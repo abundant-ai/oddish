@@ -51,7 +51,7 @@ oddish run -d terminal-bench@2.0 -a codex -m gpt-5.2-codex --n-trials 3
 
 ```bash
 # Or sweep multiple agents
-oddish run terminal-bench@2.0 -c sweep.yaml
+oddish run -d terminal-bench@2.0 -c sweep.yaml
 ```
 
 <details>
@@ -84,12 +84,11 @@ oddish status
 - `oddish status` — monitor progress
 - `oddish clean` — cleanup jobs
 
-
 ## Documentation
 
 Technical documentation lives in [AGENTS.md](AGENTS.md).
 
-Instructions for self-hosting or running locally are in [SELF_HOSTING.md](SELF_HOSTING.md).
+Instructions for self-hosting are in [SELF_HOSTING.md](SELF_HOSTING.md).
 
 ## License
 

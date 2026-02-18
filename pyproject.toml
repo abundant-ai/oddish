@@ -4,11 +4,25 @@ build-backend = "hatchling.build"
 
 [project]
 name = "oddish"
-version = "0.2.0"
-description = "Eval scheduler for Harbor tasks - Postgres-backed job queue with PGQueuer"
+version = "0.1.0"
+description = "Postgres-backed eval scheduler for Harbor agent tasks — queuing, retries, and monitoring"
 readme = "README.md"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.12"
 license = { file = "LICENSE" }
+authors = [
+    { name = "Rishi Desai", email = "rishi@abundant.ai" },
+]
+keywords = ["harbor", "eval", "llm", "agent", "benchmark", "scheduler"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Testing",
+]
 
 dependencies = [
     # Web framework
@@ -43,53 +57,35 @@ dependencies = [
     # Analysis and classification
     "swegen>=0.1.1",
     "claude-agent-sdk>=0.1.18",
-    "pre-commit>=4.0.0",
+
+    # LLM providers
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "google-generativeai>=0.8.0",
 ]
 
 [project.optional-dependencies]
-# LLM providers for analysis/verdict
-anthropic = [
-    "anthropic>=0.40.0",
-]
-openai = [
-    "openai>=1.50.0",
-]
-google = [
-    "google-generativeai>=0.8.0",
-]
-# All LLM providers
-llm = [
-    "anthropic>=0.40.0",
-    "openai>=1.50.0",
-    "google-generativeai>=0.8.0",
-]
-# Modal/Cloud deployment dependencies
-cloud = [
-    "python-jose[cryptography]>=3.3.0",
-    "httpx>=0.27.0",
-    "python-multipart>=0.0.9",
-]
-# Development
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "pre-commit>=4.0.0",
+    "twine>=6.0.0",
 ]
-# Full installation (all features)
 all = [
-    "anthropic>=0.40.0",
-    "openai>=1.50.0",
-    "google-generativeai>=0.8.0",
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "pre-commit>=4.0.0",
+    "oddish[dev]",
 ]
+
+[project.urls]
+Homepage = "https://github.com/abundant-ai/oddish"
+Repository = "https://github.com/abundant-ai/oddish"
+Issues = "https://github.com/abundant-ai/oddish/issues"
+Documentation = "https://github.com/abundant-ai/oddish/blob/main/AGENTS.md"
 
 [project.scripts]
 oddish = "oddish.cli:app"
 
-[tool.hatch.metadata]
-allow-direct-references = true
+[tool.hatch.build.targets.sdist]
+exclude = [".git", "uv.lock", ".pre-commit-config.yaml"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/oddish"]

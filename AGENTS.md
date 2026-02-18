@@ -4,14 +4,14 @@ Deep technical documentation for the Oddish core library. This covers architectu
 
 ## What is Oddish?
 
-Oddish is a Postgres-backed scheduler for running Harbor agent evaluation tasks. It provides:
+Oddish is a standalone, open-source, Postgres-backed scheduler for running [Harbor](https://github.com/laude-institute/harbor) agent evaluation tasks. It provides:
 
-- **FastAPI server** (`python -m oddish.api`) - Task submission, monitoring, logs, and results
-- **PGQueuer workers** - Provider-aware queues for trials, analysis, and verdict jobs
-- **CLI** (`oddish run`, `oddish status`) - Submits tasks and monitors experiments
-- **Database models** - Experiments, tasks, trials, and queue state in Postgres
+- **FastAPI server** (`python -m oddish.api`) — task submission, monitoring, logs, and results
+- **PGQueuer workers** — provider-aware queues for trials, analysis, and verdict jobs
+- **CLI** (`oddish run`, `oddish status`) — submits tasks and monitors experiments
+- **Database models** — experiments, tasks, trials, and queue state in Postgres
 
-This is the **open-source core** designed for self-hosting or embedding in your own services.
+Oddish is designed for self-hosting or embedding in your own services. A hosted version is available at [oddish.app](https://www.oddish.app/), but the library has no dependency on it.
 
 ## Architecture
 
@@ -19,7 +19,7 @@ This is the **open-source core** designed for self-hosting or embedding in your 
 ┌─────────────────────────────────────────────────────────────┐
 │  CLI (oddish run/status) or API Client                      │
 │  - Uses env vars for API URL + auth                         │
-│  - Submits tasks via HTTP (Authorization: Bearer <token>)   │
+│  - Submits tasks via HTTP                                   │
 │  - Watches tasks or experiments via CLI status              │
 └─────────────────────────────────────────────────────────────┘
                               │
@@ -63,24 +63,35 @@ uv run python -m oddish.api
 
 This starts Postgres, runs the API with workers, and is a good baseline for local development.
 
-### CLI auth / configuration
+### CLI configuration
 
 The CLI can talk to either:
 
-- **Hosted API** (default): `https://abundant-ai--api.modal.run` (no local infra)
-- **Local API**: `http://localhost:8000` (and optionally starts infra for you)
+- **Local API**: `http://localhost:8000` (self-hosted)
+- **Hosted API** (optional): `https://abundant-ai--api.modal.run`
 
-Configure the CLI via env vars:
+For local use, point the CLI at your server:
+
+```bash
+export ODDISH_API_URL="http://localhost:8000"
+```
+
+The local API does not enforce auth by default. For the hosted API, set an API key:
 
 ```bash
 export ODDISH_API_URL="https://abundant-ai--api.modal.run"
 export ODDISH_API_KEY="ok_..."
-export ODDISH_DASHBOARD_URL="https://www.oddish.app"
 ```
 
-For hosted deployments, `ODDISH_API_KEY` must be a real API token. The local API
-does not enforce auth by default, but the CLI still requires `ODDISH_API_KEY`
-unless you set a custom client.
+### CLI config precedence
+
+The CLI resolves API settings in this order:
+
+1. `ODDISH_API_URL` / `ODDISH_API_KEY` / `ODDISH_DASHBOARD_URL`
+2. `ODDISH_DEFAULT_API_URL` / `ODDISH_DEFAULT_DASHBOARD_URL`
+3. Built-in defaults:
+   - API: `https://abundant-ai--api.modal.run`
+   - Dashboard: `https://www.oddish.app`
 
 ### Manual setup
 
@@ -92,6 +103,16 @@ docker compose up -d db
 uv sync
 uv run python -m oddish.db setup
 uv run python -m oddish.api
+```
+
+### Database setup commands
+
+```bash
+uv run python -m oddish.db setup            # Full setup (Alembic + PGQueuer)
+uv run python -m oddish.db init             # Run Alembic migrations only
+uv run python -m oddish.db install-pgqueuer # Install PGQueuer tables only
+uv run python -m oddish.db reset            # Drop and recreate all tables
+uv run python -m oddish.db purge            # Delete all data (preserves schema)
 ```
 
 ### API flags
@@ -114,6 +135,7 @@ uv run python -m oddish.api --host 0.0.0.0 --port 9000
 | GET | `/tasks/{task_id}` | Task details with trials |
 | DELETE | `/tasks/{task_id}` | Delete a task and its trials |
 | DELETE | `/experiments/{experiment_id}` | Delete an experiment and its tasks |
+| PATCH | `/experiments/{experiment_id}` | Update experiment name |
 | POST | `/tasks/upload` | Upload task tarball |
 | POST | `/tasks/sweep` | Create evaluation sweep |
 | GET | `/tasks/{task_id}/trials/{index}` | Fetch trial by index |
@@ -130,6 +152,9 @@ docker compose up -d db
 
 # Full stack (containerized)
 docker compose up -d db api worker
+
+# One-time database initialization
+docker compose run --rm db-init
 ```
 
 Services:
@@ -139,20 +164,11 @@ Services:
 | `db` | Postgres 16 |
 | `api` | FastAPI server (`python -m oddish.api`) |
 | `worker` | Standalone worker (`python -m oddish.workers.queue.worker`) |
+| `db-init` | One-time setup: runs Alembic migrations + PGQueuer install |
 
 ## Configuration
 
-Oddish loads environment variables from `.env` by default.
-
-### CLI config precedence
-
-The CLI resolves API settings in this order:
-
-1. `ODDISH_API_URL` / `ODDISH_API_KEY` / `ODDISH_DASHBOARD_URL`
-2. `ODDISH_DEFAULT_API_URL` / `ODDISH_DEFAULT_DASHBOARD_URL`
-3. Built-in defaults:
-   - API: `https://abundant-ai--api.modal.run`
-   - Dashboard: `https://www.oddish.app`
+Oddish loads environment variables from `.env` by default (via Pydantic Settings with the `ODDISH_` prefix).
 
 ### Database URL
 
@@ -162,6 +178,8 @@ Both formats supported:
 DATABASE_URL=postgresql+asyncpg://oddish:oddish@localhost:5432/oddish
 ODDISH_DATABASE_URL=postgresql+asyncpg://...  # Alternative
 ```
+
+`DATABASE_URL` takes precedence over `ODDISH_DATABASE_URL`.
 
 ### Storage
 
@@ -186,16 +204,13 @@ Task uploads land under `tasks/<task_id>/`. Trial artifacts are uploaded under
 
 ### Execution Environments
 
-Oddish runs Harbor tasks in a sandboxed environment. Defaults are:
-
-- Local API: `docker`
-- Hhosted API: `modal` (forced)
+Oddish runs Harbor tasks in a sandboxed environment. The default is `daytona`.
 
 Override per task with `oddish run --env {docker|daytona|e2b|modal|runloop|gke}`.
 
 ### Provider Routing
 
-Oddish maps agent names to providers in `src/oddish/config.py`:
+Oddish collapses Harbor/LiteLLM's many providers into 4 queue buckets for PGQueuer concurrency control. Agent names map to providers via `src/oddish/config.py`:
 
 | Agent Pattern | Provider |
 |---------------|----------|
@@ -204,6 +219,13 @@ Oddish maps agent names to providers in `src/oddish/config.py`:
 | `codex` | `openai` |
 | (fallback, `nop`, `oracle`) | `default` |
 
+For agents mapped to `default`, the actual provider is resolved at runtime from the model name using LiteLLM. Model providers are normalised into the same 4 buckets:
+
+| Raw Provider | Queue Bucket |
+|-------------|-------------|
+| `anthropic`, `bedrock` | `claude` |
+| `google`, `vertex_ai`, `palm` | `gemini` |
+| Everything else in Harbor's PROVIDER_KEYS | `openai` |
 
 ### Concurrency Control
 
@@ -214,13 +236,12 @@ Order of precedence:
 1. **Manual API startup:** `python -m oddish.api --n-concurrent '{"claude": 8}'`
 2. **Default:** `claude: 8, gemini: 8, openai: 8, default: 8`
 
-For self-hosted/local setups, set concurrency on API startup:
+For self-hosted setups, set concurrency on API startup:
 ```bash
 uv run python -m oddish.api --n-concurrent '{"claude": 8, "openai": 8}'
 ```
 
-Note: for the **local API**, changing concurrency requires restarting the API process.
-Use `oddish run ... --fresh` after updating the API startup flags.
+Changing concurrency requires restarting the API process.
 
 ### LLM API Keys
 
@@ -230,7 +251,16 @@ Only set keys for providers you use:
 ANTHROPIC_API_KEY=sk-...
 OPENAI_API_KEY=sk-...
 GEMINI_API_KEY=...
+```
+
+### Sandbox Provider Keys
+
+Set keys for the sandbox environments you use:
+
+```bash
 DAYTONA_API_KEY=...
+MODAL_TOKEN_ID=...
+MODAL_TOKEN_SECRET=...
 ```
 
 ## Execution Pipeline
@@ -305,7 +335,7 @@ Each entrypoint handles jobs with `job_type` of `trial`, `analysis`, or `verdict
 ## CLI Reference
 
 ```bash
-# Configure API URL (local)
+# Point at local API
 export ODDISH_API_URL="http://localhost:8000"
 
 # Run a task
@@ -328,53 +358,77 @@ oddish clean --experiment <id>
 oddish clean --all-experiments
 ```
 
-### GitHub actions Integration
+### GitHub Actions Integration
 
-The CLI supports JSON output for easy integration with CI pipelines:
+The CLI supports JSON output for CI pipelines:
 
 ```bash
-# Submit tasks and get JSON with task IDs and dashboard links
 oddish run ./tasks/* -a codex --n-trials 1 --json
 
 # Output:
 # {
 #   "experiment": "random-words-123",
-#   "experiment_url": "https://www.oddish.app/experiments/random-words-123",
-#   "public_experiment_url": null,
+#   "experiment_url": "...",
 #   "total_trials": 3,
 #   "tasks": [
-#     {"id": "task-abc123", "trials_count": 1, "url": "https://www.oddish.app/tasks/task-abc123"},
+#     {"id": "task-abc123", "trials_count": 1, "url": "..."},
 #     ...
 #   ]
 # }
 ```
 
 Environment variables for CI:
-- `ODDISH_API_KEY`: API token (required)
+- `ODDISH_API_URL`: API endpoint (your self-hosted URL, or the hosted API)
+- `ODDISH_API_KEY`: API token (required for the hosted API)
 
 ## Repository Structure
 
 ```
 oddish/
-├── src/oddish/              # Main package
-│   ├── api.py               # FastAPI server
-│   ├── cli.py               # CLI entrypoint
-│   ├── queue.py             # Task creation, queue orchestration
+├── src/oddish/
+│   ├── __init__.py          # Public API (lazy-loaded exports)
 │   ├── config.py            # Settings, provider mapping
-│   ├── schemas.py           # Pydantic models
-│   ├── infra.py             # Docker/infrastructure management
+│   ├── schemas.py           # Pydantic request/response models
+│   ├── queue.py             # Task creation, queue orchestration
+│   ├── experiment.py        # Experiment name generation
+│   ├── infra.py             # Docker/infrastructure helpers
+│   ├── api/
+│   │   ├── __init__.py      # FastAPI app + endpoint wiring
+│   │   ├── endpoints.py     # Core endpoint logic
+│   │   ├── helpers.py       # Response builders
+│   │   ├── tasks.py         # Task upload handling
+│   │   └── trial_io.py      # Trial logs/result reading
+│   ├── cli/
+│   │   ├── __init__.py      # Typer app entry point
+│   │   ├── run.py           # Run command (task submission)
+│   │   ├── status.py        # Status command (monitoring)
+│   │   ├── clean.py         # Clean command (deletion)
+│   │   ├── api.py           # HTTP client helpers
+│   │   ├── config.py        # API URL/auth resolution
+│   │   └── infra.py         # Local infrastructure helpers
 │   ├── db/
-│   │   ├── models.py        # SQLAlchemy models (Task, Trial)
-│   │   ├── connection.py    # Database connection management
+│   │   ├── __init__.py      # DB exports
+│   │   ├── __main__.py      # CLI: python -m oddish.db
+│   │   ├── models.py        # SQLAlchemy models (Experiment, Task, Trial)
+│   │   ├── connection.py    # Engine, session factory, pool management
 │   │   └── storage.py       # S3/local storage client
 │   └── workers/
-│       ├── queue/worker.py      # PGQueuer-based worker
-│       └── harbor_runner.py     # Harbor task executor
+│       ├── harbor_runner.py # Harbor task executor + artifact upload
+│       └── queue/
+│           ├── queue_manager.py    # PGQueuer setup + entrypoints
+│           ├── worker.py           # Standalone worker entry point
+│           ├── trial_handler.py    # Trial execution handler
+│           ├── analysis_handler.py # Post-trial analysis handler
+│           ├── verdict_handler.py  # Task-level verdict handler
+│           ├── db_helpers.py       # Worker DB utilities
+│           └── shared.py           # Shared worker utilities
 │
-├── alembic/                 # Database migrations
-├── examples/                # Sample Harbor tasks
+├── alembic/                 # Database migrations (16 versions)
+├── alembic.ini              # Alembic configuration
 ├── docker-compose.yml       # Local dev orchestration
-└── pyproject.toml           # Package config
+├── env.example              # Example .env file
+├── pyproject.toml           # Package config (v0.2.0)
+└── README.md
 ```
 
 ## Using as a Library
@@ -386,7 +440,7 @@ Oddish can be imported as a library in your own services:
 from oddish.db import TaskModel, TrialModel, get_session, init_db
 
 # Queue operations
-from oddish.queue import create_task, get_task_with_trials
+from oddish.queue import create_task, get_task_with_trials, get_queue_stats
 
 # Worker logic
 from oddish.workers.queue import create_queue_manager
@@ -396,6 +450,23 @@ from oddish.config import settings
 
 # Schemas
 from oddish.schemas import TaskSubmission, TrialSpec
+```
+
+## Database Migrations
+
+Oddish uses Alembic for schema management. The version table is `alembic_version_oddish` (to avoid conflicts if you run your own Alembic migrations in the same database).
+
+PGQueuer tables are managed separately via `oddish.db install-pgqueuer`.
+
+```bash
+# Run all migrations
+uv run alembic upgrade head
+
+# Check current version
+uv run alembic current
+
+# Full setup (migrations + PGQueuer)
+uv run python -m oddish.db setup
 ```
 
 ## Troubleshooting
@@ -437,7 +508,7 @@ uv run alembic upgrade head
 
 ### Harbor execution failures
 
-1. Verify Docker is running
+1. Verify the sandbox environment is available (Docker running, Daytona key set, etc.)
 2. Check LLM API key is set for the provider
 3. Check trial error message:
    ```bash
