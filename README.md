@@ -38,8 +38,9 @@ Oddish extends Harbor with:
 uv pip install oddish
 ```
 
-### 2. Generate an Oddish API key [here](https://www.oddish.app/)
+### 2. Generate an Oddish API key
 
+- API key generation is restricted during the beta. To request access, contact the [maintainer](https://github.com/RishiDesai).
 
 ```bash
 export ODDISH_API_KEY="ok_..."
@@ -89,9 +90,8 @@ oddish status
 
 ## Documentation
 
-Technical documentation lives in [AGENTS.md](AGENTS.md).
-
-Instructions for self-hosting are in [SELF_HOSTING.md](SELF_HOSTING.md).
+- [Technical documentation](AGENTS.md)
+- [SELF_HOSTING.md](SELF_HOSTING.md).
 
 ## License
 
