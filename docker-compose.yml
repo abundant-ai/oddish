@@ -1,0 +1,97 @@
+version: "3.8"
+
+services:
+  # =============================================================================
+  # Database - Postgres 16
+  # =============================================================================
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=oddish
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-oddish}
+      - POSTGRES_DB=oddish
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oddish -d oddish"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # =============================================================================
+  # API Server - FastAPI
+  # =============================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "oddish.api"]
+    environment:
+      - ODDISH_DATABASE_URL=postgresql+asyncpg://oddish:${DB_PASSWORD:-oddish}@db:5432/oddish
+      - ODDISH_API_HOST=0.0.0.0
+      - ODDISH_API_PORT=8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # =============================================================================
+  # Worker - PGQueuer-based job processor
+  # =============================================================================
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "oddish.workers.queue.worker"]
+    environment:
+      # Database
+      - ODDISH_DATABASE_URL=postgresql+asyncpg://oddish:${DB_PASSWORD:-oddish}@db:5432/oddish
+
+      # LLM API Keys (for analysis/verdict)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+
+      # LLM Configuration
+      - ODDISH_ANALYSIS_LLM_PROVIDER=${ANALYSIS_LLM_PROVIDER:-anthropic}
+      - ODDISH_ANALYSIS_LLM_MODEL=${ANALYSIS_LLM_MODEL:-claude-sonnet-4-20250514}
+      - ODDISH_VERDICT_LLM_PROVIDER=${VERDICT_LLM_PROVIDER:-anthropic}
+      - ODDISH_VERDICT_LLM_MODEL=${VERDICT_LLM_MODEL:-claude-sonnet-4-20250514}
+
+      # Harbor settings (jobs_dir is hardcoded in config.py)
+    volumes:
+      # Mount jobs directory for Harbor artifacts
+      - harbor_jobs:/jobs
+      # Mount Docker socket for container-based trials
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      replicas: 1  # Scale as needed: docker-compose up --scale worker=4
+
+  # =============================================================================
+  # Database initialization (run once)
+  # =============================================================================
+  db-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "oddish.db", "setup"]
+    environment:
+      - ODDISH_DATABASE_URL=postgresql+asyncpg://oddish:${DB_PASSWORD:-oddish}@db:5432/oddish
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles:
+      - init  # Only run with: docker-compose --profile init up db-init
+
+volumes:
+  postgres_data:
+  harbor_jobs:

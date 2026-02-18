@@ -1,0 +1,281 @@
+diff --git a/README.md b/README.md
+index 7f97a76cd..866d7fbce 100644
+--- a/README.md
++++ b/README.md
+@@ -300,7 +300,7 @@ The following companies, organizations, and individuals support ESLint's ongoing
+ <!--sponsorsstart-->
+ <h3>Platinum Sponsors</h3>
+ <p><a href="https://automattic.com"><img src="https://images.opencollective.com/automattic/d0ef3e1/logo.png" alt="Automattic" height="undefined"></a></p><h3>Gold Sponsors</h3>
+-<p><a href="https://engineering.salesforce.com"><img src="https://images.opencollective.com/salesforce/ca8f997/logo.png" alt="Salesforce" height="96"></a> <a href="https://www.airbnb.com/"><img src="https://images.opencollective.com/airbnb/d327d66/logo.png" alt="Airbnb" height="96"></a></p><h3>Silver Sponsors</h3>
++<p><a href="https://bitwarden.com"><img src="https://avatars.githubusercontent.com/u/15990069?v=4" alt="Bitwarden" height="96"></a> <a href="https://engineering.salesforce.com"><img src="https://images.opencollective.com/salesforce/ca8f997/logo.png" alt="Salesforce" height="96"></a> <a href="https://www.airbnb.com/"><img src="https://images.opencollective.com/airbnb/d327d66/logo.png" alt="Airbnb" height="96"></a></p><h3>Silver Sponsors</h3>
+ <p><a href="https://www.jetbrains.com/"><img src="https://images.opencollective.com/jetbrains/eb04ddc/logo.png" alt="JetBrains" height="64"></a> <a href="https://liftoff.io/"><img src="https://images.opencollective.com/liftoff/5c4fa84/logo.png" alt="Liftoff" height="64"></a> <a href="https://americanexpress.io"><img src="https://avatars.githubusercontent.com/u/3853301?v=4" alt="American Express" height="64"></a> <a href="https://www.workleap.com"><img src="https://avatars.githubusercontent.com/u/53535748?u=d1e55d7661d724bf2281c1bfd33cb8f99fe2465f&v=4" alt="Workleap" height="64"></a></p><h3>Bronze Sponsors</h3>
+ <p><a href="https://www.notion.so"><img src="https://images.opencollective.com/notion/bf3b117/logo.png" alt="notion" height="32"></a> <a href="https://www.crosswordsolver.org/anagram-solver/"><img src="https://images.opencollective.com/anagram-solver/2666271/logo.png" alt="Anagram Solver" height="32"></a> <a href="https://icons8.com/"><img src="https://images.opencollective.com/icons8/7fa1641/logo.png" alt="Icons8" height="32"></a> <a href="https://discord.com"><img src="https://images.opencollective.com/discordapp/f9645d9/logo.png" alt="Discord" height="32"></a> <a href="https://transloadit.com/"><img src="https://avatars.githubusercontent.com/u/125754?v=4" alt="Transloadit" height="32"></a> <a href="https://www.ignitionapp.com"><img src="https://avatars.githubusercontent.com/u/5753491?v=4" alt="Ignition" height="32"></a> <a href="https://nx.dev"><img src="https://avatars.githubusercontent.com/u/23692104?v=4" alt="Nx" height="32"></a> <a href="https://herocoders.com"><img src="https://avatars.githubusercontent.com/u/37549774?v=4" alt="HeroCoders" height="32"></a> <a href="https://usenextbase.com"><img src="https://avatars.githubusercontent.com/u/145838380?v=4" alt="Nextbase Starter Kit" height="32"></a></p>
+ <!--sponsorsend-->
+diff --git a/docs/src/use/command-line-interface.md b/docs/src/use/command-line-interface.md
+index 66bceade8..65b504646 100644
+--- a/docs/src/use/command-line-interface.md
++++ b/docs/src/use/command-line-interface.md
+@@ -86,7 +86,7 @@ Fix Problems:
+
+ Ignore Files:
+   --no-ignore                     Disable use of ignore files and patterns
+-  --ignore-pattern [String]       Patterns of files to ignore
++  --ignore-pattern [String]       Pattern of files to ignore (in addition to those in .eslintignore)
+
+ Use stdin:
+   --stdin                         Lint code provided on <STDIN> - default: false
+@@ -426,7 +426,7 @@ npx eslint --no-ignore file.js
+
+ #### `--ignore-pattern`
+
+-This option allows you to specify patterns of files to ignore. In eslintrc mode, these are in addition to `.eslintignore`.
++This option allows you to specify patterns of files to ignore (in addition to those in `.eslintignore`).
+
+ * **Argument Type**: String. The supported syntax is the same as for [`.eslintignore` files](configure/ignore-deprecated#the-eslintignore-file), which use the same patterns as the [`.gitignore` specification](https://git-scm.com/docs/gitignore). You should quote your patterns in order to avoid shell interpretation of glob patterns.
+ * **Multiple Arguments**: Yes
+diff --git a/lib/eslint/eslint.js b/lib/eslint/eslint.js
+index b4c38503a..76330aca7 100644
+--- a/lib/eslint/eslint.js
++++ b/lib/eslint/eslint.js
+@@ -42,6 +42,7 @@ const {
+ const { pathToFileURL } = require("url");
+ const { FlatConfigArray } = require("../config/flat-config-array");
+ const LintResultCache = require("../cli-engine/lint-result-cache");
++const { Retrier } = require("@humanwhocodes/retry");
+
+ /*
+  * This is necessary to allow overwriting writeFile for testing purposes.
+@@ -851,6 +852,8 @@ class ESLint {
+             errorOnUnmatchedPattern
+         });
+         const controller = new AbortController();
++        const retryCodes = new Set(["ENFILE", "EMFILE"]);
++        const retrier = new Retrier(error => retryCodes.has(error.code));
+
+         debug(`${filePaths.length} files found in: ${Date.now() - startTime}ms`);
+
+@@ -919,7 +922,7 @@ class ESLint {
+                     fixer = message => shouldMessageBeFixed(message, config, fixTypesSet) && originalFix(message);
+                 }
+
+-                return fs.readFile(filePath, { encoding: "utf8", signal: controller.signal })
++                return retrier.retry(() => fs.readFile(filePath, { encoding: "utf8", signal: controller.signal })
+                     .then(text => {
+
+                         // fail immediately if an error occurred in another file
+@@ -949,11 +952,11 @@ class ESLint {
+                         }
+
+                         return result;
+-                    }).catch(error => {
++                    }))
++                    .catch(error => {
+                         controller.abort(error);
+                         throw error;
+                     });
+-
+             })
+         );
+
+diff --git a/lib/options.js b/lib/options.js
+index 5515ec608..c8c3f8e4f 100644
+--- a/lib/options.js
++++ b/lib/options.js
+@@ -38,7 +38,7 @@ const optionator = require("optionator");
+  * @property {boolean} [help] Show help
+  * @property {boolean} ignore Disable use of ignore files and patterns
+  * @property {string} [ignorePath] Specify path of ignore file
+- * @property {string[]} [ignorePattern] Patterns of files to ignore. In eslintrc mode, these are in addition to `.eslintignore`
++ * @property {string[]} [ignorePattern] Pattern of files to ignore (in addition to those in .eslintignore)
+  * @property {boolean} init Run config initialization wizard
+  * @property {boolean} inlineConfig Prevent comments from changing config or rules
+  * @property {number} maxWarnings Number of warnings to trigger nonzero exit code
+@@ -261,7 +261,7 @@ module.exports = function(usingFlatConfig) {
+             {
+                 option: "ignore-pattern",
+                 type: "[String]",
+-                description: `Patterns of files to ignore${usingFlatConfig ? "" : " (in addition to those in .eslintignore)"}`,
++                description: "Pattern of files to ignore (in addition to those in .eslintignore)",
+                 concatRepeatedArrays: [true, {
+                     oneValuePerFlag: true
+                 }]
+diff --git a/package.json b/package.json
+index acd539122..b544aad1c 100644
+--- a/package.json
++++ b/package.json
+@@ -33,7 +33,8 @@
+     "test:browser": "node Makefile.js wdio",
+     "test:cli": "mocha",
+     "test:fuzz": "node Makefile.js fuzz",
+-    "test:performance": "node Makefile.js perf"
++    "test:performance": "node Makefile.js perf",
++    "test:emfile": "node tools/check-emfile-handling.js"
+   },
+   "gitHooks": {
+     "pre-commit": "lint-staged"
+@@ -71,6 +72,7 @@
+     "@eslint/js": "9.0.0",
+     "@humanwhocodes/config-array": "^0.12.3",
+     "@humanwhocodes/module-importer": "^1.0.1",
++    "@humanwhocodes/retry": "^0.2.3",
+     "@nodelib/fs.walk": "^1.2.8",
+     "ajv": "^6.12.4",
+     "chalk": "^4.0.0",
+diff --git a/packages/eslint-config-eslint/base.js b/packages/eslint-config-eslint/base.js
+index 21d526086..65205d8e6 100644
+--- a/packages/eslint-config-eslint/base.js
++++ b/packages/eslint-config-eslint/base.js
+@@ -68,6 +68,7 @@ const jsConfigs = [js.configs.recommended, {
+         "no-caller": "error",
+         "no-confusing-arrow": "error",
+         "no-console": "error",
++        "no-constant-binary-expression": "error",
+         "no-constructor-return": "error",
+         "no-else-return": ["error", { allowElseIf: false }
+         ],
+@@ -98,8 +99,8 @@ const jsConfigs = [js.configs.recommended, {
+         "no-nested-ternary": "error",
+         "no-new": "error",
+         "no-new-func": "error",
++        "no-new-object": "error",
+         "no-new-wrappers": "error",
+-        "no-object-constructor": "error",
+         "no-octal-escape": "error",
+         "no-param-reassign": "error",
+         "no-proto": "error",
+diff --git a/packages/eslint-config-eslint/package.json b/packages/eslint-config-eslint/package.json
+index 33999006e..a57977448 100644
+--- a/packages/eslint-config-eslint/package.json
++++ b/packages/eslint-config-eslint/package.json
+@@ -30,7 +30,7 @@
+   "bugs": "https://github.com/eslint/eslint/issues/",
+   "dependencies": {
+     "@eslint-community/eslint-plugin-eslint-comments": "^4.3.0",
+-    "@eslint/js": "^9.0.0",
++    "@eslint/js": "^8.42.0",
+     "eslint-plugin-jsdoc": "^46.5.1",
+     "eslint-plugin-n": "^17.2.0",
+     "eslint-plugin-unicorn": "^49.0.0"
+@@ -42,6 +42,6 @@
+   ],
+   "license": "MIT",
+   "engines": {
+-    "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
++    "node": ">=16.0.0"
+   }
+ }
+diff --git a/tools/check-emfile-handling.js b/tools/check-emfile-handling.js
+new file mode 100644
+index 000000000..be0fd262e
+--- /dev/null
++++ b/tools/check-emfile-handling.js
+@@ -0,0 +1,109 @@
++/**
++ * @fileoverview A utility to test that ESLint doesn't crash with EMFILE/ENFILE errors.
++ * @author Nicholas C. Zakas
++ */
++
++"use strict";
++
++//------------------------------------------------------------------------------
++// Requirements
++//------------------------------------------------------------------------------
++
++const fs = require("fs");
++const { readFile } = require("fs/promises");
++const { execSync } = require("child_process");
++const os = require("os");
++
++//------------------------------------------------------------------------------
++// Helpers
++//------------------------------------------------------------------------------
++
++const OUTPUT_DIRECTORY = "tmp/emfile-check";
++const CONFIG_DIRECTORY = "tests/fixtures/emfile";
++
++/*
++ * Every operating system has a different limit for the number of files that can
++ * be opened at once. This number is meant to be larger than the default limit
++ * on most systems.
++ *
++ * Linux systems typically start at a count of 1024 and may be increased to 4096.
++ * MacOS Sonoma v14.4 has a limit of 10496.
++ * Windows has no hard limit but may be limited by available memory.
++ */
++const DEFAULT_FILE_COUNT = 15000;
++let FILE_COUNT = DEFAULT_FILE_COUNT;
++
++// if the platform isn't windows, get the ulimit to see what the actual limit is
++if (os.platform() !== "win32") {
++    try {
++        FILE_COUNT = parseInt(execSync("ulimit -n").toString().trim(), 10) + 1;
++
++        console.log(`Detected Linux file limit of ${FILE_COUNT}.`);
++
++        // if we're on a Mac, make sure the limit isn't high enough to cause a call stack error
++        if (os.platform() === "darwin") {
++            FILE_COUNT = Math.min(FILE_COUNT, 100000);
++        }
++    } catch {
++
++        // ignore error and use default
++    }
++}
++
++/**
++ * Generates files in a directory.
++ * @returns {void}
++ */
++function generateFiles() {
++
++    fs.mkdirSync(OUTPUT_DIRECTORY, { recursive: true });
++
++    for (let i = 0; i < FILE_COUNT; i++) {
++        const fileName = `file_${i}.js`;
++        const fileContent = `// This is file ${i}`;
++
++        fs.writeFileSync(`${OUTPUT_DIRECTORY}/${fileName}`, fileContent);
++    }
++
++}
++
++/**
++ * Generates an EMFILE error by reading all files in the output directory.
++ * @returns {Promise<Buffer[]>} A promise that resolves with the contents of all files.
++ */
++function generateEmFileError() {
++    return Promise.all(
++        Array.from({ length: FILE_COUNT }, (_, i) => {
++            const fileName = `file_${i}.js`;
++
++            return readFile(`${OUTPUT_DIRECTORY}/${fileName}`);
++        })
++    );
++}
++
++//------------------------------------------------------------------------------
++// Main
++//------------------------------------------------------------------------------
++
++console.log(`Generating ${FILE_COUNT} files in ${OUTPUT_DIRECTORY}...`);
++generateFiles();
++
++console.log("Running ESLint...");
++execSync(`node bin/eslint.js ${OUTPUT_DIRECTORY} -c ${CONFIG_DIRECTORY}/eslint.config.js`, { stdio: "inherit" });
++console.log("✅ No errors encountered running ESLint.");
++
++console.log("Checking that this number of files would cause an EMFILE error...");
++generateEmFileError()
++    .then(() => {
++        throw new Error("EMFILE error not encountered.");
++    })
++    .catch(error => {
++        if (error.code === "EMFILE") {
++            console.log("✅ EMFILE error encountered:", error.message);
++        } else if (error.code === "ENFILE") {
++            console.log("✅ ENFILE error encountered:", error.message);
++        } else {
++            console.error("❌ Unexpected error encountered:", error.message);
++            throw error;
++        }
++    });

@@ -1,0 +1,2011 @@
+diff --git a/README.md b/README.md
+index 866d7fbce..7f97a76cd 100644
+--- a/README.md
++++ b/README.md
+@@ -300,7 +300,7 @@ The following companies, organizations, and individuals support ESLint's ongoing
+ <!--sponsorsstart-->
+ <h3>Platinum Sponsors</h3>
+ <p><a href="https://automattic.com"><img src="https://images.opencollective.com/automattic/d0ef3e1/logo.png" alt="Automattic" height="undefined"></a></p><h3>Gold Sponsors</h3>
+-<p><a href="https://bitwarden.com"><img src="https://avatars.githubusercontent.com/u/15990069?v=4" alt="Bitwarden" height="96"></a> <a href="https://engineering.salesforce.com"><img src="https://images.opencollective.com/salesforce/ca8f997/logo.png" alt="Salesforce" height="96"></a> <a href="https://www.airbnb.com/"><img src="https://images.opencollective.com/airbnb/d327d66/logo.png" alt="Airbnb" height="96"></a></p><h3>Silver Sponsors</h3>
++<p><a href="https://engineering.salesforce.com"><img src="https://images.opencollective.com/salesforce/ca8f997/logo.png" alt="Salesforce" height="96"></a> <a href="https://www.airbnb.com/"><img src="https://images.opencollective.com/airbnb/d327d66/logo.png" alt="Airbnb" height="96"></a></p><h3>Silver Sponsors</h3>
+ <p><a href="https://www.jetbrains.com/"><img src="https://images.opencollective.com/jetbrains/eb04ddc/logo.png" alt="JetBrains" height="64"></a> <a href="https://liftoff.io/"><img src="https://images.opencollective.com/liftoff/5c4fa84/logo.png" alt="Liftoff" height="64"></a> <a href="https://americanexpress.io"><img src="https://avatars.githubusercontent.com/u/3853301?v=4" alt="American Express" height="64"></a> <a href="https://www.workleap.com"><img src="https://avatars.githubusercontent.com/u/53535748?u=d1e55d7661d724bf2281c1bfd33cb8f99fe2465f&v=4" alt="Workleap" height="64"></a></p><h3>Bronze Sponsors</h3>
+ <p><a href="https://www.notion.so"><img src="https://images.opencollective.com/notion/bf3b117/logo.png" alt="notion" height="32"></a> <a href="https://www.crosswordsolver.org/anagram-solver/"><img src="https://images.opencollective.com/anagram-solver/2666271/logo.png" alt="Anagram Solver" height="32"></a> <a href="https://icons8.com/"><img src="https://images.opencollective.com/icons8/7fa1641/logo.png" alt="Icons8" height="32"></a> <a href="https://discord.com"><img src="https://images.opencollective.com/discordapp/f9645d9/logo.png" alt="Discord" height="32"></a> <a href="https://transloadit.com/"><img src="https://avatars.githubusercontent.com/u/125754?v=4" alt="Transloadit" height="32"></a> <a href="https://www.ignitionapp.com"><img src="https://avatars.githubusercontent.com/u/5753491?v=4" alt="Ignition" height="32"></a> <a href="https://nx.dev"><img src="https://avatars.githubusercontent.com/u/23692104?v=4" alt="Nx" height="32"></a> <a href="https://herocoders.com"><img src="https://avatars.githubusercontent.com/u/37549774?v=4" alt="HeroCoders" height="32"></a> <a href="https://usenextbase.com"><img src="https://avatars.githubusercontent.com/u/145838380?v=4" alt="Nextbase Starter Kit" height="32"></a></p>
+ <!--sponsorsend-->
+diff --git a/lib/linter/apply-disable-directives.js b/lib/linter/apply-disable-directives.js
+index 0ed11bb19..f511821dd 100644
+--- a/lib/linter/apply-disable-directives.js
++++ b/lib/linter/apply-disable-directives.js
+@@ -38,16 +38,16 @@ function compareLocations(itemA, itemB) {
+  * @param {Iterable<Directive>} directives Unused directives to be removed.
+  * @returns {Directive[][]} Directives grouped by their parent comment.
+  */
+-function groupByParentDirective(directives) {
++function groupByParentComment(directives) {
+     const groups = new Map();
+
+     for (const directive of directives) {
+-        const { unprocessedDirective: { parentDirective } } = directive;
++        const { unprocessedDirective: { parentComment } } = directive;
+
+-        if (groups.has(parentDirective)) {
+-            groups.get(parentDirective).push(directive);
++        if (groups.has(parentComment)) {
++            groups.get(parentComment).push(directive);
+         } else {
+-            groups.set(parentDirective, [directive]);
++            groups.set(parentComment, [directive]);
+         }
+     }
+
+@@ -57,19 +57,19 @@ function groupByParentDirective(directives) {
+ /**
+  * Creates removal details for a set of directives within the same comment.
+  * @param {Directive[]} directives Unused directives to be removed.
+- * @param {Token} node The backing Comment token.
++ * @param {Token} commentToken The backing Comment token.
+  * @returns {{ description, fix, unprocessedDirective }[]} Details for later creation of output Problems.
+  */
+-function createIndividualDirectivesRemoval(directives, node) {
++function createIndividualDirectivesRemoval(directives, commentToken) {
+
+     /*
+-     * `node.value` starts right after `//` or `/*`.
++     * `commentToken.value` starts right after `//` or `/*`.
+      * All calculated offsets will be relative to this index.
+      */
+-    const commentValueStart = node.range[0] + "//".length;
++    const commentValueStart = commentToken.range[0] + "//".length;
+
+     // Find where the list of rules starts. `\S+` matches with the directive name (e.g. `eslint-disable-line`)
+-    const listStartOffset = /^\s*\S+\s+/u.exec(node.value)[0].length;
++    const listStartOffset = /^\s*\S+\s+/u.exec(commentToken.value)[0].length;
+
+     /*
+      * Get the list text without any surrounding whitespace. In order to preserve the original
+@@ -78,7 +78,7 @@ function createIndividualDirectivesRemoval(directives, node) {
+      *     // eslint-disable-line rule-one , rule-two , rule-three -- comment
+      *                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      */
+-    const listText = node.value
++    const listText = commentToken.value
+         .slice(listStartOffset) // remove directive name and all whitespace before the list
+         .split(/\s-{2,}\s/u)[0] // remove `-- comment`, if it exists
+         .trimEnd(); // remove all whitespace after the list
+@@ -159,13 +159,13 @@ function createIndividualDirectivesRemoval(directives, node) {
+ }
+
+ /**
+- * Creates a description of deleting an entire unused disable directive.
++ * Creates a description of deleting an entire unused disable comment.
+  * @param {Directive[]} directives Unused directives to be removed.
+- * @param {Token} node The backing Comment token.
+- * @returns {{ description, fix, unprocessedDirective }} Details for later creation of an output problem.
++ * @param {Token} commentToken The backing Comment token.
++ * @returns {{ description, fix, unprocessedDirective }} Details for later creation of an output Problem.
+  */
+-function createDirectiveRemoval(directives, node) {
+-    const { range } = node;
++function createCommentRemoval(directives, commentToken) {
++    const { range } = commentToken;
+     const ruleIds = directives.filter(directive => directive.ruleId).map(directive => `'${directive.ruleId}'`);
+
+     return {
+@@ -186,20 +186,20 @@ function createDirectiveRemoval(directives, node) {
+  * @returns {{ description, fix, unprocessedDirective }[]} Details for later creation of output Problems.
+  */
+ function processUnusedDirectives(allDirectives) {
+-    const directiveGroups = groupByParentDirective(allDirectives);
++    const directiveGroups = groupByParentComment(allDirectives);
+
+     return directiveGroups.flatMap(
+         directives => {
+-            const { parentDirective } = directives[0].unprocessedDirective;
+-            const remainingRuleIds = new Set(parentDirective.ruleIds);
++            const { parentComment } = directives[0].unprocessedDirective;
++            const remainingRuleIds = new Set(parentComment.ruleIds);
+
+             for (const directive of directives) {
+                 remainingRuleIds.delete(directive.ruleId);
+             }
+
+             return remainingRuleIds.size
+-                ? createIndividualDirectivesRemoval(directives, parentDirective.node)
+-                : [createDirectiveRemoval(directives, parentDirective.node)];
++                ? createIndividualDirectivesRemoval(directives, parentComment.commentToken)
++                : [createCommentRemoval(directives, parentComment.commentToken)];
+         }
+     );
+ }
+@@ -372,7 +372,7 @@ function applyDirectives(options) {
+
+     const unusedDirectives = processed
+         .map(({ description, fix, unprocessedDirective }) => {
+-            const { parentDirective, type, line, column } = unprocessedDirective;
++            const { parentComment, type, line, column } = unprocessedDirective;
+
+             let message;
+
+@@ -388,8 +388,8 @@ function applyDirectives(options) {
+             return {
+                 ruleId: null,
+                 message,
+-                line: type === "disable-next-line" ? parentDirective.node.loc.start.line : line,
+-                column: type === "disable-next-line" ? parentDirective.node.loc.start.column + 1 : column,
++                line: type === "disable-next-line" ? parentComment.commentToken.loc.start.line : line,
++                column: type === "disable-next-line" ? parentComment.commentToken.loc.start.column + 1 : column,
+                 severity: options.reportUnusedDisableDirectives === "warn" ? 1 : 2,
+                 nodeType: null,
+                 ...options.disableFixes ? {} : { fix }
+diff --git a/lib/linter/linter.js b/lib/linter/linter.js
+index c76b85224..22cf17b54 100644
+--- a/lib/linter/linter.js
++++ b/lib/linter/linter.js
+@@ -273,21 +273,23 @@ function createLintingProblem(options) {
+  * Creates a collection of disable directives from a comment
+  * @param {Object} options to create disable directives
+  * @param {("disable"|"enable"|"disable-line"|"disable-next-line")} options.type The type of directive comment
++ * @param {token} options.commentToken The Comment token
+  * @param {string} options.value The value after the directive in the comment
+  * comment specified no specific rules, so it applies to all rules (e.g. `eslint-disable`)
+  * @param {string} options.justification The justification of the directive
+- * @param {ASTNode|token} options.node The Comment node/token.
+- * @param {function(string): {create: Function}} ruleMapper A map from rule IDs to defined rules
++ * @param {function(string): {create: Function}} options.ruleMapper A map from rule IDs to defined rules
+  * @returns {Object} Directives and problems from the comment
+  */
+-function createDisableDirectives({ type, value, justification, node }, ruleMapper) {
++function createDisableDirectives(options) {
++    const { commentToken, type, value, justification, ruleMapper } = options;
+     const ruleIds = Object.keys(commentParser.parseListConfig(value));
+     const directiveRules = ruleIds.length ? ruleIds : [null];
+     const result = {
+         directives: [], // valid disable directives
+         directiveProblems: [] // problems in directives
+     };
+-    const parentDirective = { node, ruleIds };
++
++    const parentComment = { commentToken, ruleIds };
+
+     for (const ruleId of directiveRules) {
+
+@@ -295,25 +297,25 @@ function createDisableDirectives({ type, value, justification, node }, ruleMappe
+         if (ruleId === null || !!ruleMapper(ruleId)) {
+             if (type === "disable-next-line") {
+                 result.directives.push({
+-                    parentDirective,
++                    parentComment,
+                     type,
+-                    line: node.loc.end.line,
+-                    column: node.loc.end.column + 1,
++                    line: commentToken.loc.end.line,
++                    column: commentToken.loc.end.column + 1,
+                     ruleId,
+                     justification
+                 });
+             } else {
+                 result.directives.push({
+-                    parentDirective,
++                    parentComment,
+                     type,
+-                    line: node.loc.start.line,
+-                    column: node.loc.start.column + 1,
++                    line: commentToken.loc.start.line,
++                    column: commentToken.loc.start.column + 1,
+                     ruleId,
+                     justification
+                 });
+             }
+         } else {
+-            result.directiveProblems.push(createLintingProblem({ ruleId, loc: node.loc }));
++            result.directiveProblems.push(createLintingProblem({ ruleId, loc: commentToken.loc }));
+         }
+     }
+     return result;
+@@ -386,12 +388,8 @@ function getDirectiveComments(sourceCode, ruleMapper, warnInlineConfig, config)
+             case "eslint-disable-next-line":
+             case "eslint-disable-line": {
+                 const directiveType = directiveText.slice("eslint-".length);
+-                const { directives, directiveProblems } = createDisableDirectives({
+-                    type: directiveType,
+-                    value: directiveValue,
+-                    justification: justificationPart,
+-                    node: comment
+-                }, ruleMapper);
++                const options = { commentToken: comment, type: directiveType, value: directiveValue, justification: justificationPart, ruleMapper };
++                const { directives, directiveProblems } = createDisableDirectives(options);
+
+                 disableDirectives.push(...directives);
+                 problems.push(...directiveProblems);
+@@ -545,21 +543,53 @@ function getDirectiveComments(sourceCode, ruleMapper, warnInlineConfig, config)
+  * A collection of the directive comments that were found, along with any problems that occurred when parsing
+  */
+ function getDirectiveCommentsForFlatConfig(sourceCode, ruleMapper) {
+-    const disableDirectives = [];
+     const problems = [];
++    const disableDirectives = [];
+
+-    const {
+-        directives: directivesSources,
+-        problems: directivesProblems
+-    } = sourceCode.getDisableDirectives();
++    sourceCode.getInlineConfigNodes().filter(token => token.type !== "Shebang").forEach(comment => {
++        const { directivePart, justificationPart } = commentParser.extractDirectiveComment(comment.value);
++
++        const match = directivesPattern.exec(directivePart);
++
++        if (!match) {
++            return;
++        }
++        const directiveText = match[1];
++        const lineCommentSupported = /^eslint-disable-(next-)?line$/u.test(directiveText);
++
++        if (comment.type === "Line" && !lineCommentSupported) {
++            return;
++        }
++
++        if (directiveText === "eslint-disable-line" && comment.loc.start.line !== comment.loc.end.line) {
++            const message = `${directiveText} comment should not span multiple lines.`;
+
+-    problems.push(...directivesProblems.map(createLintingProblem));
++            problems.push(createLintingProblem({
++                ruleId: null,
++                message,
++                loc: comment.loc
++            }));
++            return;
++        }
++
++        const directiveValue = directivePart.slice(match.index + directiveText.length);
++
++        switch (directiveText) {
++            case "eslint-disable":
++            case "eslint-enable":
++            case "eslint-disable-next-line":
++            case "eslint-disable-line": {
++                const directiveType = directiveText.slice("eslint-".length);
++                const options = { commentToken: comment, type: directiveType, value: directiveValue, justification: justificationPart, ruleMapper };
++                const { directives, directiveProblems } = createDisableDirectives(options);
+
+-    directivesSources.forEach(directive => {
+-        const { directives, directiveProblems } = createDisableDirectives(directive, ruleMapper);
++                disableDirectives.push(...directives);
++                problems.push(...directiveProblems);
++                break;
++            }
+
+-        disableDirectives.push(...directives);
+-        problems.push(...directiveProblems);
++            // no default
++        }
+     });
+
+     return {
+diff --git a/lib/source-code/source-code.js b/lib/source-code/source-code.js
+index c749c2e45..f3418e7e5 100644
+--- a/lib/source-code/source-code.js
++++ b/lib/source-code/source-code.js
+@@ -373,56 +373,6 @@ class TraversalStep {
+     }
+ }
+
+-/**
+- * A class to represent a directive comment.
+- */
+-class Directive {
+-
+-    /**
+-     * The type of directive.
+-     * @type {"disable"|"enable"|"disable-next-line"|"disable-line"}
+-     * @readonly
+-     */
+-    type;
+-
+-    /**
+-     * The node representing the directive.
+-     * @type {ASTNode|Comment}
+-     * @readonly
+-     */
+-    node;
+-
+-    /**
+-     * Everything after the "eslint-disable" portion of the directive,
+-     * but before the "--" that indicates the justification.
+-     * @type {string}
+-     * @readonly
+-     */
+-    value;
+-
+-    /**
+-     * The justification for the directive.
+-     * @type {string}
+-     * @readonly
+-     */
+-    justification;
+-
+-    /**
+-     * Creates a new instance.
+-     * @param {Object} options The options for the directive.
+-     * @param {"disable"|"enable"|"disable-next-line"|"disable-line"} options.type The type of directive.
+-     * @param {ASTNode|Comment} options.node The node representing the directive.
+-     * @param {string} options.value The value of the directive.
+-     * @param {string} options.justification The justification for the directive.
+-     */
+-    constructor({ type, node, value, justification }) {
+-        this.type = type;
+-        this.node = node;
+-        this.value = value;
+-        this.justification = justification;
+-    }
+-}
+-
+ //------------------------------------------------------------------------------
+ // Public Interface
+ //------------------------------------------------------------------------------
+@@ -971,84 +921,6 @@ class SourceCode extends TokenStore {
+         return configNodes;
+     }
+
+-    /**
+-     * Returns an all directive nodes that enable or disable rules along with any problems
+-     * encountered while parsing the directives.
+-     * @returns {{problems:Array<Problem>,directives:Array<Directive>}} Information
+-     *      that ESLint needs to further process the directives.
+-     */
+-    getDisableDirectives() {
+-
+-        // check the cache first
+-        const cachedDirectives = this[caches].get("disableDirectives");
+-
+-        if (cachedDirectives) {
+-            return cachedDirectives;
+-        }
+-
+-        const problems = [];
+-        const directives = [];
+-
+-        this.getInlineConfigNodes().forEach(comment => {
+-            const { directivePart, justificationPart } = commentParser.extractDirectiveComment(comment.value);
+-
+-            // Step 1: Extract the directive text
+-            const match = directivesPattern.exec(directivePart);
+-
+-            if (!match) {
+-                return;
+-            }
+-
+-            const directiveText = match[1];
+-
+-            // Step 2: Extract the directive value
+-            const lineCommentSupported = /^eslint-disable-(next-)?line$/u.test(directiveText);
+-
+-            if (comment.type === "Line" && !lineCommentSupported) {
+-                return;
+-            }
+-
+-            // Step 3: Validate the directive does not span multiple lines
+-            if (directiveText === "eslint-disable-line" && comment.loc.start.line !== comment.loc.end.line) {
+-                const message = `${directiveText} comment should not span multiple lines.`;
+-
+-                problems.push({
+-                    ruleId: null,
+-                    message,
+-                    loc: comment.loc
+-                });
+-                return;
+-            }
+-
+-            // Step 4: Extract the directive value and create the Directive object
+-            const directiveValue = directivePart.slice(match.index + directiveText.length);
+-
+-            switch (directiveText) {
+-                case "eslint-disable":
+-                case "eslint-enable":
+-                case "eslint-disable-next-line":
+-                case "eslint-disable-line": {
+-                    const directiveType = directiveText.slice("eslint-".length);
+-
+-                    directives.push(new Directive({
+-                        type: directiveType,
+-                        node: comment,
+-                        value: directiveValue,
+-                        justification: justificationPart
+-                    }));
+-                }
+-
+-                // no default
+-            }
+-        });
+-
+-        const result = { problems, directives };
+-
+-        this[caches].set("disableDirectives", result);
+-
+-        return result;
+-    }
+-
+     /**
+      * Applies language options sent in from the core.
+      * @param {Object} languageOptions The language options for this run.
+diff --git a/packages/eslint-config-eslint/base.js b/packages/eslint-config-eslint/base.js
+index 65205d8e6..21d526086 100644
+--- a/packages/eslint-config-eslint/base.js
++++ b/packages/eslint-config-eslint/base.js
+@@ -68,7 +68,6 @@ const jsConfigs = [js.configs.recommended, {
+         "no-caller": "error",
+         "no-confusing-arrow": "error",
+         "no-console": "error",
+-        "no-constant-binary-expression": "error",
+         "no-constructor-return": "error",
+         "no-else-return": ["error", { allowElseIf: false }
+         ],
+@@ -99,8 +98,8 @@ const jsConfigs = [js.configs.recommended, {
+         "no-nested-ternary": "error",
+         "no-new": "error",
+         "no-new-func": "error",
+-        "no-new-object": "error",
+         "no-new-wrappers": "error",
++        "no-object-constructor": "error",
+         "no-octal-escape": "error",
+         "no-param-reassign": "error",
+         "no-proto": "error",
+diff --git a/packages/eslint-config-eslint/package.json b/packages/eslint-config-eslint/package.json
+index a57977448..33999006e 100644
+--- a/packages/eslint-config-eslint/package.json
++++ b/packages/eslint-config-eslint/package.json
+@@ -30,7 +30,7 @@
+   "bugs": "https://github.com/eslint/eslint/issues/",
+   "dependencies": {
+     "@eslint-community/eslint-plugin-eslint-comments": "^4.3.0",
+-    "@eslint/js": "^8.42.0",
++    "@eslint/js": "^9.0.0",
+     "eslint-plugin-jsdoc": "^46.5.1",
+     "eslint-plugin-n": "^17.2.0",
+     "eslint-plugin-unicorn": "^49.0.0"
+@@ -42,6 +42,6 @@
+   ],
+   "license": "MIT",
+   "engines": {
+-    "node": ">=16.0.0"
++    "node": "^18.18.0 || ^20.9.0 || >=21.1.0"
+   }
+ }
+diff --git a/tests/lib/linter/apply-disable-directives.js b/tests/lib/linter/apply-disable-directives.js
+index 8cafe255e..d56bf5bc1 100644
+--- a/tests/lib/linter/apply-disable-directives.js
++++ b/tests/lib/linter/apply-disable-directives.js
+@@ -17,15 +17,15 @@ const applyDisableDirectives = require("../../../lib/linter/apply-disable-direct
+ //-----------------------------------------------------------------------------
+
+ /**
+- * Creates a ParentDirective for a given range.
++ * Creates a ParentComment for a given range.
+  * @param {[number, number]} range total range of the comment
+  * @param {string} value String value of the comment
+  * @param {string[]} ruleIds Rule IDs reported in the value
+- * @returns {ParentDirective} Test-ready ParentDirective object.
++ * @returns {ParentComment} Test-ready ParentComment object.
+  */
+-function createParentDirective(range, value, ruleIds = []) {
++function createParentComment(range, value, ruleIds = []) {
+     return {
+-        node: {
++        commentToken: {
+             range,
+             loc: {
+                 start: {
+@@ -52,7 +52,7 @@ describe("apply-disable-directives", () => {
+         it("keeps problems before the comment on the same line", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+-                    directives: [{ parentDirective: createParentDirective([0, 7]), type: "disable", line: 1, column: 8, ruleId: null, justification: "justification" }],
++                    directives: [{ parentComment: createParentComment([0, 7]), type: "disable", line: 1, column: 8, ruleId: null, justification: "justification" }],
+                     problems: [{ line: 1, column: 7, ruleId: "foo" }]
+                 }),
+                 [{ line: 1, column: 7, ruleId: "foo" }]
+@@ -62,7 +62,7 @@ describe("apply-disable-directives", () => {
+         it("keeps problems on a previous line before the comment", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+-                    directives: [{ parentDirective: createParentDirective([21, 27]), type: "disable", line: 2, column: 1, ruleId: null, justification: "justification" }],
++                    directives: [{ parentComment: createParentComment([21, 27]), type: "disable", line: 2, column: 1, ruleId: null, justification: "justification" }],
+                     problems: [{ line: 1, column: 10, ruleId: "foo" }]
+                 }),
+                 [{ line: 1, column: 10, ruleId: "foo" }]
+@@ -125,7 +125,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([26, 29]),
++                        parentComment: createParentComment([26, 29]),
+                         type: "disable",
+                         line: 1,
+                         column: 1,
+@@ -142,7 +142,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([7, 31]),
++                        parentComment: createParentComment([7, 31]),
+                         type: "disable",
+                         line: 1,
+                         column: 8,
+@@ -161,7 +161,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 26]),
++                            parentComment: createParentComment([0, 26]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -169,7 +169,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([27, 45]),
++                            parentComment: createParentComment([27, 45]),
+                             type: "enable",
+                             line: 1,
+                             column: 26,
+@@ -188,7 +188,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 25]),
++                            parentComment: createParentComment([0, 25]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -196,7 +196,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([26, 40]),
++                            parentComment: createParentComment([26, 40]),
+                             type: "enable",
+                             line: 1,
+                             column: 26,
+@@ -228,7 +228,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 20]),
++                            parentComment: createParentComment([0, 20]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -236,7 +236,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([26, 44]),
++                            parentComment: createParentComment([26, 44]),
+                             type: "enable",
+                             line: 1,
+                             column: 26,
+@@ -244,7 +244,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective: createParentDirective([45, 63]),
++                            parentComment: createParentComment([45, 63]),
+                             type: "disable",
+                             line: 2,
+                             column: 1,
+@@ -263,7 +263,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 20]),
++                            parentComment: createParentComment([0, 20]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -271,7 +271,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([21, 44]),
++                            parentComment: createParentComment([21, 44]),
+                             type: "enable",
+                             line: 1,
+                             column: 26,
+@@ -279,7 +279,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective: createParentDirective([45, 63]),
++                            parentComment: createParentComment([45, 63]),
+                             type: "disable",
+                             line: 2,
+                             column: 1,
+@@ -298,7 +298,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 20]),
++                            parentComment: createParentComment([0, 20]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -306,7 +306,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([25, 44]),
++                            parentComment: createParentComment([25, 44]),
+                             type: "enable",
+                             line: 1,
+                             column: 26,
+@@ -327,7 +327,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 20]),
++                            parentComment: createParentComment([0, 20]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -335,7 +335,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([21, 44]),
++                            parentComment: createParentComment([21, 44]),
+                             type: "enable",
+                             line: 2,
+                             column: 1,
+@@ -354,7 +354,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 20]),
++                            parentComment: createParentComment([0, 20]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -362,7 +362,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([21, 44]),
++                            parentComment: createParentComment([21, 44]),
+                             type: "enable",
+                             line: 2,
+                             column: 1,
+@@ -381,7 +381,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 20]),
++                            parentComment: createParentComment([0, 20]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -389,7 +389,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([21, 44]),
++                            parentComment: createParentComment([21, 44]),
+                             type: "enable",
+                             line: 2,
+                             column: 1,
+@@ -437,7 +437,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([6, 27]),
++                        parentComment: createParentComment([6, 27]),
+                         type: "disable-line",
+                         line: 2,
+                         column: 1,
+@@ -454,7 +454,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([7, 28]),
++                        parentComment: createParentComment([7, 28]),
+                         type: "disable-line",
+                         line: 1,
+                         column: 8,
+@@ -471,7 +471,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([7, 28]),
++                        parentComment: createParentComment([7, 28]),
+                         type: "disable-line",
+                         line: 1,
+                         column: 8,
+@@ -488,7 +488,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([7, 34]),
++                        parentComment: createParentComment([7, 34]),
+                         type: "disable-line",
+                         line: 1,
+                         column: 8,
+@@ -507,7 +507,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([7, 34]),
++                        parentComment: createParentComment([7, 34]),
+                         type: "disable-line",
+                         line: 1,
+                         column: 8,
+@@ -524,7 +524,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 27]),
++                        parentComment: createParentComment([0, 27]),
+                         type: "disable-line",
+                         line: 1,
+                         column: 1,
+@@ -542,7 +542,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 21]),
++                            parentComment: createParentComment([0, 21]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -550,7 +550,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([24, 28]),
++                            parentComment: createParentComment([24, 28]),
+                             type: "disable-line",
+                             line: 1,
+                             column: 22,
+@@ -569,7 +569,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([7, 34]),
++                            parentComment: createParentComment([7, 34]),
+                             type: "disable-line",
+                             line: 1,
+                             column: 8,
+@@ -577,7 +577,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([38, 73]),
++                            parentComment: createParentComment([38, 73]),
+                             type: "disable-line",
+                             line: 2,
+                             column: 8,
+@@ -585,7 +585,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective: createParentDirective([76, 111]),
++                            parentComment: createParentComment([76, 111]),
+                             type: "disable-line",
+                             line: 3,
+                             column: 8,
+@@ -593,7 +593,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j3"
+                         },
+                         {
+-                            parentDirective: createParentDirective([114, 149]),
++                            parentComment: createParentComment([114, 149]),
+                             type: "disable-line",
+                             line: 4,
+                             column: 8,
+@@ -601,7 +601,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j4"
+                         },
+                         {
+-                            parentDirective: createParentDirective([152, 187]),
++                            parentComment: createParentComment([152, 187]),
+                             type: "disable-line",
+                             line: 5,
+                             column: 8,
+@@ -609,7 +609,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j5"
+                         },
+                         {
+-                            parentDirective: createParentDirective([190, 225]),
++                            parentComment: createParentComment([190, 225]),
+                             type: "disable-line",
+                             line: 6,
+                             column: 8,
+@@ -629,7 +629,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 31]),
++                        parentComment: createParentComment([0, 31]),
+                         type: "disable-next-line",
+                         line: 1,
+                         column: 1,
+@@ -646,7 +646,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 31]),
++                        parentComment: createParentComment([0, 31]),
+                         type: "disable-next-line",
+                         line: 1,
+                         column: 1,
+@@ -662,7 +662,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 31]),
++                        parentComment: createParentComment([0, 31]),
+                         type: "disable-next-line",
+                         line: 1,
+                         column: 1,
+@@ -679,8 +679,8 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+-                        { parentDirective: createParentDirective([0, 31]), type: "disable-next-line", line: 1, column: 1, ruleId: null, justification: "j1" },
+-                        { parentDirective: createParentDirective([31, 50]), type: "enable", line: 1, column: 31, ruleId: null, justification: "j2" }
++                        { parentComment: createParentComment([0, 31]), type: "disable-next-line", line: 1, column: 1, ruleId: null, justification: "j1" },
++                        { parentComment: createParentComment([31, 50]), type: "enable", line: 1, column: 31, ruleId: null, justification: "j2" }
+                     ],
+                     problems: [{ line: 2, column: 2, ruleId: "foo" }]
+                 }),
+@@ -704,7 +704,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 31]),
++                        parentComment: createParentComment([0, 31]),
+                         type: "disable-next-line",
+                         line: 1,
+                         column: 1,
+@@ -736,7 +736,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 20]),
++                        parentComment: createParentComment([0, 20]),
+                         type: "disable",
+                         line: 1,
+                         column: 1,
+@@ -764,7 +764,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 20]),
++                        parentComment: createParentComment([0, 20]),
+                         type: "disable",
+                         line: 1,
+                         column: 1,
+@@ -800,7 +800,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 21]),
++                        parentComment: createParentComment([0, 21]),
+                         type: "disable",
+                         line: 1,
+                         column: 1,
+@@ -829,7 +829,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 24]),
++                        parentComment: createParentComment([0, 24]),
+                         type: "disable",
+                         line: 1,
+                         column: 1,
+@@ -866,7 +866,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 21]),
++                            parentComment: createParentComment([0, 21]),
+                             type: "disable",
+                             line: 1,
+                             column: 8,
+@@ -874,7 +874,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([0, 21]),
++                            parentComment: createParentComment([0, 21]),
+                             type: "enable",
+                             line: 1,
+                             column: 24,
+@@ -912,7 +912,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 20]),
++                            parentComment: createParentComment([0, 20]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -920,7 +920,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([21, 41]),
++                            parentComment: createParentComment([21, 41]),
+                             type: "enable",
+                             line: 1,
+                             column: 12,
+@@ -951,7 +951,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 21]),
++                            parentComment: createParentComment([0, 21]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -959,7 +959,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([21, 42]),
++                            parentComment: createParentComment([21, 42]),
+                             type: "disable",
+                             line: 2,
+                             column: 1,
+@@ -1004,7 +1004,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 21]),
++                            parentComment: createParentComment([0, 21]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1012,7 +1012,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([22, 45]),
++                            parentComment: createParentComment([22, 45]),
+                             type: "disable",
+                             line: 2,
+                             column: 1,
+@@ -1054,7 +1054,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 21]),
++                            parentComment: createParentComment([0, 21]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1062,7 +1062,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([22, 45]),
++                            parentComment: createParentComment([22, 45]),
+                             type: "disable",
+                             line: 2,
+                             column: 1,
+@@ -1115,7 +1115,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 21]),
++                            parentComment: createParentComment([0, 21]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1123,7 +1123,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([22, 45]),
++                            parentComment: createParentComment([22, 45]),
+                             type: "disable",
+                             line: 2,
+                             column: 1,
+@@ -1165,7 +1165,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 20]),
++                            parentComment: createParentComment([0, 20]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1173,7 +1173,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([21, 45]),
++                            parentComment: createParentComment([21, 45]),
+                             type: "disable",
+                             line: 2,
+                             column: 1,
+@@ -1212,7 +1212,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 20]),
++                            parentComment: createParentComment([0, 20]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1220,7 +1220,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([25, 46]),
++                            parentComment: createParentComment([25, 46]),
+                             type: "enable",
+                             line: 1,
+                             column: 26,
+@@ -1258,7 +1258,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 24]),
++                            parentComment: createParentComment([0, 24]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1266,7 +1266,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([25, 49]),
++                            parentComment: createParentComment([25, 49]),
+                             type: "enable",
+                             line: 1,
+                             column: 26,
+@@ -1304,7 +1304,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 21]),
++                            parentComment: createParentComment([0, 21]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1312,7 +1312,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([22, 45]),
++                            parentComment: createParentComment([22, 45]),
+                             type: "disable",
+                             line: 2,
+                             column: 1,
+@@ -1320,7 +1320,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective: createParentDirective([46, 69]),
++                            parentComment: createParentComment([46, 69]),
+                             type: "enable",
+                             line: 3,
+                             column: 1,
+@@ -1369,7 +1369,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 20]),
++                        parentComment: createParentComment([0, 20]),
+                         type: "enable",
+                         line: 1,
+                         column: 1,
+@@ -1397,7 +1397,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 20]),
++                        parentComment: createParentComment([0, 20]),
+                         type: "enable",
+                         line: 1,
+                         column: 1,
+@@ -1436,7 +1436,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 21]),
++                        parentComment: createParentComment([0, 21]),
+                         type: "enable",
+                         line: 1,
+                         column: 1,
+@@ -1466,7 +1466,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 24]),
++                            parentComment: createParentComment([0, 24]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1474,7 +1474,7 @@ describe("apply-disable-directives", () => {
+                             justification: "justification"
+                         },
+                         {
+-                            parentDirective: createParentDirective([48, 72]),
++                            parentComment: createParentComment([48, 72]),
+                             type: "enable",
+                             line: 3,
+                             column: 1,
+@@ -1513,7 +1513,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 21]),
++                            parentComment: createParentComment([0, 21]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1521,7 +1521,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([42, 63]),
++                            parentComment: createParentComment([42, 63]),
+                             type: "enable",
+                             line: 3,
+                             column: 1,
+@@ -1529,7 +1529,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([63, 84]),
++                            parentComment: createParentComment([63, 84]),
+                             type: "enable",
+                             line: 4,
+                             column: 1,
+@@ -1537,7 +1537,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([84, 105]),
++                            parentComment: createParentComment([84, 105]),
+                             type: "enable",
+                             line: 5,
+                             column: 1,
+@@ -1588,7 +1588,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 21]),
++                            parentComment: createParentComment([0, 21]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1596,7 +1596,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([42, 63]),
++                            parentComment: createParentComment([42, 63]),
+                             type: "enable",
+                             line: 3,
+                             column: 1,
+@@ -1604,7 +1604,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([63, 84]),
++                            parentComment: createParentComment([63, 84]),
+                             type: "enable",
+                             line: 4,
+                             column: 1,
+@@ -1643,7 +1643,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 21]),
++                            parentComment: createParentComment([0, 21]),
+                             type: "enable",
+                             line: 1,
+                             column: 1,
+@@ -1651,7 +1651,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([21, 42]),
++                            parentComment: createParentComment([21, 42]),
+                             type: "enable",
+                             line: 2,
+                             column: 1,
+@@ -1696,7 +1696,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 21]),
++                            parentComment: createParentComment([0, 21]),
+                             type: "enable",
+                             line: 1,
+                             column: 1,
+@@ -1704,7 +1704,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([21, 42]),
++                            parentComment: createParentComment([21, 42]),
+                             type: "disable",
+                             line: 2,
+                             column: 1,
+@@ -1712,7 +1712,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective: createParentDirective([63, 84]),
++                            parentComment: createParentComment([63, 84]),
+                             type: "enable",
+                             line: 4,
+                             column: 1,
+@@ -1751,7 +1751,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 21]),
++                            parentComment: createParentComment([0, 21]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1759,7 +1759,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([42, 63]),
++                            parentComment: createParentComment([42, 63]),
+                             type: "enable",
+                             line: 3,
+                             column: 1,
+@@ -1767,7 +1767,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective: createParentDirective([63, 84]),
++                            parentComment: createParentComment([63, 84]),
+                             type: "enable",
+                             line: 4,
+                             column: 1,
+@@ -1820,7 +1820,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 21]),
++                            parentComment: createParentComment([0, 21]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1828,7 +1828,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([42, 63]),
++                            parentComment: createParentComment([42, 63]),
+                             type: "enable",
+                             line: 3,
+                             column: 1,
+@@ -1836,7 +1836,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective: createParentDirective([63, 84]),
++                            parentComment: createParentComment([63, 84]),
+                             type: "enable",
+                             line: 4,
+                             column: 1,
+@@ -1877,7 +1877,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 20]),
++                            parentComment: createParentComment([0, 20]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1885,7 +1885,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([60, 80]),
++                            parentComment: createParentComment([60, 80]),
+                             type: "enable",
+                             line: 3,
+                             column: 1,
+@@ -1893,7 +1893,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective: createParentDirective([80, 100]),
++                            parentComment: createParentComment([80, 100]),
+                             type: "enable",
+                             line: 4,
+                             column: 1,
+@@ -1932,7 +1932,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 20]),
++                            parentComment: createParentComment([0, 20]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1940,7 +1940,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([60, 80]),
++                            parentComment: createParentComment([60, 80]),
+                             type: "enable",
+                             line: 3,
+                             column: 1,
+@@ -1948,7 +1948,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective: createParentDirective([80, 100]),
++                            parentComment: createParentComment([80, 100]),
+                             type: "enable",
+                             line: 4,
+                             column: 1,
+@@ -1987,7 +1987,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 20]),
++                            parentComment: createParentComment([0, 20]),
+                             type: "disable",
+                             line: 1,
+                             column: 1,
+@@ -1995,7 +1995,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([40, 60]),
++                            parentComment: createParentComment([40, 60]),
+                             type: "enable",
+                             line: 3,
+                             column: 1,
+@@ -2003,7 +2003,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective: createParentDirective([60, 80]),
++                            parentComment: createParentComment([60, 80]),
+                             type: "enable",
+                             line: 4,
+                             column: 1,
+@@ -2011,7 +2011,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j3"
+                         },
+                         {
+-                            parentDirective: createParentDirective([80, 100]),
++                            parentComment: createParentComment([80, 100]),
+                             type: "enable",
+                             line: 5,
+                             column: 1,
+@@ -2062,7 +2062,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 20]),
++                            parentComment: createParentComment([0, 20]),
+                             ruleId: "used",
+                             type: "disable",
+                             line: 1,
+@@ -2070,7 +2070,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([40, 60]),
++                            parentComment: createParentComment([40, 60]),
+                             ruleId: "used",
+                             type: "disable",
+                             line: 3,
+@@ -2078,7 +2078,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective: createParentDirective([80, 100]),
++                            parentComment: createParentComment([80, 100]),
+                             ruleId: "used",
+                             type: "enable",
+                             line: 5,
+@@ -2086,7 +2086,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j3"
+                         },
+                         {
+-                            parentDirective: createParentDirective([100, 120]),
++                            parentComment: createParentComment([100, 120]),
+                             ruleId: null,
+                             type: "enable",
+                             line: 6,
+@@ -2130,7 +2130,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 22]),
++                        parentComment: createParentComment([0, 22]),
+                         type: "disable-line",
+                         line: 1,
+                         column: 1,
+@@ -2173,7 +2173,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 27]),
++                        parentComment: createParentComment([0, 27]),
+                         type: "disable-next-line",
+                         line: 1,
+                         column: 2,
+@@ -2215,8 +2215,8 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+-                        { parentDirective: createParentDirective([0, 20]), type: "disable", line: 1, column: 1, ruleId: null },
+-                        { parentDirective: createParentDirective([20, 43]), type: "disable-line", line: 1, column: 22, ruleId: null }
++                        { parentComment: createParentComment([0, 20]), type: "disable", line: 1, column: 1, ruleId: null },
++                        { parentComment: createParentComment([20, 43]), type: "disable-line", line: 1, column: 22, ruleId: null }
+                     ],
+                     problems: [],
+                     reportUnusedDisableDirectives: "error"
+@@ -2254,7 +2254,7 @@ describe("apply-disable-directives", () => {
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [{
+-                        parentDirective: createParentDirective([0, 27]),
++                        parentComment: createParentComment([0, 27]),
+                         type: "disable-next-line",
+                         line: 1,
+                         column: 1,
+@@ -2271,13 +2271,13 @@ describe("apply-disable-directives", () => {
+
+     describe("unused rules within directives", () => {
+         it("Adds a problem for /* eslint-disable used, unused */", () => {
+-            const parentDirective = createParentDirective([0, 32], " eslint-disable used, unused ", ["used", "unused"]);
++            const parentComment = createParentComment([0, 32], " eslint-disable used, unused ", ["used", "unused"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "used",
+                             type: "disable",
+                             line: 1,
+@@ -2285,7 +2285,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused",
+                             type: "disable",
+                             line: 1,
+@@ -2319,13 +2319,13 @@ describe("apply-disable-directives", () => {
+             );
+         });
+         it("Adds a problem for /* eslint-disable used , unused , -- unused and used are ok */", () => {
+-            const parentDirective = createParentDirective([0, 62], " eslint-disable used , unused , -- unused and used are ok ", ["used", "unused"]);
++            const parentComment = createParentComment([0, 62], " eslint-disable used , unused , -- unused and used are ok ", ["used", "unused"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "used",
+                             type: "disable",
+                             line: 1,
+@@ -2333,7 +2333,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused",
+                             type: "disable",
+                             line: 1,
+@@ -2368,13 +2368,13 @@ describe("apply-disable-directives", () => {
+         });
+
+         it("Adds a problem for /* eslint-disable unused, used */", () => {
+-            const parentDirective = createParentDirective([0, 32], " eslint-disable unused, used ", ["unused", "used"]);
++            const parentComment = createParentComment([0, 32], " eslint-disable unused, used ", ["unused", "used"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused",
+                             type: "disable",
+                             line: 1,
+@@ -2382,7 +2382,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "used",
+                             type: "disable",
+                             line: 1,
+@@ -2417,13 +2417,13 @@ describe("apply-disable-directives", () => {
+         });
+
+         it("Adds a problem for /* eslint-disable unused,, ,, used */", () => {
+-            const parentDirective = createParentDirective([0, 37], " eslint-disable unused,, ,, used ", ["unused", "used"]);
++            const parentComment = createParentComment([0, 37], " eslint-disable unused,, ,, used ", ["unused", "used"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused",
+                             type: "disable",
+                             line: 1,
+@@ -2431,7 +2431,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "used",
+                             type: "disable",
+                             line: 1,
+@@ -2466,13 +2466,13 @@ describe("apply-disable-directives", () => {
+         });
+
+         it("Adds a problem for /* eslint-disable unused-1, unused-2, used */", () => {
+-            const parentDirective = createParentDirective([0, 45], " eslint-disable unused-1, unused-2, used ", ["unused-1", "unused-2", "used"]);
++            const parentComment = createParentComment([0, 45], " eslint-disable unused-1, unused-2, used ", ["unused-1", "unused-2", "used"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-1",
+                             type: "disable",
+                             line: 1,
+@@ -2480,7 +2480,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-2",
+                             type: "disable",
+                             line: 1,
+@@ -2488,7 +2488,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "used",
+                             type: "disable",
+                             line: 1,
+@@ -2535,13 +2535,13 @@ describe("apply-disable-directives", () => {
+         });
+
+         it("Adds a problem for /* eslint-disable unused-1, unused-2, used, unused-3 */", () => {
+-            const parentDirective = createParentDirective([0, 55], " eslint-disable unused-1, unused-2, used, unused-3 ", ["unused-1", "unused-2", "used", "unused-3"]);
++            const parentComment = createParentComment([0, 55], " eslint-disable unused-1, unused-2, used, unused-3 ", ["unused-1", "unused-2", "used", "unused-3"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-1",
+                             type: "disable",
+                             line: 1,
+@@ -2549,7 +2549,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-2",
+                             type: "disable",
+                             line: 1,
+@@ -2557,7 +2557,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "used",
+                             type: "disable",
+                             line: 1,
+@@ -2565,7 +2565,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j3"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-3",
+                             type: "disable",
+                             line: 1,
+@@ -2624,13 +2624,13 @@ describe("apply-disable-directives", () => {
+         });
+
+         it("Adds a problem for /* eslint-disable unused-1, unused-2 */", () => {
+-            const parentDirective = createParentDirective([0, 39], " eslint-disable unused-1, unused-2 ", ["unused-1", "unused-2"]);
++            const parentComment = createParentComment([0, 39], " eslint-disable unused-1, unused-2 ", ["unused-1", "unused-2"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-1",
+                             type: "disable",
+                             line: 1,
+@@ -2638,7 +2638,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-2",
+                             type: "disable",
+                             line: 1,
+@@ -2667,27 +2667,27 @@ describe("apply-disable-directives", () => {
+         });
+
+         it("Adds a problem for /* eslint-disable unused-1, unused-2, unused-3 */", () => {
+-            const parentDirective = createParentDirective([0, 49], " eslint-disable unused-1, unused-2, unused-3 ", ["unused-1", "unused-2", "unused-3"]);
++            const parentComment = createParentComment([0, 49], " eslint-disable unused-1, unused-2, unused-3 ", ["unused-1", "unused-2", "unused-3"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-1",
+                             type: "disable",
+                             line: 1,
+                             column: 18
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-2",
+                             type: "disable",
+                             line: 1,
+                             column: 28
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-3",
+                             type: "disable",
+                             line: 1,
+@@ -2719,7 +2719,7 @@ describe("apply-disable-directives", () => {
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 29], " eslint-disable foo ", ["foo"]),
++                            parentComment: createParentComment([0, 29], " eslint-disable foo ", ["foo"]),
+                             ruleId: "foo",
+                             type: "disable",
+                             line: 1,
+@@ -2727,7 +2727,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective: createParentDirective([41, 81], " eslint-disable-line foo, bar", ["foo", "bar"]),
++                            parentComment: createParentComment([41, 81], " eslint-disable-line foo, bar", ["foo", "bar"]),
+                             ruleId: "foo",
+                             type: "disable-line",
+                             line: 2,
+@@ -2735,7 +2735,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective: createParentDirective([41, 81], " eslint-disable-line foo, bar ", ["foo", "bar"]),
++                            parentComment: createParentComment([41, 81], " eslint-disable-line foo, bar ", ["foo", "bar"]),
+                             ruleId: "bar",
+                             type: "disable-line",
+                             line: 2,
+@@ -2782,13 +2782,13 @@ describe("apply-disable-directives", () => {
+         });
+
+         it("Adds a problem for /* eslint-disable used */ /* (problem from used) */ /* eslint-enable used, unused */", () => {
+-            const parentDirective = createParentDirective([0, 32], " eslint-enable used, unused ", ["used", "unused"]);
++            const parentComment = createParentComment([0, 32], " eslint-enable used, unused ", ["used", "unused"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 29], " eslint-disable foo ", ["foo"]),
++                            parentComment: createParentComment([0, 29], " eslint-disable foo ", ["foo"]),
+                             ruleId: "used",
+                             type: "disable",
+                             line: 1,
+@@ -2796,7 +2796,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "used",
+                             type: "enable",
+                             line: 3,
+@@ -2804,7 +2804,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused",
+                             type: "enable",
+                             line: 4,
+@@ -2838,13 +2838,13 @@ describe("apply-disable-directives", () => {
+             );
+         });
+         it("Adds a problem for /* eslint-disable used */ /* (problem from used) */ /* eslint-enable used , unused , -- unused and used are ok */", () => {
+-            const parentDirective = createParentDirective([0, 62], " eslint-enable used , unused , -- unused and used are ok ", ["used", "unused"]);
++            const parentComment = createParentComment([0, 62], " eslint-enable used , unused , -- unused and used are ok ", ["used", "unused"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 29], " eslint-disable foo ", ["foo"]),
++                            parentComment: createParentComment([0, 29], " eslint-disable foo ", ["foo"]),
+                             ruleId: "used",
+                             type: "disable",
+                             line: 1,
+@@ -2852,7 +2852,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "used",
+                             type: "enable",
+                             line: 3,
+@@ -2860,7 +2860,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused",
+                             type: "enable",
+                             line: 4,
+@@ -2895,13 +2895,13 @@ describe("apply-disable-directives", () => {
+         });
+
+         it("Adds a problem for /* eslint-disable used */ /* (problem from used) */ /* eslint-enable unused, used */", () => {
+-            const parentDirective = createParentDirective([0, 32], " eslint-enable unused, used ", ["unused", "used"]);
++            const parentComment = createParentComment([0, 32], " eslint-enable unused, used ", ["unused", "used"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 29], " eslint-disable foo ", ["foo"]),
++                            parentComment: createParentComment([0, 29], " eslint-disable foo ", ["foo"]),
+                             ruleId: "used",
+                             type: "disable",
+                             line: 1,
+@@ -2909,7 +2909,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused",
+                             type: "enable",
+                             line: 3,
+@@ -2917,7 +2917,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "used",
+                             type: "enable",
+                             line: 4,
+@@ -2952,13 +2952,13 @@ describe("apply-disable-directives", () => {
+         });
+
+         it("Adds a problem for /* eslint-disable used */ /* (problem from used) */ /* eslint-enable unused,, ,, used */", () => {
+-            const parentDirective = createParentDirective([0, 37], " eslint-enable unused,, ,, used ", ["unused", "used"]);
++            const parentComment = createParentComment([0, 37], " eslint-enable unused,, ,, used ", ["unused", "used"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 29], " eslint-disable foo ", ["foo"]),
++                            parentComment: createParentComment([0, 29], " eslint-disable foo ", ["foo"]),
+                             ruleId: "used",
+                             type: "disable",
+                             line: 1,
+@@ -2966,7 +2966,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused",
+                             type: "enable",
+                             line: 3,
+@@ -2974,7 +2974,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "used",
+                             type: "enable",
+                             line: 4,
+@@ -3009,13 +3009,13 @@ describe("apply-disable-directives", () => {
+         });
+
+         it("Adds a problem for /* eslint-disable used */ /* (problem from used) */ /* eslint-enable unused-1, unused-2, used */", () => {
+-            const parentDirective = createParentDirective([0, 45], " eslint-enable unused-1, unused-2, used ", ["unused-1", "unused-2", "used"]);
++            const parentComment = createParentComment([0, 45], " eslint-enable unused-1, unused-2, used ", ["unused-1", "unused-2", "used"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 29], " eslint-disable foo ", ["foo"]),
++                            parentComment: createParentComment([0, 29], " eslint-disable foo ", ["foo"]),
+                             ruleId: "used",
+                             type: "disable",
+                             line: 1,
+@@ -3023,7 +3023,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-1",
+                             type: "enable",
+                             line: 3,
+@@ -3031,7 +3031,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-2",
+                             type: "enable",
+                             line: 4,
+@@ -3039,7 +3039,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j3"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "used",
+                             type: "enable",
+                             line: 5,
+@@ -3086,13 +3086,13 @@ describe("apply-disable-directives", () => {
+         });
+
+         it("Adds a problem for /* eslint-disable used */ /* (problem from used) */ /* eslint-enable unused-1, unused-2, used, unused-3 */", () => {
+-            const parentDirective = createParentDirective([0, 55], " eslint-enable unused-1, unused-2, used, unused-3 ", ["unused-1", "unused-2", "used", "unused-3"]);
++            const parentComment = createParentComment([0, 55], " eslint-enable unused-1, unused-2, used, unused-3 ", ["unused-1", "unused-2", "used", "unused-3"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective: createParentDirective([0, 29], " eslint-disable foo ", ["foo"]),
++                            parentComment: createParentComment([0, 29], " eslint-disable foo ", ["foo"]),
+                             ruleId: "used",
+                             type: "disable",
+                             line: 1,
+@@ -3100,7 +3100,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-1",
+                             type: "enable",
+                             line: 3,
+@@ -3108,7 +3108,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j2"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-2",
+                             type: "enable",
+                             line: 4,
+@@ -3116,7 +3116,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j3"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "used",
+                             type: "enable",
+                             line: 5,
+@@ -3124,7 +3124,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j4"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-3",
+                             type: "enable",
+                             line: 6,
+@@ -3183,13 +3183,13 @@ describe("apply-disable-directives", () => {
+         });
+
+         it("Adds a problem for /* eslint-enable unused-1, unused-2 */", () => {
+-            const parentDirective = createParentDirective([0, 39], " eslint-enable unused-1, unused-2 ", ["unused-1", "unused-2"]);
++            const parentComment = createParentComment([0, 39], " eslint-enable unused-1, unused-2 ", ["unused-1", "unused-2"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-1",
+                             type: "enable",
+                             line: 1,
+@@ -3197,7 +3197,7 @@ describe("apply-disable-directives", () => {
+                             justification: "j1"
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-2",
+                             type: "enable",
+                             line: 1,
+@@ -3226,27 +3226,27 @@ describe("apply-disable-directives", () => {
+         });
+
+         it("Adds a problem for /* eslint-enable unused-1, unused-2, unused-3 */", () => {
+-            const parentDirective = createParentDirective([0, 49], " eslint-enable unused-1, unused-2, unused-3 ", ["unused-1", "unused-2", "unused-3"]);
++            const parentComment = createParentComment([0, 49], " eslint-enable unused-1, unused-2, unused-3 ", ["unused-1", "unused-2", "unused-3"]);
+
+             assert.deepStrictEqual(
+                 applyDisableDirectives({
+                     directives: [
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-1",
+                             type: "enable",
+                             line: 1,
+                             column: 18
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-2",
+                             type: "enable",
+                             line: 1,
+                             column: 28
+                         },
+                         {
+-                            parentDirective,
++                            parentComment,
+                             ruleId: "unused-3",
+                             type: "enable",
+                             line: 1,

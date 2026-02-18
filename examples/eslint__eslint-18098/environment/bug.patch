@@ -1,0 +1,265 @@
+diff --git a/docs/src/integrate/nodejs-api.md b/docs/src/integrate/nodejs-api.md
+index d489cb8b9..744f98295 100644
+--- a/docs/src/integrate/nodejs-api.md
++++ b/docs/src/integrate/nodejs-api.md
+@@ -457,49 +457,6 @@ The `LoadedFormatter` value is the object to convert the [LintResult] objects to
+
+ ---
+
+-## loadESLint()
+-
+-The `loadESLint()` function is used for integrations that wish to support both the current configuration system (flat config) and the old configuration system (eslintrc). This function returns the correct `ESLint` class implementation based on the arguments provided:
+-
+-```js
+-const { loadESLint } = require("eslint");
+-
+-// loads the default ESLint that the CLI would use based on process.cwd()
+-const DefaultESLint = await loadESLint();
+-
+-// loads the default ESLint that the CLI would use based on the provided cwd
+-const CwdDefaultESLint = await loadESLint({ cwd: "/foo/bar" });
+-
+-// loads the flat config version specifically
+-const FlatESLint = await loadESLint({ useFlatConfig: true });
+-
+-// loads the legacy version specifically
+-const LegacyESLint = await loadESLint({ useFlatConfig: false });
+-```
+-
+-You can then use the returned constructor to instantiate a new `ESLint` instance, like this:
+-
+-```js
+-// loads the default ESLint that the CLI would use based on process.cwd()
+-const DefaultESLint = await loadESLint();
+-const eslint = new DefaultESLint();
+-```
+-
+-If you're ever unsure which config system the returned constructor uses, check the `configType` property, which is either `"flat"` or `"eslintrc"`:
+-
+-```js
+-// loads the default ESLint that the CLI would use based on process.cwd()
+-const DefaultESLint = await loadESLint();
+-
+-if (DefaultESLint.configType === "flat") {
+-    // do something specific to flat config
+-}
+-```
+-
+-If you don't need to support both the old and new configuration systems, then it's recommended to just use the `ESLint` constructor directly.
+-
+----
+-
+ ## SourceCode
+
+ The `SourceCode` type represents the parsed source code that ESLint executes on. It's used internally in ESLint and is also available so that already-parsed code can be used. You can create a new instance of `SourceCode` by passing in the text string representing the code and an abstract syntax tree (AST) in [ESTree](https://github.com/estree/estree) format (including location information, range information, comments, and tokens):
+diff --git a/lib/api.js b/lib/api.js
+index cbaac8fef..3dde09855 100644
+--- a/lib/api.js
++++ b/lib/api.js
+@@ -9,45 +9,17 @@
+ // Requirements
+ //-----------------------------------------------------------------------------
+
+-const { ESLint, FlatESLint } = require("./eslint");
+-const { shouldUseFlatConfig } = require("./eslint/flat-eslint");
++const { ESLint } = require("./eslint");
+ const { Linter } = require("./linter");
+ const { RuleTester } = require("./rule-tester");
+ const { SourceCode } = require("./source-code");
+
+-//-----------------------------------------------------------------------------
+-// Functions
+-//-----------------------------------------------------------------------------
+-
+-/**
+- * Loads the correct ESLint constructor given the options.
+- * @param {Object} [options] The options object
+- * @param {boolean} [options.useFlatConfig] Whether or not to use a flat config
+- * @param {string} [options.cwd] The current working directory
+- * @returns {Promise<ESLint|LegacyESLint>} The ESLint constructor
+- */
+-async function loadESLint({ useFlatConfig, cwd = process.cwd() } = {}) {
+-
+-    /*
+-     * Note: The v9.x version of this function doesn't have a cwd option
+-     * because it's not used. It's only used in the v8.x version of this
+-     * function.
+-     */
+-
+-    const shouldESLintUseFlatConfig = typeof useFlatConfig === "boolean"
+-        ? useFlatConfig
+-        : await shouldUseFlatConfig({ cwd });
+-
+-    return shouldESLintUseFlatConfig ? FlatESLint : ESLint;
+-}
+-
+ //-----------------------------------------------------------------------------
+ // Exports
+ //-----------------------------------------------------------------------------
+
+ module.exports = {
+     Linter,
+-    loadESLint,
+     ESLint,
+     RuleTester,
+     SourceCode
+diff --git a/lib/eslint/eslint.js b/lib/eslint/eslint.js
+index 7085d5a4d..15e6b3dee 100644
+--- a/lib/eslint/eslint.js
++++ b/lib/eslint/eslint.js
+@@ -682,13 +682,6 @@ class ESLint {
+     }
+ }
+
+-/**
+- * The type of configuration used by this class.
+- * @type {string}
+- * @static
+- */
+-ESLint.configType = "eslintrc";
+-
+ //------------------------------------------------------------------------------
+ // Public Interface
+ //------------------------------------------------------------------------------
+diff --git a/lib/eslint/flat-eslint.js b/lib/eslint/flat-eslint.js
+index ca961aafb..06b41c726 100644
+--- a/lib/eslint/flat-eslint.js
++++ b/lib/eslint/flat-eslint.js
+@@ -1116,20 +1116,11 @@ class FlatESLint {
+     }
+ }
+
+-/**
+- * The type of configuration used by this class.
+- * @type {string}
+- * @static
+- */
+-FlatESLint.configType = "flat";
+-
+ /**
+  * Returns whether flat config should be used.
+- * @param {Object} [options] The options for this function.
+- * @param {string} [options.cwd] The current working directory.
+  * @returns {Promise<boolean>} Whether flat config should be used.
+  */
+-async function shouldUseFlatConfig({ cwd = process.cwd() } = {}) {
++async function shouldUseFlatConfig() {
+     switch (process.env.ESLINT_USE_FLAT_CONFIG) {
+         case "true":
+             return true;
+@@ -1141,7 +1132,7 @@ async function shouldUseFlatConfig({ cwd = process.cwd() } = {}) {
+              * If neither explicitly enabled nor disabled, then use the presence
+              * of a flat config file to determine enablement.
+              */
+-            return !!(await findFlatConfigFile(cwd));
++            return !!(await findFlatConfigFile(process.cwd()));
+     }
+ }
+
+diff --git a/tests/lib/api.js b/tests/lib/api.js
+index 289886ae9..074d206e5 100644
+--- a/tests/lib/api.js
++++ b/tests/lib/api.js
+@@ -10,9 +10,7 @@
+ //-----------------------------------------------------------------------------
+
+ const assert = require("chai").assert,
+-    api = require("../../lib/api"),
+-    { FlatESLint } = require("../../lib/eslint"),
+-    os = require("os");
++    api = require("../../lib/api");
+
+ //-----------------------------------------------------------------------------
+ // Tests
+@@ -20,10 +18,6 @@ const assert = require("chai").assert,
+
+ describe("api", () => {
+
+-    it("should have ESLint exposed", () => {
+-        assert.isFunction(api.ESLint);
+-    });
+-
+     it("should have RuleTester exposed", () => {
+         assert.isFunction(api.RuleTester);
+     });
+@@ -43,49 +37,4 @@ describe("api", () => {
+     it("should have SourceCode exposed", () => {
+         assert.isFunction(api.SourceCode);
+     });
+-
+-    describe("loadESLint", () => {
+-
+-        afterEach(() => {
+-            delete process.env.ESLINT_USE_FLAT_CONFIG;
+-        });
+-
+-        it("should be a function", () => {
+-            assert.isFunction(api.loadESLint);
+-        });
+-
+-        it("should return a Promise", () => {
+-            assert.instanceOf(api.loadESLint(), Promise);
+-        });
+-
+-        it("should return FlatESLint when useFlatConfig is true", async () => {
+-            assert.strictEqual(await api.loadESLint({ useFlatConfig: true }), FlatESLint);
+-        });
+-
+-        it("should return ESLint when useFlatConfig is false", async () => {
+-            assert.strictEqual(await api.loadESLint({ useFlatConfig: false }), api.ESLint);
+-        });
+-
+-        it("should return FlatESLint when useFlatConfig is not provided because we have eslint.config.js", async () => {
+-            assert.strictEqual(await api.loadESLint(), FlatESLint);
+-        });
+-
+-        it("should return ESLint when useFlatConfig is not provided and there is no eslint.config.js", async () => {
+-            assert.strictEqual(await api.loadESLint({
+-                cwd: os.tmpdir()
+-            }), api.ESLint);
+-        });
+-
+-        it("should return ESLint when useFlatConfig is not provided and ESLINT_USE_FLAT_CONFIG is false", async () => {
+-            process.env.ESLINT_USE_FLAT_CONFIG = "false";
+-            assert.strictEqual(await api.loadESLint(), api.ESLint);
+-        });
+-
+-        it("should return FlatESLint when useFlatConfig is not provided and ESLINT_USE_FLAT_CONFIG is true", async () => {
+-            process.env.ESLINT_USE_FLAT_CONFIG = "true";
+-            assert.strictEqual(await api.loadESLint(), FlatESLint);
+-        });
+-
+-    });
+-
+ });
+diff --git a/tests/lib/eslint/eslint.js b/tests/lib/eslint/eslint.js
+index fdcfcb814..040722fcf 100644
+--- a/tests/lib/eslint/eslint.js
++++ b/tests/lib/eslint/eslint.js
+@@ -114,11 +114,6 @@ describe("ESLint", () => {
+     });
+
+     describe("ESLint constructor function", () => {
+-
+-        it("should have a static property indicating the configType being used", () => {
+-            assert.strictEqual(ESLint.configType, "eslintrc");
+-        });
+-
+         it("the default value of 'options.cwd' should be the current working directory.", async () => {
+             process.chdir(__dirname);
+             try {
+diff --git a/tests/lib/eslint/flat-eslint.js b/tests/lib/eslint/flat-eslint.js
+index 9bfdff3e3..9ec7305eb 100644
+--- a/tests/lib/eslint/flat-eslint.js
++++ b/tests/lib/eslint/flat-eslint.js
+@@ -128,10 +128,6 @@ describe("FlatESLint", () => {
+     });
+
+     describe("ESLint constructor function", () => {
+-        it("should have a static property indicating the configType being used", () => {
+-            assert.strictEqual(FlatESLint.configType, "flat");
+-        });
+-
+         it("the default value of 'options.cwd' should be the current working directory.", async () => {
+             process.chdir(__dirname);
+             try {

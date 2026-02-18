@@ -1,0 +1,351 @@
+diff --git a/docs/src/use/configure/configuration-files-new.md b/docs/src/use/configure/configuration-files-new.md
+index 685d0752f..a79fc110a 100644
+--- a/docs/src/use/configure/configuration-files-new.md
++++ b/docs/src/use/configure/configuration-files-new.md
+@@ -16,13 +16,7 @@ You can put your ESLint project configuration in a configuration file. You can i
+
+ ## Configuration File
+
+-The ESLint configuration file may be named any of the following:
+-
+-* `eslint.config.js`
+-* `eslint.config.mjs`
+-* `eslint.config.cjs`
+-
+-It should be placed in the root directory of your project and export an array of [configuration objects](#configuration-objects). Here's an example:
++The ESLint configuration file is named `eslint.config.js`. It should be placed in the root directory of your project and export an array of [configuration objects](#configuration-objects). Here's an example:
+
+ ```js
+ export default [
+@@ -50,6 +44,24 @@ module.exports = [
+ ];
+ ```
+
++The configuration file can also export a promise that resolves to the configuration array. This can be useful for using ESM dependencies in CommonJS configuration files, as in this example:
++
++```js
++module.exports = (async () => {
++
++    const someDependency = await import("some-esm-dependency");
++
++    return [
++        // ... use `someDependency` here
++    ];
++
++})();
++```
++
++::: warning
++ESLint only automatically looks for a config file named `eslint.config.js` and does not look for `eslint.config.cjs` or `eslint.config.mjs`. If you'd like to specify a different config filename than the default, use the `--config` command line option.
++:::
++
+ ## Configuration Objects
+
+ Each configuration object contains all of the information ESLint needs to execute on a set of files. Each configuration object is made up of these properties:
+@@ -656,7 +668,7 @@ export default [
+
+ ## Configuration File Resolution
+
+-When ESLint is run on the command line, it first checks the current working directory for `eslint.config.js`. If that file is found, then the search stops, otherwise it checks for `eslint.config.mjs`. If that file is found, then the search stops, otherwise it checks for `eslint.config.cjs`. If none of the files are not found, it checks the parent directory for each file. This search continues until either a config file is found or the root directory is reached.
++When ESLint is run on the command line, it first checks the current working directory for `eslint.config.js`. If the file is not found, it looks to the next parent directory for the file. This search continues until either the file is found or the root directory is reached.
+
+ You can prevent this search for `eslint.config.js` by setting the `ESLINT_USE_FLAT_CONFIG` environment variable to `true` and using the `-c` or `--config` option on the command line to specify an alternate configuration file, such as:
+
+diff --git a/lib/eslint/flat-eslint.js b/lib/eslint/flat-eslint.js
+index 06b41c726..785f41edf 100644
+--- a/lib/eslint/flat-eslint.js
++++ b/lib/eslint/flat-eslint.js
+@@ -91,11 +91,7 @@ const LintResultCache = require("../cli-engine/lint-result-cache");
+ // Helpers
+ //------------------------------------------------------------------------------
+
+-const FLAT_CONFIG_FILENAMES = [
+-    "eslint.config.js",
+-    "eslint.config.mjs",
+-    "eslint.config.cjs"
+-];
++const FLAT_CONFIG_FILENAME = "eslint.config.js";
+ const debug = require("debug")("eslint:flat-eslint");
+ const removedFormatters = new Set(["table", "codeframe"]);
+ const privateMembers = new WeakMap();
+@@ -252,7 +248,7 @@ function compareResultsByFilePath(a, b) {
+  */
+ function findFlatConfigFile(cwd) {
+     return findUp(
+-        FLAT_CONFIG_FILENAMES,
++        FLAT_CONFIG_FILENAME,
+         { cwd }
+     );
+ }
+diff --git a/lib/options.js b/lib/options.js
+index 089f34743..dd67c399e 100644
+--- a/lib/options.js
++++ b/lib/options.js
+@@ -168,7 +168,7 @@ module.exports = function(usingFlatConfig) {
+                 alias: "c",
+                 type: "path::String",
+                 description: usingFlatConfig
+-                    ? "Use this configuration instead of eslint.config.js, eslint.config.mjs, or eslint.config.cjs"
++                    ? "Use this configuration instead of eslint.config.js"
+                     : "Use this configuration, overriding .eslintrc.* config options if present"
+             },
+             envFlag,
+diff --git a/tests/fixtures/cjs-config/eslint.config.cjs b/tests/fixtures/cjs-config/eslint.config.cjs
+deleted file mode 100644
+index c66a491b8..000000000
+--- a/tests/fixtures/cjs-config/eslint.config.cjs
++++ /dev/null
+@@ -1,5 +0,0 @@
+-module.exports = {
+-    rules: {
+-        "no-undef": "warn"
+-    }
+-};
+diff --git a/tests/fixtures/cjs-config/foo.js b/tests/fixtures/cjs-config/foo.js
+deleted file mode 100644
+index e901f01b4..000000000
+--- a/tests/fixtures/cjs-config/foo.js
++++ /dev/null
+@@ -1 +0,0 @@
+-foo;
+diff --git a/tests/fixtures/js-mjs-cjs-config/eslint.config.cjs b/tests/fixtures/js-mjs-cjs-config/eslint.config.cjs
+deleted file mode 100644
+index b4a52eb90..000000000
+--- a/tests/fixtures/js-mjs-cjs-config/eslint.config.cjs
++++ /dev/null
+@@ -1,5 +0,0 @@
+-module.exports= {
+-    rules: {
+-        "no-undef": "warn"
+-    }
+-};
+diff --git a/tests/fixtures/js-mjs-cjs-config/eslint.config.js b/tests/fixtures/js-mjs-cjs-config/eslint.config.js
+deleted file mode 100644
+index c09a3815b..000000000
+--- a/tests/fixtures/js-mjs-cjs-config/eslint.config.js
++++ /dev/null
+@@ -1,5 +0,0 @@
+-module.exports = {
+-    rules: {
+-        "no-undef": "off"
+-    }
+-};
+diff --git a/tests/fixtures/js-mjs-cjs-config/eslint.config.mjs b/tests/fixtures/js-mjs-cjs-config/eslint.config.mjs
+deleted file mode 100644
+index 2ca4f1fc9..000000000
+--- a/tests/fixtures/js-mjs-cjs-config/eslint.config.mjs
++++ /dev/null
+@@ -1,5 +0,0 @@
+-export default {
+-    rules: {
+-        "no-undef": "error"
+-    }
+-};
+diff --git a/tests/fixtures/js-mjs-cjs-config/foo.js b/tests/fixtures/js-mjs-cjs-config/foo.js
+deleted file mode 100644
+index e901f01b4..000000000
+--- a/tests/fixtures/js-mjs-cjs-config/foo.js
++++ /dev/null
+@@ -1 +0,0 @@
+-foo;
+diff --git a/tests/fixtures/mjs-cjs-config/eslint.config.cjs b/tests/fixtures/mjs-cjs-config/eslint.config.cjs
+deleted file mode 100644
+index c66a491b8..000000000
+--- a/tests/fixtures/mjs-cjs-config/eslint.config.cjs
++++ /dev/null
+@@ -1,5 +0,0 @@
+-module.exports = {
+-    rules: {
+-        "no-undef": "warn"
+-    }
+-};
+diff --git a/tests/fixtures/mjs-cjs-config/eslint.config.mjs b/tests/fixtures/mjs-cjs-config/eslint.config.mjs
+deleted file mode 100644
+index 2ca4f1fc9..000000000
+--- a/tests/fixtures/mjs-cjs-config/eslint.config.mjs
++++ /dev/null
+@@ -1,5 +0,0 @@
+-export default {
+-    rules: {
+-        "no-undef": "error"
+-    }
+-};
+diff --git a/tests/fixtures/mjs-cjs-config/foo.js b/tests/fixtures/mjs-cjs-config/foo.js
+deleted file mode 100644
+index e901f01b4..000000000
+--- a/tests/fixtures/mjs-cjs-config/foo.js
++++ /dev/null
+@@ -1 +0,0 @@
+-foo;
+diff --git a/tests/fixtures/mjs-config/eslint.config.mjs b/tests/fixtures/mjs-config/eslint.config.mjs
+deleted file mode 100644
+index 2ca4f1fc9..000000000
+--- a/tests/fixtures/mjs-config/eslint.config.mjs
++++ /dev/null
+@@ -1,5 +0,0 @@
+-export default {
+-    rules: {
+-        "no-undef": "error"
+-    }
+-};
+diff --git a/tests/fixtures/mjs-config/foo.js b/tests/fixtures/mjs-config/foo.js
+deleted file mode 100644
+index e901f01b4..000000000
+--- a/tests/fixtures/mjs-config/foo.js
++++ /dev/null
+@@ -1 +0,0 @@
+-foo;
+diff --git a/tests/lib/eslint/flat-eslint.js b/tests/lib/eslint/flat-eslint.js
+index ad055a316..ee4178307 100644
+--- a/tests/lib/eslint/flat-eslint.js
++++ b/tests/lib/eslint/flat-eslint.js
+@@ -821,73 +821,6 @@ describe("FlatESLint", () => {
+             assert.strictEqual(results[0].messages[0].severity, 2);
+             assert.strictEqual(results[0].messages[0].ruleId, "quotes");
+         });
+-
+-        describe("Alternate config files", () => {
+-
+-            it("should find eslint.config.mjs when present", async () => {
+-
+-                const cwd = getFixturePath("mjs-config");
+-
+-                eslint = new FlatESLint({
+-                    cwd
+-                });
+-
+-                const results = await eslint.lintText("foo");
+-
+-                assert.strictEqual(results.length, 1);
+-                assert.strictEqual(results[0].messages.length, 1);
+-                assert.strictEqual(results[0].messages[0].severity, 2);
+-                assert.strictEqual(results[0].messages[0].ruleId, "no-undef");
+-
+-            });
+-
+-            it("should find eslint.config.cjs when present", async () => {
+-
+-                const cwd = getFixturePath("cjs-config");
+-
+-                eslint = new FlatESLint({
+-                    cwd
+-                });
+-
+-                const results = await eslint.lintText("foo");
+-
+-                assert.strictEqual(results.length, 1);
+-                assert.strictEqual(results[0].messages.length, 1);
+-                assert.strictEqual(results[0].messages[0].severity, 1);
+-                assert.strictEqual(results[0].messages[0].ruleId, "no-undef");
+-
+-            });
+-
+-            it("should favor eslint.config.js when eslint.config.mjs and eslint.config.cjs are present", async () => {
+-
+-                const cwd = getFixturePath("js-mjs-cjs-config");
+-
+-                eslint = new FlatESLint({
+-                    cwd
+-                });
+-
+-                const results = await eslint.lintText("foo");
+-
+-                assert.strictEqual(results.length, 1);
+-                assert.strictEqual(results[0].messages.length, 0);
+-            });
+-
+-            it("should favor eslint.config.mjs when eslint.config.cjs is present", async () => {
+-
+-                const cwd = getFixturePath("mjs-cjs-config");
+-
+-                eslint = new FlatESLint({
+-                    cwd
+-                });
+-
+-                const results = await eslint.lintText("foo");
+-
+-                assert.strictEqual(results.length, 1);
+-                assert.strictEqual(results[0].messages.length, 1);
+-                assert.strictEqual(results[0].messages[0].severity, 2);
+-                assert.strictEqual(results[0].messages[0].ruleId, "no-undef");
+-            });
+-        });
+     });
+
+     describe("lintFiles()", () => {
+@@ -4177,75 +4110,6 @@ describe("FlatESLint", () => {
+             await assert.rejects(() => eslint.lintFiles(777), /'patterns' must be a non-empty string or an array of non-empty strings/u);
+             await assert.rejects(() => eslint.lintFiles([null]), /'patterns' must be a non-empty string or an array of non-empty strings/u);
+         });
+-
+-        describe("Alternate config files", () => {
+-
+-            it("should find eslint.config.mjs when present", async () => {
+-
+-                const cwd = getFixturePath("mjs-config");
+-
+-                eslint = new FlatESLint({
+-                    cwd
+-                });
+-
+-                const results = await eslint.lintFiles("foo.js");
+-
+-                assert.strictEqual(results.length, 1);
+-                assert.strictEqual(results[0].messages.length, 1);
+-                assert.strictEqual(results[0].messages[0].severity, 2);
+-                assert.strictEqual(results[0].messages[0].ruleId, "no-undef");
+-
+-            });
+-
+-            it("should find eslint.config.cjs when present", async () => {
+-
+-                const cwd = getFixturePath("cjs-config");
+-
+-                eslint = new FlatESLint({
+-                    cwd
+-                });
+-
+-                const results = await eslint.lintFiles("foo.js");
+-
+-                assert.strictEqual(results.length, 1);
+-                assert.strictEqual(results[0].messages.length, 1);
+-                assert.strictEqual(results[0].messages[0].severity, 1);
+-                assert.strictEqual(results[0].messages[0].ruleId, "no-undef");
+-
+-            });
+-
+-            it("should favor eslint.config.js when eslint.config.mjs and eslint.config.cjs are present", async () => {
+-
+-                const cwd = getFixturePath("js-mjs-cjs-config");
+-
+-                eslint = new FlatESLint({
+-                    cwd
+-                });
+-
+-                const results = await eslint.lintFiles("foo.js");
+-
+-                assert.strictEqual(results.length, 1);
+-                assert.strictEqual(results[0].messages.length, 0);
+-            });
+-
+-            it("should favor eslint.config.mjs when eslint.config.cjs is present", async () => {
+-
+-                const cwd = getFixturePath("mjs-cjs-config");
+-
+-                eslint = new FlatESLint({
+-                    cwd
+-                });
+-
+-                const results = await eslint.lintFiles("foo.js");
+-
+-                assert.strictEqual(results.length, 1);
+-                assert.strictEqual(results[0].messages.length, 1);
+-                assert.strictEqual(results[0].messages[0].severity, 2);
+-                assert.strictEqual(results[0].messages[0].ruleId, "no-undef");
+-            });
+-        });
+-
+-
+     });
+
+     describe("Fix Types", () => {

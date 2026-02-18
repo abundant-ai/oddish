@@ -1,0 +1,135 @@
+diff --git a/docs/src/integrate/nodejs-api.md b/docs/src/integrate/nodejs-api.md
+index ce0890c79..5d081df3d 100644
+--- a/docs/src/integrate/nodejs-api.md
++++ b/docs/src/integrate/nodejs-api.md
+@@ -442,6 +442,49 @@ The `LoadedFormatter` value is the object to convert the [LintResult] objects to
+
+ ---
+
++## loadESLint()
++
++The `loadESLint()` function is used for integrations that wish to support both the current configuration system (flat config) and the old configuration system (eslintrc). This function returns the correct `ESLint` class implementation based on the arguments provided:
++
++```js
++const { loadESLint } = require("eslint");
++
++// loads the default ESLint that the CLI would use based on process.cwd()
++const DefaultESLint = await loadESLint();
++
++// loads the default ESLint that the CLI would use based on the provided cwd
++const CwdDefaultESLint = await loadESLint({ cwd: "/foo/bar" });
++
++// loads the flat config version specifically
++const FlatESLint = await loadESLint({ useFlatConfig: true });
++
++// loads the legacy version specifically
++const LegacyESLint = await loadESLint({ useFlatConfig: false });
++```
++
++You can then use the returned constructor to instantiate a new `ESLint` instance, like this:
++
++```js
++// loads the default ESLint that the CLI would use based on process.cwd()
++const DefaultESLint = await loadESLint();
++const eslint = new DefaultESLint();
++```
++
++If you're ever unsure which config system the returned constructor uses, check the `configType` property, which is either `"flat"` or `"eslintrc"`:
++
++```js
++// loads the default ESLint that the CLI would use based on process.cwd()
++const DefaultESLint = await loadESLint();
++
++if (DefaultESLint.configType === "flat") {
++    // do something specific to flat config
++}
++```
++
++If you don't need to support both the old and new configuration systems, then it's recommended to just use the `ESLint` constructor directly.
++
++---
++
+ ## SourceCode
+
+ The `SourceCode` type represents the parsed source code that ESLint executes on. It's used internally in ESLint and is also available so that already-parsed code can be used. You can create a new instance of `SourceCode` by passing in the text string representing the code and an abstract syntax tree (AST) in [ESTree](https://github.com/estree/estree) format (including location information, range information, comments, and tokens):
+diff --git a/lib/api.js b/lib/api.js
+index 4a689250a..ab0ec2fcd 100644
+--- a/lib/api.js
++++ b/lib/api.js
+@@ -9,17 +9,41 @@
+ // Requirements
+ //-----------------------------------------------------------------------------
+
+-const { ESLint } = require("./eslint/eslint");
++const { ESLint, shouldUseFlatConfig } = require("./eslint/eslint");
++const { LegacyESLint } = require("./eslint/legacy-eslint");
+ const { Linter } = require("./linter");
+ const { RuleTester } = require("./rule-tester");
+ const { SourceCode } = require("./source-code");
+
++//-----------------------------------------------------------------------------
++// Functions
++//-----------------------------------------------------------------------------
++
++/**
++ * Loads the correct ESLint constructor given the options.
++ * @param {Object} [options] The options object
++ * @param {boolean} [options.useFlatConfig] Whether or not to use a flat config
++ * @returns {Promise<ESLint|LegacyESLint>} The ESLint constructor
++ */
++async function loadESLint({ useFlatConfig } = {}) {
++
++    /*
++     * Note: The v8.x version of this function also accepted a `cwd` option, but
++     * it is not used in this implementation so we silently ignore it.
++     */
++
++    const shouldESLintUseFlatConfig = useFlatConfig ?? (await shouldUseFlatConfig());
++
++    return shouldESLintUseFlatConfig ? ESLint : LegacyESLint;
++}
++
+ //-----------------------------------------------------------------------------
+ // Exports
+ //-----------------------------------------------------------------------------
+
+ module.exports = {
+     Linter,
++    loadESLint,
+     ESLint,
+     RuleTester,
+     SourceCode
+diff --git a/lib/eslint/eslint.js b/lib/eslint/eslint.js
+index 49bc0e757..97102d3fe 100644
+--- a/lib/eslint/eslint.js
++++ b/lib/eslint/eslint.js
+@@ -565,6 +565,12 @@ function createExtraneousResultsError() {
+  */
+ class ESLint {
+
++    /**
++     * The type of configuration used by this class.
++     * @type {string}
++     */
++    static configType = "flat";
++
+     /**
+      * Creates a new instance of the main ESLint API.
+      * @param {ESLintOptions} options The options for this instance.
+diff --git a/lib/eslint/legacy-eslint.js b/lib/eslint/legacy-eslint.js
+index 251a3890d..9c86163ef 100644
+--- a/lib/eslint/legacy-eslint.js
++++ b/lib/eslint/legacy-eslint.js
+@@ -438,6 +438,12 @@ function compareResultsByFilePath(a, b) {
+  */
+ class LegacyESLint {
+
++    /**
++     * The type of configuration used by this class.
++     * @type {string}
++     */
++    static configType = "eslintrc";
++
+     /**
+      * Creates a new instance of the main ESLint API.
+      * @param {LegacyESLintOptions} options The options for this instance.

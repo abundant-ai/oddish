@@ -1,0 +1,546 @@
+diff --git a/docs/src/use/migrate-to-9.0.0.md b/docs/src/use/migrate-to-9.0.0.md
+index 9db6f4724..2a192ee46 100644
+--- a/docs/src/use/migrate-to-9.0.0.md
++++ b/docs/src/use/migrate-to-9.0.0.md
+@@ -553,11 +553,10 @@ In order to aid in the development of high-quality custom rules that are free fr
+ 1. **Suggestions must generate valid syntax.** In order for rule suggestions to be helpful, they need to be valid syntax. `RuleTester` now parses the output of suggestions using the same language options as the `code` value and throws an error if parsing fails.
+ 1. **Test cases must be unique.** Identical test cases can cause confusion and be hard to detect manually in a long test file. Duplicates are now automatically detected and can be safely removed.
+ 1. **`filename` and `only` must be of the expected type.** `RuleTester` now checks the type of `filename` and `only` properties of test objects. If specified, `filename` must be a string value. If specified, `only` must be a boolean value.
+-1. **Messages cannot have unsubstituted placeholders.** The `RuleTester` now also checks if there are {% raw %}`{{ placeholder }}` {% endraw %} still in the message as their values were not passed via `data` in the respective `context.report()` call.
+
+ **To address:** Run your rule tests using `RuleTester` and fix any errors that occur. The changes you'll need to make to satisfy `RuleTester` are compatible with ESLint v8.x.
+
+-**Related Issues(s):** [#15104](https://github.com/eslint/eslint/issues/15104), [#15735](https://github.com/eslint/eslint/issues/15735), [#16908](https://github.com/eslint/eslint/issues/16908), [#18016](https://github.com/eslint/eslint/issues/18016)
++**Related Issues(s):** [#15104](https://github.com/eslint/eslint/issues/15104), [#15735](https://github.com/eslint/eslint/issues/15735), [#16908](https://github.com/eslint/eslint/issues/16908)
+
+ ## <a name="flat-eslint"></a> `FlatESLint` is now `ESLint`
+
+diff --git a/lib/linter/index.js b/lib/linter/index.js
+index 795a414ab..25fd769bd 100644
+--- a/lib/linter/index.js
++++ b/lib/linter/index.js
+@@ -1,7 +1,7 @@
+ "use strict";
+
+ const { Linter } = require("./linter");
+-const { interpolate } = require("./interpolate");
++const interpolate = require("./interpolate");
+ const SourceCodeFixer = require("./source-code-fixer");
+
+ module.exports = {
+diff --git a/lib/linter/interpolate.js b/lib/linter/interpolate.js
+index 5f4ff9227..87e06a023 100644
+--- a/lib/linter/interpolate.js
++++ b/lib/linter/interpolate.js
+@@ -9,30 +9,13 @@
+ // Public Interface
+ //------------------------------------------------------------------------------
+
+-/**
+- * Returns a global expression matching placeholders in messages.
+- * @returns {RegExp} Global regular expression matching placeholders
+- */
+-function getPlaceholderMatcher() {
+-    return /\{\{([^{}]+?)\}\}/gu;
+-}
+-
+-/**
+- * Replaces {{ placeholders }} in the message with the provided data.
+- * Does not replace placeholders not available in the data.
+- * @param {string} text Original message with potential placeholders
+- * @param {Record<string, string>} data Map of placeholder name to its value
+- * @returns {string} Message with replaced placeholders
+- */
+-function interpolate(text, data) {
++module.exports = (text, data) => {
+     if (!data) {
+         return text;
+     }
+
+-    const matcher = getPlaceholderMatcher();
+-
+     // Substitution content for any {{ }} markers.
+-    return text.replace(matcher, (fullMatch, termWithWhitespace) => {
++    return text.replace(/\{\{([^{}]+?)\}\}/gu, (fullMatch, termWithWhitespace) => {
+         const term = termWithWhitespace.trim();
+
+         if (term in data) {
+@@ -42,9 +25,4 @@ function interpolate(text, data) {
+         // Preserve old behavior: If parameter name not provided, don't replace it.
+         return fullMatch;
+     });
+-}
+-
+-module.exports = {
+-    getPlaceholderMatcher,
+-    interpolate
+ };
+diff --git a/lib/linter/report-translator.js b/lib/linter/report-translator.js
+index c4a159a99..91fef4d95 100644
+--- a/lib/linter/report-translator.js
++++ b/lib/linter/report-translator.js
+@@ -11,7 +11,7 @@
+
+ const assert = require("assert");
+ const ruleFixer = require("./rule-fixer");
+-const { interpolate } = require("./interpolate");
++const interpolate = require("./interpolate");
+
+ //------------------------------------------------------------------------------
+ // Typedefs
+diff --git a/lib/rule-tester/rule-tester.js b/lib/rule-tester/rule-tester.js
+index 261a1bb73..bc728159f 100644
+--- a/lib/rule-tester/rule-tester.js
++++ b/lib/rule-tester/rule-tester.js
+@@ -17,8 +17,7 @@ const
+     equal = require("fast-deep-equal"),
+     Traverser = require("../shared/traverser"),
+     { getRuleOptionsSchema } = require("../config/flat-config-helpers"),
+-    { Linter, SourceCodeFixer } = require("../linter"),
+-    { interpolate, getPlaceholderMatcher } = require("../linter/interpolate"),
++    { Linter, SourceCodeFixer, interpolate } = require("../linter"),
+     stringify = require("json-stable-stringify-without-jsonify");
+
+ const { FlatConfigArray } = require("../config/flat-config-array");
+@@ -305,39 +304,6 @@ function throwForbiddenMethodError(methodName, prototype) {
+     };
+ }
+
+-/**
+- * Extracts names of {{ placeholders }} from the reported message.
+- * @param   {string} message Reported message
+- * @returns {string[]} Array of placeholder names
+- */
+-function getMessagePlaceholders(message) {
+-    const matcher = getPlaceholderMatcher();
+-
+-    return Array.from(message.matchAll(matcher), ([, name]) => name.trim());
+-}
+-
+-/**
+- * Returns the placeholders in the reported messages but
+- * only includes the placeholders available in the raw message and not in the provided data.
+- * @param {string} message The reported message
+- * @param {string} raw The raw message specified in the rule meta.messages
+- * @param {undefined|Record<unknown, unknown>} data The passed
+- * @returns {string[]} Missing placeholder names
+- */
+-function getUnsubstitutedMessagePlaceholders(message, raw, data = {}) {
+-    const unsubstituted = getMessagePlaceholders(message);
+-
+-    if (unsubstituted.length === 0) {
+-        return [];
+-    }
+-
+-    // Remove false positives by only counting placeholders in the raw message, which were not provided in the data matcher or added with a data property
+-    const known = getMessagePlaceholders(raw);
+-    const provided = Object.keys(data);
+-
+-    return unsubstituted.filter(name => known.includes(name) && !provided.includes(name));
+-}
+-
+ const metaSchemaDescription = `
+ \t- If the rule has options, set \`meta.schema\` to an array or non-empty object to enable options validation.
+ \t- If the rule doesn't have options, omit \`meta.schema\` to enforce that no options can be passed to the rule.
+@@ -1031,18 +997,6 @@ class RuleTester {
+                                 error.messageId,
+                                 `messageId '${message.messageId}' does not match expected messageId '${error.messageId}'.`
+                             );
+-
+-                            const unsubstitutedPlaceholders = getUnsubstitutedMessagePlaceholders(
+-                                message.message,
+-                                rule.meta.messages[message.messageId],
+-                                error.data
+-                            );
+-
+-                            assert.ok(
+-                                unsubstitutedPlaceholders.length === 0,
+-                                `The reported message has ${unsubstitutedPlaceholders.length > 1 ? `unsubstituted placeholders: ${unsubstitutedPlaceholders.map(name => `'${name}'`).join(", ")}` : `an unsubstituted placeholder '${unsubstitutedPlaceholders[0]}'`}. Please provide the missing ${unsubstitutedPlaceholders.length > 1 ? "values" : "value"} via the 'data' property in the context.report() call.`
+-                            );
+-
+                             if (hasOwnProperty(error, "data")) {
+
+                                 /*
+@@ -1142,18 +1096,6 @@ class RuleTester {
+                                                 expectedSuggestion.messageId,
+                                                 `${suggestionPrefix} messageId should be '${expectedSuggestion.messageId}' but got '${actualSuggestion.messageId}' instead.`
+                                             );
+-
+-                                            const unsubstitutedPlaceholders = getUnsubstitutedMessagePlaceholders(
+-                                                actualSuggestion.desc,
+-                                                rule.meta.messages[expectedSuggestion.messageId],
+-                                                expectedSuggestion.data
+-                                            );
+-
+-                                            assert.ok(
+-                                                unsubstitutedPlaceholders.length === 0,
+-                                                `The message of the suggestion has ${unsubstitutedPlaceholders.length > 1 ? `unsubstituted placeholders: ${unsubstitutedPlaceholders.map(name => `'${name}'`).join(", ")}` : `an unsubstituted placeholder '${unsubstitutedPlaceholders[0]}'`}. Please provide the missing ${unsubstitutedPlaceholders.length > 1 ? "values" : "value"} via the 'data' property for the suggestion in the context.report() call.`
+-                                            );
+-
+                                             if (hasOwnProperty(expectedSuggestion, "data")) {
+                                                 const unformattedMetaMessage = rule.meta.messages[expectedSuggestion.messageId];
+                                                 const rehydratedDesc = interpolate(unformattedMetaMessage, expectedSuggestion.data);
+diff --git a/tests/fixtures/testers/rule-tester/messageId.js b/tests/fixtures/testers/rule-tester/messageId.js
+index 8e60749af..d7386e395 100644
+--- a/tests/fixtures/testers/rule-tester/messageId.js
++++ b/tests/fixtures/testers/rule-tester/messageId.js
+@@ -34,110 +34,3 @@ module.exports.withMessageOnly = {
+         };
+     }
+ };
+-
+-module.exports.withMissingData = {
+-    meta: {
+-        messages: {
+-            avoidFoo: "Avoid using variables named '{{ name }}'.",
+-            unused: "An unused key"
+-        }
+-    },
+-    create(context) {
+-        return {
+-            Identifier(node) {
+-                if (node.name === "foo") {
+-                    context.report({
+-                        node,
+-                        messageId: "avoidFoo",
+-                    });
+-                }
+-            }
+-        };
+-    }
+-};
+-
+-module.exports.withMultipleMissingDataProperties = {
+-    meta: {
+-        messages: {
+-            avoidFoo: "Avoid using {{ type }} named '{{ name }}'.",
+-            unused: "An unused key"
+-        }
+-    },
+-    create(context) {
+-        return {
+-            Identifier(node) {
+-                if (node.name === "foo") {
+-                    context.report({
+-                        node,
+-                        messageId: "avoidFoo",
+-                    });
+-                }
+-            }
+-        };
+-    }
+-};
+-
+-module.exports.withPlaceholdersInData = {
+-    meta: {
+-        messages: {
+-            avoidFoo: "Avoid using variables named '{{ name }}'.",
+-            unused: "An unused key"
+-        }
+-    },
+-    create(context) {
+-        return {
+-            Identifier(node) {
+-                if (node.name === "foo") {
+-                    context.report({
+-                        node,
+-                        messageId: "avoidFoo",
+-                        data:      { name: '{{ placeholder }}' },
+-                    });
+-                }
+-            }
+-        };
+-    }
+-};
+-
+-module.exports.withSamePlaceholdersInData = {
+-    meta: {
+-        messages: {
+-            avoidFoo: "Avoid using variables named '{{ name }}'.",
+-            unused: "An unused key"
+-        }
+-    },
+-    create(context) {
+-        return {
+-            Identifier(node) {
+-                if (node.name === "foo") {
+-                    context.report({
+-                        node,
+-                        messageId: "avoidFoo",
+-                        data:      { name: '{{ name }}' },
+-                    });
+-                }
+-            }
+-        };
+-    }
+-};
+-
+-module.exports.withNonStringData = {
+-    meta: {
+-        messages: {
+-            avoid: "Avoid using the value '{{ value }}'.",
+-        }
+-    },
+-    create(context) {
+-        return {
+-            Literal(node) {
+-                if (node.value === 0) {
+-                    context.report({
+-                        node,
+-                        messageId: "avoid",
+-                        data:      { value: 0 },
+-                    });
+-                }
+-            }
+-        };
+-    }
+-};
+diff --git a/tests/fixtures/testers/rule-tester/suggestions.js b/tests/fixtures/testers/rule-tester/suggestions.js
+index ccbcff217..34f404d26 100644
+--- a/tests/fixtures/testers/rule-tester/suggestions.js
++++ b/tests/fixtures/testers/rule-tester/suggestions.js
+@@ -198,61 +198,3 @@ module.exports.withFailingFixer = {
+         };
+     }
+ };
+-
+-module.exports.withMissingPlaceholderData = {
+-    meta: {
+-        messages: {
+-            avoidFoo: "Avoid using identifiers named '{{ name }}'.",
+-            renameFoo: "Rename identifier 'foo' to '{{ newName }}'"
+-        },
+-        hasSuggestions: true
+-    },
+-    create(context) {
+-        return {
+-            Identifier(node) {
+-                if (node.name === "foo") {
+-                    context.report({
+-                        node,
+-                        messageId: "avoidFoo",
+-                        data: {
+-                            name: "foo"
+-                        },
+-                        suggest: [{
+-                            messageId: "renameFoo",
+-                            fix: fixer => fixer.replaceText(node, "bar")
+-                        }]
+-                    });
+-                }
+-            }
+-        };
+-    }
+-};
+-
+-module.exports.withMultipleMissingPlaceholderDataProperties = {
+-    meta: {
+-        messages: {
+-            avoidFoo: "Avoid using identifiers named '{{ name }}'.",
+-            rename: "Rename identifier '{{ currentName }}' to '{{ newName }}'"
+-        },
+-        hasSuggestions: true
+-    },
+-    create(context) {
+-        return {
+-            Identifier(node) {
+-                if (node.name === "foo") {
+-                    context.report({
+-                        node,
+-                        messageId: "avoidFoo",
+-                        data: {
+-                            name: "foo"
+-                        },
+-                        suggest: [{
+-                            messageId: "rename",
+-                            fix: fixer => fixer.replaceText(node, "bar")
+-                        }]
+-                    });
+-                }
+-            }
+-        };
+-    }
+-};
+diff --git a/tests/lib/linter/interpolate.js b/tests/lib/linter/interpolate.js
+index 9c96d0911..04e714095 100644
+--- a/tests/lib/linter/interpolate.js
++++ b/tests/lib/linter/interpolate.js
+@@ -5,40 +5,12 @@
+ //------------------------------------------------------------------------------
+
+ const assert = require("chai").assert;
+-const { getPlaceholderMatcher, interpolate } = require("../../../lib/linter/interpolate");
++const interpolate = require("../../../lib/linter/interpolate");
+
+ //------------------------------------------------------------------------------
+ // Tests
+ //------------------------------------------------------------------------------
+
+-describe("getPlaceholderMatcher", () => {
+-    it("returns a global regular expression", () => {
+-        const matcher = getPlaceholderMatcher();
+-
+-        assert.strictEqual(matcher.global, true);
+-    });
+-
+-    it("matches text with placeholders", () => {
+-        const matcher = getPlaceholderMatcher();
+-
+-        assert.match("{{ placeholder }}", matcher);
+-    });
+-
+-    it("does not match text without placeholders", () => {
+-        const matcher = getPlaceholderMatcher();
+-
+-        assert.notMatch("no placeholders in sight", matcher);
+-    });
+-
+-    it("captures the text inside the placeholder", () => {
+-        const matcher = getPlaceholderMatcher();
+-        const text = "{{ placeholder }}";
+-        const matches = Array.from(text.matchAll(matcher));
+-
+-        assert.deepStrictEqual(matches, [[text, " placeholder "]]);
+-    });
+-});
+-
+ describe("interpolate()", () => {
+     it("passes through text without {{ }}", () => {
+         const message = "This is a very important message!";
+diff --git a/tests/lib/rule-tester/rule-tester.js b/tests/lib/rule-tester/rule-tester.js
+index 28860af6f..158202842 100644
+--- a/tests/lib/rule-tester/rule-tester.js
++++ b/tests/lib/rule-tester/rule-tester.js
+@@ -1897,7 +1897,6 @@ describe("RuleTester", () => {
+             invalid: [{ code: "foo", errors: [{ messageId: "avoidFoo" }] }]
+         });
+     });
+-
+     it("should assert match between resulting message output if messageId and data provided in both test and result", () => {
+         assert.throws(() => {
+             ruleTester.run("foo", require("../../fixtures/testers/rule-tester/messageId").withMetaWithData, {
+@@ -1907,63 +1906,6 @@ describe("RuleTester", () => {
+         }, "Hydrated message \"Avoid using variables named 'notFoo'.\" does not match \"Avoid using variables named 'foo'.\"");
+     });
+
+-    it("should throw if the message has a single unsubstituted placeholder when data is not specified", () => {
+-        assert.throws(() => {
+-            ruleTester.run("foo", require("../../fixtures/testers/rule-tester/messageId").withMissingData, {
+-                valid: [],
+-                invalid: [{ code: "foo", errors: [{ messageId: "avoidFoo" }] }]
+-            });
+-        }, "The reported message has an unsubstituted placeholder 'name'. Please provide the missing value via the 'data' property in the context.report() call.");
+-    });
+-
+-    it("should throw if the message has a single unsubstituted placeholders when data is specified", () => {
+-        assert.throws(() => {
+-            ruleTester.run("foo", require("../../fixtures/testers/rule-tester/messageId").withMissingData, {
+-                valid: [],
+-                invalid: [{ code: "foo", errors: [{ messageId: "avoidFoo", data: { name: "name" } }] }]
+-            });
+-        }, "Hydrated message \"Avoid using variables named 'name'.\" does not match \"Avoid using variables named '{{ name }}'.");
+-    });
+-
+-    it("should throw if the message has multiple unsubstituted placeholders when data is not specified", () => {
+-        assert.throws(() => {
+-            ruleTester.run("foo", require("../../fixtures/testers/rule-tester/messageId").withMultipleMissingDataProperties, {
+-                valid: [],
+-                invalid: [{ code: "foo", errors: [{ messageId: "avoidFoo" }] }]
+-            });
+-        }, "The reported message has unsubstituted placeholders: 'type', 'name'. Please provide the missing values via the 'data' property in the context.report() call.");
+-    });
+-
+-    it("should not throw if the data in the message contains placeholders not present in the raw message", () => {
+-        ruleTester.run("foo", require("../../fixtures/testers/rule-tester/messageId").withPlaceholdersInData, {
+-            valid: [],
+-            invalid: [{ code: "foo", errors: [{ messageId: "avoidFoo" }] }]
+-        });
+-    });
+-
+-    it("should throw if the data in the message contains the same placeholder and data is not specified", () => {
+-        assert.throws(() => {
+-            ruleTester.run("foo", require("../../fixtures/testers/rule-tester/messageId").withSamePlaceholdersInData, {
+-                valid: [],
+-                invalid: [{ code: "foo", errors: [{ messageId: "avoidFoo" }] }]
+-            });
+-        }, "The reported message has an unsubstituted placeholder 'name'. Please provide the missing value via the 'data' property in the context.report() call.");
+-    });
+-
+-    it("should not throw if the data in the message contains the same placeholder and data is specified", () => {
+-        ruleTester.run("foo", require("../../fixtures/testers/rule-tester/messageId").withSamePlaceholdersInData, {
+-            valid: [],
+-            invalid: [{ code: "foo", errors: [{ messageId: "avoidFoo", data: { name: "{{ name }}" } }] }]
+-        });
+-    });
+-
+-    it("should not throw an error for specifying non-string data values", () => {
+-        ruleTester.run("foo", require("../../fixtures/testers/rule-tester/messageId").withNonStringData, {
+-            valid: [],
+-            invalid: [{ code: "0", errors: [{ messageId: "avoid", data: { value: 0 } }] }]
+-        });
+-    });
+-
+     // messageId/message misconfiguration cases
+     it("should throw if user tests for both message and messageId", () => {
+         assert.throws(() => {
+@@ -2215,60 +2157,6 @@ describe("RuleTester", () => {
+             });
+         });
+
+-        it("should fail with a single missing data placeholder when data is not specified", () => {
+-            assert.throws(() => {
+-                ruleTester.run("suggestions-messageIds", require("../../fixtures/testers/rule-tester/suggestions").withMissingPlaceholderData, {
+-                    valid: [],
+-                    invalid: [{
+-                        code: "var foo;",
+-                        errors: [{
+-                            messageId: "avoidFoo",
+-                            suggestions: [{
+-                                messageId: "renameFoo",
+-                                output: "var bar;"
+-                            }]
+-                        }]
+-                    }]
+-                });
+-            }, "The message of the suggestion has an unsubstituted placeholder 'newName'. Please provide the missing value via the 'data' property for the suggestion in the context.report() call.");
+-        });
+-
+-        it("should fail with a single missing data placeholder when data is specified", () => {
+-            assert.throws(() => {
+-                ruleTester.run("suggestions-messageIds", require("../../fixtures/testers/rule-tester/suggestions").withMissingPlaceholderData, {
+-                    valid: [],
+-                    invalid: [{
+-                        code: "var foo;",
+-                        errors: [{
+-                            messageId: "avoidFoo",
+-                            suggestions: [{
+-                                messageId: "renameFoo",
+-                                data: { other: "name" },
+-                                output: "var bar;"
+-                            }]
+-                        }]
+-                    }]
+-                });
+-            }, "The message of the suggestion has an unsubstituted placeholder 'newName'. Please provide the missing value via the 'data' property for the suggestion in the context.report() call.");
+-        });
+-
+-        it("should fail with multiple missing data placeholders when data is not specified", () => {
+-            assert.throws(() => {
+-                ruleTester.run("suggestions-messageIds", require("../../fixtures/testers/rule-tester/suggestions").withMultipleMissingPlaceholderDataProperties, {
+-                    valid: [],
+-                    invalid: [{
+-                        code: "var foo;",
+-                        errors: [{
+-                            messageId: "avoidFoo",
+-                            suggestions: [{
+-                                messageId: "rename",
+-                                output: "var bar;"
+-                            }]
+-                        }]
+-                    }]
+-                });
+-            }, "The message of the suggestion has unsubstituted placeholders: 'currentName', 'newName'. Please provide the missing values via the 'data' property for the suggestion in the context.report() call.");
+-        });
+
+         it("should fail when tested using empty suggestion test objects even if the array length is correct", () => {
+             assert.throw(() => {
