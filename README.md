@@ -35,7 +35,7 @@ Oddish extends Harbor with:
 ### 1. Install
 
 ```bash
-uv pip install -e .
+uv pip install oddish
 ```
 
 ### 2. Generate an Oddish API key [here](https://www.oddish.app/)
