@@ -5,6 +5,9 @@
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/oddish/">
+    <img alt="PyPI" src="https://img.shields.io/pypi/v/oddish.svg">
+  </a>
   <a href="https://www.python.org/downloads/">
     <img alt="Python" src="https://img.shields.io/badge/python-3.12+-blue.svg">
   </a>
