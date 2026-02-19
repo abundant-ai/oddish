@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import mimetypes
 import re
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import MutableMapping, TypeVar
 
 from fastapi import HTTPException
@@ -455,6 +456,82 @@ async def read_trial_trajectory(trial: TrialModel) -> dict | None:
         if _should_cache_trial(trial):
             _cache_set(_TRAJECTORY_CACHE, cache_key, result)
         return result
+
+
+def _normalize_relative_agent_path(file_path: str) -> str:
+    raw = file_path.replace("\\", "/").strip()
+    if not raw or raw.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    parts = PurePosixPath(raw).parts
+    if ".." in parts:
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    normalized = str(PurePosixPath(*parts))
+    if normalized in ("", ".", "/"):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    return normalized
+
+
+async def read_trial_agent_file(
+    trial: TrialModel,
+    file_path: str,
+) -> tuple[bytes, str]:
+    """Read a file from the trial's `agent/` directory."""
+    normalized_path = _normalize_relative_agent_path(file_path)
+    media_type, _ = mimetypes.guess_type(normalized_path)
+    if media_type is None:
+        media_type = "application/octet-stream"
+
+    if settings.s3_enabled:
+        s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
+        storage = get_storage_client()
+
+        direct_key = f"{s3_prefix}agent/{normalized_path}"
+        try:
+            content = await storage.download_bytes(direct_key)
+            return content, media_type
+        except Exception:
+            pass
+
+        try:
+            suffix = f"/agent/{normalized_path}"
+            for key in await storage.list_keys(s3_prefix):
+                if key.endswith(suffix):
+                    content = await storage.download_bytes(key)
+                    return content, media_type
+        except Exception as e:
+            logging.getLogger(__name__).debug(
+                f"No agent file in S3 for {trial.id} at {s3_prefix}: {e}"
+            )
+
+    if not trial.harbor_result_path:
+        raise HTTPException(status_code=404, detail="Trial has no local result path")
+
+    result_path = Path(trial.harbor_result_path)
+    job_dir = result_path.parent
+    agent_dir = job_dir / "agent"
+    base_dir = Path(settings.harbor_jobs_dir).resolve()
+
+    try:
+        file_path_resolved = (agent_dir / normalized_path).resolve()
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if (
+        base_dir not in file_path_resolved.parents
+        and file_path_resolved != base_dir
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Refusing to read file outside harbor_jobs_dir",
+        )
+
+    if not file_path_resolved.exists() or not file_path_resolved.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        return file_path_resolved.read_bytes(), media_type
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found")
 
 
 async def read_trial_result(trial: TrialModel) -> dict:
