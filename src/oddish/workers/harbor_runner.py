@@ -307,10 +307,14 @@ async def run_harbor_trial_async(
     if agent_env:
         agent_kwargs["env"] = agent_env
 
+    # Respect task.toml agent timeout by default. Only apply an override
+    # when API callers explicitly set timeout_minutes.
+    agent_timeout_override_sec = hc.get("agent_timeout_sec")
+
     agent_config = AgentConfig(
         name=agent,
         model_name=model,
-        override_timeout_sec=timeout_minutes * 60.0,
+        override_timeout_sec=agent_timeout_override_sec,
         override_setup_timeout_sec=hc.get("agent_setup_timeout_sec"),
         kwargs=agent_kwargs,
     )
