@@ -40,17 +40,32 @@ def upgrade() -> None:
     # Add org_id if table exists but column doesn't
     op.execute("ALTER TABLE experiments ADD COLUMN IF NOT EXISTS org_id VARCHAR(64)")
 
-    # Backfill experiments.org_id from the first task's org_id
+    # Backfill experiments.org_id from tasks, but only if tasks.experiment_id
+    # exists in the pre-migration schema.
     op.execute(
         """
-        UPDATE experiments e
-        SET org_id = (
-            SELECT t.org_id
-            FROM tasks t
-            WHERE t.experiment_id = e.id AND t.org_id IS NOT NULL
-            LIMIT 1
-        )
-        WHERE e.org_id IS NULL
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'tasks'
+                  AND column_name = 'experiment_id'
+            ) THEN
+                EXECUTE $sql$
+                    UPDATE experiments e
+                    SET org_id = (
+                        SELECT t.org_id
+                        FROM tasks t
+                        WHERE t.experiment_id = e.id AND t.org_id IS NOT NULL
+                        LIMIT 1
+                    )
+                    WHERE e.org_id IS NULL
+                $sql$;
+            END IF;
+        END
+        $$;
         """
     )
 

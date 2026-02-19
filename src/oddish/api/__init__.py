@@ -296,6 +296,7 @@ async def create_task_sweep(submission: TaskSweepSubmission):
 
         return TaskResponse(
             id=task.id,
+            name=task.name,
             status=task.status,
             priority=task.priority,
             trials_count=len(task.trials),
