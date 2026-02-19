@@ -412,6 +412,8 @@ async def create_task(
             harbor_config["agent_env"] = spec.agent_env
         if spec.agent_kwargs:
             harbor_config["agent_kwargs"] = spec.agent_kwargs
+        if "timeout_minutes" in spec.model_fields_set:
+            harbor_config["agent_timeout_sec"] = float(spec.timeout_minutes * 60)
 
         trial = TrialModel(
             id=trial_id,
