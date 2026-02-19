@@ -607,10 +607,7 @@ async def get_task_with_trials(session: AsyncSession, task_id: str) -> TaskModel
 
 
 async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> dict:
-    """Get queue statistics by provider from the trials table.
-
-    The trials table is the source of truth for trial status, providing
-    a complete view of all trials including historical data.
+    """Get queue statistics by provider across trial/analysis/verdict jobs.
 
     Args:
         session: Database session
@@ -618,6 +615,27 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
     """
     stats: dict[str, dict[str, int]] = {}
     valid_statuses = {"pending", "queued", "running", "success", "failed", "retrying"}
+    analysis_provider = "claude"
+    verdict_provider = "openai"
+
+    def _ensure_provider(provider_name: str) -> None:
+        if provider_name not in stats:
+            stats[provider_name] = {
+                "pending": 0,
+                "queued": 0,
+                "running": 0,
+                "success": 0,
+                "failed": 0,
+                "retrying": 0,
+            }
+
+    def _add(provider_name: str, status_name: str, count: int) -> None:
+        provider_key = provider_name.lower()
+        status_key = status_name.lower()
+        if status_key not in valid_statuses:
+            return
+        _ensure_provider(provider_key)
+        stats[provider_key][status_key] += int(count)
 
     if org_id:
         result = await session.execute(
@@ -643,21 +661,31 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
         )
 
     for provider, status, count in result.all():
-        provider_name = str(provider).lower()
-        status_str = str(status).lower()
-        if status_str not in valid_statuses:
-            continue
+        _add(str(provider), str(status), int(count))
 
-        if provider_name not in stats:
-            stats[provider_name] = {
-                "pending": 0,
-                "queued": 0,
-                "running": 0,
-                "success": 0,
-                "failed": 0,
-                "retrying": 0,
-            }
-        stats[provider_name][status_str] += count
+    # Analysis jobs are provider-queued jobs represented by Trial.analysis_status.
+    analysis_query = (
+        select(TrialModel.analysis_status, func.count(TrialModel.id))
+        .where(TrialModel.analysis_status.isnot(None))
+        .group_by(TrialModel.analysis_status)
+    )
+    if org_id:
+        analysis_query = analysis_query.where(TrialModel.org_id == org_id)
+    analysis_result = await session.execute(analysis_query)
+    for analysis_status, count in analysis_result.all():
+        _add(analysis_provider, analysis_status.value, int(count))
+
+    # Verdict jobs are provider-queued jobs represented by Task.verdict_status.
+    verdict_query = (
+        select(TaskModel.verdict_status, func.count(TaskModel.id))
+        .where(TaskModel.verdict_status.isnot(None))
+        .group_by(TaskModel.verdict_status)
+    )
+    if org_id:
+        verdict_query = verdict_query.where(TaskModel.org_id == org_id)
+    verdict_result = await session.execute(verdict_query)
+    for verdict_status, count in verdict_result.all():
+        _add(verdict_provider, verdict_status.value, int(count))
 
     return stats
 
