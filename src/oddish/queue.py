@@ -147,46 +147,58 @@ async def cancel_pgqueuer_jobs_for_trials(
     session: AsyncSession,
     trial_ids: list[str],
 ) -> int:
-    """Cancel PGQueuer jobs tied to trial IDs (trials + analyses)."""
+    """Cancel PGQueuer jobs tied to trial IDs (trials + analyses).
+
+    Best-effort: returns 0 if the pgqueuer table is missing or the query fails.
+    """
     if not trial_ids:
         return 0
 
-    result = await session.execute(
-        text(
+    try:
+        pool = await get_pool()
+        rows = await pool.fetch(
             """
             SELECT id
             FROM pgqueuer
             WHERE payload IS NOT NULL
-              AND (convert_from(payload, 'UTF8')::jsonb ->> 'trial_id') = ANY(:trial_ids)
-            """
-        ),
-        {"trial_ids": trial_ids},
-    )
-    job_ids = [int(row[0]) for row in result.all()]
-    return await _cancel_pgqueuer_jobs(session, job_ids)
+              AND status = 'queued'
+              AND (convert_from(payload, 'UTF8')::jsonb ->> 'trial_id') = ANY($1)
+            """,
+            trial_ids,
+        )
+        job_ids = [int(row["id"]) for row in rows]
+        return await _cancel_pgqueuer_jobs(session, job_ids)
+    except Exception:
+        return 0
 
 
 async def cancel_pgqueuer_jobs_for_tasks(
     session: AsyncSession,
     task_ids: list[str],
 ) -> int:
-    """Cancel PGQueuer jobs tied to task IDs (verdict jobs)."""
+    """Cancel PGQueuer jobs tied to task IDs (verdict jobs).
+
+    Best-effort: returns 0 if the pgqueuer table is missing or the query fails.
+    """
     if not task_ids:
         return 0
 
-    result = await session.execute(
-        text(
+    try:
+        pool = await get_pool()
+        rows = await pool.fetch(
             """
             SELECT id
             FROM pgqueuer
             WHERE payload IS NOT NULL
-              AND (convert_from(payload, 'UTF8')::jsonb ->> 'task_id') = ANY(:task_ids)
-            """
-        ),
-        {"task_ids": task_ids},
-    )
-    job_ids = [int(row[0]) for row in result.all()]
-    return await _cancel_pgqueuer_jobs(session, job_ids)
+              AND status = 'queued'
+              AND (convert_from(payload, 'UTF8')::jsonb ->> 'task_id') = ANY($1)
+            """,
+            task_ids,
+        )
+        job_ids = [int(row["id"]) for row in rows]
+        return await _cancel_pgqueuer_jobs(session, job_ids)
+    except Exception:
+        return 0
 
 
 # =============================================================================
