@@ -85,6 +85,31 @@ def _detect_trajectory(job_dir: Path) -> bool:
     return False
 
 
+def _extract_tokens_from_trajectory(
+    job_dir: Path,
+) -> tuple[int | None, int | None, int | None, float | None]:
+    """Fallback: read token counts from ATIF trajectory final_metrics."""
+    import json
+
+    if not job_dir or not job_dir.exists():
+        return None, None, None, None
+    for traj_path in job_dir.rglob("trajectory.json"):
+        try:
+            data = json.loads(traj_path.read_text())
+            fm = data.get("final_metrics")
+            if not fm:
+                continue
+            return (
+                fm.get("total_prompt_tokens"),
+                fm.get("total_completion_tokens"),
+                fm.get("total_cached_tokens"),
+                fm.get("total_cost_usd"),
+            )
+        except Exception:
+            continue
+    return None, None, None, None
+
+
 def _extract_outcome_from_job_result(
     job_result: JobResult,
     job_result_path: Path,
@@ -117,6 +142,15 @@ def _extract_outcome_from_job_result(
             output_tokens = ctx.n_output_tokens
             cost_usd = ctx.cost_usd
             break
+
+    # Fallback: read from ATIF trajectory final_metrics if AgentContext was empty
+    if input_tokens is None and output_tokens is None:
+        t_in, t_out, t_cache, t_cost = _extract_tokens_from_trajectory(job_dir)
+        input_tokens = t_in
+        output_tokens = t_out
+        cache_tokens = t_cache
+        if cost_usd is None:
+            cost_usd = t_cost
 
     # Extract per-phase timing from the first trial result
     for trial_result in job_result.trial_results:
