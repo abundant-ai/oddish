@@ -11,9 +11,8 @@ from typing import Callable, Awaitable
 
 from typing import Any
 
-import toml  # type: ignore[import-untyped]
-
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
+from harbor.models.task.config import MCPServerConfig, TaskConfig as HarborTaskConfig
 from harbor.models.trial.config import (
     AgentConfig,
     ArtifactConfig,
@@ -226,23 +225,41 @@ def _patch_task_toml(task_dir: Path, harbor_config: dict[str, Any]) -> None:
     """Patch task.toml in *task_dir* with overrides from *harbor_config*.
 
     Handles fields that Harbor reads from the task config rather than
-    the job/trial config: ``docker_image``.
+    the job/trial config: ``docker_image`` and ``mcp_servers``.
     """
     config_path = task_dir / "task.toml"
     if not config_path.exists():
         return
 
-    data = toml.loads(config_path.read_text())
-    env_section = data.setdefault("environment", {})
+    try:
+        task_config = HarborTaskConfig.model_validate_toml(config_path.read_text())
+    except Exception:
+        # Keep the trial runnable even if task.toml has unexpected shape.
+        return
+
     changed = False
 
     docker_image = harbor_config.get("docker_image")
     if docker_image:
-        env_section["docker_image"] = docker_image
+        task_config.environment.docker_image = str(docker_image)
         changed = True
 
+    mcp_servers = harbor_config.get("mcp_servers")
+    if isinstance(mcp_servers, list):
+        parsed_servers: list[MCPServerConfig] = []
+        for server in mcp_servers:
+            if not isinstance(server, dict):
+                continue
+            try:
+                parsed_servers.append(MCPServerConfig.model_validate(server))
+            except Exception:
+                continue
+        if parsed_servers:
+            task_config.environment.mcp_servers = parsed_servers
+            changed = True
+
     if changed:
-        config_path.write_text(toml.dumps(data))
+        config_path.write_text(task_config.model_dump_toml())
 
 
 def _normalize_artifacts(
@@ -350,7 +367,7 @@ async def run_harbor_trial_async(
     # task.toml, not from the job config.  When the caller supplies
     # overrides we copy the task to a temporary directory and patch its
     # task.toml so Harbor picks them up.
-    needs_task_patch = bool(hc.get("docker_image"))
+    needs_task_patch = bool(hc.get("docker_image") or hc.get("mcp_servers"))
     task_tmpdir: tempfile.TemporaryDirectory | None = None
     effective_task_path = task_path
 
@@ -405,8 +422,6 @@ async def run_harbor_trial_async(
 
     # Build Harbor AgentConfig
     agent_kwargs = hc.get("agent_kwargs") or {}
-    if hc.get("mcp_servers"):
-        agent_kwargs["mcp_servers"] = hc["mcp_servers"]
 
     agent_env = hc.get("agent_env") if isinstance(hc.get("agent_env"), dict) else {}
 

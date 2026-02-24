@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import MutableMapping, TypeVar
 
 from fastapi import HTTPException
+from harbor.models.trial.paths import TrialPaths
 
 from oddish.config import settings
 from oddish.db import TrialModel, get_storage_client
@@ -56,6 +57,51 @@ def _get_lock(locks: dict[str, asyncio.Lock], key: str) -> asyncio.Lock:
 
 def _should_cache_trial(trial: TrialModel) -> bool:
     return trial.finished_at is not None
+
+
+def _resolve_local_trial_paths(trial: TrialModel) -> TrialPaths | None:
+    """Resolve Harbor trial directory for a trial's local artifacts.
+
+    Harbor writes a job-level result at `<job_dir>/result.json` and per-trial
+    artifacts at `<job_dir>/<trial_name>/...`. For older layouts we also accept
+    direct `agent/` and `verifier/` under `<job_dir>`.
+    """
+    if not trial.harbor_result_path:
+        return None
+
+    result_path = Path(trial.harbor_result_path)
+    base_dir = Path(settings.harbor_jobs_dir).resolve()
+    try:
+        result_path_resolved = result_path.resolve()
+    except Exception:
+        return None
+
+    if (
+        base_dir not in result_path_resolved.parents
+        and result_path_resolved != base_dir
+    ):
+        raise HTTPException(
+            status_code=403, detail="Refusing to read trial outside harbor_jobs_dir"
+        )
+
+    job_dir = result_path_resolved.parent
+    if not job_dir.exists() or not job_dir.is_dir():
+        return None
+
+    # Backward-compatible flat layout: logs directly under the job directory.
+    if (job_dir / "agent").exists() or (job_dir / "verifier").exists():
+        return TrialPaths(job_dir)
+
+    # Harbor layout: one child directory per trial, each with result.json.
+    child_results = sorted(
+        job_dir.glob("*/result.json"),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
+        reverse=True,
+    )
+    if child_results:
+        return TrialPaths(child_results[0].parent)
+
+    return None
 
 
 async def read_trial_logs(trial: TrialModel) -> dict:
@@ -256,25 +302,13 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
     if not trial.harbor_result_path:
         return result
 
-    result_path = Path(trial.harbor_result_path)
-    job_dir = result_path.parent
-    base_dir = Path(settings.harbor_jobs_dir).resolve()
-
-    try:
-        job_dir_resolved = job_dir.resolve()
-    except Exception:
+    trial_paths = _resolve_local_trial_paths(trial)
+    if trial_paths is None:
         return result
 
-    if base_dir not in job_dir_resolved.parents and job_dir_resolved != base_dir:
-        raise HTTPException(
-            status_code=403, detail="Refusing to read logs outside harbor_jobs_dir"
-        )
-
-    if not job_dir_resolved.exists() or not job_dir_resolved.is_dir():
-        return result
-
-    agent_dir = job_dir_resolved / "agent"
-    verifier_dir = job_dir_resolved / "verifier"
+    trial_dir = trial_paths.trial_dir
+    agent_dir = trial_paths.agent_dir
+    verifier_dir = trial_paths.verifier_dir
 
     # Agent: oracle.txt
     oracle_path = agent_dir / "oracle.txt"
@@ -305,14 +339,14 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
                 pass
 
     # Verifier: test-stdout.txt, test-stderr.txt
-    stdout_path = verifier_dir / "test-stdout.txt"
+    stdout_path = trial_paths.test_stdout_path
     if stdout_path.exists():
         try:
             result["verifier"]["stdout"] = stdout_path.read_text(errors="replace")
         except Exception:
             pass
 
-    stderr_path = verifier_dir / "test-stderr.txt"
+    stderr_path = trial_paths.test_stderr_path
     if stderr_path.exists():
         try:
             result["verifier"]["stderr"] = stderr_path.read_text(errors="replace")
@@ -335,14 +369,14 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
         if (verifier_dir / "test-stderr.txt").exists():
             matched_paths.add(verifier_dir / "test-stderr.txt")
 
-    for p in sorted(job_dir_resolved.rglob("*")):
+    for p in sorted(trial_dir.rglob("*")):
         if not p.is_file() or p in matched_paths:
             continue
         is_log_file = p.suffix in (".log", ".txt")
         is_log_dir = any(part in p.parts for part in ("logs", "agent", "verifier"))
         if (is_log_file or is_log_dir) and p.suffix not in (".json", ".patch"):
             try:
-                rel = p.relative_to(job_dir_resolved)
+                rel = p.relative_to(trial_dir)
                 content = p.read_text(errors="replace")
                 result["other"].append({"name": str(rel), "content": content})
             except Exception:
@@ -410,24 +444,15 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
     if not trial.harbor_result_path:
         return None
 
-    result_path = Path(trial.harbor_result_path)
-    job_dir = result_path.parent
-    trajectory_path = job_dir / "agent" / "trajectory.json"
-    base_dir = Path(settings.harbor_jobs_dir).resolve()
+    trial_paths = _resolve_local_trial_paths(trial)
+    if trial_paths is None:
+        return None
+    trajectory_path = trial_paths.agent_dir / "trajectory.json"
 
     try:
         trajectory_path_resolved = trajectory_path.resolve()
     except Exception:
         return None
-
-    if (
-        base_dir not in trajectory_path_resolved.parents
-        and trajectory_path_resolved != base_dir
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Refusing to read trajectory outside harbor_jobs_dir",
-        )
 
     if not trajectory_path_resolved.exists() or not trajectory_path_resolved.is_file():
         return None
@@ -506,20 +531,16 @@ async def read_trial_agent_file(
     if not trial.harbor_result_path:
         raise HTTPException(status_code=404, detail="Trial has no local result path")
 
-    result_path = Path(trial.harbor_result_path)
-    job_dir = result_path.parent
-    agent_dir = job_dir / "agent"
-    base_dir = Path(settings.harbor_jobs_dir).resolve()
+    trial_paths = _resolve_local_trial_paths(trial)
+    if trial_paths is None:
+        raise HTTPException(status_code=404, detail="Trial has no local result path")
 
     try:
-        file_path_resolved = (agent_dir / normalized_path).resolve()
+        file_path_resolved = (trial_paths.agent_dir / normalized_path).resolve()
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
 
-    if (
-        base_dir not in file_path_resolved.parents
-        and file_path_resolved != base_dir
-    ):
+    if trial_paths.trial_dir.resolve() not in file_path_resolved.parents:
         raise HTTPException(
             status_code=403,
             detail="Refusing to read file outside harbor_jobs_dir",
