@@ -128,7 +128,6 @@ async def run_trial_job(job: Job, provider: str) -> None:
             trial_model = "default"
             trial.model = trial_model
         trial_environment = trial.environment
-        trial_timeout = trial.timeout_minutes
         trial_harbor_config = trial.harbor_config
 
     # Session is now closed - connection returned to pool
@@ -286,7 +285,6 @@ async def run_trial_job(job: Job, provider: str) -> None:
             jobs_dir=Path(settings.harbor_jobs_dir),
             model=trial_model,
             environment=env_type,
-            timeout_minutes=trial_timeout,
             hook_callback=on_harbor_event,
             trial_id=trial_id,
             harbor_config=trial_harbor_config,
