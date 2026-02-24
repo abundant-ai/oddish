@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import selectinload
@@ -25,7 +26,7 @@ from pgqueuer.queries import Queries
 from pgqueuer.types import JobId
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
-from oddish.schemas import TaskSubmission
+from oddish.schemas import TaskSubmission, TrialSpec
 
 
 async def _enqueue_job(
@@ -295,6 +296,89 @@ def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
     return name
 
 
+def _normalize_submission_artifacts(
+    artifacts: list[str | Any],
+) -> list[str | dict[str, str | None]]:
+    """Normalize API artifact specs to Harbor-compatible payload shape."""
+    normalized: list[str | dict[str, str | None]] = []
+    for artifact in artifacts:
+        if isinstance(artifact, str):
+            normalized.append(artifact)
+            continue
+
+        # API schema uses `path`; Harbor expects `source`.
+        normalized.append(
+            {
+                "source": artifact.path,
+                "destination": artifact.destination,
+            }
+        )
+    return normalized
+
+
+def _build_base_harbor_config(submission: TaskSubmission) -> dict[str, Any]:
+    """Build submission-level Harbor passthrough config."""
+    config: dict[str, Any] = {}
+
+    if submission.disable_verification:
+        config["disable_verification"] = True
+    if submission.verifier_timeout_sec is not None:
+        config["verifier_timeout_sec"] = submission.verifier_timeout_sec
+    if submission.env_cpus is not None:
+        config["env_cpus"] = submission.env_cpus
+    if submission.env_memory_mb is not None:
+        config["env_memory_mb"] = submission.env_memory_mb
+    if submission.env_storage_mb is not None:
+        config["env_storage_mb"] = submission.env_storage_mb
+    if submission.env_gpus is not None:
+        config["env_gpus"] = submission.env_gpus
+    if submission.env_gpu_types is not None:
+        config["env_gpu_types"] = submission.env_gpu_types
+    if submission.allow_internet is not None:
+        config["allow_internet"] = submission.allow_internet
+    if submission.agent_setup_timeout_sec is not None:
+        config["agent_setup_timeout_sec"] = submission.agent_setup_timeout_sec
+    if submission.docker_image is not None:
+        config["docker_image"] = submission.docker_image
+    if submission.mcp_servers is not None:
+        config["mcp_servers"] = [s.model_dump() for s in submission.mcp_servers]
+    if submission.artifacts is not None:
+        config["artifacts"] = _normalize_submission_artifacts(submission.artifacts)
+
+    # Modal sandbox lifecycle
+    if submission.sandbox_timeout_secs is not None:
+        config["sandbox_timeout_secs"] = submission.sandbox_timeout_secs
+    if submission.sandbox_idle_timeout_secs is not None:
+        config["sandbox_idle_timeout_secs"] = submission.sandbox_idle_timeout_secs
+
+    # Daytona sandbox lifecycle
+    if submission.auto_stop_interval_mins is not None:
+        config["auto_stop_interval_mins"] = submission.auto_stop_interval_mins
+    if submission.auto_delete_interval_mins is not None:
+        config["auto_delete_interval_mins"] = submission.auto_delete_interval_mins
+    if submission.snapshot_template_name is not None:
+        config["snapshot_template_name"] = submission.snapshot_template_name
+
+    return config
+
+
+def _build_trial_harbor_config(
+    base_harbor_config: dict[str, Any],
+    spec: TrialSpec,
+) -> dict[str, Any]:
+    """Build trial-level Harbor config merged on top of submission defaults."""
+    harbor_config = base_harbor_config.copy()
+
+    if spec.agent_env:
+        harbor_config["agent_env"] = spec.agent_env
+    if spec.agent_kwargs:
+        harbor_config["agent_kwargs"] = spec.agent_kwargs
+    if "timeout_minutes" in spec.model_fields_set:
+        harbor_config["agent_timeout_sec"] = float(spec.timeout_minutes * 60)
+
+    return harbor_config
+
+
 async def create_task(
     session: AsyncSession,
     submission: TaskSubmission,
@@ -359,57 +443,7 @@ async def create_task(
     # Priority for PGQueuer (higher number = higher priority)
     pgq_priority = 1000 if submission.priority == Priority.HIGH else 0
 
-    # Build harbor passthrough config from submission-level defaults
-    base_harbor_config: dict = {}
-    if submission.disable_verification:
-        base_harbor_config["disable_verification"] = True
-    if submission.verifier_timeout_sec is not None:
-        base_harbor_config["verifier_timeout_sec"] = submission.verifier_timeout_sec
-    if submission.env_cpus is not None:
-        base_harbor_config["env_cpus"] = submission.env_cpus
-    if submission.env_memory_mb is not None:
-        base_harbor_config["env_memory_mb"] = submission.env_memory_mb
-    if submission.env_storage_mb is not None:
-        base_harbor_config["env_storage_mb"] = submission.env_storage_mb
-    if submission.env_gpus is not None:
-        base_harbor_config["env_gpus"] = submission.env_gpus
-    if submission.env_gpu_types is not None:
-        base_harbor_config["env_gpu_types"] = submission.env_gpu_types
-    if submission.allow_internet is not None:
-        base_harbor_config["allow_internet"] = submission.allow_internet
-    if submission.agent_setup_timeout_sec is not None:
-        base_harbor_config["agent_setup_timeout_sec"] = (
-            submission.agent_setup_timeout_sec
-        )
-    if submission.docker_image is not None:
-        base_harbor_config["docker_image"] = submission.docker_image
-    if submission.mcp_servers is not None:
-        base_harbor_config["mcp_servers"] = [
-            s.model_dump() for s in submission.mcp_servers
-        ]
-    if submission.artifacts is not None:
-        base_harbor_config["artifacts"] = [
-            a.model_dump() if hasattr(a, "model_dump") else a
-            for a in submission.artifacts
-        ]
-    # Modal sandbox lifecycle
-    if submission.sandbox_timeout_secs is not None:
-        base_harbor_config["sandbox_timeout_secs"] = submission.sandbox_timeout_secs
-    if submission.sandbox_idle_timeout_secs is not None:
-        base_harbor_config["sandbox_idle_timeout_secs"] = (
-            submission.sandbox_idle_timeout_secs
-        )
-    # Daytona sandbox lifecycle
-    if submission.auto_stop_interval_mins is not None:
-        base_harbor_config["auto_stop_interval_mins"] = (
-            submission.auto_stop_interval_mins
-        )
-    if submission.auto_delete_interval_mins is not None:
-        base_harbor_config["auto_delete_interval_mins"] = (
-            submission.auto_delete_interval_mins
-        )
-    if submission.snapshot_template_name is not None:
-        base_harbor_config["snapshot_template_name"] = submission.snapshot_template_name
+    base_harbor_config = _build_base_harbor_config(submission)
 
     # Create trials
     trials_to_enqueue: list[tuple[str, str]] = []  # (trial_id, provider)
@@ -418,14 +452,7 @@ async def create_task(
         trial_id = f"{task_id}-{i}"
         trial_name = f"{task_name}-{i}"
 
-        # Merge submission-level config with per-trial agent config
-        harbor_config = base_harbor_config.copy()
-        if spec.agent_env:
-            harbor_config["agent_env"] = spec.agent_env
-        if spec.agent_kwargs:
-            harbor_config["agent_kwargs"] = spec.agent_kwargs
-        if "timeout_minutes" in spec.model_fields_set:
-            harbor_config["agent_timeout_sec"] = float(spec.timeout_minutes * 60)
+        harbor_config = _build_trial_harbor_config(base_harbor_config, spec)
 
         trial = TrialModel(
             id=trial_id,

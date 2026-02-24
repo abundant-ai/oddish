@@ -16,6 +16,7 @@ import toml  # type: ignore[import-untyped]
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
 from harbor.models.trial.config import (
     AgentConfig,
+    ArtifactConfig,
     EnvironmentConfig,
     TaskConfig,
     VerifierConfig,
@@ -25,6 +26,31 @@ from harbor.trial.hooks import TrialHookEvent
 from harbor.models.job.result import JobResult
 
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
+
+
+_KNOWN_HARBOR_CONFIG_KEYS = {
+    "disable_verification",
+    "verifier_timeout_sec",
+    "env_cpus",
+    "env_memory_mb",
+    "env_storage_mb",
+    "env_gpus",
+    "env_gpu_types",
+    "allow_internet",
+    "agent_setup_timeout_sec",
+    "docker_image",
+    "mcp_servers",
+    "artifacts",
+    "sandbox_timeout_secs",
+    "sandbox_idle_timeout_secs",
+    "auto_stop_interval_mins",
+    "auto_delete_interval_mins",
+    "snapshot_template_name",
+    "agent_env",
+    "agent_kwargs",
+    "agent_timeout_sec",
+    "force_build",
+}
 
 
 @dataclass(frozen=True)
@@ -219,6 +245,53 @@ def _patch_task_toml(task_dir: Path, harbor_config: dict[str, Any]) -> None:
         config_path.write_text(toml.dumps(data))
 
 
+def _normalize_artifacts(
+    raw_artifacts: Any,
+) -> list[str | ArtifactConfig]:
+    """Normalize oddish artifact payloads to Harbor's ArtifactConfig shape.
+
+    Oddish historically accepts both strings and dicts with either:
+    - {"source": "...", "destination": "..."} (Harbor-native), or
+    - {"path": "...", "destination": "..."} (Oddish API schema).
+    """
+    if not raw_artifacts:
+        return []
+
+    normalized: list[str | ArtifactConfig] = []
+    for artifact in raw_artifacts:
+        if isinstance(artifact, str):
+            normalized.append(artifact)
+            continue
+
+        if isinstance(artifact, dict):
+            source = artifact.get("source") or artifact.get("path")
+            if isinstance(source, str) and source:
+                normalized.append(
+                    ArtifactConfig(
+                        source=source,
+                        destination=artifact.get("destination"),
+                    )
+                )
+
+    return normalized
+
+
+def _sanitize_harbor_config(raw_config: Any) -> dict[str, Any]:
+    """Keep only known Harbor passthrough keys with basic type checks."""
+    if not isinstance(raw_config, dict):
+        return {}
+
+    sanitized = {k: v for k, v in raw_config.items() if k in _KNOWN_HARBOR_CONFIG_KEYS}
+
+    # Normalize map-like fields to avoid malformed persisted payloads.
+    if not isinstance(sanitized.get("agent_kwargs"), dict):
+        sanitized["agent_kwargs"] = {}
+    if not isinstance(sanitized.get("agent_env"), dict):
+        sanitized["agent_env"] = {}
+
+    return sanitized
+
+
 # =============================================================================
 # Harbor Python API Integration (with Hooks)
 # =============================================================================
@@ -230,7 +303,6 @@ async def run_harbor_trial_async(
     jobs_dir: Path,
     model: str | None = None,
     environment: EnvironmentType = EnvironmentType.DOCKER,
-    timeout_minutes: int = 60,
     hook_callback: HookCallback | None = None,
     trial_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
@@ -244,7 +316,6 @@ async def run_harbor_trial_async(
         jobs_dir: Directory for job artifacts
         model: Optional model override
         environment: Execution backend (EnvironmentType)
-        timeout_minutes: Timeout for the trial
         hook_callback: Optional callback invoked for trial lifecycle events
         trial_id: Optional trial ID for traceability
         harbor_config: Optional dict with Harbor passthrough config
@@ -272,7 +343,7 @@ async def run_harbor_trial_async(
     unique_parent = jobs_dir / f"{task_path.name}.{agent}.{unique_suffix}"
     unique_parent.mkdir(parents=True, exist_ok=True)
 
-    hc = harbor_config or {}
+    hc = _sanitize_harbor_config(harbor_config)
 
     # ── Task patching ────────────────────────────────────────────────────
     # docker_image and mcp_servers are read by Harbor from the task's
@@ -337,9 +408,7 @@ async def run_harbor_trial_async(
     if hc.get("mcp_servers"):
         agent_kwargs["mcp_servers"] = hc["mcp_servers"]
 
-    agent_env = hc.get("agent_env")
-    if agent_env:
-        agent_kwargs["env"] = agent_env
+    agent_env = hc.get("agent_env") if isinstance(hc.get("agent_env"), dict) else {}
 
     # Respect task.toml agent timeout by default. Only apply an override
     # when API callers explicitly set timeout_minutes.
@@ -351,6 +420,7 @@ async def run_harbor_trial_async(
         override_timeout_sec=agent_timeout_override_sec,
         override_setup_timeout_sec=hc.get("agent_setup_timeout_sec"),
         kwargs=agent_kwargs,
+        env=agent_env,
     )
 
     # Build Harbor VerifierConfig
@@ -358,12 +428,14 @@ async def run_harbor_trial_async(
         disable=hc.get("disable_verification", False),
         override_timeout_sec=hc.get("verifier_timeout_sec"),
     )
+    artifacts = _normalize_artifacts(hc.get("artifacts"))
 
     config = JobConfig(
         tasks=[TaskConfig(path=effective_task_path)],
         agents=[agent_config],
         environment=env_config,
         verifier=verifier_config,
+        artifacts=artifacts,
         jobs_dir=unique_parent,
     )
 
@@ -387,10 +459,9 @@ async def run_harbor_trial_async(
         job_result = await job.run()
         duration = time.time() - start
 
-        # Get paths from job object - Harbor creates job_dir = jobs_dir / job_name
-        # job_name defaults to timestamp like "2026-01-15__17-29-55"
+        # Harbor creates job_dir = jobs_dir / job_name (job_name defaults to timestamp).
         job_dir = job.job_dir
-        job_result_path = job._job_result_path
+        job_result_path = job_dir / "result.json"
 
         # Verify paths exist (should always exist after successful run)
         if not job_result_path.exists():
@@ -445,7 +516,6 @@ def run_harbor_trial(
     jobs_dir: Path,
     model: str | None = None,
     environment: EnvironmentType = EnvironmentType.DOCKER,
-    timeout_minutes: int = 60,
     hook_callback: HookCallback | None = None,
     trial_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
@@ -461,7 +531,6 @@ def run_harbor_trial(
                 jobs_dir=jobs_dir,
                 model=model,
                 environment=environment,
-                timeout_minutes=timeout_minutes,
                 hook_callback=hook_callback,
                 trial_id=trial_id,
                 harbor_config=harbor_config,

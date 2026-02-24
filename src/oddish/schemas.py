@@ -30,7 +30,7 @@ class TrialSpec(BaseModel):
     Not Harbor's AgentConfig — this is an API-facing schema with simpler field
     names (``agent`` vs ``name``, ``model`` vs ``model_name``,
     ``timeout_minutes`` vs ``override_timeout_sec``).  Translation to Harbor's
-    AgentConfig happens in harbor_runner.run_harbor_trial_async().
+    AgentConfig happens in oddish's queue/runner layer.
     """
 
     agent: str = Field(

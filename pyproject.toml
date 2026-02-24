@@ -31,33 +31,25 @@ dependencies = [
     "python-multipart>=0.0.9",
     "httpx>=0.27.0",
     "python-jose[cryptography]>=3.3.0",
-
     # Validation & settings
     "pydantic>=2.6.0",
     "pydantic-settings>=2.2.0",
-
     # Database
     "sqlalchemy[asyncio]>=2.0.0",
     "asyncpg>=0.29.0",
     "alembic>=1.13.0",
-
     # Job queue
     "pgqueuer>=0.18.0",
-
     # CLI
     "typer>=0.12.0",
     "rich>=13.7.0",
-
     # S3-compatible storage
     "aioboto3>=13.0.0",
-
     # Harbor
-    "harbor>=0.1.44",
-
+    "harbor==0.1.44",
     # Analysis and classification
     "swegen>=0.1.1",
     "claude-agent-sdk>=0.1.18",
-
     # LLM providers
     "anthropic>=0.40.0",
     "openai>=1.50.0",
@@ -108,10 +100,36 @@ module = [
 ]
 ignore_missing_imports = true
 
+[tool.uv.sources]
+harbor = { git = "https://github.com/laude-institute/harbor.git", rev = "abcf356385c106cd3e6326306e098483cd38049a" }
+
 [dependency-groups]
 dev = [
+    "cfgv==3.5.0",
+    "distlib==0.4.0",
+    "docutils==0.22.4",
+    "id==1.6.1",
+    "identify==2.6.16",
+    "iniconfig==2.3.0",
+    "jaraco-classes==3.4.0",
+    "jaraco-context==6.1.0",
+    "jaraco-functools==4.4.0",
+    "keyring==25.7.0",
     "mypy>=1.19.1",
+    "more-itertools==10.8.0",
+    "nh3==0.3.3",
+    "nodeenv==1.10.0",
+    "platformdirs==4.5.1",
+    "pluggy==1.6.0",
+    "pre-commit==4.5.1",
+    "pytest==9.0.2",
+    "pytest-asyncio==1.3.0",
+    "readme-renderer==44.0",
+    "requests-toolbelt==1.0.0",
+    "rfc3986==2.0.0",
     "sqlalchemy2-stubs>=0.0.2a38",
+    "twine==6.2.0",
     "types-pyyaml>=6.0.12.20250915",
     "types-requests>=2.32.4.20260107",
+    "virtualenv==20.36.1",
 ]
