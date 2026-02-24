@@ -41,11 +41,33 @@ def _verifier_ran_from_job_result(job_result_path: str | None) -> bool:
     if not job_result_path:
         return False
     try:
-        with open(job_result_path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        trial_results = data.get("trial_results") or []
-        for trial_result in trial_results:
-            if trial_result.get("verifier_result") is not None:
+        result_path = Path(job_result_path)
+        if not result_path.exists():
+            return False
+
+        # Backward compatibility: older Harbor job result.json included trial_results.
+        data = json.loads(result_path.read_text(encoding="utf-8"))
+        trial_results = data.get("trial_results") if isinstance(data, dict) else None
+        if isinstance(trial_results, list):
+            for trial_result in trial_results:
+                if (
+                    isinstance(trial_result, dict)
+                    and trial_result.get("verifier_result") is not None
+                ):
+                    return True
+
+        # Harbor now stores verifier info in per-trial result.json files under
+        # <job_dir>/<trial_name>/result.json.
+        job_dir = result_path.parent
+        for trial_result_path in job_dir.glob("*/result.json"):
+            try:
+                trial_data = json.loads(trial_result_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if (
+                isinstance(trial_data, dict)
+                and trial_data.get("verifier_result") is not None
+            ):
                 return True
     except Exception:
         return False
