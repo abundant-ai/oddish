@@ -7,7 +7,7 @@ Deep technical documentation for the Oddish core library. This covers architectu
 Oddish is a standalone, open-source, Postgres-backed scheduler for running [Harbor](https://github.com/laude-institute/harbor) agent evaluation tasks. It provides:
 
 - **FastAPI server** (`python -m oddish.api`) — task submission, monitoring, logs, and results
-- **PGQueuer workers** — provider-aware queues for trials, analysis, and verdict jobs
+- **PGQueuer workers** — queue-keyed queues for trials, analysis, and verdict jobs
 - **CLI** (`oddish run`, `oddish status`) — submits tasks and monitors experiments
 - **Database models** — experiments, tasks, trials, and queue state in Postgres
 
@@ -44,7 +44,7 @@ Oddish is designed for self-hosting or embedding in your own services. A hosted 
 ┌─────────────────────────────────────────────────────────────┐
 │  PGQueuer Workers                                           │
 │  - Poll queue via SELECT FOR UPDATE SKIP LOCKED             │
-│  - Provider-aware concurrency limits                        │
+│  - Queue-key concurrency limits                             │
 │  - Execute trials, analyses, and verdict jobs               │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -118,8 +118,8 @@ uv run python -m oddish.db purge            # Delete all data (preserves schema)
 ### API flags
 
 ```bash
-# Set provider concurrency
-uv run python -m oddish.api --n-concurrent '{"claude": 8, "openai": 8, "gemini": 8, "default": 8}'
+# Set queue-key concurrency
+uv run python -m oddish.api --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/claude-sonnet-4-5": 8}'
 
 # Custom host/port
 uv run python -m oddish.api --host 0.0.0.0 --port 9000
@@ -208,37 +208,25 @@ Oddish runs Harbor tasks in a sandboxed environment. The default is `daytona`.
 
 Override per task with `oddish run --env {docker|daytona|e2b|modal|runloop|gke}`.
 
-### Provider Routing
+### Queue-Key Routing
 
-Oddish collapses Harbor/LiteLLM's many providers into 4 queue buckets for PGQueuer concurrency control. Agent names map to providers via `src/oddish/config.py`:
-
-| Agent Pattern | Provider |
-|---------------|----------|
-| `claude-code` | `claude` |
-| `gemini-cli` | `gemini` |
-| `codex` | `openai` |
-| (fallback, `nop`, `oracle`) | `default` |
-
-For agents mapped to `default`, the actual provider is resolved at runtime from the model name using LiteLLM. Model providers are normalised into the same 4 buckets:
-
-| Raw Provider | Queue Bucket |
-|-------------|-------------|
-| `anthropic`, `bedrock` | `claude` |
-| `google`, `vertex_ai`, `palm` | `gemini` |
-| Everything else in Harbor's PROVIDER_KEYS | `openai` |
+Oddish routes jobs by **queue key** (normalized model string) for PGQueuer entrypoints.
+Agent names still map to provider buckets for compatibility/attribution, but queueing
+uses `get_queue_key_for_trial(agent, model)` and defaults to the agent fallback only
+when no model is provided.
 
 ### Concurrency Control
 
-Provider concurrency is fixed at API startup (not per job).
+Queue-key concurrency is fixed at API startup (not per job).
 
 Order of precedence:
 
-1. **Manual API startup:** `python -m oddish.api --n-concurrent '{"claude": 8}'`
-2. **Default:** `claude: 8, gemini: 8, openai: 8, default: 8`
+1. **Manual API startup:** `python -m oddish.api --n-concurrent '{"openai/gpt-5.2": 8}'`
+2. **Default:** `ODDISH_DEFAULT_MODEL_CONCURRENCY` (with optional model overrides)
 
 For self-hosted setups, set concurrency on API startup:
 ```bash
-uv run python -m oddish.api --n-concurrent '{"claude": 8, "openai": 8}'
+uv run python -m oddish.api --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/claude-sonnet-4-5": 8}'
 ```
 
 Changing concurrency requires restarting the API process.
@@ -271,7 +259,7 @@ Tasks move through a multi-stage pipeline when `run_analysis` is enabled:
 2. **Analyses** run per trial after completion to classify outcomes.
 3. **Verdict** runs once per task to summarize analyses.
 
-Each stage is a PGQueuer job routed through provider entrypoints. Task status
+Each stage is a PGQueuer job routed through queue-key entrypoints. Task status
 progresses from `pending` → `running` → `analyzing` → `verdict_pending` → `completed`
 (or `failed` on terminal error).
 
@@ -304,7 +292,7 @@ Workers claim jobs atomically via Postgres:
 
 ```sql
 SELECT * FROM pgqueuer
-WHERE status = 'queued' AND entrypoint = 'claude'
+WHERE status = 'queued' AND entrypoint = 'openai/gpt-5.2'
 ORDER BY priority DESC
 LIMIT 1
 FOR UPDATE SKIP LOCKED;
@@ -322,14 +310,14 @@ PGQueuer checks processing count before claiming:
 
 ```sql
 SELECT COUNT(*) FROM pgqueuer
-WHERE entrypoint = 'claude' AND status = 'processing';
+WHERE entrypoint = 'openai/gpt-5.2' AND status = 'processing';
 ```
 
 If count >= limit (e.g., 8), worker waits. Concurrency is database state, not worker count.
 
 ### Job routing
 
-Queue entrypoints are created per provider (claude, gemini, openai, default).
+Queue entrypoints are created per queue key (typically model identifiers).
 Each entrypoint handles jobs with `job_type` of `trial`, `analysis`, or `verdict`.
 
 ## CLI Reference
@@ -502,7 +490,7 @@ uv run alembic upgrade head
    oddish status
    ```
 
-2. Check provider concurrency limits (set at API startup) and worker logs
+2. Check queue-key concurrency limits (set at API startup) and worker logs
 
 3. Check for errors in API logs
 

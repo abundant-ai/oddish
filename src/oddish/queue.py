@@ -75,7 +75,7 @@ async def _enqueue_job(
 async def enqueue_trial(
     session: AsyncSession,
     trial_id: str,
-    provider: str,
+    queue_key: str,
     priority: int = 0,
 ) -> None:
     """Enqueue a trial job to PGQueuer *within the current DB transaction*.
@@ -84,10 +84,15 @@ async def enqueue_trial(
     Otherwise, a worker can dequeue the PGQueuer job before the trial row is
     committed and permanently "drop" the job (leaving the trial stuck QUEUED).
     """
+    resolved_queue_key = settings.normalize_queue_key(queue_key)
     await _enqueue_job(
         session,
-        entrypoint=provider,
-        payload={"job_type": "trial", "trial_id": trial_id},
+        entrypoint=resolved_queue_key,
+        payload={
+            "job_type": "trial",
+            "trial_id": trial_id,
+            "queue_key": resolved_queue_key,
+        },
         priority=priority,
     )
 
@@ -95,16 +100,24 @@ async def enqueue_trial(
 async def enqueue_analysis(
     session: AsyncSession,
     trial_id: str,
+    queue_key: str | None = None,
     priority: int = 0,
 ) -> None:
-    """Enqueue an analysis job for a trial (always uses claude queue).
+    """Enqueue an analysis job for a trial.
 
     Analysis jobs classify trial outcomes using LLM.
     """
+    resolved_queue_key = settings.normalize_queue_key(
+        queue_key or settings.get_analysis_queue_key()
+    )
     await _enqueue_job(
         session,
-        entrypoint="claude",  # Analysis always uses Claude
-        payload={"job_type": "analysis", "trial_id": trial_id},
+        entrypoint=resolved_queue_key,
+        payload={
+            "job_type": "analysis",
+            "trial_id": trial_id,
+            "queue_key": resolved_queue_key,
+        },
         priority=priority,
     )
 
@@ -112,16 +125,20 @@ async def enqueue_analysis(
 async def enqueue_verdict(
     session: AsyncSession,
     task_id: str,
+    queue_key: str | None = None,
     priority: int = 0,
 ) -> None:
-    """Enqueue a verdict job for a task (always uses openai queue).
+    """Enqueue a verdict job for a task.
 
     Verdict jobs synthesize trial classifications into a final task verdict.
     """
+    resolved_queue_key = settings.normalize_queue_key(
+        queue_key or settings.get_verdict_queue_key()
+    )
     await _enqueue_job(
         session,
-        entrypoint="openai",  # Verdict runs on openai provider queue
-        payload={"job_type": "verdict", "task_id": task_id},
+        entrypoint=resolved_queue_key,
+        payload={"job_type": "verdict", "task_id": task_id, "queue_key": resolved_queue_key},
         priority=priority,
     )
 
@@ -446,9 +463,11 @@ async def create_task(
     base_harbor_config = _build_base_harbor_config(submission)
 
     # Create trials
-    trials_to_enqueue: list[tuple[str, str]] = []  # (trial_id, provider)
+    trials_to_enqueue: list[tuple[str, str]] = []  # (trial_id, queue_key)
     for i, spec in enumerate(submission.trials):
-        provider = settings.get_provider_for_trial(spec.agent, spec.model)
+        model = settings.normalize_trial_model(spec.agent, spec.model)
+        provider = settings.get_provider_for_trial(spec.agent, model)
+        queue_key = settings.get_queue_key_for_trial(spec.agent, model)
         trial_id = f"{task_id}-{i}"
         trial_name = f"{task_name}-{i}"
 
@@ -461,20 +480,21 @@ async def create_task(
             org_id=org_id,  # Denormalized for efficient org-scoped queries
             agent=spec.agent,
             provider=provider,
-            model=spec.model,
+            queue_key=queue_key,
+            model=model,
             timeout_minutes=spec.timeout_minutes,
             environment=spec.environment,
             harbor_config=harbor_config or None,
             status=TrialStatus.QUEUED,  # Mark as queued immediately
         )
         session.add(trial)
-        trials_to_enqueue.append((trial_id, provider))
+        trials_to_enqueue.append((trial_id, queue_key))
 
     await session.flush()
 
     # Enqueue all trials to PGQueuer
-    for trial_id, provider in trials_to_enqueue:
-        await enqueue_trial(session, trial_id, provider, priority=pgq_priority)
+    for trial_id, queue_key in trials_to_enqueue:
+        await enqueue_trial(session, trial_id, queue_key, priority=pgq_priority)
 
     # Refresh to load the trials relationship
     await session.refresh(task, attribute_names=["trials"])
@@ -648,7 +668,7 @@ async def get_task_with_trials(session: AsyncSession, task_id: str) -> TaskModel
 
 
 async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> dict:
-    """Get queue statistics by provider across trial/analysis/verdict jobs.
+    """Get queue statistics by queue_key across trial/analysis/verdict jobs.
 
     Args:
         session: Database session
@@ -656,12 +676,12 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
     """
     stats: dict[str, dict[str, int]] = {}
     valid_statuses = {"pending", "queued", "running", "success", "failed", "retrying"}
-    analysis_provider = "claude"
-    verdict_provider = "openai"
+    analysis_queue_key = settings.get_analysis_queue_key()
+    verdict_queue_key = settings.get_verdict_queue_key()
 
-    def _ensure_provider(provider_name: str) -> None:
-        if provider_name not in stats:
-            stats[provider_name] = {
+    def _ensure_queue(queue_key: str) -> None:
+        if queue_key not in stats:
+            stats[queue_key] = {
                 "pending": 0,
                 "queued": 0,
                 "running": 0,
@@ -670,22 +690,22 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
                 "retrying": 0,
             }
 
-    def _add(provider_name: str, status_name: str, count: int) -> None:
-        provider_key = provider_name.lower()
+    def _add(queue_key: str, status_name: str, count: int) -> None:
+        resolved_key = settings.normalize_queue_key(queue_key)
         status_key = status_name.lower()
         if status_key not in valid_statuses:
             return
-        _ensure_provider(provider_key)
-        stats[provider_key][status_key] += int(count)
+        _ensure_queue(resolved_key)
+        stats[resolved_key][status_key] += int(count)
 
     if org_id:
         result = await session.execute(
             text(
                 """
-                SELECT provider, status::text AS status, COUNT(*) AS count
+                SELECT COALESCE(queue_key, provider) AS queue_key, status::text AS status, COUNT(*) AS count
                 FROM trials
                 WHERE org_id = :org_id
-                GROUP BY provider, status
+                GROUP BY COALESCE(queue_key, provider), status
                 """
             ),
             {"org_id": org_id},
@@ -694,15 +714,15 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
         result = await session.execute(
             text(
                 """
-                SELECT provider, status::text AS status, COUNT(*) AS count
+                SELECT COALESCE(queue_key, provider) AS queue_key, status::text AS status, COUNT(*) AS count
                 FROM trials
-                GROUP BY provider, status
+                GROUP BY COALESCE(queue_key, provider), status
                 """
             )
         )
 
-    for provider, status, count in result.all():
-        _add(str(provider), str(status), int(count))
+    for queue_key, status, count in result.all():
+        _add(str(queue_key), str(status), int(count))
 
     # Analysis jobs are provider-queued jobs represented by Trial.analysis_status.
     analysis_query = (
@@ -714,7 +734,7 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
         analysis_query = analysis_query.where(TrialModel.org_id == org_id)
     analysis_result = await session.execute(analysis_query)
     for analysis_status, count in analysis_result.all():
-        _add(analysis_provider, analysis_status.value, int(count))
+        _add(analysis_queue_key, analysis_status.value, int(count))
 
     # Verdict jobs are provider-queued jobs represented by Task.verdict_status.
     verdict_query = (
@@ -726,7 +746,7 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
         verdict_query = verdict_query.where(TaskModel.org_id == org_id)
     verdict_result = await session.execute(verdict_query)
     for verdict_status, count in verdict_result.all():
-        _add(verdict_provider, verdict_status.value, int(count))
+        _add(verdict_queue_key, verdict_status.value, int(count))
 
     return stats
 
@@ -734,12 +754,13 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
 async def get_queue_stats_with_concurrency(
     session: AsyncSession, org_id: str | None = None
 ) -> dict[str, dict]:
-    """Get queue stats with recommended concurrency per provider."""
+    """Get queue stats with recommended concurrency per queue key."""
     stats = await get_queue_stats(session, org_id)
     queue_stats: dict[str, dict] = {}
-    for provider in settings.default_provider_concurrency:
+    queue_keys = set(stats.keys()) | settings.get_known_queue_keys()
+    for queue_key in sorted(queue_keys):
         provider_stats = stats.get(
-            provider,
+            queue_key,
             {
                 "pending": 0,
                 "queued": 0,
@@ -749,11 +770,9 @@ async def get_queue_stats_with_concurrency(
                 "retrying": 0,
             },
         )
-        queue_stats[provider] = {
+        queue_stats[queue_key] = {
             **provider_stats,
-            "recommended_concurrency": settings.get_default_concurrency_for_provider(
-                provider
-            ),
+            "recommended_concurrency": settings.get_model_concurrency(queue_key),
         }
     return queue_stats
 

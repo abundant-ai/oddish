@@ -20,7 +20,7 @@ from oddish.api.endpoints import (
     list_tasks_core,
 )
 from oddish.api.tasks import handle_task_upload, resolve_task_storage
-from oddish.config import Settings, settings
+from oddish.config import settings
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -54,12 +54,13 @@ console = Console()
 _CONCURRENCY_OVERRIDES: dict[str, int] = {}
 
 
-def get_provider_concurrency(provider: str) -> int:
-    """Get concurrency limit for a provider (with runtime overrides)."""
+def get_queue_concurrency(queue_key: str) -> int:
+    """Get concurrency limit for a queue key (with runtime overrides)."""
     overrides = _get_concurrency_overrides()
-    if provider in overrides:
-        return overrides[provider]
-    return cast(int, settings.get_default_concurrency_for_provider(provider))
+    normalized = settings.normalize_queue_key(queue_key)
+    if normalized in overrides:
+        return overrides[normalized]
+    return cast(int, settings.get_model_concurrency(normalized))
 
 
 def _get_concurrency_overrides() -> dict[str, int]:
@@ -67,17 +68,18 @@ def _get_concurrency_overrides() -> dict[str, int]:
     return dict(_CONCURRENCY_OVERRIDES)
 
 
-def update_provider_concurrency(overrides: dict[str, int]) -> None:
-    """Update provider concurrency limits at API startup."""
+def update_queue_concurrency(overrides: dict[str, int]) -> None:
+    """Update queue-key concurrency limits at API startup."""
     current = _get_concurrency_overrides()
-    for provider, concurrency in overrides.items():
+    for queue_key, concurrency in overrides.items():
         # Take the max of current and new value
-        existing = current.get(provider, 0)
-        current[provider] = max(existing, concurrency)
+        normalized = settings.normalize_queue_key(queue_key)
+        existing = current.get(normalized, 0)
+        current[normalized] = max(existing, concurrency)
     _CONCURRENCY_OVERRIDES.clear()
     _CONCURRENCY_OVERRIDES.update(current)
-    Settings.default_provider_concurrency = dict(current)
-    console.print(f"[dim]Updated provider concurrency: {current}[/dim]")
+    settings.model_concurrency_overrides = dict(current)
+    console.print(f"[dim]Updated queue concurrency: {current}[/dim]")
 
 
 @asynccontextmanager
@@ -114,13 +116,8 @@ async def lifespan(app: FastAPI):
                 # Pool is already warmed up, so this should be fast
                 qm = await create_queue_manager()
 
-                console.print("[blue]Registered provider queues:[/blue]")
-                console.print("  - claude (trials + analysis + verdict)")
-                console.print("  - gemini (trials)")
-                console.print("  - openai (trials - includes codex, gpt)")
-                console.print("  - default (trials - oracle, etc)")
                 console.print(
-                    f"[dim]Provider concurrency: {_get_concurrency_overrides() or settings.default_provider_concurrency}[/dim]"
+                    f"[dim]Queue concurrency overrides: {_get_concurrency_overrides() or settings.model_concurrency_overrides}[/dim]"
                 )
 
                 # Run the queue manager (this blocks, but that's OK in background task)
@@ -453,13 +450,13 @@ def run_server(
     """Start the API server.
 
     Args:
-        concurrency: Provider concurrency limits (e.g., {"claude": 8, "default": 4})
+        concurrency: Queue concurrency limits (e.g., {"openai/gpt-5.2": 8})
         host: Override API host
         port: Override API port
     """
     # Apply concurrency settings if provided
     if concurrency:
-        update_provider_concurrency(concurrency)
+        update_queue_concurrency(concurrency)
 
     uvicorn.run(
         "oddish.api:api",
@@ -478,7 +475,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n-concurrent",
         type=str,
-        help="Provider concurrency as JSON (e.g., '{\"claude\": 8}')",
+        help="Queue concurrency as JSON (e.g., '{\"openai/gpt-5.2\": 8}')",
     )
     parser.add_argument("--host", type=str, help="API host")
     parser.add_argument("--port", type=int, help="API port")

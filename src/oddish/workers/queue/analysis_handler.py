@@ -13,11 +13,10 @@ from oddish.queue import maybe_start_verdict_stage
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
 
-ANALYSIS_MODEL = "claude-haiku-4-5"
 ANALYSIS_TIMEOUT = 900  # 15 minutes
 
 
-async def run_analysis_job(job: Job, provider: str) -> None:
+async def run_analysis_job(job: Job, queue_key: str) -> None:
     """
     Handle an analysis job from PGQueuer.
 
@@ -36,7 +35,7 @@ async def run_analysis_job(job: Job, provider: str) -> None:
         raise ValueError(f"Invalid analysis job payload (missing trial_id): {payload}")
 
     console.print(
-        f"[cyan]Processing analysis[/cyan] {trial_id} (provider={provider}, pgqueuer_job_id={job.id})"
+        f"[cyan]Processing analysis[/cyan] {trial_id} (queue_key={queue_key}, pgqueuer_job_id={job.id})"
     )
     console.print(
         f"[dim]S3 enabled: {settings.s3_enabled}, bucket: {settings.s3_bucket}[/dim]"
@@ -116,7 +115,7 @@ async def run_analysis_job(job: Job, provider: str) -> None:
 
         # Run classification
         classifier = TrialClassifier(
-            model=ANALYSIS_MODEL,
+            model=settings.analysis_model,
             verbose=True,
             timeout=ANALYSIS_TIMEOUT,  # 5 minutes
         )
