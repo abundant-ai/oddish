@@ -1,0 +1,93 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 36 58% 88%;
+    --foreground: 26 22% 18%;
+    --card: 36 52% 92%;
+    --card-foreground: 26 22% 18%;
+    --popover: 36 52% 92%;
+    --popover-foreground: 26 22% 18%;
+    --primary: 26 38% 28%;
+    --primary-foreground: 36 60% 92%;
+    --secondary: 34 45% 80%;
+    --secondary-foreground: 26 28% 22%;
+    --muted: 34 40% 84%;
+    --muted-foreground: 28 16% 38%;
+    --accent: 30 48% 72%;
+    --accent-foreground: 26 30% 20%;
+    --destructive: 0 70% 52%;
+    --destructive-foreground: 36 60% 92%;
+    --border: 30 28% 68%;
+    --input: 30 28% 68%;
+    --ring: 26 32% 30%;
+    --chart-1: 24 50% 30%;
+    --chart-2: 32 60% 38%;
+    --chart-3: 16 40% 34%;
+    --chart-4: 40 50% 44%;
+    --chart-5: 10 45% 40%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 0 0% 4%;
+    --foreground: 0 0% 93%;
+    --card: 0 0% 7%;
+    --card-foreground: 0 0% 93%;
+    --popover: 0 0% 7%;
+    --popover-foreground: 0 0% 93%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 0 0% 9%;
+    --secondary: 0 0% 14%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 14%;
+    --muted-foreground: 0 0% 64%;
+    --accent: 0 0% 14%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 14%;
+    --input: 0 0% 14%;
+    --ring: 0 0% 83%;
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    scrollbar-gutter: stable both-edges;
+  }
+  body {
+    @apply bg-background text-foreground;
+    scrollbar-gutter: stable both-edges;
+  }
+  html[data-scroll-locked],
+  body[data-scroll-locked] {
+    /* Prevent Radix/remove-scroll from adding right padding that causes layout shift */
+    margin-right: 0 !important;
+    padding-right: 0 !important;
+  }
+
+  /* Fallback for browsers without `scrollbar-gutter` support */
+  @supports not (scrollbar-gutter: stable) {
+    html,
+    body {
+      overflow-y: scroll;
+    }
+  }
+
+  /* Hide Clerk development mode badge */
+  [data-localization-key="badge__developmentMode"],
+  [data-localization-key="badge__developmentModeShort"] {
+    display: none !important;
+  }
+}
