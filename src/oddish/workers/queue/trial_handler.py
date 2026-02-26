@@ -73,6 +73,29 @@ def _verifier_ran_from_job_result(job_result_path: str | None) -> bool:
     return False
 
 
+def _cleanup_uploaded_job_dir(job_dir: Path | None, trial_id: str) -> None:
+    """Delete local Harbor artifacts after a successful S3 upload."""
+    if not job_dir:
+        return
+    try:
+        base_dir = Path(settings.harbor_jobs_dir).resolve()
+        resolved_job_dir = job_dir.resolve()
+        if not resolved_job_dir.exists():
+            return
+        if not resolved_job_dir.is_relative_to(base_dir):
+            console.print(
+                "[yellow]Skipping cleanup outside harbor_jobs_dir for "
+                f"{trial_id}: {resolved_job_dir}[/yellow]"
+            )
+            return
+        shutil.rmtree(resolved_job_dir, ignore_errors=True)
+        console.print(
+            f"[dim]Cleaned local Harbor artifacts for {trial_id}: {resolved_job_dir}[/dim]"
+        )
+    except Exception as e:
+        console.print(f"[yellow]Failed to cleanup local Harbor artifacts: {e}[/yellow]")
+
+
 async def run_trial_job(job: Job, queue_key: str) -> None:
     """
     Handle a trial job from PGQueuer.
@@ -345,6 +368,7 @@ async def run_trial_job(job: Job, queue_key: str) -> None:
             storage = get_storage_client()
             trial_s3_key = await storage.upload_trial_results(trial_id, outcome.job_dir)
             console.print(f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]")
+            _cleanup_uploaded_job_dir(outcome.job_dir, trial_id)
         except Exception as e:
             console.print(f"[yellow]Failed to upload trial results to S3: {e}[/yellow]")
 
