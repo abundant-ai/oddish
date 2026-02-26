@@ -1,0 +1,40 @@
+[project]
+name = "oddish-app"
+version = "0.1.0"
+description = "Cloud deployment layer for Oddish - Modal API with multi-tenant auth"
+requires-python = ">=3.12,<3.14"
+
+dependencies = [
+    # Core oddish library (includes fastapi, sqlalchemy, pgqueuer, etc.)
+    "oddish",
+
+    # pyparsing for pyiceberg compatibility
+    "pyparsing",
+
+    # Modal deployment
+    "modal>=0.64.0",
+
+    # Auth - JWT validation for Clerk
+    "python-jose[cryptography]>=3.3.0",
+
+    # HTTP client for JWKS fetching
+    "httpx>=0.27.0",
+
+    # Clerk webhook verification
+    "svix>=1.39.0",
+
+    # File uploads
+    "python-multipart>=0.0.9",
+
+    # Environment loading
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.uv.sources]
+oddish = { path = "../oddish", editable = true }

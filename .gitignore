@@ -25,6 +25,7 @@ node_modules/
 .pnpm-store/
 frontend/.npm-cache
 frontend/.certs/
+backend/jobs/
 
 # OS / editor
 .DS_Store
