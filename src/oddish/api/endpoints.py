@@ -16,7 +16,9 @@ from oddish.api.trial_io import (
     read_trial_result,
     read_trial_trajectory,
 )
-from oddish.db import TaskModel, TrialModel
+from oddish.config import settings
+from oddish.db import Priority, TaskModel, TaskStatus, TrialModel, TrialStatus
+from oddish.queue import enqueue_trial
 from oddish.schemas import TaskStatusResponse, TrialResponse
 
 
@@ -164,6 +166,56 @@ async def get_trial_for_org_core(
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
     return trial
+
+
+async def retry_trial_core(
+    session: AsyncSession,
+    *,
+    trial_id: str,
+    org_id: str | None = None,
+) -> dict[str, str]:
+    """Reset and requeue a trial for another attempt."""
+    trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
+    task = await session.get(TaskModel, trial.task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+
+    # Allow retrying terminal states OR stuck trials.
+    # A trial is "stuck" if running/retrying with error or completed harbor stage.
+    terminal_states = {TrialStatus.FAILED, TrialStatus.SUCCESS}
+    is_stuck = trial.status in {TrialStatus.RUNNING, TrialStatus.RETRYING} and (
+        trial.error_message or trial.harbor_stage == "completed"
+    )
+    if trial.status not in terminal_states and not is_stuck:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Can only retry completed, failed, or stuck trials (current: {trial.status.value})",
+        )
+
+    trial.status = TrialStatus.QUEUED
+    trial.error_message = None
+    trial.reward = None
+    trial.result = None
+    trial.started_at = None
+    trial.finished_at = None
+    trial.harbor_stage = None
+    trial.harbor_result_path = None
+    trial.trial_s3_key = None
+    trial.attempts = 0
+    # Clear idempotency key so worker can process this retry.
+    trial.idempotency_key = None
+
+    pgq_priority = 1000 if task.priority == Priority.HIGH else 0
+    queue_key = trial.queue_key or settings.get_queue_key_for_trial(trial.agent, trial.model)
+    await enqueue_trial(session, trial_id, queue_key, priority=pgq_priority)
+
+    # Move completed tasks back to running once a trial is requeued.
+    if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+        task.status = TaskStatus.RUNNING
+        task.finished_at = None
+
+    await session.commit()
+    return {"status": "queued", "trial_id": trial_id}
 
 
 async def get_trial_logs_core(

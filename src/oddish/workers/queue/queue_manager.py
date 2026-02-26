@@ -11,6 +11,7 @@ from pgqueuer.models import Job
 from oddish.config import settings
 from oddish.db import get_pool
 from oddish.workers.queue.analysis_handler import run_analysis_job
+from oddish.workers.queue.dispatch_planner import discover_active_queue_keys
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.trial_handler import run_trial_job
 from oddish.workers.queue.verdict_handler import run_verdict_job
@@ -49,33 +50,6 @@ def register_queue_entrypoints(
             console.print(f"[dim]{_queue_key} entrypoint received job {job.id}[/dim]")
             await handler(job, _queue_key)
 
-async def _discover_active_queue_keys() -> tuple[str, ...]:
-    pool = await get_pool()
-    rows = await pool.fetch(
-        """
-        SELECT DISTINCT entrypoint
-        FROM pgqueuer
-        WHERE status IN ('queued', 'picked')
-        """
-    )
-    discovered: set[str] = set()
-    for row in rows:
-        entrypoint = row.get("entrypoint")
-        if not entrypoint:
-            continue
-        raw_key = str(entrypoint).strip().lower().replace(" ", "_")
-        if not raw_key:
-            continue
-        # Keep raw keys so legacy queued jobs still drain, and add canonical
-        # keys so new writes converge to a single entrypoint.
-        discovered.add(raw_key)
-        discovered.add(settings.normalize_queue_key(raw_key))
-    discovered.update(settings.get_known_queue_keys())
-    if not discovered:
-        discovered = {"default"}
-    return tuple(sorted(discovered))
-
-
 async def create_queue_manager() -> QueueManager:
     """Create and configure the QueueManager with model-keyed entrypoints."""
     # Lazy import to avoid circular dependency (api.py imports from workers)
@@ -87,7 +61,7 @@ async def create_queue_manager() -> QueueManager:
     # Each provider handles: trials, analysis (if claude), verdict (if claude)
     retry_timer = timedelta(minutes=settings.trial_retry_timer_minutes)
 
-    queue_keys = await _discover_active_queue_keys()
+    queue_keys = await discover_active_queue_keys()
     concurrency_limits = {
         queue_key: get_queue_concurrency(queue_key) for queue_key in queue_keys
     }
