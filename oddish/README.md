@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/abundant-ai/oddish">
-    <img src="assets/oddish_jump.gif" style="height: 10em" alt="Oddish" />
+    <img src="../assets/oddish_jump.gif" style="height: 10em" alt="Oddish" />
   </a>
 </p>
 
@@ -29,12 +29,6 @@ Oddish extends Harbor with:
 - Postgres-backed state plus S3 for artifacts
 
 **Harbor compatibility:** replace `harbor run` with `oddish run`.
-
-## Monorepo layout
-
-- `oddish/` - core Python package (published to PyPI as `oddish`)
-- `backend/` - cloud API + worker deployment layer
-- `frontend/` - Next.js dashboard
 
 ## Quick Start
 
@@ -65,7 +59,7 @@ oddish run -d terminal-bench@2.0 -c sweep.yaml
 ```
 
 <details>
-<summary>Example <a href="assets/sweep.yaml">sweep.yaml</a></summary>
+<summary>Example <a href="../assets/sweep.yaml">sweep.yaml</a></summary>
 
 ```yaml
 agents:
@@ -96,9 +90,9 @@ oddish status
 
 ## Documentation
 
-- [Technical documentation](oddish/AGENTS.md)
-- [SELF_HOSTING.md](oddish/SELF_HOSTING.md)
+- [Technical documentation](AGENTS.md)
+- [SELF_HOSTING.md](SELF_HOSTING.md).
 
 ## License
 
-[Apache License 2.0](oddish/LICENSE)
+[Apache License 2.0](LICENSE)
