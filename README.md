@@ -41,7 +41,7 @@ uv pip install oddish
 ### 2. Generate an Oddish API key
 
 - API key generation is restricted during the beta. To request access, contact the [maintainer](https://github.com/RishiDesai).
-@
+
 ```bash
 export ODDISH_API_KEY="ok_..."
 ```

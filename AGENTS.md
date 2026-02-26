@@ -8,7 +8,7 @@ Oddish is a standalone, open-source, Postgres-backed scheduler for running [Harb
 
 - **FastAPI server** (`python -m oddish.api`) — task submission, monitoring, logs, and results
 - **PGQueuer workers** — queue-keyed queues for trials, analysis, and verdict jobs
-- **CLI** (`oddish run`, `oddish status`) — submits tasks and monitors experiments
+- **CLI** (`oddish run`, `oddish status`, `oddish clean`) — submits tasks, monitors experiments, and manages cleanup
 - **Database models** — experiments, tasks, trials, and queue state in Postgres
 
 Oddish is designed for self-hosting or embedding in your own services. A hosted version is available at [oddish.app](https://www.oddish.app/), but the library has no dependency on it.
@@ -204,9 +204,16 @@ Task uploads land under `tasks/<task_id>/`. Trial artifacts are uploaded under
 
 ### Execution Environments
 
-Oddish runs Harbor tasks in a sandboxed environment. The default is `daytona`.
+Oddish runs Harbor tasks in a sandboxed environment.
 
-Override per task with `oddish run --env {docker|daytona|e2b|modal|runloop|gke}`.
+CLI behavior when `--env` is omitted:
+
+- Local API URL (`localhost`) defaults to `docker`
+- Hosted Modal API URL (`*.modal.run`) defaults to `modal`
+- Other remote API URLs default to `docker`
+
+You can always override per task with:
+`oddish run --env {docker|daytona|e2b|modal|runloop|gke}`.
 
 ### Queue-Key Routing
 
@@ -275,16 +282,13 @@ The CLI can watch an experiment with `oddish status --experiment <id>`.
 
 By default, `python -m oddish.api` spawns workers in background threads.
 
-To run workers separately (for scaling):
+For separate worker processes (for scaling), run:
 
 ```bash
-# Disable auto-start
-export ODDISH_AUTO_START_WORKERS=false
-uv run python -m oddish.api
-
-# Run worker separately
 uv run python -m oddish.workers.queue.worker
 ```
+
+In Docker Compose, this maps to the dedicated `worker` service.
 
 ### How PGQueuer works
 
@@ -411,11 +415,11 @@ oddish/
 │           ├── db_helpers.py       # Worker DB utilities
 │           └── shared.py           # Shared worker utilities
 │
-├── alembic/                 # Database migrations (16 versions)
+├── alembic/                 # Database migrations
 ├── alembic.ini              # Alembic configuration
 ├── docker-compose.yml       # Local dev orchestration
 ├── env.example              # Example .env file
-├── pyproject.toml           # Package config (v0.2.0)
+├── pyproject.toml           # Package config and dependencies
 └── README.md
 ```
 
