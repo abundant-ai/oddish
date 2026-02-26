@@ -3,9 +3,10 @@ from __future__ import annotations
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import load_only, selectinload
 
 from oddish.api.helpers import (
+    build_task_status_response_compact,
     build_task_status_response,
     build_task_status_responses_from_counts,
     build_trial_response,
@@ -17,7 +18,14 @@ from oddish.api.trial_io import (
     read_trial_trajectory,
 )
 from oddish.config import settings
-from oddish.db import Priority, TaskModel, TaskStatus, TrialModel, TrialStatus
+from oddish.db import (
+    ExperimentModel,
+    Priority,
+    TaskModel,
+    TaskStatus,
+    TrialModel,
+    TrialStatus,
+)
 from oddish.queue import enqueue_trial
 from oddish.schemas import TaskStatusResponse, TrialResponse
 
@@ -46,6 +54,7 @@ async def list_tasks_core(
     user: str | None = None,
     experiment_id: str | None = None,
     include_trials: bool = True,
+    compact_trials: bool = False,
     limit: int = 100,
     offset: int = 0,
     org_id: str | None = None,
@@ -54,9 +63,58 @@ async def list_tasks_core(
     """List tasks with optional filters and aggregated trial stats."""
     query = select(TaskModel).order_by(TaskModel.created_at.desc())
     if include_trials:
-        query = query.options(
-            selectinload(TaskModel.trials), selectinload(TaskModel.experiment)
-        )
+        trials_loader = selectinload(TaskModel.trials)
+        experiment_loader = selectinload(TaskModel.experiment)
+        if compact_trials:
+            trials_loader = trials_loader.load_only(
+                TrialModel.id,
+                TrialModel.name,
+                TrialModel.task_id,
+                TrialModel.agent,
+                TrialModel.provider,
+                TrialModel.queue_key,
+                TrialModel.model,
+                TrialModel.status,
+                TrialModel.attempts,
+                TrialModel.max_attempts,
+                TrialModel.harbor_stage,
+                TrialModel.reward,
+                TrialModel.error_message,
+                TrialModel.has_trajectory,
+                TrialModel.analysis_status,
+                TrialModel.analysis,
+                TrialModel.created_at,
+                TrialModel.started_at,
+                TrialModel.finished_at,
+            )
+            experiment_loader = experiment_loader.load_only(
+                ExperimentModel.id,
+                ExperimentModel.name,
+                ExperimentModel.is_public,
+            )
+            query = query.options(
+                load_only(
+                    TaskModel.id,
+                    TaskModel.name,
+                    TaskModel.status,
+                    TaskModel.priority,
+                    TaskModel.user,
+                    TaskModel.tags,
+                    TaskModel.task_path,
+                    TaskModel.experiment_id,
+                    TaskModel.run_analysis,
+                    TaskModel.verdict_status,
+                    TaskModel.verdict,
+                    TaskModel.verdict_error,
+                    TaskModel.created_at,
+                    TaskModel.started_at,
+                    TaskModel.finished_at,
+                ),
+                trials_loader,
+                experiment_loader,
+            )
+        else:
+            query = query.options(trials_loader, experiment_loader)
     else:
         query = query.options(selectinload(TaskModel.experiment))
 
@@ -74,6 +132,13 @@ async def list_tasks_core(
     tasks = result.scalars().all()
 
     if include_trials:
+        if compact_trials:
+            return [
+                build_task_status_response_compact(
+                    task, include_empty_rewards=include_empty_rewards
+                )
+                for task in tasks
+            ]
         return [
             build_task_status_response(
                 task, include_empty_rewards=include_empty_rewards
@@ -152,18 +217,23 @@ async def get_trial_for_org_core(
     org_id: str | None = None,
 ) -> TrialModel:
     """Fetch a trial with optional org scoping via its task."""
-    result = await session.execute(
-        select(TrialModel, TaskModel.org_id)
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .where(TrialModel.id == trial_id)
-    )
-    row = result.first()
-    if not row:
+    result = await session.execute(select(TrialModel).where(TrialModel.id == trial_id))
+    trial = result.scalar_one_or_none()
+    if not trial:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
-    trial, task_org_id = row
-    if org_id is not None and task_org_id != org_id:
-        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+    if org_id is not None:
+        if trial.org_id is not None:
+            if trial.org_id != org_id:
+                raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+        else:
+            # Fallback for legacy rows where trial.org_id is not populated.
+            task_org_result = await session.execute(
+                select(TaskModel.org_id).where(TaskModel.id == trial.task_id)
+            )
+            task_org_id = task_org_result.scalar_one_or_none()
+            if task_org_id != org_id:
+                raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
     return trial
 

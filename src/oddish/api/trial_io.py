@@ -104,6 +104,16 @@ def _resolve_local_trial_paths(trial: TrialModel) -> TrialPaths | None:
     return None
 
 
+def _trajectory_candidate_keys(trial: TrialModel, s3_prefix: str) -> list[str]:
+    """Return likely S3 keys for trajectory without listing whole prefixes."""
+    candidates: list[str] = [f"{s3_prefix}agent/trajectory.json"]
+    if trial.name:
+        candidates.append(f"{s3_prefix}{trial.name}/agent/trajectory.json")
+    # Common Harbor fallback naming convention.
+    candidates.append(f"{s3_prefix}trial-0/agent/trajectory.json")
+    return list(dict.fromkeys(candidates))
+
+
 async def read_trial_logs(trial: TrialModel) -> dict:
     """Read trial logs from S3 or local storage."""
     # Prefer S3 if configured and we have a prefix
@@ -412,17 +422,14 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
         s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
         storage = get_storage_client()
 
-        # Harbor job structure: job_dir/trial_name/agent/trajectory.json
-        # We upload job_dir, so files end up as: s3_prefix/trial_name/agent/trajectory.json
-        # Try both direct path and with trial subdirectory
-        try:
-            # First, try direct path (if upload was from trial_dir)
-            trajectory_key = f"{s3_prefix}agent/trajectory.json"
-            content = await storage.download_text(trajectory_key)
-            if content:
-                return _json.loads(content)
-        except Exception:
-            pass
+        # Prefer direct key lookups to avoid expensive prefix listings.
+        for trajectory_key in _trajectory_candidate_keys(trial, s3_prefix):
+            try:
+                content = await storage.download_text(trajectory_key)
+                if content:
+                    return _json.loads(content)
+            except Exception:
+                continue
 
         # If not found, look for trial subdirectory (Harbor's actual structure)
         try:

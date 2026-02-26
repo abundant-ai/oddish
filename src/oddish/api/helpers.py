@@ -44,6 +44,49 @@ def build_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
     )
 
 
+def build_compact_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
+    """Build a compact TrialResponse for table views.
+
+    Intentionally omits large payload fields that are not needed by list UIs.
+    """
+    analysis_summary = None
+    if isinstance(trial.analysis, dict):
+        analysis_summary = {
+            "classification": trial.analysis.get("classification"),
+            "subtype": trial.analysis.get("subtype"),
+        }
+
+    return TrialResponse(
+        id=trial.id,
+        name=trial.name,
+        task_id=trial.task_id,
+        task_path=task_path,
+        agent=trial.agent,
+        provider=trial.provider,
+        queue_key=settings.normalize_queue_key(trial.queue_key),
+        model=trial.model,
+        status=trial.status,
+        attempts=trial.attempts,
+        max_attempts=trial.max_attempts,
+        harbor_stage=trial.harbor_stage,
+        reward=trial.reward,
+        error_message=trial.error_message,
+        result=None,
+        input_tokens=None,
+        cache_tokens=None,
+        output_tokens=None,
+        cost_usd=None,
+        phase_timing=None,
+        has_trajectory=trial.has_trajectory,
+        analysis_status=trial.analysis_status,
+        analysis=analysis_summary,
+        analysis_error=None,
+        created_at=trial.created_at,
+        started_at=trial.started_at,
+        finished_at=trial.finished_at,
+    )
+
+
 def resolve_task_status(
     task: TaskModel, *, total: int, completed: int, failed: int
 ) -> TaskStatus:
@@ -136,6 +179,29 @@ def build_task_status_response(
     reward_success = sum(1 for t in task.trials if t.reward == 1)
     reward_total = sum(1 for t in task.trials if t.reward is not None)
     trials = [build_trial_response(t, task.task_path) for t in task.trials]
+
+    return _build_task_status_response(
+        task,
+        total=total,
+        completed=completed,
+        failed=failed,
+        reward_success=reward_success,
+        reward_total=reward_total,
+        include_empty_rewards=include_empty_rewards,
+        trials=trials,
+    )
+
+
+def build_task_status_response_compact(
+    task: TaskModel, *, include_empty_rewards: bool = True
+) -> TaskStatusResponse:
+    """Build TaskStatusResponse with compact per-trial payloads."""
+    total = len(task.trials)
+    completed = sum(1 for t in task.trials if t.status == TrialStatus.SUCCESS)
+    failed = sum(1 for t in task.trials if t.status == TrialStatus.FAILED)
+    reward_success = sum(1 for t in task.trials if t.reward == 1)
+    reward_total = sum(1 for t in task.trials if t.reward is not None)
+    trials = [build_compact_trial_response(t, task.task_path) for t in task.trials]
 
     return _build_task_status_response(
         task,
