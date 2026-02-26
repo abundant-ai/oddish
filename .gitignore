@@ -23,6 +23,7 @@ dist/
 node_modules/
 .next/
 .pnpm-store/
+*.tsbuildinfo
 frontend/.npm-cache
 frontend/.certs/
 backend/jobs/
