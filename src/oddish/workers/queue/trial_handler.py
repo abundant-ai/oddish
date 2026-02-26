@@ -7,7 +7,6 @@ import shutil
 import uuid
 from pathlib import Path
 
-from harbor.models.agent.name import AgentName
 from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from pgqueuer.models import Job
@@ -74,7 +73,7 @@ def _verifier_ran_from_job_result(job_result_path: str | None) -> bool:
     return False
 
 
-async def run_trial_job(job: Job, provider: str) -> None:
+async def run_trial_job(job: Job, queue_key: str) -> None:
     """
     Handle a trial job from PGQueuer.
 
@@ -92,7 +91,7 @@ async def run_trial_job(job: Job, provider: str) -> None:
         raise ValueError(f"Invalid trial job payload (missing trial_id): {payload}")
 
     console.print(
-        f"[cyan]Processing trial[/cyan] {trial_id} (provider={provider}, pgqueuer_job_id={job.id})"
+        f"[cyan]Processing trial[/cyan] {trial_id} (queue_key={queue_key}, pgqueuer_job_id={job.id})"
     )
 
     # Check idempotency - prevent duplicate processing
@@ -142,13 +141,12 @@ async def run_trial_job(job: Job, provider: str) -> None:
         task_s3_key = task.task_s3_key if task else None
         task_id = task.id if task else trial.task_id
         trial_agent = trial.agent
-        trial_model = trial.model
-        if not trial_model and trial_agent in (
-            AgentName.NOP.value,
-            AgentName.ORACLE.value,
-        ):
-            trial_model = "default"
+        trial_model = settings.normalize_trial_model(trial_agent, trial.model)
+        if trial.model != trial_model:
             trial.model = trial_model
+        canonical_queue_key = settings.get_queue_key_for_trial(trial_agent, trial_model)
+        if trial.queue_key != canonical_queue_key:
+            trial.queue_key = canonical_queue_key
         trial_environment = trial.environment
         trial_harbor_config = trial.harbor_config
 
@@ -429,7 +427,11 @@ async def run_trial_job(job: Job, provider: str) -> None:
             task = await session.get(TaskModel, trial.task_id)
             if task and task.run_analysis and trial.analysis_status is None:
                 trial.analysis_status = AnalysisStatus.QUEUED
-                await enqueue_analysis(session, trial_id)
+                await enqueue_analysis(
+                    session,
+                    trial_id,
+                    queue_key=settings.get_analysis_queue_key(),
+                )
                 console.print(f"[cyan]Enqueued analysis for {trial_id}[/cyan]")
 
             # Check if all trials done → transition task status

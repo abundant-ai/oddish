@@ -224,6 +224,7 @@ class TrialModel(Base):
     # Trial spec
     agent: Mapped[str] = mapped_column(String(64), nullable=False)
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    queue_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     timeout_minutes: Mapped[int] = mapped_column(Integer, default=60)
     environment: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -297,9 +298,10 @@ class TrialModel(Base):
 
     __table_args__ = (
         # Composite index for efficient trial claiming queries
-        Index("idx_trials_claimable", "status", "provider", "next_retry_at"),
+        Index("idx_trials_claimable", "status", "queue_key", "next_retry_at"),
         Index("idx_trials_task_id", "task_id"),
         Index("idx_trials_status", "status"),
         # Composite index for efficient queue stats aggregation (no JOIN needed)
         Index("idx_trials_org_provider_status", "org_id", "provider", "status"),
+        Index("idx_trials_org_queue_key_status", "org_id", "queue_key", "status"),
     )

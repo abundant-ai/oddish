@@ -4,6 +4,7 @@ import json
 
 from pgqueuer.models import Job
 
+from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -16,7 +17,7 @@ from oddish.db import (
 from oddish.workers.queue.shared import console
 
 
-async def run_verdict_job(job: Job, provider: str) -> None:
+async def run_verdict_job(job: Job, queue_key: str) -> None:
     """
     Handle a verdict job from PGQueuer.
 
@@ -35,7 +36,7 @@ async def run_verdict_job(job: Job, provider: str) -> None:
         raise ValueError(f"Invalid verdict job payload (missing task_id): {payload}")
 
     console.print(
-        f"[cyan]Processing verdict[/cyan] {task_id} (provider={provider}, pgqueuer_job_id={job.id})"
+        f"[cyan]Processing verdict[/cyan] {task_id} (queue_key={queue_key}, pgqueuer_job_id={job.id})"
     )
 
     # Mark as running and load classifications
@@ -102,7 +103,7 @@ async def run_verdict_job(job: Job, provider: str) -> None:
             classifications=classifications,
             baseline=None,  # We don't have baseline validation data
             quality_check_passed=True,  # Assume passed
-            model="gpt-5.2",
+            model=settings.verdict_model,
             console=console,
             verbose=True,
             timeout=180,  # 3 minutes

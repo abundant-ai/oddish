@@ -111,13 +111,13 @@ docker compose up -d db
 uv run python -m oddish.db setup
 ```
 
-## Provider Concurrency
+## Queue-Key Concurrency
 
-Control how many trials run per LLM provider:
+Control how many trials run per queue key (typically a normalized model id):
 
 ```bash
 # Pass concurrency on API startup
-uv run python -m oddish.api --n-concurrent '{"claude": 8, "openai": 4}'
+uv run python -m oddish.api --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/claude-sonnet-4-5": 4}'
 ```
 
 The API server persists between runs. Use `--fresh` to restart after updating concurrency.
@@ -150,7 +150,7 @@ Self-hosted Oddish runs as:
 ┌──────────────────────────────────────────┐
 │ Workers (spawned by API)                 │
 │ - Execute trials in sandboxed runtimes   │
-│ - Provider-aware concurrency limits      │
+│ - Queue-key concurrency limits           │
 └──────────────────────────────────────────┘
 ```
 

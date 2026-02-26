@@ -11,6 +11,8 @@ from harbor.models.task.config import MCPServerConfig as MCPServerSpec
 
 from oddish.db import AnalysisStatus, Priority, TaskStatus, TrialStatus, VerdictStatus
 
+_MODEL_ABSENT_ALIASES: set[str] = {"", "-", "none", "null", "nil", "n/a", "na", "default"}
+
 
 class ArtifactSpec(BaseModel):
     """Specification for a file to extract from the sandbox after execution."""
@@ -51,6 +53,17 @@ class TrialSpec(BaseModel):
         default_factory=dict,
         description="Agent-specific keyword arguments forwarded to Harbor's AgentConfig.kwargs (e.g. max_thinking_tokens)",
     )
+
+    @model_validator(mode="after")
+    def normalize_model_aliases(self) -> "TrialSpec":
+        if self.model is None:
+            return self
+        normalized = self.model.strip()
+        if normalized.lower() in _MODEL_ABSENT_ALIASES:
+            self.model = None
+            return self
+        self.model = normalized
+        return self
 
 
 class AgentModelPair(TrialSpec):
@@ -258,6 +271,7 @@ class TrialResponse(BaseModel):
     task_path: str
     agent: str
     provider: str
+    queue_key: str
     model: str | None
     status: TrialStatus = Field(
         ...,

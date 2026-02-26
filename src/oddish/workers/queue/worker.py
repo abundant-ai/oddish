@@ -15,18 +15,8 @@ async def run_worker() -> None:
 
     qm = await create_queue_manager()
 
-    # Log registered entrypoints
-    entrypoints = [
-        "claude (trials + analysis + verdict)",
-        "gemini (trials)",
-        "openai (trials - includes codex, gpt)",
-        "default (trials - oracle, etc)",
-    ]
-    console.print("[blue]Registered provider queues:[/blue]")
-    for ep in entrypoints:
-        console.print(f"  - {ep}")
     console.print(
-        f"[dim]Provider concurrency: {settings.default_provider_concurrency}[/dim]"
+        f"[dim]Model concurrency overrides: {settings.model_concurrency_overrides}[/dim]"
     )
 
     # Handle shutdown gracefully

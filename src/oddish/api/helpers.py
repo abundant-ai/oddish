@@ -6,6 +6,7 @@ from typing import Sequence
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.config import settings
 from oddish.db import TaskModel, TaskStatus, TrialModel, TrialStatus
 from oddish.schemas import TaskStatusResponse, TrialResponse
 
@@ -19,6 +20,7 @@ def build_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
         task_path=task_path,
         agent=trial.agent,
         provider=trial.provider,
+        queue_key=settings.normalize_queue_key(trial.queue_key),
         model=trial.model,
         status=trial.status,
         attempts=trial.attempts,
