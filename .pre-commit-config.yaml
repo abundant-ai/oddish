@@ -1,5 +1,5 @@
-# See https://pre-commit.com for more information
-# See https://pre-commit.com/hooks.html for more hooks
+exclude: ^(harbor|pgqueuer|sauron|SWE-gen)/
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
@@ -15,29 +15,46 @@ repos:
       - id: debug-statements
       - id: mixed-line-ending
 
-  # Python linting and formatting
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.8.4
     hooks:
-      # Run the linter
       - id: ruff
-        args: [--fix, --exit-non-zero-on-fix]
-        files: ^(src/|alembic/).*\.py$
-      # Run the formatter
+        args: [--fix, --exit-non-zero-on-fix, --select, F401,F841]
+        files: ^(backend|oddish)/.*\.py$
       - id: ruff-format
-        files: ^(src/|alembic/).*\.py$
+        files: ^(backend|oddish)/.*\.py$
 
   - repo: https://github.com/psf/black
     rev: 24.10.0
     hooks:
       - id: black
-        files: ^(src/|alembic/).*\.py$
+        files: ^(backend|oddish)/.*\.py$
 
-  # Mypy type checking
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.13.0
     hooks:
       - id: mypy
-        files: ^src/.*\.py$
+        files: ^(backend|oddish/src/oddish)/.*\.py$
+        exclude: ^(backend|oddish)/alembic/
         additional_dependencies: [types-PyYAML, types-requests, sqlalchemy2-stubs]
-        args: [--ignore-missing-imports, --no-strict-optional]
+        args:
+          [
+            --ignore-missing-imports,
+            --no-strict-optional,
+          ]
+
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        files: ^frontend/.*\.(ts|tsx|js|jsx|json|css|md)$
+        args: [--write, --config, frontend/.prettierrc.json]
+
+  - repo: local
+    hooks:
+      - id: eslint
+        name: eslint
+        entry: bash -c 'cd frontend && pnpm exec eslint --fix --max-warnings=0'
+        language: system
+        files: ^frontend/.*\.(ts|tsx|js|jsx)$
+        pass_filenames: true
