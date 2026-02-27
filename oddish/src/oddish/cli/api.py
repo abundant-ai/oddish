@@ -161,6 +161,19 @@ def upload_task(
         shutil.rmtree(Path(tarball_path).parent, ignore_errors=True)
 
 
+def _parse_key_value_pairs(pairs: list[str] | None) -> dict[str, str]:
+    """Parse a list of 'key=value' strings into a dict."""
+    if not pairs:
+        return {}
+    result: dict[str, str] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            continue
+        key, _, value = pair.partition("=")
+        result[key.strip()] = value.strip()
+    return result
+
+
 def submit_sweep(
     api_url: str,
     task_id: str,
@@ -174,18 +187,53 @@ def submit_sweep(
     tags: dict[str, str] | None = None,
     publish_experiment: bool | None = False,
     disable_verification: bool = False,
-    env_cpus: int | None = None,
-    env_memory_mb: int | None = None,
-    env_gpus: int | None = None,
+    override_cpus: int | None = None,
+    override_memory_mb: int | None = None,
+    override_gpus: int | None = None,
+    override_storage_mb: int | None = None,
+    force_build: bool | None = None,
+    agent_env: list[str] | None = None,
+    agent_kwargs: list[str] | None = None,
+    artifact_paths: list[str] | None = None,
 ) -> dict:
     """Submit a task sweep to the API."""
     env_value = environment.value
 
-    # Ensure each config has the environment set
     for config in configs:
         config["environment"] = env_value
 
-    payload = {
+    harbor: dict = {}
+    env_overrides: dict = {}
+    if override_cpus is not None:
+        env_overrides["override_cpus"] = override_cpus
+    if override_memory_mb is not None:
+        env_overrides["override_memory_mb"] = override_memory_mb
+    if override_gpus is not None:
+        env_overrides["override_gpus"] = override_gpus
+    if override_storage_mb is not None:
+        env_overrides["override_storage_mb"] = override_storage_mb
+    if force_build is not None:
+        env_overrides["force_build"] = force_build
+    if env_overrides:
+        harbor["environment"] = env_overrides
+    if disable_verification:
+        harbor["verifier"] = {"disable": True}
+    if artifact_paths:
+        harbor["artifacts"] = artifact_paths
+
+    # CLI --ae/--ak flags apply to all configs as default agent overrides
+    parsed_env = _parse_key_value_pairs(agent_env)
+    parsed_kwargs = _parse_key_value_pairs(agent_kwargs)
+    if parsed_env or parsed_kwargs:
+        for config in configs:
+            existing = config.get("agent_config") or {}
+            if parsed_env:
+                existing.setdefault("env", {}).update(parsed_env)
+            if parsed_kwargs:
+                existing.setdefault("kwargs", {}).update(parsed_kwargs)
+            config["agent_config"] = existing
+
+    payload: dict = {
         "task_id": task_id,
         "configs": configs,
         "user": user,
@@ -200,16 +248,8 @@ def submit_sweep(
     if tags:
         payload["tags"] = tags
     payload["publish_experiment"] = publish_experiment
-
-    # Harbor passthrough config
-    if disable_verification:
-        payload["disable_verification"] = True
-    if env_cpus is not None:
-        payload["env_cpus"] = env_cpus
-    if env_memory_mb is not None:
-        payload["env_memory_mb"] = env_memory_mb
-    if env_gpus is not None:
-        payload["env_gpus"] = env_gpus
+    if harbor:
+        payload["harbor"] = harbor
 
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
         response = client.post(f"{api_url}/tasks/sweep", json=payload)
@@ -248,27 +288,33 @@ def get_task_summary(api_url: str, task_id: str) -> dict | None:
 def load_sweep_config(config_path: Path) -> dict:
     """Load and validate a sweep config file (YAML or JSON).
 
-    Expected format:
+    Expected format::
+
         agents:
           - name: claude-code
             model_name: claude-sonnet-4-5
             n_trials: 4
+            env:                        # optional: agent env vars
+              CUSTOM_VAR: "value"
+            kwargs:                     # optional: agent kwargs
+              max_thinking_tokens: 8000
 
           - name: codex
             model_name: gpt-5.2
             n_trials: 3
+            timeout_minutes: 120        # optional: per-agent timeout
 
         # Task source (pick one):
-        path: ./my-task           # local task or dataset directory
-        dataset: swebench@1.0     # registry dataset
+        path: ./my-task                 # local task or dataset directory
+        dataset: swebench@1.0           # registry dataset
 
         # Optional filtering (Harbor-compatible):
-        task_names: ["task-*"]        # glob patterns to include
+        task_names: ["task-*"]          # glob patterns to include
         exclude_task_names: ["*-slow"]  # glob patterns to exclude
-        n_tasks: 10                   # max tasks to run
+        n_tasks: 10                     # max tasks to run
 
         # Optional fields:
-        environment: daytona      # execution environment
+        environment: daytona            # execution environment
         priority: low
         experiment_id: exp_123
     """
@@ -330,20 +376,20 @@ def load_sweep_config(config_path: Path) -> dict:
             )
             raise typer.Exit(1)
 
-        # Build normalized config with Oddish-specific fields
         entry: dict = {
             "agent": harbor_config.name,
             "model": harbor_config.model_name,
             "n_trials": agent_entry.get("n_trials", 1),
         }
+
+        agent_config_overrides: dict = {}
         if agent_entry.get("env"):
-            entry["agent_env"] = agent_entry["env"]
-        if agent_entry.get("agent_env"):
-            entry["agent_env"] = agent_entry["agent_env"]
+            agent_config_overrides["env"] = agent_entry["env"]
         if agent_entry.get("kwargs"):
-            entry["agent_kwargs"] = agent_entry["kwargs"]
-        if agent_entry.get("agent_kwargs"):
-            entry["agent_kwargs"] = agent_entry["agent_kwargs"]
+            agent_config_overrides["kwargs"] = agent_entry["kwargs"]
+        if agent_config_overrides:
+            entry["agent_config"] = agent_config_overrides
+
         if "timeout_minutes" in agent_entry:
             entry["timeout_minutes"] = agent_entry["timeout_minutes"]
         normalized_agents.append(entry)

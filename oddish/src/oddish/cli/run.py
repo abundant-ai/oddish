@@ -215,29 +215,66 @@ def run(
     disable_verification: Annotated[
         bool,
         typer.Option(
-            "--disable-verification",
-            help="Skip test verification (useful for RL rollout generation)",
+            "--disable-verification/--enable-verification",
+            help="Disable task verification (skip running tests)",
         ),
     ] = False,
-    env_cpus: Annotated[
+    override_cpus: Annotated[
         Optional[int],
         typer.Option(
-            "--env-cpus",
-            help="Override sandbox CPU count",
+            "--override-cpus",
+            help="Override the number of CPUs for the environment",
         ),
     ] = None,
-    env_memory_mb: Annotated[
+    override_memory_mb: Annotated[
         Optional[int],
         typer.Option(
-            "--env-memory-mb",
-            help="Override sandbox memory in MB",
+            "--override-memory-mb",
+            help="Override the memory (in MB) for the environment",
         ),
     ] = None,
-    env_gpus: Annotated[
+    override_gpus: Annotated[
         Optional[int],
         typer.Option(
-            "--env-gpus",
-            help="Override sandbox GPU count",
+            "--override-gpus",
+            help="Override the number of GPUs for the environment",
+        ),
+    ] = None,
+    override_storage_mb: Annotated[
+        Optional[int],
+        typer.Option(
+            "--override-storage-mb",
+            help="Override the storage (in MB) for the environment",
+        ),
+    ] = None,
+    force_build: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--force-build/--no-force-build",
+            help="Force rebuild the environment Docker image",
+        ),
+    ] = None,
+    agent_env: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--ae",
+            "--agent-env",
+            help="Environment variable for the agent in KEY=VALUE format (can be used multiple times)",
+        ),
+    ] = None,
+    agent_kwargs: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--ak",
+            "--agent-kwarg",
+            help="Agent kwarg in key=value format (can be used multiple times)",
+        ),
+    ] = None,
+    artifact_paths: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--artifact",
+            help="Environment path to download as an artifact after the trial (can be used multiple times)",
         ),
     ] = None,
     api_url: Annotated[
@@ -360,12 +397,12 @@ def run(
         # Config can set Harbor passthrough options
         if "disable_verification" in sweep_config:
             disable_verification = sweep_config["disable_verification"]
-        if "env_cpus" in sweep_config and env_cpus is None:
-            env_cpus = sweep_config["env_cpus"]
-        if "env_memory_mb" in sweep_config and env_memory_mb is None:
-            env_memory_mb = sweep_config["env_memory_mb"]
-        if "env_gpus" in sweep_config and env_gpus is None:
-            env_gpus = sweep_config["env_gpus"]
+        if "override_cpus" in sweep_config and override_cpus is None:
+            override_cpus = sweep_config["override_cpus"]
+        if "override_memory_mb" in sweep_config and override_memory_mb is None:
+            override_memory_mb = sweep_config["override_memory_mb"]
+        if "override_gpus" in sweep_config and override_gpus is None:
+            override_gpus = sweep_config["override_gpus"]
 
         # Warn if CLI agent/model/n_trials are also specified
         if agent or model or n_trials != 1:
@@ -511,9 +548,14 @@ def run(
                 tags=tags or None,
                 publish_experiment=publish,
                 disable_verification=disable_verification,
-                env_cpus=env_cpus,
-                env_memory_mb=env_memory_mb,
-                env_gpus=env_gpus,
+                override_cpus=override_cpus,
+                override_memory_mb=override_memory_mb,
+                override_gpus=override_gpus,
+                override_storage_mb=override_storage_mb,
+                force_build=force_build,
+                agent_env=agent_env,
+                agent_kwargs=agent_kwargs,
+                artifact_paths=artifact_paths,
             )
             all_results.append(result)
             total_trials_submitted += result["trials_count"]

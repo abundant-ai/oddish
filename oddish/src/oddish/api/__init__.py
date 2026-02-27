@@ -35,10 +35,8 @@ from oddish.schemas import (
     ExperimentUpdateResponse,
     TaskResponse,
     TaskStatusResponse,
-    TaskSubmission,
     TaskSweepSubmission,
     TrialResponse,
-    TrialSpec,
     UploadResponse,
 )
 
@@ -232,47 +230,11 @@ async def create_task_sweep(submission: TaskSweepSubmission):
         ),
     )
 
-    trials: list[TrialSpec] = []
+    from oddish.api.sweeps import build_trial_specs_from_sweep, build_task_submission_from_sweep
 
-    for config in submission.configs:
-        for _ in range(config.n_trials):
-            trials.append(
-                TrialSpec(
-                    agent=config.agent,
-                    model=config.model,
-                    timeout_minutes=config.timeout_minutes
-                    or submission.timeout_minutes,
-                    environment=config.environment or submission.environment,
-                    agent_env=config.agent_env,
-                    agent_kwargs=config.agent_kwargs,
-                )
-            )
-
-    expanded = TaskSubmission(
-        task_path=task_path,  # Local path or s3:// URL
-        trials=trials,
-        user=submission.user,
-        priority=submission.priority,
-        experiment_id=submission.experiment_id,
-        tags=submission.tags,
-        run_analysis=submission.run_analysis,
-        disable_verification=submission.disable_verification,
-        verifier_timeout_sec=submission.verifier_timeout_sec,
-        env_cpus=submission.env_cpus,
-        env_memory_mb=submission.env_memory_mb,
-        env_storage_mb=submission.env_storage_mb,
-        env_gpus=submission.env_gpus,
-        env_gpu_types=submission.env_gpu_types,
-        allow_internet=submission.allow_internet,
-        agent_setup_timeout_sec=submission.agent_setup_timeout_sec,
-        docker_image=submission.docker_image,
-        mcp_servers=submission.mcp_servers,
-        artifacts=submission.artifacts,
-        sandbox_timeout_secs=submission.sandbox_timeout_secs,
-        sandbox_idle_timeout_secs=submission.sandbox_idle_timeout_secs,
-        auto_stop_interval_mins=submission.auto_stop_interval_mins,
-        auto_delete_interval_mins=submission.auto_delete_interval_mins,
-        snapshot_template_name=submission.snapshot_template_name,
+    trials = build_trial_specs_from_sweep(submission)
+    expanded = build_task_submission_from_sweep(
+        submission, task_path=task_path, trials=trials,
     )
 
     async with get_session() as session:
