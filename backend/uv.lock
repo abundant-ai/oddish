@@ -1121,8 +1121,8 @@ wheels = [
 
 [[package]]
 name = "harbor"
-version = "0.1.44"
-source = { git = "https://github.com/laude-institute/harbor.git?rev=abcf356385c106cd3e6326306e098483cd38049a#abcf356385c106cd3e6326306e098483cd38049a" }
+version = "0.1.45"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "claude-agent-sdk" },
     { name = "datasets" },
@@ -1148,6 +1148,10 @@ dependencies = [
     { name = "toml" },
     { name = "typer" },
     { name = "uvicorn" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/89/78/e4da8b6c33b8c7a5d5d923cc296628d309bdf642f9ba66ed0d5b3301efc4/harbor-0.1.45.tar.gz", hash = "sha256:f8999cdb21978e33478d460ed6253c52b729b6d04d76ce119a5ef23d3bf6c306", size = 650970, upload-time = "2026-02-27T01:21:35.091Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ca/dc/003653587735fea639fbb6b2221cda8dbe03cc9c1af9d292f055d5a6da42/harbor-0.1.45-py3-none-any.whl", hash = "sha256:ea1494f2dc1cf4286c7d390b3d8e89bb23c201ab9c570117c8319fb57a39d56a", size = 741599, upload-time = "2026-02-27T01:21:33.492Z" },
 ]
 
 [[package]]
@@ -1784,7 +1788,7 @@ wheels = [
 
 [[package]]
 name = "oddish"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "../oddish" }
 dependencies = [
     { name = "aioboto3" },
@@ -1818,7 +1822,7 @@ requires-dist = [
     { name = "claude-agent-sdk", specifier = ">=0.1.18" },
     { name = "fastapi", specifier = ">=0.109.0" },
     { name = "google-generativeai", specifier = ">=0.8.0" },
-    { name = "harbor", git = "https://github.com/laude-institute/harbor.git?rev=abcf356385c106cd3e6326306e098483cd38049a" },
+    { name = "harbor", specifier = "==0.1.45" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "oddish", extras = ["dev"], marker = "extra == 'all'" },
     { name = "openai", specifier = ">=1.50.0" },

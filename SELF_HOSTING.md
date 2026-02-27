@@ -22,8 +22,8 @@ section at the end.
 Install and authenticate Modal CLI:
 
 ```bash
-pip install modal
-modal token new
+uv pip install modal
+modal setup
 ```
 
 ## 2) Configure backend environment
@@ -88,9 +88,6 @@ modal serve deploy.py
 modal deploy deploy.py
 ```
 
-Your API will be available at a Modal URL like:
-`https://<workspace>--api.modal.run`
-
 Set CLI target:
 
 ```bash
@@ -139,7 +136,7 @@ CLERK_JWT_TEMPLATE=oddish
 Run locally:
 
 ```bash
-pnpm dev
+pnpm dev:modal
 ```
 
 ## 7) Create an API key and run jobs
@@ -149,27 +146,6 @@ Create an API key from the dashboard Settings page (recommended), then:
 ```bash
 export ODDISH_API_URL="https://<workspace>--api.modal.run"
 export ODDISH_API_KEY="ok_..."
-```
-
-Submit and monitor:
-
-```bash
-oddish run -d terminal-bench@2.0 -a codex -m gpt-5.2-codex --n-trials 3
-oddish status
-```
-
-## Operations
-
-Health check:
-
-```bash
-curl "$ODDISH_API_URL/health"
-```
-
-Queue overview:
-
-```bash
-curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_API_URL/dashboard" | jq ".queues"
 ```
 
 Tune model concurrency with env vars:
