@@ -65,6 +65,7 @@ image = (
         "modal_app",
         "models",
         "worker",
+        "integrations",
         copy=True,
     )
 )
