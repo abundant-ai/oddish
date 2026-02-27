@@ -30,12 +30,6 @@ Oddish extends Harbor with:
 
 **Harbor compatibility:** replace `harbor run` with `oddish run`.
 
-## Monorepo layout
-
-- `oddish/` - core Python package (published to PyPI as `oddish`)
-- `backend/` - cloud API + worker deployment layer
-- `frontend/` - Next.js dashboard
-
 ## Quick Start
 
 ### 1. Install
@@ -96,9 +90,11 @@ oddish status
 
 ## Documentation
 
-- [Technical documentation](oddish/AGENTS.md)
-- [SELF_HOSTING.md](oddish/SELF_HOSTING.md)
+- [core library](oddish/README.md)
+- [dashboard](frontend/README.md)
+- [cloud workers](backend/README.md)
+- [self-hosting](SELF_HOSTING.md)
 
 ## License
 
-[Apache License 2.0](oddish/LICENSE)
+[Apache License 2.0](LICENSE)

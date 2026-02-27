@@ -2,6 +2,8 @@
 
 Serverless API and worker orchestration for Oddish Cloud, deployed on [Modal](https://modal.com), with multi-tenant authentication and authorization.
 
+For a step-by-step self-deploy walkthrough, see [SELF_HOSTING.md](../SELF_HOSTING.md).
+
 ## Overview
 
 The backend wraps the OSS `oddish` core with:
@@ -225,22 +227,32 @@ alembic upgrade head
 ## Development Workflows
 
 ```bash
-# backend only (modal local serve)
+# Backend only (Modal local serve)
 cd backend
 modal serve deploy.py
-# Terminal 1: core DB + local oddish API
-cd ../oddish
+```
+
+For full-stack local development, use one of these flows:
+
+```bash
+# Flow A: Frontend + local core API
+# Terminal 1
+cd oddish
 docker compose up -d db
 uv run python -m oddish.api
 
-# Terminal 2: frontend against local backend
+# Terminal 2
 cd frontend
 pnpm dev:local
-# Terminal 1: modal backend
+```
+
+```bash
+# Flow B: Frontend + Modal backend
+# Terminal 1
 cd backend
 modal serve deploy.py
 
-# Terminal 2: frontend against modal backend
+# Terminal 2
 cd frontend
 pnpm dev:modal
 ```
