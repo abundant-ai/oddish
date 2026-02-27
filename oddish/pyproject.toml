@@ -71,7 +71,7 @@ all = [
 Homepage = "https://github.com/abundant-ai/oddish"
 Repository = "https://github.com/abundant-ai/oddish"
 Issues = "https://github.com/abundant-ai/oddish/issues"
-Documentation = "https://github.com/abundant-ai/oddish/blob/main/oddish/AGENTS.md"
+Documentation = "https://github.com/abundant-ai/oddish/blob/main/oddish/README.md"
 
 [project.scripts]
 oddish = "oddish.cli:app"

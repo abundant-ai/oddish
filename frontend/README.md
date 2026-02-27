@@ -2,6 +2,9 @@
 
 Next.js dashboard for the Oddish evaluation platform with Clerk authentication.
 
+For product overview and CLI quick start, see the repository root [README.md](../README.md).  
+For cloud API/worker deployment details, see [backend/README.md](../backend/README.md).
+
 ## Overview
 
 The frontend provides:
@@ -161,45 +164,18 @@ frontend/
 
 ## API Routes
 
-The frontend proxies requests to the backend through Next.js route handlers:
+The frontend proxies requests to the backend through Next.js route handlers in
+`src/app/api/*`.
 
-| Frontend Route                                  | Method(s)     | Backend Route                               |
-| ----------------------------------------------- | ------------- | ------------------------------------------- |
-| `/api/health`                                   | GET           | `/health`                                   |
-| `/api/dashboard`                                | GET           | `/dashboard`                                |
-| `/api/tasks`                                    | GET           | `/tasks`                                    |
-| `/api/tasks/[task_id]`                          | GET, DELETE   | `/tasks/{task_id}`                          |
-| `/api/tasks/[task_id]/trials`                   | GET           | `/tasks/{task_id}/trials`                   |
-| `/api/tasks/[task_id]/trials/[index]`           | GET           | `/tasks/{task_id}/trials/{index}`           |
-| `/api/tasks/[task_id]/files`                    | GET           | `/tasks/{task_id}/files`                    |
-| `/api/tasks/[task_id]/files/[...path]`          | GET           | `/tasks/{task_id}/files/{path}`             |
-| `/api/trials/[trial_id]/retry`                  | POST          | `/trials/{trial_id}/retry`                  |
-| `/api/trials/[trial_id]/logs`                   | GET           | `/trials/{trial_id}/logs`                   |
-| `/api/trials/[trial_id]/logs/structured`        | GET           | `/trials/{trial_id}/logs/structured`        |
-| `/api/trials/[trial_id]/trajectory`             | GET           | `/trials/{trial_id}/trajectory`             |
-| `/api/trials/[trial_id]/result`                 | GET           | `/trials/{trial_id}/result`                 |
-| `/api/trials/[trial_id]/files`                  | GET           | `/trials/{trial_id}/files`                  |
-| `/api/trials/[trial_id]/files/[...path]`        | GET           | `/trials/{trial_id}/files/{path}`           |
-| `/api/experiments/[experiment]/tasks`           | GET           | `/tasks?experiment_id={id}`                 |
-| `/api/experiments/[experiment]`                 | PATCH, DELETE | `/experiments/{id}`                         |
-| `/api/experiments/[experiment]/share`           | GET           | `/experiments/{id}/share`                   |
-| `/api/experiments/[experiment]/publish`         | POST          | `/experiments/{id}/publish`                 |
-| `/api/experiments/[experiment]/unpublish`       | POST          | `/experiments/{id}/unpublish`               |
-| `/api/settings/api-keys`                        | GET, POST     | `/api-keys`                                 |
-| `/api/settings/api-keys/[key_id]`               | DELETE        | `/api-keys/{key_id}`                        |
-| `/api/admin/slots`                              | GET           | `/admin/slots`                              |
-| `/api/admin/pgqueuer`                           | GET           | `/admin/pgqueuer`                           |
-| `/api/public/experiments`                       | GET           | `/public/experiments`                       |
-| `/api/public/experiments/[token]`               | GET           | `/public/experiments/{token}`               |
-| `/api/public/experiments/[token]/tasks`         | GET           | `/public/experiments/{token}/tasks`         |
-| `/api/public/trials/[trial_id]/logs`            | GET           | `/public/trials/{trial_id}/logs`            |
-| `/api/public/trials/[trial_id]/logs/structured` | GET           | `/public/trials/{trial_id}/logs/structured` |
-| `/api/public/trials/[trial_id]/trajectory`      | GET           | `/public/trials/{trial_id}/trajectory`      |
-| `/api/public/trials/[trial_id]/result`          | GET           | `/public/trials/{trial_id}/result`          |
-| `/api/public/trials/[trial_id]/files`           | GET           | `/public/trials/{trial_id}/files`           |
-| `/api/public/trials/[trial_id]/files/[...path]` | GET           | `/public/trials/{trial_id}/files/{path}`    |
-| `/api/public/tasks/[task_id]/files`             | GET           | `/public/tasks/{task_id}/files`             |
-| `/api/public/tasks/[task_id]/files/[...path]`   | GET           | `/public/tasks/{task_id}/files/{path}`      |
+Primary route groups:
+
+- `/api/tasks/*` and `/api/trials/*` for task execution, logs, results, and files
+- `/api/experiments/*` for experiment management and sharing
+- `/api/settings/*` for API key management
+- `/api/admin/*` for operational views
+- `/api/public/*` for tokenized public datasets and artifacts
+
+For the canonical backend route list and behavior, see `backend/README.md`.
 
 ### Route handler pattern
 
@@ -226,7 +202,8 @@ The frontend uses [Clerk](https://clerk.com) for authentication:
 2. API requests include Clerk session token
 3. Backend validates token and auto-provisions orgs/users
 
-The frontend forwards auth through both `Authorization` and `X-Clerk-Authorization` compatible header paths used by backend auth parsing.
+Route handlers forward auth to backend-compatible headers; backend-side token
+validation and auth scope logic are documented in `backend/README.md`.
 
 ### JWT template
 
@@ -255,7 +232,7 @@ https://abundant-ai--api.modal.run/webhooks/clerk
 ### Local backend workflow
 
 ```bash
-# Terminal 1: Start backend
+# Terminal 1: Start local core API
 cd ../oddish
 docker compose up -d db
 uv run python -m oddish.api
@@ -268,22 +245,17 @@ pnpm dev:local
 ### Modal backend workflow
 
 ```bash
-# Terminal 1: Start Modal API
+# Terminal 1: Start Modal backend
 cd ../backend
 modal serve deploy.py
 
-# Terminal 2: Start frontend (explicit API URL override)
+# Terminal 2: Start frontend
 export NEXT_PUBLIC_MODAL_API_URL="https://username--api-dev.modal.run"
 pnpm dev:modal
 ```
 
-Equivalent modal workflow without explicit override:
-
-```bash
-# frontend pointed at default modal URL derivation
-cd ../frontend
-pnpm dev:modal
-```
+Backend startup details and environment requirements are maintained in
+`oddish/README.md` (local core API) and `backend/README.md` (Modal backend).
 
 ### Use Clerk production keys locally (optional)
 
