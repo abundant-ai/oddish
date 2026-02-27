@@ -20,8 +20,6 @@
 
 > Run evals on [Harbor](https://github.com/laude-institute/harbor) tasks at scale with queuing, retries, and monitoring.
 
-## Overview
-
 Oddish extends Harbor with:
 
 - Provider-aware queuing and automatic retries for LLM providers
@@ -38,7 +36,7 @@ Oddish extends Harbor with:
 uv pip install oddish
 ```
 
-### 2. Generate an Oddish API key
+### 2. Generate an API key
 
 - API key generation is restricted during the beta. To request access, contact the [maintainer](https://github.com/RishiDesai).
 
@@ -81,12 +79,6 @@ agents:
 ```bash
 oddish status
 ```
-
-## Commands
-
-- `oddish run` — submit a job
-- `oddish status` — monitor progress
-- `oddish clean` — cleanup jobs
 
 ## Documentation
 
