@@ -15,41 +15,15 @@ from harbor import Job, JobConfig  # type: ignore[attr-defined]
 from harbor.models.task.config import MCPServerConfig, TaskConfig as HarborTaskConfig
 from harbor.models.trial.config import (
     AgentConfig,
-    ArtifactConfig,
-    EnvironmentConfig,
     TaskConfig,
-    VerifierConfig,
 )
 from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialHookEvent
 from harbor.models.job.result import JobResult
 
+from oddish.schemas import HarborConfig
+
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
-
-
-_KNOWN_HARBOR_CONFIG_KEYS = {
-    "disable_verification",
-    "verifier_timeout_sec",
-    "env_cpus",
-    "env_memory_mb",
-    "env_storage_mb",
-    "env_gpus",
-    "env_gpu_types",
-    "allow_internet",
-    "agent_setup_timeout_sec",
-    "docker_image",
-    "mcp_servers",
-    "artifacts",
-    "sandbox_timeout_secs",
-    "sandbox_idle_timeout_secs",
-    "auto_stop_interval_mins",
-    "auto_delete_interval_mins",
-    "snapshot_template_name",
-    "agent_env",
-    "agent_kwargs",
-    "agent_timeout_sec",
-    "force_build",
-}
 
 
 @dataclass(frozen=True)
@@ -221,11 +195,11 @@ def _extract_outcome_from_job_result(
     return _outcome(None)
 
 
-def _patch_task_toml(task_dir: Path, harbor_config: dict[str, Any]) -> None:
-    """Patch task.toml in *task_dir* with overrides from *harbor_config*.
+def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
+    """Patch task.toml with ``docker_image`` and ``mcp_servers`` from *hc*.
 
-    Handles fields that Harbor reads from the task config rather than
-    the job/trial config: ``docker_image`` and ``mcp_servers``.
+    These fields are read by Harbor from the task's task.toml rather than
+    the job/trial config, so we patch the file before execution.
     """
     config_path = task_dir / "task.toml"
     if not config_path.exists():
@@ -234,79 +208,23 @@ def _patch_task_toml(task_dir: Path, harbor_config: dict[str, Any]) -> None:
     try:
         task_config = HarborTaskConfig.model_validate_toml(config_path.read_text())
     except Exception:
-        # Keep the trial runnable even if task.toml has unexpected shape.
         return
 
     changed = False
 
-    docker_image = harbor_config.get("docker_image")
-    if docker_image:
-        task_config.environment.docker_image = str(docker_image)
+    if hc.docker_image:
+        task_config.environment.docker_image = str(hc.docker_image)
         changed = True
 
-    mcp_servers = harbor_config.get("mcp_servers")
-    if isinstance(mcp_servers, list):
-        parsed_servers: list[MCPServerConfig] = []
-        for server in mcp_servers:
-            if not isinstance(server, dict):
-                continue
-            try:
-                parsed_servers.append(MCPServerConfig.model_validate(server))
-            except Exception:
-                continue
-        if parsed_servers:
-            task_config.environment.mcp_servers = parsed_servers
-            changed = True
+    if hc.mcp_servers:
+        task_config.environment.mcp_servers = [
+            MCPServerConfig.model_validate(s.model_dump()) if not isinstance(s, MCPServerConfig) else s
+            for s in hc.mcp_servers
+        ]
+        changed = True
 
     if changed:
         config_path.write_text(task_config.model_dump_toml())
-
-
-def _normalize_artifacts(
-    raw_artifacts: Any,
-) -> list[str | ArtifactConfig]:
-    """Normalize oddish artifact payloads to Harbor's ArtifactConfig shape.
-
-    Oddish historically accepts both strings and dicts with either:
-    - {"source": "...", "destination": "..."} (Harbor-native), or
-    - {"path": "...", "destination": "..."} (Oddish API schema).
-    """
-    if not raw_artifacts:
-        return []
-
-    normalized: list[str | ArtifactConfig] = []
-    for artifact in raw_artifacts:
-        if isinstance(artifact, str):
-            normalized.append(artifact)
-            continue
-
-        if isinstance(artifact, dict):
-            source = artifact.get("source") or artifact.get("path")
-            if isinstance(source, str) and source:
-                normalized.append(
-                    ArtifactConfig(
-                        source=source,
-                        destination=artifact.get("destination"),
-                    )
-                )
-
-    return normalized
-
-
-def _sanitize_harbor_config(raw_config: Any) -> dict[str, Any]:
-    """Keep only known Harbor passthrough keys with basic type checks."""
-    if not isinstance(raw_config, dict):
-        return {}
-
-    sanitized = {k: v for k, v in raw_config.items() if k in _KNOWN_HARBOR_CONFIG_KEYS}
-
-    # Normalize map-like fields to avoid malformed persisted payloads.
-    if not isinstance(sanitized.get("agent_kwargs"), dict):
-        sanitized["agent_kwargs"] = {}
-    if not isinstance(sanitized.get("agent_env"), dict):
-        sanitized["agent_env"] = {}
-
-    return sanitized
 
 
 # =============================================================================
@@ -335,7 +253,7 @@ async def run_harbor_trial_async(
         environment: Execution backend (EnvironmentType)
         hook_callback: Optional callback invoked for trial lifecycle events
         trial_id: Optional trial ID for traceability
-        harbor_config: Optional dict with Harbor passthrough config
+        harbor_config: Optional dict (serialized HarborConfig + agent_overrides)
 
     Returns:
         HarborOutcome with reward, error, tokens, cost, timing, trajectory, and paths
@@ -360,14 +278,12 @@ async def run_harbor_trial_async(
     unique_parent = jobs_dir / f"{task_path.name}.{agent}.{unique_suffix}"
     unique_parent.mkdir(parents=True, exist_ok=True)
 
-    hc = _sanitize_harbor_config(harbor_config)
+    raw = harbor_config or {}
+    hc = HarborConfig.model_validate(raw)
+    agent_overrides: dict[str, Any] = raw.get("agent_overrides", {})
 
     # ── Task patching ────────────────────────────────────────────────────
-    # docker_image and mcp_servers are read by Harbor from the task's
-    # task.toml, not from the job config.  When the caller supplies
-    # overrides we copy the task to a temporary directory and patch its
-    # task.toml so Harbor picks them up.
-    needs_task_patch = bool(hc.get("docker_image") or hc.get("mcp_servers"))
+    needs_task_patch = bool(hc.docker_image or hc.mcp_servers)
     task_tmpdir: tempfile.TemporaryDirectory | None = None
     effective_task_path = task_path
 
@@ -378,79 +294,25 @@ async def run_harbor_trial_async(
         _patch_task_toml(patched_task, hc)
         effective_task_path = patched_task
 
-    # ── Build Harbor EnvironmentConfig ───────────────────────────────────
-    env_type = environment
-    env_kwargs: dict[str, Any] = {}
-
-    # Network isolation: allow_internet maps to network_block_all for Daytona
-    allow_internet = hc.get("allow_internet")
-    if env_type == EnvironmentType.DAYTONA:
-        if allow_internet is not None:
-            env_kwargs["network_block_all"] = not allow_internet
-        else:
-            env_kwargs["network_block_all"] = False
-
-        # Daytona lifecycle controls
-        if hc.get("auto_stop_interval_mins") is not None:
-            env_kwargs["auto_stop_interval_mins"] = hc["auto_stop_interval_mins"]
-        if hc.get("auto_delete_interval_mins") is not None:
-            env_kwargs["auto_delete_interval_mins"] = hc["auto_delete_interval_mins"]
-        if hc.get("snapshot_template_name") is not None:
-            env_kwargs["snapshot_template_name"] = hc["snapshot_template_name"]
-
-    # Modal sandbox lifecycle controls
-    if env_type == EnvironmentType.MODAL:
-        if hc.get("sandbox_timeout_secs") is not None:
-            env_kwargs["sandbox_timeout_secs"] = hc["sandbox_timeout_secs"]
-        if hc.get("sandbox_idle_timeout_secs") is not None:
-            env_kwargs["sandbox_idle_timeout_secs"] = hc["sandbox_idle_timeout_secs"]
-
-    # GPU type selection forwarded via kwargs
-    gpu_types = hc.get("env_gpu_types")
-    if gpu_types:
-        env_kwargs["gpu_types"] = gpu_types
-
-    env_config = EnvironmentConfig(
-        type=env_type,
-        override_cpus=hc.get("env_cpus"),
-        override_memory_mb=hc.get("env_memory_mb"),
-        override_storage_mb=hc.get("env_storage_mb"),
-        override_gpus=hc.get("env_gpus"),
-        force_build=hc.get("force_build", False),
-        kwargs=env_kwargs,
-    )
-
-    # Build Harbor AgentConfig
-    agent_kwargs = hc.get("agent_kwargs") or {}
-
-    agent_env = hc.get("agent_env") if isinstance(hc.get("agent_env"), dict) else {}
-
-    # Respect task.toml agent timeout by default. Only apply an override
-    # when API callers explicitly set timeout_minutes.
-    agent_timeout_override_sec = hc.get("agent_timeout_sec")
+    # ── Build Harbor configs ─────────────────────────────────────────────
+    env_config = hc.environment.model_copy()
+    env_config.type = environment
 
     agent_config = AgentConfig(
         name=agent,
         model_name=model,
-        override_timeout_sec=agent_timeout_override_sec,
-        override_setup_timeout_sec=hc.get("agent_setup_timeout_sec"),
-        kwargs=agent_kwargs,
-        env=agent_env,
+        override_timeout_sec=agent_overrides.get("override_timeout_sec"),
+        override_setup_timeout_sec=agent_overrides.get("override_setup_timeout_sec"),
+        kwargs=agent_overrides.get("kwargs", {}),
+        env=agent_overrides.get("env", {}),
     )
-
-    # Build Harbor VerifierConfig
-    verifier_config = VerifierConfig(
-        disable=hc.get("disable_verification", False),
-        override_timeout_sec=hc.get("verifier_timeout_sec"),
-    )
-    artifacts = _normalize_artifacts(hc.get("artifacts"))
 
     config = JobConfig(
         tasks=[TaskConfig(path=effective_task_path)],
         agents=[agent_config],
         environment=env_config,
-        verifier=verifier_config,
-        artifacts=artifacts,
+        verifier=hc.verifier,
+        artifacts=hc.artifacts,
         jobs_dir=unique_parent,
     )
 

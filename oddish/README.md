@@ -318,7 +318,14 @@ oddish run ./my-task -a claude-code -m claude-sonnet-4-5
 oddish run -d terminalbench@2.0 -c sweep.yaml
 
 # Optional run flags
-oddish run ./my-task --run-analysis --env daytona
+oddish run ./my-task --run-analysis --env daytona --override-cpus 4
+
+# Pass environment variables and kwargs to the agent
+oddish run ./my-task -a claude-code -m claude-sonnet-4-5 \
+  --ae AWS_REGION=us-east-1 --ak max_thinking_tokens=8000
+
+# Force rebuild and collect artifacts
+oddish run ./my-task -a claude-code --force-build --artifact /workspace/output.txt
 
 # Monitor
 oddish status
@@ -329,6 +336,90 @@ oddish status --experiment <experiment_id> --watch
 oddish clean <task_id>
 oddish clean --experiment <id>
 oddish clean --all-experiments
+```
+
+### Sweep Config Files
+
+A sweep config file (YAML or JSON, passed via `oddish run -c sweep.yaml`) defines
+which agents and models to evaluate:
+
+```yaml
+agents:
+  - name: claude-code
+    model_name: anthropic/claude-sonnet-4-5
+    n_trials: 3
+    env:                        # optional: agent env vars
+      CUSTOM_VAR: "value"
+    kwargs:                     # optional: agent kwargs
+      max_thinking_tokens: 8000
+
+  - name: codex
+    model_name: openai/gpt-5.2
+    n_trials: 3
+    timeout_minutes: 120        # optional: per-agent timeout
+
+# Task source (pick one):
+path: ./my-task                 # local task or dataset directory
+dataset: swebench@1.0           # registry dataset
+
+# Optional filtering:
+task_names: ["task-*"]
+exclude_task_names: ["*-slow"]
+n_tasks: 10
+
+# Optional fields:
+environment: daytona
+priority: low
+experiment_id: exp_123
+```
+
+### Harbor Execution Config
+
+All Harbor execution settings (environment resources, verifier config, artifacts)
+are passed via a nested `harbor` field in the API. This directly uses Harbor's
+native `EnvironmentConfig`, `VerifierConfig`, and `ArtifactConfig` types:
+
+```json
+{
+  "task_id": "abc123",
+  "configs": [{"agent": "claude-code", "model": "claude-sonnet-4-5", "n_trials": 3}],
+  "user": "alice",
+  "harbor": {
+    "environment": {
+      "override_cpus": 4,
+      "override_memory_mb": 8192,
+      "override_gpus": 1,
+      "kwargs": {
+        "network_block_all": false,
+        "sandbox_timeout_secs": 86400
+      }
+    },
+    "verifier": {
+      "disable": true
+    },
+    "artifacts": ["/workspace/output.txt"],
+    "docker_image": "my-registry/my-image:latest"
+  }
+}
+```
+
+Per-trial agent overrides (env vars, kwargs, timeouts) use `agent_config`:
+
+```json
+{
+  "configs": [
+    {
+      "agent": "claude-code",
+      "model": "claude-sonnet-4-5",
+      "n_trials": 3,
+      "agent_config": {
+        "env": {"CUSTOM_VAR": "value"},
+        "kwargs": {"max_thinking_tokens": 8000},
+        "override_timeout_sec": 7200
+      }
+    }
+  ]
+}
 ```
 
 ### GitHub Actions Integration
@@ -361,7 +452,7 @@ oddish/
 ├── src/oddish/
 │   ├── __init__.py          # Public API (lazy-loaded exports)
 │   ├── config.py            # Settings, provider mapping
-│   ├── schemas.py           # Pydantic request/response models
+│   ├── schemas.py           # Pydantic request/response models (HarborConfig, TaskSubmission, etc.)
 │   ├── queue.py             # Task creation, queue orchestration
 │   ├── experiment.py        # Experiment name generation
 │   ├── infra.py             # Docker/infrastructure helpers
@@ -422,7 +513,7 @@ from oddish.workers.queue import create_queue_manager
 from oddish.config import settings
 
 # Schemas
-from oddish.schemas import TaskSubmission, TrialSpec
+from oddish.schemas import TaskSubmission, TaskSweepSubmission, TrialSpec, HarborConfig
 ```
 
 ## Database Migrations

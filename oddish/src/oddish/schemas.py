@@ -8,17 +8,45 @@ from pydantic import BaseModel, Field, model_validator
 from harbor.models.agent.name import AgentName
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.task.config import MCPServerConfig as MCPServerSpec
+from harbor.models.trial.config import (
+    AgentConfig as HarborAgentConfig,
+    ArtifactConfig as HarborArtifactConfig,
+    EnvironmentConfig as HarborEnvironmentConfig,
+    VerifierConfig as HarborVerifierConfig,
+)
 
 from oddish.db import AnalysisStatus, Priority, TaskStatus, TrialStatus, VerdictStatus
 
 _MODEL_ABSENT_ALIASES: set[str] = {"", "-", "none", "null", "nil", "n/a", "na", "default"}
 
 
-class ArtifactSpec(BaseModel):
-    """Specification for a file to extract from the sandbox after execution."""
+# =============================================================================
+# Harbor Execution Config (wraps Harbor's native types)
+# =============================================================================
 
-    path: str
-    destination: str | None = None
+
+class HarborConfig(BaseModel):
+    """Structured Harbor execution config using Harbor's native types.
+
+    Embeds Harbor's EnvironmentConfig, VerifierConfig, and ArtifactConfig
+    directly so that new Harbor fields are automatically available without
+    Oddish-side changes.
+    """
+
+    environment: HarborEnvironmentConfig = Field(
+        default_factory=HarborEnvironmentConfig
+    )
+    verifier: HarborVerifierConfig = Field(default_factory=HarborVerifierConfig)
+    artifacts: list[str | HarborArtifactConfig] = Field(default_factory=list)
+
+    docker_image: str | None = Field(
+        None,
+        description="Prebuilt Docker image (patched into task.toml, not a JobConfig field)",
+    )
+    mcp_servers: list[MCPServerSpec] | None = Field(
+        None,
+        description="MCP servers to make available in the task environment",
+    )
 
 
 # =============================================================================
@@ -29,10 +57,8 @@ class ArtifactSpec(BaseModel):
 class TrialSpec(BaseModel):
     """Specification for a single trial (API input).
 
-    Not Harbor's AgentConfig — this is an API-facing schema with simpler field
-    names (``agent`` vs ``name``, ``model`` vs ``model_name``,
-    ``timeout_minutes`` vs ``override_timeout_sec``).  Translation to Harbor's
-    AgentConfig happens in oddish's queue/runner layer.
+    ``agent`` and ``model`` identify *what* to run.  Per-trial Harbor overrides
+    (env vars, kwargs, timeouts) live in the optional ``agent_config``.
     """
 
     agent: str = Field(
@@ -45,13 +71,9 @@ class TrialSpec(BaseModel):
     environment: EnvironmentType | None = Field(
         None, description="Execution backend override"
     )
-    agent_env: dict[str, str] = Field(
-        default_factory=dict,
-        description="Extra environment variables injected into the agent sandbox",
-    )
-    agent_kwargs: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Agent-specific keyword arguments forwarded to Harbor's AgentConfig.kwargs (e.g. max_thinking_tokens)",
+    agent_config: HarborAgentConfig | None = Field(
+        None,
+        description="Per-trial Harbor AgentConfig overrides (env vars, kwargs, setup timeout, etc.)",
     )
 
     @model_validator(mode="after")
@@ -82,80 +104,7 @@ class AgentModelPair(TrialSpec):
     )
 
 
-class HarborPassthroughConfig(BaseModel):
-    """Harbor configuration fields passed through to the execution layer.
-
-    Shared by TaskSubmission and TaskSweepSubmission to avoid duplication.
-    """
-
-    # Verifier
-    disable_verification: bool = Field(
-        False,
-        description="Skip test verification (useful for RL rollout generation)",
-    )
-    verifier_timeout_sec: float | None = Field(
-        None,
-        description="Override the default verifier timeout in seconds",
-    )
-
-    # Environment resources
-    env_cpus: int | None = Field(None, description="Override sandbox CPU count")
-    env_memory_mb: int | None = Field(None, description="Override sandbox memory in MB")
-    env_storage_mb: int | None = Field(
-        None, description="Override sandbox storage in MB"
-    )
-    env_gpus: int | None = Field(None, description="Override sandbox GPU count")
-    env_gpu_types: list[str] | None = Field(
-        None,
-        description="Acceptable GPU types (e.g. ['A100', 'H100']). None means any type.",
-    )
-    allow_internet: bool | None = Field(
-        None,
-        description="Whether to allow internet access in sandbox (None = use task default)",
-    )
-    agent_setup_timeout_sec: float | None = Field(
-        None,
-        description="Override agent setup/installation timeout in seconds",
-    )
-    docker_image: str | None = Field(
-        None,
-        description="Prebuilt Docker image to use instead of building from task Dockerfile",
-    )
-    mcp_servers: list[MCPServerSpec] | None = Field(
-        None,
-        description="MCP servers to make available in the task environment",
-    )
-    artifacts: list[ArtifactSpec | str] | None = Field(
-        None,
-        description="Files to extract from sandbox after execution",
-    )
-
-    # Modal sandbox lifecycle
-    sandbox_timeout_secs: int | None = Field(
-        None,
-        description="Maximum lifetime of a Modal sandbox in seconds (default 86400 = 24h)",
-    )
-    sandbox_idle_timeout_secs: int | None = Field(
-        None,
-        description="Seconds of inactivity before a Modal sandbox is terminated",
-    )
-
-    # Daytona sandbox lifecycle
-    auto_stop_interval_mins: int | None = Field(
-        None,
-        description="Minutes of inactivity before a Daytona sandbox is stopped (0 = no auto-stop)",
-    )
-    auto_delete_interval_mins: int | None = Field(
-        None,
-        description="Minutes after stop before a Daytona sandbox is deleted (0 = immediate)",
-    )
-    snapshot_template_name: str | None = Field(
-        None,
-        description="Daytona snapshot template name for faster env init (use {name} placeholder)",
-    )
-
-
-class TaskSubmission(HarborPassthroughConfig):
+class TaskSubmission(BaseModel):
     """Task submission request (API input)."""
 
     task_path: str = Field(..., description="Path to Harbor task directory")
@@ -176,6 +125,10 @@ class TaskSubmission(HarborPassthroughConfig):
         None,
         description="GitHub username to attribute this task to (recorded as metadata)",
     )
+    harbor: HarborConfig = Field(
+        default_factory=HarborConfig,
+        description="Harbor execution config (environment, verifier, artifacts, etc.)",
+    )
 
     @model_validator(mode="after")
     def require_models(self):
@@ -186,7 +139,7 @@ class TaskSubmission(HarborPassthroughConfig):
         return self
 
 
-class TaskSweepSubmission(HarborPassthroughConfig):
+class TaskSweepSubmission(BaseModel):
     """Convenience API for the common workflow: one task + many agent/model pairs.
 
     The server expands this into a normal TaskSubmission with trials for each agent/model pair.
@@ -199,7 +152,8 @@ class TaskSweepSubmission(HarborPassthroughConfig):
                 {"agent": "claude-code", "model": "claude-sonnet-4-5", "n_trials": 3},
                 {"agent": "terminus-2", "model": "gemini-3-pro-preview", "n_trials": 5},
             ],
-            "user": "alice"
+            "user": "alice",
+            "harbor": {"verifier": {"disable": true}}
         }
     """
 
@@ -233,6 +187,10 @@ class TaskSweepSubmission(HarborPassthroughConfig):
     publish_experiment: bool | None = Field(
         None,
         description="If true, publish the experiment for public read-only access",
+    )
+    harbor: HarborConfig = Field(
+        default_factory=HarborConfig,
+        description="Harbor execution config (environment, verifier, artifacts, etc.)",
     )
 
     @model_validator(mode="after")

@@ -64,9 +64,10 @@ def build_trial_specs_from_sweep(
                 "model": config.model,
                 "environment": trial_environment,
             }
-            # Keep Harbor task.toml timeout by default; only override when explicit.
             if timeout_explicit:
                 trial_kwargs["timeout_minutes"] = timeout_minutes
+            if config.agent_config:
+                trial_kwargs["agent_config"] = config.agent_config
             trials.append(TrialSpec(**trial_kwargs))
 
     return trials
@@ -87,21 +88,6 @@ def build_task_submission_from_sweep(
         experiment_id=submission.experiment_id,
         tags=submission.tags,
         run_analysis=submission.run_analysis,
-        disable_verification=submission.disable_verification,
-        verifier_timeout_sec=submission.verifier_timeout_sec,
-        env_cpus=submission.env_cpus,
-        env_memory_mb=submission.env_memory_mb,
-        env_storage_mb=submission.env_storage_mb,
-        env_gpus=submission.env_gpus,
-        env_gpu_types=submission.env_gpu_types,
-        allow_internet=submission.allow_internet,
-        agent_setup_timeout_sec=submission.agent_setup_timeout_sec,
-        docker_image=submission.docker_image,
-        mcp_servers=submission.mcp_servers,
-        artifacts=submission.artifacts,
-        sandbox_timeout_secs=submission.sandbox_timeout_secs,
-        sandbox_idle_timeout_secs=submission.sandbox_idle_timeout_secs,
-        auto_stop_interval_mins=submission.auto_stop_interval_mins,
-        auto_delete_interval_mins=submission.auto_delete_interval_mins,
-        snapshot_template_name=submission.snapshot_template_name,
+        github_username=submission.github_username,
+        harbor=submission.harbor,
     )
