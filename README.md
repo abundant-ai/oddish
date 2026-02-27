@@ -26,7 +26,7 @@ Oddish extends Harbor with:
 - Real-time monitoring via dashboard or CLI
 - Postgres-backed state plus S3 for artifacts
 
-**Harbor compatibility:** replace `harbor run` with `oddish run`.
+Just replace `harbor run` with `oddish run`.
 
 ## Quick Start
 
@@ -36,7 +36,7 @@ Oddish extends Harbor with:
 uv pip install oddish
 ```
 
-### 2. Generate an API key
+### 2. Generate an API key [here](https://oddish.app/)
 
 - API key generation is restricted during the beta. To request access, contact the [maintainer](https://github.com/RishiDesai).
 

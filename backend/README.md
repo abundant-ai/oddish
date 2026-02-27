@@ -2,8 +2,6 @@
 
 Serverless API and worker orchestration for Oddish Cloud, deployed on [Modal](https://modal.com), with multi-tenant authentication and authorization.
 
-For a step-by-step self-deploy walkthrough, see [SELF_HOSTING.md](../SELF_HOSTING.md).
-
 ## Overview
 
 The backend wraps the OSS `oddish` core with:
@@ -268,37 +266,4 @@ curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_MODAL_API_URL/tasks" | 
 
 # dashboard queue overview
 curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_MODAL_API_URL/dashboard" | jq '.queues'
-```
-
-## Troubleshooting
-
-### "Organization not found"
-
-- Confirm Clerk token includes `org_id`
-- Verify `CLERK_DOMAIN` is configured
-- Confirm org provisioning exists in backend DB
-
-### Tasks are queued but not executing
-
-```bash
-modal app logs oddish
-```
-
-Check queue depth:
-
-```bash
-curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_MODAL_API_URL/dashboard" | jq '.queues'
-```
-
-### Database connection issues
-
-```bash
-psql "$DATABASE_URL" -c "SELECT 1"
-modal secret list
-```
-
-### S3 upload failures
-
-```bash
-aws s3 ls "s3://$ODDISH_S3_BUCKET" --endpoint-url "$ODDISH_S3_ENDPOINT_URL"
 ```

@@ -1,10 +1,5 @@
 # Oddish Frontend
 
-Next.js dashboard for the Oddish evaluation platform with Clerk authentication.
-
-For product overview and CLI quick start, see the repository root [README.md](../README.md).  
-For cloud API/worker deployment details, see [backend/README.md](../backend/README.md).
-
 ## Overview
 
 The frontend provides:
