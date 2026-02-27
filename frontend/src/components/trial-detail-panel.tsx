@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
+import useSWR from "swr";
 import { mutate } from "swr";
 import {
   ResizableDrawer,
@@ -27,10 +28,19 @@ import {
   XCircle,
   AlertTriangle,
   Route,
+  Terminal,
+  Bot,
+  FlaskConical,
+  Flame,
+  Package,
 } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { TrajectoryViewer } from "@/components/trajectory-viewer";
 import { TaskFilesPanel } from "@/components/task-files-panel";
+import { CodeBlock } from "@/components/code-block";
+import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
+import { ArtifactsViewer } from "@/components/artifacts-viewer";
 import type { Trial, Task } from "@/lib/types";
 import {
   getMatrixStatus,
@@ -41,6 +51,23 @@ import { fetcher } from "@/lib/api";
 import { HarborStageTimeline } from "@/components/harbor-stage-timeline";
 import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
+
+interface StructuredLogs {
+  trial_id: string;
+  agent: {
+    oracle: string | null;
+    setup: string | null;
+    commands: Array<{ name: string; content: string }>;
+  };
+  verifier: {
+    stdout: string | null;
+    stderr: string | null;
+  };
+  other: Array<{ name: string; content: string }>;
+  exception: string | null;
+}
+
+type LogCategory = "agent" | "verifier" | "other" | "exception";
 
 interface TrialDetailPanelProps {
   isOpen: boolean;
@@ -91,7 +118,47 @@ export function TrialDetailPanel({
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [logCategory, setLogCategory] = useState<LogCategory>("agent");
+  const [logCategoryInitialized, setLogCategoryInitialized] = useState(false);
   const trialId = trial?.id;
+
+  // Fetch structured logs when Logs tab is active
+  const logsSwrKey =
+    isOpen && trialId && activeTab === "logs"
+      ? `${apiBaseUrl}/trials/${trialId}/logs/structured`
+      : null;
+
+  const {
+    data: structuredLogs,
+    error: logsSwrError,
+    isLoading: logsLoading,
+  } = useSWR<StructuredLogs>(logsSwrKey, fetcher, {
+    revalidateOnFocus: false,
+    revalidateOnReconnect: false,
+  });
+
+  // Auto-select first available log category
+  useEffect(() => {
+    if (!structuredLogs || logCategoryInitialized) return;
+
+    if (
+      structuredLogs.agent.oracle ||
+      structuredLogs.agent.setup ||
+      structuredLogs.agent.commands.length > 0
+    ) {
+      setLogCategory("agent");
+    } else if (
+      structuredLogs.verifier.stdout ||
+      structuredLogs.verifier.stderr
+    ) {
+      setLogCategory("verifier");
+    } else if (structuredLogs.other && structuredLogs.other.length > 0) {
+      setLogCategory("other");
+    } else if (structuredLogs.exception) {
+      setLogCategory("exception");
+    }
+    setLogCategoryInitialized(true);
+  }, [structuredLogs, logCategoryInitialized]);
 
   // Prefetch trajectory while viewing summary to reduce perceived latency.
   useEffect(() => {
@@ -139,6 +206,7 @@ export function TrialDetailPanel({
       setShowFullError(false);
       setRetrying(false);
       setRetryError(null);
+      setLogCategoryInitialized(false);
     }
   }, [isOpen]);
 
@@ -490,6 +558,13 @@ export function TrialDetailPanel({
               Summary
             </TabsTrigger>
             <TabsTrigger
+              value="logs"
+              className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-3 sm:px-4 text-xs sm:text-sm"
+            >
+              <Terminal className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1 sm:mr-2" />
+              Logs
+            </TabsTrigger>
+            <TabsTrigger
               value="files"
               className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-3 sm:px-4 text-xs sm:text-sm"
             >
@@ -502,6 +577,13 @@ export function TrialDetailPanel({
             >
               <Route className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1 sm:mr-2" />
               Trajectory
+            </TabsTrigger>
+            <TabsTrigger
+              value="artifacts"
+              className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-3 sm:px-4 text-xs sm:text-sm"
+            >
+              <Package className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1 sm:mr-2" />
+              Artifacts
             </TabsTrigger>
           </TabsList>
         </div>
@@ -601,7 +683,12 @@ export function TrialDetailPanel({
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="px-4 pb-3">
-                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2">
+                  <TimingBreakdownBar
+                    createdAt={trial.created_at}
+                    startedAt={trial.started_at}
+                    finishedAt={trial.finished_at}
+                  />
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2 mt-3">
                     {formatDate(trial.created_at)}
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
@@ -685,6 +772,253 @@ export function TrialDetailPanel({
             </div>
           </TabsContent>
 
+          <TabsContent value="logs" className="m-0 h-full p-0">
+            <div className="h-full flex">
+              {logsLoading ? (
+                <div className="flex-1 p-4 space-y-2">
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-3/4" />
+                  <Skeleton className="h-4 w-5/6" />
+                </div>
+              ) : logsSwrError ? (
+                <div className="flex-1 p-4 text-center">
+                  <AlertCircle className="h-8 w-8 text-red-500 mx-auto mb-2" />
+                  <p className="text-sm text-muted-foreground">
+                    {logsSwrError?.message ?? "Failed to load logs"}
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="w-28 sm:w-32 shrink-0 border-r border-border bg-muted/20 flex flex-col p-2 space-y-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setLogCategory("agent")}
+                      className={cn(
+                        "w-full justify-start gap-2 px-2 py-1.5 text-xs",
+                        logCategory === "agent"
+                          ? "bg-primary/10 text-primary font-medium"
+                          : "text-muted-foreground hover:bg-muted",
+                      )}
+                    >
+                      <Bot className="h-3.5 w-3.5" />
+                      Agent
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setLogCategory("verifier")}
+                      className={cn(
+                        "w-full justify-start gap-2 px-2 py-1.5 text-xs",
+                        logCategory === "verifier"
+                          ? "bg-primary/10 text-primary font-medium"
+                          : "text-muted-foreground hover:bg-muted",
+                      )}
+                    >
+                      <FlaskConical className="h-3.5 w-3.5" />
+                      Tests
+                    </Button>
+                    {structuredLogs?.other &&
+                      structuredLogs.other.length > 0 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setLogCategory("other")}
+                          className={cn(
+                            "w-full justify-start gap-2 px-2 py-1.5 text-xs",
+                            logCategory === "other"
+                              ? "bg-primary/10 text-primary font-medium"
+                              : "text-muted-foreground hover:bg-muted",
+                          )}
+                        >
+                          <FileText className="h-3.5 w-3.5" />
+                          Other
+                        </Button>
+                      )}
+                    {(structuredLogs?.exception || trial.error_message) && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setLogCategory("exception")}
+                        className={cn(
+                          "w-full justify-start gap-2 px-2 py-1.5 text-xs",
+                          logCategory === "exception"
+                            ? "bg-red-500/10 text-red-500 font-medium"
+                            : "text-red-500/70 hover:bg-red-500/10",
+                        )}
+                      >
+                        <Flame className="h-3.5 w-3.5" />
+                        Error
+                      </Button>
+                    )}
+                  </div>
+
+                  <div className="flex-1 overflow-auto p-3">
+                    {logCategory === "agent" &&
+                      (() => {
+                        const agentTabs: {
+                          id: string;
+                          label: string;
+                          content: string;
+                          lang: string;
+                        }[] = [];
+                        if (structuredLogs?.agent.oracle)
+                          agentTabs.push({
+                            id: "oracle",
+                            label: "Oracle",
+                            content: structuredLogs.agent.oracle,
+                            lang: "text",
+                          });
+                        if (structuredLogs?.agent.setup)
+                          agentTabs.push({
+                            id: "setup",
+                            label: "Setup",
+                            content: structuredLogs.agent.setup,
+                            lang: "bash",
+                          });
+                        for (const cmd of structuredLogs?.agent.commands ?? [])
+                          agentTabs.push({
+                            id: `cmd-${cmd.name}`,
+                            label: cmd.name,
+                            content: cmd.content,
+                            lang: "bash",
+                          });
+
+                        if (agentTabs.length === 0)
+                          return (
+                            <div className="text-center py-8 text-muted-foreground text-sm">
+                              No agent logs available
+                            </div>
+                          );
+
+                        return (
+                          <Tabs defaultValue={agentTabs[0].id}>
+                            <TabsList className="h-8 bg-muted/50 flex-wrap">
+                              {agentTabs.map((tab) => (
+                                <TabsTrigger
+                                  key={tab.id}
+                                  value={tab.id}
+                                  className="text-xs px-3 py-1"
+                                >
+                                  {tab.label}
+                                </TabsTrigger>
+                              ))}
+                            </TabsList>
+                            {agentTabs.map((tab) => (
+                              <TabsContent
+                                key={tab.id}
+                                value={tab.id}
+                                className="mt-2"
+                              >
+                                <CodeBlock
+                                  code={tab.content}
+                                  language={tab.lang}
+                                  maxHeight="24rem"
+                                />
+                              </TabsContent>
+                            ))}
+                          </Tabs>
+                        );
+                      })()}
+
+                    {logCategory === "verifier" && (
+                      <div className="space-y-3">
+                        {structuredLogs?.verifier.stdout ||
+                        structuredLogs?.verifier.stderr ? (
+                          <Tabs
+                            defaultValue={
+                              structuredLogs?.verifier.stdout
+                                ? "stdout"
+                                : "stderr"
+                            }
+                          >
+                            <TabsList className="h-8 bg-muted/50">
+                              {structuredLogs?.verifier.stdout && (
+                                <TabsTrigger
+                                  value="stdout"
+                                  className="text-xs px-3 py-1"
+                                >
+                                  Output
+                                </TabsTrigger>
+                              )}
+                              {structuredLogs?.verifier.stderr && (
+                                <TabsTrigger
+                                  value="stderr"
+                                  className="text-xs px-3 py-1"
+                                >
+                                  Stderr
+                                </TabsTrigger>
+                              )}
+                            </TabsList>
+                            {structuredLogs?.verifier.stdout && (
+                              <TabsContent value="stdout" className="mt-2">
+                                <CodeBlock
+                                  code={structuredLogs.verifier.stdout}
+                                  language="text"
+                                  maxHeight="24rem"
+                                />
+                              </TabsContent>
+                            )}
+                            {structuredLogs?.verifier.stderr && (
+                              <TabsContent value="stderr" className="mt-2">
+                                <CodeBlock
+                                  code={structuredLogs.verifier.stderr}
+                                  language="text"
+                                  maxHeight="24rem"
+                                />
+                              </TabsContent>
+                            )}
+                          </Tabs>
+                        ) : (
+                          <div className="text-center py-8 text-muted-foreground text-sm">
+                            No test output available
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {logCategory === "other" && (
+                      <div className="space-y-3">
+                        {structuredLogs?.other.map((log, idx) => (
+                          <div key={idx}>
+                            <h4 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+                              {log.name}
+                            </h4>
+                            <CodeBlock
+                              code={log.content}
+                              language="text"
+                            />
+                          </div>
+                        ))}
+                        {(!structuredLogs?.other ||
+                          structuredLogs.other.length === 0) && (
+                          <div className="text-center py-8 text-muted-foreground text-sm">
+                            No other logs available
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {logCategory === "exception" && (
+                      <CodeBlock
+                        code={
+                          structuredLogs?.exception ||
+                          trial.error_message ||
+                          "No exception details"
+                        }
+                        language="text"
+                      />
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          </TabsContent>
+
           <TabsContent value="files" className="m-0 h-full p-0">
             <TaskFilesPanel
               isOpen={isOpen && activeTab === "files"}
@@ -692,6 +1026,12 @@ export function TrialDetailPanel({
               taskId={null}
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
               contentOnly
+            />
+          </TabsContent>
+
+          <TabsContent value="artifacts" className="m-0 h-full p-0 overflow-auto">
+            <ArtifactsViewer
+              filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
             />
           </TabsContent>
 
