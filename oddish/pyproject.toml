@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "oddish"
-version = "0.1.0"
+version = "0.1.1"
 description = "Postgres-backed eval scheduler for Harbor agent tasks — queuing, retries, and monitoring"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -46,7 +46,7 @@ dependencies = [
     # S3-compatible storage
     "aioboto3>=13.0.0",
     # Harbor
-    "harbor==0.1.44",
+    "harbor==0.1.45",
     # Analysis and classification
     "swegen>=0.1.1",
     "claude-agent-sdk>=0.1.18",
@@ -100,8 +100,6 @@ module = [
 ]
 ignore_missing_imports = true
 
-[tool.uv.sources]
-harbor = { git = "https://github.com/laude-institute/harbor.git", rev = "abcf356385c106cd3e6326306e098483cd38049a" }
 
 [dependency-groups]
 dev = [
