@@ -29,6 +29,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { fetcher } from "@/lib/api";
+import { CodeBlock, getLanguageFromFilename } from "@/components/code-block";
 import type { Task, Trial } from "@/lib/types";
 
 interface TaskFile {
@@ -234,27 +235,7 @@ function getFileIcon(name: string) {
   }
 }
 
-/**
- * Get the language for syntax highlighting based on file extension.
- */
-function getLanguage(name: string): string {
-  const ext = name.split(".").pop()?.toLowerCase();
-  const langMap: Record<string, string> = {
-    ts: "typescript",
-    tsx: "typescript",
-    js: "javascript",
-    jsx: "javascript",
-    py: "python",
-    toml: "toml",
-    yaml: "yaml",
-    yml: "yaml",
-    sh: "bash",
-    json: "json",
-    md: "markdown",
-    txt: "text",
-  };
-  return langMap[ext || ""] || "text";
-}
+// Language detection is handled by getLanguageFromFilename from code-block
 
 function isTextContent(contentType: string): boolean {
   const normalized = contentType.toLowerCase();
@@ -818,13 +799,17 @@ export function TaskFilesPanel({
       );
     }
 
-    const language = getLanguage(selectedFile.name);
+    const language = getLanguageFromFilename(selectedFile.name);
 
     return (
       <div className="flex flex-col h-full">
-        <pre className="flex-1 p-4 text-xs font-mono whitespace-pre-wrap overflow-auto bg-muted/30">
-          <code className={`language-${language}`}>{fileContent}</code>
-        </pre>
+        <CodeBlock
+          code={fileContent}
+          language={language}
+          className="flex-1 min-h-0"
+          maxHeight="none"
+          truncateAt={0}
+        />
         {isTruncated && (
           <div className="flex items-center justify-between px-4 py-3 border-t border-border bg-muted/50">
             <span className="text-xs text-muted-foreground">

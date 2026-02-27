@@ -1,8 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import useSWR from "swr";
-import DOMPurify from "dompurify";
 import {
   Accordion,
   AccordionContent,
@@ -13,7 +12,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { Copy, Check, Route, ChevronRight, ImageOff } from "lucide-react";
+import { Route, ChevronRight, ImageOff } from "lucide-react";
+import { CodeBlock } from "@/components/code-block";
 import { fetcher } from "@/lib/api";
 import type {
   Trajectory,
@@ -489,110 +489,8 @@ function StepMetricsBar({ metrics }: { metrics: TrajectoryStep["metrics"] }) {
 }
 
 // =============================================================================
-// Syntax Highlighted CodeBlock Component
+// Re-export CodeBlock from shared component
 // =============================================================================
-
-// Cache the shiki highlighter promise
-let shikiPromise: Promise<typeof import("shiki")> | null = null;
-
-function getShiki() {
-  if (!shikiPromise) {
-    shikiPromise = import("shiki");
-  }
-  return shikiPromise;
-}
-
-function CodeBlock({
-  code,
-  language = "text",
-  className,
-}: {
-  code: string;
-  language?: "json" | "text" | "bash" | "python" | "typescript" | "javascript";
-  className?: string;
-}) {
-  const [copied, setCopied] = useState(false);
-  const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null);
-  const sanitizedHtml = useMemo(() => {
-    if (!highlightedHtml) {
-      return null;
-    }
-    return DOMPurify.sanitize(highlightedHtml, {
-      USE_PROFILES: { html: true },
-    });
-  }, [highlightedHtml]);
-
-  // Truncate very long code for performance
-  const truncatedCode = useMemo(() => {
-    const maxLength = 50000;
-    if (code.length > maxLength) {
-      return code.slice(0, maxLength) + "\n\n... (truncated)";
-    }
-    return code;
-  }, [code]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function highlight() {
-      try {
-        const shiki = await getShiki();
-        const html = await shiki.codeToHtml(truncatedCode, {
-          lang: language,
-          theme: "github-dark-default",
-        });
-        if (!cancelled) {
-          setHighlightedHtml(html);
-        }
-      } catch {
-        // Fallback to plain text on error
-        if (!cancelled) {
-          setHighlightedHtml(null);
-        }
-      }
-    }
-
-    highlight();
-    return () => {
-      cancelled = true;
-    };
-  }, [truncatedCode, language]);
-
-  const handleCopy = useCallback(async () => {
-    await navigator.clipboard.writeText(code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }, [code]);
-
-  return (
-    <div className={`relative group ${className || ""}`}>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        onClick={handleCopy}
-        className="absolute top-2 right-2 p-1.5 rounded bg-black/50 hover:bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-        title="Copy to clipboard"
-      >
-        {copied ? (
-          <Check className="h-3 w-3 text-green-400" />
-        ) : (
-          <Copy className="h-3 w-3 text-gray-300" />
-        )}
-      </Button>
-      {sanitizedHtml ? (
-        <div
-          className="text-xs rounded overflow-x-auto max-h-64 overflow-y-auto [&>pre]:p-3 [&>pre]:m-0 [&>pre]:bg-[#0d1117] [&>pre]:overflow-x-auto"
-          dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
-        />
-      ) : (
-        <pre className="text-xs bg-[#0d1117] text-gray-300 p-3 rounded overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap break-words">
-          {truncatedCode}
-        </pre>
-      )}
-    </div>
-  );
-}
 
 // =============================================================================
 // StepTrigger Component
@@ -844,18 +742,15 @@ export function TrajectoryViewer({
 
   const [expandedSteps, setExpandedSteps] = useState<string[]>([]);
   const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const stepReset = useRef<string | null>(null);
 
-  // Auto-expand last step if trial has finished (helps debugging failures)
+  // Reset expanded steps when switching to a different trial
   useEffect(() => {
-    if (
-      trajectory &&
-      trajectory.steps.length > 0 &&
-      expandedSteps.length === 0
-    ) {
-      const lastIdx = trajectory.steps.length - 1;
-      setExpandedSteps([`step-${lastIdx}`]);
+    if (trialId !== stepReset.current) {
+      stepReset.current = trialId;
+      setExpandedSteps([]);
     }
-  }, [trajectory, expandedSteps.length]);
+  }, [trialId]);
 
   const handleStepClick = (index: number) => {
     const stepKey = `step-${index}`;

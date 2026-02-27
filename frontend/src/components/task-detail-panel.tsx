@@ -43,6 +43,8 @@ import {
 import { cn } from "@/lib/utils";
 import { TrajectoryViewer } from "@/components/trajectory-viewer";
 import { TrialMetricsCards } from "@/components/trial-metrics-cards";
+import { CodeBlock, getLanguageFromFilename } from "@/components/code-block";
+import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import type { Trial, Task } from "@/lib/types";
 import { getMatrixStatus, STATUS_CONFIG } from "@/lib/status-config";
 import { fetcher } from "@/lib/api";
@@ -613,9 +615,12 @@ function FileBrowser({
               <Skeleton className="h-3 w-5/6" />
             </div>
           ) : selectedFile && fileContent !== null ? (
-            <pre className="p-3 text-[10px] font-mono whitespace-pre-wrap overflow-x-auto">
-              {fileContent}
-            </pre>
+            <CodeBlock
+              code={fileContent}
+              language={getLanguageFromFilename(selectedFile.name)}
+              maxHeight="none"
+              truncateAt={0}
+            />
           ) : (
             <div className="p-4 text-center text-xs text-muted-foreground">
               Select a file to view
@@ -1172,7 +1177,12 @@ function TrialDetailView({
                 </CardTitle>
               </CardHeader>
               <CardContent className="px-4 pb-3">
-                <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2">
+                <TimingBreakdownBar
+                  createdAt={trial.created_at}
+                  startedAt={trial.started_at}
+                  finishedAt={trial.finished_at}
+                />
+                <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2 mt-3">
                   {formatDate(trial.created_at)}
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
@@ -1292,77 +1302,126 @@ function TrialDetailView({
 
                   {/* Log content */}
                   <div className="flex-1 overflow-auto p-3">
-                    {logCategory === "agent" && (
-                      <div className="space-y-3">
-                        {structuredLogs?.agent.oracle && (
-                          <div>
-                            <h4 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
-                              Oracle
-                            </h4>
-                            <pre className="text-xs font-mono bg-muted/50 p-3 rounded overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">
-                              {structuredLogs.agent.oracle}
-                            </pre>
-                          </div>
-                        )}
-                        {structuredLogs?.agent.setup && (
-                          <div>
-                            <h4 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
-                              Setup
-                            </h4>
-                            <pre className="text-xs font-mono bg-muted/50 p-3 rounded overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">
-                              {structuredLogs.agent.setup}
-                            </pre>
-                          </div>
-                        )}
-                        {structuredLogs?.agent.commands.map((cmd) => (
-                          <div key={cmd.name}>
-                            <h4 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
-                              {cmd.name}
-                            </h4>
-                            <pre className="text-xs font-mono bg-muted/50 p-3 rounded overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">
-                              {cmd.content}
-                            </pre>
-                          </div>
-                        ))}
-                        {!structuredLogs?.agent.oracle &&
-                          !structuredLogs?.agent.setup &&
-                          (!structuredLogs?.agent.commands ||
-                            structuredLogs.agent.commands.length === 0) && (
+                    {logCategory === "agent" &&
+                      (() => {
+                        const agentTabs: {
+                          id: string;
+                          label: string;
+                          content: string;
+                          lang: string;
+                        }[] = [];
+                        if (structuredLogs?.agent.oracle)
+                          agentTabs.push({
+                            id: "oracle",
+                            label: "Oracle",
+                            content: structuredLogs.agent.oracle,
+                            lang: "text",
+                          });
+                        if (structuredLogs?.agent.setup)
+                          agentTabs.push({
+                            id: "setup",
+                            label: "Setup",
+                            content: structuredLogs.agent.setup,
+                            lang: "bash",
+                          });
+                        for (const cmd of structuredLogs?.agent.commands ?? [])
+                          agentTabs.push({
+                            id: `cmd-${cmd.name}`,
+                            label: cmd.name,
+                            content: cmd.content,
+                            lang: "bash",
+                          });
+
+                        if (agentTabs.length === 0)
+                          return (
                             <div className="text-center py-8 text-muted-foreground text-sm">
                               No agent logs available
                             </div>
-                          )}
-                      </div>
-                    )}
+                          );
+
+                        return (
+                          <Tabs defaultValue={agentTabs[0].id}>
+                            <TabsList className="h-8 bg-muted/50 flex-wrap">
+                              {agentTabs.map((tab) => (
+                                <TabsTrigger
+                                  key={tab.id}
+                                  value={tab.id}
+                                  className="text-xs px-3 py-1"
+                                >
+                                  {tab.label}
+                                </TabsTrigger>
+                              ))}
+                            </TabsList>
+                            {agentTabs.map((tab) => (
+                              <TabsContent
+                                key={tab.id}
+                                value={tab.id}
+                                className="mt-2"
+                              >
+                                <CodeBlock
+                                  code={tab.content}
+                                  language={tab.lang}
+                                  maxHeight="24rem"
+                                />
+                              </TabsContent>
+                            ))}
+                          </Tabs>
+                        );
+                      })()}
 
                     {logCategory === "verifier" && (
                       <div className="space-y-3">
-                        {structuredLogs?.verifier.stdout && (
-                          <div>
-                            <h4 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
-                              stdout
-                            </h4>
-                            <pre className="text-xs font-mono bg-muted/50 p-3 rounded overflow-x-auto whitespace-pre-wrap max-h-96 overflow-y-auto">
-                              {structuredLogs.verifier.stdout}
-                            </pre>
+                        {structuredLogs?.verifier.stdout ||
+                        structuredLogs?.verifier.stderr ? (
+                          <Tabs
+                            defaultValue={
+                              structuredLogs?.verifier.stdout
+                                ? "stdout"
+                                : "stderr"
+                            }
+                          >
+                            <TabsList className="h-8 bg-muted/50">
+                              {structuredLogs?.verifier.stdout && (
+                                <TabsTrigger
+                                  value="stdout"
+                                  className="text-xs px-3 py-1"
+                                >
+                                  Output
+                                </TabsTrigger>
+                              )}
+                              {structuredLogs?.verifier.stderr && (
+                                <TabsTrigger
+                                  value="stderr"
+                                  className="text-xs px-3 py-1"
+                                >
+                                  Stderr
+                                </TabsTrigger>
+                              )}
+                            </TabsList>
+                            {structuredLogs?.verifier.stdout && (
+                              <TabsContent value="stdout" className="mt-2">
+                                <CodeBlock
+                                  code={structuredLogs.verifier.stdout}
+                                  language="text"
+                                  maxHeight="24rem"
+                                />
+                              </TabsContent>
+                            )}
+                            {structuredLogs?.verifier.stderr && (
+                              <TabsContent value="stderr" className="mt-2">
+                                <CodeBlock
+                                  code={structuredLogs.verifier.stderr}
+                                  language="text"
+                                  maxHeight="24rem"
+                                />
+                              </TabsContent>
+                            )}
+                          </Tabs>
+                        ) : (
+                          <div className="text-center py-8 text-muted-foreground text-sm">
+                            No test output available
                           </div>
                         )}
-                        {structuredLogs?.verifier.stderr && (
-                          <div>
-                            <h4 className="text-[10px] font-semibold text-red-500/80 uppercase tracking-wider mb-1.5">
-                              stderr
-                            </h4>
-                            <pre className="text-xs font-mono bg-red-500/5 border border-red-500/20 p-3 rounded overflow-x-auto whitespace-pre-wrap max-h-96 overflow-y-auto text-red-600 dark:text-red-400">
-                              {structuredLogs.verifier.stderr}
-                            </pre>
-                          </div>
-                        )}
-                        {!structuredLogs?.verifier.stdout &&
-                          !structuredLogs?.verifier.stderr && (
-                            <div className="text-center py-8 text-muted-foreground text-sm">
-                              No test output available
-                            </div>
-                          )}
                       </div>
                     )}
 
@@ -1373,9 +1432,10 @@ function TrialDetailView({
                             <h4 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
                               {log.name}
                             </h4>
-                            <pre className="text-xs font-mono bg-muted/50 p-3 rounded overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">
-                              {log.content}
-                            </pre>
+                            <CodeBlock
+                              code={log.content}
+                              language="text"
+                            />
                           </div>
                         ))}
                         {(!structuredLogs?.other ||
@@ -1388,11 +1448,14 @@ function TrialDetailView({
                     )}
 
                     {logCategory === "exception" && (
-                      <pre className="text-xs font-mono bg-red-500/5 border border-red-500/20 p-3 rounded overflow-x-auto whitespace-pre-wrap text-red-600 dark:text-red-400">
-                        {structuredLogs?.exception ||
+                      <CodeBlock
+                        code={
+                          structuredLogs?.exception ||
                           trial.error_message ||
-                          "No exception details"}
-                      </pre>
+                          "No exception details"
+                        }
+                        language="text"
+                      />
                     )}
                   </div>
                 </>
