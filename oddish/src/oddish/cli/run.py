@@ -577,6 +577,8 @@ def run(
         experiment_url = (
             f"{dashboard_url}/experiments/{experiment_ref}" if experiment_ref else None
         )
+        fallback_url = f"{dashboard_url}/dashboard"
+        task_url = experiment_url or fallback_url
         public_experiment_url = None
         if publish and experiment_id_resolved:
             share = get_experiment_share(api_url, experiment_id_resolved)
@@ -592,7 +594,7 @@ def run(
                 {
                     "id": r["id"],
                     "trials_count": r["trials_count"],
-                    "url": f"{dashboard_url}/tasks/{r['id']}",
+                    "url": task_url,
                     "public_url": public_experiment_url,
                 }
                 for r in all_results
@@ -617,11 +619,17 @@ def run(
             public_experiment_url = f"{dashboard_url}/share/{token}"
     if len(all_results) == 1:
         result = all_results[0]
+        experiment_ref = experiment_id_resolved or experiment_name
+        task_url = (
+            f"{dashboard_url}/experiments/{experiment_ref}"
+            if experiment_ref
+            else f"{dashboard_url}/dashboard"
+        )
         console.print("[bold green]Task submitted![/bold green]")
         console.print(f"  Task ID:    {result['id']}")
         console.print(f"  Trials:     {result['trials_count']}")
         console.print(f"  Providers:  {', '.join(result['providers'].keys())}")
-        console.print(f"  View:       {dashboard_url}/tasks/{result['id']}")
+        console.print(f"  View:       {task_url}")
         if public_experiment_url:
             console.print(f"  Public:     {public_experiment_url}")
     else:
