@@ -332,6 +332,13 @@ oddish status
 oddish status <task_id> --watch
 oddish status --experiment <experiment_id> --watch
 
+# Pull remote logs/artifacts locally
+oddish pull <trial_id>
+oddish pull <task_id>
+oddish pull <experiment_id> --include-task-files
+oddish pull <task_id> --watch --interval 5
+oddish pull <id> --type trial --out ./oddish-pulls/<id>
+
 # Cleanup
 oddish clean <task_id>
 oddish clean --experiment <id>
@@ -402,6 +409,30 @@ native `EnvironmentConfig`, `VerifierConfig`, and `ArtifactConfig` types:
   }
 }
 ```
+
+### Pulling Logs and Artifacts
+
+Use `oddish pull` to download trial/task/experiment outputs from the API into a
+local bundle you can inspect or hand off to local agents.
+
+```bash
+# Auto-resolve trial/task/experiment IDs
+oddish pull <id>
+
+# Keep syncing while a run is still active
+oddish pull <task_id> --watch --interval 5
+
+# Include task-level files when pulling a task or experiment
+oddish pull <experiment_id> --include-task-files
+```
+
+Notes:
+- `oddish pull` writes files under `./oddish-pulls/<id>/` by default (override with `--out`).
+- A `manifest.json` is written on each pull iteration with metadata and summaries.
+- API auth is still required for `oddish pull`, but it transparently falls back to
+  public API endpoints when a referenced task/trial/experiment is publicly shared.
+- For in-progress trials, some artifacts may not appear until trial completion because
+  trial outputs are uploaded after Harbor execution finalizes.
 
 Per-trial agent overrides (env vars, kwargs, timeouts) use `agent_config`:
 

@@ -794,3 +794,49 @@ def watch_task(api_url: str, task_id: str) -> dict | None:
                 time.sleep(2)
 
     return final_result
+
+
+# =============================================================================
+# Pull Helpers
+# =============================================================================
+
+
+def fetch_task_status(api_url: str, task_id: str) -> dict | None:
+    """Fetch a single task status payload."""
+    try:
+        with httpx.Client(timeout=20.0, headers=get_auth_headers()) as client:
+            response = client.get(f"{api_url}/tasks/{task_id}")
+        if response.status_code == 200:
+            return cast(dict, response.json())
+    except Exception:
+        return None
+    return None
+
+
+def list_tasks_for_experiment(api_url: str, experiment_id: str) -> list[dict]:
+    """List tasks for an experiment ID."""
+    with httpx.Client(timeout=20.0, headers=get_auth_headers()) as client:
+        response = client.get(f"{api_url}/tasks", params={"experiment_id": experiment_id})
+    if response.status_code != 200:
+        return []
+    return cast(list[dict], response.json())
+
+
+def list_trial_files(api_url: str, trial_id: str) -> dict | None:
+    """List all files for a trial."""
+    with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
+        response = client.get(f"{api_url}/trials/{trial_id}/files")
+    if response.status_code != 200:
+        return None
+    return cast(dict, response.json())
+
+
+def list_task_files(api_url: str, task_id: str) -> dict | None:
+    """List all files for a task."""
+    with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
+        response = client.get(
+            f"{api_url}/tasks/{task_id}/files", params={"recursive": True, "presign": False}
+        )
+    if response.status_code != 200:
+        return None
+    return cast(dict, response.json())
