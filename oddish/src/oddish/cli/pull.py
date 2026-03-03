@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
@@ -16,6 +17,8 @@ from oddish.cli.config import get_api_url, get_auth_headers, require_api_key
 console = Console()
 
 TargetType = Literal["trial", "task", "experiment"]
+
+MAX_WORKERS = 8
 
 
 def _utc_now() -> str:
@@ -47,29 +50,35 @@ def _write_bytes(path: Path, content: bytes) -> None:
     path.write_bytes(content)
 
 
+def _make_client(api_url: str) -> httpx.Client:
+    return httpx.Client(
+        base_url=api_url,
+        timeout=60.0,
+        headers=get_auth_headers(),
+        limits=httpx.Limits(max_connections=MAX_WORKERS + 2, max_keepalive_connections=MAX_WORKERS + 2),
+    )
+
+
 def _get_json(
-    api_url: str,
+    client: httpx.Client,
     private_path: str,
     public_path: str | None = None,
     *,
     params: dict | None = None,
 ) -> dict | list | None:
-    headers = get_auth_headers()
-    with httpx.Client(timeout=60.0, headers=headers) as client:
-        response = client.get(f"{api_url}{private_path}", params=params)
+    response = client.get(private_path, params=params)
     if response.status_code == 200:
         return response.json()
     if public_path:
-        with httpx.Client(timeout=60.0, headers=headers) as client:
-            response = client.get(f"{api_url}{public_path}", params=params)
+        response = client.get(public_path, params=params)
         if response.status_code == 200:
             return response.json()
     return None
 
 
-def _get_task_status(api_url: str, task_id: str) -> dict | None:
+def _get_task_status(client: httpx.Client, task_id: str) -> dict | None:
     data = _get_json(
-        api_url,
+        client,
         f"/tasks/{task_id}",
         f"/public/tasks/{task_id}",
     )
@@ -78,9 +87,9 @@ def _get_task_status(api_url: str, task_id: str) -> dict | None:
     return None
 
 
-def _list_trial_files(api_url: str, trial_id: str) -> dict | None:
+def _list_trial_files(client: httpx.Client, trial_id: str) -> dict | None:
     data = _get_json(
-        api_url,
+        client,
         f"/trials/{trial_id}/files",
         f"/public/trials/{trial_id}/files",
     )
@@ -89,10 +98,10 @@ def _list_trial_files(api_url: str, trial_id: str) -> dict | None:
     return None
 
 
-def _list_task_files(api_url: str, task_id: str) -> dict | None:
+def _list_task_files(client: httpx.Client, task_id: str) -> dict | None:
     params = {"recursive": True, "presign": False}
     data = _get_json(
-        api_url,
+        client,
         f"/tasks/{task_id}/files",
         f"/public/tasks/{task_id}/files",
         params=params,
@@ -102,9 +111,9 @@ def _list_task_files(api_url: str, task_id: str) -> dict | None:
     return None
 
 
-def _list_tasks_for_experiment(api_url: str, experiment_id: str) -> list[dict]:
+def _list_tasks_for_experiment(client: httpx.Client, experiment_id: str) -> list[dict]:
     private_data = _get_json(
-        api_url,
+        client,
         "/tasks",
         None,
         params={"experiment_id": experiment_id},
@@ -112,7 +121,7 @@ def _list_tasks_for_experiment(api_url: str, experiment_id: str) -> list[dict]:
     if isinstance(private_data, list) and private_data:
         return private_data
 
-    public_experiments = _get_json(api_url, "/public/experiments", "/public/experiments")
+    public_experiments = _get_json(client, "/public/experiments", "/public/experiments")
     if not isinstance(public_experiments, list):
         return []
     public_token = None
@@ -126,7 +135,7 @@ def _list_tasks_for_experiment(api_url: str, experiment_id: str) -> list[dict]:
         return []
 
     data = _get_json(
-        api_url,
+        client,
         f"/public/experiments/{public_token}/tasks",
         f"/public/experiments/{public_token}/tasks",
     )
@@ -136,51 +145,79 @@ def _list_tasks_for_experiment(api_url: str, experiment_id: str) -> list[dict]:
 
 
 def _download_trial_file(
-    api_url: str,
+    client: httpx.Client,
     trial_id: str,
     remote_path: str,
 ) -> tuple[bytes | None, str | None]:
     encoded_path = quote(remote_path, safe="/")
-    headers = get_auth_headers()
-    with httpx.Client(timeout=60.0, headers=headers) as client:
-        response = client.get(f"{api_url}/trials/{trial_id}/files/{encoded_path}")
+    response = client.get(f"/trials/{trial_id}/files/{encoded_path}")
     if response.status_code != 200:
-        with httpx.Client(timeout=60.0, headers=headers) as client:
-            response = client.get(
-                f"{api_url}/public/trials/{trial_id}/files/{encoded_path}"
-            )
+        response = client.get(f"/public/trials/{trial_id}/files/{encoded_path}")
     if response.status_code != 200:
         return None, f"{response.status_code}: {response.text}"
     return response.content, None
 
 
 def _download_task_file(
-    api_url: str,
+    client: httpx.Client,
     task_id: str,
     remote_path: str,
 ) -> tuple[str | None, str | None]:
     encoded_path = quote(remote_path, safe="/")
-    headers = get_auth_headers()
     params = {"presign": False}
-    with httpx.Client(timeout=60.0, headers=headers) as client:
+    response = client.get(
+        f"/tasks/{task_id}/files/{encoded_path}",
+        params=params,
+    )
+    if response.status_code != 200:
         response = client.get(
-            f"{api_url}/tasks/{task_id}/files/{encoded_path}",
+            f"/public/tasks/{task_id}/files/{encoded_path}",
             params=params,
         )
-    if response.status_code != 200:
-        with httpx.Client(timeout=60.0, headers=headers) as client:
-            response = client.get(
-                f"{api_url}/public/tasks/{task_id}/files/{encoded_path}",
-                params=params,
-            )
     if response.status_code != 200:
         return None, f"{response.status_code}: {response.text}"
     data = response.json()
     return str(data.get("content", "")), None
 
 
+def _download_and_save_trial_file(
+    client: httpx.Client,
+    trial_id: str,
+    remote_path: str,
+    local_file: Path,
+    error_dir: Path,
+    rel: Path,
+) -> str:
+    """Download a single trial file and save it. Returns 'saved', 'error'."""
+    content, err = _download_trial_file(client, trial_id, remote_path)
+    if content is None:
+        if err:
+            _write_text(error_dir / f"{rel.as_posix()}.error.txt", err)
+        return "error"
+    _write_bytes(local_file, content)
+    return "saved"
+
+
+def _download_and_save_task_file(
+    client: httpx.Client,
+    task_id: str,
+    remote_path: str,
+    local_file: Path,
+    error_dir: Path,
+    rel: Path,
+) -> str:
+    """Download a single task file and save it. Returns 'saved', 'error'."""
+    content, err = _download_task_file(client, task_id, remote_path)
+    if content is None:
+        if err:
+            _write_text(error_dir / f"{rel.as_posix()}.error.txt", err)
+        return "error"
+    _write_text(local_file, content)
+    return "saved"
+
+
 def _pull_trial(
-    api_url: str,
+    client: httpx.Client,
     trial_id: str,
     output_root: Path,
     *,
@@ -199,7 +236,7 @@ def _pull_trial(
 
     if include_logs:
         logs_payload = _get_json(
-            api_url,
+            client,
             f"/trials/{trial_id}/logs",
             f"/public/trials/{trial_id}/logs",
         )
@@ -211,7 +248,7 @@ def _pull_trial(
 
         if include_structured_logs:
             structured_payload = _get_json(
-                api_url,
+                client,
                 f"/trials/{trial_id}/logs/structured",
                 f"/public/trials/{trial_id}/logs/structured",
             )
@@ -222,14 +259,14 @@ def _pull_trial(
                 summary["errors"] = int(summary["errors"]) + 1
 
     result_payload = _get_json(
-        api_url,
+        client,
         f"/trials/{trial_id}/result",
         f"/public/trials/{trial_id}/result",
     )
     if isinstance(result_payload, dict):
         _write_json(trial_root / "result.json", result_payload)
     trajectory_payload = _get_json(
-        api_url,
+        client,
         f"/trials/{trial_id}/trajectory",
         f"/public/trials/{trial_id}/trajectory",
     )
@@ -237,8 +274,9 @@ def _pull_trial(
         _write_json(trial_root / "trajectory.json", trajectory_payload)
 
     if include_files:
-        listing = _list_trial_files(api_url, trial_id)
+        listing = _list_trial_files(client, trial_id)
         if listing:
+            to_download: list[tuple[str, Path, Path]] = []
             for file_meta in listing.get("files", []):
                 remote_path = file_meta.get("path")
                 if not remote_path:
@@ -258,27 +296,35 @@ def _pull_trial(
                 ):
                     summary["files_skipped"] = int(summary["files_skipped"]) + 1
                     continue
-                content, err = _download_trial_file(api_url, trial_id, remote_path)
-                if content is None:
-                    summary["errors"] = int(summary["errors"]) + 1
-                    if err:
-                        _write_text(
-                            trial_root / "errors" / f"{rel.as_posix()}.error.txt", err
-                        )
-                    continue
-                _write_bytes(local_file, content)
-                summary["files_saved"] = int(summary["files_saved"]) + 1
+                to_download.append((remote_path, local_file, rel))
+
+            error_dir = trial_root / "errors"
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+                futures = {
+                    pool.submit(
+                        _download_and_save_trial_file,
+                        client, trial_id, remote_path, local_file, error_dir, rel,
+                    ): rel
+                    for remote_path, local_file, rel in to_download
+                }
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result == "saved":
+                        summary["files_saved"] = int(summary["files_saved"]) + 1
+                    else:
+                        summary["errors"] = int(summary["errors"]) + 1
 
     return summary
 
 
-def _pull_task_files(api_url: str, task_id: str, output_root: Path) -> dict:
+def _pull_task_files(client: httpx.Client, task_id: str, output_root: Path) -> dict:
     task_root = output_root / "tasks" / task_id / "files"
     summary = {"task_files_saved": 0, "task_files_skipped": 0, "task_file_errors": 0}
-    listing = _list_task_files(api_url, task_id)
+    listing = _list_task_files(client, task_id)
     if not listing:
         return summary
 
+    to_download: list[tuple[str, Path, Path]] = []
     for file_meta in listing.get("files", []):
         remote_path = file_meta.get("path")
         if not remote_path:
@@ -299,15 +345,23 @@ def _pull_task_files(api_url: str, task_id: str, output_root: Path) -> dict:
         ):
             summary["task_files_skipped"] += 1
             continue
+        to_download.append((remote_path, local_file, rel))
 
-        content, err = _download_task_file(api_url, task_id, remote_path)
-        if content is None:
-            summary["task_file_errors"] += 1
-            if err:
-                _write_text(task_root / "errors" / f"{rel.as_posix()}.error.txt", err)
-            continue
-        _write_text(local_file, content)
-        summary["task_files_saved"] += 1
+    error_dir = task_root / "errors"
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {
+            pool.submit(
+                _download_and_save_task_file,
+                client, task_id, remote_path, local_file, error_dir, rel,
+            ): rel
+            for remote_path, local_file, rel in to_download
+        }
+        for future in as_completed(futures):
+            result = future.result()
+            if result == "saved":
+                summary["task_files_saved"] += 1
+            else:
+                summary["task_file_errors"] += 1
 
     return summary
 
@@ -321,32 +375,35 @@ def _trial_task_id(trial_id: str) -> str | None:
     return task_id or None
 
 
-def _resolve_target(api_url: str, value: str, kind: TargetType | None) -> tuple[TargetType, str]:
+def _resolve_target(
+    client: httpx.Client, value: str, kind: TargetType | None,
+) -> tuple[TargetType, str, dict | list[dict] | None]:
+    """Returns (type, id, cached_data) so _pull_once can reuse the fetched data."""
     if kind:
-        return kind, value
+        return kind, value, None
 
     trial_task_id = _trial_task_id(value)
     if trial_task_id:
-        task = _get_task_status(api_url, trial_task_id)
+        task = _get_task_status(client, trial_task_id)
         if task and any(t.get("id") == value for t in task.get("trials", []) or []):
-            return "trial", value
+            return "trial", value, None
 
-    task = _get_task_status(api_url, value)
+    task = _get_task_status(client, value)
     if task:
-        return "task", value
+        return "task", value, task
 
-    experiment_tasks = _list_tasks_for_experiment(api_url, value)
+    experiment_tasks = _list_tasks_for_experiment(client, value)
     if experiment_tasks:
-        return "experiment", value
+        return "experiment", value, experiment_tasks
 
     raise typer.BadParameter(f"Unable to resolve '{value}' as trial, task, or experiment.")
 
 
-def _is_trial_terminal(api_url: str, trial_id: str) -> bool:
+def _is_trial_terminal(client: httpx.Client, trial_id: str) -> bool:
     task_id = _trial_task_id(trial_id)
     if not task_id:
         return True
-    task = _get_task_status(api_url, task_id)
+    task = _get_task_status(client, task_id)
     if not task:
         return False
     trials = task.get("trials", []) or []
@@ -356,22 +413,22 @@ def _is_trial_terminal(api_url: str, trial_id: str) -> bool:
     return False
 
 
-def _is_task_terminal(api_url: str, task_id: str) -> bool:
-    task = _get_task_status(api_url, task_id)
+def _is_task_terminal(client: httpx.Client, task_id: str) -> bool:
+    task = _get_task_status(client, task_id)
     if not task:
         return False
     return task.get("status") in ("completed", "failed")
 
 
-def _is_experiment_terminal(api_url: str, experiment_id: str) -> bool:
-    tasks = _list_tasks_for_experiment(api_url, experiment_id)
+def _is_experiment_terminal(client: httpx.Client, experiment_id: str) -> bool:
+    tasks = _list_tasks_for_experiment(client, experiment_id)
     if not tasks:
         return True
     return all(t.get("status") in ("completed", "failed") for t in tasks)
 
 
 def _pull_once(
-    api_url: str,
+    client: httpx.Client,
     target_type: TargetType,
     target_id: str,
     output_root: Path,
@@ -380,6 +437,7 @@ def _pull_once(
     include_files: bool,
     include_structured_logs: bool,
     include_task_files: bool,
+    cached_data: dict | list[dict] | None = None,
 ) -> dict:
     run_manifest: dict = {
         "target_type": target_type,
@@ -392,7 +450,7 @@ def _pull_once(
 
     if target_type == "trial":
         summary = _pull_trial(
-            api_url,
+            client,
             target_id,
             output_root,
             include_logs=include_logs,
@@ -403,40 +461,49 @@ def _pull_once(
         return run_manifest
 
     if target_type == "task":
-        task = _get_task_status(api_url, target_id)
+        task = cached_data if isinstance(cached_data, dict) else _get_task_status(client, target_id)
         if not task:
             raise typer.BadParameter(f"Task '{target_id}' not found.")
         _write_json(output_root / "tasks" / target_id / "task.json", task)
         run_manifest["tasks"].append(
             {"task_id": target_id, "status": task.get("status"), "experiment_id": task.get("experiment_id")}
         )
-        for trial in task.get("trials", []) or []:
-            trial_id = trial.get("id")
-            if not trial_id:
-                continue
-            run_manifest["trials"].append(
-                _pull_trial(
-                    api_url,
-                    trial_id,
-                    output_root,
+
+        trial_ids = [
+            t.get("id") for t in (task.get("trials", []) or []) if t.get("id")
+        ]
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            futures = {
+                pool.submit(
+                    _pull_trial,
+                    client, tid, output_root,
                     include_logs=include_logs,
                     include_files=include_files,
                     include_structured_logs=include_structured_logs,
-                )
-            )
+                ): tid
+                for tid in trial_ids
+            }
+            for future in as_completed(futures):
+                run_manifest["trials"].append(future.result())
+
         if include_task_files and include_files:
-            run_manifest["tasks"][-1] |= _pull_task_files(api_url, target_id, output_root)
+            run_manifest["tasks"][-1] |= _pull_task_files(client, target_id, output_root)
         return run_manifest
 
-    tasks = _list_tasks_for_experiment(api_url, target_id)
+    tasks = (
+        cached_data
+        if isinstance(cached_data, list)
+        else _list_tasks_for_experiment(client, target_id)
+    )
     if not tasks:
         raise typer.BadParameter(f"Experiment '{target_id}' not found or has no tasks.")
 
+    all_trial_work: list[tuple[str, str]] = []
     for task in tasks:
         task_id = task.get("id")
         if not task_id:
             continue
-        full_task = _get_task_status(api_url, task_id) or task
+        full_task = task if task.get("trials") is not None else (_get_task_status(client, task_id) or task)
         _write_json(output_root / "tasks" / task_id / "task.json", full_task)
         task_summary: dict = {
             "task_id": task_id,
@@ -445,21 +512,25 @@ def _pull_once(
         }
         for trial in full_task.get("trials", []) or []:
             trial_id = trial.get("id")
-            if not trial_id:
-                continue
-            run_manifest["trials"].append(
-                _pull_trial(
-                    api_url,
-                    trial_id,
-                    output_root,
-                    include_logs=include_logs,
-                    include_files=include_files,
-                    include_structured_logs=include_structured_logs,
-                )
-            )
+            if trial_id:
+                all_trial_work.append((task_id, trial_id))
         if include_task_files and include_files:
-            task_summary |= _pull_task_files(api_url, task_id, output_root)
+            task_summary |= _pull_task_files(client, task_id, output_root)
         run_manifest["tasks"].append(task_summary)
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {
+            pool.submit(
+                _pull_trial,
+                client, trial_id, output_root,
+                include_logs=include_logs,
+                include_files=include_files,
+                include_structured_logs=include_structured_logs,
+            ): trial_id
+            for _task_id, trial_id in all_trial_work
+        }
+        for future in as_completed(futures):
+            run_manifest["trials"].append(future.result())
 
     return run_manifest
 
@@ -521,61 +592,64 @@ def pull(
     if interval < 1:
         raise typer.BadParameter("--interval must be >= 1")
 
-    resolved_type, resolved_id = _resolve_target(api_url, target, target_type)
-    output_root = out or (Path.cwd() / "oddish-pulls" / resolved_id)
-    output_root.mkdir(parents=True, exist_ok=True)
-
-    console.print(
-        f"[cyan]Pulling[/cyan] type={resolved_type} id={resolved_id} -> {output_root}"
-    )
-
-    iteration = 0
-    while True:
-        iteration += 1
-        run_manifest = _pull_once(
-            api_url,
-            resolved_type,
-            resolved_id,
-            output_root,
-            include_logs=logs,
-            include_files=files,
-            include_structured_logs=structured,
-            include_task_files=include_task_files,
-        )
-        manifest = {
-            "source": {"api_url": api_url, "target_type": resolved_type, "target_id": resolved_id},
-            "pulled_at": _utc_now(),
-            "watch": watch,
-            "watch_iteration": iteration,
-            "run": run_manifest,
-        }
-        _write_json(output_root / "manifest.json", manifest)
-
-        total_saved = sum(
-            int(t.get("files_saved", 0)) + int(t.get("logs_saved", 0))
-            for t in run_manifest.get("trials", [])
-        )
-        console.print(
-            f"[green]Pull iteration {iteration} complete[/green] "
-            f"({len(run_manifest.get('trials', []))} trials, {total_saved} artifacts/log files saved)"
-        )
-
-        if not watch:
-            break
-
-        if resolved_type == "trial":
-            done = _is_trial_terminal(api_url, resolved_id)
-        elif resolved_type == "task":
-            done = _is_task_terminal(api_url, resolved_id)
-        else:
-            done = _is_experiment_terminal(api_url, resolved_id)
-
-        if done:
-            console.print("[green]Target reached terminal state; stopping watch.[/green]")
-            break
+    with _make_client(api_url) as client:
+        resolved_type, resolved_id, cached_data = _resolve_target(client, target, target_type)
+        output_root = out or (Path.cwd() / "oddish-pulls" / resolved_id)
+        output_root.mkdir(parents=True, exist_ok=True)
 
         console.print(
-            f"[dim]Target still running; polling again in {interval}s...[/dim]"
+            f"[cyan]Pulling[/cyan] type={resolved_type} id={resolved_id} -> {output_root}"
         )
-        time.sleep(interval)
 
+        iteration = 0
+        while True:
+            iteration += 1
+            run_manifest = _pull_once(
+                client,
+                resolved_type,
+                resolved_id,
+                output_root,
+                include_logs=logs,
+                include_files=files,
+                include_structured_logs=structured,
+                include_task_files=include_task_files,
+                cached_data=cached_data,
+            )
+            cached_data = None
+
+            manifest = {
+                "source": {"api_url": api_url, "target_type": resolved_type, "target_id": resolved_id},
+                "pulled_at": _utc_now(),
+                "watch": watch,
+                "watch_iteration": iteration,
+                "run": run_manifest,
+            }
+            _write_json(output_root / "manifest.json", manifest)
+
+            total_saved = sum(
+                int(t.get("files_saved", 0)) + int(t.get("logs_saved", 0))
+                for t in run_manifest.get("trials", [])
+            )
+            console.print(
+                f"[green]Pull iteration {iteration} complete[/green] "
+                f"({len(run_manifest.get('trials', []))} trials, {total_saved} artifacts/log files saved)"
+            )
+
+            if not watch:
+                break
+
+            if resolved_type == "trial":
+                done = _is_trial_terminal(client, resolved_id)
+            elif resolved_type == "task":
+                done = _is_task_terminal(client, resolved_id)
+            else:
+                done = _is_experiment_terminal(client, resolved_id)
+
+            if done:
+                console.print("[green]Target reached terminal state; stopping watch.[/green]")
+                break
+
+            console.print(
+                f"[dim]Target still running; polling again in {interval}s...[/dim]"
+            )
+            time.sleep(interval)
