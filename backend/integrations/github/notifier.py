@@ -74,7 +74,7 @@ async def _build_task_summary(session: AsyncSession, task: TaskModel) -> TaskSum
         await _build_trial_summary(t, task_name=task.name) for t in trials
     ]
 
-    task_url = f"{DASHBOARD_URL}/tasks/{task.id}"
+    task_url = f"{DASHBOARD_URL}/experiments/{task.experiment_id}"
 
     return TaskSummary(
         task_id=task.id,
