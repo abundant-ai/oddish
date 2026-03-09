@@ -6,6 +6,11 @@ import { Providers } from "./providers";
 export const metadata: Metadata = {
   title: "Oddish - Eval Scheduler",
   description: "Postgres-backed eval scheduler for Harbor tasks",
+  icons: {
+    icon: "/oddish.png",
+    shortcut: "/oddish.png",
+    apple: "/oddish.png",
+  },
 };
 
 export default function RootLayout({

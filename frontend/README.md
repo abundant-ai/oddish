@@ -153,7 +153,7 @@ frontend/
 │   │   └── utils.ts              # Utility functions
 │   └── middleware.ts             # Clerk auth middleware
 ├── public/
-│   └── oddish.jpg                # Logo
+│   └── oddish.png                # Logo
 └── tailwind.config.ts            # Tailwind configuration
 ```
 
