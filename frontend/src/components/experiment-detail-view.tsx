@@ -212,10 +212,14 @@ export function ExperimentDetailView({
         next.set("trial", drawerState.trial.id);
       } else {
         next.delete("trial");
+        next.delete("tab");
+        next.delete("file");
       }
     } else {
       next.delete("task");
       next.delete("trial");
+      next.delete("tab");
+      next.delete("file");
     }
 
     if (next.toString() !== searchParams.toString()) {

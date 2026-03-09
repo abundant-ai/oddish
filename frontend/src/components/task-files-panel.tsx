@@ -83,6 +83,12 @@ interface TaskFilesPanelProps {
    * This allows reusing the file tree viewer for trial files.
    */
   filesUrl?: string;
+  /**
+   * When set, auto-expand the tree to this file path and select it.
+   * Useful for deep-linking from external UI (e.g. execution timeline).
+   * Bump the value or pair with a counter to re-trigger navigation to the same path.
+   */
+  initialFilePath?: string | null;
 }
 
 function getNodeName(path: string): string {
@@ -202,6 +208,27 @@ function findNodeByPath(nodes: TreeNode[], path: string): TreeNode | null {
 }
 
 /**
+ * Find a file node whose path ends with the given suffix.
+ * If the suffix matches a directory instead, returns the first file inside it.
+ * Useful when S3 paths are prefixed with a trial-name directory.
+ */
+function findNodeBySuffix(nodes: TreeNode[], suffix: string): TreeNode | null {
+  for (const node of nodes) {
+    if (node.path === suffix || node.path.endsWith(`/${suffix}`)) {
+      if (node.type === "file") return node;
+      if (node.type === "dir" && node.children) {
+        return findFirstFile(node.children);
+      }
+    }
+    if (node.type === "dir" && node.children) {
+      const found = findNodeBySuffix(node.children, suffix);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+/**
  * Find the first file in the tree.
  */
 function findFirstFile(nodes: TreeNode[]): TreeNode | null {
@@ -269,6 +296,7 @@ export function TaskFilesPanel({
   onRetryComplete,
   contentOnly = false,
   filesUrl,
+  initialFilePath,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
@@ -666,6 +694,31 @@ export function TaskFilesPanel({
       setLoadingFullFile(false);
     }
   }, [isOpen]);
+
+  // Navigate to a specific file when initialFilePath changes (suffix match)
+  useEffect(() => {
+    if (!initialFilePath || fileTree.length === 0) return;
+
+    const node =
+      findNodeByPath(fileTree, initialFilePath) ??
+      findNodeBySuffix(fileTree, initialFilePath);
+    if (!node || node.type !== "file") return;
+
+    const parts = node.path.split("/").filter(Boolean);
+    if (parts.length > 1) {
+      setExpandedDirs((prev) => {
+        const next = new Set(prev);
+        let accumulated = "";
+        for (let i = 0; i < parts.length - 1; i++) {
+          accumulated = accumulated ? `${accumulated}/${parts[i]}` : parts[i];
+          next.add(accumulated);
+        }
+        return next;
+      });
+    }
+
+    setSelectedFile(node);
+  }, [initialFilePath, fileTree]);
 
   useEffect(() => {
     if (!isOpen) return;
