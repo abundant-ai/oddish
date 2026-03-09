@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import useSWRInfinite from "swr/infinite";
+import { useSWRConfig } from "swr";
 import { useAuth } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,39 +33,32 @@ export function ExperimentClientPage({
   initialTasksPage = null,
 }: ExperimentClientPageProps) {
   const { orgRole } = useAuth();
+  const { mutate: mutateKey } = useSWRConfig();
 
   const [isEditingName, setIsEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [isSavingName, setIsSavingName] = useState(false);
+  const getTasksPageKey = useCallback(
+    (pageIndex: number, previousPageData: Task[] | null) => {
+      if (!experimentId) return null;
+      if (previousPageData && previousPageData.length < TASKS_PAGE_SIZE) {
+        return null;
+      }
+      const offset = pageIndex * TASKS_PAGE_SIZE;
+      return `/api/experiments/${encodeExperimentRouteParam(
+        experimentId,
+      )}/tasks?limit=${TASKS_PAGE_SIZE}&offset=${offset}&include_trials=true`;
+    },
+    [experimentId],
+  );
 
   const { data, error, isLoading, isValidating, size, setSize, mutate } =
     useSWRInfinite<Task[]>(
-      (pageIndex, previousPageData) => {
-        if (!experimentId) return null;
-        if (previousPageData && previousPageData.length < TASKS_PAGE_SIZE) {
-          return null;
-        }
-        const offset = pageIndex * TASKS_PAGE_SIZE;
-        return `/api/experiments/${encodeExperimentRouteParam(
-          experimentId,
-        )}/tasks?limit=${TASKS_PAGE_SIZE}&offset=${offset}&include_trials=true`;
-      },
+      getTasksPageKey,
       fetcher,
       {
-        refreshInterval: (latestData) => {
-          const pages = Array.isArray(latestData) ? latestData : [];
-          const tasks = pages.flat();
-          if (tasks.length === 0) return 5000;
-          const hasActiveTasks = tasks.some((task) => {
-            const activeTrials = Math.max(
-              0,
-              task.total - task.completed - task.failed,
-            );
-            return activeTrials > 0 || ACTIVE_TASK_STATUSES.has(task.status);
-          });
-          return hasActiveTasks ? 30000 : 90000;
-        },
+        refreshInterval: 0,
         revalidateOnFocus: false,
         revalidateFirstPage: true,
         persistSize: true,
@@ -89,6 +83,15 @@ export function ExperimentClientPage({
   const lastPage = data?.[data.length - 1] ?? null;
   const hasMore = Boolean(lastPage && lastPage.length === TASKS_PAGE_SIZE);
   const isLoadingMore = isValidating && !isLoading;
+  const firstPageKey = getTasksPageKey(0, null);
+  const refreshIntervalMs = useMemo(() => {
+    if (tasksForExperiment.length === 0) return 5000;
+    const hasActiveTasks = tasksForExperiment.some((task) => {
+      const activeTrials = Math.max(0, task.total - task.completed - task.failed);
+      return activeTrials > 0 || ACTIVE_TASK_STATUSES.has(task.status);
+    });
+    return hasActiveTasks ? 30000 : 90000;
+  }, [tasksForExperiment]);
 
   const experimentName = tasksForExperiment[0]?.experiment_name ?? "";
   const displayName = experimentName || experimentId || "Experiment";
@@ -96,12 +99,57 @@ export function ExperimentClientPage({
   const canManageExperimentShare =
     orgRole === "org:admin" || orgRole === "org:owner";
 
+  const refreshTaskPages = useCallback(
+    async (taskIds?: string[]) => {
+      if (!firstPageKey) return;
+
+      const pages = Array.isArray(data) ? data : [];
+      if (!taskIds?.length || pages.length === 0) {
+        await mutateKey(firstPageKey);
+        return;
+      }
+
+      const pageIndexes = new Set<number>();
+      for (const [pageIndex, page] of pages.entries()) {
+        if (page?.some((task) => taskIds.includes(task.id))) {
+          pageIndexes.add(pageIndex);
+        }
+      }
+
+      if (pageIndexes.size === 0) {
+        pageIndexes.add(0);
+      }
+
+      await Promise.all(
+        Array.from(pageIndexes).map((pageIndex) => {
+          const previousPageData =
+            pageIndex === 0 ? null : (pages[pageIndex - 1] ?? null);
+          const key = getTasksPageKey(pageIndex, previousPageData);
+          return key ? mutateKey(key) : Promise.resolve(undefined);
+        }),
+      );
+    },
+    [data, firstPageKey, getTasksPageKey, mutateKey],
+  );
+
   useEffect(() => {
     if (!isEditingName) {
       setNameDraft(initialName);
       setNameError(null);
     }
   }, [initialName, isEditingName]);
+
+  useEffect(() => {
+    if (!firstPageKey) return;
+
+    const intervalId = window.setInterval(() => {
+      void mutateKey(firstPageKey);
+    }, refreshIntervalMs);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [firstPageKey, refreshIntervalMs, mutateKey]);
 
   const handleRename = async () => {
     if (!experimentId) return;
@@ -132,7 +180,17 @@ export function ExperimentClientPage({
       }
 
       setIsEditingName(false);
-      await mutate();
+      await mutate(
+        (pages) =>
+          pages?.map((page) =>
+            page?.map((task) => ({
+              ...task,
+              experiment_name: nextName,
+            })),
+          ),
+        { revalidate: false },
+      );
+      void refreshTaskPages();
     } catch (err) {
       setNameError(err instanceof Error ? err.message : "Rename failed");
     } finally {
@@ -152,7 +210,11 @@ export function ExperimentClientPage({
       );
     }
 
-    await mutate();
+    await mutate(
+      (pages) => pages?.map((page) => page?.filter((item) => item.id !== task.id)),
+      { revalidate: false },
+    );
+    await refreshTaskPages([task.id]);
   };
 
   return (
@@ -252,7 +314,7 @@ export function ExperimentClientPage({
           readOnly={false}
           allowRetry
           onTaskDelete={handleDeleteTask}
-          onRerun={() => mutate()}
+          onRerun={refreshTaskPages}
         />
       )}
     </div>

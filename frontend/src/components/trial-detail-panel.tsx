@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import useSWR from "swr";
-import { mutate } from "swr";
 import {
   ResizableDrawer,
   DrawerHeader,
@@ -83,7 +82,7 @@ interface TrialDetailPanelProps {
   }> | null;
   onNavigate?: (trial: Trial, trialIndex: number) => void;
   onNavigateToTask?: () => void;
-  onRetry?: () => void;
+  onRetry?: (taskIds?: string[]) => void;
   apiBaseUrl?: string;
   allowRetry?: boolean;
   /** Render content only without ResizableDrawer wrapper */
@@ -160,17 +159,6 @@ export function TrialDetailPanel({
     setLogCategoryInitialized(true);
   }, [structuredLogs, logCategoryInitialized]);
 
-  // Prefetch trajectory while viewing summary to reduce perceived latency.
-  useEffect(() => {
-    if (!isOpen || !trialId) return;
-
-    const trajectoryUrl = `${apiBaseUrl}/trials/${trialId}/trajectory`;
-
-    if (activeTab !== "trajectory") {
-      void mutate(trajectoryUrl, fetcher(trajectoryUrl), { revalidate: false });
-    }
-  }, [isOpen, trialId, apiBaseUrl, activeTab]);
-
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
 
@@ -190,7 +178,7 @@ export function TrialDetailPanel({
       }
 
       // Success - trigger data refresh and close panel
-      onRetry?.();
+      onRetry?.([task.id]);
       onClose();
     } catch (err) {
       setRetryError(err instanceof Error ? err.message : "Failed to retry");

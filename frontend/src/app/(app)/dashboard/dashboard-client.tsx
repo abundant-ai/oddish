@@ -944,6 +944,7 @@ export function DashboardClient({
     experiments,
     experimentsTotal,
     hasMoreExperiments,
+    swrKey: experimentsSwrKey,
     error: experimentsError,
     isLoading: isExperimentsLoading,
   } = useDashboardExperiments(
@@ -972,11 +973,7 @@ export function DashboardClient({
   };
 
   const handleRefreshCurrentPage = async () => {
-    await mutate(
-      (key) => typeof key === "string" && key.startsWith("/api/dashboard?"),
-      undefined,
-      { revalidate: true },
-    );
+    await mutate(experimentsSwrKey);
   };
 
   useEffect(() => {

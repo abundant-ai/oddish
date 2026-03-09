@@ -45,6 +45,11 @@ interface TaskDirectory {
   path: string;
 }
 
+interface FilesListingResponse {
+  files?: TaskFile[];
+  dirs?: TaskDirectory[];
+}
+
 interface TreeNode {
   name: string;
   path: string;
@@ -68,7 +73,7 @@ interface TaskFilesPanelProps {
   onNavigateToFirstTrial?: () => void;
   apiBaseUrl?: string;
   allowRetry?: boolean;
-  onRetryComplete?: () => void;
+  onRetryComplete?: (taskIds?: string[]) => void;
   /** Render content only without ResizableDrawer wrapper */
   contentOnly?: boolean;
   /**
@@ -281,8 +286,10 @@ export function TaskFilesPanel({
   const [fullFileSize, setFullFileSize] = useState<number | null>(null);
   const [loadingFullFile, setLoadingFullFile] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
+  const verdictTaskKey =
+    isOpen && taskId ? `${baseUrl}/tasks/${taskId}?include_trials=false` : null;
   const { data: verdictTask } = useSWR<Task>(
-    isOpen && taskId ? `${baseUrl}/tasks/${taskId}` : null,
+    verdictTaskKey,
     fetcher,
     {
       refreshInterval: (data) => {
@@ -293,6 +300,15 @@ export function TaskFilesPanel({
       revalidateOnFocus: false,
     },
   );
+  const recursiveFilesKey =
+    isOpen && filesUrl ? `${resolvedFilesUrl}?recursive=1` : null;
+  const {
+    data: recursiveFilesData,
+    error: recursiveFilesError,
+    isLoading: recursiveFilesLoading,
+  } = useSWR<FilesListingResponse>(recursiveFilesKey, fetcher, {
+    revalidateOnFocus: false,
+  });
   const verdictSource = verdictTask ?? task;
 
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
@@ -353,7 +369,7 @@ export function TaskFilesPanel({
       } else {
         setRerunError(null);
       }
-      onRetryComplete?.();
+      onRetryComplete?.(task?.id ? [task.id] : taskId ? [taskId] : undefined);
     } finally {
       setIsRerunning(false);
     }
@@ -375,33 +391,41 @@ export function TaskFilesPanel({
     );
   };
 
-  const prefetchFullTree = useCallback(async () => {
-    if (!taskId && !filesUrl) return;
-    try {
-      const res = await fetch(`${resolvedFilesUrl}?recursive=1`);
-      if (!res.ok) {
-        return;
-      }
-      const data = await res.json();
-      const files: TaskFile[] = data.files || [];
-      if (files.length === 0) return;
-
-      const tree = buildTreeFromPaths(files);
-      setFileTree(tree);
-      setSelectedFile((prev) => {
-        if (prev) {
-          return findNodeByPath(tree, prev.path) ?? prev;
-        }
-        return findFirstFile(tree);
-      });
-    } catch {
-      // Silently fail prefetch
-    }
-  }, [taskId, filesUrl, resolvedFilesUrl]);
-
-  // Fetch file list when panel opens
   useEffect(() => {
-    if (!isOpen || (!taskId && !filesUrl)) {
+    if (!isOpen || !filesUrl) {
+      return;
+    }
+
+    setError(null);
+    setFileTree([]);
+    setSelectedFile(null);
+    setFileContent(null);
+    setExpandedDirs(new Set());
+  }, [isOpen, filesUrl]);
+
+  useEffect(() => {
+    if (!isOpen || !filesUrl) {
+      return;
+    }
+
+    if (!recursiveFilesData) {
+      return;
+    }
+
+    const files: TaskFile[] = recursiveFilesData.files || [];
+    const tree = buildTreeFromPaths(files);
+    setFileTree(tree);
+    setSelectedFile((prev) => {
+      if (prev) {
+        return findNodeByPath(tree, prev.path) ?? prev;
+      }
+      return findFirstFile(tree);
+    });
+  }, [isOpen, filesUrl, recursiveFilesData]);
+
+  // Fetch task file list when panel opens
+  useEffect(() => {
+    if (!isOpen || !taskId || filesUrl) {
       return;
     }
 
@@ -416,10 +440,7 @@ export function TaskFilesPanel({
       setExpandedDirs(new Set());
 
       try {
-        // When filesUrl is provided (e.g. trial files), always fetch recursive
-        // since the endpoint returns all files at once.
-        const recursive = filesUrl ? "1" : "0";
-        const res = await fetch(`${resolvedFilesUrl}?recursive=${recursive}`);
+        const res = await fetch(`${resolvedFilesUrl}?recursive=0`);
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(
@@ -431,23 +452,12 @@ export function TaskFilesPanel({
         if (cancelled) return;
 
         const files: TaskFile[] = data.files || [];
-
-        if (filesUrl) {
-          const tree = buildTreeFromPaths(files);
-          setFileTree(tree);
-          const firstFile = findFirstFile(tree);
-          if (firstFile) {
-            setSelectedFile(firstFile);
-          }
-        } else {
-          const dirs: TaskDirectory[] = data.dirs || [];
-          const tree = buildNodesFromListing(files, dirs);
-          setFileTree(tree);
-          const firstFile = findFirstFile(tree);
-          if (firstFile) {
-            setSelectedFile(firstFile);
-          }
-          void prefetchFullTree();
+        const dirs: TaskDirectory[] = data.dirs || [];
+        const tree = buildNodesFromListing(files, dirs);
+        setFileTree(tree);
+        const firstFile = findFirstFile(tree);
+        if (firstFile) {
+          setSelectedFile(firstFile);
         }
       } catch (err) {
         if (!cancelled) {
@@ -467,7 +477,7 @@ export function TaskFilesPanel({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, prefetchFullTree]);
+  }, [isOpen, taskId, filesUrl, resolvedFilesUrl]);
 
   const loadDirectory = useCallback(
     async (path: string) => {
@@ -840,24 +850,29 @@ export function TaskFilesPanel({
   const showVerdictCard =
     Boolean(verdictSource) &&
     Boolean(verdictSource?.verdict_status || verdictSource?.verdict);
+  const isListingLoading = filesUrl ? recursiveFilesLoading : loading;
+  const listingError =
+    filesUrl && recursiveFilesError
+      ? recursiveFilesError.message
+      : error;
 
   const fileTreeContent = (
     <>
-      {loading ? (
+      {isListingLoading ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="flex items-center gap-2 text-muted-foreground">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-current border-t-transparent" />
             <span className="text-sm">Loading files...</span>
           </div>
         </div>
-      ) : error ? (
+      ) : listingError ? (
         <div className="flex-1 flex items-center justify-center p-4 sm:p-6">
           <div className="text-center space-y-2">
             <AlertCircle className="h-8 w-8 text-red-500 mx-auto" />
             <p className="text-sm text-muted-foreground">
               Unable to load files
             </p>
-            <p className="text-xs text-muted-foreground">{error}</p>
+            <p className="text-xs text-muted-foreground">{listingError}</p>
           </div>
         </div>
       ) : fileTree.length === 0 ? (

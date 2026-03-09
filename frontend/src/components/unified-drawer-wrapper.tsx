@@ -22,7 +22,7 @@ export function UnifiedDrawerWrapper({
   mode,
   taskContent,
   trialContent,
-  defaultWidth = 820,
+  defaultWidth = 1080,
   minWidth = 420,
   maxWidth = 1200,
 }: UnifiedDrawerWrapperProps) {
