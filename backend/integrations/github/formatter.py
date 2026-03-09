@@ -105,11 +105,13 @@ def _trial_status_cell(trial: TrialSummary) -> str:
     return f"✅ Done ({_format_duration(trial.duration_seconds)})"
 
 
-def _analysis_cell(trial: TrialSummary, dashboard_url: str) -> str:
+def _analysis_cell(
+    trial: TrialSummary, dashboard_url: str, experiment_url: str | None = None
+) -> str:
     """Render the analysis/classification cell with an optional View link."""
     if trial.analysis_status == "success" and trial.classification:
         label = _classification_label(trial.classification, trial.subtype)
-        view_url = f"{dashboard_url}/tasks/{trial.trial_id.rsplit('-', 1)[0]}?trial={trial.trial_id}"
+        view_url = _trial_view_url(trial, dashboard_url, experiment_url)
         return f"{label} ([View]({view_url}))"
     if trial.analysis_status == "running":
         return "🔄 Analyzing..."
@@ -122,10 +124,13 @@ def _analysis_cell(trial: TrialSummary, dashboard_url: str) -> str:
     return "-"
 
 
-def _trial_view_url(trial: TrialSummary, dashboard_url: str) -> str:
-    """Build a dashboard URL pointing to a specific trial."""
-    task_id = trial.trial_id.rsplit("-", 1)[0]
-    return f"{dashboard_url}/tasks/{task_id}?trial={trial.trial_id}"
+def _trial_view_url(
+    trial: TrialSummary, dashboard_url: str, experiment_url: str | None = None
+) -> str:
+    """Build a dashboard URL pointing to a specific trial's experiment."""
+    if experiment_url:
+        return experiment_url
+    return dashboard_url
 
 
 def _progress_bar(completed: int, total: int) -> str:
@@ -198,9 +203,9 @@ def format_task_comment(
         status_str = _trial_status_cell(trial)
         reward_str = _format_reward(trial.reward)
         classification_str = _classification_label(trial.classification, trial.subtype)
-        analysis_str = _analysis_cell(trial, dashboard_url)
+        analysis_str = _analysis_cell(trial, dashboard_url, experiment_url)
         model_str = trial.model or "-"
-        trial_link = f"[{trial.index + 1}]({_trial_view_url(trial, dashboard_url)})"
+        trial_link = f"[{trial.index + 1}]({_trial_view_url(trial, dashboard_url, experiment_url)})"
 
         lines.append(
             f"| {trial_link} | {trial.agent} | {model_str} | "
@@ -356,8 +361,8 @@ def format_experiment_comment(
             classification_str = _classification_label(
                 trial.classification, trial.subtype
             )
-            analysis_str = _analysis_cell(trial, dashboard_url)
-            trial_link = f"[{trial.index + 1}]({_trial_view_url(trial, dashboard_url)})"
+            analysis_str = _analysis_cell(trial, dashboard_url, experiment_url)
+            trial_link = f"[{trial.index + 1}]({_trial_view_url(trial, dashboard_url, experiment_url)})"
 
             lines.append(
                 f"| {task.task_name} | {trial.agent} | {model_str} | "
