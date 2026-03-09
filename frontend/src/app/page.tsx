@@ -92,7 +92,7 @@ export default function LandingPage() {
             <div className="max-w-5xl mx-auto flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Image
-                  src="/oddish.jpg"
+                  src="/oddish.png"
                   alt="Oddish"
                   width={32}
                   height={32}
