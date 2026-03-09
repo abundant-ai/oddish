@@ -1089,7 +1089,13 @@ function TrialDetailView({
                           </span>
                         )}
                       </div>
-                      {trial.analysis?.root_cause && (
+                      {trial.analysis?.evidence && (
+                        <p className="text-xs text-muted-foreground/90 mt-2 leading-relaxed">
+                          {trial.analysis.evidence}
+                        </p>
+                      )}
+                      {trial.analysis?.root_cause &&
+                        trial.analysis.root_cause !== trial.analysis.evidence && (
                         <p className="text-xs text-muted-foreground mt-1">
                           {trial.analysis.root_cause}
                         </p>

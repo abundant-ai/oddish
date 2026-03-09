@@ -82,6 +82,7 @@ async def list_tasks_core(
                 TrialModel.reward,
                 TrialModel.error_message,
                 TrialModel.has_trajectory,
+                TrialModel.phase_timing,
                 TrialModel.analysis_status,
                 TrialModel.created_at,
                 TrialModel.started_at,

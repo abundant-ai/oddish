@@ -62,6 +62,7 @@ def build_compact_trial_response(
             resolved_analysis_summary = {
                 "classification": trial.analysis.get("classification"),
                 "subtype": trial.analysis.get("subtype"),
+                "evidence": trial.analysis.get("evidence"),
             }
     else:
         resolved_analysis_summary = analysis_summary if analysis_summary else None
@@ -86,7 +87,7 @@ def build_compact_trial_response(
         cache_tokens=None,
         output_tokens=None,
         cost_usd=None,
-        phase_timing=None,
+        phase_timing=trial.phase_timing,
         has_trajectory=trial.has_trajectory,
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
@@ -251,6 +252,7 @@ async def fetch_trial_analysis_summaries(
             TrialModel.id,
             TrialModel.analysis["classification"].astext.label("classification"),
             TrialModel.analysis["subtype"].astext.label("subtype"),
+            TrialModel.analysis["evidence"].astext.label("evidence"),
         ).where(
             TrialModel.task_id.in_(task_ids),
             TrialModel.analysis.isnot(None),
@@ -264,6 +266,7 @@ async def fetch_trial_analysis_summaries(
         summaries[row.id] = {
             "classification": row.classification,
             "subtype": row.subtype,
+            "evidence": row.evidence,
         }
     return summaries
 
