@@ -119,6 +119,10 @@ export function TrialDetailPanel({
   const [retryError, setRetryError] = useState<string | null>(null);
   const [logCategory, setLogCategory] = useState<LogCategory>("agent");
   const [logCategoryInitialized, setLogCategoryInitialized] = useState(false);
+  const [agentSubTab, setAgentSubTab] = useState<string | null>(null);
+  const [pendingAgentSubTab, setPendingAgentSubTab] = useState<string | null>(
+    null,
+  );
   const trialId = trial?.id;
 
   // Fetch structured logs when Logs tab is active
@@ -159,6 +163,19 @@ export function TrialDetailPanel({
     setLogCategoryInitialized(true);
   }, [structuredLogs, logCategoryInitialized]);
 
+  useEffect(() => {
+    if (!pendingAgentSubTab || !structuredLogs) return;
+    const validIds: string[] = [];
+    if (structuredLogs.agent.oracle) validIds.push("oracle");
+    if (structuredLogs.agent.setup) validIds.push("setup");
+    for (const cmd of structuredLogs.agent.commands)
+      validIds.push(`cmd-${cmd.name}`);
+    if (validIds.includes(pendingAgentSubTab)) {
+      setAgentSubTab(pendingAgentSubTab);
+    }
+    setPendingAgentSubTab(null);
+  }, [pendingAgentSubTab, structuredLogs]);
+
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
 
@@ -178,12 +195,40 @@ export function TrialDetailPanel({
       }
 
       // Success - trigger data refresh and close panel
-      onRetry?.([task.id]);
+      onRetry?.(task ? [task.id] : undefined);
       onClose();
     } catch (err) {
       setRetryError(err instanceof Error ? err.message : "Failed to retry");
     } finally {
       setRetrying(false);
+    }
+  };
+
+  const handleTimelineStageClick = (stageId: string) => {
+    setActiveTab("logs");
+    setLogCategoryInitialized(true);
+    switch (stageId) {
+      case "starting":
+      case "trial_started":
+        setLogCategory("agent");
+        setPendingAgentSubTab("oracle");
+        break;
+      case "environment_setup":
+        setLogCategory("agent");
+        setPendingAgentSubTab("setup");
+        break;
+      case "agent_running":
+        setLogCategory("agent");
+        setPendingAgentSubTab(null);
+        break;
+      case "verification":
+      case "completed":
+        setLogCategory("verifier");
+        setPendingAgentSubTab(null);
+        break;
+      default:
+        setLogCategory("agent");
+        setPendingAgentSubTab(null);
     }
   };
 
@@ -195,6 +240,8 @@ export function TrialDetailPanel({
       setRetrying(false);
       setRetryError(null);
       setLogCategoryInitialized(false);
+      setAgentSubTab(null);
+      setPendingAgentSubTab(null);
     }
   }, [isOpen]);
 
@@ -625,7 +672,13 @@ export function TrialDetailPanel({
                             </span>
                           )}
                         </div>
-                        {trial.analysis?.root_cause && (
+                        {trial.analysis?.evidence && (
+                          <p className="text-xs text-muted-foreground/90 mt-2 leading-relaxed">
+                            {trial.analysis.evidence}
+                          </p>
+                        )}
+                        {trial.analysis?.root_cause &&
+                          trial.analysis.root_cause !== trial.analysis.evidence && (
                           <p className="text-xs text-muted-foreground mt-1">
                             {trial.analysis.root_cause}
                           </p>
@@ -659,6 +712,10 @@ export function TrialDetailPanel({
                         trial.status === "failed" ||
                         Boolean(trial.error_message)
                       }
+                      onStageClick={handleTimelineStageClick}
+                      phaseTiming={trial.phase_timing}
+                      startedAt={trial.started_at}
+                      finishedAt={trial.finished_at}
                     />
                   </CardContent>
                 </Card>
@@ -883,8 +940,15 @@ export function TrialDetailPanel({
                             </div>
                           );
 
+                        const resolvedSubTab =
+                          agentTabs.find((t) => t.id === agentSubTab)?.id ??
+                          agentTabs[0].id;
+
                         return (
-                          <Tabs defaultValue={agentTabs[0].id}>
+                          <Tabs
+                            value={resolvedSubTab}
+                            onValueChange={setAgentSubTab}
+                          >
                             <TabsList className="h-8 bg-muted/50 flex-wrap">
                               {agentTabs.map((tab) => (
                                 <TabsTrigger
