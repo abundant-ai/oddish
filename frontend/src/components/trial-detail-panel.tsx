@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
-import useSWR from "swr";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   ResizableDrawer,
   DrawerHeader,
@@ -27,17 +27,11 @@ import {
   XCircle,
   AlertTriangle,
   Route,
-  Terminal,
-  Bot,
-  FlaskConical,
-  Flame,
   Package,
 } from "lucide-react";
-import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { TrajectoryViewer } from "@/components/trajectory-viewer";
 import { TaskFilesPanel } from "@/components/task-files-panel";
-import { CodeBlock } from "@/components/code-block";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { ArtifactsViewer } from "@/components/artifacts-viewer";
 import type { Trial, Task } from "@/lib/types";
@@ -46,27 +40,9 @@ import {
   STATUS_CONFIG,
   type MatrixStatus,
 } from "@/lib/status-config";
-import { fetcher } from "@/lib/api";
 import { HarborStageTimeline } from "@/components/harbor-stage-timeline";
 import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
-
-interface StructuredLogs {
-  trial_id: string;
-  agent: {
-    oracle: string | null;
-    setup: string | null;
-    commands: Array<{ name: string; content: string }>;
-  };
-  verifier: {
-    stdout: string | null;
-    stderr: string | null;
-  };
-  other: Array<{ name: string; content: string }>;
-  exception: string | null;
-}
-
-type LogCategory = "agent" | "verifier" | "other" | "exception";
 
 interface TrialDetailPanelProps {
   isOpen: boolean;
@@ -113,68 +89,61 @@ export function TrialDetailPanel({
   allowRetry = true,
   contentOnly = false,
 }: TrialDetailPanelProps) {
-  const [activeTab, setActiveTab] = useState("summary");
+  const searchParams = useSearchParams();
+
+  const validTabs = useMemo(
+    () => new Set(["summary", "files", "trajectory", "artifacts"]),
+    [],
+  );
+
+  const [activeTab, setActiveTab] = useState(() => {
+    const urlTab = searchParams.get("tab");
+    return urlTab && validTabs.has(urlTab) ? urlTab : "summary";
+  });
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
-  const [logCategory, setLogCategory] = useState<LogCategory>("agent");
-  const [logCategoryInitialized, setLogCategoryInitialized] = useState(false);
-  const [agentSubTab, setAgentSubTab] = useState<string | null>(null);
-  const [pendingAgentSubTab, setPendingAgentSubTab] = useState<string | null>(
-    null,
+  const [filesTargetPath, setFilesTargetPath] = useState<string | null>(
+    () => searchParams.get("file"),
   );
-  const trialId = trial?.id;
 
-  // Fetch structured logs when Logs tab is active
-  const logsSwrKey =
-    isOpen && trialId && activeTab === "logs"
-      ? `${apiBaseUrl}/trials/${trialId}/logs/structured`
-      : null;
+  const hydratedFromUrl = useRef(false);
 
-  const {
-    data: structuredLogs,
-    error: logsSwrError,
-    isLoading: logsLoading,
-  } = useSWR<StructuredLogs>(logsSwrKey, fetcher, {
-    revalidateOnFocus: false,
-    revalidateOnReconnect: false,
-  });
-
-  // Auto-select first available log category
+  // Hydrate from URL on first open
   useEffect(() => {
-    if (!structuredLogs || logCategoryInitialized) return;
-
-    if (
-      structuredLogs.agent.oracle ||
-      structuredLogs.agent.setup ||
-      structuredLogs.agent.commands.length > 0
-    ) {
-      setLogCategory("agent");
-    } else if (
-      structuredLogs.verifier.stdout ||
-      structuredLogs.verifier.stderr
-    ) {
-      setLogCategory("verifier");
-    } else if (structuredLogs.other && structuredLogs.other.length > 0) {
-      setLogCategory("other");
-    } else if (structuredLogs.exception) {
-      setLogCategory("exception");
+    if (!isOpen || hydratedFromUrl.current) return;
+    hydratedFromUrl.current = true;
+    const urlTab = searchParams.get("tab");
+    const urlFile = searchParams.get("file");
+    if (urlTab && validTabs.has(urlTab)) setActiveTab(urlTab);
+    if (urlFile) {
+      setFilesTargetPath(urlFile);
+      if (!urlTab) setActiveTab("files");
     }
-    setLogCategoryInitialized(true);
-  }, [structuredLogs, logCategoryInitialized]);
+  }, [isOpen, searchParams, validTabs]);
 
+  // Sync tab & file to URL (without triggering Next.js router navigation)
   useEffect(() => {
-    if (!pendingAgentSubTab || !structuredLogs) return;
-    const validIds: string[] = [];
-    if (structuredLogs.agent.oracle) validIds.push("oracle");
-    if (structuredLogs.agent.setup) validIds.push("setup");
-    for (const cmd of structuredLogs.agent.commands)
-      validIds.push(`cmd-${cmd.name}`);
-    if (validIds.includes(pendingAgentSubTab)) {
-      setAgentSubTab(pendingAgentSubTab);
+    if (!isOpen || !hydratedFromUrl.current) return;
+    const next = new URLSearchParams(searchParams.toString());
+
+    if (activeTab && activeTab !== "summary") {
+      next.set("tab", activeTab);
+    } else {
+      next.delete("tab");
     }
-    setPendingAgentSubTab(null);
-  }, [pendingAgentSubTab, structuredLogs]);
+
+    if (filesTargetPath) {
+      next.set("file", filesTargetPath);
+    } else {
+      next.delete("file");
+    }
+
+    if (next.toString() !== searchParams.toString()) {
+      const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
+      window.history.replaceState(window.history.state, "", url);
+    }
+  }, [isOpen, activeTab, filesTargetPath, searchParams]);
 
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
@@ -194,7 +163,6 @@ export function TrialDetailPanel({
         throw new Error(data.detail || data.error || "Failed to retry trial");
       }
 
-      // Success - trigger data refresh and close panel
       onRetry?.(task ? [task.id] : undefined);
       onClose();
     } catch (err) {
@@ -204,32 +172,19 @@ export function TrialDetailPanel({
     }
   };
 
+  const STAGE_FILE_MAP: Record<string, string> = {
+    starting: "agent/oracle.txt",
+    trial_started: "agent/oracle.txt",
+    environment_setup: "agent/setup/stdout.txt",
+    agent_running: "agent",
+    verification: "verifier/test-stdout.txt",
+    completed: "verifier/test-stdout.txt",
+  };
+
   const handleTimelineStageClick = (stageId: string) => {
-    setActiveTab("logs");
-    setLogCategoryInitialized(true);
-    switch (stageId) {
-      case "starting":
-      case "trial_started":
-        setLogCategory("agent");
-        setPendingAgentSubTab("oracle");
-        break;
-      case "environment_setup":
-        setLogCategory("agent");
-        setPendingAgentSubTab("setup");
-        break;
-      case "agent_running":
-        setLogCategory("agent");
-        setPendingAgentSubTab(null);
-        break;
-      case "verification":
-      case "completed":
-        setLogCategory("verifier");
-        setPendingAgentSubTab(null);
-        break;
-      default:
-        setLogCategory("agent");
-        setPendingAgentSubTab(null);
-    }
+    const filePath = STAGE_FILE_MAP[stageId] ?? null;
+    setActiveTab("files");
+    setFilesTargetPath(filePath);
   };
 
   // Reset state when panel closes
@@ -239,9 +194,8 @@ export function TrialDetailPanel({
       setShowFullError(false);
       setRetrying(false);
       setRetryError(null);
-      setLogCategoryInitialized(false);
-      setAgentSubTab(null);
-      setPendingAgentSubTab(null);
+      setFilesTargetPath(null);
+      hydratedFromUrl.current = false;
     }
   }, [isOpen]);
 
@@ -352,45 +306,6 @@ export function TrialDetailPanel({
     const nextIndex = orderedList.findIndex((item) => item.id === nextTrial.id);
     if (nextIndex < 0) return;
     onNavigate(nextTrial, nextIndex);
-  };
-
-  const formatTime = (value?: string | null) => {
-    if (!value) return "—";
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return "—";
-    return parsed.toLocaleTimeString([], {
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  };
-
-  const formatDate = (value?: string | null) => {
-    if (!value) return "—";
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return "—";
-    return parsed.toLocaleDateString([], {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
-  };
-
-  const formatDuration = (start?: string | null, end?: string | null) => {
-    if (!start || !end) return "—";
-    const startDate = new Date(start);
-    const endDate = new Date(end);
-    const diffMs = endDate.getTime() - startDate.getTime();
-    if (diffMs < 0 || Number.isNaN(diffMs)) return "—";
-    const seconds = Math.floor(diffMs / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-    if (hours > 0) {
-      return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
-    }
-    if (minutes > 0) {
-      return `${minutes}m ${seconds % 60}s`;
-    }
-    return `${seconds}s`;
   };
 
   const content = (
@@ -593,13 +508,6 @@ export function TrialDetailPanel({
               Summary
             </TabsTrigger>
             <TabsTrigger
-              value="logs"
-              className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-3 sm:px-4 text-xs sm:text-sm"
-            >
-              <Terminal className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1 sm:mr-2" />
-              Logs
-            </TabsTrigger>
-            <TabsTrigger
               value="files"
               className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-3 sm:px-4 text-xs sm:text-sm"
             >
@@ -721,57 +629,12 @@ export function TrialDetailPanel({
                 </Card>
               )}
 
-              <Card>
-                <CardHeader className="pb-1 pt-2 px-4">
-                  <CardTitle className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
-                    Timing
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="px-4 pb-3">
-                  <TimingBreakdownBar
-                    createdAt={trial.created_at}
-                    startedAt={trial.started_at}
-                    finishedAt={trial.finished_at}
-                  />
-                  <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2 mt-3">
-                    {formatDate(trial.created_at)}
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                    <div>
-                      <span className="text-muted-foreground block">
-                        Created
-                      </span>
-                      <span className="font-mono">
-                        {formatTime(trial.created_at)}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground block">
-                        Started
-                      </span>
-                      <span className="font-mono">
-                        {formatTime(trial.started_at)}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground block">
-                        Finished
-                      </span>
-                      <span className="font-mono">
-                        {formatTime(trial.finished_at)}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground block">
-                        Duration
-                      </span>
-                      <span className="font-mono">
-                        {formatDuration(trial.started_at, trial.finished_at)}
-                      </span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+              <TimingBreakdownBar
+                createdAt={trial.created_at}
+                startedAt={trial.started_at}
+                finishedAt={trial.finished_at}
+                compact
+              />
 
               {/* Error Card */}
               {trial.error_message && (
@@ -817,266 +680,13 @@ export function TrialDetailPanel({
             </div>
           </TabsContent>
 
-          <TabsContent value="logs" className="m-0 h-full p-0">
-            <div className="h-full flex">
-              {logsLoading ? (
-                <div className="flex-1 p-4 space-y-2">
-                  <Skeleton className="h-4 w-full" />
-                  <Skeleton className="h-4 w-3/4" />
-                  <Skeleton className="h-4 w-5/6" />
-                </div>
-              ) : logsSwrError ? (
-                <div className="flex-1 p-4 text-center">
-                  <AlertCircle className="h-8 w-8 text-red-500 mx-auto mb-2" />
-                  <p className="text-sm text-muted-foreground">
-                    {logsSwrError?.message ?? "Failed to load logs"}
-                  </p>
-                </div>
-              ) : (
-                <>
-                  <div className="w-28 sm:w-32 shrink-0 border-r border-border bg-muted/20 flex flex-col p-2 space-y-1">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setLogCategory("agent")}
-                      className={cn(
-                        "w-full justify-start gap-2 px-2 py-1.5 text-xs",
-                        logCategory === "agent"
-                          ? "bg-primary/10 text-primary font-medium"
-                          : "text-muted-foreground hover:bg-muted",
-                      )}
-                    >
-                      <Bot className="h-3.5 w-3.5" />
-                      Agent
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setLogCategory("verifier")}
-                      className={cn(
-                        "w-full justify-start gap-2 px-2 py-1.5 text-xs",
-                        logCategory === "verifier"
-                          ? "bg-primary/10 text-primary font-medium"
-                          : "text-muted-foreground hover:bg-muted",
-                      )}
-                    >
-                      <FlaskConical className="h-3.5 w-3.5" />
-                      Tests
-                    </Button>
-                    {structuredLogs?.other &&
-                      structuredLogs.other.length > 0 && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setLogCategory("other")}
-                          className={cn(
-                            "w-full justify-start gap-2 px-2 py-1.5 text-xs",
-                            logCategory === "other"
-                              ? "bg-primary/10 text-primary font-medium"
-                              : "text-muted-foreground hover:bg-muted",
-                          )}
-                        >
-                          <FileText className="h-3.5 w-3.5" />
-                          Other
-                        </Button>
-                      )}
-                    {(structuredLogs?.exception || trial.error_message) && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setLogCategory("exception")}
-                        className={cn(
-                          "w-full justify-start gap-2 px-2 py-1.5 text-xs",
-                          logCategory === "exception"
-                            ? "bg-red-500/10 text-red-500 font-medium"
-                            : "text-red-500/70 hover:bg-red-500/10",
-                        )}
-                      >
-                        <Flame className="h-3.5 w-3.5" />
-                        Error
-                      </Button>
-                    )}
-                  </div>
-
-                  <div className="flex-1 overflow-auto p-3">
-                    {logCategory === "agent" &&
-                      (() => {
-                        const agentTabs: {
-                          id: string;
-                          label: string;
-                          content: string;
-                          lang: string;
-                        }[] = [];
-                        if (structuredLogs?.agent.oracle)
-                          agentTabs.push({
-                            id: "oracle",
-                            label: "Oracle",
-                            content: structuredLogs.agent.oracle,
-                            lang: "text",
-                          });
-                        if (structuredLogs?.agent.setup)
-                          agentTabs.push({
-                            id: "setup",
-                            label: "Setup",
-                            content: structuredLogs.agent.setup,
-                            lang: "bash",
-                          });
-                        for (const cmd of structuredLogs?.agent.commands ?? [])
-                          agentTabs.push({
-                            id: `cmd-${cmd.name}`,
-                            label: cmd.name,
-                            content: cmd.content,
-                            lang: "bash",
-                          });
-
-                        if (agentTabs.length === 0)
-                          return (
-                            <div className="text-center py-8 text-muted-foreground text-sm">
-                              No agent logs available
-                            </div>
-                          );
-
-                        const resolvedSubTab =
-                          agentTabs.find((t) => t.id === agentSubTab)?.id ??
-                          agentTabs[0].id;
-
-                        return (
-                          <Tabs
-                            value={resolvedSubTab}
-                            onValueChange={setAgentSubTab}
-                          >
-                            <TabsList className="h-8 bg-muted/50 flex-wrap">
-                              {agentTabs.map((tab) => (
-                                <TabsTrigger
-                                  key={tab.id}
-                                  value={tab.id}
-                                  className="text-xs px-3 py-1"
-                                >
-                                  {tab.label}
-                                </TabsTrigger>
-                              ))}
-                            </TabsList>
-                            {agentTabs.map((tab) => (
-                              <TabsContent
-                                key={tab.id}
-                                value={tab.id}
-                                className="mt-2"
-                              >
-                                <CodeBlock
-                                  code={tab.content}
-                                  language={tab.lang}
-                                  maxHeight="24rem"
-                                />
-                              </TabsContent>
-                            ))}
-                          </Tabs>
-                        );
-                      })()}
-
-                    {logCategory === "verifier" && (
-                      <div className="space-y-3">
-                        {structuredLogs?.verifier.stdout ||
-                        structuredLogs?.verifier.stderr ? (
-                          <Tabs
-                            defaultValue={
-                              structuredLogs?.verifier.stdout
-                                ? "stdout"
-                                : "stderr"
-                            }
-                          >
-                            <TabsList className="h-8 bg-muted/50">
-                              {structuredLogs?.verifier.stdout && (
-                                <TabsTrigger
-                                  value="stdout"
-                                  className="text-xs px-3 py-1"
-                                >
-                                  Output
-                                </TabsTrigger>
-                              )}
-                              {structuredLogs?.verifier.stderr && (
-                                <TabsTrigger
-                                  value="stderr"
-                                  className="text-xs px-3 py-1"
-                                >
-                                  Stderr
-                                </TabsTrigger>
-                              )}
-                            </TabsList>
-                            {structuredLogs?.verifier.stdout && (
-                              <TabsContent value="stdout" className="mt-2">
-                                <CodeBlock
-                                  code={structuredLogs.verifier.stdout}
-                                  language="text"
-                                  maxHeight="24rem"
-                                />
-                              </TabsContent>
-                            )}
-                            {structuredLogs?.verifier.stderr && (
-                              <TabsContent value="stderr" className="mt-2">
-                                <CodeBlock
-                                  code={structuredLogs.verifier.stderr}
-                                  language="text"
-                                  maxHeight="24rem"
-                                />
-                              </TabsContent>
-                            )}
-                          </Tabs>
-                        ) : (
-                          <div className="text-center py-8 text-muted-foreground text-sm">
-                            No test output available
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {logCategory === "other" && (
-                      <div className="space-y-3">
-                        {structuredLogs?.other.map((log, idx) => (
-                          <div key={idx}>
-                            <h4 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
-                              {log.name}
-                            </h4>
-                            <CodeBlock
-                              code={log.content}
-                              language="text"
-                            />
-                          </div>
-                        ))}
-                        {(!structuredLogs?.other ||
-                          structuredLogs.other.length === 0) && (
-                          <div className="text-center py-8 text-muted-foreground text-sm">
-                            No other logs available
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {logCategory === "exception" && (
-                      <CodeBlock
-                        code={
-                          structuredLogs?.exception ||
-                          trial.error_message ||
-                          "No exception details"
-                        }
-                        language="text"
-                      />
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
-          </TabsContent>
-
           <TabsContent value="files" className="m-0 h-full p-0">
             <TaskFilesPanel
               isOpen={isOpen && activeTab === "files"}
               onClose={() => {}}
               taskId={null}
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
+              initialFilePath={filesTargetPath}
               contentOnly
             />
           </TabsContent>

@@ -14,16 +14,31 @@ function formatMs(ms: number): string {
   return `${hours}h ${remainingMinutes}m`;
 }
 
+function formatTimestamp(value: string): string {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function formatDateShort(value: string): string {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
 interface TimingBreakdownBarProps {
   createdAt: string | null | undefined;
   startedAt: string | null | undefined;
   finishedAt: string | null | undefined;
+  /** Compact mode: no header, integrates timestamps inline. */
+  compact?: boolean;
 }
 
 export function TimingBreakdownBar({
   createdAt,
   startedAt,
   finishedAt,
+  compact = false,
 }: TimingBreakdownBarProps) {
   const [hoveredSegment, setHoveredSegment] = useState<string | null>(null);
 
@@ -62,6 +77,56 @@ export function TimingBreakdownBar({
     const raw = (s.value / totalMs) * 100;
     return Math.max(raw, minWidthPercent);
   });
+
+  if (compact) {
+    return (
+      <div>
+        <div className="relative">
+          {hoveredSegment && (
+            <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+              <div className="bg-popover border border-border rounded px-2 py-1 text-xs whitespace-nowrap shadow-md">
+                {segments.find((s) => s.key === hoveredSegment)?.label}:{" "}
+                {formatMs(
+                  segments.find((s) => s.key === hoveredSegment)?.value ?? 0,
+                )}
+              </div>
+            </div>
+          )}
+          <div className="flex h-2.5 overflow-hidden rounded-full gap-0.5">
+            {segments.map((segment, idx) => (
+              <div
+                key={segment.key}
+                className={`${segment.color} transition-opacity cursor-default`}
+                style={{
+                  width: `${widths[idx]}%`,
+                  opacity:
+                    hoveredSegment && hoveredSegment !== segment.key ? 0.3 : 1,
+                }}
+                onMouseEnter={() => setHoveredSegment(segment.key)}
+                onMouseLeave={() => setHoveredSegment(null)}
+              />
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center justify-between mt-1.5 text-[10px] text-muted-foreground">
+          <div className="flex items-center gap-2.5">
+            {segments.map((segment) => (
+              <span key={segment.key} className="flex items-center gap-1">
+                <span
+                  className={`inline-block w-1.5 h-1.5 rounded-full ${segment.color}`}
+                />
+                {segment.label}: {formatMs(segment.value)}
+              </span>
+            ))}
+          </div>
+          <span className="font-mono tabular-nums">
+            {formatDateShort(createdAt)}{" "}
+            {formatTimestamp(createdAt)} → {formatTimestamp(finishedAt)}
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
