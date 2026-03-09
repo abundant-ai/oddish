@@ -10,6 +10,8 @@ from oddish.config import settings
 from oddish.db import TaskModel, TaskStatus, TrialModel, TrialStatus
 from oddish.schemas import TaskStatusResponse, TrialResponse
 
+_ANALYSIS_SUMMARY_UNSET = object()
+
 
 def build_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
@@ -44,17 +46,25 @@ def build_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
     )
 
 
-def build_compact_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
+def build_compact_trial_response(
+    trial: TrialModel,
+    task_path: str,
+    *,
+    analysis_summary: dict[str, str | None] | None | object = _ANALYSIS_SUMMARY_UNSET,
+) -> TrialResponse:
     """Build a compact TrialResponse for table views.
 
     Intentionally omits large payload fields that are not needed by list UIs.
     """
-    analysis_summary = None
-    if isinstance(trial.analysis, dict):
-        analysis_summary = {
-            "classification": trial.analysis.get("classification"),
-            "subtype": trial.analysis.get("subtype"),
-        }
+    resolved_analysis_summary: dict[str, str | None] | None = None
+    if analysis_summary is _ANALYSIS_SUMMARY_UNSET:
+        if isinstance(trial.analysis, dict):
+            resolved_analysis_summary = {
+                "classification": trial.analysis.get("classification"),
+                "subtype": trial.analysis.get("subtype"),
+            }
+    else:
+        resolved_analysis_summary = analysis_summary if analysis_summary else None
 
     return TrialResponse(
         id=trial.id,
@@ -79,7 +89,7 @@ def build_compact_trial_response(trial: TrialModel, task_path: str) -> TrialResp
         phase_timing=None,
         has_trajectory=trial.has_trajectory,
         analysis_status=trial.analysis_status,
-        analysis=analysis_summary,
+        analysis=resolved_analysis_summary,
         analysis_error=None,
         created_at=trial.created_at,
         started_at=trial.started_at,
@@ -193,7 +203,10 @@ def build_task_status_response(
 
 
 def build_task_status_response_compact(
-    task: TaskModel, *, include_empty_rewards: bool = True
+    task: TaskModel,
+    *,
+    include_empty_rewards: bool = True,
+    analysis_summaries: dict[str, dict[str, str | None]] | None = None,
 ) -> TaskStatusResponse:
     """Build TaskStatusResponse with compact per-trial payloads."""
     total = len(task.trials)
@@ -201,7 +214,18 @@ def build_task_status_response_compact(
     failed = sum(1 for t in task.trials if t.status == TrialStatus.FAILED)
     reward_success = sum(1 for t in task.trials if t.reward == 1)
     reward_total = sum(1 for t in task.trials if t.reward is not None)
-    trials = [build_compact_trial_response(t, task.task_path) for t in task.trials]
+    trials = [
+        build_compact_trial_response(
+            t,
+            task.task_path,
+            analysis_summary=(
+                analysis_summaries.get(t.id, {})
+                if analysis_summaries is not None
+                else _ANALYSIS_SUMMARY_UNSET
+            ),
+        )
+        for t in task.trials
+    ]
 
     return _build_task_status_response(
         task,
@@ -213,6 +237,35 @@ def build_task_status_response_compact(
         include_empty_rewards=include_empty_rewards,
         trials=trials,
     )
+
+
+async def fetch_trial_analysis_summaries(
+    session: AsyncSession, *, task_ids: Sequence[str]
+) -> dict[str, dict[str, str | None]]:
+    """Fetch only compact analysis fields needed by matrix views."""
+    if not task_ids:
+        return {}
+
+    result = await session.execute(
+        select(
+            TrialModel.id,
+            TrialModel.analysis["classification"].astext.label("classification"),
+            TrialModel.analysis["subtype"].astext.label("subtype"),
+        ).where(
+            TrialModel.task_id.in_(task_ids),
+            TrialModel.analysis.isnot(None),
+        )
+    )
+
+    summaries: dict[str, dict[str, str | None]] = {}
+    for row in result.all():
+        if row.classification is None and row.subtype is None:
+            continue
+        summaries[row.id] = {
+            "classification": row.classification,
+            "subtype": row.subtype,
+        }
+    return summaries
 
 
 async def build_task_status_responses_from_counts(

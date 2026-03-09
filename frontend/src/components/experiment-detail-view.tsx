@@ -44,7 +44,7 @@ interface ExperimentDetailViewProps {
   allowRetry?: boolean;
   apiBaseUrl?: string;
   onTaskDelete?: (task: Task) => Promise<void>;
-  onRerun?: () => void;
+  onRerun?: (taskIds?: string[]) => void;
 }
 
 type ExperimentSummary = {

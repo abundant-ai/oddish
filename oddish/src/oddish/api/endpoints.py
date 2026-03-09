@@ -10,6 +10,7 @@ from oddish.api.helpers import (
     build_task_status_response,
     build_task_status_responses_from_counts,
     build_trial_response,
+    fetch_trial_analysis_summaries,
 )
 from oddish.api.trial_io import (
     read_trial_logs,
@@ -82,7 +83,6 @@ async def list_tasks_core(
                 TrialModel.error_message,
                 TrialModel.has_trajectory,
                 TrialModel.analysis_status,
-                TrialModel.analysis,
                 TrialModel.created_at,
                 TrialModel.started_at,
                 TrialModel.finished_at,
@@ -133,9 +133,14 @@ async def list_tasks_core(
 
     if include_trials:
         if compact_trials:
+            analysis_summaries = await fetch_trial_analysis_summaries(
+                session, task_ids=[task.id for task in tasks]
+            )
             return [
                 build_task_status_response_compact(
-                    task, include_empty_rewards=include_empty_rewards
+                    task,
+                    include_empty_rewards=include_empty_rewards,
+                    analysis_summaries=analysis_summaries,
                 )
                 for task in tasks
             ]

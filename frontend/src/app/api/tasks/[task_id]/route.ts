@@ -15,8 +15,9 @@ export async function GET(
     const token = await getClerkToken(getToken);
 
     const { task_id } = await params;
+    const queryParams = Object.fromEntries(request.nextUrl.searchParams.entries());
 
-    const url = getBackendUrl("tasks", `/${task_id}`);
+    const url = getBackendUrl("tasks", `/${task_id}`, queryParams);
     const res = await fetch(url, {
       cache: "no-store",
       headers: getAuthHeaders(token),

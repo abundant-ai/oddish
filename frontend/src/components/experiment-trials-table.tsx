@@ -87,7 +87,7 @@ type ExperimentTrialsTableProps = {
   isLoading: boolean;
   topControlsLeft?: ReactNode;
   onTaskDelete?: (task: Task) => Promise<void>;
-  onRerun?: () => void;
+  onRerun?: (taskIds?: string[]) => void;
   allowRerun?: boolean;
   readOnly?: boolean;
   onTrialSelect?: (
@@ -745,7 +745,7 @@ export function ExperimentTrialsTable({
       } else {
         setRerunError(null);
       }
-      onRerun?.();
+      onRerun?.(selectedTaskList.map((task) => task.id));
     } finally {
       setIsRerunning(false);
     }
