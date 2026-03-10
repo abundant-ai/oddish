@@ -64,25 +64,25 @@
     @apply border-border;
   }
   html {
-    scrollbar-gutter: stable both-edges;
+    overflow-y: scroll;
   }
   body {
     @apply bg-background text-foreground;
-    scrollbar-gutter: stable both-edges;
   }
   html[data-scroll-locked],
   body[data-scroll-locked] {
-    /* Prevent Radix/remove-scroll from adding right padding that causes layout shift */
+    /* Keep the viewport width stable when modal libraries lock page scroll. */
     margin-right: 0 !important;
     padding-right: 0 !important;
   }
-
-  /* Fallback for browsers without `scrollbar-gutter` support */
-  @supports not (scrollbar-gutter: stable) {
-    html,
-    body {
-      overflow-y: scroll;
-    }
+  html[data-scroll-locked] {
+    overflow-y: scroll !important;
+  }
+  body[data-scroll-locked],
+  body[style*="padding-right"],
+  body[style*="margin-right"] {
+    margin-right: 0 !important;
+    padding-right: 0 !important;
   }
 
   /* Hide Clerk development mode badge */

@@ -86,9 +86,9 @@ export default function LandingPage() {
       </SignedIn>
 
       <SignedOut>
-        <div className="min-h-screen bg-background text-foreground flex flex-col">
+        <div className="flex min-h-screen flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(133,184,92,0.16),transparent_34%),radial-gradient(circle_at_80%_20%,rgba(111,136,180,0.12),transparent_28%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--background)))] text-foreground">
           {/* Header */}
-          <header className="w-full border-b border-border/50 px-6 py-4">
+          <header className="w-full border-b border-emerald-700/15 px-6 py-3 dark:border-emerald-400/10">
             <div className="max-w-5xl mx-auto flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Image
@@ -101,12 +101,13 @@ export default function LandingPage() {
                 <span className="font-semibold text-lg">Oddish</span>
               </div>
               <div className="flex items-center gap-3">
-                <Button variant="ghost" size="sm" asChild>
-                  <a href="/datasets">Datasets</a>
-                </Button>
                 <ThemeToggle />
                 <SignUpButton mode="modal" fallbackRedirectUrl="/dashboard">
-                  <Button variant="outline" size="sm">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="border-emerald-700/25 bg-background/70 shadow-sm hover:border-emerald-600/35 hover:bg-emerald-500/10 dark:border-emerald-400/20 dark:hover:border-emerald-300/30 dark:hover:bg-emerald-400/10"
+                  >
                     Sign Up
                   </Button>
                 </SignUpButton>
@@ -114,7 +115,7 @@ export default function LandingPage() {
                   href="https://github.com/abundant-ai/oddish"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center justify-center rounded-full border border-border/60 bg-muted/40 p-2 text-muted-foreground hover:text-foreground hover:border-border transition-colors"
+                  className="inline-flex items-center justify-center rounded-full border border-[#6f88b4]/30 bg-background/60 p-2 text-[#5c7096] transition-colors hover:border-emerald-600/35 hover:bg-emerald-500/10 hover:text-foreground dark:text-[#9db0cf]"
                   aria-label="Oddish GitHub"
                 >
                   <Github className="h-4 w-4" />
@@ -124,56 +125,87 @@ export default function LandingPage() {
           </header>
 
           {/* Main content */}
-          <main className="flex-1 flex flex-col items-center justify-center px-6 py-12">
-            <div className="max-w-3xl w-full space-y-12">
+          <main className="relative flex flex-1 flex-col items-center justify-center px-6 py-8 sm:py-10">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_25%_0%,rgba(133,184,92,0.2),transparent_34%),radial-gradient(circle_at_72%_18%,rgba(111,136,180,0.14),transparent_30%),linear-gradient(to_bottom,rgba(0,0,0,0),rgba(0,0,0,0.08))]"
+            />
+            <div className="relative max-w-5xl w-full space-y-8 sm:space-y-10">
               {/* Hero */}
-              <div className="text-center">
-                <h1 className="text-4xl sm:text-5xl font-bold tracking-tight">
-                  Run agent evals{" "}
-                  <span className="text-primary/80">at scale</span>
-                </h1>
+              <div className="grid items-center gap-6 md:grid-cols-[1.05fr_0.95fr]">
+                <div className="text-center md:text-left">
+                  <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">
+                    Run{" "}
+                    <a
+                      href="https://harborframework.com/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="transition-colors hover:text-[#5d77a5] dark:hover:text-[#a8b8d2]"
+                    >
+                      Harbor
+                    </a>{" "}
+                    tasks
+                    <span className="block text-[#5c8e43] dark:text-[#85b85c]">
+                      on the cloud
+                    </span>
+                  </h1>
+                </div>
+                <div className="relative mx-auto w-full max-w-sm">
+                  <div
+                    aria-hidden="true"
+                    className="absolute inset-0 rounded-full bg-[radial-gradient(circle,rgba(133,184,92,0.34),transparent_55%)] blur-3xl"
+                  />
+                  <Image
+                    src="/oddish.png"
+                    alt="Oddish pixel art"
+                    width={512}
+                    height={512}
+                    priority
+                    className="relative mx-auto h-auto w-full max-w-[16rem] drop-shadow-[0_16px_26px_rgba(73,96,137,0.24)]"
+                  />
+                </div>
               </div>
 
               {/* Terminal */}
-              <div className="rounded-xl border border-border bg-zinc-900 shadow-lg overflow-hidden">
-                <div className="flex items-center gap-2 px-4 py-3 bg-zinc-800/80 border-b border-zinc-700">
-                  <div className="h-3 w-3 rounded-full bg-red-500/80" />
-                  <div className="h-3 w-3 rounded-full bg-yellow-500/80" />
-                  <div className="h-3 w-3 rounded-full bg-green-500/80" />
+              <div className="overflow-hidden rounded-xl border border-[#85b85c]/15 bg-zinc-900 shadow-[0_20px_56px_rgba(39,55,85,0.18)] ring-1 ring-[#6f88b4]/10">
+                <div className="flex items-center gap-2 border-b border-zinc-700 bg-[linear-gradient(90deg,rgba(111,136,180,0.16),rgba(133,184,92,0.08)),rgba(39,39,42,0.92)] px-4 py-2.5">
+                  <div className="h-3 w-3 rounded-full bg-[#d79088]" />
+                  <div className="h-3 w-3 rounded-full bg-[#c9cf8a]" />
+                  <div className="h-3 w-3 rounded-full bg-[#85b85c]" />
                 </div>
-                <pre className="p-5 text-sm text-zinc-300 overflow-x-auto font-mono leading-relaxed">
+                <pre className="overflow-x-auto p-4 text-sm leading-relaxed text-zinc-300 sm:p-5 font-mono">
                   <code>
                     <span className="text-zinc-500"># Submit a job</span>
                     {"\n"}
-                    <span className="text-green-400">$</span> oddish run -d
+                    <span className="text-[#85b85c]">$</span> oddish run -d
                     terminal-bench@2.0 -a codex -m gpt-5.2-codex --n-trials 3
                     {"\n\n"}
                     <span className="text-zinc-500">
                       # Or sweep multiple agents
                     </span>
                     {"\n"}
-                    <span className="text-green-400">$</span>{" "}
+                    <span className="text-[#85b85c]">$</span>{" "}
                     <span>{typedCommand}</span>
                     <span
                       aria-hidden="true"
-                      className={`ml-1 inline-block h-4 w-2 align-middle bg-zinc-300 ${
+                      className={`ml-1 inline-block h-4 w-2 align-middle bg-[#6f88b4] ${
                         cursorVisible ? "opacity-100" : "opacity-0"
                       }`}
                     />
                     {"\n\n"}
                     <span className="text-zinc-500"># Monitor progress</span>
                     {"\n"}
-                    <span className="text-green-400">$</span> oddish status
+                    <span className="text-[#85b85c]">$</span> oddish status
                   </code>
                 </pre>
               </div>
 
               {/* CTA */}
-              <div className="flex justify-center pt-4">
+              <div className="flex justify-center pt-1">
                 <Button
                   asChild
                   size="lg"
-                  className="inline-flex items-center gap-2 px-8"
+                  className="inline-flex items-center gap-2 bg-[#6f88b4] px-8 text-white shadow-[0_10px_28px_rgba(73,96,137,0.24)] hover:bg-[#647daa]"
                 >
                   <a href="/settings?tab=api-keys">
                     Get Started
@@ -185,7 +217,7 @@ export default function LandingPage() {
           </main>
 
           {/* Footer */}
-          <footer className="w-full border-t border-border/50 px-6 py-4">
+          <footer className="w-full border-t border-[#6f88b4]/15 px-6 py-3 dark:border-[#85b85c]/10">
             <div className="max-w-5xl mx-auto text-center text-sm text-muted-foreground">
               by{" "}
               <a
