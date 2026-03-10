@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 import getpass
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -42,6 +44,7 @@ from oddish.cli.infra import check_api_health, ensure_infrastructure
 from oddish.experiment import generate_experiment_name
 
 console = Console()
+TASK_UPLOAD_CONCURRENCY = 4
 
 
 def run(
@@ -512,6 +515,39 @@ def run(
     all_results = []
     total_trials_submitted = 0
 
+    def upload_and_submit_task(task_path: Path) -> dict:
+        task_id = upload_task(api_url, task_path)
+
+        tags: dict[str, str] = {}
+        if github_meta:
+            tags["github_meta"] = github_meta
+
+        # submit_sweep mutates config entries to set environment, so each worker
+        # needs its own copy when uploads run concurrently.
+        task_configs = copy.deepcopy(configs)
+        return submit_sweep(
+            api_url=api_url,
+            task_id=task_id,
+            configs=task_configs,
+            environment=environment,
+            user=user,
+            priority=priority,
+            experiment_id=experiment_id,
+            run_analysis=run_analysis,
+            github_username=github_user,
+            tags=tags or None,
+            publish_experiment=publish,
+            disable_verification=disable_verification,
+            override_cpus=override_cpus,
+            override_memory_mb=override_memory_mb,
+            override_gpus=override_gpus,
+            override_storage_mb=override_storage_mb,
+            force_build=force_build,
+            agent_env=agent_env,
+            agent_kwargs=agent_kwargs,
+            artifact_paths=artifact_paths,
+        )
+
     show_progress = not quiet and not json_output
     progress = Progress(
         SpinnerColumn(),
@@ -525,41 +561,29 @@ def run(
         upload_task_progress = progress.add_task(
             f"Uploading {len(task_paths)} tasks...", total=len(task_paths)
         )
+        if len(task_paths) <= 1:
+            for task_path in task_paths:
+                result = upload_and_submit_task(task_path)
+                all_results.append(result)
+                total_trials_submitted += result["trials_count"]
+                progress.update(upload_task_progress, advance=1)
+        else:
+            results_by_index: list[dict | None] = [None] * len(task_paths)
+            max_workers = min(TASK_UPLOAD_CONCURRENCY, len(task_paths))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_index = {
+                    executor.submit(upload_and_submit_task, task_path): index
+                    for index, task_path in enumerate(task_paths)
+                }
 
-        for task_path in task_paths:
-            # Upload task
-            task_id = upload_task(api_url, task_path)
+                for future in as_completed(future_to_index):
+                    index = future_to_index[future]
+                    result = future.result()
+                    results_by_index[index] = result
+                    total_trials_submitted += result["trials_count"]
+                    progress.update(upload_task_progress, advance=1)
 
-            tags: dict[str, str] = {}
-            if github_meta:
-                tags["github_meta"] = github_meta
-
-            # Submit sweep for this task
-            result = submit_sweep(
-                api_url=api_url,
-                task_id=task_id,
-                configs=configs,
-                environment=environment,
-                user=user,
-                priority=priority,
-                experiment_id=experiment_id,
-                run_analysis=run_analysis,
-                github_username=github_user,
-                tags=tags or None,
-                publish_experiment=publish,
-                disable_verification=disable_verification,
-                override_cpus=override_cpus,
-                override_memory_mb=override_memory_mb,
-                override_gpus=override_gpus,
-                override_storage_mb=override_storage_mb,
-                force_build=force_build,
-                agent_env=agent_env,
-                agent_kwargs=agent_kwargs,
-                artifact_paths=artifact_paths,
-            )
-            all_results.append(result)
-            total_trials_submitted += result["trials_count"]
-            progress.update(upload_task_progress, advance=1)
+            all_results = [result for result in results_by_index if result is not None]
 
     experiment_id_resolved: str | None = None
     experiment_name = ""

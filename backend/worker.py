@@ -32,6 +32,7 @@ from modal_app import (
     WORKER_TIMEOUT_SECONDS,
     app,
     image,
+    runtime_secrets,
     volume,
 )
 from pgqueuer.qm import QueueManager
@@ -357,7 +358,7 @@ async def create_single_job_queue_manager(queue_key: str) -> QueueManager:
 @app.function(
     image=image,
     volumes={VOLUME_MOUNT_PATH: volume},
-    secrets=[modal.Secret.from_dotenv()],
+    secrets=runtime_secrets,
     timeout=WORKER_TIMEOUT_SECONDS,
     memory=1024,  # 1GB memory to prevent OOM issues
 )
@@ -437,7 +438,7 @@ async def process_single_job(queue_key: str):
 @app.function(
     image=image,
     volumes={VOLUME_MOUNT_PATH: volume},
-    secrets=[modal.Secret.from_dotenv()],
+    secrets=runtime_secrets,
     timeout=60,  # Dispatcher is lightweight, should complete quickly
     schedule=modal.Period(seconds=POLL_INTERVAL_SECONDS),
 )

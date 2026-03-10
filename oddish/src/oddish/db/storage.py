@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import posixpath
 import tempfile
@@ -47,6 +48,8 @@ class StorageClient:
     def __init__(self):
         self._client: aioboto3.Client | None = None
         self._session: aioboto3.Session | None = None
+
+    _MAX_CONCURRENT_UPLOADS = 8
 
     async def _ensure_client(self):
         """Lazy initialization of aioboto3 client."""
@@ -104,12 +107,7 @@ class StorageClient:
         if not local_path.exists() or not local_path.is_dir():
             raise ValueError(f"Task directory does not exist: {local_path}")
 
-        # Upload all files in the directory recursively
-        for file_path in local_path.rglob("*"):
-            if file_path.is_file():
-                relative_path = file_path.relative_to(local_path)
-                s3_key = f"{s3_prefix}{relative_path}"
-                await self.upload_file(file_path, s3_key)
+        await self._upload_directory(local_path, s3_prefix)
 
         return s3_prefix
 
@@ -156,14 +154,25 @@ class StorageClient:
         if not harbor_job_dir.exists():
             raise ValueError(f"Harbor job directory does not exist: {harbor_job_dir}")
 
-        # Upload all files
-        for file_path in harbor_job_dir.rglob("*"):
-            if file_path.is_file():
-                relative_path = file_path.relative_to(harbor_job_dir)
-                s3_key = f"{s3_prefix}{relative_path}"
-                await self.upload_file(file_path, s3_key)
+        await self._upload_directory(harbor_job_dir, s3_prefix)
 
         return s3_prefix
+
+    async def _upload_directory(self, local_path: Path, s3_prefix: str) -> None:
+        """Upload a directory tree to S3 with bounded concurrency."""
+        file_paths = [path for path in local_path.rglob("*") if path.is_file()]
+        if not file_paths:
+            return
+
+        semaphore = asyncio.Semaphore(self._MAX_CONCURRENT_UPLOADS)
+
+        async def upload_one(file_path: Path) -> None:
+            relative_path = file_path.relative_to(local_path)
+            s3_key = f"{s3_prefix}{relative_path}"
+            async with semaphore:
+                await self.upload_file(file_path, s3_key)
+
+        await asyncio.gather(*(upload_one(file_path) for file_path in file_paths))
 
     async def download_trial_directory(self, s3_prefix: str, local_path: Path) -> None:
         """
@@ -372,7 +381,7 @@ class StorageClient:
             await self._client.put_object(
                 Bucket=settings.s3_bucket,
                 Key=s3_key,
-                Body=f.read(),
+                Body=f,
             )
 
     async def download_file(self, s3_key: str, local_path: Path) -> None:

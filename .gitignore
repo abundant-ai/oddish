@@ -31,3 +31,5 @@ backend/jobs/
 # OS / editor
 .DS_Store
 .idea/
+oddish-pulls/
+**/oddish-pulls/

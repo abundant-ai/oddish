@@ -4,10 +4,13 @@ import modal
 from harbor.models.environment_type import EnvironmentType
 
 from modal_app import (
+    API_MAX_CONTAINERS,
+    API_MIN_CONTAINERS,
     MODEL_CONCURRENCY_DEFAULT,
     VOLUME_MOUNT_PATH,
     app,
     image,
+    runtime_secrets,
     volume,
 )
 from oddish.config import Settings, settings
@@ -67,10 +70,10 @@ api.include_router(admin.router)
 @app.function(
     image=image,
     volumes={VOLUME_MOUNT_PATH: volume},
-    secrets=[modal.Secret.from_dotenv()],
+    secrets=runtime_secrets,
     timeout=600,
-    min_containers=4,
-    max_containers=16,
+    min_containers=API_MIN_CONTAINERS,
+    max_containers=API_MAX_CONTAINERS,
 )
 @modal.asgi_app(label="api")
 def api_app():
