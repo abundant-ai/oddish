@@ -98,16 +98,6 @@ export function Nav() {
                 <span>Dashboard</span>
               </Link>
             </Button>
-            <Button
-              variant={pathname.startsWith("/datasets") ? "secondary" : "ghost"}
-              size="sm"
-              asChild
-              className="gap-2"
-            >
-              <Link href="/datasets" className="flex items-center gap-2">
-                <span>Datasets</span>
-              </Link>
-            </Button>
           </div>
 
           {/* Right side - consolidated settings menu */}
