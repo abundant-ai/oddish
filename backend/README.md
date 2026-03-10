@@ -70,6 +70,10 @@ curl -H "Authorization: Bearer ok_abc123..." "$API_URL/tasks"
 3. Otherwise validate Clerk JWT and resolve org/user.
 4. Return auth context (`org_id`, `user_id`, `scope`) to route handlers.
 
+If a Clerk JWT arrives without an `org_id`, the backend will try to resolve a
+single existing org membership and, if none exists, provision a personal org for
+that user.
+
 ## Multi-tenancy
 
 All task/trial/experiment access is org-scoped. Cloud-side schema adds:
@@ -88,9 +92,12 @@ The API layer enforces this scope in all list/read/write queries.
 | `modal_app.py` | Modal image, volumes, and shared runtime setup |
 | `endpoints.py` | ASGI entrypoint and oddish settings patching for Modal |
 | `api/app.py` | FastAPI app factory + startup/lifespan wiring |
-| `api/routers/tasks.py` | Task CRUD, uploads, sweep creation, file access |
-| `api/routers/trials.py` | Trial listing, retry, logs, result, trajectory |
-| `api/routers/dashboard.py` | Dashboard aggregate endpoint |
+| `api/schemas.py` | Pydantic models for org/auth/share responses |
+| `api/routers/tasks.py` | Task CRUD, uploads, sweep creation, sharing, and file access |
+| `api/routers/trials.py` | Trial listing, retry, logs, result, trajectory, and debug file inspection |
+| `api/routers/dashboard.py` | Cached aggregate dashboard endpoint (health, queues, usage, tasks, experiments) |
+| `api/routers/orgs.py` | Current org lookup and Clerk-backed user management |
+| `api/routers/api_keys.py` | Org API key listing, creation, and revocation |
 | `api/routers/public.py` | Public token-based read routes (no auth) |
 | `api/routers/admin.py` | Queue-slot and pgqueuer inspection endpoints |
 | `api/routers/clerk_webhooks.py` | Clerk org/user synchronization |
@@ -99,6 +106,7 @@ The API layer enforces this scope in all list/read/write queries.
 | `auth/provisioning.py` | Clerk user/org provisioning helpers |
 | `models.py` | Cloud auth models (orgs/users/api keys) |
 | `worker.py` | Dispatcher and single-job worker orchestration |
+| `integrations/github/` | PR comment formatting, metadata parsing, and notification client |
 | `alembic/` | Cloud migrations (auth + cloud table extensions) |
 
 ## Configuration
@@ -107,19 +115,36 @@ The API layer enforces this scope in all list/read/write queries.
 cp .env.example .env
 ```
 
-Use `backend/.env.example` as the canonical list of backend environment variables.
-For local cloud-app development, the minimum required values are:
+Use `backend/.env.example` as the starting point for local backend config.
+For the API and worker runtime, the minimum required values are:
 
 - `DATABASE_URL`
 - `CLERK_DOMAIN`
+
+Required for Clerk-backed org invites, membership lookups, and GitHub username enrichment:
+
 - `CLERK_SECRET_KEY`
 
-Recommended for dashboard auth + Clerk sync:
+Required if you want Clerk webhook ingestion enabled:
 
 - `CLERK_WEBHOOK_SECRET`
 
-Everything else is optional and documented inline in `.env.example` (S3, provider
-keys, sandbox keys, GitHub integration, CORS, concurrency tuning).
+Common optional settings:
+
+- `CORS_ALLOWED_ORIGINS`
+- `CLERK_ISSUER`
+- `CLERK_JWT_AUDIENCE`
+- `ODDISH_S3_*`
+- provider keys such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DAYTONA_API_KEY`
+- GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`
+
+Modal runtime knobs are read directly by `modal_app.py`, including:
+
+- `ODDISH_ENABLE_MODAL_WORKERS`
+- `ODDISH_MODAL_API_MIN_CONTAINERS`
+- `ODDISH_MODAL_API_MAX_CONTAINERS`
+- `MODAL_APP_NAME`
+- `MODAL_VOLUME_NAME`
 
 ### oddish runtime patching
 
@@ -138,7 +163,7 @@ All routes require auth unless marked public.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/health` | Liveness check (no auth) |
-| GET | `/dashboard` | Health + queues + recent task summary |
+| GET | `/dashboard` | Cached aggregate response for health, queues, pipeline stats, usage, tasks, and experiments |
 | POST | `/tasks/upload` | Upload task archive |
 | POST | `/tasks/sweep` | Expand one task into multiple trials |
 | GET | `/tasks` | List tasks (org-scoped, paginated/filtered) |
@@ -183,9 +208,9 @@ All routes require auth unless marked public.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/public/experiments/{token}` | Public experiment metadata |
+| GET | `/public/experiments/{public_token}` | Public experiment metadata |
 | GET | `/public/experiments` | List all public experiments |
-| GET | `/public/experiments/{token}/tasks` | Public tasks for experiment |
+| GET | `/public/experiments/{public_token}/tasks` | Public tasks for experiment |
 | GET | `/public/tasks/{task_id}` | Public task status |
 | GET | `/public/tasks/{task_id}/trials` | Public trial list |
 | GET | `/public/trials/{trial_id}/logs` | Public trial logs |
@@ -216,18 +241,24 @@ Two migration stacks are required on fresh environments:
 
 ```bash
 # Core (run in oddish/)
-alembic upgrade head
+uv run alembic upgrade head
 
 # Cloud (run in backend/)
-alembic upgrade head
+uv run alembic upgrade head
 ```
 
 ## Development Workflows
 
 ```bash
+# Install backend deps (includes the local ../oddish path dependency)
+cd backend
+uv sync
+```
+
+```bash
 # Backend only (Modal local serve)
 cd backend
-modal serve deploy.py
+uv run modal serve deploy.py
 ```
 
 For full-stack local development, use one of these flows:
@@ -248,7 +279,7 @@ pnpm dev:local
 # Flow B: Frontend + Modal backend
 # Terminal 1
 cd backend
-modal serve deploy.py
+uv run modal serve deploy.py
 
 # Terminal 2
 cd frontend
