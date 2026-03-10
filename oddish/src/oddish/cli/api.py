@@ -121,7 +121,8 @@ def archive_task_dir(task_path: Path) -> Path:
     tmpdir = tempfile.mkdtemp()
     tarball_path = Path(tmpdir) / f"{task_path.name}.tar.gz"
 
-    with tarfile.open(tarball_path, "w:gz") as tar:
+    # Favor fast uploads in CI/cloud flows over maximum compression.
+    with tarfile.open(tarball_path, "w:gz", compresslevel=1) as tar:
         # Add contents of task_path to the tarball
         for item in task_path.iterdir():
             tar.add(item, arcname=item.name)
@@ -137,7 +138,7 @@ def upload_task(
     tarball_path = archive_task_dir(task_path)
 
     try:
-        with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
+        with httpx.Client(timeout=300.0, headers=get_auth_headers()) as client:
             with open(tarball_path, "rb") as f:
                 response = client.post(
                     f"{api_url}/tasks/upload",
@@ -251,7 +252,7 @@ def submit_sweep(
     if harbor:
         payload["harbor"] = harbor
 
-    with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
+    with httpx.Client(timeout=120.0, headers=get_auth_headers()) as client:
         response = client.post(f"{api_url}/tasks/sweep", json=payload)
 
     if response.status_code != 200:

@@ -1,11 +1,42 @@
+import os
+from pathlib import Path
+
 import modal
 from dotenv import dotenv_values
 
-app = modal.App("oddish")
+
+def _get_bool_env(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_int_env(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return int(value)
+
+
+MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
+MODAL_VOLUME_NAME = os.environ.get("MODAL_VOLUME_NAME", "oddish")
+MODAL_SECRET_ENVIRONMENT = "main"
+ENABLE_BACKGROUND_WORKERS = _get_bool_env("ODDISH_ENABLE_MODAL_WORKERS", True)
+API_MIN_CONTAINERS = _get_int_env("ODDISH_MODAL_API_MIN_CONTAINERS", 4)
+API_MAX_CONTAINERS = _get_int_env("ODDISH_MODAL_API_MAX_CONTAINERS", 16)
+LOCAL_DOTENV_PATH = Path(__file__).with_name(".env")
+LOCAL_DOTENV_VARS = {
+    key: value
+    for key, value in dotenv_values(LOCAL_DOTENV_PATH).items()
+    if value is not None
+}
+
+app = modal.App(MODAL_APP_NAME)
 
 # Create Modal Volumes for shared storage between functions
 # the volume isn't really used for anything
-volume = modal.Volume.from_name("oddish", create_if_missing=True)
+volume = modal.Volume.from_name(MODAL_VOLUME_NAME, create_if_missing=True)
 VOLUME_MOUNT_PATH = "/data"
 
 # Worker configuration
@@ -17,11 +48,18 @@ SHUTDOWN_TIMEOUT_SECONDS = 10  # How long to wait for graceful shutdown
 # Max number of workers spawned per poll cycle (rate limiter)
 MAX_WORKERS_PER_POLL = 32
 
+# Always attach the production Modal secret. Local deploys can layer a backend
+# `.env` file on top for developer-specific overrides.
+runtime_secrets = [
+    modal.Secret.from_name("oddish-prod", environment_name=MODAL_SECRET_ENVIRONMENT)
+]
+if LOCAL_DOTENV_VARS:
+    runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
+
 # Environment configuration for Modal functions
 # Note: Storage paths and harbor_environment are ClassVars in oddish.config,
 # so we need to patch them at runtime or configure via trial submission.
 ENV_VARS = {
-    **dotenv_values(".env"),
     "UV_LINK_MODE": "copy",
     # Claude CLI refuses --dangerously-skip-permissions when running as root (Modal default).
     # Setting IS_SANDBOX=1 tells it we're in a sandboxed environment and bypasses this check.
