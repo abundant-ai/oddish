@@ -321,11 +321,6 @@ function formatDuration(seconds: number | null): string {
   return `${(seconds / 3600).toFixed(1)}h`;
 }
 
-function shortModelName(model: string): string {
-  const parts = model.split("/");
-  return parts[parts.length - 1];
-}
-
 function UsageOverviewCard({
   queues: _queues,
   modelUsage,
@@ -614,8 +609,11 @@ function UsageOverviewCard({
                                   model={m.model}
                                   size={12}
                                 />
-                                <span className="text-xs font-medium">
-                                  {shortModelName(m.model)}
+                                <span
+                                  className="text-xs font-medium font-mono"
+                                  title={m.model}
+                                >
+                                  {m.model}
                                 </span>
                               </div>
                             </TableCell>

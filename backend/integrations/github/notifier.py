@@ -12,6 +12,7 @@ import os
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.config import settings
 from oddish.db import TaskModel, TrialModel, get_session
 
 from .client import GitHubMeta, get_github_client
@@ -51,7 +52,7 @@ async def _build_trial_summary(
         index=index,
         trial_id=trial.id,
         agent=trial.agent,
-        model=trial.model,
+        model=settings.normalize_trial_model(trial.agent, trial.model),
         status=trial.status.value if trial.status else "pending",
         reward=trial.reward,
         duration_seconds=duration_seconds,

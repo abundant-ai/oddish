@@ -250,7 +250,9 @@ export function DatasetDetailView({
                                   className="text-muted-foreground"
                                   size={14}
                                 />
-                                <span className="truncate">{model.model}</span>
+                                <span className="truncate font-mono">
+                                  {model.model}
+                                </span>
                               </div>
                               <div className="font-medium">
                                 {model.passRate === null
