@@ -23,7 +23,15 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { ChevronDown, Key, User, LogOut, Activity, Shield } from "lucide-react";
+import {
+  ChevronDown,
+  Key,
+  User,
+  LogOut,
+  Activity,
+  Shield,
+  BookOpen,
+} from "lucide-react";
 import { fetcher } from "@/lib/api";
 
 type HealthResponse = {
@@ -60,7 +68,7 @@ function HealthIndicator() {
   }
 
   return (
-    <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-muted/50">
+    <div className="flex items-center gap-1.5 rounded-md border border-[#85b85c]/20 bg-muted/40 px-2 py-1">
       <Activity className={`h-3.5 w-3.5 ${colorClass}`} />
       <span className={`text-xs font-medium capitalize ${colorClass}`}>
         {statusText}
@@ -76,7 +84,7 @@ export function Nav() {
   const { signOut } = useClerk();
 
   return (
-    <nav className="border-b border-border bg-card/70 backdrop-blur-sm sticky top-0 z-50">
+    <nav className="sticky top-0 z-50 border-b border-[#6f88b4]/15 bg-card/80 backdrop-blur-sm">
       <div className="max-w-screen-2xl mx-auto px-4 h-14 flex items-center">
         <div className="flex items-center justify-between w-full">
           {/* Left side - primary nav */}
@@ -85,9 +93,13 @@ export function Nav() {
               variant={pathname === "/dashboard" ? "secondary" : "ghost"}
               size="sm"
               asChild
-              className="gap-2"
+              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
             >
-              <Link href="/dashboard" className="flex items-center gap-2">
+              <Link
+                href="/dashboard"
+                className="flex items-center gap-2"
+                data-active={pathname === "/dashboard"}
+              >
                 <Image
                   src="/oddish.png"
                   alt="Oddish"
@@ -104,6 +116,21 @@ export function Nav() {
           <div className="flex items-center gap-2">
             <ThemeToggle />
             <SignedIn>
+              <Button
+                variant="ghost"
+                size="sm"
+                asChild
+                className="gap-2 text-[#5d77a5] hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
+              >
+                <a
+                  href="https://github.com/abundant-ai/oddish#quick-start"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <BookOpen className="h-4 w-4" />
+                  <span className="hidden sm:inline">Docs</span>
+                </a>
+              </Button>
               <HealthIndicator />
               <DropdownMenu modal={false}>
                 <DropdownMenuTrigger asChild>
@@ -111,7 +138,7 @@ export function Nav() {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-auto rounded-full border border-border bg-background/60 px-2 py-1 text-sm hover:bg-muted"
+                    className="h-auto rounded-full border border-[#6f88b4]/20 bg-background/70 px-2 py-1 text-sm hover:border-[#85b85c]/20 hover:bg-muted"
                   >
                     <Avatar className="h-8 w-8">
                       <AvatarImage
@@ -128,7 +155,10 @@ export function Nav() {
                     <ChevronDown className="hidden h-4 w-4 text-muted-foreground sm:inline" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-64 p-2">
+                <DropdownMenuContent
+                  align="end"
+                  className="w-64 border-[#6f88b4]/20 p-2"
+                >
                   <div className="px-2 py-1.5">
                     <p className="text-sm font-medium">
                       {user?.fullName ?? user?.username ?? "Account"}
@@ -175,7 +205,7 @@ export function Nav() {
                         elements: {
                           rootBox: "flex items-center",
                           organizationSwitcherTrigger:
-                            "w-full justify-between rounded-md border border-border bg-muted/70 px-3 py-2 text-sm font-medium text-foreground shadow-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                            "w-full justify-between rounded-md border border-[#6f88b4]/20 bg-muted/70 px-3 py-2 text-sm font-medium text-foreground shadow-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                         },
                       }}
                     />

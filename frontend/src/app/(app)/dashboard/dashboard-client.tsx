@@ -43,13 +43,18 @@ import { fetcher } from "@/lib/api";
 import { encodeExperimentRouteParam, formatShortDateTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import {
+  ArrowRight,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock,
+  Copy,
   Loader2,
   Trash2,
   Globe,
+  Key,
+  Terminal,
 } from "lucide-react";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 
@@ -154,6 +159,119 @@ function formatTaskAuthor(author: DashboardExperimentAuthor | null): string {
     return `@${author.name.replace(/^@/, "")}`;
   }
   return author.name;
+}
+
+function CommandSnippet({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-border/80 bg-muted/35 px-3 py-2">
+      <code className="min-w-0 flex-1 overflow-x-auto font-mono text-xs">
+        {command}
+      </code>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 px-2 text-xs"
+        onClick={handleCopy}
+        aria-label="Copy command"
+      >
+        {copied ? (
+          <Check className="h-3.5 w-3.5 text-[#5c8e43]" />
+        ) : (
+          <Copy className="h-3.5 w-3.5" />
+        )}
+      </Button>
+    </div>
+  );
+}
+
+function FirstRunCard() {
+  return (
+    <Card className="border-[#85b85c]/25 bg-card/95 shadow-sm">
+      <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Set up your first Oddish run</p>
+          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+            <span className="rounded-full border border-[#85b85c]/25 bg-background/70 px-2 py-1">
+              1. Install CLI
+            </span>
+            <span className="rounded-full border border-[#6f88b4]/25 bg-background/70 px-2 py-1">
+              2. Export API key
+            </span>
+            <span className="rounded-full border border-[#85b85c]/25 bg-background/70 px-2 py-1">
+              3. Submit job
+            </span>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild size="sm">
+            <Link href="/settings?tab=api-keys">
+              API keys
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          </Button>
+          <Button asChild variant="outline" size="sm">
+            <a
+              href="https://github.com/abundant-ai/oddish#quick-start"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Quick start
+            </a>
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function EmptyExperimentsState() {
+  return (
+    <div className="rounded-lg border border-dashed border-[#6f88b4]/30 bg-card/60 p-6">
+      <div className="flex flex-col items-center text-center">
+        <Clock className="mb-3 h-11 w-11 text-muted-foreground/70" />
+        <p className="text-base font-medium">No experiments yet</p>
+      </div>
+
+      <div className="mt-5 grid gap-3 lg:grid-cols-3">
+        <div className="rounded-lg border border-[#85b85c]/20 bg-background/80 p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-medium">
+            <Terminal className="h-4 w-4 text-[#5c8e43]" />
+            Install the CLI
+          </div>
+          <CommandSnippet command="uv pip install oddish" />
+        </div>
+
+        <div className="rounded-lg border border-[#6f88b4]/20 bg-background/80 p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-medium">
+            <Key className="h-4 w-4 text-[#6f88b4]" />
+            Add an API key
+          </div>
+          <CommandSnippet command={'export ODDISH_API_KEY="ok_..."'} />
+        </div>
+
+        <div className="rounded-lg border border-[#85b85c]/20 bg-background/80 p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-medium">
+            <ArrowRight className="h-4 w-4 text-[#5c8e43]" />
+            Submit your first job
+          </div>
+          <CommandSnippet command="oddish run -p my-task -a codex -m openai/gpt-5.4" />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // =============================================================================
@@ -307,7 +425,7 @@ function UsageOverviewCard({
   };
 
   return (
-    <Card>
+    <Card className="border-[#6f88b4]/20 shadow-sm">
       <CardHeader className="pb-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -324,7 +442,7 @@ function UsageOverviewCard({
             {totals.running > 0 && (
               <Badge
                 variant="outline"
-                className="text-[10px] font-normal text-blue-400 border-blue-500/30"
+                className="border-[#85b85c]/30 text-[10px] font-normal text-[#5c8e43] dark:text-[#85b85c]"
               >
                 {totals.running} running
               </Badge>
@@ -332,7 +450,7 @@ function UsageOverviewCard({
             {totals.queued > 0 && (
               <Badge
                 variant="outline"
-                className="text-[10px] font-normal text-purple-400 border-purple-500/30"
+                className="border-[#6f88b4]/30 text-[10px] font-normal text-[#5d77a5] dark:text-[#a8b8d2]"
               >
                 {totals.queued} queued
               </Badge>
@@ -350,7 +468,7 @@ function UsageOverviewCard({
                 setIsCustomPickerOpen(false);
                 onTimeRangeChange(value as PresetTimeRangeKey);
               }}
-              className="h-7 w-[120px] rounded-md border border-input bg-background px-2 text-[11px]"
+              className="h-7 w-[120px] rounded-md border border-[#6f88b4]/20 bg-background px-2 text-[11px]"
               aria-label="Time window"
             >
               {TIME_RANGES.map((range) => (
@@ -374,7 +492,7 @@ function UsageOverviewCard({
                   onChange={(event) =>
                     setCustomUnit(event.target.value as "m" | "h" | "d")
                   }
-                  className="h-7 w-[64px] rounded-md border border-input bg-background px-2 text-[11px]"
+                  className="h-7 w-[64px] rounded-md border border-[#6f88b4]/20 bg-background px-2 text-[11px]"
                   aria-label="Custom time window unit"
                 >
                   <option value="m">min</option>
@@ -430,13 +548,13 @@ function UsageOverviewCard({
               )}
               {/* Summary stats row */}
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                <div className="rounded-md border border-border p-2 text-center">
+                <div className="rounded-md border border-[#6f88b4]/18 bg-background/70 p-2 text-center">
                   <div className="text-base font-bold tabular-nums">
                     {formatCost(totals.cost)}
                   </div>
                   <div className="text-[10px] text-muted-foreground">Cost</div>
                 </div>
-                <div className="rounded-md border border-border p-2 text-center">
+                <div className="rounded-md border border-[#6f88b4]/18 bg-background/70 p-2 text-center">
                   <div className="text-base font-bold tabular-nums">
                     {formatCompactNumber(
                       totals.inputTokens + totals.outputTokens,
@@ -446,7 +564,7 @@ function UsageOverviewCard({
                     Tokens
                   </div>
                 </div>
-                <div className="rounded-md border border-border p-2 text-center">
+                <div className="rounded-md border border-[#6f88b4]/18 bg-background/70 p-2 text-center">
                   <div className="text-base font-bold tabular-nums">
                     {totals.trials}
                   </div>
@@ -454,7 +572,7 @@ function UsageOverviewCard({
                     Trials
                   </div>
                 </div>
-                <div className="rounded-md border border-border p-2 text-center">
+                <div className="rounded-md border border-[#85b85c]/18 bg-background/70 p-2 text-center">
                   <div className="text-base font-bold tabular-nums">
                     {totals.running}
                   </div>
@@ -506,7 +624,7 @@ function UsageOverviewCard({
                                 {m.running > 0 && (
                                   <Badge
                                     variant="outline"
-                                    className="text-[9px] font-normal text-blue-400 border-blue-500/30"
+                                    className="border-[#85b85c]/30 text-[9px] font-normal text-[#5c8e43] dark:text-[#85b85c]"
                                   >
                                     {m.running}
                                   </Badge>
@@ -514,7 +632,7 @@ function UsageOverviewCard({
                                 {m.queued > 0 && (
                                   <Badge
                                     variant="outline"
-                                    className="text-[9px] font-normal text-purple-400 border-purple-500/30"
+                                    className="border-[#6f88b4]/30 text-[9px] font-normal text-[#5d77a5] dark:text-[#a8b8d2]"
                                   >
                                     {m.queued}
                                   </Badge>
@@ -560,7 +678,7 @@ function UsageOverviewCard({
 
               {/* Totals footer */}
               {sortedModels.length > 0 && (
-                <div className="flex flex-wrap items-center gap-3 text-[10px] text-muted-foreground border-t border-border pt-2">
+                <div className="flex flex-wrap items-center gap-3 border-t border-[#6f88b4]/15 pt-2 text-[10px] text-muted-foreground">
                   <span>
                     In: {formatCompactNumber(totals.inputTokens)} tokens
                   </span>
@@ -660,7 +778,7 @@ function RecentTasksCard({
   };
 
   return (
-    <Card className="col-span-5">
+    <Card className="col-span-5 border-[#6f88b4]/20 shadow-sm">
       <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-1">
           <CardTitle className="text-base">Recent Experiments</CardTitle>
@@ -676,10 +794,10 @@ function RecentTasksCard({
             value={searchQuery}
             onChange={(event) => onSearchQueryChange(event.target.value)}
             placeholder="Search"
-            className="h-8 w-full sm:w-[220px]"
+            className="h-8 w-full border-[#6f88b4]/20 sm:w-[220px]"
           />
           <Select value={statusFilter} onValueChange={onStatusFilterChange}>
-            <SelectTrigger className="h-8 w-full sm:w-[170px]">
+            <SelectTrigger className="h-8 w-full border-[#6f88b4]/20 sm:w-[170px]">
               <SelectValue placeholder="Filter status" />
             </SelectTrigger>
             <SelectContent>
@@ -704,10 +822,7 @@ function RecentTasksCard({
         ) : isLoading && experiments.length === 0 ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : !isLoading && totalExperiments === 0 && !hasFilters ? (
-          <div className="text-center py-8 text-muted-foreground">
-            <Clock className="h-12 w-12 mx-auto mb-3 opacity-50" />
-            <p>No experiments yet</p>
-          </div>
+          <EmptyExperimentsState />
         ) : experiments.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground">
             <p>No experiments match the current filters.</p>
@@ -727,7 +842,7 @@ function RecentTasksCard({
                   <TableHead className="text-right">Delete</TableHead>
                 </TableRow>
               </TableHeader>
-              <TableBody>
+              <TableBody className="[&_td]:text-xs">
                 {experiments.map((experiment) => {
                   const passRate =
                     experiment.reward_total > 0
@@ -746,7 +861,7 @@ function RecentTasksCard({
                             href={`/experiments/${encodeExperimentRouteParam(
                               experiment.id,
                             )}`}
-                            className="text-blue-400 hover:text-blue-300 hover:underline"
+                            className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
                           >
                             {experiment.name}
                           </Link>
@@ -769,7 +884,7 @@ function RecentTasksCard({
                             href={experiment.last_pr_url}
                             target="_blank"
                             rel="noreferrer"
-                            className="text-blue-400 hover:text-blue-300 hover:underline"
+                            className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
                           >
                             {experiment.last_pr_title
                               ? experiment.last_pr_title
@@ -785,7 +900,7 @@ function RecentTasksCard({
                       <TableCell className="font-mono text-xs whitespace-nowrap">
                         {experiment.completed_trials}/{experiment.total_trials}
                         {experiment.failed_trials > 0 && (
-                          <span className="text-red-400">
+                          <span className="text-rose-400">
                             {" "}
                             ({experiment.failed_trials}F)
                           </span>
@@ -798,10 +913,10 @@ function RecentTasksCard({
                           <span
                             className={
                               passRate >= 80
-                                ? "text-green-400"
+                                ? "text-[#5c8e43] dark:text-[#85b85c]"
                                 : passRate >= 50
                                   ? "text-yellow-400"
-                                  : "text-red-400"
+                                  : "text-rose-400"
                             }
                           >
                             {passRate}%
@@ -983,6 +1098,9 @@ export function DashboardClient({
 
   return (
     <div className="space-y-4">
+      {experimentsTotal === 0 && !isExperimentsLoading && !experimentsError && (
+        <FirstRunCard />
+      )}
       <UsageOverviewCard
         queues={queues}
         modelUsage={modelUsage}
@@ -1010,7 +1128,7 @@ export function DashboardClient({
           currentExperimentsPage={currentExperimentsPage}
         />
       ) : (
-        <Card className="col-span-5">
+        <Card className="col-span-5 border-[#6f88b4]/20 shadow-sm">
           <CardHeader className="pb-3">
             <CardTitle className="text-base">Recent Experiments</CardTitle>
           </CardHeader>
