@@ -37,6 +37,7 @@ from modal_app import (
 )
 from pgqueuer.qm import QueueManager
 from pgqueuer.models import Job
+from pgqueuer.types import QueueExecutionMode
 
 from oddish.config import settings
 from oddish.db import TrialModel, close_pool, get_pool, get_session
@@ -99,11 +100,14 @@ def _configure_storage_paths():
     Settings.harbor_jobs_dir = f"{VOLUME_MOUNT_PATH}/harbor"
     Settings.harbor_environment = _get_default_cloud_environment().value
     # Keep pools small: each worker processes one job.
-    # PGQueuer requires max_size > 2, so we use 3.
+    # Modal can burst many containers at once, so keep both SQLAlchemy and
+    # asyncpg pools tiny to avoid exhausting Supabase connection limits.
     Settings.db_pool_min_size = 1
-    Settings.db_pool_max_size = 3
+    Settings.db_pool_max_size = 2
     Settings.db_pool_size = 1
     Settings.db_pool_max_overflow = 0
+    Settings.asyncpg_pool_min_size = 1
+    Settings.asyncpg_pool_max_size = 1
     settings.default_model_concurrency = MODEL_CONCURRENCY_DEFAULT
 
     os.makedirs(Settings.local_storage_dir, exist_ok=True)
@@ -416,6 +420,8 @@ async def process_single_job(queue_key: str):
         await qm.run(
             batch_size=1,
             dequeue_timeout=timedelta(seconds=2),
+            mode=QueueExecutionMode.drain,
+            shutdown_on_listener_failure=True,
         )
 
     except asyncio.CancelledError:

@@ -10,5 +10,3 @@ async def _trial_session(trial_id: str, *, allow_missing: bool = False):
         if not trial and not allow_missing:
             raise RuntimeError(f"Trial {trial_id} not found in database")
         yield session, trial
-        if trial:
-            await session.commit()
