@@ -325,3 +325,43 @@ export interface PGQueuerResponse {
   has_more: boolean;
   timestamp: string;
 }
+
+export interface OrphanedTrialSample {
+  trial_id: string;
+  task_id: string;
+  queue_key: string;
+  status: string;
+  issue: string;
+  harbor_stage: string | null;
+  current_pgqueuer_job_id: number | null;
+  current_worker_id: string | null;
+  current_queue_slot: number | null;
+  claimed_at: string | null;
+  heartbeat_at: string | null;
+  updated_at: string | null;
+}
+
+export interface OrphanedTaskSample {
+  task_id: string;
+  status: string;
+  run_analysis: boolean;
+  verdict_status: string | null;
+  issue: string;
+  updated_at: string | null;
+}
+
+export interface OrphanedStateCounts {
+  queued_without_job: number;
+  running_without_picked_job: number;
+  running_stale_heartbeat: number;
+  picked_without_active_slot: number;
+  active_tasks_without_active_trials: number;
+}
+
+export interface OrphanedStateResponse {
+  counts: OrphanedStateCounts;
+  trial_samples: OrphanedTrialSample[];
+  task_samples: OrphanedTaskSample[];
+  stale_after_minutes: number;
+  timestamp: string;
+}

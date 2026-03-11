@@ -242,6 +242,21 @@ class TrialModel(Base):
     # Harbor execution stage (from lifecycle hooks)
     harbor_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
+    # Current execution claim metadata (best-effort runtime correlation)
+    current_pgqueuer_job_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, index=True
+    )
+    current_worker_id: Mapped[str | None] = mapped_column(
+        String(160), nullable=True, index=True
+    )
+    current_queue_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Timing
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -301,6 +316,7 @@ class TrialModel(Base):
         Index("idx_trials_claimable", "status", "queue_key", "next_retry_at"),
         Index("idx_trials_task_id", "task_id"),
         Index("idx_trials_status", "status"),
+        Index("idx_trials_status_heartbeat_at", "status", "heartbeat_at"),
         # Composite index for efficient queue stats aggregation (no JOIN needed)
         Index("idx_trials_org_provider_status", "org_id", "provider", "status"),
         Index("idx_trials_org_queue_key_status", "org_id", "queue_key", "status"),
