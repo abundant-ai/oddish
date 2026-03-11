@@ -1,9 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import useSWR, { mutate } from "swr";
-import { OrganizationProfile, useOrganization } from "@clerk/nextjs";
-import { useSearchParams } from "next/navigation";
+import {
+  CreateOrganization,
+  OrganizationProfile,
+  UserProfile,
+  useOrganization,
+  useOrganizationList,
+} from "@clerk/nextjs";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -45,9 +51,10 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { fetcher } from "@/lib/api";
-import { Key, Plus, Trash2, Copy, Check } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Building2, Check, Copy, Key, Loader2, Plus, Trash2 } from "lucide-react";
 
-const clerkAppearance = {
+const clerkProfileAppearance = {
   variables: {
     colorBackground: "hsl(var(--card))",
     colorText: "hsl(var(--foreground))",
@@ -86,6 +93,12 @@ const clerkAppearance = {
     badge: "hidden",
   },
 };
+
+type SettingsTab = "profile" | "workspace" | "api-keys";
+
+function isSettingsTab(value: string | null): value is SettingsTab {
+  return value === "profile" || value === "workspace" || value === "api-keys";
+}
 
 interface APIKey {
   id: string;
@@ -477,59 +490,221 @@ function APIKeysCard() {
   );
 }
 
-function OrganizationManagementCard() {
-  const { organization, isLoaded } = useOrganization();
-
-  if (!isLoaded) {
-    return (
-      <div className="rounded-lg border border-border bg-card p-6 shadow-sm">
-        <p className="text-muted-foreground">Loading...</p>
+function ProfileManagementCard() {
+  return (
+    <div className="space-y-3">
+      <div className="space-y-1">
+        <h2 className="text-lg font-semibold">Profile & security</h2>
       </div>
-    );
-  }
-
-  if (!organization) {
-    return (
-      <div className="rounded-lg border border-border bg-card p-6 shadow-sm">
-        <p className="text-sm text-muted-foreground">
-          Personal accounts do not have organization settings. Select an
-          organization from the nav bar to manage members.
-        </p>
-      </div>
-    );
-  }
-
-  return <OrganizationProfile routing="hash" appearance={clerkAppearance} />;
+      <UserProfile routing="hash" appearance={clerkProfileAppearance} />
+    </div>
+  );
 }
 
-export default function SettingsPage() {
-  const searchParams = useSearchParams();
-  const tabParam = searchParams.get("tab");
-  const resolvedTab = tabParam === "api-keys" ? "api-keys" : "general";
-  const [tab, setTab] = useState(resolvedTab);
+function WorkspaceSelectorCard() {
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [activatingOrgId, setActivatingOrgId] = useState<string | null>(null);
+  const { organization } = useOrganization();
+  const { isLoaded, setActive, userMemberships } = useOrganizationList({
+    userMemberships: true,
+  });
 
-  useEffect(() => {
-    setTab(resolvedTab);
-  }, [resolvedTab]);
+  const memberships = userMemberships.data ?? [];
+
+  const handleSelectWorkspace = async (organizationId: string) => {
+    if (!setActive || organization?.id === organizationId) {
+      return;
+    }
+
+    setActivatingOrgId(organizationId);
+    try {
+      await setActive({ organization: organizationId });
+    } finally {
+      setActivatingOrgId(null);
+    }
+  };
+
+  return (
+    <>
+      <Card className="border-[#6f88b4]/18 bg-card/95 shadow-sm">
+        <CardHeader className="flex flex-row items-start justify-between gap-4 pb-3">
+          <div>
+            <CardTitle className="text-base">Workspaces</CardTitle>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Switch between organizations and open the active workspace settings.
+            </p>
+          </div>
+          <Button size="sm" onClick={() => setShowCreateDialog(true)}>
+            <Plus className="mr-1 h-4 w-4" />
+            New
+          </Button>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {!isLoaded || userMemberships.isLoading ? (
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-background/70 px-3 py-4 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading workspaces...
+            </div>
+          ) : memberships.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border bg-background/60 p-4">
+              <p className="text-sm text-muted-foreground">
+                No workspaces found yet. Create one to get started.
+              </p>
+            </div>
+          ) : (
+            memberships.map((membership) => {
+              const isActive = organization?.id === membership.organization.id;
+              const isSwitching = activatingOrgId === membership.organization.id;
+
+              return (
+                <button
+                  key={membership.id}
+                  type="button"
+                  onClick={() => handleSelectWorkspace(membership.organization.id)}
+                  disabled={isSwitching}
+                  className={cn(
+                    "flex w-full items-center justify-between rounded-xl border px-3 py-3 text-left transition-colors",
+                    isActive
+                      ? "border-[#85b85c]/35 bg-[#85b85c]/10"
+                      : "border-[#6f88b4]/16 bg-background/70 hover:border-[#85b85c]/25 hover:bg-muted/60",
+                  )}
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div
+                      className={cn(
+                        "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border text-sm font-semibold",
+                        isActive
+                          ? "border-[#85b85c]/30 bg-[#85b85c]/12 text-[#5c8e43]"
+                          : "border-[#6f88b4]/18 bg-muted/50 text-muted-foreground",
+                      )}
+                    >
+                      {membership.organization.name.slice(0, 1).toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-foreground">
+                        {membership.organization.name}
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {membership.role.replace(/^org:/, "")}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="ml-3 flex items-center gap-2">
+                    {isSwitching ? (
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    ) : isActive ? (
+                      <Badge
+                        variant="outline"
+                        className="border-[#85b85c]/25 bg-[#85b85c]/8 text-[#5c8e43]"
+                      >
+                        Active
+                      </Badge>
+                    ) : null}
+                  </div>
+                </button>
+              );
+            })
+          )}
+        </CardContent>
+      </Card>
+
+      <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
+        <DialogContent className="max-w-3xl border-0 bg-transparent p-0 shadow-none">
+          <CreateOrganization
+            routing="hash"
+            skipInvitationScreen
+            afterCreateOrganizationUrl="/settings?tab=workspace"
+            appearance={clerkProfileAppearance}
+          />
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+function WorkspaceManagementSection() {
+  const { organization } = useOrganization();
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Settings</h1>
+      <div className="space-y-1">
+        <h2 className="text-lg font-semibold">Workspace settings</h2>
+        <p className="text-sm text-muted-foreground">
+          Switch between organizations, create new workspaces, and manage members
+          from this page.
+        </p>
       </div>
 
-      <Tabs value={tab} onValueChange={setTab} className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="general">Organization</TabsTrigger>
+      <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
+        <WorkspaceSelectorCard />
+
+        <div>
+          {organization ? (
+            <OrganizationProfile
+              routing="hash"
+              appearance={clerkProfileAppearance}
+            />
+          ) : (
+            <Card className="border-dashed border-[#6f88b4]/28 bg-card/70 shadow-none">
+              <CardContent className="flex items-center gap-3 p-6 text-sm text-muted-foreground">
+                <Building2 className="h-4 w-4 shrink-0" />
+                Select a workspace to manage members, roles, and organization
+                details.
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function SettingsPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const requestedTab = searchParams.get("tab");
+  const tab: SettingsTab = isSettingsTab(requestedTab)
+    ? requestedTab
+    : "profile";
+
+  const handleTabChange = (nextTab: string) => {
+    if (!isSettingsTab(nextTab)) {
+      return;
+    }
+
+    const params = new URLSearchParams(searchParams.toString());
+    if (nextTab === "profile") {
+      params.delete("tab");
+    } else {
+      params.set("tab", nextTab);
+    }
+
+    const nextUrl = params.toString()
+      ? `${pathname}?${params.toString()}`
+      : pathname;
+    router.replace(nextUrl, { scroll: false });
+  };
+
+  return (
+    <div className="space-y-6">
+      <Tabs value={tab} onValueChange={handleTabChange} className="space-y-4">
+        <TabsList className="grid w-full max-w-xl grid-cols-3">
+          <TabsTrigger value="profile">Profile</TabsTrigger>
+          <TabsTrigger value="workspace">Workspace</TabsTrigger>
           <TabsTrigger value="api-keys">API Keys</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="general">
-          <div className="space-y-6">
-            <OrganizationManagementCard />
-          </div>
+        <TabsContent value="profile" className="space-y-6">
+          <ProfileManagementCard />
         </TabsContent>
-        <TabsContent value="api-keys">
+
+        <TabsContent value="workspace" className="space-y-6">
+          <WorkspaceManagementSection />
+        </TabsContent>
+
+        <TabsContent value="api-keys" className="space-y-6">
           <div className="grid gap-6">
             <APIKeysCard />
           </div>
