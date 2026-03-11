@@ -34,6 +34,7 @@ import type {
   QueueStats,
   QueueSlotsResponse,
   PGQueuerResponse,
+  OrphanedStateResponse,
   QueueSlotSummary,
   PGQueuerJob,
 } from "@/lib/types";
@@ -981,6 +982,187 @@ function QueueHealthCard() {
   );
 }
 
+function formatIssueLabel(issue: string) {
+  switch (issue) {
+    case "queued_without_job":
+      return "Queued row without job";
+    case "running_without_picked_job":
+      return "Running row without picked job";
+    case "running_stale_heartbeat":
+      return "Running row with stale heartbeat";
+    case "active_task_without_active_trials":
+      return "Active task without active trials";
+    default:
+      return issue.replaceAll("_", " ");
+  }
+}
+
+function OrphanedStateCard() {
+  const { data, error, isLoading } = useSWR<OrphanedStateResponse>(
+    "/api/admin/orphaned-state?stale_after_minutes=10",
+    fetcher,
+    {
+      refreshInterval: 10000,
+    },
+  );
+
+  const counts = data?.counts;
+  const totalIssues = counts
+    ? counts.queued_without_job +
+      counts.running_without_picked_job +
+      counts.running_stale_heartbeat +
+      counts.picked_without_active_slot +
+      counts.active_tasks_without_active_trials
+    : 0;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-5 w-5" />
+            <CardTitle className="text-base">Orphaned State</CardTitle>
+            {counts && (
+              <Badge variant={totalIssues > 0 ? "destructive" : "outline"}>
+                {totalIssues} signals
+              </Badge>
+            )}
+          </div>
+          {data && (
+            <p className="text-xs text-muted-foreground">
+              Updated {new Date(data.timestamp).toLocaleTimeString()}
+            </p>
+          )}
+        </div>
+        {data && (
+          <p className="text-xs text-muted-foreground">
+            Heartbeat becomes stale after {data.stale_after_minutes} minutes.
+          </p>
+        )}
+      </CardHeader>
+      <CardContent>
+        {error ? (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Failed to load orphaned state</AlertTitle>
+            <AlertDescription>
+              {error instanceof Error ? error.message : "Unknown error"}
+            </AlertDescription>
+          </Alert>
+        ) : isLoading || !counts ? (
+          <p className="text-muted-foreground">Loading...</p>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex flex-wrap gap-2 text-xs">
+              <Badge variant="outline">
+                queued/no-job {counts.queued_without_job}
+              </Badge>
+              <Badge variant="outline">
+                running/no-pick {counts.running_without_picked_job}
+              </Badge>
+              <Badge variant="outline">
+                stale-heartbeat {counts.running_stale_heartbeat}
+              </Badge>
+              <Badge variant="outline">
+                picked/no-slot {counts.picked_without_active_slot}
+              </Badge>
+              <Badge variant="outline">
+                active-tasks/no-trials {counts.active_tasks_without_active_trials}
+              </Badge>
+            </div>
+
+            {totalIssues === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No orphaned queue or pipeline state detected.
+              </p>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">Trial samples</div>
+                  {data.trial_samples.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No trial samples.</p>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Issue</TableHead>
+                          <TableHead>Trial</TableHead>
+                          <TableHead>Queue Key</TableHead>
+                          <TableHead>Worker</TableHead>
+                          <TableHead>Heartbeat</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {data.trial_samples.map((sample) => (
+                          <TableRow key={`${sample.issue}-${sample.trial_id}`}>
+                            <TableCell className="text-xs">
+                              {formatIssueLabel(sample.issue)}
+                            </TableCell>
+                            <TableCell className="font-mono text-xs">
+                              {sample.trial_id}
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              {sample.queue_key}
+                            </TableCell>
+                            <TableCell className="font-mono text-xs">
+                              {sample.current_worker_id || "—"}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {formatAge(sample.heartbeat_at)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">Task samples</div>
+                  {data.task_samples.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No task samples.</p>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Issue</TableHead>
+                          <TableHead>Task</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Verdict</TableHead>
+                          <TableHead>Updated</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {data.task_samples.map((sample) => (
+                          <TableRow key={`${sample.issue}-${sample.task_id}`}>
+                            <TableCell className="text-xs">
+                              {formatIssueLabel(sample.issue)}
+                            </TableCell>
+                            <TableCell className="font-mono text-xs">
+                              {sample.task_id}
+                            </TableCell>
+                            <TableCell className="text-xs">{sample.status}</TableCell>
+                            <TableCell className="text-xs">
+                              {sample.verdict_status || "—"}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {formatAge(sample.updated_at)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // =============================================================================
 // PGQueuer Jobs Card
 // =============================================================================
@@ -1354,6 +1536,7 @@ export default function AdminPage() {
         <TabsContent value="overview" className="space-y-4">
           <QueuesAndPipelineCard />
           <QueueHealthCard />
+          <OrphanedStateCard />
           <EntrypointStatsCard />
           <PGQueuerCard />
         </TabsContent>

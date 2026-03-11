@@ -25,6 +25,8 @@ from oddish.workers.harbor_runner import run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
 
+TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
+
 
 def _is_agent_timeout_exception(exc: object | None) -> bool:
     return bool(exc and getattr(exc, "exception_type", None) == "AgentTimeoutError")
@@ -96,7 +98,71 @@ def _cleanup_uploaded_job_dir(job_dir: Path | None, trial_id: str) -> None:
         console.print(f"[yellow]Failed to cleanup local Harbor artifacts: {e}[/yellow]")
 
 
-async def run_trial_job(job: Job, queue_key: str) -> None:
+async def _touch_trial_execution(
+    *,
+    trial_id: str,
+    worker_id: str | None,
+    pgqueuer_job_id: int | None,
+    queue_slot: int | None,
+    claimed: bool = False,
+) -> None:
+    async with _trial_session(trial_id, allow_missing=True) as (session, trial):
+        if not trial or trial.status != TrialStatus.RUNNING:
+            return
+        if worker_id and trial.current_worker_id not in (None, worker_id):
+            return
+        if (
+            pgqueuer_job_id is not None
+            and trial.current_pgqueuer_job_id not in (None, pgqueuer_job_id)
+        ):
+            return
+
+        now = utcnow()
+        trial.current_pgqueuer_job_id = pgqueuer_job_id
+        trial.current_worker_id = worker_id
+        trial.current_queue_slot = queue_slot
+        if claimed:
+            trial.claimed_at = now
+        trial.heartbeat_at = now
+
+
+async def _heartbeat_trial_execution(
+    *,
+    trial_id: str,
+    worker_id: str | None,
+    pgqueuer_job_id: int | None,
+    queue_slot: int | None,
+    stop_event: asyncio.Event,
+) -> None:
+    while True:
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(), timeout=TRIAL_HEARTBEAT_INTERVAL_SECONDS
+            )
+        except TimeoutError:
+            pass
+
+        if stop_event.is_set():
+            return
+
+        try:
+            await _touch_trial_execution(
+                trial_id=trial_id,
+                worker_id=worker_id,
+                pgqueuer_job_id=pgqueuer_job_id,
+                queue_slot=queue_slot,
+            )
+        except Exception as exc:
+            console.print(f"[yellow]Trial heartbeat update failed: {exc}[/yellow]")
+
+
+async def run_trial_job(
+    job: Job,
+    queue_key: str,
+    *,
+    worker_id: str | None = None,
+    queue_slot: int | None = None,
+) -> None:
     """
     Handle a trial job from PGQueuer.
 
@@ -172,6 +238,11 @@ async def run_trial_job(job: Job, queue_key: str) -> None:
             trial.queue_key = canonical_queue_key
         trial_environment = trial.environment
         trial_harbor_config = trial.harbor_config
+        trial.current_pgqueuer_job_id = job.id
+        trial.current_worker_id = worker_id
+        trial.current_queue_slot = queue_slot
+        trial.claimed_at = utcnow()
+        trial.heartbeat_at = trial.claimed_at
 
     # Session is now closed - connection returned to pool
 
@@ -197,6 +268,16 @@ async def run_trial_job(job: Job, queue_key: str) -> None:
 
     # Run the trial (outside the session context for long-running operation)
     execution_error: str | None = None
+    heartbeat_stop = asyncio.Event()
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_trial_execution(
+            trial_id=trial_id,
+            worker_id=worker_id,
+            pgqueuer_job_id=job.id,
+            queue_slot=queue_slot,
+            stop_event=heartbeat_stop,
+        )
+    )
     try:
         # Create hook callback for real-time DB updates
         async def on_harbor_event(hook_event: TrialHookEvent) -> None:
@@ -212,6 +293,7 @@ async def run_trial_job(job: Job, queue_key: str) -> None:
 
                     # Log event
                     console.print(f"[dim]Trial {trial_id} event: {event.value}[/dim]")
+                    trial.heartbeat_at = utcnow()
 
                     # Update database based on event type
                     if event == TrialEvent.START:
@@ -351,6 +433,8 @@ async def run_trial_job(job: Job, queue_key: str) -> None:
         console.print(f"[red]Trial {trial_id} execution error: {execution_error}[/red]")
         outcome = None
     finally:
+        heartbeat_stop.set()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
         # Clean up temp task directory
         if temp_task_dir and temp_task_dir.exists():
             shutil.rmtree(temp_task_dir, ignore_errors=True)
@@ -447,6 +531,11 @@ async def run_trial_job(job: Job, queue_key: str) -> None:
                     execution_error or "Trial execution failed with exception"
                 )
                 console.print(f"[red]Trial {trial_id} FAILED (exception)[/red]")
+
+            trial.current_pgqueuer_job_id = None
+            trial.current_worker_id = None
+            trial.current_queue_slot = None
+            trial.heartbeat_at = utcnow()
 
             # Immediately enqueue analysis if run_analysis is enabled (don't wait for all trials)
             if trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED):

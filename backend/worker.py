@@ -265,7 +265,12 @@ async def _cleanup_stale_queue_slots() -> int:
 # =============================================================================
 
 
-async def create_single_job_queue_manager(queue_key: str) -> QueueManager:
+async def create_single_job_queue_manager(
+    queue_key: str,
+    *,
+    worker_id: str,
+    queue_slot: int,
+) -> QueueManager:
     """
     Create QueueManager configured to process exactly ONE job then exit.
 
@@ -309,7 +314,12 @@ async def create_single_job_queue_manager(queue_key: str) -> QueueManager:
                     )
                 trial_id = payload["trial_id"]
                 await _enforce_trial_environment(trial_id)
-                await run_trial_job(job, queue_key=queue_key)
+                await run_trial_job(
+                    job,
+                    queue_key=queue_key,
+                    worker_id=worker_id,
+                    queue_slot=queue_slot,
+                )
                 # Notify GitHub of trial completion
                 await _notify_github_trial(trial_id)
 
@@ -413,7 +423,11 @@ async def process_single_job(queue_key: str):
             f"[dim]Acquired queue slot {lock_slot + 1}/{queue_limit} (queue_key={queue_key})[/dim]"
         )
 
-        qm = await create_single_job_queue_manager(queue_key=queue_key)
+        qm = await create_single_job_queue_manager(
+            queue_key=queue_key,
+            worker_id=worker_id,
+            queue_slot=lock_slot,
+        )
 
         # Try to claim and process one job
         # Short dequeue_timeout so we exit quickly if no jobs available
