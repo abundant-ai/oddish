@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from pgqueuer.models import Job
@@ -126,32 +127,41 @@ async def run_verdict_job(job: Job, queue_key: str) -> None:
             f"(confidence: {verdict.confidence})"
         )
 
+    except asyncio.CancelledError:
+        verdict_error = (
+            "Verdict synthesis was cancelled by the worker runtime before it finished. "
+            "This is usually caused by a worker restart or shutdown."
+        )
+        console.print(f"[yellow]Verdict cancelled for {task_id}[/yellow]")
     except Exception as e:
         verdict_error = f"{type(e).__name__}: {e}"
         console.print(f"[red]Verdict error for {task_id}: {verdict_error}[/red]")
 
-    # Store results
-    async with get_session() as session:
-        task = await session.get(TaskModel, task_id)
-        if not task:
-            return
+    async def _store_results() -> None:
+        async with get_session() as session:
+            task = await session.get(TaskModel, task_id)
+            if not task:
+                return
 
-        if verdict_result:
-            task.verdict = verdict_result
-            task.verdict_status = VerdictStatus.SUCCESS
-            task.verdict_finished_at = utcnow()
-            task.status = TaskStatus.COMPLETED
-            task.finished_at = utcnow()
-            console.print(f"[green]Verdict {task_id} SUCCESS - Task COMPLETED[/green]")
-        else:
-            task.verdict_status = VerdictStatus.FAILED
-            task.verdict_error = verdict_error
-            task.verdict_finished_at = utcnow()
-            # Still mark task as completed even if verdict failed
-            task.status = TaskStatus.COMPLETED
-            task.finished_at = utcnow()
-            console.print(
-                f"[yellow]Verdict {task_id} FAILED - Task COMPLETED (no verdict)[/yellow]"
-            )
+            if verdict_result:
+                task.verdict = verdict_result
+                task.verdict_status = VerdictStatus.SUCCESS
+                task.verdict_error = None
+                task.verdict_finished_at = utcnow()
+                task.status = TaskStatus.COMPLETED
+                task.finished_at = utcnow()
+                console.print(f"[green]Verdict {task_id} SUCCESS - Task COMPLETED[/green]")
+            else:
+                task.verdict_status = VerdictStatus.FAILED
+                task.verdict_error = (
+                    verdict_error or "Verdict synthesis failed with exception"
+                )
+                task.verdict_finished_at = utcnow()
+                # Still mark task as completed even if verdict failed
+                task.status = TaskStatus.COMPLETED
+                task.finished_at = utcnow()
+                console.print(
+                    f"[yellow]Verdict {task_id} FAILED - Task COMPLETED (no verdict)[/yellow]"
+                )
 
-        await session.commit()
+    await asyncio.shield(_store_results())

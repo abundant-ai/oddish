@@ -372,95 +372,103 @@ async def run_trial_job(job: Job, queue_key: str) -> None:
         except Exception as e:
             console.print(f"[yellow]Failed to upload trial results to S3: {e}[/yellow]")
 
-    # New session for storing results (connection was released during Harbor execution)
-    async with _trial_session(trial_id, allow_missing=True) as (session, trial):
-        if not trial:
-            return
+    async def _store_results() -> Exception | None:
+        retry_exception: Exception | None = None
 
-        if outcome:
-            # Always update reward/error/paths from outcome (most authoritative source)
-            is_timeout = _is_agent_timeout_error_message(outcome.error)
-            derived_reward = outcome.reward
-            if derived_reward is None and is_timeout:
-                verifier_ran = _verifier_ran_from_job_result(
+        async with _trial_session(trial_id, allow_missing=True) as (session, trial):
+            if not trial:
+                return None
+
+            if outcome:
+                # Always update reward/error/paths from outcome (most authoritative source)
+                is_timeout = _is_agent_timeout_error_message(outcome.error)
+                derived_reward = outcome.reward
+                if derived_reward is None and is_timeout:
+                    verifier_ran = _verifier_ran_from_job_result(
+                        str(outcome.job_result_path) if outcome.job_result_path else None
+                    )
+                    if verifier_ran:
+                        derived_reward = 0
+                        console.print(
+                            f"[yellow]Trial {trial_id} agent timeout -> reward=0[/yellow]"
+                        )
+
+                trial.reward = derived_reward
+                if outcome.error:
+                    trial.error_message = outcome.error
+                elif derived_reward is not None:
+                    trial.error_message = None
+                trial.harbor_result_path = (
                     str(outcome.job_result_path) if outcome.job_result_path else None
                 )
-                if verifier_ran:
-                    derived_reward = 0
-                    console.print(
-                        f"[yellow]Trial {trial_id} agent timeout -> reward=0[/yellow]"
-                    )
+                trial.trial_s3_key = trial_s3_key
 
-            trial.reward = derived_reward
-            if outcome.error:
-                trial.error_message = outcome.error
-            elif derived_reward is not None:
-                trial.error_message = None
-            trial.harbor_result_path = (
-                str(outcome.job_result_path) if outcome.job_result_path else None
-            )
-            trial.trial_s3_key = trial_s3_key
+                # Store token usage & cost from Harbor's AgentContext
+                trial.input_tokens = outcome.input_tokens
+                trial.cache_tokens = outcome.cache_tokens
+                trial.output_tokens = outcome.output_tokens
+                trial.cost_usd = outcome.cost_usd
 
-            # Store token usage & cost from Harbor's AgentContext
-            trial.input_tokens = outcome.input_tokens
-            trial.cache_tokens = outcome.cache_tokens
-            trial.output_tokens = outcome.output_tokens
-            trial.cost_usd = outcome.cost_usd
+                # Store per-phase timing breakdown
+                trial.phase_timing = outcome.phase_timing
 
-            # Store per-phase timing breakdown
-            trial.phase_timing = outcome.phase_timing
+                # Store trajectory availability
+                trial.has_trajectory = outcome.has_trajectory
 
-            # Store trajectory availability
-            trial.has_trajectory = outcome.has_trajectory
-
-            # SUCCESS means "trial executed to completion" (regardless of reward)
-            # FAILED means "trial encountered an execution error"
-            if derived_reward is not None:
-                # Harbor produced a test result (0 or 1) - trial executed successfully
-                # Hook may have already set status to SUCCESS - that's OK, we're confirming it
-                trial.status = TrialStatus.SUCCESS
-                trial.finished_at = utcnow()
-                console.print(
-                    f"[green]Trial {trial_id} SUCCESS[/green] reward={derived_reward}"
-                )
-            else:
-                # No reward - trial encountered an error or didn't complete verification
-                # Retry if attempts remain
-                if trial.attempts < trial.max_attempts:
-                    trial.status = TrialStatus.RETRYING
-                    console.print(
-                        f"[yellow]Trial {trial_id} retrying ({trial.attempts}/{trial.max_attempts})[/yellow]"
-                    )
-                    raise Exception(
-                        f"Trial failed, retrying: {outcome.error}"
-                    )  # PGQueuer will retry
-                else:
-                    trial.status = TrialStatus.FAILED
+                # SUCCESS means "trial executed to completion" (regardless of reward)
+                # FAILED means "trial encountered an execution error"
+                if derived_reward is not None:
+                    # Harbor produced a test result (0 or 1) - trial executed successfully
+                    # Hook may have already set status to SUCCESS - that's OK, we're confirming it
+                    trial.status = TrialStatus.SUCCESS
                     trial.finished_at = utcnow()
-                    console.print(f"[red]Trial {trial_id} FAILED (max attempts)[/red]")
-        else:
-            trial.status = TrialStatus.FAILED
-            trial.finished_at = utcnow()
-            trial.error_message = (
-                execution_error or "Trial execution failed with exception"
-            )
-            console.print(f"[red]Trial {trial_id} FAILED (exception)[/red]")
-
-        # Immediately enqueue analysis if run_analysis is enabled (don't wait for all trials)
-        if trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED):
-            task = await session.get(TaskModel, trial.task_id)
-            if task and task.run_analysis and trial.analysis_status is None:
-                trial.analysis_status = AnalysisStatus.QUEUED
-                await enqueue_analysis(
-                    session,
-                    trial_id,
-                    queue_key=settings.get_analysis_queue_key(),
+                    console.print(
+                        f"[green]Trial {trial_id} SUCCESS[/green] reward={derived_reward}"
+                    )
+                else:
+                    # No reward - trial encountered an error or didn't complete verification.
+                    # Persist RETRYING before re-raising so the retry path survives cancellation.
+                    if trial.attempts < trial.max_attempts:
+                        trial.status = TrialStatus.RETRYING
+                        console.print(
+                            f"[yellow]Trial {trial_id} retrying ({trial.attempts}/{trial.max_attempts})[/yellow]"
+                        )
+                        retry_exception = RuntimeError(
+                            f"Trial failed, retrying: {outcome.error}"
+                        )
+                    else:
+                        trial.status = TrialStatus.FAILED
+                        trial.finished_at = utcnow()
+                        console.print(f"[red]Trial {trial_id} FAILED (max attempts)[/red]")
+            else:
+                trial.status = TrialStatus.FAILED
+                trial.finished_at = utcnow()
+                trial.error_message = (
+                    execution_error or "Trial execution failed with exception"
                 )
-                console.print(f"[cyan]Enqueued analysis for {trial_id}[/cyan]")
+                console.print(f"[red]Trial {trial_id} FAILED (exception)[/red]")
 
-            # Check if all trials done → transition task status
-            started = await maybe_start_analysis_stage(session, trial_id)
-            if started:
-                console.print(
-                    f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
-                )
+            # Immediately enqueue analysis if run_analysis is enabled (don't wait for all trials)
+            if trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED):
+                task = await session.get(TaskModel, trial.task_id)
+                if task and task.run_analysis and trial.analysis_status is None:
+                    trial.analysis_status = AnalysisStatus.QUEUED
+                    await enqueue_analysis(
+                        session,
+                        trial_id,
+                        queue_key=settings.get_analysis_queue_key(),
+                    )
+                    console.print(f"[cyan]Enqueued analysis for {trial_id}[/cyan]")
+
+                # Check if all trials done → transition task status
+                started = await maybe_start_analysis_stage(session, trial_id)
+                if started:
+                    console.print(
+                        f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
+                    )
+
+        return retry_exception
+
+    retry_exception = await asyncio.shield(_store_results())
+    if retry_exception is not None:
+        raise retry_exception

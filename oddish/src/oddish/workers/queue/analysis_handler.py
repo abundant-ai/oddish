@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -147,6 +148,12 @@ async def run_analysis_job(job: Job, queue_key: str) -> None:
                 f"[green]Classification complete:[/green] {classification.classification.value} - {classification.subtype}"
             )
 
+    except asyncio.CancelledError:
+        analysis_error = (
+            "Analysis was cancelled by the worker runtime before it finished. "
+            "This is usually caused by a worker restart or shutdown."
+        )
+        console.print(f"[yellow]Analysis cancelled for {trial_id}[/yellow]")
     except Exception as e:
         analysis_error = f"{type(e).__name__}: {e}"
         console.print(f"[red]Analysis error for {trial_id}: {analysis_error}[/red]")
@@ -157,25 +164,30 @@ async def run_analysis_job(job: Job, queue_key: str) -> None:
         if temp_trial_dir and temp_trial_dir.exists():
             shutil.rmtree(temp_trial_dir, ignore_errors=True)
 
-    # Store results
-    async with _trial_session(trial_id, allow_missing=True) as (session, trial):
-        if not trial:
-            return
+    async def _store_results() -> None:
+        async with _trial_session(trial_id, allow_missing=True) as (session, trial):
+            if not trial:
+                return
 
-        if classification_result:
-            trial.analysis = classification_result
-            trial.analysis_status = AnalysisStatus.SUCCESS
-            trial.analysis_finished_at = utcnow()
-            console.print(f"[green]Analysis {trial_id} SUCCESS[/green]")
-        else:
-            trial.analysis_status = AnalysisStatus.FAILED
-            trial.analysis_error = analysis_error
-            trial.analysis_finished_at = utcnow()
-            console.print(f"[red]Analysis {trial_id} FAILED[/red]")
+            if classification_result:
+                trial.analysis = classification_result
+                trial.analysis_status = AnalysisStatus.SUCCESS
+                trial.analysis_finished_at = utcnow()
+                trial.analysis_error = None
+                console.print(f"[green]Analysis {trial_id} SUCCESS[/green]")
+            else:
+                trial.analysis_status = AnalysisStatus.FAILED
+                trial.analysis_error = (
+                    analysis_error or "Analysis execution failed with exception"
+                )
+                trial.analysis_finished_at = utcnow()
+                console.print(f"[red]Analysis {trial_id} FAILED[/red]")
 
-        # Check if all analyses done → start verdict stage
-        started = await maybe_start_verdict_stage(session, trial_id)
-        if started:
-            console.print(
-                f"[blue]Task {trial.task_id} transitioned to VERDICT_PENDING[/blue]"
-            )
+            # Check if all analyses done → start verdict stage
+            started = await maybe_start_verdict_stage(session, trial_id)
+            if started:
+                console.print(
+                    f"[blue]Task {trial.task_id} transitioned to VERDICT_PENDING[/blue]"
+                )
+
+    await asyncio.shield(_store_results())
