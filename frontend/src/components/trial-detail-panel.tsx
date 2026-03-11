@@ -318,7 +318,7 @@ export function TrialDetailPanel({
             <span className="text-[10px] sm:text-xs font-bold truncate">
               {trial.agent}
             </span>
-            <span className="text-[9px] sm:text-[10px] font-normal truncate flex items-center gap-1">
+            <span className="text-[9px] sm:text-[10px] font-normal truncate flex items-center gap-1 font-mono">
               <QueueKeyIcon
                 queueKey={trial.provider}
                 model={trial.model}

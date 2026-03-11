@@ -10,6 +10,7 @@ from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.orm import selectinload
 
 from oddish.api.helpers import build_task_status_responses_from_counts
+from oddish.config import normalize_model_id
 from auth import APIKeyScope, AuthContext, require_auth
 from oddish.db import (
     ExperimentModel,
@@ -195,33 +196,91 @@ async def get_dashboard(
                             )
                         )
                     ).label("avg_duration_s"),
+                    func.count(
+                        case((TrialModel.finished_at.isnot(None), 1))
+                    ).label("duration_count"),
                 )
                 .where(*usage_filters)
                 .group_by(TrialModel.model, TrialModel.provider)
             )
 
             usage_result = await session.execute(usage_query)
-            model_usage = [
-                {
-                    "model": row.model or "unknown",
-                    "provider": row.provider or "unknown",
-                    "trial_count": int(row.trial_count),
-                    "input_tokens": int(row.input_tokens or 0),
-                    "cache_tokens": int(row.cache_tokens or 0),
-                    "output_tokens": int(row.output_tokens or 0),
-                    "cost_usd": round(float(row.cost_usd or 0), 4),
-                    "running": int(row.running),
-                    "queued": int(row.queued),
-                    "succeeded": int(row.succeeded),
-                    "failed": int(row.failed),
-                    "avg_duration_s": (
-                        round(float(row.avg_duration_s), 1)
-                        if row.avg_duration_s
-                        else None
-                    ),
-                }
-                for row in usage_result.all()
-            ]
+            merged_usage: dict[tuple[str, str], dict[str, int | float | str | None]] = {}
+            for row in usage_result.all():
+                normalized_model = normalize_model_id(row.model) or "unknown"
+                normalized_provider = (row.provider or "unknown").strip().lower() or "unknown"
+                key = (normalized_model, normalized_provider)
+                duration_count = int(row.duration_count or 0)
+
+                if key not in merged_usage:
+                    merged_usage[key] = {
+                        "model": normalized_model,
+                        "provider": normalized_provider,
+                        "trial_count": 0,
+                        "input_tokens": 0,
+                        "cache_tokens": 0,
+                        "output_tokens": 0,
+                        "cost_usd": 0.0,
+                        "running": 0,
+                        "queued": 0,
+                        "succeeded": 0,
+                        "failed": 0,
+                        "duration_total_s": 0.0,
+                        "duration_count": 0,
+                        "avg_duration_s": None,
+                    }
+
+                aggregate = merged_usage[key]
+                aggregate["trial_count"] = int(aggregate["trial_count"]) + int(
+                    row.trial_count or 0
+                )
+                aggregate["input_tokens"] = int(aggregate["input_tokens"]) + int(
+                    row.input_tokens or 0
+                )
+                aggregate["cache_tokens"] = int(aggregate["cache_tokens"]) + int(
+                    row.cache_tokens or 0
+                )
+                aggregate["output_tokens"] = int(aggregate["output_tokens"]) + int(
+                    row.output_tokens or 0
+                )
+                aggregate["cost_usd"] = float(aggregate["cost_usd"]) + float(
+                    row.cost_usd or 0
+                )
+                aggregate["running"] = int(aggregate["running"]) + int(row.running or 0)
+                aggregate["queued"] = int(aggregate["queued"]) + int(row.queued or 0)
+                aggregate["succeeded"] = int(aggregate["succeeded"]) + int(
+                    row.succeeded or 0
+                )
+                aggregate["failed"] = int(aggregate["failed"]) + int(row.failed or 0)
+                aggregate["duration_total_s"] = float(
+                    aggregate["duration_total_s"]
+                ) + float((row.avg_duration_s or 0) * duration_count)
+                aggregate["duration_count"] = int(aggregate["duration_count"]) + duration_count
+
+            model_usage = []
+            for aggregate in merged_usage.values():
+                duration_count = int(aggregate["duration_count"])
+                avg_duration_s = (
+                    round(float(aggregate["duration_total_s"]) / duration_count, 1)
+                    if duration_count > 0
+                    else None
+                )
+                model_usage.append(
+                    {
+                        "model": str(aggregate["model"]),
+                        "provider": str(aggregate["provider"]),
+                        "trial_count": int(aggregate["trial_count"]),
+                        "input_tokens": int(aggregate["input_tokens"]),
+                        "cache_tokens": int(aggregate["cache_tokens"]),
+                        "output_tokens": int(aggregate["output_tokens"]),
+                        "cost_usd": round(float(aggregate["cost_usd"]), 4),
+                        "running": int(aggregate["running"]),
+                        "queued": int(aggregate["queued"]),
+                        "succeeded": int(aggregate["succeeded"]),
+                        "failed": int(aggregate["failed"]),
+                        "avg_duration_s": avg_duration_s,
+                    }
+                )
 
         # =====================================================================
         # 4. Recent Tasks (optimized two-phase query)

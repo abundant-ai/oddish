@@ -15,9 +15,8 @@ from harbor.models.trial.config import (
     VerifierConfig as HarborVerifierConfig,
 )
 
+from oddish.config import normalize_model_id
 from oddish.db import AnalysisStatus, Priority, TaskStatus, TrialStatus, VerdictStatus
-
-_MODEL_ABSENT_ALIASES: set[str] = {"", "-", "none", "null", "nil", "n/a", "na", "default"}
 
 
 # =============================================================================
@@ -78,13 +77,7 @@ class TrialSpec(BaseModel):
 
     @model_validator(mode="after")
     def normalize_model_aliases(self) -> "TrialSpec":
-        if self.model is None:
-            return self
-        normalized = self.model.strip()
-        if normalized.lower() in _MODEL_ABSENT_ALIASES:
-            self.model = None
-            return self
-        self.model = normalized
+        self.model = normalize_model_id(self.model)
         return self
 
 

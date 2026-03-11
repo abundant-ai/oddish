@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from typing import ClassVar
 
 from pydantic import Field, model_validator
@@ -26,6 +27,35 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "gemini",
     "default",
 }
+
+
+def normalize_model_id(model: str | None) -> str | None:
+    """Canonicalize model identifiers for storage and display.
+
+    Model IDs should be lowercase, preserve provider prefixes, and avoid
+    whitespace-only variants that would fragment usage aggregation.
+    """
+    if model is None:
+        return None
+
+    stripped = model.strip().lower()
+    if not stripped:
+        return None
+
+    normalized_parts: list[str] = []
+    for part in stripped.split("/"):
+        normalized_part = re.sub(r"\s+", "-", part.strip())
+        normalized_part = re.sub(r"-{2,}", "-", normalized_part).strip("-")
+        if normalized_part:
+            normalized_parts.append(normalized_part)
+
+    if not normalized_parts:
+        return None
+
+    normalized = "/".join(normalized_parts)
+    if normalized in _MODEL_ABSENT_ALIASES:
+        return None
+    return normalized
 
 
 def _build_agent_provider_map() -> dict[str, str]:
@@ -252,11 +282,7 @@ class Settings(BaseSettings):
         - For nop/oracle, always force model to 'default'.
         - Otherwise return cleaned model (or None if missing).
         """
-        cleaned: str | None = None
-        if model is not None:
-            candidate = model.strip()
-            if candidate.lower() not in _MODEL_ABSENT_ALIASES:
-                cleaned = candidate
+        cleaned = normalize_model_id(model)
 
         normalized_agent = (agent or "").strip().lower()
         if normalized_agent in {AgentName.NOP.value, AgentName.ORACLE.value}:

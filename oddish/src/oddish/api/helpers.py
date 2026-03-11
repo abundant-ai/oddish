@@ -15,6 +15,7 @@ _ANALYSIS_SUMMARY_UNSET = object()
 
 def build_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
+    normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
     return TrialResponse(
         id=trial.id,
         name=trial.name,
@@ -23,7 +24,7 @@ def build_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
         agent=trial.agent,
         provider=trial.provider,
         queue_key=settings.normalize_queue_key(trial.queue_key),
-        model=trial.model,
+        model=normalized_model,
         status=trial.status,
         attempts=trial.attempts,
         max_attempts=trial.max_attempts,
@@ -66,6 +67,7 @@ def build_compact_trial_response(
             }
     else:
         resolved_analysis_summary = analysis_summary if analysis_summary else None
+    normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
 
     return TrialResponse(
         id=trial.id,
@@ -75,7 +77,7 @@ def build_compact_trial_response(
         agent=trial.agent,
         provider=trial.provider,
         queue_key=settings.normalize_queue_key(trial.queue_key),
-        model=trial.model,
+        model=normalized_model,
         status=trial.status,
         attempts=trial.attempts,
         max_attempts=trial.max_attempts,

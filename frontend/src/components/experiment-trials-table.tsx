@@ -945,7 +945,7 @@ export function ExperimentTrialsTable({
                 <span className={`${isVisible ? "" : "line-through"}`}>
                   {agent.agent}
                 </span>
-                <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                <span className="text-[10px] text-muted-foreground flex items-center gap-1 font-mono">
                   <QueueKeyIcon
                     queueKey={agent.queueKey}
                     model={agent.model}
@@ -1163,7 +1163,7 @@ export function ExperimentTrialsTable({
                         <div className="text-[10px] sm:text-xs font-bold text-foreground truncate max-w-[70px] sm:max-w-[110px] md:max-w-none">
                           {agent.agent}
                         </div>
-                        <div className="text-[9px] sm:text-[10px] font-normal text-muted-foreground truncate max-w-[70px] sm:max-w-[110px] md:max-w-none flex items-center justify-center gap-1">
+                        <div className="text-[9px] sm:text-[10px] font-normal text-muted-foreground truncate max-w-[70px] sm:max-w-[110px] md:max-w-none flex items-center justify-center gap-1 font-mono">
                           <QueueKeyIcon
                             queueKey={agent.queueKey}
                             model={agent.model}

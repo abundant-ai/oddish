@@ -653,7 +653,7 @@ function AgentGroupCard({
             <CardTitle className="text-sm font-semibold truncate">
               {group.agent}
             </CardTitle>
-            <p className="text-xs text-muted-foreground truncate">
+            <p className="text-xs text-muted-foreground truncate font-mono">
               {group.model || "default model"}
             </p>
           </div>
@@ -901,7 +901,7 @@ function TrialDetailView({
             </span>
             <div className="min-w-0">
               <h3 className="font-semibold text-sm truncate">{trial.agent}</h3>
-              <p className="text-xs text-muted-foreground truncate">
+              <p className="text-xs text-muted-foreground truncate font-mono">
                 {trial.model || "default"}
               </p>
             </div>
