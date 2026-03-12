@@ -20,6 +20,8 @@ import json
 import os
 from uuid import uuid4
 
+import anyio
+import asyncpg
 import modal
 from rich.console import Console
 from harbor.models.environment_type import EnvironmentType
@@ -35,19 +37,25 @@ from modal_app import (
     runtime_secrets,
     volume,
 )
+from pgqueuer import buffers, helpers
+from pgqueuer.db import AsyncpgDriver
+from pgqueuer.models import Context, Job
 from pgqueuer.qm import QueueManager
-from pgqueuer.models import Job
-from pgqueuer.types import QueueExecutionMode
 
 from oddish.config import settings
-from oddish.db import TrialModel, close_pool, get_pool, get_session
+from oddish.db import (
+    TrialModel,
+    close_database_connections,
+    get_pool,
+    get_session,
+    reconfigure_database_connections,
+)
 from oddish.workers.queue.dispatch_planner import (
     build_spawn_plan,
     discover_active_queue_keys,
     get_queue_counts,
 )
 from oddish.workers.queue import (
-    create_queue_manager_base,
     register_queue_entrypoints,
     run_analysis_job,
     run_trial_job,
@@ -93,7 +101,7 @@ async def _notify_github_verdict(task_id: str) -> None:
         console.print(f"[yellow]GitHub notification failed (verdict): {e}[/yellow]")
 
 
-def _configure_storage_paths():
+async def _configure_storage_paths() -> None:
     """Configure storage paths to use Modal Volume."""
     # Patch ClassVars at runtime (since they're not env-configurable)
     Settings.local_storage_dir = f"{VOLUME_MOUNT_PATH}/tasks"
@@ -106,9 +114,13 @@ def _configure_storage_paths():
     Settings.db_pool_max_size = 2
     Settings.db_pool_size = 1
     Settings.db_pool_max_overflow = 0
-    Settings.asyncpg_pool_min_size = 1
-    Settings.asyncpg_pool_max_size = 1
+    settings.asyncpg_pool_min_size = 1
+    settings.asyncpg_pool_max_size = 1
     settings.default_model_concurrency = MODEL_CONCURRENCY_DEFAULT
+
+    # Modal containers are frequently reused. Rebuild the DB clients here so the
+    # smaller worker pool sizes actually take effect for this invocation.
+    await reconfigure_database_connections()
 
     os.makedirs(Settings.local_storage_dir, exist_ok=True)
     os.makedirs(Settings.harbor_jobs_dir, exist_ok=True)
@@ -270,14 +282,21 @@ async def create_single_job_queue_manager(
     *,
     worker_id: str,
     queue_slot: int,
-) -> QueueManager:
+) -> tuple[QueueManager, asyncpg.Connection]:
     """
     Create QueueManager configured to process exactly ONE job then exit.
 
     Each Modal worker container runs this to claim and process a single job.
     PGQueuer's SKIP LOCKED ensures no duplicate processing across workers.
     """
-    qm = await create_queue_manager_base()
+    # Use a dedicated connection for the one-shot worker. This avoids
+    # LISTEN/NOTIFY listener state inside an asyncpg pool and keeps connection
+    # usage predictable on Supabase/Modal.
+    connection = await asyncpg.connect(
+        settings.asyncpg_url,
+        statement_cache_size=0,
+    )
+    qm = QueueManager(AsyncpgDriver(connection))
 
     retry_timer = timedelta(minutes=settings.trial_retry_timer_minutes)
 
@@ -361,7 +380,42 @@ async def create_single_job_queue_manager(
         handler=handle_queue_job,
     )
 
-    return qm
+    return qm, connection
+
+
+async def _run_single_job_without_listener(qm: QueueManager) -> bool:
+    """Dequeue and dispatch at most one job without starting pgqueuer listeners."""
+    await qm.verify_structure()
+    heartbeat_buffer_timeout = helpers.retry_timer_buffer_timeout(
+        [x.parameters.retry_timer for x in qm.entrypoint_registry.values()]
+    )
+
+    async with (
+        buffers.JobStatusLogBuffer(
+            max_size=1,
+            callback=qm.queries.log_jobs,
+        ) as jbuff,
+        buffers.HeartbeatBuffer(
+            max_size=1,
+            timeout=heartbeat_buffer_timeout / 4,
+            callback=qm.queries.update_heartbeat,
+        ) as hbuff,
+        buffers.RequestsPerSecondBuffer(
+            max_size=1,
+            callback=qm.update_rps_stats,
+        ) as rpsbuff,
+        qm.connection,
+    ):
+        async for job in qm.fetch_jobs(batch_size=1, global_concurrency_limit=1):
+            await rpsbuff.add(job.entrypoint)
+            qm.job_context[job.id] = Context(
+                cancellation=anyio.CancelScope(),
+                resources=qm.resources,
+            )
+            await qm._dispatch(job, jbuff, hbuff)
+            return True
+
+    return False
 
 
 # =============================================================================
@@ -389,10 +443,11 @@ async def process_single_job(queue_key: str):
     Each worker gets the full timeout budget for its single job.
     """
     console.print(f"[cyan]Job worker starting (queue_key={queue_key})...[/cyan]")
-    _configure_storage_paths()
+    await _configure_storage_paths()
 
     worker_id = f"{queue_key}-{uuid4().hex[:12]}"
     lock_slot: int | None = None
+    qm_connection: asyncpg.Connection | None = None
 
     try:
         queue_limit = settings.get_model_concurrency(queue_key)
@@ -423,20 +478,17 @@ async def process_single_job(queue_key: str):
             f"[dim]Acquired queue slot {lock_slot + 1}/{queue_limit} (queue_key={queue_key})[/dim]"
         )
 
-        qm = await create_single_job_queue_manager(
+        qm, qm_connection = await create_single_job_queue_manager(
             queue_key=queue_key,
             worker_id=worker_id,
             queue_slot=lock_slot,
         )
 
-        # Try to claim and process one job
-        # Short dequeue_timeout so we exit quickly if no jobs available
-        await qm.run(
-            batch_size=1,
-            dequeue_timeout=timedelta(seconds=2),
-            mode=QueueExecutionMode.drain,
-            shutdown_on_listener_failure=True,
-        )
+        job_found = await _run_single_job_without_listener(qm)
+        if not job_found:
+            console.print(
+                f"[dim]No job available after slot acquisition (queue_key={queue_key})[/dim]"
+            )
 
     except asyncio.CancelledError:
         console.print("[yellow]Worker cancelled[/yellow]")
@@ -445,13 +497,15 @@ async def process_single_job(queue_key: str):
         console.print(f"[red]Worker error: {e}[/red]")
         raise
     finally:
+        if qm_connection is not None:
+            await qm_connection.close()
         if lock_slot is not None:
             await _release_queue_slot(
                 queue_key=queue_key,
                 slot=lock_slot,
                 worker_id=worker_id,
             )
-        await close_pool()
+        await close_database_connections()
         console.print("[green]Job worker complete[/green]")
 
 
@@ -478,7 +532,7 @@ async def poll_queue():
     - Parallelism scales with queue depth (up to MAX_WORKERS_PER_POLL per cycle)
     """
     console.print("[cyan]Queue dispatcher starting...[/cyan]")
-    _configure_storage_paths()
+    await _configure_storage_paths()
 
     try:
         stale_cleared = await _cleanup_stale_queue_slots()
@@ -517,10 +571,12 @@ async def poll_queue():
 
         console.print(f"[green]Spawning {len(spawn_plan)} job worker(s)...[/green]")
 
-        # Spawn workers in parallel using Modal's .spawn()
-        # Each worker will claim a job from its queue key.
+        # Use Modal's async spawn interface inside this async function to avoid
+        # blocking the event loop and spurious AsyncUsageWarning noise.
+        await asyncio.gather(
+            *(process_single_job.spawn.aio(queue_key=queue_key) for queue_key in spawn_plan)
+        )
         for i, queue_key in enumerate(spawn_plan, start=1):
-            process_single_job.spawn(queue_key=queue_key)
             console.print(
                 f"[dim]Spawned worker {i}/{len(spawn_plan)} (queue_key={queue_key})[/dim]"
             )
@@ -537,5 +593,5 @@ async def poll_queue():
         console.print(f"[red]Dispatcher error: {e}[/red]")
         raise
     finally:
-        await close_pool()
+        await close_database_connections()
         console.print("[green]Dispatcher complete[/green]")

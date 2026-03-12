@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 import asyncpg
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore[attr-defined]
 from pgqueuer.db import AsyncpgPoolDriver
 from pgqueuer.queries import Queries
@@ -18,16 +18,26 @@ from oddish.db.models import Base
 # Ensure we use asyncpg driver explicitly (URL should already have +asyncpg).
 db_url = settings.database_url
 
-# Disable prepared statements for connection poolers (Supavisor, PgBouncer)
-# that run in transaction mode
-engine = create_async_engine(
-    db_url,
-    echo=False,
-    connect_args={"statement_cache_size": 0},
-    pool_size=settings.db_pool_size,
-    max_overflow=settings.db_pool_max_overflow,
-)
-async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
+def _create_engine() -> AsyncEngine:
+    # Disable prepared statements for connection poolers (Supavisor, PgBouncer)
+    # that run in transaction mode.
+    return create_async_engine(
+        db_url,
+        echo=False,
+        connect_args={"statement_cache_size": 0},
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_pool_max_overflow,
+    )
+
+
+def _create_session_maker(
+    db_engine: AsyncEngine,
+) -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(db_engine, expire_on_commit=False)
+
+
+engine = _create_engine()
+async_session_maker = _create_session_maker(engine)
 
 # Global connection pool for asyncpg (used by PGQueuer)
 _pool: asyncpg.Pool | None = None
@@ -54,6 +64,30 @@ async def close_pool() -> None:
     if _pool is not None:
         await _pool.close()
         _pool = None
+
+
+async def close_engine() -> None:
+    """Dispose the SQLAlchemy engine and release pooled connections."""
+    await engine.dispose()
+
+
+async def close_database_connections() -> None:
+    """Close both asyncpg and SQLAlchemy database connections."""
+    await close_pool()
+    await close_engine()
+
+
+async def reconfigure_database_connections() -> None:
+    """Rebuild DB clients after runtime pool-size overrides change.
+
+    Modal workers adjust pool sizes at runtime, but the SQLAlchemy engine is
+    created at import time. Recreate it so the current settings actually take
+    effect, especially in reused worker containers.
+    """
+    global engine, async_session_maker
+    await close_database_connections()
+    engine = _create_engine()
+    async_session_maker = _create_session_maker(engine)
 
 
 @asynccontextmanager

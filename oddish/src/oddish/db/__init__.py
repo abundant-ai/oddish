@@ -17,10 +17,13 @@ from oddish.db.models import (
 
 # Connection
 from oddish.db.connection import (
+    close_database_connections,
+    close_engine,
     # Session/Pool
     close_pool,
     engine,
     get_pool,
+    reconfigure_database_connections,
     get_session,
     # Setup
     drop_db,
@@ -58,6 +61,9 @@ __all__ = [
     "get_session",
     "get_pool",
     "close_pool",
+    "close_engine",
+    "close_database_connections",
+    "reconfigure_database_connections",
     # Setup
     "init_db",
     "drop_db",
