@@ -62,13 +62,13 @@ oddish run -d terminal-bench@2.0 -c sweep.yaml
 ```yaml
 agents:
   - name: claude-code
-    model_name: anthropic/claude-sonnet-4-5
+    model_name: anthropic/claude-opus-4-6
     n_trials: 3
   - name: codex
-    model_name: openai/gpt-5.2-codex
+    model_name: openai/gpt-5.4
     n_trials: 3
-  - name: gemini-cli
-    model_name: google/gemini-3-flash-preview
+  - name: terminus-2
+    model_name: gemini/gemini-3-flash-preview
     n_trials: 3
 ```
 
