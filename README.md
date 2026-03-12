@@ -18,13 +18,13 @@
 
 # Oddish
 
-> Run evals on [Harbor](https://github.com/laude-institute/harbor) tasks at scale with queuing, retries, and monitoring.
+> Run evals on [Harbor](https://github.com/laude-institute/harbor) tasks in the cloud.
 
 Oddish extends Harbor with:
 
 - Provider-aware queuing and automatic retries for LLM providers
 - Real-time monitoring via dashboard or CLI
-- Postgres-backed state plus S3 for artifacts
+- Postgres-backed state and S3 storage for logs
 
 Just replace `harbor run` with `oddish run`.
 
