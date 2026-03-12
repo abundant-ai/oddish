@@ -5,7 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Literal
+from typing import Annotated, Callable, Literal
 from urllib.parse import quote
 
 import httpx
@@ -17,6 +17,7 @@ from oddish.cli.config import get_api_url, get_auth_headers, require_api_key
 console = Console()
 
 TargetType = Literal["trial", "task", "experiment"]
+StatusCallback = Callable[[str], None]
 
 MAX_WORKERS = 8
 
@@ -224,6 +225,7 @@ def _pull_trial(
     include_logs: bool,
     include_files: bool,
     include_structured_logs: bool,
+    status_update: StatusCallback | None = None,
 ) -> dict:
     trial_root = output_root / "trials" / trial_id
     summary: dict[str, int | str] = {
@@ -235,6 +237,8 @@ def _pull_trial(
     }
 
     if include_logs:
+        if status_update:
+            status_update(f"Pulling trial {trial_id}: fetching logs")
         logs_payload = _get_json(
             client,
             f"/trials/{trial_id}/logs",
@@ -247,6 +251,8 @@ def _pull_trial(
             summary["errors"] = int(summary["errors"]) + 1
 
         if include_structured_logs:
+            if status_update:
+                status_update(f"Pulling trial {trial_id}: fetching structured logs")
             structured_payload = _get_json(
                 client,
                 f"/trials/{trial_id}/logs/structured",
@@ -274,6 +280,8 @@ def _pull_trial(
         _write_json(trial_root / "trajectory.json", trajectory_payload)
 
     if include_files:
+        if status_update:
+            status_update(f"Pulling trial {trial_id}: listing files")
         listing = _list_trial_files(client, trial_id)
         if listing:
             to_download: list[tuple[str, Path, Path]] = []
@@ -299,6 +307,9 @@ def _pull_trial(
                 to_download.append((remote_path, local_file, rel))
 
             error_dir = trial_root / "errors"
+            total_downloads = len(to_download)
+            if status_update and total_downloads:
+                status_update(f"Pulling trial {trial_id}: downloading files (0/{total_downloads})")
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
                 futures = {
                     pool.submit(
@@ -307,19 +318,33 @@ def _pull_trial(
                     ): rel
                     for remote_path, local_file, rel in to_download
                 }
+                completed = 0
                 for future in as_completed(futures):
                     result = future.result()
+                    completed += 1
                     if result == "saved":
                         summary["files_saved"] = int(summary["files_saved"]) + 1
                     else:
                         summary["errors"] = int(summary["errors"]) + 1
+                    if status_update and total_downloads:
+                        status_update(
+                            f"Pulling trial {trial_id}: downloading files ({completed}/{total_downloads})"
+                        )
 
     return summary
 
 
-def _pull_task_files(client: httpx.Client, task_id: str, output_root: Path) -> dict:
+def _pull_task_files(
+    client: httpx.Client,
+    task_id: str,
+    output_root: Path,
+    *,
+    status_update: StatusCallback | None = None,
+) -> dict:
     task_root = output_root / "tasks" / task_id / "files"
     summary = {"task_files_saved": 0, "task_files_skipped": 0, "task_file_errors": 0}
+    if status_update:
+        status_update(f"Pulling task {task_id}: listing task files")
     listing = _list_task_files(client, task_id)
     if not listing:
         return summary
@@ -348,6 +373,9 @@ def _pull_task_files(client: httpx.Client, task_id: str, output_root: Path) -> d
         to_download.append((remote_path, local_file, rel))
 
     error_dir = task_root / "errors"
+    total_downloads = len(to_download)
+    if status_update and total_downloads:
+        status_update(f"Pulling task {task_id}: downloading task files (0/{total_downloads})")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {
             pool.submit(
@@ -356,12 +384,18 @@ def _pull_task_files(client: httpx.Client, task_id: str, output_root: Path) -> d
             ): rel
             for remote_path, local_file, rel in to_download
         }
+        completed = 0
         for future in as_completed(futures):
             result = future.result()
+            completed += 1
             if result == "saved":
                 summary["task_files_saved"] += 1
             else:
                 summary["task_file_errors"] += 1
+            if status_update and total_downloads:
+                status_update(
+                    f"Pulling task {task_id}: downloading task files ({completed}/{total_downloads})"
+                )
 
     return summary
 
@@ -438,6 +472,7 @@ def _pull_once(
     include_structured_logs: bool,
     include_task_files: bool,
     cached_data: dict | list[dict] | None = None,
+    status_update: StatusCallback | None = None,
 ) -> dict:
     run_manifest: dict = {
         "target_type": target_type,
@@ -449,6 +484,8 @@ def _pull_once(
     }
 
     if target_type == "trial":
+        if status_update:
+            status_update(f"Pulling trial {target_id}")
         summary = _pull_trial(
             client,
             target_id,
@@ -456,11 +493,14 @@ def _pull_once(
             include_logs=include_logs,
             include_files=include_files,
             include_structured_logs=include_structured_logs,
+            status_update=status_update,
         )
         run_manifest["trials"].append(summary)
         return run_manifest
 
     if target_type == "task":
+        if status_update:
+            status_update(f"Pulling task {target_id}: fetching task metadata")
         task = cached_data if isinstance(cached_data, dict) else _get_task_status(client, target_id)
         if not task:
             raise typer.BadParameter(f"Task '{target_id}' not found.")
@@ -472,6 +512,9 @@ def _pull_once(
         trial_ids = [
             t.get("id") for t in (task.get("trials", []) or []) if t.get("id")
         ]
+        total_trials = len(trial_ids)
+        if status_update and total_trials:
+            status_update(f"Pulling task {target_id}: downloading trials (0/{total_trials})")
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             futures = {
                 pool.submit(
@@ -480,14 +523,26 @@ def _pull_once(
                     include_logs=include_logs,
                     include_files=include_files,
                     include_structured_logs=include_structured_logs,
+                    status_update=None,
                 ): tid
                 for tid in trial_ids
             }
+            completed_trials = 0
             for future in as_completed(futures):
                 run_manifest["trials"].append(future.result())
+                completed_trials += 1
+                if status_update and total_trials:
+                    status_update(
+                        f"Pulling task {target_id}: downloading trials ({completed_trials}/{total_trials})"
+                    )
 
         if include_task_files and include_files:
-            run_manifest["tasks"][-1] |= _pull_task_files(client, target_id, output_root)
+            run_manifest["tasks"][-1] |= _pull_task_files(
+                client,
+                target_id,
+                output_root,
+                status_update=status_update,
+            )
         return run_manifest
 
     tasks = (
@@ -499,10 +554,13 @@ def _pull_once(
         raise typer.BadParameter(f"Experiment '{target_id}' not found or has no tasks.")
 
     all_trial_work: list[tuple[str, str]] = []
-    for task in tasks:
+    total_tasks = len(tasks)
+    for task_index, task in enumerate(tasks, start=1):
         task_id = task.get("id")
         if not task_id:
             continue
+        if status_update:
+            status_update(f"Pulling experiment {target_id}: preparing task {task_index}/{total_tasks} ({task_id})")
         full_task = task if task.get("trials") is not None else (_get_task_status(client, task_id) or task)
         _write_json(output_root / "tasks" / task_id / "task.json", full_task)
         task_summary: dict = {
@@ -515,9 +573,17 @@ def _pull_once(
             if trial_id:
                 all_trial_work.append((task_id, trial_id))
         if include_task_files and include_files:
-            task_summary |= _pull_task_files(client, task_id, output_root)
+            task_summary |= _pull_task_files(
+                client,
+                task_id,
+                output_root,
+                status_update=status_update,
+            )
         run_manifest["tasks"].append(task_summary)
 
+    total_trials = len(all_trial_work)
+    if status_update and total_trials:
+        status_update(f"Pulling experiment {target_id}: downloading trials (0/{total_trials})")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {
             pool.submit(
@@ -526,11 +592,18 @@ def _pull_once(
                 include_logs=include_logs,
                 include_files=include_files,
                 include_structured_logs=include_structured_logs,
+                status_update=None,
             ): trial_id
             for _task_id, trial_id in all_trial_work
         }
+        completed_trials = 0
         for future in as_completed(futures):
             run_manifest["trials"].append(future.result())
+            completed_trials += 1
+            if status_update and total_trials:
+                status_update(
+                    f"Pulling experiment {target_id}: downloading trials ({completed_trials}/{total_trials})"
+                )
 
     return run_manifest
 
@@ -604,17 +677,22 @@ def pull(
         iteration = 0
         while True:
             iteration += 1
-            run_manifest = _pull_once(
-                client,
-                resolved_type,
-                resolved_id,
-                output_root,
-                include_logs=logs,
-                include_files=files,
-                include_structured_logs=structured,
-                include_task_files=include_task_files,
-                cached_data=cached_data,
-            )
+            with console.status(
+                f"Pulling {resolved_type} {resolved_id} (iteration {iteration})",
+                spinner="dots",
+            ) as status:
+                run_manifest = _pull_once(
+                    client,
+                    resolved_type,
+                    resolved_id,
+                    output_root,
+                    include_logs=logs,
+                    include_files=files,
+                    include_structured_logs=structured,
+                    include_task_files=include_task_files,
+                    cached_data=cached_data,
+                    status_update=status.update,
+                )
             cached_data = None
 
             manifest = {
