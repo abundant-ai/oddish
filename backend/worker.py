@@ -32,6 +32,10 @@ from modal_app import (
     POLL_INTERVAL_SECONDS,
     MODEL_CONCURRENCY_DEFAULT,
     VOLUME_MOUNT_PATH,
+    WORKER_BUFFER_CONTAINERS,
+    WORKER_MAX_CONTAINERS,
+    WORKER_MIN_CONTAINERS,
+    WORKER_SCALEDOWN_WINDOW_SECONDS,
     WORKER_TIMEOUT_SECONDS,
     app,
     image,
@@ -631,6 +635,10 @@ async def _run_single_job_without_listener(qm: QueueManager) -> bool:
     image=image,
     volumes={VOLUME_MOUNT_PATH: volume},
     secrets=runtime_secrets,
+    min_containers=WORKER_MIN_CONTAINERS,
+    buffer_containers=WORKER_BUFFER_CONTAINERS,
+    scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
+    max_containers=WORKER_MAX_CONTAINERS,
     timeout=WORKER_TIMEOUT_SECONDS,
     memory=1024,  # 1GB memory to prevent OOM issues
 )
