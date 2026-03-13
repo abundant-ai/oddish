@@ -1234,7 +1234,7 @@ export function ExperimentTrialsTable({
                         className={`sticky left-0 z-10 font-mono text-xs border-r border-border shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] ${index % 2 === 0 ? "bg-background" : "bg-muted/20"}`}
                         style={{ width: getDisplayedWidth("task") }}
                       >
-                        <div className="flex items-center gap-2">
+                        <div className="flex min-w-0 items-center gap-2">
                           <span className="text-[10px] text-muted-foreground w-5 text-right flex-shrink-0">
                             {index + 1}
                           </span>
@@ -1255,8 +1255,8 @@ export function ExperimentTrialsTable({
                               className="h-4 w-4"
                             />
                           )}
-                          <div className="flex flex-col">
-                            <div className="flex items-center gap-1">
+                          <div className="flex min-w-0 flex-1 flex-col">
+                            <div className="flex min-w-0 items-center gap-1">
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <button
@@ -1267,7 +1267,7 @@ export function ExperimentTrialsTable({
                                         taskIndex: index,
                                       })
                                     }
-                                    className="font-medium text-foreground truncate text-left hover:text-blue-400 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 cursor-pointer"
+                                    className="min-w-0 flex-1 overflow-hidden truncate text-left font-medium text-foreground transition-colors hover:text-blue-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 cursor-pointer"
                                   >
                                     {task.name}
                                   </button>

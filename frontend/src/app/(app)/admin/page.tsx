@@ -445,7 +445,7 @@ function QueueKeyMatrix({
                     <TableCell className="font-medium">
                       <span className="inline-flex items-center gap-2">
                         <QueueKeyIcon queueKey={row.queueKey} size={13} />
-                        <span className="capitalize">{row.queueKey}</span>
+                        <span className="font-mono text-xs">{row.queueKey}</span>
                       </span>
                     </TableCell>
                     <TableCell className="text-right">
@@ -712,7 +712,7 @@ function QueueSlotsCard() {
                         <span className="font-medium">
                           <span className="inline-flex items-center gap-2">
                             <QueueKeyIcon queueKey={queueKey} size={13} />
-                            <span className="capitalize">{queueKey}</span>
+                            <span className="font-mono text-xs">{queueKey}</span>
                           </span>
                         </span>
                         <div className="flex items-center gap-2">
@@ -952,7 +952,7 @@ function QueueHealthCard() {
                     <TableCell>
                       <span className="inline-flex items-center gap-2">
                         <QueueKeyIcon queueKey={row.queueKey} size={13} />
-                        <span className="capitalize">{row.queueKey}</span>
+                        <span className="font-mono text-xs">{row.queueKey}</span>
                       </span>
                     </TableCell>
                     <TableCell className="text-right font-mono text-xs">
@@ -1382,7 +1382,7 @@ function PGQueuerCard() {
                         <TableCell className="text-xs">
                           <span className="inline-flex items-center gap-1.5">
                             <QueueKeyIcon queueKey={job.entrypoint} size={12} />
-                            <span className="capitalize">{job.entrypoint}</span>
+                            <span className="font-mono text-xs">{job.entrypoint}</span>
                           </span>
                         </TableCell>
                         <TableCell className="text-xs">
@@ -1473,7 +1473,7 @@ function EntrypointStatsCard() {
             return (
               <div key={entrypoint} className="space-y-1">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium capitalize">
+                  <span className="font-mono text-sm font-medium">
                     {entrypoint}
                   </span>
                   <span className="text-xs text-muted-foreground">
