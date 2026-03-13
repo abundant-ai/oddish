@@ -39,6 +39,20 @@ _CACHE_TTL_SECONDS = 10  # Short TTL - data freshness vs performance tradeoff
 _CACHE_MAX_SIZE = 100
 
 
+def _normalize_dashboard_model(model: str | None, provider: str | None) -> str:
+    """Preserve the nop/oracle default model label in usage tables."""
+    normalized_model = normalize_model_id(model)
+    if normalized_model:
+        return normalized_model
+
+    normalized_provider = (provider or "").strip().lower()
+    raw_model = (model or "").strip().lower()
+    if raw_model == "default" or normalized_provider == "default":
+        return "default"
+
+    return "unknown"
+
+
 def _get_cached(cache_key: str) -> dict | None:
     """Get cached response if still valid."""
     if cache_key not in _dashboard_cache:
@@ -166,13 +180,15 @@ async def get_dashboard(
                         case((TrialModel.status == TrialStatus.RUNNING, 1))
                     ).label("running"),
                     func.count(
+                        case((TrialModel.status == TrialStatus.RETRYING, 1))
+                    ).label("retrying"),
+                    func.count(
                         case(
                             (
                                 TrialModel.status.in_(
                                     [
                                         TrialStatus.PENDING,
                                         TrialStatus.QUEUED,
-                                        TrialStatus.RETRYING,
                                     ]
                                 ),
                                 1,
@@ -207,8 +223,10 @@ async def get_dashboard(
             usage_result = await session.execute(usage_query)
             merged_usage: dict[tuple[str, str], dict[str, int | float | str | None]] = {}
             for row in usage_result.all():
-                normalized_model = normalize_model_id(row.model) or "unknown"
                 normalized_provider = (row.provider or "unknown").strip().lower() or "unknown"
+                normalized_model = _normalize_dashboard_model(
+                    row.model, normalized_provider
+                )
                 key = (normalized_model, normalized_provider)
                 duration_count = int(row.duration_count or 0)
 
@@ -222,6 +240,7 @@ async def get_dashboard(
                         "output_tokens": 0,
                         "cost_usd": 0.0,
                         "running": 0,
+                        "retrying": 0,
                         "queued": 0,
                         "succeeded": 0,
                         "failed": 0,
@@ -247,6 +266,9 @@ async def get_dashboard(
                     row.cost_usd or 0
                 )
                 aggregate["running"] = int(aggregate["running"]) + int(row.running or 0)
+                aggregate["retrying"] = int(aggregate["retrying"]) + int(
+                    row.retrying or 0
+                )
                 aggregate["queued"] = int(aggregate["queued"]) + int(row.queued or 0)
                 aggregate["succeeded"] = int(aggregate["succeeded"]) + int(
                     row.succeeded or 0
@@ -275,6 +297,7 @@ async def get_dashboard(
                         "output_tokens": int(aggregate["output_tokens"]),
                         "cost_usd": round(float(aggregate["cost_usd"]), 4),
                         "running": int(aggregate["running"]),
+                        "retrying": int(aggregate["retrying"]),
                         "queued": int(aggregate["queued"]),
                         "succeeded": int(aggregate["succeeded"]),
                         "failed": int(aggregate["failed"]),

@@ -143,6 +143,46 @@ async def enqueue_verdict(
     )
 
 
+async def _ensure_trials_have_pgqueuer_rows(
+    session: AsyncSession,
+    *,
+    trials_to_enqueue: list[tuple[str, str]],
+    priority: int,
+) -> int:
+    """Backfill any missing queued PGQueuer rows before commit.
+
+    This is a defensive consistency check for the cloud submission path: if a
+    burst submission leaves trial rows in `QUEUED` without a matching pgqueuer
+    row, workers will never see them.
+    """
+    if not trials_to_enqueue:
+        return 0
+
+    trial_ids = [trial_id for trial_id, _ in trials_to_enqueue]
+    result = await session.execute(
+        text(
+            """
+            SELECT DISTINCT convert_from(payload, 'UTF8')::jsonb ->> 'trial_id' AS trial_id
+            FROM pgqueuer
+            WHERE payload IS NOT NULL
+              AND status = 'queued'
+              AND (convert_from(payload, 'UTF8')::jsonb ->> 'trial_id') = ANY(:trial_ids)
+            """
+        ),
+        {"trial_ids": trial_ids},
+    )
+    present_trial_ids = {str(row[0]) for row in result.all() if row[0]}
+
+    inserted = 0
+    for trial_id, queue_key in trials_to_enqueue:
+        if trial_id in present_trial_ids:
+            continue
+        await enqueue_trial(session, trial_id, queue_key, priority=priority)
+        inserted += 1
+
+    return inserted
+
+
 # =============================================================================
 # PGQueuer Cleanup
 # =============================================================================
@@ -179,7 +219,7 @@ async def cancel_pgqueuer_jobs_for_trials(
             SELECT id
             FROM pgqueuer
             WHERE payload IS NOT NULL
-              AND status = 'queued'
+              AND status IN ('queued', 'picked')
               AND (convert_from(payload, 'UTF8')::jsonb ->> 'trial_id') = ANY($1)
             """,
             trial_ids,
@@ -208,7 +248,7 @@ async def cancel_pgqueuer_jobs_for_tasks(
             SELECT id
             FROM pgqueuer
             WHERE payload IS NOT NULL
-              AND status = 'queued'
+              AND status IN ('queued', 'picked')
               AND (convert_from(payload, 'UTF8')::jsonb ->> 'task_id') = ANY($1)
             """,
             task_ids,
@@ -441,6 +481,17 @@ async def create_task(
     # Enqueue all trials to PGQueuer
     for trial_id, queue_key in trials_to_enqueue:
         await enqueue_trial(session, trial_id, queue_key, priority=pgq_priority)
+
+    missing_rows_backfilled = await _ensure_trials_have_pgqueuer_rows(
+        session,
+        trials_to_enqueue=trials_to_enqueue,
+        priority=pgq_priority,
+    )
+    if missing_rows_backfilled > 0:
+        print(
+            f"[oddish] Backfilled {missing_rows_backfilled} missing PGQueuer rows "
+            f"for task {task_id}"
+        )
 
     # Refresh to load the trials relationship
     await session.refresh(task, attribute_names=["trials"])
