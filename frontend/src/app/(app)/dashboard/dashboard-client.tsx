@@ -7,12 +7,12 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -63,6 +63,14 @@ import { QueueKeyIcon } from "@/components/queue-key-icon";
 // =============================================================================
 
 const EXPERIMENTS_PAGE_SIZE = 25;
+const STATUS_FILTER_OPTIONS = [
+  { value: "all", label: "All statuses" },
+  { value: "active", label: "Active trials" },
+  { value: "completed", label: "Completed" },
+  { value: "needs-review", label: "Needs review" },
+  { value: "pending-verdict", label: "Pending verdict" },
+  { value: "failed", label: "Failures" },
+] as const;
 
 function useDashboardUsage(
   usageMinutes: number | null,
@@ -745,6 +753,9 @@ function RecentTasksCard({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const hasFilters = searchQuery.trim().length > 0 || statusFilter !== "all";
+  const statusFilterLabel =
+    STATUS_FILTER_OPTIONS.find((option) => option.value === statusFilter)?.label ??
+    "Filter status";
 
   const handleDeleteExperiment = async () => {
     if (!deleteTarget || isDeleting) return;
@@ -794,19 +805,31 @@ function RecentTasksCard({
             placeholder="Search"
             className="h-8 w-full border-[#6f88b4]/20 sm:w-[220px]"
           />
-          <Select value={statusFilter} onValueChange={onStatusFilterChange}>
-            <SelectTrigger className="h-8 w-full border-[#6f88b4]/20 sm:w-[170px]">
-              <SelectValue placeholder="Filter status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All statuses</SelectItem>
-              <SelectItem value="active">Active trials</SelectItem>
-              <SelectItem value="completed">Completed</SelectItem>
-              <SelectItem value="needs-review">Needs review</SelectItem>
-              <SelectItem value="pending-verdict">Pending verdict</SelectItem>
-              <SelectItem value="failed">Failures</SelectItem>
-            </SelectContent>
-          </Select>
+          <DropdownMenu modal={false}>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 w-full justify-between border-[#6f88b4]/20 sm:w-[170px]"
+              >
+                <span className="truncate">{statusFilterLabel}</span>
+                <ChevronDown className="h-4 w-4 opacity-50" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-[170px]">
+              <DropdownMenuRadioGroup
+                value={statusFilter}
+                onValueChange={onStatusFilterChange}
+              >
+                {STATUS_FILTER_OPTIONS.map((option) => (
+                  <DropdownMenuRadioItem key={option.value} value={option.value}>
+                    {option.label}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </CardHeader>
       <CardContent>

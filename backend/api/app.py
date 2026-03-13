@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from oddish.config import settings
-from oddish.db import close_pool, get_pool, init_db
+from oddish.db import close_database_connections, init_db
 
 
 def _get_cors_origins() -> list[str]:
@@ -33,21 +33,16 @@ def _get_cors_origins() -> list[str]:
 
 @asynccontextmanager
 async def lifespan(_api: FastAPI):
-    """Initialize DB + pool in Modal web containers."""
+    """Initialize DB in Modal web containers."""
     Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.local_storage_dir).mkdir(parents=True, exist_ok=True)
 
     await init_db()
-    try:
-        await get_pool()
-    except Exception:
-        # Don't block API startup if pool warmup fails.
-        pass
 
     yield
 
     try:
-        await close_pool()
+        await close_database_connections()
     except Exception:
         pass
 

@@ -65,9 +65,12 @@
   }
   html {
     overflow-y: scroll;
+    overflow-x: clip;
+    scrollbar-gutter: stable both-edges;
   }
   body {
     @apply bg-background text-foreground;
+    overflow-x: clip;
   }
   html[data-scroll-locked],
   body[data-scroll-locked] {

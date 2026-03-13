@@ -127,6 +127,7 @@ async def process_single_job(queue_key: str):
     volumes={VOLUME_MOUNT_PATH: volume},
     secrets=runtime_secrets,
     timeout=60,  # Dispatcher is lightweight, should complete quickly
+    max_containers=1,  # Keep the scheduled dispatcher singleton-ish.
     schedule=modal.Period(seconds=POLL_INTERVAL_SECONDS),
 )
 async def poll_queue():

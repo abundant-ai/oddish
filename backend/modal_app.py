@@ -5,26 +5,15 @@ import modal
 from dotenv import dotenv_values
 
 
-def _get_bool_env(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _get_int_env(name: str, default: int) -> int:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return int(value)
-
-
 MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
 MODAL_VOLUME_NAME = os.environ.get("MODAL_VOLUME_NAME", "oddish")
 MODAL_SECRET_ENVIRONMENT = "main"
-ENABLE_BACKGROUND_WORKERS = _get_bool_env("ODDISH_ENABLE_MODAL_WORKERS", True)
-API_MIN_CONTAINERS = _get_int_env("ODDISH_MODAL_API_MIN_CONTAINERS", 4)
-API_MAX_CONTAINERS = _get_int_env("ODDISH_MODAL_API_MAX_CONTAINERS", 16)
+ENABLE_BACKGROUND_WORKERS = True
+API_MIN_CONTAINERS = 2
+API_BUFFER_CONTAINERS = 2
+API_MAX_CONTAINERS = 16
+API_CONCURRENCY_TARGET = 8
+API_CONCURRENCY_MAX = 16
 LOCAL_DOTENV_PATH = Path(__file__).with_name(".env")
 LOCAL_DOTENV_VARS = {
     key: value
@@ -45,9 +34,9 @@ POLL_INTERVAL_SECONDS = 60  # How often to check for new jobs
 WORKER_TIMEOUT_SECONDS = 18000  # 5 hours max per job worker
 SHUTDOWN_TIMEOUT_SECONDS = 10  # How long to wait for graceful shutdown
 WORKER_MIN_CONTAINERS = 1  # Keep one job worker warm to reduce cold starts
-WORKER_BUFFER_CONTAINERS = 1  # Keep one extra warm worker during active bursts
+WORKER_BUFFER_CONTAINERS = 4  # Keep a few extra warm workers during active bursts.
 WORKER_SCALEDOWN_WINDOW_SECONDS = 300  # Keep idle workers warm for 5 minutes
-WORKER_MAX_CONTAINERS: int | None = None  # Leave uncapped; queue logic limits fan-out
+WORKER_MAX_CONTAINERS = 256  # High global cap so several queue keys can scale, but still not unbounded.
 
 # Max number of workers spawned per poll cycle (rate limiter)
 MAX_WORKERS_PER_POLL = 16

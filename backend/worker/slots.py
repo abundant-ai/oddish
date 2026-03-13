@@ -1,12 +1,31 @@
-from oddish.db import get_pool
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+import asyncpg
+
+from oddish.config import settings
+
+
+@asynccontextmanager
+async def _slot_connection() -> AsyncIterator[asyncpg.Connection]:
+    # Slot bookkeeping only needs short, one-off queries. Using direct
+    # connections here avoids keeping an extra asyncpg pool connection open for
+    # the full lifetime of every long-running Modal worker.
+    conn = await asyncpg.connect(
+        settings.asyncpg_url,
+        statement_cache_size=0,
+    )
+    try:
+        yield conn
+    finally:
+        await conn.close()
 
 
 async def ensure_queue_slots(queue_key: str, limit: int) -> None:
     """Ensure queue slot rows exist up to the configured limit."""
     if limit <= 0:
         return
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+    async with _slot_connection() as conn:
         await conn.execute(
             """
             INSERT INTO queue_slots (queue_key, slot)
@@ -30,8 +49,7 @@ async def acquire_queue_slot(
     if limit <= 0:
         return None
     await ensure_queue_slots(queue_key, limit)
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+    async with _slot_connection() as conn:
         async with conn.transaction():
             row = await conn.fetchrow(
                 """
@@ -69,8 +87,7 @@ async def release_queue_slot(
     slot: int,
     worker_id: str,
 ) -> None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+    async with _slot_connection() as conn:
         await conn.execute(
             """
             UPDATE queue_slots
@@ -88,8 +105,7 @@ async def release_queue_slot(
 
 async def cleanup_stale_queue_slots() -> int:
     """Clear expired slot leases so admin views stay accurate."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+    async with _slot_connection() as conn:
         result = await conn.execute(
             """
             UPDATE queue_slots
