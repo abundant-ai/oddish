@@ -14,13 +14,14 @@ from pgqueuer.models import Job
 from oddish.config import Settings, settings
 from oddish.db import (
     AnalysisStatus,
+    Priority,
     TaskModel,
     TaskStatus,
     TrialStatus,
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
-from oddish.queue import enqueue_analysis, maybe_start_analysis_stage
+from oddish.queue import enqueue_analysis, enqueue_trial, maybe_start_analysis_stage
 from oddish.workers.harbor_runner import run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
@@ -511,14 +512,27 @@ async def run_trial_job(
                     )
                 else:
                     # No reward - trial encountered an error or didn't complete verification.
-                    # Persist RETRYING before re-raising so the retry path survives cancellation.
                     if trial.attempts < trial.max_attempts:
-                        trial.status = TrialStatus.RETRYING
-                        console.print(
-                            f"[yellow]Trial {trial_id} retrying ({trial.attempts}/{trial.max_attempts})[/yellow]"
+                        task = await session.get(TaskModel, trial.task_id)
+                        queue_key = trial.queue_key or settings.get_queue_key_for_trial(
+                            trial.agent,
+                            settings.normalize_trial_model(trial.agent, trial.model),
                         )
-                        retry_exception = RuntimeError(
-                            f"Trial failed, retrying: {outcome.error}"
+                        pgq_priority = (
+                            1000
+                            if task and task.priority == Priority.HIGH
+                            else 0
+                        )
+                        trial.status = TrialStatus.RETRYING
+                        await enqueue_trial(
+                            session,
+                            trial_id,
+                            queue_key,
+                            priority=pgq_priority,
+                        )
+                        console.print(
+                            f"[yellow]Trial {trial_id} re-enqueued "
+                            f"({trial.attempts}/{trial.max_attempts})[/yellow]"
                         )
                     else:
                         trial.status = TrialStatus.FAILED
