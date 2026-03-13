@@ -25,7 +25,7 @@ def _configure_modal_settings() -> None:
     Settings.local_storage_dir = f"{VOLUME_MOUNT_PATH}/tasks"
     Settings.harbor_jobs_dir = f"{VOLUME_MOUNT_PATH}/harbor"
     Settings.harbor_environment = _get_default_cloud_environment()
-    # Workers run separately in Modal (see backend/worker.py)
+    # Workers run separately in Modal (see backend/worker/)
     Settings.auto_start_workers = False
     settings.default_model_concurrency = MODEL_CONCURRENCY_DEFAULT
 
