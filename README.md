@@ -57,7 +57,7 @@ oddish run -d terminal-bench@2.0 -c sweep.yaml
 ```
 
 <details>
-<summary>Example <a href="assets/sweep.yaml">sweep.yaml</a></summary>
+<summary>Example <a href="assets/job.yaml">sweep.yaml</a></summary>
 
 ```yaml
 agents:
@@ -82,6 +82,7 @@ oddish status
 
 ## Documentation
 
+- [cli docs](DOCS.md)
 - [core library](oddish/README.md)
 - [dashboard](frontend/README.md)
 - [cloud workers](backend/README.md)
