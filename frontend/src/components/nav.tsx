@@ -119,7 +119,7 @@ export function Nav() {
                 className="gap-2 text-[#5d77a5] hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
               >
                 <a
-                  href="https://github.com/abundant-ai/oddish#quick-start"
+                  href="https://github.com/abundant-ai/oddish/blob/main/DOCS.md"
                   target="_blank"
                   rel="noreferrer"
                 >

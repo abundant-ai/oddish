@@ -1,22 +1,32 @@
 # Oddish CLI
 
-`oddish` is a Harbor-compatible CLI for running evals with persisted state, queued execution, retries, and monitoring.
+> Harbor-compatible CLI for submitting evals, tracking progress, pulling artifacts, and cleaning up runs.
 
-**Commands**
 
-- `oddish run` — submit a job
-- `oddish status`— view progress
-- `oddish pull` — download logs and artifacts
-- `oddish clean` — delete task or trial data
-
-## Setup
+## Installation
 
 ```bash
 uv pip install oddish
+```
+
+Ensure your API key is set:
+
+```bash
 export ODDISH_API_KEY="ok_..."
 ```
 
-## `oddish run`
+## Usage
+
+**Commands:**
+
+- `oddish run` - submit a job
+- `oddish status` - view progress
+- `oddish pull` - download logs and artifacts
+- `oddish clean` - delete task or trial data
+
+## Submit a Job
+
+Use `oddish run` to launch a task, dataset, or multi-agent sweep.
 
 ```bash
 # Single task
@@ -30,7 +40,7 @@ oddish run ./my-task -c sweep.yaml
 ```
 
 <details>
-<summary>options</summary>
+<summary>Options</summary>
 
 - `--path`, `-p PATH` - Harbor-compatible path flag for a local task or dataset directory
 - `--dataset`, `-d TEXT` - Registry dataset such as `swebench@1.0`
@@ -52,7 +62,7 @@ oddish run ./my-task -c sweep.yaml
 - `--background`, `--async`, `-b` - Submit and return immediately
 - `--quiet`, `-q` - Suppress local infrastructure startup logs
 - `--run-analysis` - Run trial analysis and compute a task verdict
-- `--disable-verification` - Skip task verification/tests
+- `--disable-verification` - Skip task verification or tests
 - `--override-cpus INTEGER` - Override environment CPU count
 - `--override-memory-mb INTEGER` - Override environment memory
 - `--override-gpus INTEGER` - Override environment GPU count
@@ -67,7 +77,7 @@ oddish run ./my-task -c sweep.yaml
 
 </details>
 
-## Sweep Config
+### Sweep Config
 
 Use `oddish run -c sweep.yaml` to run multiple agents:
 
@@ -85,7 +95,9 @@ agents:
     n_trials: 3
 ```
 
-## `oddish status`
+## Check Progress
+
+Use `oddish status` to inspect the system, a task, or an experiment.
 
 ```bash
 # System overview
@@ -99,7 +111,7 @@ oddish status --experiment <experiment_id> --watch
 ```
 
 <details>
-<summary>options</summary>
+<summary>Options</summary>
 
 - `TASK_ID` - Task ID to inspect when not using `--experiment`
 - `--experiment`, `-e TEXT` - Inspect an experiment instead of a task
@@ -109,11 +121,9 @@ oddish status --experiment <experiment_id> --watch
 
 </details>
 
-## `oddish pull`
+## Download Outputs
 
-Download logs and artifacts from Oddish to local files.
-
-Examples:
+Use `oddish pull` to download logs and artifacts from Oddish to local files.
 
 ```bash
 # Pull a single trial
@@ -126,7 +136,7 @@ oddish pull <experiment_id> --include-task-files --out ./downloads
 By default, files are written to `./oddish-pulls/<target>`.
 
 <details>
-<summary>options</summary>
+<summary>Options</summary>
 
 - `TARGET` - Trial ID, task ID, or experiment ID
 - `--type [trial|task|experiment]` - Force target type instead of auto-resolving
@@ -141,28 +151,20 @@ By default, files are written to `./oddish-pulls/<target>`.
 
 </details>
 
-## `oddish clean`
+## Clean Up
 
-Stop local Oddish infrastructure or delete task data.
-
-Examples:
+Use `oddish clean` to delete task data.
 
 ```bash
-# Stop local services and delete local data
-oddish clean
-
-# Stop local services but keep data
-oddish clean --stop-only
-
-# Delete one task through the API
+# Delete task
 oddish clean <task_id>
 
-# Delete an experiment through the API
+# Delete an experiment
 oddish clean --experiment <experiment_id>
 ```
 
 <details>
-<summary>options</summary>
+<summary>Options</summary>
 
 - `TASK_ID` - Task ID to delete when not using `--experiment`
 - `--experiment`, `-e TEXT` - Delete an experiment instead of a task
