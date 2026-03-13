@@ -40,13 +40,17 @@ volume = modal.Volume.from_name(MODAL_VOLUME_NAME, create_if_missing=True)
 VOLUME_MOUNT_PATH = "/data"
 
 # Worker configuration
-POLL_INTERVAL_SECONDS = 30  # How often to check for new jobs
+POLL_INTERVAL_SECONDS = 60  # How often to check for new jobs
 # Allow ~30 min trials with small shutdown buffer.
 WORKER_TIMEOUT_SECONDS = 18000  # 5 hours max per job worker
 SHUTDOWN_TIMEOUT_SECONDS = 10  # How long to wait for graceful shutdown
+WORKER_MIN_CONTAINERS = 1  # Keep one job worker warm to reduce cold starts
+WORKER_BUFFER_CONTAINERS = 1  # Keep one extra warm worker during active bursts
+WORKER_SCALEDOWN_WINDOW_SECONDS = 300  # Keep idle workers warm for 5 minutes
+WORKER_MAX_CONTAINERS: int | None = None  # Leave uncapped; queue logic limits fan-out
 
 # Max number of workers spawned per poll cycle (rate limiter)
-MAX_WORKERS_PER_POLL = 32
+MAX_WORKERS_PER_POLL = 16
 
 # Always attach the production Modal secret. Local deploys can layer a backend
 # `.env` file on top for developer-specific overrides.
