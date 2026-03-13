@@ -27,7 +27,7 @@ async def configure_storage_paths() -> None:
     Settings.db_pool_max_size = 2
     Settings.db_pool_size = 1
     Settings.db_pool_max_overflow = 0
-    settings.asyncpg_pool_min_size = 1
+    settings.asyncpg_pool_min_size = 0
     settings.asyncpg_pool_max_size = 1
     settings.default_model_concurrency = MODEL_CONCURRENCY_DEFAULT
 

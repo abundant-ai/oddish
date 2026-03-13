@@ -57,6 +57,7 @@ async def cleanup_orphaned_queue_state(
     """Cancel stale/orphaned trial state so the queue can make forward progress."""
     issue_rows: list[tuple[str, str]] = []
     terminal_trial_ids_with_jobs: list[str] = []
+    orphaned_picked_trial_ids: list[str] = []
 
     async with get_session() as session:
         issue_rows = list(
@@ -150,8 +151,39 @@ async def cleanup_orphaned_queue_state(
             ).all()
         ]
 
+        orphaned_picked_trial_ids = [
+            row[0]
+            for row in (
+                await session.execute(
+                    text(
+                        """
+                        SELECT DISTINCT convert_from(p.payload, 'utf8')::jsonb->>'trial_id' AS trial_id
+                        FROM pgqueuer p
+                        LEFT JOIN trials t
+                          ON t.id::text = convert_from(p.payload, 'utf8')::jsonb->>'trial_id'
+                        WHERE p.status = 'picked'
+                          AND convert_from(p.payload, 'utf8')::jsonb ? 'trial_id'
+                          AND COALESCE(p.heartbeat, p.updated, p.created) <
+                              NOW() - make_interval(mins => :stale_after_minutes)
+                          AND (
+                              t.id IS NULL
+                              OR t.status::text NOT IN ('RUNNING', 'RETRYING')
+                              OR t.current_pgqueuer_job_id IS DISTINCT FROM p.id
+                          )
+                        """
+                    ),
+                    {"stale_after_minutes": stale_after_minutes},
+                )
+            ).all()
+            if row[0]
+        ]
+
         trial_ids_to_update = [trial_id for trial_id, _ in issue_rows]
-        trial_ids_to_cancel_jobs = set(trial_ids_to_update) | set(terminal_trial_ids_with_jobs)
+        trial_ids_to_cancel_jobs = (
+            set(trial_ids_to_update)
+            | set(terminal_trial_ids_with_jobs)
+            | set(orphaned_picked_trial_ids)
+        )
         if trial_ids_to_cancel_jobs:
             await cancel_pgqueuer_jobs_for_trials(session, list(trial_ids_to_cancel_jobs))
 
@@ -204,6 +236,7 @@ async def cleanup_orphaned_queue_state(
         "running_without_picked_job": 0,
         "running_stale_heartbeat": 0,
         "terminal_jobs_cancelled": len(terminal_trial_ids_with_jobs),
+        "orphaned_picked_jobs_cancelled": len(orphaned_picked_trial_ids),
     }
     for _, issue in issue_rows:
         counts[issue] = counts.get(issue, 0) + 1
