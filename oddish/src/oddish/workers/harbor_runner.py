@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
+import re
 import shutil
+import sys
 import tempfile
 import time
 import uuid
-from dataclasses import dataclass
-import asyncio
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Awaitable
-
 from typing import Any
+from typing import Awaitable, Callable, Iterator, TextIO
 
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
 from harbor.models.task.config import MCPServerConfig, TaskConfig as HarborTaskConfig
@@ -24,6 +27,37 @@ from harbor.models.job.result import JobResult
 from oddish.schemas import HarborConfig
 
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+class _TeeTextIO:
+    """Mirror terminal output to a debug log file."""
+
+    def __init__(self, primary: TextIO, secondary: TextIO) -> None:
+        self._primary = primary
+        self._secondary = secondary
+
+    def write(self, data: str) -> int:
+        self._primary.write(data)
+        cleaned = _ANSI_ESCAPE_RE.sub("", data).replace("\r\n", "\n").replace("\r", "\n")
+        if cleaned:
+            self._secondary.write(cleaned)
+        return len(data)
+
+    def flush(self) -> None:
+        self._primary.flush()
+        self._secondary.flush()
+
+    def isatty(self) -> bool:
+        isatty = getattr(self._primary, "isatty", None)
+        return bool(isatty and isatty())
+
+    @property
+    def encoding(self) -> str | None:
+        return getattr(self._primary, "encoding", None)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._primary, name)
 
 
 @dataclass(frozen=True)
@@ -107,6 +141,81 @@ def _extract_tokens_from_trajectory(
         except Exception:
             continue
     return None, None, None, None
+
+
+@contextlib.contextmanager
+def _capture_modal_output(job_dir: Path, environment: EnvironmentType) -> Iterator[Path | None]:
+    """Capture Modal SDK output into a trial-local log file."""
+    if environment != EnvironmentType.MODAL:
+        yield None
+        return
+
+    log_path = job_dir / "modal-output.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with contextlib.ExitStack() as stack:
+        log_file = stack.enter_context(log_path.open("a", encoding="utf-8"))
+        log_file.write(
+            "[oddish] Capturing Modal SDK output for this trial. "
+            "Image build failures will usually appear here.\n"
+        )
+        log_file.flush()
+
+        stack.enter_context(contextlib.redirect_stdout(_TeeTextIO(sys.stdout, log_file)))
+        stack.enter_context(contextlib.redirect_stderr(_TeeTextIO(sys.stderr, log_file)))
+
+        try:
+            import modal
+        except Exception as exc:
+            log_file.write(
+                f"[oddish] Failed to enable modal output capture: {type(exc).__name__}: {exc}\n"
+            )
+            log_file.flush()
+            yield log_path
+            return
+
+        output_manager = stack.enter_context(modal.enable_output())
+        if hasattr(output_manager, "enable_image_logs"):
+            output_manager.enable_image_logs()
+        if hasattr(output_manager, "set_timestamps"):
+            output_manager.set_timestamps(True)
+
+        yield log_path
+
+
+def _write_debug_result_json(
+    *,
+    job_dir: Path,
+    duration_sec: float,
+    exception_type: str,
+    exception_message: str,
+    debug_log_path: Path | None = None,
+) -> Path:
+    """Persist a minimal result.json when Harbor fails before writing one."""
+    result_path = job_dir / "result.json"
+    payload: dict[str, Any] = {
+        "trial_results": [],
+        "duration_sec": round(duration_sec, 2),
+        "exception_info": {
+            "exception_type": exception_type,
+            "exception_message": exception_message,
+        },
+        "debug_artifacts": {},
+    }
+    if debug_log_path is not None:
+        payload["debug_artifacts"]["modal_output_log"] = debug_log_path.name
+    result_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return result_path
+
+
+def _maybe_add_modal_debug_hint(error_message: str, debug_log_path: Path | None) -> str:
+    """Append a short pointer to the captured Modal debug log."""
+    if debug_log_path is None:
+        return error_message
+    return (
+        f"{error_message} Captured Modal SDK output in {debug_log_path.name}; "
+        "open the trial logs to inspect the image build failure."
+    )
 
 
 def _extract_outcome_from_job_result(
@@ -317,7 +426,9 @@ async def run_harbor_trial_async(
     )
 
     # Create Harbor Job
+    actual_job_dir = unique_parent
     job = Job(config)
+    actual_job_dir = job.job_dir
 
     # Register hooks if callback provided
     if hook_callback:
@@ -331,9 +442,13 @@ async def run_harbor_trial_async(
 
     # Run the job
     start = time.time()
+    modal_debug_log_path: Path | None = None
+
     try:
-        # Harbor's job.run() returns JobResult object directly
-        job_result = await job.run()
+        with _capture_modal_output(actual_job_dir, environment) as captured_log_path:
+            modal_debug_log_path = captured_log_path
+            # Harbor's job.run() returns JobResult object directly
+            job_result = await job.run()
         duration = time.time() - start
 
         # Harbor creates job_dir = jobs_dir / job_name (job_name defaults to timestamp).
@@ -352,35 +467,59 @@ async def run_harbor_trial_async(
             )
 
         # Extract reward/error directly from JobResult object (no file parsing needed)
-        return _extract_outcome_from_job_result(
+        outcome = _extract_outcome_from_job_result(
             job_result=job_result,
             job_result_path=job_result_path,
             job_dir=job_dir,
             duration_sec=duration,
         )
+        if outcome.error:
+            outcome = replace(
+                outcome,
+                error=_maybe_add_modal_debug_hint(outcome.error, modal_debug_log_path),
+            )
+        return outcome
 
     except asyncio.CancelledError:
         duration = time.time() - start
+        error_message = (
+            "Harbor trial cancelled by the runtime. This usually means the worker "
+            "was restarted or the sandbox failed during startup. Check worker logs."
+        )
+        error_message = _maybe_add_modal_debug_hint(error_message, modal_debug_log_path)
+        debug_result_path = _write_debug_result_json(
+            job_dir=actual_job_dir,
+            duration_sec=duration,
+            exception_type="CancelledError",
+            exception_message=error_message,
+            debug_log_path=modal_debug_log_path,
+        )
         return HarborOutcome(
             reward=None,
-            error=(
-                "Harbor trial cancelled by the runtime. This usually means the worker "
-                "was restarted or the sandbox failed during startup. Check worker logs."
-            ),
+            error=error_message,
             exit_code=-1,
             duration_sec=duration,
-            job_result_path=None,
-            job_dir=unique_parent,
+            job_result_path=debug_result_path,
+            job_dir=actual_job_dir,
         )
     except Exception as e:
         duration = time.time() - start
+        error_message = f"Harbor job execution failed: {type(e).__name__}: {e}"
+        error_message = _maybe_add_modal_debug_hint(error_message, modal_debug_log_path)
+        debug_result_path = _write_debug_result_json(
+            job_dir=actual_job_dir,
+            duration_sec=duration,
+            exception_type=type(e).__name__,
+            exception_message=error_message,
+            debug_log_path=modal_debug_log_path,
+        )
         return HarborOutcome(
             reward=None,
-            error=f"Harbor job execution failed: {type(e).__name__}: {e}",
+            error=error_message,
             exit_code=-1,
             duration_sec=duration,
-            job_result_path=None,
-            job_dir=unique_parent,
+            job_result_path=debug_result_path,
+            job_dir=actual_job_dir,
         )
     finally:
         if task_tmpdir is not None:

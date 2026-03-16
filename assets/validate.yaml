@@ -1,0 +1,7 @@
+agents:
+  - name: nop
+    model_name: default
+    n_trials: 8
+  - name: oracle
+    model_name: default
+    n_trials: 8
