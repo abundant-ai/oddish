@@ -1,14 +1,21 @@
 from sqlalchemy import select, text
 
+from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
+    Priority,
     TaskModel,
     TrialModel,
     TrialStatus,
     get_session,
     utcnow,
 )
-from oddish.queue import cancel_pgqueuer_jobs_for_trials, maybe_start_analysis_stage
+from oddish.queue import (
+    cancel_pgqueuer_job_ids,
+    cancel_pgqueuer_jobs_for_trials,
+    enqueue_trial,
+    maybe_start_analysis_stage,
+)
 
 ORPHANED_STATE_STALE_AFTER_MINUTES = 10
 
@@ -57,7 +64,12 @@ async def cleanup_orphaned_queue_state(
     """Cancel stale/orphaned trial state so the queue can make forward progress."""
     issue_rows: list[tuple[str, str]] = []
     terminal_trial_ids_with_jobs: list[str] = []
-    orphaned_picked_trial_ids: list[str] = []
+    orphaned_picked_job_ids: list[int] = []
+    queued_without_job_reenqueued = 0
+    retrying_without_job_reenqueued = 0
+    running_jobs_cancelled = 0
+    terminal_jobs_cancelled = 0
+    orphaned_picked_jobs_cancelled = 0
 
     async with get_session() as session:
         issue_rows = list(
@@ -151,13 +163,13 @@ async def cleanup_orphaned_queue_state(
             ).all()
         ]
 
-        orphaned_picked_trial_ids = [
-            row[0]
+        orphaned_picked_job_ids = [
+            int(row[0])
             for row in (
                 await session.execute(
                     text(
                         """
-                        SELECT DISTINCT convert_from(p.payload, 'utf8')::jsonb->>'trial_id' AS trial_id
+                        SELECT DISTINCT p.id AS job_id
                         FROM pgqueuer p
                         LEFT JOIN trials t
                           ON t.id::text = convert_from(p.payload, 'utf8')::jsonb->>'trial_id'
@@ -175,23 +187,80 @@ async def cleanup_orphaned_queue_state(
                     {"stale_after_minutes": stale_after_minutes},
                 )
             ).all()
-            if row[0]
+            if row[0] is not None
         ]
 
-        trial_ids_to_update = [trial_id for trial_id, _ in issue_rows]
-        trial_ids_to_cancel_jobs = (
-            set(trial_ids_to_update)
-            | set(terminal_trial_ids_with_jobs)
-            | set(orphaned_picked_trial_ids)
-        )
-        if trial_ids_to_cancel_jobs:
-            await cancel_pgqueuer_jobs_for_trials(session, list(trial_ids_to_cancel_jobs))
+        issue_by_trial_id = {trial_id: issue for trial_id, issue in issue_rows}
+        trial_ids_to_requeue = [
+            trial_id
+            for trial_id, issue in issue_rows
+            if issue in {"queued_without_job", "retrying_without_job"}
+        ]
+        trial_ids_to_fail = [
+            trial_id
+            for trial_id, issue in issue_rows
+            if issue in {"running_without_picked_job", "running_stale_heartbeat"}
+        ]
 
-        if trial_ids_to_update:
-            issue_by_trial_id = {trial_id: issue for trial_id, issue in issue_rows}
+        if terminal_trial_ids_with_jobs:
+            terminal_jobs_cancelled = await cancel_pgqueuer_jobs_for_trials(
+                session,
+                terminal_trial_ids_with_jobs,
+                suppress_errors=False,
+            )
+
+        if trial_ids_to_fail:
+            running_jobs_cancelled = await cancel_pgqueuer_jobs_for_trials(
+                session,
+                trial_ids_to_fail,
+                suppress_errors=False,
+            )
+
+        if orphaned_picked_job_ids:
+            orphaned_picked_jobs_cancelled = await cancel_pgqueuer_job_ids(
+                session,
+                orphaned_picked_job_ids,
+                suppress_errors=False,
+            )
+
+        if trial_ids_to_requeue:
             trials = (
                 await session.execute(
-                    select(TrialModel).where(TrialModel.id.in_(trial_ids_to_update))
+                    select(TrialModel).where(TrialModel.id.in_(trial_ids_to_requeue))
+                )
+            ).scalars().all()
+
+            for trial in trials:
+                issue = issue_by_trial_id[trial.id]
+                task = await session.get(TaskModel, trial.task_id)
+                model = settings.normalize_trial_model(trial.agent, trial.model)
+                queue_key = trial.queue_key or settings.get_queue_key_for_trial(
+                    trial.agent,
+                    model,
+                )
+                if trial.queue_key != queue_key:
+                    trial.queue_key = queue_key
+                trial.current_pgqueuer_job_id = None
+                trial.current_worker_id = None
+                trial.current_queue_slot = None
+                trial.claimed_at = None
+                trial.heartbeat_at = None
+                pgq_priority = 1000 if task and task.priority == Priority.HIGH else 0
+                await enqueue_trial(
+                    session,
+                    trial.id,
+                    queue_key,
+                    priority=pgq_priority,
+                )
+                if issue == "queued_without_job":
+                    queued_without_job_reenqueued += 1
+                else:
+                    retrying_without_job_reenqueued += 1
+
+        if trial_ids_to_fail:
+            trials = (
+                await session.execute(
+                    select(TrialModel).where(TrialModel.id.in_(trial_ids_to_fail))
                 )
             ).scalars().all()
 
@@ -227,7 +296,7 @@ async def cleanup_orphaned_queue_state(
 
             await session.flush()
 
-            for trial_id in trial_ids_to_update:
+            for trial_id in trial_ids_to_fail:
                 await maybe_start_analysis_stage(session, trial_id)
 
     counts = {
@@ -235,8 +304,11 @@ async def cleanup_orphaned_queue_state(
         "retrying_without_job": 0,
         "running_without_picked_job": 0,
         "running_stale_heartbeat": 0,
-        "terminal_jobs_cancelled": len(terminal_trial_ids_with_jobs),
-        "orphaned_picked_jobs_cancelled": len(orphaned_picked_trial_ids),
+        "queued_without_job_reenqueued": queued_without_job_reenqueued,
+        "retrying_without_job_reenqueued": retrying_without_job_reenqueued,
+        "running_jobs_cancelled": running_jobs_cancelled,
+        "terminal_jobs_cancelled": terminal_jobs_cancelled,
+        "orphaned_picked_jobs_cancelled": orphaned_picked_jobs_cancelled,
     }
     for _, issue in issue_rows:
         counts[issue] = counts.get(issue, 0) + 1

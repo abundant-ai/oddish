@@ -163,7 +163,7 @@ async def poll_queue():
                 + " ".join(f"{key}={value}" for key, value in cleanup_counts.items())
             )
             console.print(
-                "[yellow]Cancelled orphaned queue state:[/yellow] "
+                "[yellow]Reconciled orphaned queue state:[/yellow] "
                 + ", ".join(
                     f"{key}={value}" for key, value in cleanup_counts.items() if value > 0
                 )

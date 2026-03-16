@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,8 @@ from pgqueuer.types import JobId
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
 from oddish.schemas import TaskSubmission, TrialSpec
+
+logger = logging.getLogger(__name__)
 
 
 async def _enqueue_job(
@@ -191,19 +194,66 @@ async def _ensure_trials_have_pgqueuer_rows(
 async def _cancel_pgqueuer_jobs(
     session: AsyncSession,
     job_ids: list[int],
+    *,
+    suppress_errors: bool = True,
 ) -> int:
+    del session
     if not job_ids:
         return 0
 
-    pool = await get_pool()
-    queries = Queries.from_asyncpg_pool(pool)
-    await queries.mark_job_as_cancelled([JobId(job_id) for job_id in job_ids])
-    return len(job_ids)
+    try:
+        unique_job_ids = sorted({int(job_id) for job_id in job_ids})
+        pool = await get_pool()
+        rows = await pool.fetch(
+            """
+            WITH deleted AS (
+                DELETE FROM pgqueuer
+                WHERE id = ANY($1::integer[])
+                RETURNING id, entrypoint, priority
+            ),
+            inserted AS (
+                INSERT INTO pgqueuer_log (job_id, status, entrypoint, priority)
+                SELECT id, 'canceled', entrypoint, priority
+                FROM deleted
+                RETURNING job_id
+            )
+            SELECT job_id FROM inserted
+            """,
+            unique_job_ids,
+        )
+        deleted_job_ids = [int(row["job_id"]) for row in rows]
+        if deleted_job_ids:
+            queries = Queries.from_asyncpg_pool(pool)
+            await queries.notify_job_cancellation(
+                [JobId(job_id) for job_id in deleted_job_ids]
+            )
+        return len(deleted_job_ids)
+    except Exception:
+        if suppress_errors:
+            logger.exception("Failed to cancel PGQueuer jobs")
+            return 0
+        raise
+
+
+async def cancel_pgqueuer_job_ids(
+    session: AsyncSession,
+    job_ids: list[int],
+    *,
+    suppress_errors: bool = True,
+) -> int:
+    """Cancel specific PGQueuer job IDs directly."""
+    return await _cancel_pgqueuer_jobs(
+        session,
+        job_ids,
+        suppress_errors=suppress_errors,
+    )
 
 
 async def cancel_pgqueuer_jobs_for_trials(
     session: AsyncSession,
     trial_ids: list[str],
+    *,
+    suppress_errors: bool = True,
 ) -> int:
     """Cancel PGQueuer jobs tied to trial IDs (trials + analyses).
 
@@ -225,14 +275,23 @@ async def cancel_pgqueuer_jobs_for_trials(
             trial_ids,
         )
         job_ids = [int(row["id"]) for row in rows]
-        return await _cancel_pgqueuer_jobs(session, job_ids)
+        return await _cancel_pgqueuer_jobs(
+            session,
+            job_ids,
+            suppress_errors=suppress_errors,
+        )
     except Exception:
-        return 0
+        if suppress_errors:
+            logger.exception("Failed to cancel PGQueuer jobs for trials")
+            return 0
+        raise
 
 
 async def cancel_pgqueuer_jobs_for_tasks(
     session: AsyncSession,
     task_ids: list[str],
+    *,
+    suppress_errors: bool = True,
 ) -> int:
     """Cancel PGQueuer jobs tied to task IDs (verdict jobs).
 
@@ -254,9 +313,16 @@ async def cancel_pgqueuer_jobs_for_tasks(
             task_ids,
         )
         job_ids = [int(row["id"]) for row in rows]
-        return await _cancel_pgqueuer_jobs(session, job_ids)
+        return await _cancel_pgqueuer_jobs(
+            session,
+            job_ids,
+            suppress_errors=suppress_errors,
+        )
     except Exception:
-        return 0
+        if suppress_errors:
+            logger.exception("Failed to cancel PGQueuer jobs for tasks")
+            return 0
+        raise
 
 
 # =============================================================================

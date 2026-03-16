@@ -333,10 +333,10 @@ async def get_orphaned_state(
             await session.execute(
                 text(
                     """
-                    WITH queued_jobs AS (
+                    WITH active_trial_jobs AS (
                         SELECT convert_from(payload, 'utf8')::jsonb->>'trial_id' AS trial_id
                         FROM pgqueuer
-                        WHERE status = 'queued'
+                        WHERE status IN ('queued', 'picked')
                     ),
                     picked_jobs AS (
                         SELECT id, entrypoint
@@ -356,12 +356,32 @@ async def get_orphaned_state(
                     stale_tasks AS (
                         SELECT t.id
                         FROM tasks t
-                        LEFT JOIN trials tr ON tr.task_id = t.id
-                        WHERE t.status IN ('RUNNING', 'ANALYZING', 'VERDICT_PENDING')
-                        GROUP BY t.id
-                        HAVING COUNT(*) FILTER (
-                            WHERE tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
-                        ) = 0
+                        WHERE (
+                            t.status = 'RUNNING'
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM trials tr
+                                WHERE tr.task_id = t.id
+                                  AND tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
+                            )
+                        ) OR (
+                            t.status = 'ANALYZING'
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM trials tr
+                                WHERE tr.task_id = t.id
+                                  AND tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
+                            )
+                        ) OR (
+                            t.status = 'VERDICT_PENDING'
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM pgqueuer p
+                                WHERE p.status IN ('queued', 'picked')
+                                  AND convert_from(p.payload, 'utf8')::jsonb->>'task_id' = t.id
+                                  AND convert_from(p.payload, 'utf8')::jsonb->>'job_type' = 'verdict'
+                            )
+                        )
                     )
                     SELECT
                         (
@@ -369,7 +389,9 @@ async def get_orphaned_state(
                             FROM trials t
                             WHERE t.status = 'QUEUED'
                               AND NOT EXISTS (
-                                  SELECT 1 FROM queued_jobs q WHERE q.trial_id = t.id
+                                  SELECT 1
+                                  FROM active_trial_jobs q
+                                  WHERE q.trial_id = t.id
                               )
                         ) AS queued_without_job,
                         (
@@ -414,10 +436,10 @@ async def get_orphaned_state(
             await session.execute(
                 text(
                     """
-                    WITH queued_jobs AS (
+                    WITH active_trial_jobs AS (
                         SELECT convert_from(payload, 'utf8')::jsonb->>'trial_id' AS trial_id
                         FROM pgqueuer
-                        WHERE status = 'queued'
+                        WHERE status IN ('queued', 'picked')
                     ),
                     picked_jobs AS (
                         SELECT id
@@ -442,7 +464,9 @@ async def get_orphaned_state(
                         FROM trials t
                         WHERE t.status = 'QUEUED'
                           AND NOT EXISTS (
-                              SELECT 1 FROM queued_jobs q WHERE q.trial_id = t.id
+                              SELECT 1
+                              FROM active_trial_jobs q
+                              WHERE q.trial_id = t.id
                           )
 
                         UNION ALL
@@ -512,12 +536,32 @@ async def get_orphaned_state(
                             t.verdict_status::text AS verdict_status,
                             t.updated_at
                         FROM tasks t
-                        LEFT JOIN trials tr ON tr.task_id = t.id
-                        WHERE t.status IN ('RUNNING', 'ANALYZING', 'VERDICT_PENDING')
-                        GROUP BY t.id, t.status, t.run_analysis, t.verdict_status, t.updated_at
-                        HAVING COUNT(*) FILTER (
-                            WHERE tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
-                        ) = 0
+                        WHERE (
+                            t.status = 'RUNNING'
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM trials tr
+                                WHERE tr.task_id = t.id
+                                  AND tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
+                            )
+                        ) OR (
+                            t.status = 'ANALYZING'
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM trials tr
+                                WHERE tr.task_id = t.id
+                                  AND tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
+                            )
+                        ) OR (
+                            t.status = 'VERDICT_PENDING'
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM pgqueuer p
+                                WHERE p.status IN ('queued', 'picked')
+                                  AND convert_from(p.payload, 'utf8')::jsonb->>'task_id' = t.id
+                                  AND convert_from(p.payload, 'utf8')::jsonb->>'job_type' = 'verdict'
+                            )
+                        )
                     )
                     SELECT
                         task_id,

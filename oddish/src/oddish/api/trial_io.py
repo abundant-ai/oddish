@@ -101,6 +101,17 @@ def _resolve_local_trial_paths(trial: TrialModel) -> TrialPaths | None:
     if child_results:
         return TrialPaths(child_results[0].parent)
 
+    # Setup failures can still leave behind root-level debug logs plus a
+    # synthetic result.json. Treat the job directory itself as the trial dir so
+    # the structured-log view can surface those artifacts.
+    for candidate in job_dir.iterdir():
+        if not candidate.is_file():
+            continue
+        if candidate.suffix in (".json", ".patch"):
+            continue
+        if candidate.suffix in (".log", ".txt"):
+            return TrialPaths(job_dir)
+
     return None
 
 
@@ -204,6 +215,7 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
             setup_key: str | None = None
             verifier_stdout_key: str | None = None
             verifier_stderr_key: str | None = None
+            exception_key: str | None = None
 
             for key in files:
                 # Agent logs
@@ -239,6 +251,11 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
                     if verifier_stderr_key is None:
                         verifier_stderr_key = key
                         download_plan.append((key, "verifier_stderr", None))
+                        matched_keys.add(key)
+                elif key.endswith("/exception.txt"):
+                    if exception_key is None:
+                        exception_key = key
+                        download_plan.append((key, "exception", None))
                         matched_keys.add(key)
 
             # Add other log files that weren't matched
@@ -289,6 +306,8 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
                         result["verifier"]["stdout"] = content
                     elif category == "verifier_stderr":
                         result["verifier"]["stderr"] = content
+                    elif category == "exception":
+                        result["exception"] = content
                     elif category == "other" and extra_info:
                         other_list.append((extra_info, content))
 
@@ -360,6 +379,13 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
     if stderr_path.exists():
         try:
             result["verifier"]["stderr"] = stderr_path.read_text(errors="replace")
+        except Exception:
+            pass
+
+    exception_path = trial_dir / "exception.txt"
+    if exception_path.exists():
+        try:
+            result["exception"] = exception_path.read_text(errors="replace")
         except Exception:
             pass
 
