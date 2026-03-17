@@ -1,7 +1,6 @@
 import asyncio
 from uuid import uuid4
 
-import asyncpg
 import modal
 
 from modal_app import (
@@ -27,7 +26,7 @@ from oddish.workers.queue.dispatch_planner import (
 )
 
 from .cleanup import cleanup_orphaned_queue_state
-from .queue_manager import create_single_job_queue_manager, run_single_job_without_listener
+from .queue_manager import run_single_job
 from .runtime import configure_storage_paths, console
 from .slots import acquire_queue_slot, cleanup_stale_queue_slots, release_queue_slot
 
@@ -60,7 +59,6 @@ async def process_single_job(queue_key: str):
 
     worker_id = f"{queue_key}-{uuid4().hex[:12]}"
     lock_slot: int | None = None
-    qm_connection: asyncpg.Connection | None = None
 
     try:
         queue_limit = settings.get_model_concurrency(queue_key)
@@ -91,13 +89,11 @@ async def process_single_job(queue_key: str):
             f"[dim]Acquired queue slot {lock_slot + 1}/{queue_limit} (queue_key={queue_key})[/dim]"
         )
 
-        qm, qm_connection = await create_single_job_queue_manager(
+        job_found = await run_single_job(
             queue_key=queue_key,
             worker_id=worker_id,
             queue_slot=lock_slot,
         )
-
-        job_found = await run_single_job_without_listener(qm)
         if not job_found:
             console.print(
                 f"[dim]No job available after slot acquisition (queue_key={queue_key})[/dim]"
@@ -110,8 +106,6 @@ async def process_single_job(queue_key: str):
         console.print(f"[red]Worker error: {e}[/red]")
         raise
     finally:
-        if qm_connection is not None:
-            await qm_connection.close()
         if lock_slot is not None:
             await release_queue_slot(
                 queue_key=queue_key,

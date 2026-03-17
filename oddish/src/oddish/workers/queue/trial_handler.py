@@ -39,6 +39,24 @@ def _is_agent_timeout_error_message(error: str | None) -> bool:
     return "AgentTimeoutError" in error or "Agent execution timed out" in error
 
 
+def _apply_default_trial_timeout(
+    harbor_config: dict | None,
+    timeout_minutes: int | None,
+) -> dict | None:
+    """Ensure Harbor sees the trial timeout even for legacy rows."""
+    if timeout_minutes is None or timeout_minutes <= 0:
+        return harbor_config
+
+    effective_config = dict(harbor_config or {})
+    raw_agent_overrides = effective_config.get("agent_overrides")
+    agent_overrides = (
+        dict(raw_agent_overrides) if isinstance(raw_agent_overrides, dict) else {}
+    )
+    agent_overrides.setdefault("override_timeout_sec", float(timeout_minutes * 60))
+    effective_config["agent_overrides"] = agent_overrides
+    return effective_config
+
+
 def _verifier_ran_from_job_result(job_result_path: str | None) -> bool:
     if not job_result_path:
         return False
@@ -210,10 +228,23 @@ async def run_trial_job(
             console.print(f"[yellow]Trial {trial_id} not found, skipping[/yellow]")
             return
 
-        # Mark as running
+        # Clear terminal state from any previous attempt before starting a retry.
         trial.status = TrialStatus.RUNNING
         trial.started_at = utcnow()
+        trial.finished_at = None
+        trial.next_retry_at = None
         trial.harbor_stage = "starting"  # Initial stage before Harbor events
+        trial.reward = None
+        trial.error_message = None
+        trial.harbor_result_path = None
+        trial.trial_s3_key = None
+        trial.result = None
+        trial.input_tokens = None
+        trial.cache_tokens = None
+        trial.output_tokens = None
+        trial.cost_usd = None
+        trial.phase_timing = None
+        trial.has_trajectory = False
         trial.attempts += 1
 
         # Set idempotency key on first attempt
@@ -238,7 +269,10 @@ async def run_trial_job(
         if trial.queue_key != canonical_queue_key:
             trial.queue_key = canonical_queue_key
         trial_environment = trial.environment
-        trial_harbor_config = trial.harbor_config
+        trial_harbor_config = _apply_default_trial_timeout(
+            trial.harbor_config,
+            trial.timeout_minutes,
+        )
         trial.current_pgqueuer_job_id = job.id
         trial.current_worker_id = worker_id
         trial.current_queue_slot = queue_slot
