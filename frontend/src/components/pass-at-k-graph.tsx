@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import type { Task, Trial } from "@/lib/types";
 import { calculatePassAtKCurve, type AgentPassAtKStats } from "@/lib/pass-at-k";
+import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import type { AgentSummary } from "./experiment-trials-table";
 import { Button } from "@/components/ui/button";
 
@@ -41,8 +42,14 @@ interface PassAtKGraphProps {
  */
 function buildAgentStats(
   tasks: Task[],
-  agents: string[],
+  agentSummaries: AgentSummary[],
 ): { agentStats: Record<string, AgentPassAtKStats>; maxN: number } {
+  const modelScopedAgents = new Set(
+    agentSummaries
+      .filter((summary) => summary.isModelScoped)
+      .map((summary) => summary.agent),
+  );
+
   // First, determine the max number of trials per task-agent combination
   let maxN = 1;
 
@@ -54,10 +61,11 @@ function buildAgentStats(
 
     taskAgentTrials[task.id] = {};
     for (const trial of task.trials) {
-      if (!taskAgentTrials[task.id][trial.agent]) {
-        taskAgentTrials[task.id][trial.agent] = [];
+      const key = getExperimentAgentKey(trial, modelScopedAgents);
+      if (!taskAgentTrials[task.id][key]) {
+        taskAgentTrials[task.id][key] = [];
       }
-      taskAgentTrials[task.id][trial.agent].push(trial);
+      taskAgentTrials[task.id][key].push(trial);
     }
 
     // Update maxN based on this task's trials per agent
@@ -69,11 +77,11 @@ function buildAgentStats(
   // Build agent stats
   const agentStats: Record<string, AgentPassAtKStats> = {};
 
-  for (const agent of agents) {
+  for (const summary of agentSummaries) {
     const taskResults: { task: string; c: number }[] = [];
 
     for (const task of tasks) {
-      const trials = taskAgentTrials[task.id]?.[agent] ?? [];
+      const trials = taskAgentTrials[task.id]?.[summary.key] ?? [];
       if (trials.length === 0) continue;
 
       // Count passing trials (reward === 1)
@@ -81,7 +89,7 @@ function buildAgentStats(
       taskResults.push({ task: task.id, c });
     }
 
-    agentStats[agent] = { n: maxN, taskResults };
+    agentStats[summary.key] = { n: maxN, taskResults };
   }
 
   return { agentStats, maxN };
@@ -93,17 +101,13 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   hiddenAgents,
   onToggleAgent,
 }: PassAtKGraphProps) {
-  const agents = useMemo(
-    () => agentSummaries.map((a) => a.agent),
-    [agentSummaries],
-  );
-  const visibleAgents = useMemo(
-    () => agents.filter((a) => !hiddenAgents.has(a)),
-    [agents, hiddenAgents],
+  const visibleAgentSummaries = useMemo(
+    () => agentSummaries.filter((summary) => !hiddenAgents.has(summary.key)),
+    [agentSummaries, hiddenAgents],
   );
 
   const { data, maxK, hasMultipleAttempts } = useMemo(() => {
-    const { agentStats, maxN } = buildAgentStats(tasks, agents);
+    const { agentStats, maxN } = buildAgentStats(tasks, agentSummaries);
 
     // Check if we have any multi-attempt data
     if (maxN <= 1) {
@@ -113,7 +117,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
     const curveData = calculatePassAtKCurve(agentStats, maxN);
 
     return { data: curveData, maxK: maxN, hasMultipleAttempts: true };
-  }, [tasks, agents]);
+  }, [tasks, agentSummaries]);
 
   // Don't render if no multi-attempt data
   if (!hasMultipleAttempts || data.length === 0) {
@@ -171,13 +175,15 @@ export const PassAtKGraph = memo(function PassAtKGraph({
                   fontFamily: "monospace",
                 }}
               />
-              {visibleAgents.map((agent) => {
-                const originalIdx = agents.indexOf(agent);
+              {visibleAgentSummaries.map((summary) => {
+                const originalIdx = agentSummaries.findIndex(
+                  (agent) => agent.key === summary.key,
+                );
                 return (
                   <Line
-                    key={agent}
+                    key={summary.key}
                     type="monotone"
-                    dataKey={agent}
+                    dataKey={summary.key}
                     stroke={AGENT_COLORS[originalIdx % AGENT_COLORS.length]}
                     strokeWidth={2}
                     dot={{ r: 3 }}
@@ -191,14 +197,14 @@ export const PassAtKGraph = memo(function PassAtKGraph({
 
         {/* Interactive Legend */}
         <div className="mt-3 flex flex-wrap gap-2">
-          {agents.map((agent, idx) => {
-            const isHidden = hiddenAgents.has(agent);
+          {agentSummaries.map((summary, idx) => {
+            const isHidden = hiddenAgents.has(summary.key);
             const color = AGENT_COLORS[idx % AGENT_COLORS.length];
             return (
               <Button
-                key={agent}
+                key={summary.key}
                 type="button"
-                onClick={() => onToggleAgent(agent)}
+                onClick={() => onToggleAgent(summary.key)}
                 variant="ghost"
                 size="sm"
                 className={`h-auto flex items-center gap-2 rounded px-2 py-1 font-mono text-xs transition-all ${
@@ -218,7 +224,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
                     isHidden ? "text-muted-foreground line-through" : ""
                   }
                 >
-                  {agent}
+                  {summary.label}
                 </span>
               </Button>
             );

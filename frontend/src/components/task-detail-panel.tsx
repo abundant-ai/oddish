@@ -789,10 +789,10 @@ function TrialDetailView({
       structuredLogs.verifier.stderr
     ) {
       setLogCategory("verifier");
-    } else if (structuredLogs.other && structuredLogs.other.length > 0) {
-      setLogCategory("other");
     } else if (structuredLogs.exception) {
       setLogCategory("exception");
+    } else if (structuredLogs.other && structuredLogs.other.length > 0) {
+      setLogCategory("other");
     }
     setLogCategoryInitialized(true);
   }, [structuredLogs, logCategoryInitialized]);

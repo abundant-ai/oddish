@@ -3,6 +3,7 @@
 import { memo, useMemo } from "react";
 import type { Task, Trial } from "@/lib/types";
 import { Button } from "@/components/ui/button";
+import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import type { AgentSummary } from "./experiment-trials-table";
 import { QueueKeyIcon } from "./queue-key-icon";
 import { AGENT_COLORS } from "./pass-at-k-graph";
@@ -15,6 +16,8 @@ interface PassAtOneLeaderboardProps {
 }
 
 type LeaderboardRow = {
+  key: string;
+  label: string;
   agent: string;
   model: string | null;
   queueKey: string | null;
@@ -40,13 +43,19 @@ function calculateRows(
   tasks: Task[],
   agentSummaries: AgentSummary[],
 ): LeaderboardRow[] {
+  const modelScopedAgents = new Set(
+    agentSummaries
+      .filter((summary) => summary.isModelScoped)
+      .map((summary) => summary.agent),
+  );
   const rows: LeaderboardRow[] = [];
 
   for (const summary of agentSummaries) {
     const taskValues: number[] = [];
     for (const task of tasks) {
       const trials = (task.trials ?? []).filter(
-        (trial) => trial.agent === summary.agent,
+        (trial) =>
+          getExperimentAgentKey(trial, modelScopedAgents) === summary.key,
       );
       const value = getPassAtOneValue(trials);
       if (value !== null) {
@@ -59,6 +68,8 @@ function calculateRows(
     const mean =
       taskValues.reduce((acc, value) => acc + value, 0) / taskValues.length;
     rows.push({
+      key: summary.key,
+      label: summary.label,
       agent: summary.agent,
       model: summary.model,
       queueKey: summary.queueKey,
@@ -80,13 +91,13 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
     [tasks, agentSummaries],
   );
   const visibleRows = useMemo(
-    () => rows.filter((row) => !hiddenAgents.has(row.agent)),
+    () => rows.filter((row) => !hiddenAgents.has(row.key)),
     [rows, hiddenAgents],
   );
   const colorByAgent = useMemo(() => {
     const colors = new Map<string, string>();
     for (const [idx, summary] of agentSummaries.entries()) {
-      colors.set(summary.agent, AGENT_COLORS[idx % AGENT_COLORS.length]);
+      colors.set(summary.key, AGENT_COLORS[idx % AGENT_COLORS.length]);
     }
     return colors;
   }, [agentSummaries]);
@@ -116,7 +127,7 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
             const width = (row.mean / domain) * 100;
 
             return (
-              <div key={row.agent} className="min-w-0 space-y-1.5">
+              <div key={row.key} className="min-w-0 space-y-1.5">
                 <div className="flex items-center justify-between gap-4 text-sm text-foreground">
                   <div className="flex min-w-0 items-center justify-start gap-1.5">
                     <QueueKeyIcon
@@ -127,7 +138,7 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
                       className="shrink-0 text-muted-foreground"
                     />
                     <span className="truncate">
-                      <span className="font-semibold">{row.agent}</span>
+                      <span className="font-semibold">{row.label}</span>
                     </span>
                   </div>
                   <div className="text-right font-mono text-sm text-foreground">
@@ -164,13 +175,13 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
 
         <div className="mt-3 flex flex-wrap gap-2">
           {rows.map((row) => {
-            const isHidden = hiddenAgents.has(row.agent);
-            const color = colorByAgent.get(row.agent) ?? AGENT_COLORS[0];
+            const isHidden = hiddenAgents.has(row.key);
+            const color = colorByAgent.get(row.key) ?? AGENT_COLORS[0];
             return (
               <Button
-                key={row.agent}
+                key={row.key}
                 type="button"
-                onClick={() => onToggleAgent(row.agent)}
+                onClick={() => onToggleAgent(row.key)}
                 variant="ghost"
                 size="sm"
                 className={`h-auto flex items-center gap-2 rounded px-2 py-1 font-mono text-xs transition-all ${
@@ -190,7 +201,7 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
                     isHidden ? "text-muted-foreground line-through" : ""
                   }
                 >
-                  {row.agent}
+                  {row.label}
                 </span>
               </Button>
             );
