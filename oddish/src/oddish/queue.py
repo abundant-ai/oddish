@@ -223,10 +223,11 @@ async def _cancel_pgqueuer_jobs(
         )
         deleted_job_ids = [int(row["job_id"]) for row in rows]
         if deleted_job_ids:
-            queries = Queries.from_asyncpg_pool(pool)
-            await queries.notify_job_cancellation(
-                [JobId(job_id) for job_id in deleted_job_ids]
-            )
+            async with pool.acquire() as conn:
+                queries = Queries.from_asyncpg_connection(conn)
+                await queries.notify_job_cancellation(
+                    [JobId(job_id) for job_id in deleted_job_ids]
+                )
         return len(deleted_job_ids)
     except Exception:
         if suppress_errors:
@@ -431,6 +432,9 @@ def _build_harbor_config_for_trial(
     base = submission.harbor.model_dump(mode="json", exclude_defaults=True)
 
     agent_overrides: dict[str, Any] = {}
+    if spec.timeout_minutes > 0:
+        agent_overrides["override_timeout_sec"] = float(spec.timeout_minutes * 60)
+
     if spec.agent_config:
         ac = spec.agent_config
         if ac.env:
@@ -441,8 +445,6 @@ def _build_harbor_config_for_trial(
             agent_overrides["override_timeout_sec"] = ac.override_timeout_sec
         if ac.override_setup_timeout_sec is not None:
             agent_overrides["override_setup_timeout_sec"] = ac.override_setup_timeout_sec
-    elif "timeout_minutes" in spec.model_fields_set:
-        agent_overrides["override_timeout_sec"] = float(spec.timeout_minutes * 60)
 
     if agent_overrides:
         base["agent_overrides"] = agent_overrides
