@@ -45,6 +45,10 @@ import { useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
 import {
+  getExperimentAgentKey,
+  type ExperimentAgentSummary,
+} from "@/lib/experiment-agent-grouping";
+import {
   getMatrixStatus,
   STATUS_CONFIG,
   type MatrixStatus,
@@ -75,15 +79,12 @@ const PassAtOneLeaderboard = dynamic(
   },
 );
 
-export type AgentSummary = {
-  agent: string;
-  model: string | null;
-  queueKey: string | null;
-};
+export type AgentSummary = ExperimentAgentSummary;
 
 type ExperimentTrialsTableProps = {
   tasks: Task[];
   agentSummaries: AgentSummary[];
+  modelScopedAgents: ReadonlySet<string>;
   isLoading: boolean;
   topControlsLeft?: ReactNode;
   onTaskDelete?: (task: Task) => Promise<void>;
@@ -224,13 +225,17 @@ function VerdictIndicator({ task }: { task: Task }) {
   );
 }
 
-function groupTrialsByAgent(trials: Trial[] | null | undefined) {
+function groupTrialsByAgent(
+  trials: Trial[] | null | undefined,
+  modelScopedAgents: ReadonlySet<string>,
+) {
   const grouped = new Map<string, Trial[]>();
   if (!trials) return grouped;
   for (const trial of trials) {
-    const existing = grouped.get(trial.agent) ?? [];
+    const key = getExperimentAgentKey(trial, modelScopedAgents);
+    const existing = grouped.get(key) ?? [];
     existing.push(trial);
-    grouped.set(trial.agent, existing);
+    grouped.set(key, existing);
   }
   return grouped;
 }
@@ -249,6 +254,7 @@ function getTrialTitle(trial: Trial, status: MatrixStatus) {
 export function ExperimentTrialsTable({
   tasks,
   agentSummaries,
+  modelScopedAgents,
   isLoading,
   topControlsLeft,
   onTaskDelete,
@@ -414,29 +420,28 @@ export function ExperimentTrialsTable({
       const keyA = getAgentSortKey(a.agent);
       const keyB = getAgentSortKey(b.agent);
       if (keyA !== keyB) return keyA - keyB;
-      return a.agent.localeCompare(b.agent);
+      if (a.agent !== b.agent) {
+        return a.agent.localeCompare(b.agent);
+      }
+      return a.label.localeCompare(b.label);
     });
   }, [agentSummaries]);
 
   const visibleAgents = useMemo(
     () =>
-      sortedAgentSummaries.filter((agent) => !hiddenAgents.has(agent.agent)),
+      sortedAgentSummaries.filter((agent) => !hiddenAgents.has(agent.key)),
     [sortedAgentSummaries, hiddenAgents],
-  );
-  const visibleAgentNames = useMemo(
-    () => visibleAgents.map((agent) => agent.agent),
-    [visibleAgents],
   );
 
   const columnOrder = useMemo(
-    () => ["task", ...visibleAgents.map((agent) => agent.agent)],
+    () => ["task", ...visibleAgents.map((agent) => agent.key)],
     [visibleAgents],
   );
 
   const baseTableWidth = useMemo(() => {
     const agentTotal = visibleAgents.reduce(
       (sum, agent) =>
-        sum + (agentColumnWidths[agent.agent] ?? DEFAULT_AGENT_WIDTH),
+        sum + (agentColumnWidths[agent.key] ?? DEFAULT_AGENT_WIDTH),
       0,
     );
     return taskColumnWidth + agentTotal;
@@ -463,8 +468,8 @@ export function ExperimentTrialsTable({
       const next: Record<string, number> = { ...prev };
       let hasChange = false;
       for (const agent of visibleAgents) {
-        if (next[agent.agent] == null) {
-          next[agent.agent] = DEFAULT_AGENT_WIDTH;
+        if (next[agent.key] == null) {
+          next[agent.key] = DEFAULT_AGENT_WIDTH;
           hasChange = true;
         }
       }
@@ -503,7 +508,7 @@ export function ExperimentTrialsTable({
       const cached = contextCache.get(task.id);
       if (cached) return cached;
 
-      const groupedTrialsByAgent = groupTrialsByAgent(task.trials);
+      const groupedTrialsByAgent = groupTrialsByAgent(task.trials, modelScopedAgents);
       const orderedTrials: Trial[] = [];
       const trialIndexById = new Map<string, number>();
       const trialGroups: Array<{
@@ -512,11 +517,14 @@ export function ExperimentTrialsTable({
         trials: Trial[];
       }> = [];
 
-      for (const agentName of visibleAgentNames) {
-        const trials = groupedTrialsByAgent.get(agentName) ?? EMPTY_TRIALS;
+      for (const agent of visibleAgents) {
+        const trials = groupedTrialsByAgent.get(agent.key) ?? EMPTY_TRIALS;
         if (trials.length > 0) {
-          const model = trials.find((trial) => trial.model)?.model ?? null;
-          trialGroups.push({ agent: agentName, model, trials });
+          trialGroups.push({
+            agent: agent.label,
+            model: agent.model,
+            trials,
+          });
         }
         for (const trial of trials) {
           trialIndexById.set(trial.id, orderedTrials.length);
@@ -533,7 +541,7 @@ export function ExperimentTrialsTable({
       contextCache.set(task.id, context);
       return context;
     };
-  }, [visibleAgentNames]);
+  }, [visibleAgents, modelScopedAgents]);
 
   const selectedTaskList = useMemo(
     () => tasks.filter((task) => selectedTasks.has(task.id)),
@@ -617,7 +625,7 @@ export function ExperimentTrialsTable({
 
   const handleCopyTableAsTSV = async () => {
     // Generate TSV header
-    const headers = ["Task", ...visibleAgents.map((agent) => agent.agent)];
+    const headers = ["Task", ...visibleAgents.map((agent) => agent.label)];
     const rows: string[] = [headers.join("\t")];
 
     // Generate TSV rows
@@ -627,7 +635,7 @@ export function ExperimentTrialsTable({
 
       const rowCells = [task.name];
       for (const agent of visibleAgents) {
-        const trials = grouped.get(agent.agent) ?? [];
+        const trials = grouped.get(agent.key) ?? [];
         if (trials.length === 0) {
           rowCells.push("—");
         } else {
@@ -929,21 +937,21 @@ export function ExperimentTrialsTable({
         </div>
         <div className="space-y-1">
           {sortedAgentSummaries.map((agent) => {
-            const isVisible = !hiddenAgents.has(agent.agent);
+            const isVisible = !hiddenAgents.has(agent.key);
             return (
               <label
-                key={agent.agent}
+                key={agent.key}
                 className={`flex items-center gap-2 rounded px-2 py-1 text-xs ${
                   isVisible ? "hover:bg-muted" : "text-muted-foreground"
                 }`}
               >
                 <Checkbox
                   checked={isVisible}
-                  onCheckedChange={() => toggleAgent(agent.agent)}
+                  onCheckedChange={() => toggleAgent(agent.key)}
                   className="h-3.5 w-3.5"
                 />
                 <span className={`${isVisible ? "" : "line-through"}`}>
-                  {agent.agent}
+                  {agent.label}
                 </span>
                 <span className="text-[10px] text-muted-foreground flex items-center gap-1 font-mono">
                   <QueueKeyIcon
@@ -1109,9 +1117,9 @@ export function ExperimentTrialsTable({
                 <col style={{ width: `${getDisplayedWidth("task")}px` }} />
                 {visibleAgents.map((agent) => (
                   <col
-                    key={`col-${agent.agent}`}
+                    key={`col-${agent.key}`}
                     style={{
-                      width: `${getDisplayedWidth(agent.agent)}px`,
+                      width: `${getDisplayedWidth(agent.key)}px`,
                     }}
                   />
                 ))}
@@ -1153,26 +1161,35 @@ export function ExperimentTrialsTable({
                   </TableHead>
                   {visibleAgents.map((agent, agentIndex) => (
                     <TableHead
-                      key={agent.agent}
+                      key={agent.key}
                       className="text-center font-mono border-r border-border last:border-r-0 px-1 sm:px-2 bg-muted relative"
                       style={{
-                        width: getDisplayedWidth(agent.agent),
+                        width: getDisplayedWidth(agent.key),
                       }}
                     >
                       <div className="flex flex-col gap-0.5 items-center min-w-[60px] sm:min-w-[80px] md:min-w-[100px]">
                         <div className="text-[10px] sm:text-xs font-bold text-foreground truncate max-w-[70px] sm:max-w-[110px] md:max-w-none">
                           {agent.agent}
                         </div>
-                        <div className="text-[9px] sm:text-[10px] font-normal text-muted-foreground truncate max-w-[70px] sm:max-w-[110px] md:max-w-none flex items-center justify-center gap-1 font-mono">
-                          <QueueKeyIcon
-                            queueKey={agent.queueKey}
-                            model={agent.model}
-                            agent={agent.agent}
-                            size={11}
-                            className="shrink-0"
-                          />
-                          {agent.model ?? "—"}
-                        </div>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal text-muted-foreground sm:text-[10px]">
+                              <QueueKeyIcon
+                                queueKey={agent.queueKey}
+                                model={agent.model}
+                                agent={agent.agent}
+                                size={11}
+                                className="shrink-0"
+                              />
+                              <span className="min-w-0 truncate">
+                                {agent.model ?? "—"}
+                              </span>
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom">
+                            {agent.model ?? "—"}
+                          </TooltipContent>
+                        </Tooltip>
                       </div>
                       {agentIndex < visibleAgents.length - 1 && (
                         <div
@@ -1180,8 +1197,8 @@ export function ExperimentTrialsTable({
                           onMouseDown={(event) =>
                             startResize(
                               event,
-                              agent.agent,
-                              agentColumnWidths[agent.agent] ??
+                              agent.key,
+                              agentColumnWidths[agent.key] ??
                                 DEFAULT_AGENT_WIDTH,
                             )
                           }
@@ -1301,13 +1318,13 @@ export function ExperimentTrialsTable({
                         </div>
                       </TableCell>
                       {visibleAgents.map((agent) => {
-                        const trials = grouped.get(agent.agent) ?? EMPTY_TRIALS;
+                        const trials = grouped.get(agent.key) ?? EMPTY_TRIALS;
                         return (
                           <TableCell
-                            key={`${task.id}-${agent.agent}`}
+                            key={`${task.id}-${agent.key}`}
                             className="text-center border-r border-border last:border-r-0"
                             style={{
-                              width: getDisplayedWidth(agent.agent),
+                              width: getDisplayedWidth(agent.key),
                             }}
                           >
                             {trials.length === 0 ? (
