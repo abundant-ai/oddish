@@ -15,10 +15,10 @@ from rich.console import Console
 from oddish.api.endpoints import (
     get_task_status_core,
     get_trial_by_index_core,
-    get_trial_logs_core,
-    get_trial_result_core,
+    get_trial_for_org_core,
     list_tasks_core,
 )
+from oddish.api.trial_io import read_trial_logs, read_trial_result
 from oddish.api.tasks import handle_task_upload, resolve_task_storage
 from oddish.config import settings
 from oddish.db import (
@@ -78,6 +78,14 @@ def update_queue_concurrency(overrides: dict[str, int]) -> None:
     _CONCURRENCY_OVERRIDES.update(current)
     settings.model_concurrency_overrides = dict(current)
     console.print(f"[dim]Updated queue concurrency: {current}[/dim]")
+
+
+async def _get_detached_trial(trial_id: str) -> TrialModel:
+    """Load a trial, then release the DB session before artifact I/O."""
+    async with get_session() as session:
+        trial = await get_trial_for_org_core(session, trial_id=trial_id)
+        session.expunge(trial)
+        return trial
 
 
 @asynccontextmanager
@@ -393,15 +401,15 @@ async def get_trial(task_id: str, index: int):
 @api.get("/trials/{trial_id}/logs")
 async def get_trial_logs(trial_id: str):
     """Get logs for a specific trial (from S3 if enabled, otherwise from local storage)."""
-    async with get_session() as session:
-        return await get_trial_logs_core(session, trial_id=trial_id)
+    trial = await _get_detached_trial(trial_id)
+    return await read_trial_logs(trial)
 
 
 @api.get("/trials/{trial_id}/result")
 async def get_trial_result(trial_id: str):
     """Get the full Harbor result.json for a trial (from S3 if enabled, otherwise from local storage)."""
-    async with get_session() as session:
-        return await get_trial_result_core(session, trial_id=trial_id)
+    trial = await _get_detached_trial(trial_id)
+    return await read_trial_result(trial)
 
 
 def run_server(

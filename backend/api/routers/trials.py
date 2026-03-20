@@ -7,13 +7,15 @@ from oddish.api.endpoints import (
     get_trial_by_index_core,
     get_task_for_org_core,
     get_trial_for_org_core,
-    get_trial_logs_core,
-    get_trial_logs_structured_core,
     retry_trial_core,
-    get_trial_result_core,
-    get_trial_trajectory_core,
 )
-from oddish.api.trial_io import read_trial_agent_file
+from oddish.api.trial_io import (
+    read_trial_agent_file,
+    read_trial_logs,
+    read_trial_logs_structured,
+    read_trial_result,
+    read_trial_trajectory,
+)
 from api.routers._helpers import (
     get_trial_file_content_s3,
     list_task_trials_for_task,
@@ -22,6 +24,7 @@ from api.routers._helpers import (
 from auth import APIKeyScope, AuthContext, require_auth
 from oddish.config import settings
 from oddish.db import (
+    TrialModel,
     get_session,
     get_storage_client,
 )
@@ -29,6 +32,16 @@ from oddish.db.storage import StorageClient
 from oddish.schemas import TrialResponse
 
 router = APIRouter(tags=["Trials"])
+
+
+async def _get_authorized_trial(trial_id: str, auth: AuthContext) -> TrialModel:
+    """Load a trial, then release the DB session before artifact I/O."""
+    async with get_session() as session:
+        trial = await get_trial_for_org_core(
+            session, trial_id=trial_id, org_id=auth.org_id
+        )
+        session.expunge(trial)
+        return trial
 
 
 @router.get("/tasks/{task_id}/trials/{index}", response_model=TrialResponse)
@@ -79,9 +92,8 @@ async def get_trial_logs(
 ) -> dict:
     """Get logs for a specific trial."""
     auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
-        return await get_trial_logs_core(session, trial_id=trial_id, org_id=auth.org_id)
+    trial = await _get_authorized_trial(trial_id, auth)
+    return await read_trial_logs(trial)
 
 
 @router.get("/trials/{trial_id}/logs/structured")
@@ -91,11 +103,8 @@ async def get_trial_logs_structured(
 ) -> dict:
     """Get logs for a trial, structured by category (agent, verifier, exception)."""
     auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
-        return await get_trial_logs_structured_core(
-            session, trial_id=trial_id, org_id=auth.org_id
-        )
+    trial = await _get_authorized_trial(trial_id, auth)
+    return await read_trial_logs_structured(trial)
 
 
 @router.get("/trials/{trial_id}/files")
@@ -105,12 +114,8 @@ async def list_trial_files(
 ) -> dict:
     """List all files in S3 for a trial, with presigned URLs for direct access."""
     auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
-        trial = await get_trial_for_org_core(
-            session, trial_id=trial_id, org_id=auth.org_id
-        )
-        return await list_trial_files_s3(trial)
+    trial = await _get_authorized_trial(trial_id, auth)
+    return await list_trial_files_s3(trial)
 
 
 @router.get("/trials/{trial_id}/debug-files")
@@ -120,41 +125,37 @@ async def debug_trial_files(
 ) -> dict:
     """Debug endpoint: list all files in S3 for a trial."""
     auth.require_scope(APIKeyScope.READ)
+    trial = await _get_authorized_trial(trial_id, auth)
 
-    async with get_session() as session:
-        trial = await get_trial_for_org_core(
-            session, trial_id=trial_id, org_id=auth.org_id
-        )
+    result = {
+        "trial_id": trial_id,
+        "trial_s3_key": trial.trial_s3_key,
+        "computed_prefix": StorageClient._trial_prefix(trial_id),
+        "harbor_result_path": trial.harbor_result_path,
+        "s3_enabled": settings.s3_enabled,
+        "files": [],
+        "trajectory_files": [],
+        "error": None,
+    }
 
-        result = {
-            "trial_id": trial_id,
-            "trial_s3_key": trial.trial_s3_key,
-            "computed_prefix": StorageClient._trial_prefix(trial_id),
-            "harbor_result_path": trial.harbor_result_path,
-            "s3_enabled": settings.s3_enabled,
-            "files": [],
-            "trajectory_files": [],
-            "error": None,
-        }
-
-        if not settings.s3_enabled:
-            result["error"] = "S3 not enabled"
-            return result
-
-        s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial_id)
-        result["using_prefix"] = s3_prefix
-
-        storage = get_storage_client()
-        try:
-            # List all files under this prefix
-            files = await storage.list_keys(s3_prefix)
-            result["files"] = files
-            # Find any trajectory files
-            result["trajectory_files"] = [f for f in files if "trajectory.json" in f]
-        except Exception as e:
-            result["error"] = f"Failed to list files: {str(e)}"
-
+    if not settings.s3_enabled:
+        result["error"] = "S3 not enabled"
         return result
+
+    s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial_id)
+    result["using_prefix"] = s3_prefix
+
+    storage = get_storage_client()
+    try:
+        # List all files under this prefix
+        files = await storage.list_keys(s3_prefix)
+        result["files"] = files
+        # Find any trajectory files
+        result["trajectory_files"] = [f for f in files if "trajectory.json" in f]
+    except Exception as e:
+        result["error"] = f"Failed to list files: {str(e)}"
+
+    return result
 
 
 @router.get("/trials/{trial_id}/files/{file_path:path}")
@@ -169,18 +170,14 @@ async def get_trial_file(
     then falls back to the agent/ subdirectory for backward compatibility.
     """
     auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
-        trial = await get_trial_for_org_core(
-            session, trial_id=trial_id, org_id=auth.org_id
-        )
-        try:
-            content, media_type = await get_trial_file_content_s3(trial, file_path)
-            return Response(content=content, media_type=media_type)
-        except HTTPException:
-            pass
-        content, media_type = await read_trial_agent_file(trial, file_path)
+    trial = await _get_authorized_trial(trial_id, auth)
+    try:
+        content, media_type = await get_trial_file_content_s3(trial, file_path)
         return Response(content=content, media_type=media_type)
+    except HTTPException:
+        pass
+    content, media_type = await read_trial_agent_file(trial, file_path)
+    return Response(content=content, media_type=media_type)
 
 
 @router.get("/trials/{trial_id}/trajectory")
@@ -190,11 +187,8 @@ async def get_trial_trajectory(
 ) -> dict | None:
     """Get ATIF trajectory.json for a trial (step-by-step agent actions)."""
     auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
-        return await get_trial_trajectory_core(
-            session, trial_id=trial_id, org_id=auth.org_id
-        )
+    trial = await _get_authorized_trial(trial_id, auth)
+    return await read_trial_trajectory(trial)
 
 
 @router.get("/trials/{trial_id}/result")
@@ -204,8 +198,5 @@ async def get_trial_result(
 ) -> dict:
     """Get result.json for a trial."""
     auth.require_scope(APIKeyScope.READ)
-
-    async with get_session() as session:
-        return await get_trial_result_core(
-            session, trial_id=trial_id, org_id=auth.org_id
-        )
+    trial = await _get_authorized_trial(trial_id, auth)
+    return await read_trial_result(trial)

@@ -24,10 +24,20 @@ from api.routers._helpers import (
     list_trial_files_s3,
 )
 from api.schemas import PublicExperimentListItem, PublicExperimentResponse
-from oddish.db import ExperimentModel, TaskModel, get_session
+from oddish.db import ExperimentModel, TaskModel, TrialModel, get_session
 from oddish.schemas import TaskStatusResponse, TrialResponse
 
 router = APIRouter(tags=["Public"])
+
+
+async def _get_detached_public_trial(trial_id: str) -> TrialModel:
+    """Load a public trial, then release the DB session before artifact I/O."""
+    async with get_session() as session:
+        trial = await get_public_trial(session, trial_id)
+        if not trial:
+            raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+        session.expunge(trial)
+        return trial
 
 
 @router.get(
@@ -158,72 +168,49 @@ async def list_public_task_trials(task_id: str) -> list[TrialResponse]:
 @router.get("/public/trials/{trial_id}/logs")
 async def get_public_trial_logs(trial_id: str) -> dict:
     """Get logs for a public trial."""
-    async with get_session() as session:
-        trial = await get_public_trial(session, trial_id)
-        if not trial:
-            raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-        return await read_trial_logs(trial)
+    trial = await _get_detached_public_trial(trial_id)
+    return await read_trial_logs(trial)
 
 
 @router.get("/public/trials/{trial_id}/logs/structured")
 async def get_public_trial_logs_structured(trial_id: str) -> dict:
     """Get structured logs for a public trial."""
-    async with get_session() as session:
-        trial = await get_public_trial(session, trial_id)
-        if not trial:
-            raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-
-        return await read_trial_logs_structured(trial)
+    trial = await _get_detached_public_trial(trial_id)
+    return await read_trial_logs_structured(trial)
 
 
 @router.get("/public/trials/{trial_id}/trajectory")
 async def get_public_trial_trajectory(trial_id: str) -> dict | None:
     """Get ATIF trajectory.json for a public trial."""
-    async with get_session() as session:
-        trial = await get_public_trial(session, trial_id)
-        if not trial:
-            raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-
-        return await read_trial_trajectory(trial)
+    trial = await _get_detached_public_trial(trial_id)
+    return await read_trial_trajectory(trial)
 
 
 @router.get("/public/trials/{trial_id}/files")
 async def list_public_trial_files(trial_id: str) -> dict:
     """List all files in a public trial's S3 directory."""
-    async with get_session() as session:
-        trial = await get_public_trial(session, trial_id)
-        if not trial:
-            raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-
-        return await list_trial_files_s3(trial)
+    trial = await _get_detached_public_trial(trial_id)
+    return await list_trial_files_s3(trial)
 
 
 @router.get("/public/trials/{trial_id}/files/{file_path:path}")
 async def get_public_trial_file(trial_id: str, file_path: str) -> Response:
     """Get a file from a public trial's S3 directory."""
-    async with get_session() as session:
-        trial = await get_public_trial(session, trial_id)
-        if not trial:
-            raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-
-        try:
-            content, media_type = await get_trial_file_content_s3(trial, file_path)
-            return Response(content=content, media_type=media_type)
-        except HTTPException:
-            pass
-        content, media_type = await read_trial_agent_file(trial, file_path)
+    trial = await _get_detached_public_trial(trial_id)
+    try:
+        content, media_type = await get_trial_file_content_s3(trial, file_path)
         return Response(content=content, media_type=media_type)
+    except HTTPException:
+        pass
+    content, media_type = await read_trial_agent_file(trial, file_path)
+    return Response(content=content, media_type=media_type)
 
 
 @router.get("/public/trials/{trial_id}/result")
 async def get_public_trial_result(trial_id: str) -> dict:
     """Get result.json for a public trial."""
-    async with get_session() as session:
-        trial = await get_public_trial(session, trial_id)
-        if not trial:
-            raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-
-        return await read_trial_result(trial)
+    trial = await _get_detached_public_trial(trial_id)
+    return await read_trial_result(trial)
 
 
 @router.get("/public/tasks/{task_id}/files")
