@@ -7,6 +7,7 @@ from oddish.api.endpoints import (
     get_trial_by_index_core,
     get_task_for_org_core,
     get_trial_for_org_core,
+    rerun_trial_analysis_core,
     retry_trial_core,
 )
 from oddish.api.trial_io import (
@@ -83,6 +84,20 @@ async def retry_trial(
 
     async with get_session() as session:
         return await retry_trial_core(session, trial_id=trial_id, org_id=auth.org_id)
+
+
+@router.post("/trials/{trial_id}/analysis/retry")
+async def retry_trial_analysis(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Queue analysis for a completed trial and invalidate its task verdict."""
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        return await rerun_trial_analysis_core(
+            session, trial_id=trial_id, org_id=auth.org_id
+        )
 
 
 @router.get("/trials/{trial_id}/logs")

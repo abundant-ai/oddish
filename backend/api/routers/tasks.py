@@ -9,7 +9,12 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor.models.environment_type import EnvironmentType
-from oddish.api.endpoints import get_task_for_org_core, get_task_status_core
+from oddish.api.endpoints import (
+    get_task_for_org_core,
+    get_task_status_core,
+    rerun_task_analysis_core,
+    rerun_task_verdict_core,
+)
 from api.routers._helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
@@ -449,6 +454,34 @@ async def delete_task(
         await session.commit()
 
     return {"status": "success", "deleted": {"task_id": task_id}}
+
+
+@router.post("/tasks/{task_id}/analysis/retry")
+async def retry_task_analysis(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Queue analysis jobs for every completed trial in a task."""
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        return await rerun_task_analysis_core(
+            session, task_id=task_id, org_id=auth.org_id
+        )
+
+
+@router.post("/tasks/{task_id}/verdict/retry")
+async def retry_task_verdict(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Queue a fresh verdict job for a task whose analyses are complete."""
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        return await rerun_task_verdict_core(
+            session, task_id=task_id, org_id=auth.org_id
+        )
 
 
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)

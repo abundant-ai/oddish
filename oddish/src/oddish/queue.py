@@ -694,17 +694,21 @@ async def maybe_start_verdict_stage(session: AsyncSession, trial_id: str) -> boo
     if task.status != TaskStatus.ANALYZING:
         return False
 
-    # Check if any analyses are still pending/queued/running
+    # Check if any analyses are still missing or pending/queued/running.
+    # Manual re-analysis can temporarily clear a trial's analysis state.
     pending_count = await session.scalar(
         select(func.count(TrialModel.id)).where(
             and_(
                 TrialModel.task_id == task_id,
-                TrialModel.analysis_status.in_(
-                    [
-                        AnalysisStatus.PENDING,
-                        AnalysisStatus.QUEUED,
-                        AnalysisStatus.RUNNING,
-                    ]
+                or_(
+                    TrialModel.analysis_status.is_(None),
+                    TrialModel.analysis_status.in_(
+                        [
+                            AnalysisStatus.PENDING,
+                            AnalysisStatus.QUEUED,
+                            AnalysisStatus.RUNNING,
+                        ]
+                    ),
                 ),
             )
         )
