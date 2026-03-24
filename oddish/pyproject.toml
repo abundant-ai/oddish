@@ -47,9 +47,6 @@ dependencies = [
     "aioboto3>=13.0.0",
     # Harbor
     "harbor==0.1.45",
-    # Analysis and classification
-    "swegen>=0.1.1",
-    "claude-agent-sdk>=0.1.18",
     # LLM providers
     "anthropic>=0.40.0",
     "openai>=1.50.0",
@@ -78,9 +75,11 @@ oddish = "oddish.cli:app"
 
 [tool.hatch.build.targets.sdist]
 exclude = [".git", "uv.lock", ".pre-commit-config.yaml"]
+include = ["src/oddish/analyze/*.txt"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/oddish"]
+include = ["src/oddish/analyze/*.txt"]
 
 [tool.mypy]
 python_version = "3.12"

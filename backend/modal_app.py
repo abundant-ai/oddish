@@ -70,6 +70,11 @@ image = (
         "git",
         "curl",
     )
+    # Install Claude Code for trial analysis jobs that shell out to `claude -p`.
+    .run_commands(
+        "curl -fsSL https://claude.ai/install.sh | bash",
+        "ln -sf /root/.local/bin/claude /usr/local/bin/claude",
+    )
     .pip_install("psycopg2-binary")
     .env(ENV_VARS)
     # Copy oddish source BEFORE uv_sync (required for local path dependency)

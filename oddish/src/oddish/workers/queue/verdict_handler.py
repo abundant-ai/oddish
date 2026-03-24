@@ -28,7 +28,11 @@ async def run_verdict_job(job: Job, queue_key: str) -> None:
     3. Store verdict in task.verdict
     4. Mark task as COMPLETED
     """
-    from swegen.analyze import Classification, TrialClassification, compute_task_verdict
+    from oddish.analyze import (
+        Classification,
+        TrialClassification,
+        compute_task_verdict,
+    )
 
     payload = json.loads(job.payload.decode())
     task_id = payload.get("task_id")
