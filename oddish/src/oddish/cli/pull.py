@@ -294,7 +294,9 @@ def _pull_trial(
                 except ValueError:
                     summary["errors"] = int(summary["errors"]) + 1
                     continue
-                local_file = trial_root / "files" / rel
+                # Preserve Harbor's relative layout so downstream tooling can read
+                # pulled trials without another conversion step.
+                local_file = trial_root / rel
                 remote_size = file_meta.get("size")
                 if (
                     local_file.exists()
@@ -306,7 +308,7 @@ def _pull_trial(
                     continue
                 to_download.append((remote_path, local_file, rel))
 
-            error_dir = trial_root / "errors"
+            error_dir = trial_root / "_pull_errors"
             total_downloads = len(to_download)
             if status_update and total_downloads:
                 status_update(f"Pulling trial {trial_id}: downloading files (0/{total_downloads})")

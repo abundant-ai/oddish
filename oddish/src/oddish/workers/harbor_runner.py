@@ -336,6 +336,61 @@ def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
         config_path.write_text(task_config.model_dump_toml())
 
 
+def _build_agent_config(
+    *,
+    agent: str,
+    model: str | None,
+    raw_harbor_config: dict[str, Any],
+) -> AgentConfig:
+    """Build Harbor's full AgentConfig, preserving rich per-trial fields."""
+    raw_agent_config = raw_harbor_config.get("agent_config")
+    agent_config = (
+        AgentConfig.model_validate(raw_agent_config)
+        if isinstance(raw_agent_config, dict)
+        else AgentConfig()
+    )
+
+    # Backward compatibility for rows persisted before Oddish stored full
+    # Harbor AgentConfig payloads.
+    raw_agent_overrides = raw_harbor_config.get("agent_overrides")
+    legacy_overrides = (
+        dict(raw_agent_overrides) if isinstance(raw_agent_overrides, dict) else {}
+    )
+
+    legacy_env = legacy_overrides.get("env")
+    if isinstance(legacy_env, dict):
+        agent_config.env = {**legacy_env, **agent_config.env}
+
+    legacy_kwargs = legacy_overrides.get("kwargs")
+    if isinstance(legacy_kwargs, dict):
+        agent_config.kwargs = {**legacy_kwargs, **agent_config.kwargs}
+
+    if (
+        agent_config.override_timeout_sec is None
+        and legacy_overrides.get("override_timeout_sec") is not None
+    ):
+        agent_config.override_timeout_sec = legacy_overrides["override_timeout_sec"]
+    if (
+        agent_config.override_setup_timeout_sec is None
+        and legacy_overrides.get("override_setup_timeout_sec") is not None
+    ):
+        agent_config.override_setup_timeout_sec = legacy_overrides[
+            "override_setup_timeout_sec"
+        ]
+    if (
+        agent_config.max_timeout_sec is None
+        and legacy_overrides.get("max_timeout_sec") is not None
+    ):
+        agent_config.max_timeout_sec = legacy_overrides["max_timeout_sec"]
+
+    if agent_config.name is None and agent_config.import_path is None:
+        agent_config.name = agent
+    if agent_config.model_name is None:
+        agent_config.model_name = model
+
+    return agent_config
+
+
 # =============================================================================
 # Harbor Python API Integration (with Hooks)
 # =============================================================================
@@ -362,7 +417,7 @@ async def run_harbor_trial_async(
         environment: Execution backend (EnvironmentType)
         hook_callback: Optional callback invoked for trial lifecycle events
         trial_id: Optional trial ID for traceability
-        harbor_config: Optional dict (serialized HarborConfig + agent_overrides)
+        harbor_config: Optional dict (serialized HarborConfig + Harbor AgentConfig)
 
     Returns:
         HarborOutcome with reward, error, tokens, cost, timing, trajectory, and paths
@@ -389,7 +444,6 @@ async def run_harbor_trial_async(
 
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
-    agent_overrides: dict[str, Any] = raw.get("agent_overrides", {})
 
     # ── Task patching ────────────────────────────────────────────────────
     needs_task_patch = bool(hc.docker_image or hc.mcp_servers)
@@ -407,13 +461,10 @@ async def run_harbor_trial_async(
     env_config = hc.environment.model_copy()
     env_config.type = environment
 
-    agent_config = AgentConfig(
-        name=agent,
-        model_name=model,
-        override_timeout_sec=agent_overrides.get("override_timeout_sec"),
-        override_setup_timeout_sec=agent_overrides.get("override_setup_timeout_sec"),
-        kwargs=agent_overrides.get("kwargs", {}),
-        env=agent_overrides.get("env", {}),
+    agent_config = _build_agent_config(
+        agent=agent,
+        model=model,
+        raw_harbor_config=raw,
     )
 
     config = JobConfig(

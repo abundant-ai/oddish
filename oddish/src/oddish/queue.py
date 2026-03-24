@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from harbor.models.trial.config import AgentConfig as HarborAgentConfig
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -426,28 +427,21 @@ def _build_harbor_config_for_trial(
 ) -> dict[str, Any] | None:
     """Build the harbor_config JSONB payload for a single trial row.
 
-    Combines the submission-level HarborConfig with per-trial agent overrides
-    from TrialSpec.agent_config.
+    Combines the submission-level HarborConfig with the full Harbor AgentConfig
+    payload from TrialSpec.agent_config. Older rows stored a reduced
+    ``agent_overrides`` blob; we still write the richer ``agent_config`` field so
+    Harbor-specific fields like ``import_path`` and ``max_timeout_sec`` survive
+    end-to-end.
     """
     base = submission.harbor.model_dump(mode="json", exclude_defaults=True)
 
-    agent_overrides: dict[str, Any] = {}
-    if spec.timeout_minutes > 0:
-        agent_overrides["override_timeout_sec"] = float(spec.timeout_minutes * 60)
+    agent_config = spec.agent_config.model_copy() if spec.agent_config else HarborAgentConfig()
+    if spec.timeout_minutes > 0 and agent_config.override_timeout_sec is None:
+        agent_config.override_timeout_sec = float(spec.timeout_minutes * 60)
 
-    if spec.agent_config:
-        ac = spec.agent_config
-        if ac.env:
-            agent_overrides["env"] = ac.env
-        if ac.kwargs:
-            agent_overrides["kwargs"] = ac.kwargs
-        if ac.override_timeout_sec is not None:
-            agent_overrides["override_timeout_sec"] = ac.override_timeout_sec
-        if ac.override_setup_timeout_sec is not None:
-            agent_overrides["override_setup_timeout_sec"] = ac.override_setup_timeout_sec
-
-    if agent_overrides:
-        base["agent_overrides"] = agent_overrides
+    agent_config_payload = agent_config.model_dump(mode="json", exclude_defaults=True)
+    if agent_config_payload:
+        base["agent_config"] = agent_config_payload
 
     return base or None
 
