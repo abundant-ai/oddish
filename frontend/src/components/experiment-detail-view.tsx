@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import {
   ExperimentTrialsTable,
 } from "@/components/experiment-trials-table";
@@ -109,9 +110,13 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
 
 function ExperimentHeaderMeta({
   isLoading,
+  showPassAtK,
+  onToggleShowPassAtK,
   headerRight,
 }: {
   isLoading: boolean;
+  showPassAtK: boolean;
+  onToggleShowPassAtK: () => void;
   headerRight?: React.ReactNode;
 }) {
   return (
@@ -119,6 +124,15 @@ function ExperimentHeaderMeta({
       {isLoading && (
         <div className="text-xs text-muted-foreground">Loading...</div>
       )}
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={onToggleShowPassAtK}
+        className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
+      >
+        {showPassAtK ? "Hide graph" : "Show graph"}
+      </Button>
       {headerRight}
     </div>
   );
@@ -180,6 +194,7 @@ export function ExperimentDetailView({
 }: ExperimentDetailViewProps) {
   const searchParams = useSearchParams();
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
+  const [showPassAtK, setShowPassAtK] = useState(false);
   const hydratedFromUrl = useRef(false);
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(tasksForExperiment),
@@ -335,10 +350,18 @@ export function ExperimentDetailView({
       <Card>
         <CardHeader className="py-3">
           <div className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              {headerLeft}
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
+                {headerLeft}
+                <ExperimentSummaryBar
+                  taskCount={tasksForExperiment.length}
+                  summary={summary}
+                />
+              </div>
               <ExperimentHeaderMeta
                 isLoading={isLoading}
+                showPassAtK={showPassAtK}
+                onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
                 headerRight={headerRight}
               />
             </div>
@@ -358,12 +381,7 @@ export function ExperimentDetailView({
                 agentSummaries={agentSummaries}
                 modelScopedAgents={modelScopedAgents}
                 isLoading={isLoading}
-                topControlsLeft={
-                  <ExperimentSummaryBar
-                    taskCount={tasksForExperiment.length}
-                    summary={summary}
-                  />
-                }
+                showPassAtK={showPassAtK}
                 onTaskDelete={onTaskDelete}
                 onRerun={onRerun}
                 allowRerun={allowRetry}

@@ -87,6 +87,7 @@ type ExperimentTrialsTableProps = {
   modelScopedAgents: ReadonlySet<string>;
   isLoading: boolean;
   topControlsLeft?: ReactNode;
+  showPassAtK?: boolean;
   onTaskDelete?: (task: Task) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
   allowRerun?: boolean;
@@ -121,12 +122,12 @@ const EMPTY_TRIAL_INDEX: ReadonlyMap<string, number> = new Map<
 >();
 const VIRTUALIZATION_THRESHOLD = 50;
 const STATUS_FILTER_ORDER: MatrixStatus[] = [
+  "queued",
+  "running",
   "pass",
   "fail",
   "harness-error",
   "pending",
-  "queued",
-  "running",
 ];
 
 // Analysis classification badge styling
@@ -135,11 +136,75 @@ const ANALYSIS_CONFIG: Record<
   { label: string; dotClass: string }
 > = {
   GOOD_SUCCESS: { label: "Good success", dotClass: "bg-emerald-400" },
-  GOOD_FAILURE: { label: "Good failure", dotClass: "bg-slate-400" },
-  BAD_SUCCESS: { label: "Bad success", dotClass: "bg-amber-400" },
-  BAD_FAILURE: { label: "Bad failure", dotClass: "bg-amber-400" },
-  HARNESS_ERROR: { label: "Harness error", dotClass: "bg-slate-500" },
+  GOOD_FAILURE: { label: "Good failure", dotClass: "bg-emerald-400" },
+  BAD_SUCCESS: { label: "Bad success", dotClass: "bg-red-400" },
+  BAD_FAILURE: { label: "Bad failure", dotClass: "bg-red-400" },
+  HARNESS_ERROR: { label: "Harness error", dotClass: "bg-yellow-400" },
 };
+
+const ANALYSIS_LEGEND_ITEMS: Array<{
+  key: AnalysisLegendKey;
+  label: string;
+  dotClass: string;
+  animate?: boolean;
+}> = [
+  {
+    key: "analyzing",
+    label: "Analyzing",
+    dotClass: "bg-blue-400",
+    animate: true,
+  },
+  {
+    key: "good",
+    label: "Good success or failure",
+    dotClass: ANALYSIS_CONFIG.GOOD_SUCCESS.dotClass,
+  },
+  {
+    key: "bad",
+    label: "Bad success or failure",
+    dotClass: ANALYSIS_CONFIG.BAD_SUCCESS.dotClass,
+  },
+  {
+    key: "analysis-failed",
+    label: "Analysis failed",
+    dotClass: "bg-yellow-400",
+  },
+];
+
+type AnalysisLegendKey = "analyzing" | "good" | "bad" | "analysis-failed";
+
+function getAnalysisLegendKey(trial: Trial): AnalysisLegendKey | null {
+  const status = trial.analysis_status;
+  const classification = trial.analysis?.classification;
+
+  if (status === "pending" || status === "queued" || status === "running") {
+    return "analyzing";
+  }
+
+  if (status === "failed") {
+    return "analysis-failed";
+  }
+
+  if (status === "success") {
+    if (
+      classification === "GOOD_SUCCESS" ||
+      classification === "GOOD_FAILURE"
+    ) {
+      return "good";
+    }
+    if (
+      classification === "BAD_SUCCESS" ||
+      classification === "BAD_FAILURE"
+    ) {
+      return "bad";
+    }
+    if (classification === "HARNESS_ERROR") {
+      return "analysis-failed";
+    }
+  }
+
+  return null;
+}
 
 function getAnalysisIndicator(trial: Trial): {
   dotClass: string;
@@ -171,7 +236,7 @@ function getAnalysisIndicator(trial: Trial): {
   // Analysis failed
   if (status === "failed") {
     return {
-      dotClass: "bg-red-400",
+      dotClass: "bg-yellow-400",
       animate: false,
       title: "Analysis failed",
     };
@@ -257,6 +322,7 @@ export function ExperimentTrialsTable({
   modelScopedAgents,
   isLoading,
   topControlsLeft,
+  showPassAtK = false,
   onTaskDelete,
   onRerun,
   allowRerun = true,
@@ -274,15 +340,21 @@ export function ExperimentTrialsTable({
   const [dimmedStatuses, setDimmedStatuses] = useState<Set<MatrixStatus>>(
     new Set(),
   );
+  const [dimmedAnalysisKeys, setDimmedAnalysisKeys] = useState<
+    Set<AnalysisLegendKey>
+  >(new Set());
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
   const [copiedTaskId, setCopiedTaskId] = useState<string | null>(null);
   const [copiedTable, setCopiedTable] = useState(false);
-  const [showPassAtK, setShowPassAtK] = useState(false);
   const [deleteTargets, setDeleteTargets] = useState<Task[]>([]);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isRerunning, setIsRerunning] = useState(false);
   const [rerunError, setRerunError] = useState<string | null>(null);
+  const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [isRunningVerdict, setIsRunningVerdict] = useState(false);
+  const [verdictError, setVerdictError] = useState<string | null>(null);
   const [taskColumnWidth, setTaskColumnWidth] = useState(DEFAULT_AGENT_WIDTH);
   const [agentColumnWidths, setAgentColumnWidths] = useState<
     Record<string, number>
@@ -345,6 +417,8 @@ export function ExperimentTrialsTable({
   useEffect(() => {
     if (selectedTasks.size === 0) {
       setRerunError(null);
+      setAnalysisError(null);
+      setVerdictError(null);
     }
   }, [selectedTasks]);
 
@@ -565,6 +639,46 @@ export function ExperimentTrialsTable({
     return retryable;
   }, [selectedTaskList]);
 
+  const selectedAnalysisRunnableTasks = useMemo(
+    () =>
+      selectedTaskList.filter((task) => {
+        const trials = task.trials ?? [];
+        if (trials.length === 0) return false;
+        const allTrialsTerminal = trials.every(
+          (trial) => trial.status === "failed" || trial.status === "success",
+        );
+        const hasAnalysisInFlight = trials.some((trial) =>
+          ["pending", "queued", "running"].includes(trial.analysis_status ?? ""),
+        );
+        const verdictInFlight = ["pending", "queued", "running"].includes(
+          task.verdict_status ?? "",
+        );
+        return allTrialsTerminal && !hasAnalysisInFlight && !verdictInFlight;
+      }),
+    [selectedTaskList],
+  );
+
+  const selectedVerdictRunnableTasks = useMemo(
+    () =>
+      selectedTaskList.filter((task) => {
+        const trials = task.trials ?? [];
+        if (trials.length === 0) return false;
+        const allTrialsTerminal = trials.every(
+          (trial) => trial.status === "failed" || trial.status === "success",
+        );
+        const allAnalysesComplete = trials.every(
+          (trial) =>
+            trial.analysis_status === "success" ||
+            trial.analysis_status === "failed",
+        );
+        const verdictInFlight = ["pending", "queued", "running"].includes(
+          task.verdict_status ?? "",
+        );
+        return allTrialsTerminal && allAnalysesComplete && !verdictInFlight;
+      }),
+    [selectedTaskList],
+  );
+
   const rowVirtualizer = useVirtualizer({
     count: filteredTasks.length,
     getScrollElement: () => tableContainerRef.current,
@@ -594,6 +708,18 @@ export function ExperimentTrialsTable({
         next.delete(status);
       } else {
         next.add(status);
+      }
+      return next;
+    });
+  };
+
+  const toggleAnalysisKey = (analysisKey: AnalysisLegendKey) => {
+    setDimmedAnalysisKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(analysisKey)) {
+        next.delete(analysisKey);
+      } else {
+        next.add(analysisKey);
       }
       return next;
     });
@@ -756,6 +882,84 @@ export function ExperimentTrialsTable({
       onRerun?.(selectedTaskList.map((task) => task.id));
     } finally {
       setIsRerunning(false);
+    }
+  };
+
+  const handleRunAnalysisForSelectedTasks = async () => {
+    if (!canRerun || isRunningAnalysis) return;
+    if (selectedAnalysisRunnableTasks.length === 0) {
+      setAnalysisError("No tasks are ready for analysis.");
+      return;
+    }
+
+    setIsRunningAnalysis(true);
+    setAnalysisError(null);
+
+    try {
+      const results = await Promise.allSettled(
+        selectedAnalysisRunnableTasks.map(async (task) => {
+          const res = await fetch(`/api/tasks/${task.id}/analysis/retry`, {
+            method: "POST",
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(
+              data.detail || data.error || "Failed to queue task analysis",
+            );
+          }
+        }),
+      );
+
+      const failures = results.filter((result) => result.status === "rejected");
+      if (failures.length > 0) {
+        setAnalysisError(
+          `Failed to queue analysis for ${failures.length} task(s).`,
+        );
+      } else {
+        setAnalysisError(null);
+      }
+      onRerun?.(selectedAnalysisRunnableTasks.map((task) => task.id));
+    } finally {
+      setIsRunningAnalysis(false);
+    }
+  };
+
+  const handleRunVerdictForSelectedTasks = async () => {
+    if (!canRerun || isRunningVerdict) return;
+    if (selectedVerdictRunnableTasks.length === 0) {
+      setVerdictError("No tasks are ready for a verdict.");
+      return;
+    }
+
+    setIsRunningVerdict(true);
+    setVerdictError(null);
+
+    try {
+      const results = await Promise.allSettled(
+        selectedVerdictRunnableTasks.map(async (task) => {
+          const res = await fetch(`/api/tasks/${task.id}/verdict/retry`, {
+            method: "POST",
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(
+              data.detail || data.error || "Failed to queue task verdict",
+            );
+          }
+        }),
+      );
+
+      const failures = results.filter((result) => result.status === "rejected");
+      if (failures.length > 0) {
+        setVerdictError(
+          `Failed to queue verdict for ${failures.length} task(s).`,
+        );
+      } else {
+        setVerdictError(null);
+      }
+      onRerun?.(selectedVerdictRunnableTasks.map((task) => task.id));
+    } finally {
+      setIsRunningVerdict(false);
     }
   };
 
@@ -971,6 +1175,47 @@ export function ExperimentTrialsTable({
     </Popover>
   );
 
+  const renderLegendBlock = () => (
+    <div className="grid grid-cols-[56px_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-[10px] text-muted-foreground">
+      <div className="flex items-center font-semibold uppercase tracking-wide text-foreground/80">
+        Trial
+      </div>
+      <div className="min-w-0">{renderStatusFilters()}</div>
+      <div className="flex items-center font-semibold uppercase tracking-wide text-foreground/80">
+        Analyzer
+      </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+        {ANALYSIS_LEGEND_ITEMS.map((item) => (
+          <Tooltip key={item.key}>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                onClick={() => toggleAnalysisKey(item.key)}
+                variant="ghost"
+                size="sm"
+                className={`h-auto flex items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition ${
+                  dimmedAnalysisKeys.has(item.key)
+                    ? "border-border text-muted-foreground line-through"
+                    : "border-transparent hover:border-border"
+                }`}
+              >
+                <span
+                  className={`inline-flex h-2.5 w-2.5 rounded-full ${item.dotClass} ${
+                    item.animate ? "animate-pulse" : ""
+                  }`}
+                />
+                <span>{item.label}</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {item.label} ({dimmedAnalysisKeys.has(item.key) ? "dimmed" : "visible"})
+            </TooltipContent>
+          </Tooltip>
+        ))}
+      </div>
+    </div>
+  );
+
   const selectAllVisible = () => {
     setSelectedTasks(new Set(filteredTasks.map((task) => task.id)));
   };
@@ -982,18 +1227,11 @@ export function ExperimentTrialsTable({
   return (
     <TooltipProvider>
       <div className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">{topControlsLeft}</div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => setShowPassAtK((prev) => !prev)}
-            className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
-          >
-            {showPassAtK ? "Hide graph" : "Show graph"}
-          </Button>
-        </div>
+        {topControlsLeft ? (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">{topControlsLeft}</div>
+          </div>
+        ) : null}
         {/* Pass@k Graph - only shows when there are multiple trials per task-agent */}
         {showPassAtK ? (
           <div className="grid gap-4 xl:grid-cols-2 items-stretch">
@@ -1018,8 +1256,8 @@ export function ExperimentTrialsTable({
 
         <div className="rounded-lg border border-border bg-card shadow-sm max-w-full overflow-hidden">
           <div className="border-b border-border bg-card/70 px-3 py-2 space-y-2 relative z-30">
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="flex-1 min-w-[200px] max-w-[420px]">
+            <div className="flex flex-wrap items-start gap-3">
+              <div className="w-full min-w-[200px] max-w-[420px] md:w-auto md:flex-1">
                 <Input
                   type="search"
                   value={taskSearch}
@@ -1030,32 +1268,34 @@ export function ExperimentTrialsTable({
                   className="h-9 text-xs"
                 />
               </div>
-              {renderStatusFilters()}
-              {renderAgentFilterMenu()}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handleCopyTableAsTSV}
-                    className="h-auto select-none px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
-                  >
-                    {copiedTable ? (
-                      <>
-                        <Check className="h-3 w-3 mr-1 text-emerald-500" />
-                        Copied
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="h-3 w-3 mr-1" />
-                        Copy TSV
-                      </>
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Copy table as TSV</TooltipContent>
-              </Tooltip>
+              <div className="min-w-0 flex-1">{renderLegendBlock()}</div>
+              <div className="ml-auto flex shrink-0 items-center gap-2">
+                {renderAgentFilterMenu()}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleCopyTableAsTSV}
+                      className="h-auto select-none px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                    >
+                      {copiedTable ? (
+                        <>
+                          <Check className="h-3 w-3 mr-1 text-emerald-500" />
+                          Copied
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-3 w-3 mr-1" />
+                          Copy TSV
+                        </>
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Copy table as TSV</TooltipContent>
+                </Tooltip>
+              </div>
             </div>
             <div
               className={`flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground ${!readOnly && selectedTasks.size > 0 ? "" : "hidden"}`}
@@ -1084,6 +1324,38 @@ export function ExperimentTrialsTable({
                     : `Rerun trials (${selectedRetryableTrials.length})`}
                 </Button>
               )}
+              {canRerun && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRunAnalysisForSelectedTasks}
+                  disabled={
+                    isRunningAnalysis || selectedAnalysisRunnableTasks.length === 0
+                  }
+                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                >
+                  {isRunningAnalysis
+                    ? "Queueing..."
+                    : `Run analysis (${selectedAnalysisRunnableTasks.length})`}
+                </Button>
+              )}
+              {canRerun && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRunVerdictForSelectedTasks}
+                  disabled={
+                    isRunningVerdict || selectedVerdictRunnableTasks.length === 0
+                  }
+                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                >
+                  {isRunningVerdict
+                    ? "Queueing..."
+                    : `Run verdict (${selectedVerdictRunnableTasks.length})`}
+                </Button>
+              )}
               {canDeleteTasks && (
                 <Button
                   type="button"
@@ -1102,6 +1374,12 @@ export function ExperimentTrialsTable({
               )}
               {rerunError && (
                 <span className="text-[10px] text-red-500">{rerunError}</span>
+              )}
+              {analysisError && (
+                <span className="text-[10px] text-red-500">{analysisError}</span>
+              )}
+              {verdictError && (
+                <span className="text-[10px] text-red-500">{verdictError}</span>
               )}
             </div>
           </div>
@@ -1349,6 +1627,13 @@ export function ExperimentTrialsTable({
                                       : "";
                                   const analysisIndicator =
                                     getAnalysisIndicator(trial);
+                                  const analysisLegendKey =
+                                    getAnalysisLegendKey(trial);
+                                  const analysisDimClass =
+                                    analysisLegendKey &&
+                                    dimmedAnalysisKeys.has(analysisLegendKey)
+                                      ? "opacity-25"
+                                      : "";
                                   // Build enhanced title with analysis info
                                   const baseTitle = getTrialTitle(
                                     trial,
@@ -1359,7 +1644,10 @@ export function ExperimentTrialsTable({
                                     : "";
                                   const fullTitle = `${baseTitle}${analysisTitle}`;
                                   return (
-                                    <div key={trial.id} className="relative">
+                                    <div
+                                      key={trial.id}
+                                      className={`relative ${dimClass || analysisDimClass ? "opacity-25" : ""}`}
+                                    >
                                       <Button
                                         type="button"
                                         variant="ghost"
@@ -1373,7 +1661,7 @@ export function ExperimentTrialsTable({
                                             trialGroups,
                                           });
                                         }}
-                                        className={`h-5 w-5 shrink-0 rounded-sm border p-0 text-sm font-semibold leading-none transition hover:opacity-90 ${config.matrixClass} ${dimClass}`}
+                                        className={`h-5 w-5 shrink-0 rounded-sm border p-0 text-sm font-semibold leading-none transition hover:opacity-90 ${config.matrixClass}`}
                                         aria-label={`Trial ${trialIndex + 1} ${config.shortLabel}`}
                                         title={fullTitle}
                                       >

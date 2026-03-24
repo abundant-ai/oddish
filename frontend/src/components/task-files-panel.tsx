@@ -304,6 +304,14 @@ export function TaskFilesPanel({
   const [error, setError] = useState<string | null>(null);
   const [isRerunning, setIsRerunning] = useState(false);
   const [rerunError, setRerunError] = useState<string | null>(null);
+  const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
+  const [analysisActionError, setAnalysisActionError] = useState<string | null>(
+    null,
+  );
+  const [isRunningVerdict, setIsRunningVerdict] = useState(false);
+  const [verdictActionError, setVerdictActionError] = useState<string | null>(
+    null,
+  );
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [selectedFile, setSelectedFile] = useState<TreeNode | null>(null);
@@ -361,6 +369,36 @@ export function TaskFilesPanel({
   }, [task]);
 
   const canRetryTask = allowRetry && retryableTrials.length > 0;
+  const allTrialsTerminal =
+    Boolean(task?.trials?.length) &&
+    (task?.trials ?? []).every(
+      (trial) => trial.status === "failed" || trial.status === "success",
+    );
+  const hasAnalysisInFlight = (task?.trials ?? []).some((trial) =>
+    ["pending", "queued", "running"].includes(trial.analysis_status ?? ""),
+  );
+  const allAnalysesComplete =
+    Boolean(task?.trials?.length) &&
+    (task?.trials ?? []).every(
+      (trial) =>
+        trial.analysis_status === "success" || trial.analysis_status === "failed",
+    );
+  const verdictInFlight = ["pending", "queued", "running"].includes(
+    verdictSource?.verdict_status ?? "",
+  );
+  const canRunTaskAnalysis =
+    allowRetry && Boolean(task) && allTrialsTerminal && !hasAnalysisInFlight && !verdictInFlight;
+  const canRunVerdict =
+    allowRetry && Boolean(task) && allTrialsTerminal && allAnalysesComplete && !verdictInFlight;
+  const analysisActionLabel = (task?.trials ?? []).some(
+    (trial) => trial.analysis_status || trial.analysis,
+  )
+    ? "Rerun analyses"
+    : "Run analyses";
+  const verdictActionLabel =
+    verdictSource?.verdict_status || verdictSource?.verdict
+      ? "Rerun verdict"
+      : "Run verdict";
 
   const navigateTo = useCallback(
     (nextIndex: number) => {
@@ -403,9 +441,61 @@ export function TaskFilesPanel({
     }
   };
 
+  const handleRunTaskAnalysis = async () => {
+    if (!task?.id || !canRunTaskAnalysis || isRunningAnalysis) return;
+    setIsRunningAnalysis(true);
+    setAnalysisActionError(null);
+
+    try {
+      const res = await fetch(`${baseUrl}/tasks/${task.id}/analysis/retry`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          data.detail || data.error || "Failed to queue task analysis",
+        );
+      }
+      onRetryComplete?.([task.id]);
+    } catch (err) {
+      setAnalysisActionError(
+        err instanceof Error ? err.message : "Failed to queue task analysis",
+      );
+    } finally {
+      setIsRunningAnalysis(false);
+    }
+  };
+
+  const handleRunVerdict = async () => {
+    if (!task?.id || !canRunVerdict || isRunningVerdict) return;
+    setIsRunningVerdict(true);
+    setVerdictActionError(null);
+
+    try {
+      const res = await fetch(`${baseUrl}/tasks/${task.id}/verdict/retry`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || data.error || "Failed to queue verdict");
+      }
+      onRetryComplete?.([task.id]);
+    } catch (err) {
+      setVerdictActionError(
+        err instanceof Error ? err.message : "Failed to queue verdict",
+      );
+    } finally {
+      setIsRunningVerdict(false);
+    }
+  };
+
   useEffect(() => {
     setRerunError(null);
     setIsRerunning(false);
+    setAnalysisActionError(null);
+    setIsRunningAnalysis(false);
+    setVerdictActionError(null);
+    setIsRunningVerdict(false);
   }, [taskId]);
 
   const isEditableTarget = (target: EventTarget | null) => {
@@ -692,6 +782,10 @@ export function TaskFilesPanel({
       setIsTruncated(false);
       setFullFileSize(null);
       setLoadingFullFile(false);
+      setAnalysisActionError(null);
+      setIsRunningAnalysis(false);
+      setVerdictActionError(null);
+      setIsRunningVerdict(false);
     }
   }, [isOpen]);
 
@@ -903,6 +997,13 @@ export function TaskFilesPanel({
   const showVerdictCard =
     Boolean(verdictSource) &&
     Boolean(verdictSource?.verdict_status || verdictSource?.verdict);
+  const taskSummary = verdictSource ?? task;
+  const rewardSuccess = taskSummary?.reward_success ?? task?.reward_success ?? null;
+  const rewardTotal = taskSummary?.reward_total ?? task?.reward_total ?? null;
+  const averageRewardPct =
+    rewardTotal && rewardTotal > 0 && rewardSuccess != null
+      ? Math.round((rewardSuccess / rewardTotal) * 100)
+      : null;
   const isListingLoading = filesUrl ? recursiveFilesLoading : loading;
   const listingError =
     filesUrl && recursiveFilesError
@@ -969,118 +1070,180 @@ export function TaskFilesPanel({
   const content = (
     <>
       <DrawerHeader className="shrink-0 px-4 py-3 border-b border-border">
-        <div className="flex items-center justify-between mb-2 pr-20">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="min-w-0">
-              <DrawerTitle className="font-mono text-base font-semibold truncate">
-                {taskName}
-              </DrawerTitle>
-            </div>
+        <div className="mb-2 flex flex-wrap items-start justify-between gap-3 pr-20">
+          <div className="min-w-0 flex-1">
+            <DrawerTitle className="font-mono text-base font-semibold truncate">
+              {taskName}
+            </DrawerTitle>
           </div>
         </div>
 
         {/* Combined navigation row */}
-        {(onNavigateToFirstTrial || hasNavigation || allowRetry) && (
-          <div className="flex items-center gap-3 pt-2 text-xs text-muted-foreground">
-            {/* Horizontal navigation - task icon view */}
-            {onNavigateToFirstTrial && (
-              <div className="flex items-center gap-1">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  disabled={true}
-                  className="h-7 w-7"
-                  aria-label="No previous"
-                >
-                  <ChevronLeft className="h-4 w-4" />
-                </Button>
+        {(onNavigateToFirstTrial ||
+          hasNavigation ||
+          allowRetry ||
+          canRunTaskAnalysis ||
+          canRunVerdict) && (
+          <div className="space-y-2 pt-2 text-xs text-muted-foreground">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-3">
+                {/* Horizontal navigation - task icon view */}
+                {onNavigateToFirstTrial && (
+                  <div className="flex items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      disabled={true}
+                      className="h-7 w-7"
+                      aria-label="No previous"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
 
-                {/* Task indicator - active since we're viewing the task */}
-                <div className="flex gap-1">
-                  <span
-                    className="h-5 w-5 rounded-sm border text-[10px] font-bold flex items-center justify-center transition bg-blue-500 text-white border-blue-500 ring-2 ring-primary ring-offset-1 ring-offset-background"
-                    aria-label="Current: Task view"
-                    title="Task view"
+                    {/* Task indicator - active since we're viewing the task */}
+                    <div className="flex gap-1">
+                      <span
+                        className="h-5 w-5 rounded-sm border text-[10px] font-bold flex items-center justify-center transition bg-blue-500 text-white border-blue-500 ring-2 ring-primary ring-offset-1 ring-offset-background"
+                        aria-label="Current: Task view"
+                        title="Task view"
+                      >
+                        <FileText className="h-3 w-3" />
+                      </span>
+                    </div>
+
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={onNavigateToFirstTrial}
+                      className="h-7 w-7"
+                      aria-label="View first trial"
+                      title="View first trial"
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+                )}
+
+                {/* Vertical navigation - task list position */}
+                {hasNavigation && (
+                  <div className="flex items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => navigateTo(resolvedIndex - 1)}
+                      disabled={!canGoPrev}
+                      className="h-7 w-7"
+                      aria-label="Previous task"
+                      title="Previous task"
+                    >
+                      <ChevronUp className="h-4 w-4" />
+                    </Button>
+                    <div
+                      className="relative h-6 w-1.5 rounded-full bg-muted"
+                      aria-label="Task position"
+                      title="Task position"
+                    >
+                      <div
+                        className="absolute left-0 right-0 rounded-full bg-primary"
+                        style={{ height: `${progressPct}%`, bottom: 0 }}
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => navigateTo(resolvedIndex + 1)}
+                      disabled={!canGoNext}
+                      className="h-7 w-7"
+                      aria-label="Next task"
+                      title="Next task"
+                    >
+                      <ChevronDown className="h-4 w-4" />
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                <div className="rounded-md border border-border bg-muted/30 px-3 py-1.5 text-right">
+                  <div className="text-[9px] uppercase tracking-wider text-muted-foreground leading-none">
+                    Avg reward
+                  </div>
+                  <div className="mt-1 flex items-baseline justify-end gap-2">
+                    <span className="font-mono text-sm font-semibold leading-none">
+                      {averageRewardPct !== null ? `${averageRewardPct}%` : "—"}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground leading-none">
+                      {rewardTotal && rewardTotal > 0 && rewardSuccess != null
+                        ? `${rewardSuccess}/${rewardTotal}`
+                        : "No results"}
+                    </span>
+                  </div>
+                </div>
+                {allowRetry && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRetryTask}
+                    disabled={!canRetryTask || isRerunning}
+                    className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
                   >
-                    <FileText className="h-3 w-3" />
-                  </span>
-                </div>
+                    <RefreshCw
+                      className={`mr-1 h-3.5 w-3.5 ${
+                        isRerunning ? "animate-spin" : ""
+                      }`}
+                    />
+                    {isRerunning ? "Rerunning..." : "Rerun trials"}
+                  </Button>
+                )}
+                {task && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRunTaskAnalysis}
+                    disabled={!canRunTaskAnalysis || isRunningAnalysis}
+                    className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
+                  >
+                    {isRunningAnalysis ? (
+                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Microscope className="mr-1 h-3.5 w-3.5" />
+                    )}
+                    {isRunningAnalysis ? "Queueing..." : analysisActionLabel}
+                  </Button>
+                )}
+                {task && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRunVerdict}
+                    disabled={!canRunVerdict || isRunningVerdict}
+                    className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
+                  >
+                    {isRunningVerdict ? (
+                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                    )}
+                    {isRunningVerdict ? "Queueing..." : verdictActionLabel}
+                  </Button>
+                )}
+              </div>
+            </div>
 
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={onNavigateToFirstTrial}
-                  className="h-7 w-7"
-                  aria-label="View first trial"
-                  title="View first trial"
-                >
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
+            {(rerunError || analysisActionError || verdictActionError) && (
+              <div className="flex flex-wrap items-center justify-end gap-3 text-red-500">
+                {rerunError && <span>{rerunError}</span>}
+                {analysisActionError && <span>{analysisActionError}</span>}
+                {verdictActionError && <span>{verdictActionError}</span>}
               </div>
             )}
-
-            {/* Vertical navigation - task list position */}
-            {hasNavigation && (
-              <div className="flex items-center gap-1">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => navigateTo(resolvedIndex - 1)}
-                  disabled={!canGoPrev}
-                  className="h-7 w-7"
-                  aria-label="Previous task"
-                  title="Previous task"
-                >
-                  <ChevronUp className="h-4 w-4" />
-                </Button>
-                <div
-                  className="relative h-6 w-1.5 rounded-full bg-muted"
-                  aria-label="Task position"
-                  title="Task position"
-                >
-                  <div
-                    className="absolute left-0 right-0 rounded-full bg-primary"
-                    style={{ height: `${progressPct}%`, bottom: 0 }}
-                  />
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => navigateTo(resolvedIndex + 1)}
-                  disabled={!canGoNext}
-                  className="h-7 w-7"
-                  aria-label="Next task"
-                  title="Next task"
-                >
-                  <ChevronDown className="h-4 w-4" />
-                </Button>
-              </div>
-            )}
-
-            {/* Rerun trials button */}
-            {allowRetry && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={handleRetryTask}
-                disabled={!canRetryTask || isRerunning}
-                className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
-              >
-                <RefreshCw
-                  className={`mr-1 h-3.5 w-3.5 ${
-                    isRerunning ? "animate-spin" : ""
-                  }`}
-                />
-                {isRerunning ? "Rerunning..." : "Rerun trials"}
-              </Button>
-            )}
-
-            {rerunError && <span className="text-red-500">{rerunError}</span>}
           </div>
         )}
       </DrawerHeader>

@@ -103,6 +103,8 @@ export function TrialDetailPanel({
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [analysisRunning, setAnalysisRunning] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [filesTargetPath, setFilesTargetPath] = useState<string | null>(
     () => searchParams.get("file"),
   );
@@ -147,6 +149,16 @@ export function TrialDetailPanel({
 
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
+  const taskHasActiveTrials =
+    task !== null ? Math.max(0, task.total - task.completed - task.failed) > 0 : false;
+  const canRunAnalysis =
+    allowRetry &&
+    !taskHasActiveTrials &&
+    (task?.run_analysis ||
+      trial?.analysis_status != null ||
+      trial?.analysis != null);
+  const analysisLabel =
+    trial?.analysis_status || trial?.analysis ? "Rerun analysis" : "Run analysis";
 
   const handleRetry = async () => {
     if (!trial || retrying || !allowRetry) return;
@@ -172,6 +184,32 @@ export function TrialDetailPanel({
     }
   };
 
+  const handleRunAnalysis = async () => {
+    if (!trial || !task || analysisRunning || !canRunAnalysis) return;
+    setAnalysisRunning(true);
+    setAnalysisError(null);
+
+    try {
+      const res = await fetch(`${apiBaseUrl}/trials/${trial.id}/analysis/retry`, {
+        method: "POST",
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || data.error || "Failed to queue analysis");
+      }
+
+      onRetry?.([task.id]);
+      onClose();
+    } catch (err) {
+      setAnalysisError(
+        err instanceof Error ? err.message : "Failed to queue analysis",
+      );
+    } finally {
+      setAnalysisRunning(false);
+    }
+  };
+
   const STAGE_FILE_MAP: Record<string, string> = {
     starting: "agent/oracle.txt",
     trial_started: "agent/oracle.txt",
@@ -194,6 +232,8 @@ export function TrialDetailPanel({
       setShowFullError(false);
       setRetrying(false);
       setRetryError(null);
+      setAnalysisRunning(false);
+      setAnalysisError(null);
       setFilesTargetPath(null);
       hydratedFromUrl.current = false;
     }
@@ -486,10 +526,34 @@ export function TrialDetailPanel({
                 )}
               </Button>
             )}
+            {canRunAnalysis && (
+              <Button
+                onClick={handleRunAnalysis}
+                disabled={analysisRunning}
+                variant="outline"
+                size="sm"
+                className="h-7 min-w-[148px] px-2 text-[10px] font-semibold uppercase tracking-wide"
+              >
+                {analysisRunning ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                    Queueing...
+                  </>
+                ) : (
+                  <>
+                    <Microscope className="h-3.5 w-3.5 mr-1" />
+                    {analysisLabel}
+                  </>
+                )}
+              </Button>
+            )}
           </div>
         </div>
         {retryError && (
           <p className="text-xs text-red-500 text-right pt-1">{retryError}</p>
+        )}
+        {analysisError && (
+          <p className="text-xs text-red-500 text-right pt-1">{analysisError}</p>
         )}
       </DrawerHeader>
 
