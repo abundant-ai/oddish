@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from harbor.models.trial.config import AgentConfig as HarborAgentConfig
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -435,11 +434,23 @@ def _build_harbor_config_for_trial(
     """
     base = submission.harbor.model_dump(mode="json", exclude_defaults=True)
 
-    agent_config = spec.agent_config.model_copy() if spec.agent_config else HarborAgentConfig()
-    if spec.timeout_minutes > 0 and agent_config.override_timeout_sec is None:
-        agent_config.override_timeout_sec = float(spec.timeout_minutes * 60)
+    agent_config_payload: dict[str, Any] = {}
+    if spec.agent_config:
+        agent_config_payload = spec.agent_config.model_dump(
+            mode="json", exclude_defaults=True
+        )
+        # Trial rows already store the source-of-truth agent/model separately.
+        # Dropping these avoids Harbor's implicit AgentConfig(name="oracle")
+        # default from overriding the intended trial agent at execution time.
+        agent_config_payload.pop("name", None)
+        agent_config_payload.pop("model_name", None)
 
-    agent_config_payload = agent_config.model_dump(mode="json", exclude_defaults=True)
+    if (
+        spec.timeout_minutes > 0
+        and agent_config_payload.get("override_timeout_sec") is None
+    ):
+        agent_config_payload["override_timeout_sec"] = float(spec.timeout_minutes * 60)
+
     if agent_config_payload:
         base["agent_config"] = agent_config_payload
 

@@ -347,7 +347,7 @@ def _build_agent_config(
     agent_config = (
         AgentConfig.model_validate(raw_agent_config)
         if isinstance(raw_agent_config, dict)
-        else AgentConfig()
+        else AgentConfig(name=agent, model_name=model)
     )
 
     # Backward compatibility for rows persisted before Oddish stored full
@@ -383,9 +383,9 @@ def _build_agent_config(
     ):
         agent_config.max_timeout_sec = legacy_overrides["max_timeout_sec"]
 
-    if agent_config.name is None and agent_config.import_path is None:
+    if agent_config.import_path is None:
         agent_config.name = agent
-    if agent_config.model_name is None:
+    if model is not None:
         agent_config.model_name = model
 
     return agent_config

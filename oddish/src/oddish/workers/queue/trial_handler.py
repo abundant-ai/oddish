@@ -7,7 +7,6 @@ import shutil
 import uuid
 from pathlib import Path
 
-from harbor.models.trial.config import AgentConfig as HarborAgentConfig
 from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
@@ -52,13 +51,15 @@ def _apply_default_trial_timeout(
     effective_config = dict(harbor_config or {})
 
     raw_agent_config = effective_config.get("agent_config")
-    if isinstance(raw_agent_config, dict):
-        agent_config = HarborAgentConfig.model_validate(raw_agent_config)
-    else:
-        agent_config = HarborAgentConfig()
-    if agent_config.override_timeout_sec is None:
-        agent_config.override_timeout_sec = float(timeout_minutes * 60)
-    agent_config_payload = agent_config.model_dump(mode="json", exclude_defaults=True)
+    agent_config_payload = (
+        dict(raw_agent_config) if isinstance(raw_agent_config, dict) else {}
+    )
+    # Trial rows already carry the canonical agent/model, so keep only override
+    # fields here and avoid Harbor's implicit AgentConfig(name="oracle") default.
+    agent_config_payload.pop("name", None)
+    agent_config_payload.pop("model_name", None)
+    if agent_config_payload.get("override_timeout_sec") is None:
+        agent_config_payload["override_timeout_sec"] = float(timeout_minutes * 60)
     if agent_config_payload:
         effective_config["agent_config"] = agent_config_payload
 
@@ -66,7 +67,8 @@ def _apply_default_trial_timeout(
     agent_overrides = (
         dict(raw_agent_overrides) if isinstance(raw_agent_overrides, dict) else {}
     )
-    agent_overrides.setdefault("override_timeout_sec", float(timeout_minutes * 60))
+    if agent_overrides.get("override_timeout_sec") is None:
+        agent_overrides["override_timeout_sec"] = float(timeout_minutes * 60)
     if agent_overrides:
         effective_config["agent_overrides"] = agent_overrides
     return effective_config
