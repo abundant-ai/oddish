@@ -1276,18 +1276,19 @@ export function ExperimentTrialsTable({
                             <div className="flex min-w-0 items-center gap-1">
                               <Tooltip>
                                 <TooltipTrigger asChild>
-                                  <button
+                                  <Button
                                     type="button"
+                                    variant="ghost"
                                     onClick={() =>
                                       onTaskSelect?.(task, {
                                         orderedTasks: filteredTasks,
                                         taskIndex: index,
                                       })
                                     }
-                                    className="min-w-0 flex-1 overflow-hidden truncate text-left font-medium text-foreground transition-colors hover:text-blue-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 cursor-pointer"
+                                    className="h-auto min-w-0 flex-1 cursor-pointer justify-start overflow-hidden truncate px-0 py-0 text-left font-medium text-foreground hover:bg-transparent hover:text-blue-400"
                                   >
                                     {task.name}
-                                  </button>
+                                  </Button>
                                 </TooltipTrigger>
                                 <TooltipContent>View task files</TooltipContent>
                               </Tooltip>
@@ -1359,8 +1360,10 @@ export function ExperimentTrialsTable({
                                   const fullTitle = `${baseTitle}${analysisTitle}`;
                                   return (
                                     <div key={trial.id} className="relative">
-                                      <button
+                                      <Button
                                         type="button"
+                                        variant="ghost"
+                                        size="icon"
                                         onClick={() => {
                                           const trialIndex =
                                             trialIndexById.get(trial.id) ?? 0;
@@ -1370,7 +1373,7 @@ export function ExperimentTrialsTable({
                                             trialGroups,
                                           });
                                         }}
-                                        className={`h-5 w-5 rounded-sm border p-0 text-sm font-semibold leading-none transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 cursor-pointer flex items-center justify-center ${config.matrixClass} ${dimClass}`}
+                                        className={`h-5 w-5 shrink-0 rounded-sm border p-0 text-sm font-semibold leading-none transition hover:opacity-90 ${config.matrixClass} ${dimClass}`}
                                         aria-label={`Trial ${trialIndex + 1} ${config.shortLabel}`}
                                         title={fullTitle}
                                       >
@@ -1383,7 +1386,7 @@ export function ExperimentTrialsTable({
                                         ) : (
                                           config.symbol
                                         )}
-                                      </button>
+                                      </Button>
                                       {analysisIndicator && (
                                         <span
                                           className={`absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full ring-1 ring-background ${analysisIndicator.dotClass} ${analysisIndicator.animate ? "animate-pulse" : ""}`}

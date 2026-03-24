@@ -1,6 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 function formatMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
@@ -40,8 +45,6 @@ export function TimingBreakdownBar({
   finishedAt,
   compact = false,
 }: TimingBreakdownBarProps) {
-  const [hoveredSegment, setHoveredSegment] = useState<string | null>(null);
-
   if (!createdAt || !startedAt || !finishedAt) return null;
 
   const created = new Date(createdAt).getTime();
@@ -80,104 +83,92 @@ export function TimingBreakdownBar({
 
   if (compact) {
     return (
-      <div>
-        <div className="relative">
-          {hoveredSegment && (
-            <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
-              <div className="bg-popover border border-border rounded px-2 py-1 text-xs whitespace-nowrap shadow-md">
-                {segments.find((s) => s.key === hoveredSegment)?.label}:{" "}
-                {formatMs(
-                  segments.find((s) => s.key === hoveredSegment)?.value ?? 0,
-                )}
-              </div>
+      <TooltipProvider>
+        <div>
+          <div className="relative">
+            <div className="flex h-2.5 overflow-hidden rounded-full gap-0.5">
+              {segments.map((segment, idx) => (
+                <Tooltip key={segment.key}>
+                  <TooltipTrigger asChild>
+                    <div
+                      className={`${segment.color} cursor-default`}
+                      style={{
+                        width: `${widths[idx]}%`,
+                      }}
+                    />
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {segment.label}: {formatMs(segment.value)}
+                  </TooltipContent>
+                </Tooltip>
+              ))}
             </div>
-          )}
-          <div className="flex h-2.5 overflow-hidden rounded-full gap-0.5">
-            {segments.map((segment, idx) => (
-              <div
-                key={segment.key}
-                className={`${segment.color} transition-opacity cursor-default`}
-                style={{
-                  width: `${widths[idx]}%`,
-                  opacity:
-                    hoveredSegment && hoveredSegment !== segment.key ? 0.3 : 1,
-                }}
-                onMouseEnter={() => setHoveredSegment(segment.key)}
-                onMouseLeave={() => setHoveredSegment(null)}
-              />
-            ))}
+          </div>
+          <div className="flex items-center justify-between mt-1.5 text-[10px] text-muted-foreground">
+            <div className="flex items-center gap-2.5">
+              {segments.map((segment) => (
+                <span key={segment.key} className="flex items-center gap-1">
+                  <span
+                    className={`inline-block w-1.5 h-1.5 rounded-full ${segment.color}`}
+                  />
+                  {segment.label}: {formatMs(segment.value)}
+                </span>
+              ))}
+            </div>
+            <span className="font-mono tabular-nums">
+              {formatDateShort(createdAt)}{" "}
+              {formatTimestamp(createdAt)} → {formatTimestamp(finishedAt)}
+            </span>
           </div>
         </div>
-        <div className="flex items-center justify-between mt-1.5 text-[10px] text-muted-foreground">
-          <div className="flex items-center gap-2.5">
-            {segments.map((segment) => (
-              <span key={segment.key} className="flex items-center gap-1">
-                <span
-                  className={`inline-block w-1.5 h-1.5 rounded-full ${segment.color}`}
-                />
-                {segment.label}: {formatMs(segment.value)}
-              </span>
-            ))}
-          </div>
-          <span className="font-mono tabular-nums">
-            {formatDateShort(createdAt)}{" "}
-            {formatTimestamp(createdAt)} → {formatTimestamp(finishedAt)}
-          </span>
-        </div>
-      </div>
+      </TooltipProvider>
     );
   }
 
   return (
-    <div>
-      <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
-          Timing
-        </span>
-        <span className="text-xs text-muted-foreground">
-          {formatMs(totalMs)} total
-        </span>
-      </div>
-      <div className="relative">
-        {hoveredSegment && (
-          <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
-            <div className="bg-popover border border-border rounded px-2 py-1 text-xs whitespace-nowrap shadow-md">
-              {segments.find((s) => s.key === hoveredSegment)?.label}:{" "}
-              {formatMs(
-                segments.find((s) => s.key === hoveredSegment)?.value ?? 0,
-              )}
-            </div>
+    <TooltipProvider>
+      <div>
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+            Timing
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {formatMs(totalMs)} total
+          </span>
+        </div>
+        <div className="relative">
+          <div className="flex h-3 overflow-hidden rounded-full gap-0.5">
+            {segments.map((segment, idx) => (
+              <Tooltip key={segment.key}>
+                <TooltipTrigger asChild>
+                  <div
+                    className={`${segment.color} cursor-default`}
+                    style={{
+                      width: `${widths[idx]}%`,
+                    }}
+                  />
+                </TooltipTrigger>
+                <TooltipContent>
+                  {segment.label}: {formatMs(segment.value)}
+                </TooltipContent>
+              </Tooltip>
+            ))}
           </div>
-        )}
-        <div className="flex h-3 overflow-hidden rounded-full gap-0.5">
-          {segments.map((segment, idx) => (
+        </div>
+        <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-1.5">
+          {segments.map((segment) => (
             <div
               key={segment.key}
-              className={`${segment.color} transition-opacity cursor-default`}
-              style={{
-                width: `${widths[idx]}%`,
-                opacity:
-                  hoveredSegment && hoveredSegment !== segment.key ? 0.3 : 1,
-              }}
-              onMouseEnter={() => setHoveredSegment(segment.key)}
-              onMouseLeave={() => setHoveredSegment(null)}
-            />
+              className="flex items-center gap-1 text-[10px]"
+            >
+              <div className={`w-2 h-2 rounded-full ${segment.color}`} />
+              <span className="text-muted-foreground">
+                {segment.label}: {formatMs(segment.value)}
+              </span>
+            </div>
           ))}
         </div>
       </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-1.5">
-        {segments.map((segment) => (
-          <div
-            key={segment.key}
-            className="flex items-center gap-1 text-[10px]"
-          >
-            <div className={`w-2 h-2 rounded-full ${segment.color}`} />
-            <span className="text-muted-foreground">
-              {segment.label}: {formatMs(segment.value)}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
+    </TooltipProvider>
   );
 }

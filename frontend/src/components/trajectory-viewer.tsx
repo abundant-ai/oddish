@@ -14,6 +14,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Route, ChevronRight, ImageOff } from "lucide-react";
 import { CodeBlock } from "@/components/code-block";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { fetcher } from "@/lib/api";
 import type {
   Trajectory,
@@ -228,7 +234,6 @@ function StepDurationBar({
   onStepClick: (index: number) => void;
 }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const [hoverPosition, setHoverPosition] = useState<number>(0);
 
   if (steps.length === 0) return null;
 
@@ -275,56 +280,50 @@ function StepDurationBar({
   }
 
   return (
-    <div className="mb-4">
-      <div className="relative">
-        {hoveredIndex !== null && (
-          <div
-            className="absolute bottom-full mb-2 z-10 -translate-x-1/2 pointer-events-none"
-            style={{ left: `${hoverPosition}%` }}
-          >
-            <div className="bg-popover border border-border rounded-md shadow-md px-3 py-2 whitespace-nowrap text-xs">
-              <div className="font-medium">
-                Step #{stepDurations[hoveredIndex].stepId}
-              </div>
-              <div className="text-muted-foreground">
-                Duration: {formatMs(stepDurations[hoveredIndex].durationMs)}
-              </div>
-              <div className="text-muted-foreground">
-                At: {formatMs(stepDurations[hoveredIndex].elapsedMs)}
-              </div>
-            </div>
-          </div>
-        )}
-        <div className="flex h-6 overflow-hidden rounded">
-          {stepDurations.map((step, idx) => {
-            const widthPercent = widths[idx];
-            const isHovered = hoveredIndex === idx;
-            const isOtherHovered =
-              hoveredIndex !== null && hoveredIndex !== idx;
-            const centerPosition = cumulativeWidths[idx] + widthPercent / 2;
+    <TooltipProvider>
+      <div className="mb-4">
+        <div className="relative">
+          <div className="flex h-6 overflow-hidden rounded">
+            {stepDurations.map((step, idx) => {
+              const widthPercent = widths[idx];
+              const isHovered = hoveredIndex === idx;
+              const isOtherHovered =
+                hoveredIndex !== null && hoveredIndex !== idx;
 
-            return (
-              <div
-                key={step.stepId}
-                className="transition-all duration-150 cursor-pointer hover:brightness-110"
-                style={{
-                  width: `${widthPercent}%`,
-                  backgroundColor: getOscillatingColor(idx),
-                  opacity: isOtherHovered ? 0.3 : 1,
-                  transform: isHovered ? "scaleY(1.1)" : "scaleY(1)",
-                }}
-                onMouseEnter={() => {
-                  setHoveredIndex(idx);
-                  setHoverPosition(centerPosition);
-                }}
-                onMouseLeave={() => setHoveredIndex(null)}
-                onClick={() => onStepClick(idx)}
-              />
-            );
-          })}
+              return (
+                <Tooltip key={step.stepId} open={isHovered}>
+                  <TooltipTrigger asChild>
+                    <div
+                      className="transition-all duration-150 cursor-pointer hover:brightness-110"
+                      style={{
+                        width: `${widthPercent}%`,
+                        backgroundColor: getOscillatingColor(idx),
+                        opacity: isOtherHovered ? 0.3 : 1,
+                        transform: isHovered ? "scaleY(1.1)" : "scaleY(1)",
+                      }}
+                      onMouseEnter={() => setHoveredIndex(idx)}
+                      onMouseLeave={() => setHoveredIndex(null)}
+                      onClick={() => onStepClick(idx)}
+                    />
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    <div className="flex flex-col gap-1 text-xs">
+                      <div className="font-medium">Step #{step.stepId}</div>
+                      <div className="text-muted-foreground">
+                        Duration: {formatMs(step.durationMs)}
+                      </div>
+                      <div className="text-muted-foreground">
+                        At: {formatMs(step.elapsedMs)}
+                      </div>
+                    </div>
+                  </TooltipContent>
+                </Tooltip>
+              );
+            })}
+          </div>
         </div>
       </div>
-    </div>
+    </TooltipProvider>
   );
 }
 
@@ -333,8 +332,6 @@ function StepDurationBar({
 // =============================================================================
 
 function TokenUsageBar({ metrics }: { metrics: FinalMetrics | null }) {
-  const [hoveredSegment, setHoveredSegment] = useState<string | null>(null);
-
   if (!metrics) return null;
 
   const cached = metrics.total_cached_tokens ?? 0;
@@ -371,56 +368,50 @@ function TokenUsageBar({ metrics }: { metrics: FinalMetrics | null }) {
   });
 
   return (
-    <div className="mb-4">
-      <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
-          Tokens
-        </span>
-        <span className="text-xs text-muted-foreground">
-          {total.toLocaleString()} total
-        </span>
-      </div>
-      <div className="relative">
-        {hoveredSegment && (
-          <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
-            <div className="bg-popover border border-border rounded px-2 py-1 text-xs whitespace-nowrap shadow-md">
-              {segments.find((s) => s.key === hoveredSegment)?.label}:{" "}
-              {segments
-                .find((s) => s.key === hoveredSegment)
-                ?.value.toLocaleString()}
-            </div>
+    <TooltipProvider>
+      <div className="mb-4">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+            Tokens
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {total.toLocaleString()} total
+          </span>
+        </div>
+        <div className="relative">
+          <div className="flex h-3 overflow-hidden rounded-full gap-0.5">
+            {segments.map((segment, idx) => (
+              <Tooltip key={segment.key}>
+                <TooltipTrigger asChild>
+                  <div
+                    className={`${segment.color} cursor-default`}
+                    style={{
+                      width: `${widths[idx]}%`,
+                    }}
+                  />
+                </TooltipTrigger>
+                <TooltipContent>
+                  {segment.label}: {segment.value.toLocaleString()}
+                </TooltipContent>
+              </Tooltip>
+            ))}
           </div>
-        )}
-        <div className="flex h-3 overflow-hidden rounded-full gap-0.5">
-          {segments.map((segment, idx) => (
+        </div>
+        <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-1.5">
+          {segments.map((segment) => (
             <div
               key={segment.key}
-              className={`${segment.color} transition-opacity cursor-default`}
-              style={{
-                width: `${widths[idx]}%`,
-                opacity:
-                  hoveredSegment && hoveredSegment !== segment.key ? 0.3 : 1,
-              }}
-              onMouseEnter={() => setHoveredSegment(segment.key)}
-              onMouseLeave={() => setHoveredSegment(null)}
-            />
+              className="flex items-center gap-1 text-[10px]"
+            >
+              <div className={`w-2 h-2 rounded-full ${segment.color}`} />
+              <span className="text-muted-foreground">
+                {segment.label}: {segment.value.toLocaleString()}
+              </span>
+            </div>
           ))}
         </div>
       </div>
-      <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-1.5">
-        {segments.map((segment) => (
-          <div
-            key={segment.key}
-            className="flex items-center gap-1 text-[10px]"
-          >
-            <div className={`w-2 h-2 rounded-full ${segment.color}`} />
-            <span className="text-muted-foreground">
-              {segment.label}: {segment.value.toLocaleString()}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
+    </TooltipProvider>
   );
 }
 
