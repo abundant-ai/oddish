@@ -91,7 +91,7 @@ async def get_dashboard(
     experiments_offset: int = Query(0, ge=0),
     experiments_query: str | None = Query(None),
     experiments_status: str = Query("all"),
-    usage_minutes: int | None = Query(None, ge=1, le=43200),
+    usage_minutes: int | None = Query(None, ge=1, le=86400),
     include_tasks: bool = Query(True),
     include_usage: bool = Query(True),
     include_experiments: bool = Query(True),

@@ -297,10 +297,10 @@ const TIME_RANGES = [
   { key: "all", label: "All", minutes: null },
   { key: "15m", label: "15m", minutes: 15 },
   { key: "1h", label: "1h", minutes: 60 },
-  { key: "6h", label: "6h", minutes: 360 },
   { key: "24h", label: "24h", minutes: 1440 },
   { key: "7d", label: "7d", minutes: 10080 },
   { key: "30d", label: "30d", minutes: 43200 },
+  { key: "60d", label: "60d", minutes: 86400 },
 ] as const;
 
 type PresetTimeRangeKey = (typeof TIME_RANGES)[number]["key"];
@@ -312,6 +312,18 @@ function getMinutesFromTimeRange(range: TimeRangeKey): number | null {
     return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
   }
   return TIME_RANGES.find((r) => r.key === range)?.minutes ?? null;
+}
+
+function getTimeRangeLabel(range: TimeRangeKey): string {
+  if (!range.startsWith("custom:")) {
+    return TIME_RANGES.find((entry) => entry.key === range)?.label ?? "Window";
+  }
+
+  const minutes = getMinutesFromTimeRange(range);
+  if (!minutes) return "Custom";
+  if (minutes % 1440 === 0) return `${minutes / 1440}d`;
+  if (minutes % 60 === 0) return `${minutes / 60}h`;
+  return `${minutes}m`;
 }
 
 function formatCompactNumber(n: number): string {
@@ -336,8 +348,47 @@ function formatDuration(seconds: number | null): string {
   return `${(seconds / 3600).toFixed(1)}h`;
 }
 
+function inferProviderFromQueueKey(queueKey: string): string {
+  const [provider] = queueKey.split("/", 1);
+  return provider || "unknown";
+}
+
+function getQueueQueuedJobs(stats?: QueueStats[string]): number {
+  if (!stats) return 0;
+  return (Number(stats.pending) || 0) + (Number(stats.queued) || 0);
+}
+
+function getQueueTotalJobs(stats?: QueueStats[string]): number {
+  if (!stats) return 0;
+  return (
+    (Number(stats.pending) || 0) +
+    (Number(stats.queued) || 0) +
+    (Number(stats.running) || 0) +
+    (Number(stats.retrying) || 0) +
+    (Number(stats.success) || 0) +
+    (Number(stats.failed) || 0)
+  );
+}
+
+type UsageRow = {
+  key: string;
+  queueKey: string;
+  model: string;
+  provider: string;
+  jobCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheTokens: number;
+  costUsd: number;
+  running: number;
+  queued: number;
+  retrying: number;
+  avgDurationS: number | null;
+  hasUsageMetrics: boolean;
+};
+
 function UsageOverviewCard({
-  queues: _queues,
+  queues,
   modelUsage,
   error,
   isLoading,
@@ -378,47 +429,107 @@ function UsageOverviewCard({
     setCustomUnit("m");
   }, [timeRange]);
 
-  const sortedModels = useMemo(
+  const usageRows = useMemo(
+    () => {
+      const mergedRows = new Map<string, UsageRow>();
+
+      for (const usage of modelUsage) {
+        const queueKey = usage.model || usage.provider || "unknown";
+        const queueStats = queues?.[queueKey];
+        mergedRows.set(queueKey, {
+          key: queueKey,
+          queueKey,
+          model: usage.model,
+          provider: usage.provider,
+          jobCount: getQueueTotalJobs(queueStats) || usage.trial_count,
+          inputTokens: usage.input_tokens,
+          outputTokens: usage.output_tokens,
+          cacheTokens: usage.cache_tokens,
+          costUsd: usage.cost_usd,
+          running: queueStats ? (Number(queueStats.running) || 0) : usage.running,
+          queued: queueStats ? getQueueQueuedJobs(queueStats) : usage.queued,
+          retrying: queueStats ? (Number(queueStats.retrying) || 0) : 0,
+          avgDurationS: usage.avg_duration_s,
+          hasUsageMetrics: true,
+        });
+      }
+
+      for (const [queueKey, queueStats] of Object.entries(queues ?? {})) {
+        const totalJobs = getQueueTotalJobs(queueStats);
+        if (mergedRows.has(queueKey) || totalJobs === 0) continue;
+
+        mergedRows.set(queueKey, {
+          key: queueKey,
+          queueKey,
+          model: queueKey,
+          provider: inferProviderFromQueueKey(queueKey),
+          jobCount: totalJobs,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheTokens: 0,
+          costUsd: 0,
+          running: Number(queueStats.running) || 0,
+          queued: getQueueQueuedJobs(queueStats),
+          retrying: Number(queueStats.retrying) || 0,
+          avgDurationS: null,
+          hasUsageMetrics: false,
+        });
+      }
+
+      return Array.from(mergedRows.values());
+    },
+    [modelUsage, queues],
+  );
+
+  const sortedUsageRows = useMemo(
     () =>
-      [...modelUsage].sort((a, b) => {
-        const aActive = a.running + a.queued;
-        const bActive = b.running + b.queued;
+      [...usageRows].sort((a, b) => {
+        const aActive = a.running + a.queued + a.retrying;
+        const bActive = b.running + b.queued + b.retrying;
         if (aActive !== bActive) return bActive - aActive;
-        return b.cost_usd - a.cost_usd;
+        if (a.hasUsageMetrics !== b.hasUsageMetrics) {
+          return a.hasUsageMetrics ? -1 : 1;
+        }
+        if (a.costUsd !== b.costUsd) return b.costUsd - a.costUsd;
+        if (a.jobCount !== b.jobCount) return b.jobCount - a.jobCount;
+        return a.model.localeCompare(b.model);
       }),
-    [modelUsage],
+    [usageRows],
   );
 
   const totals = useMemo(
     () =>
-      modelUsage.reduce(
-        (acc, m) => ({
-          trials: acc.trials + m.trial_count,
-          inputTokens: acc.inputTokens + m.input_tokens,
-          outputTokens: acc.outputTokens + m.output_tokens,
-          cacheTokens: acc.cacheTokens + m.cache_tokens,
-          cost: acc.cost + m.cost_usd,
-          running: acc.running + m.running,
-          queued: acc.queued + m.queued,
+      usageRows.reduce(
+        (acc, row) => ({
+          jobs: acc.jobs + row.jobCount,
+          inputTokens: acc.inputTokens + row.inputTokens,
+          outputTokens: acc.outputTokens + row.outputTokens,
+          cacheTokens: acc.cacheTokens + row.cacheTokens,
+          cost: acc.cost + row.costUsd,
+          running: acc.running + row.running,
+          queued: acc.queued + row.queued,
+          retrying: acc.retrying + row.retrying,
         }),
         {
-          trials: 0,
+          jobs: 0,
           inputTokens: 0,
           outputTokens: 0,
           cacheTokens: 0,
           cost: 0,
           running: 0,
           queued: 0,
+          retrying: 0,
         },
       ),
-    [modelUsage],
+    [usageRows],
   );
 
   const selectedWindowValue = timeRange.startsWith("custom:")
     ? "custom"
     : timeRange;
+  const selectedWindowLabel = getTimeRangeLabel(timeRange);
   const showCustomControls =
-    isCustomPickerOpen || timeRange.startsWith("custom:");
+    expanded && (isCustomPickerOpen || timeRange.startsWith("custom:"));
 
   const applyCustomWindow = () => {
     const magnitude = Number(customMagnitude);
@@ -427,7 +538,7 @@ function UsageOverviewCard({
     const minutesPerUnit =
       customUnit === "d" ? 1440 : customUnit === "h" ? 60 : 1;
     const minutes = Math.min(
-      43200,
+      86400,
       Math.max(1, roundedMagnitude * minutesPerUnit),
     );
     onTimeRangeChange(`custom:${minutes}`);
@@ -437,8 +548,8 @@ function UsageOverviewCard({
   return (
     <Card className="border-[#6f88b4]/20 shadow-sm">
       <CardHeader className="pb-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-start gap-2 sm:items-center">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             <CardTitle className="text-base">Usage</CardTitle>
             {(isLoading || isRefreshing) && (
               <Badge
@@ -465,36 +576,57 @@ function UsageOverviewCard({
                 {totals.queued} queued
               </Badge>
             )}
-          </div>
-          <div className="flex flex-wrap items-center gap-1">
-            <Select
-              value={selectedWindowValue}
-              onValueChange={(value) => {
-                if (value === "custom") {
-                  setIsCustomPickerOpen(true);
-                  return;
-                }
-                setIsCustomPickerOpen(false);
-                onTimeRangeChange(value as PresetTimeRangeKey);
-              }}
-            >
-              <SelectTrigger
-                className="h-7 w-[120px] border-[#6f88b4]/20 text-[11px]"
-                aria-label="Time window"
+            {totals.retrying > 0 && (
+              <Badge
+                variant="outline"
+                className="border-amber-500/30 text-[10px] font-normal text-amber-600 dark:text-amber-300"
               >
-                <SelectValue placeholder="Window" />
-              </SelectTrigger>
-              <SelectContent align="end">
-                {TIME_RANGES.map((range) => (
-                  <SelectItem key={range.key} value={range.key} className="text-xs">
-                    {range.label}
-                  </SelectItem>
-                ))}
-                <SelectItem value="custom" className="text-xs">
-                  Custom...
-                </SelectItem>
-              </SelectContent>
-            </Select>
+                {totals.retrying} retrying
+              </Badge>
+            )}
+          </div>
+          <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1">
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 w-[120px] justify-between border-[#6f88b4]/20 px-2 text-[11px]"
+                  aria-label="Time window"
+                  disabled={!expanded}
+                >
+                  <span>{selectedWindowLabel}</span>
+                  <ChevronDown className="h-3.5 w-3.5 opacity-50" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-[120px]">
+                <DropdownMenuRadioGroup
+                  value={selectedWindowValue}
+                  onValueChange={(value) => {
+                    if (value === "custom") {
+                      setIsCustomPickerOpen(true);
+                      return;
+                    }
+                    setIsCustomPickerOpen(false);
+                    onTimeRangeChange(value as PresetTimeRangeKey);
+                  }}
+                >
+                  {TIME_RANGES.map((range) => (
+                    <DropdownMenuRadioItem
+                      key={range.key}
+                      value={range.key}
+                      className="text-xs"
+                    >
+                      {range.label}
+                    </DropdownMenuRadioItem>
+                  ))}
+                  <DropdownMenuRadioItem value="custom" className="text-xs">
+                    Custom...
+                  </DropdownMenuRadioItem>
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
             {showCustomControls && (
               <>
                 <Input
@@ -503,12 +635,14 @@ function UsageOverviewCard({
                   inputMode="numeric"
                   className="h-7 w-[66px] text-[11px]"
                   aria-label="Custom time window amount"
+                  disabled={!expanded}
                 />
                 <Select
                   value={customUnit}
                   onValueChange={(value) =>
                     setCustomUnit(value as "m" | "h" | "d")
                   }
+                  disabled={!expanded}
                 >
                   <SelectTrigger
                     className="h-7 w-[72px] border-[#6f88b4]/20 text-[11px]"
@@ -533,6 +667,7 @@ function UsageOverviewCard({
                   size="sm"
                   className="h-7 px-2 text-[11px]"
                   onClick={applyCustomWindow}
+                  disabled={!expanded}
                 >
                   Apply
                 </Button>
@@ -595,15 +730,15 @@ function UsageOverviewCard({
                 </div>
                 <div className="rounded-md border border-[#6f88b4]/18 bg-background/70 p-2 text-center">
                   <div className="text-base font-bold tabular-nums">
-                    {totals.trials}
+                    {totals.jobs}
                   </div>
                   <div className="text-[10px] text-muted-foreground">
-                    Trials
+                    Jobs
                   </div>
                 </div>
                 <div className="rounded-md border border-[#85b85c]/18 bg-background/70 p-2 text-center">
                   <div className="text-base font-bold tabular-nums">
-                    {totals.running}
+                    {totals.running + totals.queued + totals.retrying}
                   </div>
                   <div className="text-[10px] text-muted-foreground">
                     Active Now
@@ -612,14 +747,14 @@ function UsageOverviewCard({
               </div>
 
               {/* Per-model table */}
-              {sortedModels.length > 0 ? (
+              {sortedUsageRows.length > 0 ? (
                 <div className="max-h-[260px] overflow-y-auto">
                   <Table>
                     <TableHeader>
                       <TableRow>
                         <TableHead>Model</TableHead>
                         <TableHead className="text-right">Status</TableHead>
-                        <TableHead className="text-right">Trials</TableHead>
+                        <TableHead className="text-right">Jobs</TableHead>
                         <TableHead className="text-right">
                           Input Tokens
                         </TableHead>
@@ -632,44 +767,53 @@ function UsageOverviewCard({
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {sortedModels.map((m) => {
-                        const queueKey = m.provider;
+                      {sortedUsageRows.map((row) => {
                         return (
-                          <TableRow key={`${m.model}:${queueKey}`}>
+                          <TableRow key={row.key}>
                             <TableCell>
                               <div className="flex items-center gap-2">
                                 <QueueKeyIcon
-                                  queueKey={queueKey}
-                                  model={m.model}
+                                  queueKey={row.queueKey}
+                                  model={row.model}
                                   size={12}
                                 />
                                 <span
                                   className="text-xs font-medium font-mono"
-                                  title={m.model}
+                                  title={row.model}
                                 >
-                                  {m.model}
+                                  {row.model}
                                 </span>
                               </div>
                             </TableCell>
                             <TableCell className="text-right">
                               <div className="flex items-center justify-end gap-1">
-                                {m.running > 0 && (
+                                {row.running > 0 && (
                                   <Badge
                                     variant="outline"
                                     className="border-[#85b85c]/30 text-[9px] font-normal text-[#5c8e43] dark:text-[#85b85c]"
                                   >
-                                    {m.running}
+                                    {row.running}
                                   </Badge>
                                 )}
-                                {m.queued > 0 && (
+                                {row.queued > 0 && (
                                   <Badge
                                     variant="outline"
                                     className="border-[#6f88b4]/30 text-[9px] font-normal text-[#5d77a5] dark:text-[#a8b8d2]"
                                   >
-                                    {m.queued}
+                                    {row.queued}
                                   </Badge>
                                 )}
-                                {m.running === 0 && m.queued === 0 && (
+                                {row.retrying > 0 && (
+                                  <Badge
+                                    variant="outline"
+                                    className="border-amber-500/30 text-[9px] font-normal text-amber-600 dark:text-amber-300"
+                                  >
+                                    {row.retrying}
+                                  </Badge>
+                                )}
+                                {row.running === 0 &&
+                                  row.queued === 0 &&
+                                  row.retrying === 0 && (
                                   <span className="text-[10px] text-muted-foreground">
                                     —
                                   </span>
@@ -677,24 +821,32 @@ function UsageOverviewCard({
                               </div>
                             </TableCell>
                             <TableCell className="text-right font-mono text-xs">
-                              {m.trial_count}
+                              {row.jobCount}
                             </TableCell>
                             <TableCell className="text-right font-mono text-xs">
-                              {formatCompactNumber(m.input_tokens)}
-                            </TableCell>
-                            <TableCell className="text-right font-mono text-xs">
-                              {formatCompactNumber(m.output_tokens)}
-                            </TableCell>
-                            <TableCell className="text-right font-mono text-xs text-muted-foreground">
-                              {m.cache_tokens > 0
-                                ? formatCompactNumber(m.cache_tokens)
+                              {row.hasUsageMetrics
+                                ? formatCompactNumber(row.inputTokens)
                                 : "—"}
                             </TableCell>
                             <TableCell className="text-right font-mono text-xs">
-                              {m.cost_usd > 0 ? formatCost(m.cost_usd) : "—"}
+                              {row.hasUsageMetrics
+                                ? formatCompactNumber(row.outputTokens)
+                                : "—"}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-xs text-muted-foreground">
+                              {row.hasUsageMetrics && row.cacheTokens > 0
+                                ? formatCompactNumber(row.cacheTokens)
+                                : "—"}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-xs">
+                              {row.hasUsageMetrics && row.costUsd > 0
+                                ? formatCost(row.costUsd)
+                                : "—"}
                             </TableCell>
                             <TableCell className="text-right text-xs text-muted-foreground">
-                              {formatDuration(m.avg_duration_s)}
+                              {row.hasUsageMetrics
+                                ? formatDuration(row.avgDurationS)
+                                : "—"}
                             </TableCell>
                           </TableRow>
                         );
@@ -704,12 +856,13 @@ function UsageOverviewCard({
                 </div>
               ) : (
                 <div className="py-6 text-center text-sm text-muted-foreground">
-                  No model usage data yet. Trials will appear here as they run.
+                  No job usage data yet. Trial, analysis, and verdict jobs will
+                  appear here as they run.
                 </div>
               )}
 
               {/* Totals footer */}
-              {sortedModels.length > 0 && (
+              {sortedUsageRows.length > 0 && (
                 <div className="flex flex-wrap items-center gap-3 border-t border-[#6f88b4]/15 pt-2 text-[10px] text-muted-foreground">
                   <span>
                     In: {formatCompactNumber(totals.inputTokens)} tokens
@@ -724,6 +877,10 @@ function UsageOverviewCard({
                   )}
                   <span className="font-medium text-foreground">
                     {formatCost(totals.cost)}
+                  </span>
+                  <span>
+                    Statuses include trial, analysis, and verdict jobs; token and
+                    cost metrics come from trial runs.
                   </span>
                 </div>
               )}

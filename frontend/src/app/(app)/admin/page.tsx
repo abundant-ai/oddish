@@ -124,6 +124,17 @@ function getQueueWindowAverage(
   return Math.round(total / windowSamples.length);
 }
 
+function getWaitingJobs(stats: QueueStat | undefined) {
+  const pending = Number(stats?.pending) || 0;
+  const queued = Number(stats?.queued) || 0;
+  const retrying = Number(stats?.retrying) || 0;
+  return pending + queued + retrying;
+}
+
+function getLiveJobs(stats: QueueStat | undefined) {
+  return getWaitingJobs(stats) + (Number(stats?.running) || 0);
+}
+
 function downsampleSeries(values: number[], maxPoints: number) {
   if (values.length <= maxPoints) return values;
   const step = Math.ceil(values.length / maxPoints);
@@ -258,12 +269,18 @@ function QueueKeyMatrix({
     return queueKeys
       .map((queueKey) => {
         const stats = queues[queueKey];
+        const pending = Number(stats.pending) || 0;
         const queued = Number(stats.queued) || 0;
         const running = Number(stats.running) || 0;
         const retrying = Number(stats.retrying) || 0;
-        const failed = Number(stats.failed) || 0;
         const recommended = Number(stats.recommended_concurrency) || 0;
-        const backlog = queued + retrying;
+        const waiting = getWaitingJobs(stats);
+        const liveJobs = getLiveJobs(stats);
+        const mixPending = getQueueWindowAverage(
+          windowSamples,
+          queueKey,
+          "pending",
+        );
         const mixQueued = getQueueWindowAverage(
           windowSamples,
           queueKey,
@@ -279,60 +296,59 @@ function QueueKeyMatrix({
           queueKey,
           "running",
         );
-        const mixFailed = getQueueDelta(windowSamples, queueKey, "failed");
         const deltaSuccess = getQueueDelta(windowSamples, queueKey, "success");
         const deltaFailed = getQueueDelta(windowSamples, queueKey, "failed");
         const trend = getQueueSeries(windowSamples, queueKey, (entry) => {
+          const trendPending = Number(entry?.pending) || 0;
           const trendQueued = Number(entry?.queued) || 0;
           const trendRunning = Number(entry?.running) || 0;
           const trendRetrying = Number(entry?.retrying) || 0;
-          return trendQueued + trendRunning + trendRetrying;
+          return trendPending + trendQueued + trendRunning + trendRetrying;
         });
 
         return {
           queueKey,
+          pending,
           queued,
           running,
           retrying,
-          failed,
           recommended,
-          backlog,
+          waiting,
+          liveJobs,
+          mixPending,
           mixQueued,
           mixRetrying,
           mixRunning,
-          mixFailed,
           deltaSuccess,
           deltaFailed,
           trend,
         };
       })
-      .sort((a, b) => b.backlog - a.backlog);
+      .sort((a, b) => b.liveJobs - a.liveJobs || b.waiting - a.waiting);
   }, [queues, queueKeys, windowSamples]);
 
   const totals = useMemo(() => {
     if (!queues) {
       return {
-        backlog: 0,
+        waiting: 0,
         running: 0,
-        failed: 0,
+        liveJobs: 0,
       };
     }
     return Object.values(queues).reduce(
       (acc, stats) => {
-        const queued = Number(stats.queued) || 0;
         const running = Number(stats.running) || 0;
-        const retrying = Number(stats.retrying) || 0;
-        const failed = Number(stats.failed) || 0;
+        const waiting = getWaitingJobs(stats);
         return {
-          backlog: acc.backlog + queued + retrying,
+          waiting: acc.waiting + waiting,
           running: acc.running + running,
-          failed: acc.failed + failed,
+          liveJobs: acc.liveJobs + waiting + running,
         };
       },
       {
-        backlog: 0,
+        waiting: 0,
         running: 0,
-        failed: 0,
+        liveJobs: 0,
       },
     );
   }, [queues]);
@@ -352,10 +368,13 @@ function QueueKeyMatrix({
             Queue keys {queueKeys.length}
           </Badge>
           <Badge variant="outline" className="text-[10px] font-normal">
-            Queued {totals.backlog}
+            Waiting {totals.waiting}
           </Badge>
           <Badge variant="outline" className="text-[10px] font-normal">
             Running {totals.running}
+          </Badge>
+          <Badge variant="outline" className="text-[10px] font-normal">
+            Live jobs {totals.liveJobs}
           </Badge>
           {hiddenRows > 0 && (
             <Badge variant="outline" className="text-[10px] font-normal">
@@ -411,6 +430,13 @@ function QueueKeyMatrix({
                   row.recommended > 0 && row.running > row.recommended;
                 const queueSegments: BarSegment[] = [
                   {
+                    key: "pending",
+                    label: "Pending",
+                    value: row.mixPending,
+                    className: "bg-slate-400/80",
+                    textClassName: "text-slate-400",
+                  },
+                  {
                     key: "queued",
                     label: "Queued",
                     value: row.mixQueued,
@@ -430,13 +456,6 @@ function QueueKeyMatrix({
                     value: row.mixRunning,
                     className: "bg-blue-400/80",
                     textClassName: "text-blue-400",
-                  },
-                  {
-                    key: "failed",
-                    label: "Failed",
-                    value: row.mixFailed,
-                    className: "bg-red-400/80",
-                    textClassName: "text-red-400",
                   },
                 ];
 
@@ -991,7 +1010,7 @@ function formatIssueLabel(issue: string) {
     case "running_stale_heartbeat":
       return "Running row with stale heartbeat";
     case "active_task_without_active_trials":
-      return "Active task without active trials";
+      return "Active task without active jobs";
     default:
       return issue.replaceAll("_", " ");
   }
@@ -1067,7 +1086,7 @@ function OrphanedStateCard() {
                 picked/no-slot {counts.picked_without_active_slot}
               </Badge>
               <Badge variant="outline">
-                active-tasks/no-trials {counts.active_tasks_without_active_trials}
+                active-tasks/no-jobs {counts.active_tasks_without_active_trials}
               </Badge>
             </div>
 
@@ -1078,15 +1097,19 @@ function OrphanedStateCard() {
             ) : (
               <>
                 <div className="space-y-2">
-                  <div className="text-sm font-medium">Trial samples</div>
+                  <div className="text-sm font-medium">
+                    Execution job samples
+                  </div>
                   {data.trial_samples.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">No trial samples.</p>
+                    <p className="text-xs text-muted-foreground">
+                      No execution job samples.
+                    </p>
                   ) : (
                     <Table>
                       <TableHeader>
                         <TableRow>
                           <TableHead>Issue</TableHead>
-                          <TableHead>Trial</TableHead>
+                          <TableHead>Execution Job</TableHead>
                           <TableHead>Queue Key</TableHead>
                           <TableHead>Worker</TableHead>
                           <TableHead>Heartbeat</TableHead>
@@ -1118,7 +1141,7 @@ function OrphanedStateCard() {
                 </div>
 
                 <div className="space-y-2">
-                  <div className="text-sm font-medium">Task samples</div>
+                  <div className="text-sm font-medium">Task-stage job samples</div>
                   {data.task_samples.length === 0 ? (
                     <p className="text-xs text-muted-foreground">No task samples.</p>
                   ) : (
