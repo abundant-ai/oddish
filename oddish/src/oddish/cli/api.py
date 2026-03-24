@@ -139,7 +139,7 @@ def upload_task(
     tarball_path = archive_task_dir(task_path)
 
     try:
-        with httpx.Client(timeout=300.0, headers=get_auth_headers()) as client:
+        with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
             with open(tarball_path, "rb") as f:
                 response = client.post(
                     f"{api_url}/tasks/upload",
