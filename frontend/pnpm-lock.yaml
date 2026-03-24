@@ -59,9 +59,6 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
-      dompurify:
-        specifier: ^3.3.1
-        version: 3.3.1
       lucide-react:
         specifier: ^0.468.0
         version: 0.468.0(react@19.2.3)
