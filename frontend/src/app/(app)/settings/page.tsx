@@ -557,15 +557,16 @@ function WorkspaceSelectorCard() {
               const isSwitching = activatingOrgId === membership.organization.id;
 
               return (
-                <button
+                <Button
                   key={membership.id}
                   type="button"
+                  variant="ghost"
                   onClick={() => handleSelectWorkspace(membership.organization.id)}
                   disabled={isSwitching}
                   className={cn(
-                    "flex w-full items-center justify-between rounded-xl border px-3 py-3 text-left transition-colors",
+                    "h-auto w-full justify-between rounded-xl border px-3 py-3 text-left font-normal transition-colors",
                     isActive
-                      ? "border-[#85b85c]/35 bg-[#85b85c]/10"
+                      ? "border-[#85b85c]/35 bg-[#85b85c]/10 hover:bg-[#85b85c]/12"
                       : "border-[#6f88b4]/16 bg-background/70 hover:border-[#85b85c]/25 hover:bg-muted/60",
                   )}
                 >
@@ -602,7 +603,7 @@ function WorkspaceSelectorCard() {
                       </Badge>
                     ) : null}
                   </div>
-                </button>
+                </Button>
               );
             })
           )}

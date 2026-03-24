@@ -1,4 +1,5 @@
 import { Check, Clock, AlertCircle } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 interface PhaseTimingEntry {
@@ -166,19 +167,19 @@ export function HarborStageTimeline({
             {/* Stage info */}
             <div className="flex-1 flex items-baseline justify-between gap-2 pb-2.5">
               {(isCompleted || isCurrent) && onStageClick ? (
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
                   onClick={() => onStageClick(stage.id)}
                   className={cn(
-                    "text-xs font-medium text-left transition-colors rounded px-1.5 -mx-1.5 py-0.5 -my-0.5",
-                    "hover:bg-muted hover:underline underline-offset-2 cursor-pointer",
+                    "h-auto -mx-1.5 -my-0.5 px-1.5 py-0.5 text-left text-xs font-medium leading-normal hover:bg-muted hover:underline hover:underline-offset-2",
                     isCompleted || isCurrent
                       ? "text-foreground"
                       : "text-muted-foreground",
                   )}
                 >
                   {stageLabel}
-                </button>
+                </Button>
               ) : (
                 <p
                   className={cn(

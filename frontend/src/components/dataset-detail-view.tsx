@@ -2,10 +2,12 @@
 
 import { useDeferredValue, useMemo, useState } from "react";
 import { LayoutDashboard, Search, TableProperties } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import type { Task } from "@/lib/types";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
+import { cn } from "@/lib/utils";
 
 type DatasetDetailViewProps = {
   datasetName: string;
@@ -179,30 +181,30 @@ export function DatasetDetailView({
       <div className="grid min-h-[calc(100vh-3.5rem)] grid-cols-1 lg:grid-cols-[250px_minmax(0,1fr)]">
         <aside className="border-r border-border bg-card/40 px-4 py-5">
           <div className="space-y-2 text-sm">
-            <button
+            <Button
               type="button"
+              variant={view === "overview" ? "secondary" : "ghost"}
               onClick={() => setView("overview")}
-              className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition ${
-                view === "overview"
-                  ? "bg-secondary text-secondary-foreground"
-                  : "text-muted-foreground hover:bg-muted"
-              }`}
+              className={cn(
+                "w-full justify-start gap-2 px-2 py-1.5 text-left font-normal",
+                view !== "overview" && "text-muted-foreground hover:bg-muted",
+              )}
             >
               <LayoutDashboard className="h-4 w-4" />
               Overview
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
+              variant={view === "tasks" ? "secondary" : "ghost"}
               onClick={() => setView("tasks")}
-              className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition ${
-                view === "tasks"
-                  ? "bg-secondary text-secondary-foreground"
-                  : "text-muted-foreground hover:bg-muted"
-              }`}
+              className={cn(
+                "w-full justify-start gap-2 px-2 py-1.5 text-left font-normal",
+                view !== "tasks" && "text-muted-foreground hover:bg-muted",
+              )}
             >
               <TableProperties className="h-4 w-4" />
               Tasks
-            </button>
+            </Button>
           </div>
         </aside>
 

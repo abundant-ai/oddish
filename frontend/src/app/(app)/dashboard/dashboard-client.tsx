@@ -43,6 +43,13 @@ import { fetcher } from "@/lib/api";
 import { encodeExperimentRouteParam, formatShortDateTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   ArrowRight,
   Check,
   ChevronDown,
@@ -460,10 +467,9 @@ function UsageOverviewCard({
             )}
           </div>
           <div className="flex flex-wrap items-center gap-1">
-            <select
+            <Select
               value={selectedWindowValue}
-              onChange={(event) => {
-                const value = event.target.value;
+              onValueChange={(value) => {
                 if (value === "custom") {
                   setIsCustomPickerOpen(true);
                   return;
@@ -471,16 +477,24 @@ function UsageOverviewCard({
                 setIsCustomPickerOpen(false);
                 onTimeRangeChange(value as PresetTimeRangeKey);
               }}
-              className="h-7 w-[120px] rounded-md border border-[#6f88b4]/20 bg-background px-2 text-[11px]"
-              aria-label="Time window"
             >
-              {TIME_RANGES.map((range) => (
-                <option key={range.key} value={range.key}>
-                  {range.label}
-                </option>
-              ))}
-              <option value="custom">Custom...</option>
-            </select>
+              <SelectTrigger
+                className="h-7 w-[120px] border-[#6f88b4]/20 text-[11px]"
+                aria-label="Time window"
+              >
+                <SelectValue placeholder="Window" />
+              </SelectTrigger>
+              <SelectContent align="end">
+                {TIME_RANGES.map((range) => (
+                  <SelectItem key={range.key} value={range.key} className="text-xs">
+                    {range.label}
+                  </SelectItem>
+                ))}
+                <SelectItem value="custom" className="text-xs">
+                  Custom...
+                </SelectItem>
+              </SelectContent>
+            </Select>
             {showCustomControls && (
               <>
                 <Input
@@ -490,18 +504,30 @@ function UsageOverviewCard({
                   className="h-7 w-[66px] text-[11px]"
                   aria-label="Custom time window amount"
                 />
-                <select
+                <Select
                   value={customUnit}
-                  onChange={(event) =>
-                    setCustomUnit(event.target.value as "m" | "h" | "d")
+                  onValueChange={(value) =>
+                    setCustomUnit(value as "m" | "h" | "d")
                   }
-                  className="h-7 w-[64px] rounded-md border border-[#6f88b4]/20 bg-background px-2 text-[11px]"
-                  aria-label="Custom time window unit"
                 >
-                  <option value="m">min</option>
-                  <option value="h">hour</option>
-                  <option value="d">day</option>
-                </select>
+                  <SelectTrigger
+                    className="h-7 w-[72px] border-[#6f88b4]/20 text-[11px]"
+                    aria-label="Custom time window unit"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="end">
+                    <SelectItem value="m" className="text-xs">
+                      min
+                    </SelectItem>
+                    <SelectItem value="h" className="text-xs">
+                      hour
+                    </SelectItem>
+                    <SelectItem value="d" className="text-xs">
+                      day
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
                 <Button
                   variant="secondary"
                   size="sm"
