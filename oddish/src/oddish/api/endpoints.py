@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only, selectinload
 
@@ -20,14 +20,21 @@ from oddish.api.trial_io import (
 )
 from oddish.config import settings
 from oddish.db import (
+    AnalysisStatus,
     ExperimentModel,
     Priority,
     TaskModel,
     TaskStatus,
     TrialModel,
     TrialStatus,
+    VerdictStatus,
 )
-from oddish.queue import enqueue_trial
+from oddish.queue import (
+    cancel_pgqueuer_jobs_for_tasks,
+    enqueue_analysis,
+    enqueue_trial,
+    enqueue_verdict,
+)
 from oddish.schemas import TaskStatusResponse, TrialResponse
 
 
@@ -292,6 +299,237 @@ async def retry_trial_core(
 
     await session.commit()
     return {"status": "queued", "trial_id": trial_id}
+
+
+def _reset_task_verdict(task: TaskModel) -> None:
+    """Clear cached verdict state before re-running analysis or verdict."""
+    task.verdict = None
+    task.verdict_status = None
+    task.verdict_error = None
+    task.verdict_started_at = None
+    task.verdict_finished_at = None
+
+
+def _reset_trial_analysis(trial: TrialModel) -> None:
+    """Clear cached analysis state before re-running analysis."""
+    trial.analysis = None
+    trial.analysis_status = None
+    trial.analysis_error = None
+    trial.analysis_started_at = None
+    trial.analysis_finished_at = None
+
+
+async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
+    """Count non-terminal trials for a task."""
+    active_statuses = [
+        TrialStatus.PENDING,
+        TrialStatus.QUEUED,
+        TrialStatus.RUNNING,
+        TrialStatus.RETRYING,
+    ]
+    count = await session.scalar(
+        select(func.count(TrialModel.id)).where(
+            TrialModel.task_id == task_id,
+            TrialModel.status.in_(active_statuses),
+        )
+    )
+    return int(count or 0)
+
+
+async def rerun_trial_analysis_core(
+    session: AsyncSession,
+    *,
+    trial_id: str,
+    org_id: str | None = None,
+) -> dict[str, str]:
+    """Queue analysis for a completed trial and invalidate the task verdict."""
+    trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
+    task = await session.get(TaskModel, trial.task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+
+    if trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Can only run analysis for completed or failed trials "
+                f"(current: {trial.status.value})"
+            ),
+        )
+
+    if trial.analysis_status in (
+        AnalysisStatus.PENDING,
+        AnalysisStatus.QUEUED,
+        AnalysisStatus.RUNNING,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Analysis is already in progress for this trial "
+                f"(current: {trial.analysis_status.value})"
+            ),
+        )
+
+    active_trials = await _count_active_trials(session, task_id=task.id)
+    if active_trials > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Can only run trial analysis after all trials for the task finish",
+        )
+
+    if task.verdict_status in (
+        VerdictStatus.PENDING,
+        VerdictStatus.QUEUED,
+        VerdictStatus.RUNNING,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot rerun analysis while the task verdict is still running",
+        )
+
+    _reset_trial_analysis(trial)
+    _reset_task_verdict(task)
+    task.run_analysis = True
+    task.status = TaskStatus.ANALYZING
+    task.finished_at = None
+    trial.analysis_status = AnalysisStatus.QUEUED
+
+    await cancel_pgqueuer_jobs_for_tasks(session, [task.id])
+    await enqueue_analysis(session, trial_id)
+
+    await session.commit()
+    return {"status": "queued", "trial_id": trial_id}
+
+
+async def rerun_task_analysis_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    org_id: str | None = None,
+) -> dict[str, str | int]:
+    """Queue analysis jobs for every trial in a finished task."""
+    result = await session.execute(
+        select(TaskModel)
+        .options(selectinload(TaskModel.trials))
+        .where(TaskModel.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    if org_id is not None and task.org_id != org_id:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    if not task.trials:
+        raise HTTPException(status_code=400, detail="Task has no trials to analyze")
+
+    active_trials = await _count_active_trials(session, task_id=task.id)
+    if active_trials > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Can only run task analysis after all trials finish",
+        )
+
+    if any(
+        trial.analysis_status
+        in (AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
+        for trial in task.trials
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Some trial analyses are already in progress for this task",
+        )
+
+    if task.verdict_status in (
+        VerdictStatus.PENDING,
+        VerdictStatus.QUEUED,
+        VerdictStatus.RUNNING,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot rerun analysis while the task verdict is still running",
+        )
+
+    for trial in task.trials:
+        _reset_trial_analysis(trial)
+        trial.analysis_status = AnalysisStatus.QUEUED
+
+    _reset_task_verdict(task)
+    task.run_analysis = True
+    task.status = TaskStatus.ANALYZING
+    task.finished_at = None
+
+    await cancel_pgqueuer_jobs_for_tasks(session, [task.id])
+    for trial in task.trials:
+        await enqueue_analysis(session, trial.id)
+
+    await session.commit()
+    return {
+        "status": "queued",
+        "task_id": task_id,
+        "trial_count": len(task.trials),
+    }
+
+
+async def rerun_task_verdict_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    org_id: str | None = None,
+) -> dict[str, str]:
+    """Queue a fresh verdict job for a finished task."""
+    result = await session.execute(
+        select(TaskModel)
+        .options(selectinload(TaskModel.trials))
+        .where(TaskModel.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    if org_id is not None and task.org_id != org_id:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    if not task.trials:
+        raise HTTPException(status_code=400, detail="Task has no trials")
+
+    active_trials = await _count_active_trials(session, task_id=task.id)
+    if active_trials > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Can only run a task verdict after all trials finish",
+        )
+
+    if any(
+        trial.analysis_status in (None, AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
+        for trial in task.trials
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="All trial analyses must finish before running a task verdict",
+        )
+
+    if task.verdict_status in (
+        VerdictStatus.PENDING,
+        VerdictStatus.QUEUED,
+        VerdictStatus.RUNNING,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Task verdict is already in progress",
+        )
+
+    _reset_task_verdict(task)
+    task.run_analysis = True
+    task.status = TaskStatus.VERDICT_PENDING
+    task.finished_at = None
+    task.verdict_status = VerdictStatus.QUEUED
+    task.verdict_started_at = None
+    task.verdict_finished_at = None
+
+    await cancel_pgqueuer_jobs_for_tasks(session, [task.id])
+    await enqueue_verdict(session, task.id)
+
+    await session.commit()
+    return {"status": "queued", "task_id": task_id}
 
 
 async def get_trial_logs_core(
