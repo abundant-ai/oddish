@@ -21,13 +21,13 @@ async def run_analysis_job(job: Job, queue_key: str) -> None:
     """
     Handle an analysis job from PGQueuer.
 
-    This classifies a trial outcome using swegen's TrialClassifier:
+    This classifies a trial outcome using oddish's TrialClassifier:
     1. Download task and trial from S3
     2. Run classification with Claude Code
     3. Store classification in trial.analysis
     4. Check if all analyses done → enqueue verdict
     """
-    from swegen.analyze import TrialClassifier
+    from oddish.analyze import TrialClassifier
 
     payload = json.loads(job.payload.decode())
     trial_id = payload.get("trial_id")
