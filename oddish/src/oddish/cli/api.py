@@ -25,6 +25,7 @@ from harbor.dataset.client import DatasetClient
 from oddish.cli.config import get_auth_headers, error_console
 
 console = Console()
+TASK_SWEEP_TIMEOUT_SECONDS = 600.0
 
 
 # =============================================================================
@@ -252,7 +253,9 @@ def submit_sweep(
     if harbor:
         payload["harbor"] = harbor
 
-    with httpx.Client(timeout=120.0, headers=get_auth_headers()) as client:
+    with httpx.Client(
+        timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()
+    ) as client:
         response = client.post(f"{api_url}/tasks/sweep", json=payload)
 
     if response.status_code != 200:

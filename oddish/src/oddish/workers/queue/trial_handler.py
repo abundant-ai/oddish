@@ -7,8 +7,10 @@ import shutil
 import uuid
 from pathlib import Path
 
+from harbor.models.trial.config import AgentConfig as HarborAgentConfig
 from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
+from harbor.viewer.scanner import JobScanner
 from pgqueuer.models import Job
 
 from oddish.config import Settings, settings
@@ -48,12 +50,25 @@ def _apply_default_trial_timeout(
         return harbor_config
 
     effective_config = dict(harbor_config or {})
+
+    raw_agent_config = effective_config.get("agent_config")
+    if isinstance(raw_agent_config, dict):
+        agent_config = HarborAgentConfig.model_validate(raw_agent_config)
+    else:
+        agent_config = HarborAgentConfig()
+    if agent_config.override_timeout_sec is None:
+        agent_config.override_timeout_sec = float(timeout_minutes * 60)
+    agent_config_payload = agent_config.model_dump(mode="json", exclude_defaults=True)
+    if agent_config_payload:
+        effective_config["agent_config"] = agent_config_payload
+
     raw_agent_overrides = effective_config.get("agent_overrides")
     agent_overrides = (
         dict(raw_agent_overrides) if isinstance(raw_agent_overrides, dict) else {}
     )
     agent_overrides.setdefault("override_timeout_sec", float(timeout_minutes * 60))
-    effective_config["agent_overrides"] = agent_overrides
+    if agent_overrides:
+        effective_config["agent_overrides"] = agent_overrides
     return effective_config
 
 
@@ -76,18 +91,11 @@ def _verifier_ran_from_job_result(job_result_path: str | None) -> bool:
                 ):
                     return True
 
-        # Harbor now stores verifier info in per-trial result.json files under
-        # <job_dir>/<trial_name>/result.json.
         job_dir = result_path.parent
-        for trial_result_path in job_dir.glob("*/result.json"):
-            try:
-                trial_data = json.loads(trial_result_path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if (
-                isinstance(trial_data, dict)
-                and trial_data.get("verifier_result") is not None
-            ):
+        scanner = JobScanner(job_dir.parent)
+        for trial_name in scanner.list_trials(job_dir.name):
+            trial_result = scanner.get_trial_result(job_dir.name, trial_name)
+            if trial_result and trial_result.verifier_result is not None:
                 return True
     except Exception:
         return False

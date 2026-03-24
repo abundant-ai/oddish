@@ -11,6 +11,7 @@ from typing import MutableMapping, TypeVar
 
 from fastapi import HTTPException
 from harbor.models.trial.paths import TrialPaths
+from harbor.viewer.scanner import JobScanner
 
 from oddish.config import settings
 from oddish.db import TrialModel, get_storage_client
@@ -59,13 +60,8 @@ def _should_cache_trial(trial: TrialModel) -> bool:
     return trial.finished_at is not None
 
 
-def _resolve_local_trial_paths(trial: TrialModel) -> TrialPaths | None:
-    """Resolve Harbor trial directory for a trial's local artifacts.
-
-    Harbor writes a job-level result at `<job_dir>/result.json` and per-trial
-    artifacts at `<job_dir>/<trial_name>/...`. For older layouts we also accept
-    direct `agent/` and `verifier/` under `<job_dir>`.
-    """
+def _resolve_local_job_dir(trial: TrialModel) -> Path | None:
+    """Resolve and validate the local Harbor job directory for a trial."""
     if not trial.harbor_result_path:
         return None
 
@@ -87,19 +83,44 @@ def _resolve_local_trial_paths(trial: TrialModel) -> TrialPaths | None:
     job_dir = result_path_resolved.parent
     if not job_dir.exists() or not job_dir.is_dir():
         return None
+    return job_dir
+
+
+def _resolve_scanned_trial_dir(job_dir: Path, preferred_name: str | None) -> Path | None:
+    """Use Harbor's JobScanner to identify the per-trial directory inside a job."""
+    scanner = JobScanner(job_dir.parent)
+    trial_names = scanner.list_trials(job_dir.name)
+    if not trial_names:
+        return None
+
+    for candidate in (preferred_name, "trial-0"):
+        if candidate and candidate in trial_names:
+            return job_dir / candidate
+
+    if len(trial_names) == 1:
+        return job_dir / trial_names[0]
+
+    return job_dir / trial_names[0]
+
+
+def _resolve_local_trial_paths(trial: TrialModel) -> TrialPaths | None:
+    """Resolve Harbor trial directory for a trial's local artifacts.
+
+    Harbor writes a job-level result at `<job_dir>/result.json` and per-trial
+    artifacts under child trial directories. For older layouts we also accept
+    direct `agent/` and `verifier/` under `<job_dir>`.
+    """
+    job_dir = _resolve_local_job_dir(trial)
+    if job_dir is None:
+        return None
 
     # Backward-compatible flat layout: logs directly under the job directory.
     if (job_dir / "agent").exists() or (job_dir / "verifier").exists():
         return TrialPaths(job_dir)
 
-    # Harbor layout: one child directory per trial, each with result.json.
-    child_results = sorted(
-        job_dir.glob("*/result.json"),
-        key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
-        reverse=True,
-    )
-    if child_results:
-        return TrialPaths(child_results[0].parent)
+    scanned_trial_dir = _resolve_scanned_trial_dir(job_dir, trial.name)
+    if scanned_trial_dir is not None:
+        return TrialPaths(scanned_trial_dir)
 
     # Setup failures can still leave behind root-level debug logs plus a
     # synthetic result.json. Treat the job directory itself as the trial dir so
@@ -138,26 +159,8 @@ async def read_trial_logs(trial: TrialModel) -> dict:
             # Fall back to local volume if S3 read fails
             pass
 
-    # Local path (best-effort): infer job directory from harbor_result_path
-    if not trial.harbor_result_path:
-        return {"trial_id": trial.id, "logs": ""}
-
-    result_path = Path(trial.harbor_result_path)
-    job_dir = result_path.parent
-    base_dir = Path(settings.harbor_jobs_dir).resolve()
-
-    try:
-        job_dir_resolved = job_dir.resolve()
-    except Exception:
-        return {"trial_id": trial.id, "logs": ""}
-
-    # Safety: only allow reads under harbor_jobs_dir
-    if base_dir not in job_dir_resolved.parents and job_dir_resolved != base_dir:
-        raise HTTPException(
-            status_code=403, detail="Refusing to read logs outside harbor_jobs_dir"
-        )
-
-    if not job_dir_resolved.exists() or not job_dir_resolved.is_dir():
+    job_dir_resolved = _resolve_local_job_dir(trial)
+    if job_dir_resolved is None:
         return {"trial_id": trial.id, "logs": ""}
 
     logs_parts: list[str] = []
@@ -608,23 +611,11 @@ async def read_trial_result(trial: TrialModel) -> dict:
             status_code=404, detail=f"Trial {trial.id} has no local result path"
         )
 
-    result_path = Path(trial.harbor_result_path)
-    base_dir = Path(settings.harbor_jobs_dir).resolve()
-    try:
-        result_path_resolved = result_path.resolve()
-    except Exception:
+    if _resolve_local_job_dir(trial) is None:
         raise HTTPException(
             status_code=404, detail=f"Local result not found for {trial.id}"
         )
-
-    if (
-        base_dir not in result_path_resolved.parents
-        and result_path_resolved != base_dir
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Refusing to read result outside harbor_jobs_dir",
-        )
+    result_path_resolved = Path(trial.harbor_result_path).resolve()
 
     if not result_path_resolved.exists() or not result_path_resolved.is_file():
         raise HTTPException(
