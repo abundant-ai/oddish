@@ -296,6 +296,8 @@ curl http://localhost:8000/health
 - make sure the API is healthy
 - remember `oddish.api` auto-starts workers, or run `python -m oddish.workers.queue.worker`
 - check queue concurrency settings if a model-specific queue is saturated
+- orphan cleanup should only cancel trial-execution jobs; analysis jobs for completed
+  trials are valid and stale queued analyses should be re-enqueued automatically
 
 ### Pulling from a remote API fails
 

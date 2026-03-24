@@ -28,6 +28,9 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
+ANALYSIS_MODEL = "claude-haiku-4-5"
+VERDICT_MODEL = "gpt-5.2"
+
 
 def normalize_model_id(model: str | None) -> str | None:
     """Canonicalize model identifiers for storage and display.
@@ -184,8 +187,8 @@ class Settings(BaseSettings):
     # for per-model values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
     default_model_concurrency: int = 8
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
-    analysis_model: str = "claude-haiku-4-5"
-    verdict_model: str = "gpt-5.2"
+    analysis_model: ClassVar[str] = ANALYSIS_MODEL
+    verdict_model: ClassVar[str] = VERDICT_MODEL
 
     # Agent to provider mapping
     agent_to_provider: ClassVar[dict[str, str]] = _build_agent_provider_map()

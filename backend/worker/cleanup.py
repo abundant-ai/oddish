@@ -13,6 +13,7 @@ from oddish.db import (
 from oddish.queue import (
     cancel_pgqueuer_job_ids,
     cancel_pgqueuer_jobs_for_trials,
+    enqueue_analysis,
     enqueue_trial,
     maybe_start_analysis_stage,
 )
@@ -63,10 +64,12 @@ async def cleanup_orphaned_queue_state(
 ) -> dict[str, int]:
     """Cancel stale/orphaned trial state so the queue can make forward progress."""
     issue_rows: list[tuple[str, str]] = []
-    terminal_trial_ids_with_jobs: list[str] = []
+    terminal_trial_job_ids: list[int] = []
     orphaned_picked_job_ids: list[int] = []
+    analysis_trial_ids_to_requeue: list[str] = []
     queued_without_job_reenqueued = 0
     retrying_without_job_reenqueued = 0
+    analysis_queued_without_job_reenqueued = 0
     running_jobs_cancelled = 0
     terminal_jobs_cancelled = 0
     orphaned_picked_jobs_cancelled = 0
@@ -77,15 +80,27 @@ async def cleanup_orphaned_queue_state(
                 await session.execute(
                     text(
                         """
-                        WITH picked_jobs AS (
+                        WITH picked_trial_jobs AS (
                             SELECT id
                             FROM pgqueuer
                             WHERE status = 'picked'
+                              AND payload IS NOT NULL
+                              AND convert_from(payload, 'utf8')::jsonb ? 'trial_id'
+                              AND COALESCE(
+                                  convert_from(payload, 'utf8')::jsonb->>'job_type',
+                                  'trial'
+                              ) = 'trial'
                         ),
                         active_trial_jobs AS (
                             SELECT convert_from(payload, 'utf8')::jsonb->>'trial_id' AS trial_id
                             FROM pgqueuer
                             WHERE status IN ('queued', 'picked')
+                              AND payload IS NOT NULL
+                              AND convert_from(payload, 'utf8')::jsonb ? 'trial_id'
+                              AND COALESCE(
+                                  convert_from(payload, 'utf8')::jsonb->>'job_type',
+                                  'trial'
+                              ) = 'trial'
                         )
                         SELECT trial_id, issue
                         FROM (
@@ -117,7 +132,7 @@ async def cleanup_orphaned_queue_state(
                                              t.current_pgqueuer_job_id IS NULL
                                              OR NOT EXISTS (
                                                  SELECT 1
-                                                 FROM picked_jobs p
+                                                 FROM picked_trial_jobs p
                                                  WHERE p.id = t.current_pgqueuer_job_id
                                              )
                                          )
@@ -142,25 +157,29 @@ async def cleanup_orphaned_queue_state(
             ).all()
         )
 
-        terminal_trial_ids_with_jobs = [
+        terminal_trial_job_ids = [
             row[0]
             for row in (
                 await session.execute(
                     text(
                         """
-                        SELECT t.id
-                        FROM trials t
-                        WHERE t.status::text IN ('SUCCESS', 'FAILED')
-                          AND EXISTS (
-                              SELECT 1
-                              FROM pgqueuer p
-                              WHERE convert_from(p.payload, 'utf8')::jsonb->>'trial_id' = t.id
-                                AND p.status IN ('queued', 'picked')
-                          )
+                        SELECT p.id
+                        FROM pgqueuer p
+                        JOIN trials t
+                          ON convert_from(p.payload, 'utf8')::jsonb->>'trial_id' = t.id
+                        WHERE p.status IN ('queued', 'picked')
+                          AND p.payload IS NOT NULL
+                          AND convert_from(p.payload, 'utf8')::jsonb ? 'trial_id'
+                          AND COALESCE(
+                              convert_from(p.payload, 'utf8')::jsonb->>'job_type',
+                              'trial'
+                          ) = 'trial'
+                          AND t.status::text IN ('SUCCESS', 'FAILED')
                         """
                     )
                 )
             ).all()
+            if row[0] is not None
         ]
 
         orphaned_picked_job_ids = [
@@ -174,7 +193,12 @@ async def cleanup_orphaned_queue_state(
                         LEFT JOIN trials t
                           ON t.id::text = convert_from(p.payload, 'utf8')::jsonb->>'trial_id'
                         WHERE p.status = 'picked'
+                          AND p.payload IS NOT NULL
                           AND convert_from(p.payload, 'utf8')::jsonb ? 'trial_id'
+                          AND COALESCE(
+                              convert_from(p.payload, 'utf8')::jsonb->>'job_type',
+                              'trial'
+                          ) = 'trial'
                           AND COALESCE(p.heartbeat, p.updated, p.created) <
                               NOW() - make_interval(mins => :stale_after_minutes)
                           AND (
@@ -182,6 +206,42 @@ async def cleanup_orphaned_queue_state(
                               OR t.status::text NOT IN ('RUNNING', 'RETRYING')
                               OR t.current_pgqueuer_job_id IS DISTINCT FROM p.id
                           )
+                        """
+                    ),
+                    {"stale_after_minutes": stale_after_minutes},
+                )
+            ).all()
+            if row[0] is not None
+        ]
+
+        analysis_trial_ids_to_requeue = [
+            row[0]
+            for row in (
+                await session.execute(
+                    text(
+                        """
+                        WITH active_analysis_jobs AS (
+                            SELECT convert_from(payload, 'utf8')::jsonb->>'trial_id' AS trial_id
+                            FROM pgqueuer
+                            WHERE status IN ('queued', 'picked')
+                              AND payload IS NOT NULL
+                              AND convert_from(payload, 'utf8')::jsonb->>'job_type' = 'analysis'
+                        )
+                        SELECT t.id
+                        FROM trials t
+                        WHERE t.analysis_status::text = 'QUEUED'
+                          AND COALESCE(
+                              t.updated_at,
+                              t.analysis_finished_at,
+                              t.analysis_started_at,
+                              t.created_at
+                          ) < NOW() - make_interval(mins => :stale_after_minutes)
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM active_analysis_jobs a
+                              WHERE a.trial_id = t.id
+                          )
+                        ORDER BY t.id
                         """
                     ),
                     {"stale_after_minutes": stale_after_minutes},
@@ -202,10 +262,10 @@ async def cleanup_orphaned_queue_state(
             if issue in {"running_without_picked_job", "running_stale_heartbeat"}
         ]
 
-        if terminal_trial_ids_with_jobs:
-            terminal_jobs_cancelled = await cancel_pgqueuer_jobs_for_trials(
+        if terminal_trial_job_ids:
+            terminal_jobs_cancelled = await cancel_pgqueuer_job_ids(
                 session,
-                terminal_trial_ids_with_jobs,
+                terminal_trial_job_ids,
                 suppress_errors=False,
             )
 
@@ -257,6 +317,23 @@ async def cleanup_orphaned_queue_state(
                 else:
                     retrying_without_job_reenqueued += 1
 
+        if analysis_trial_ids_to_requeue:
+            analysis_trials = (
+                await session.execute(
+                    select(TrialModel).where(TrialModel.id.in_(analysis_trial_ids_to_requeue))
+                )
+            ).scalars().all()
+
+            for trial in analysis_trials:
+                if trial.analysis_status != AnalysisStatus.QUEUED:
+                    continue
+                await enqueue_analysis(
+                    session,
+                    trial.id,
+                    queue_key=settings.get_analysis_queue_key(),
+                )
+                analysis_queued_without_job_reenqueued += 1
+
         if trial_ids_to_fail:
             trials = (
                 await session.execute(
@@ -302,6 +379,7 @@ async def cleanup_orphaned_queue_state(
     counts = {
         "queued_without_job": 0,
         "retrying_without_job": 0,
+        "analysis_queued_without_job_reenqueued": analysis_queued_without_job_reenqueued,
         "running_without_picked_job": 0,
         "running_stale_heartbeat": 0,
         "queued_without_job_reenqueued": queued_without_job_reenqueued,
