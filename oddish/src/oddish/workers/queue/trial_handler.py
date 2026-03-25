@@ -342,13 +342,10 @@ async def run_trial_job(
                     # If the trial was cancelled by the user (cancel API sets
                     # max_attempts=attempts), don't let lifecycle hooks
                     # overwrite the "Cancelled by user" error_message/stage.
-                    user_cancelled = (
-                        trial.error_message == "Cancelled by user"
-                        or (
-                            trial.status == TrialStatus.FAILED
-                            and trial.max_attempts <= trial.attempts
-                            and trial.max_attempts > 0
-                        )
+                    user_cancelled = trial.error_message == "Cancelled by user" or (
+                        trial.status == TrialStatus.FAILED
+                        and trial.max_attempts <= trial.attempts
+                        and trial.max_attempts > 0
                     )
                     if user_cancelled and event in (
                         TrialEvent.END,
@@ -538,7 +535,10 @@ async def run_trial_job(
             if (
                 trial.error_message == "Cancelled by user"
                 or trial.harbor_stage == "cancelled"
-                or (trial.status == TrialStatus.FAILED and trial.max_attempts <= trial.attempts)
+                or (
+                    trial.status == TrialStatus.FAILED
+                    and trial.max_attempts <= trial.attempts
+                )
             ):
                 console.print(
                     f"[dim]Trial {trial_id} was cancelled by user, skipping result update[/dim]"

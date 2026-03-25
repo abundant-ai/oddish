@@ -369,7 +369,12 @@ async def cancel_task_runs(
     pgq_cancelled += await cancel_pgqueuer_jobs_for_tasks(session, [task_id])
 
     # Collect Modal function call IDs before clearing them
-    active_statuses = {TrialStatus.PENDING, TrialStatus.QUEUED, TrialStatus.RUNNING, TrialStatus.RETRYING}
+    active_statuses = {
+        TrialStatus.PENDING,
+        TrialStatus.QUEUED,
+        TrialStatus.RUNNING,
+        TrialStatus.RETRYING,
+    }
     modal_fc_ids: list[str] = []
     trials_cancelled = 0
 
@@ -392,7 +397,12 @@ async def cancel_task_runs(
         trials_cancelled += 1
 
     # Update task status
-    if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.ANALYZING, TaskStatus.VERDICT_PENDING):
+    if task.status in (
+        TaskStatus.PENDING,
+        TaskStatus.RUNNING,
+        TaskStatus.ANALYZING,
+        TaskStatus.VERDICT_PENDING,
+    ):
         task.status = TaskStatus.FAILED
         task.finished_at = utcnow()
 

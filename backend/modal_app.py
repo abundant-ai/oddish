@@ -36,7 +36,9 @@ SHUTDOWN_TIMEOUT_SECONDS = 10  # How long to wait for graceful shutdown
 WORKER_MIN_CONTAINERS = 1  # Keep one job worker warm to reduce cold starts
 WORKER_BUFFER_CONTAINERS = 4  # Keep a few extra warm workers during active bursts.
 WORKER_SCALEDOWN_WINDOW_SECONDS = 300  # Keep idle workers warm for 5 minutes
-WORKER_MAX_CONTAINERS = 256  # High global cap so several queue keys can scale, but still not unbounded.
+WORKER_MAX_CONTAINERS = (
+    256  # High global cap so several queue keys can scale, but still not unbounded.
+)
 
 # Max number of workers spawned per poll cycle (rate limiter)
 MAX_WORKERS_PER_POLL = 16
