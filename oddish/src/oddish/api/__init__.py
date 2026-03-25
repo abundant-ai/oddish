@@ -43,6 +43,7 @@ from oddish.schemas import (
 from oddish.queue import (
     cancel_pgqueuer_jobs_for_tasks,
     cancel_pgqueuer_jobs_for_trials,
+    cancel_task_runs,
     create_task,
 )
 from oddish.workers import create_queue_manager
@@ -310,6 +311,24 @@ async def get_task_status(task_id: str):
             include_trials=True,
             include_empty_rewards=False,
         )
+
+
+@api.post("/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    """Cancel all in-flight runs for a task without deleting data."""
+    async with get_session() as session:
+        result = await cancel_task_runs(session, task_id)
+        if result.get("error") == "not_found":
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        await session.commit()
+
+    return {
+        "status": "cancelled",
+        "task_id": task_id,
+        "trials_cancelled": result.get("trials_cancelled", 0),
+        "pgqueuer_jobs_cancelled": result.get("pgqueuer_jobs_cancelled", 0),
+        "modal_calls_cancelled": 0,
+    }
 
 
 @api.delete("/tasks/{task_id}")

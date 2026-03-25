@@ -303,6 +303,7 @@ async def cleanup_orphaned_queue_state(
                 trial.current_pgqueuer_job_id = None
                 trial.current_worker_id = None
                 trial.current_queue_slot = None
+                trial.modal_function_call_id = None
                 trial.claimed_at = None
                 trial.heartbeat_at = None
                 pgq_priority = 1000 if task and task.priority == Priority.HIGH else 0
@@ -355,6 +356,7 @@ async def cleanup_orphaned_queue_state(
                 trial.current_pgqueuer_job_id = None
                 trial.current_worker_id = None
                 trial.current_queue_slot = None
+                trial.modal_function_call_id = None
                 trial.heartbeat_at = utcnow()
                 if trial.harbor_stage not in {"completed", "cancelled"}:
                     trial.harbor_stage = "cancelled"

@@ -68,6 +68,7 @@ Available commands:
 
 - `oddish run` submits a task, dataset, or sweep config
 - `oddish status` shows system, task, or experiment status
+- `oddish cancel` stops all in-flight runs for a task
 - `oddish pull` downloads logs and artifact files locally
 - `oddish clean` deletes task data or resets local infrastructure
 
@@ -165,6 +166,17 @@ oddish status <task_id> --watch
 
 # Watch an experiment
 oddish status --experiment <experiment_id> --watch
+```
+
+### `oddish cancel`
+
+Cancel all in-flight runs for a task without deleting any data. Queued jobs are
+removed, running trials are marked as failed, and Modal worker containers are
+terminated. Completed trials and their results are preserved.
+
+```bash
+oddish cancel <task_id>
+oddish cancel <task_id> --force   # skip confirmation
 ```
 
 ### `oddish pull`

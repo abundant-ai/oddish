@@ -331,6 +331,82 @@ async def cancel_pgqueuer_jobs_for_tasks(
 
 
 # =============================================================================
+# Task/Trial Cancellation (user-initiated)
+# =============================================================================
+
+
+async def cancel_task_runs(
+    session: AsyncSession,
+    task_id: str,
+    org_id: str | None = None,
+) -> dict:
+    """Cancel all in-flight runs for a task without deleting data.
+
+    1. Cancel queued PGQueuer jobs (trials, analyses, verdicts)
+    2. Mark running/queued/retrying trials as FAILED
+    3. Return Modal function call IDs so callers can cancel them remotely
+
+    Returns a summary dict with counts and modal_function_call_ids to cancel.
+    """
+    query = select(TaskModel).where(TaskModel.id == task_id)
+    if org_id:
+        query = query.where(TaskModel.org_id == org_id)
+    result = await session.execute(query)
+    task = result.scalar_one_or_none()
+    if not task:
+        return {"error": "not_found"}
+
+    # Gather trial IDs for this task
+    trial_rows = await session.execute(
+        select(TrialModel).where(TrialModel.task_id == task_id)
+    )
+    trials = list(trial_rows.scalars().all())
+    trial_ids = [t.id for t in trials]
+
+    # Cancel PGQueuer jobs (queued + picked)
+    pgq_cancelled = 0
+    pgq_cancelled += await cancel_pgqueuer_jobs_for_trials(session, trial_ids)
+    pgq_cancelled += await cancel_pgqueuer_jobs_for_tasks(session, [task_id])
+
+    # Collect Modal function call IDs before clearing them
+    active_statuses = {TrialStatus.PENDING, TrialStatus.QUEUED, TrialStatus.RUNNING, TrialStatus.RETRYING}
+    modal_fc_ids: list[str] = []
+    trials_cancelled = 0
+
+    for trial in trials:
+        if trial.status not in active_statuses:
+            continue
+        if trial.modal_function_call_id:
+            modal_fc_ids.append(trial.modal_function_call_id)
+        trial.status = TrialStatus.FAILED
+        trial.error_message = "Cancelled by user"
+        trial.finished_at = utcnow()
+        trial.harbor_stage = "cancelled"
+        # Prevent the dying container's error handler from re-queuing:
+        # the retry logic checks `attempts < max_attempts`.
+        trial.max_attempts = trial.attempts
+        trial.current_pgqueuer_job_id = None
+        trial.current_worker_id = None
+        trial.current_queue_slot = None
+        trial.modal_function_call_id = None
+        trials_cancelled += 1
+
+    # Update task status
+    if task.status in (TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.ANALYZING, TaskStatus.VERDICT_PENDING):
+        task.status = TaskStatus.FAILED
+        task.finished_at = utcnow()
+
+    await session.flush()
+
+    return {
+        "task_id": task_id,
+        "trials_cancelled": trials_cancelled,
+        "pgqueuer_jobs_cancelled": pgq_cancelled,
+        "modal_function_call_ids": modal_fc_ids,
+    }
+
+
+# =============================================================================
 # Task/Trial Creation
 # =============================================================================
 
