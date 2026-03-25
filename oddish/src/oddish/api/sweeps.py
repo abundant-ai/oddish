@@ -18,7 +18,9 @@ def _validate_allowed_environment(
     allowed_environments: set[EnvironmentType],
 ) -> None:
     if env not in allowed_environments:
-        allowed = ", ".join(sorted(f"'{value.value}'" for value in allowed_environments))
+        allowed = ", ".join(
+            sorted(f"'{value.value}'" for value in allowed_environments)
+        )
         raise HTTPException(
             status_code=400,
             detail=(

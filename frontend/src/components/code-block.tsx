@@ -133,18 +133,17 @@ export function CodeBlock({
     setTimeout(() => setCopied(false), 2000);
   }, [code]);
 
-  const heightStyle =
-    maxHeight === "none" ? { height: "100%" } : { maxHeight };
+  const heightStyle = maxHeight === "none" ? { height: "100%" } : { maxHeight };
 
   return (
-    <div className={`relative group ${className || ""}`}>
+    <div className={`group relative ${className || ""}`}>
       {showCopyButton && (
         <Button
           type="button"
           variant="ghost"
           size="icon"
           onClick={handleCopy}
-          className="absolute top-2 right-2 p-1.5 rounded bg-muted/80 hover:bg-muted opacity-0 group-hover:opacity-100 transition-opacity z-10"
+          className="absolute right-2 top-2 z-10 rounded bg-muted/80 p-1.5 opacity-0 transition-opacity hover:bg-muted group-hover:opacity-100"
           title="Copy to clipboard"
         >
           {copied ? (
@@ -156,13 +155,13 @@ export function CodeBlock({
       )}
       {highlightedHtml ? (
         <div
-          className="text-xs rounded border border-border overflow-x-auto overflow-y-auto [&>pre]:p-3 [&>pre]:m-0 [&>pre]:overflow-x-auto [&>pre]:whitespace-pre-wrap [&>pre]:break-words"
+          className="overflow-x-auto overflow-y-auto rounded border border-border text-xs [&>pre]:m-0 [&>pre]:overflow-x-auto [&>pre]:whitespace-pre-wrap [&>pre]:break-words [&>pre]:p-3"
           style={heightStyle}
           dangerouslySetInnerHTML={{ __html: highlightedHtml }}
         />
       ) : (
         <pre
-          className="text-xs bg-muted/50 text-foreground p-3 rounded border border-border overflow-x-auto overflow-y-auto whitespace-pre-wrap break-words"
+          className="overflow-x-auto overflow-y-auto whitespace-pre-wrap break-words rounded border border-border bg-muted/50 p-3 text-xs text-foreground"
           style={heightStyle}
         >
           {truncatedCode}

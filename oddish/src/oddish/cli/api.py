@@ -358,11 +358,11 @@ def load_sweep_config(config_path: Path) -> dict:
         }
 
         if not agent_data["name"]:
-            error_console.print(f"[red]Agent entry {i+1} missing 'name' field[/red]")
+            error_console.print(f"[red]Agent entry {i + 1} missing 'name' field[/red]")
             raise typer.Exit(1)
         if agent_data["model_name"] is None:
             error_console.print(
-                f"[red]Agent entry {i+1} missing 'model_name' field[/red]"
+                f"[red]Agent entry {i + 1} missing 'model_name' field[/red]"
             )
             raise typer.Exit(1)
 
@@ -370,12 +370,14 @@ def load_sweep_config(config_path: Path) -> dict:
         try:
             harbor_config = AgentConfig.model_validate(agent_data)
         except Exception as e:
-            error_console.print(f"[red]Invalid agent config at entry {i+1}:[/red] {e}")
+            error_console.print(
+                f"[red]Invalid agent config at entry {i + 1}:[/red] {e}"
+            )
             raise typer.Exit(1)
 
         if "n_concurrent" in agent_entry or "concurrency" in agent_entry:
             error_console.print(
-                f"[red]Agent entry {i+1} includes 'n_concurrent', which is no longer supported.[/red]\n"
+                f"[red]Agent entry {i + 1} includes 'n_concurrent', which is no longer supported.[/red]\n"
                 "Set provider concurrency when starting the API (e.g. --n-concurrent)."
             )
             raise typer.Exit(1)
@@ -820,7 +822,9 @@ def fetch_task_status(api_url: str, task_id: str) -> dict | None:
 def list_tasks_for_experiment(api_url: str, experiment_id: str) -> list[dict]:
     """List tasks for an experiment ID."""
     with httpx.Client(timeout=20.0, headers=get_auth_headers()) as client:
-        response = client.get(f"{api_url}/tasks", params={"experiment_id": experiment_id})
+        response = client.get(
+            f"{api_url}/tasks", params={"experiment_id": experiment_id}
+        )
     if response.status_code != 200:
         return []
     return cast(list[dict], response.json())
@@ -839,7 +843,8 @@ def list_task_files(api_url: str, task_id: str) -> dict | None:
     """List all files for a task."""
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
         response = client.get(
-            f"{api_url}/tasks/{task_id}/files", params={"recursive": True, "presign": False}
+            f"{api_url}/tasks/{task_id}/files",
+            params={"recursive": True, "presign": False},
         )
     if response.status_code != 200:
         return None

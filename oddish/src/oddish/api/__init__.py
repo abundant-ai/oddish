@@ -238,11 +238,16 @@ async def create_task_sweep(submission: TaskSweepSubmission):
         ),
     )
 
-    from oddish.api.sweeps import build_trial_specs_from_sweep, build_task_submission_from_sweep
+    from oddish.api.sweeps import (
+        build_trial_specs_from_sweep,
+        build_task_submission_from_sweep,
+    )
 
     trials = build_trial_specs_from_sweep(submission)
     expanded = build_task_submission_from_sweep(
-        submission, task_path=task_path, trials=trials,
+        submission,
+        task_path=task_path,
+        trials=trials,
     )
 
     async with get_session() as session:

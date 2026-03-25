@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -119,7 +118,7 @@ class TaskSubmission(BaseModel):
         description="GitHub username to attribute this task to (recorded as metadata)",
     )
     harbor: HarborConfig = Field(
-        default_factory=HarborConfig,
+        default_factory=HarborConfig,  # type: ignore[arg-type]
         description="Harbor execution config (environment, verifier, artifacts, etc.)",
     )
 
@@ -182,7 +181,7 @@ class TaskSweepSubmission(BaseModel):
         description="If true, publish the experiment for public read-only access",
     )
     harbor: HarborConfig = Field(
-        default_factory=HarborConfig,
+        default_factory=HarborConfig,  # type: ignore[arg-type]
         description="Harbor execution config (environment, verifier, artifacts, etc.)",
     )
 

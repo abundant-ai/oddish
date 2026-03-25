@@ -86,7 +86,7 @@ export function TimingBreakdownBar({
       <TooltipProvider>
         <div>
           <div className="relative">
-            <div className="flex h-2.5 overflow-hidden rounded-full gap-0.5">
+            <div className="flex h-2.5 gap-0.5 overflow-hidden rounded-full">
               {segments.map((segment, idx) => (
                 <Tooltip key={segment.key}>
                   <TooltipTrigger asChild>
@@ -104,20 +104,20 @@ export function TimingBreakdownBar({
               ))}
             </div>
           </div>
-          <div className="flex items-center justify-between mt-1.5 text-[10px] text-muted-foreground">
+          <div className="mt-1.5 flex items-center justify-between text-[10px] text-muted-foreground">
             <div className="flex items-center gap-2.5">
               {segments.map((segment) => (
                 <span key={segment.key} className="flex items-center gap-1">
                   <span
-                    className={`inline-block w-1.5 h-1.5 rounded-full ${segment.color}`}
+                    className={`inline-block h-1.5 w-1.5 rounded-full ${segment.color}`}
                   />
                   {segment.label}: {formatMs(segment.value)}
                 </span>
               ))}
             </div>
             <span className="font-mono tabular-nums">
-              {formatDateShort(createdAt)}{" "}
-              {formatTimestamp(createdAt)} → {formatTimestamp(finishedAt)}
+              {formatDateShort(createdAt)} {formatTimestamp(createdAt)} →{" "}
+              {formatTimestamp(finishedAt)}
             </span>
           </div>
         </div>
@@ -128,8 +128,8 @@ export function TimingBreakdownBar({
   return (
     <TooltipProvider>
       <div>
-        <div className="flex items-center gap-2 mb-1.5">
-          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+        <div className="mb-1.5 flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
             Timing
           </span>
           <span className="text-xs text-muted-foreground">
@@ -137,7 +137,7 @@ export function TimingBreakdownBar({
           </span>
         </div>
         <div className="relative">
-          <div className="flex h-3 overflow-hidden rounded-full gap-0.5">
+          <div className="flex h-3 gap-0.5 overflow-hidden rounded-full">
             {segments.map((segment, idx) => (
               <Tooltip key={segment.key}>
                 <TooltipTrigger asChild>
@@ -155,13 +155,13 @@ export function TimingBreakdownBar({
             ))}
           </div>
         </div>
-        <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-1.5">
+        <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1.5">
           {segments.map((segment) => (
             <div
               key={segment.key}
               className="flex items-center gap-1 text-[10px]"
             >
-              <div className={`w-2 h-2 rounded-full ${segment.color}`} />
+              <div className={`h-2 w-2 rounded-full ${segment.color}`} />
               <span className="text-muted-foreground">
                 {segment.label}: {formatMs(segment.value)}
               </span>

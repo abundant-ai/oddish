@@ -52,7 +52,15 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { fetcher } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Building2, Check, Copy, Key, Loader2, Plus, Trash2 } from "lucide-react";
+import {
+  Building2,
+  Check,
+  Copy,
+  Key,
+  Loader2,
+  Plus,
+  Trash2,
+} from "lucide-react";
 
 const clerkProfileAppearance = {
   variables: {
@@ -303,7 +311,7 @@ function NewKeyDisplay({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex items-center gap-2 p-3 bg-background border border-border rounded-md font-mono text-sm">
+        <div className="flex items-center gap-2 rounded-md border border-border bg-background p-3 font-mono text-sm">
           <code className="flex-1 break-all">{apiKey}</code>
           <Button variant="ghost" size="sm" onClick={handleCopy}>
             {copied ? (
@@ -369,7 +377,7 @@ function APIKeysCard() {
             </CardTitle>
           </div>
           <Button onClick={() => setShowCreateModal(true)}>
-            <Plus className="h-4 w-4 mr-1" />
+            <Plus className="mr-1 h-4 w-4" />
             Create Key
           </Button>
         </div>
@@ -390,8 +398,8 @@ function APIKeysCard() {
         ) : isLoading ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : !keys || keys.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground">
-            <Key className="h-12 w-12 mx-auto mb-3 opacity-50" />
+          <div className="py-8 text-center text-muted-foreground">
+            <Key className="mx-auto mb-3 h-12 w-12 opacity-50" />
             <p>No API keys yet</p>
             <p className="text-sm">Create one to get started</p>
           </div>
@@ -420,10 +428,10 @@ function APIKeysCard() {
                   <TableCell>
                     <ScopeBadge scope={key.scope} />
                   </TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
+                  <TableCell className="text-sm text-muted-foreground">
                     {formatDateTime(key.last_used_at)}
                   </TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
+                  <TableCell className="text-sm text-muted-foreground">
                     {formatDate(key.created_at)}
                   </TableCell>
                   <TableCell>
@@ -531,7 +539,8 @@ function WorkspaceSelectorCard() {
           <div>
             <CardTitle className="text-base">Workspaces</CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">
-              Switch between organizations and open the active workspace settings.
+              Switch between organizations and open the active workspace
+              settings.
             </p>
           </div>
           <Button size="sm" onClick={() => setShowCreateDialog(true)}>
@@ -554,20 +563,23 @@ function WorkspaceSelectorCard() {
           ) : (
             memberships.map((membership) => {
               const isActive = organization?.id === membership.organization.id;
-              const isSwitching = activatingOrgId === membership.organization.id;
+              const isSwitching =
+                activatingOrgId === membership.organization.id;
 
               return (
                 <Button
                   key={membership.id}
                   type="button"
                   variant="ghost"
-                  onClick={() => handleSelectWorkspace(membership.organization.id)}
+                  onClick={() =>
+                    handleSelectWorkspace(membership.organization.id)
+                  }
                   disabled={isSwitching}
                   className={cn(
                     "h-auto w-full justify-between rounded-xl border px-3 py-3 text-left font-normal transition-colors",
                     isActive
-                      ? "border-[#85b85c]/35 bg-[#85b85c]/10 hover:bg-[#85b85c]/12"
-                      : "border-[#6f88b4]/16 bg-background/70 hover:border-[#85b85c]/25 hover:bg-muted/60",
+                      ? "hover:bg-[#85b85c]/12 border-[#85b85c]/35 bg-[#85b85c]/10"
+                      : "border-[#6f88b4]/16 bg-background/70 hover:border-[#85b85c]/25 hover:bg-muted/60"
                   )}
                 >
                   <div className="flex min-w-0 items-center gap-3">
@@ -575,8 +587,8 @@ function WorkspaceSelectorCard() {
                       className={cn(
                         "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border text-sm font-semibold",
                         isActive
-                          ? "border-[#85b85c]/30 bg-[#85b85c]/12 text-[#5c8e43]"
-                          : "border-[#6f88b4]/18 bg-muted/50 text-muted-foreground",
+                          ? "bg-[#85b85c]/12 border-[#85b85c]/30 text-[#5c8e43]"
+                          : "border-[#6f88b4]/18 bg-muted/50 text-muted-foreground"
                       )}
                     >
                       {membership.organization.name.slice(0, 1).toUpperCase()}
@@ -597,7 +609,7 @@ function WorkspaceSelectorCard() {
                     ) : isActive ? (
                       <Badge
                         variant="outline"
-                        className="border-[#85b85c]/25 bg-[#85b85c]/8 text-[#5c8e43]"
+                        className="bg-[#85b85c]/8 border-[#85b85c]/25 text-[#5c8e43]"
                       >
                         Active
                       </Badge>
@@ -632,8 +644,8 @@ function WorkspaceManagementSection() {
       <div className="space-y-1">
         <h2 className="text-lg font-semibold">Workspace settings</h2>
         <p className="text-sm text-muted-foreground">
-          Switch between organizations, create new workspaces, and manage members
-          from this page.
+          Switch between organizations, create new workspaces, and manage
+          members from this page.
         </p>
       </div>
 
@@ -647,7 +659,7 @@ function WorkspaceManagementSection() {
               appearance={clerkProfileAppearance}
             />
           ) : (
-            <Card className="border-dashed border-[#6f88b4]/28 bg-card/70 shadow-none">
+            <Card className="border-[#6f88b4]/28 border-dashed bg-card/70 shadow-none">
               <CardContent className="flex items-center gap-3 p-6 text-sm text-muted-foreground">
                 <Building2 className="h-4 w-4 shrink-0" />
                 Select a workspace to manage members, roles, and organization

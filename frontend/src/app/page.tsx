@@ -16,7 +16,7 @@ function RedirectToDashboard() {
   }, [router]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
+    <div className="flex min-h-screen items-center justify-center bg-background">
       <p className="text-muted-foreground">Redirecting to dashboard...</p>
     </div>
   );
@@ -89,7 +89,7 @@ export default function LandingPage() {
         <div className="flex min-h-screen flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(133,184,92,0.16),transparent_34%),radial-gradient(circle_at_80%_20%,rgba(111,136,180,0.12),transparent_28%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--background)))] text-foreground">
           {/* Header */}
           <header className="w-full border-b border-emerald-700/15 px-6 py-3 dark:border-emerald-400/10">
-            <div className="max-w-5xl mx-auto flex items-center justify-between">
+            <div className="mx-auto flex max-w-5xl items-center justify-between">
               <div className="flex items-center gap-2">
                 <Image
                   src="/oddish.png"
@@ -98,7 +98,7 @@ export default function LandingPage() {
                   height={32}
                   className="drop-shadow-sm"
                 />
-                <span className="font-semibold text-lg">Oddish</span>
+                <span className="text-lg font-semibold">Oddish</span>
               </div>
               <div className="flex items-center gap-3">
                 <ThemeToggle />
@@ -130,7 +130,7 @@ export default function LandingPage() {
               aria-hidden="true"
               className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_25%_0%,rgba(133,184,92,0.2),transparent_34%),radial-gradient(circle_at_72%_18%,rgba(111,136,180,0.14),transparent_30%),linear-gradient(to_bottom,rgba(0,0,0,0),rgba(0,0,0,0.08))]"
             />
-            <div className="relative max-w-5xl w-full space-y-8 sm:space-y-10">
+            <div className="relative w-full max-w-5xl space-y-8 sm:space-y-10">
               {/* Hero */}
               <div className="grid items-center gap-6 md:grid-cols-[1.05fr_0.95fr]">
                 <div className="text-center md:text-left">
@@ -173,7 +173,7 @@ export default function LandingPage() {
                   <div className="h-3 w-3 rounded-full bg-[#c9cf8a]" />
                   <div className="h-3 w-3 rounded-full bg-[#85b85c]" />
                 </div>
-                <pre className="overflow-x-auto p-4 text-sm leading-relaxed text-zinc-300 sm:p-5 font-mono">
+                <pre className="overflow-x-auto p-4 font-mono text-sm leading-relaxed text-zinc-300 sm:p-5">
                   <code>
                     <span className="text-zinc-500"># Submit a job</span>
                     {"\n"}
@@ -188,7 +188,7 @@ export default function LandingPage() {
                     <span>{typedCommand}</span>
                     <span
                       aria-hidden="true"
-                      className={`ml-1 inline-block h-4 w-2 align-middle bg-[#6f88b4] ${
+                      className={`ml-1 inline-block h-4 w-2 bg-[#6f88b4] align-middle ${
                         cursorVisible ? "opacity-100" : "opacity-0"
                       }`}
                     />
@@ -218,13 +218,13 @@ export default function LandingPage() {
 
           {/* Footer */}
           <footer className="w-full border-t border-[#6f88b4]/15 px-6 py-3 dark:border-[#85b85c]/10">
-            <div className="max-w-5xl mx-auto text-center text-sm text-muted-foreground">
+            <div className="mx-auto max-w-5xl text-center text-sm text-muted-foreground">
               by{" "}
               <a
                 href="https://abundantdata.com/"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="hover:text-foreground transition-colors"
+                className="transition-colors hover:text-foreground"
               >
                 Abundant AI
               </a>

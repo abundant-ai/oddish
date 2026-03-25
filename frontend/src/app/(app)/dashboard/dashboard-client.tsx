@@ -81,7 +81,7 @@ const STATUS_FILTER_OPTIONS = [
 
 function useDashboardUsage(
   usageMinutes: number | null,
-  fallbackData?: DashboardResponse | null,
+  fallbackData?: DashboardResponse | null
 ) {
   const params = new URLSearchParams({
     include_tasks: "false",
@@ -102,14 +102,14 @@ function useDashboardUsage(
           (stats) =>
             (Number(stats.running) || 0) > 0 ||
             (Number(stats.queued) || 0) > 0 ||
-            (Number(stats.retrying) || 0) > 0,
+            (Number(stats.retrying) || 0) > 0
         );
         return hasActiveQueue ? 30000 : 90000;
       },
       revalidateOnFocus: false,
       keepPreviousData: true,
       fallbackData: fallbackData ?? undefined,
-    },
+    }
   );
 
   return {
@@ -130,7 +130,7 @@ function useDashboardExperiments(
   experimentsOffset: number,
   experimentsQuery: string,
   experimentsStatus: string,
-  fallbackData?: DashboardResponse | null,
+  fallbackData?: DashboardResponse | null
 ) {
   const params = new URLSearchParams({
     experiments_limit: String(experimentsLimit),
@@ -155,7 +155,7 @@ function useDashboardExperiments(
         experimentsStatus === "all"
           ? (fallbackData ?? undefined)
           : undefined,
-    },
+    }
   );
 
   return {
@@ -406,7 +406,7 @@ function UsageOverviewCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [isCustomPickerOpen, setIsCustomPickerOpen] = useState(
-    timeRange.startsWith("custom:"),
+    timeRange.startsWith("custom:")
   );
   const [customMagnitude, setCustomMagnitude] = useState("2");
   const [customUnit, setCustomUnit] = useState<"m" | "h" | "d">("h");
@@ -429,57 +429,54 @@ function UsageOverviewCard({
     setCustomUnit("m");
   }, [timeRange]);
 
-  const usageRows = useMemo(
-    () => {
-      const mergedRows = new Map<string, UsageRow>();
+  const usageRows = useMemo(() => {
+    const mergedRows = new Map<string, UsageRow>();
 
-      for (const usage of modelUsage) {
-        const queueKey = usage.model || usage.provider || "unknown";
-        const queueStats = queues?.[queueKey];
-        mergedRows.set(queueKey, {
-          key: queueKey,
-          queueKey,
-          model: usage.model,
-          provider: usage.provider,
-          jobCount: getQueueTotalJobs(queueStats) || usage.trial_count,
-          inputTokens: usage.input_tokens,
-          outputTokens: usage.output_tokens,
-          cacheTokens: usage.cache_tokens,
-          costUsd: usage.cost_usd,
-          running: queueStats ? (Number(queueStats.running) || 0) : usage.running,
-          queued: queueStats ? getQueueQueuedJobs(queueStats) : usage.queued,
-          retrying: queueStats ? (Number(queueStats.retrying) || 0) : 0,
-          avgDurationS: usage.avg_duration_s,
-          hasUsageMetrics: true,
-        });
-      }
+    for (const usage of modelUsage) {
+      const queueKey = usage.model || usage.provider || "unknown";
+      const queueStats = queues?.[queueKey];
+      mergedRows.set(queueKey, {
+        key: queueKey,
+        queueKey,
+        model: usage.model,
+        provider: usage.provider,
+        jobCount: getQueueTotalJobs(queueStats) || usage.trial_count,
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+        cacheTokens: usage.cache_tokens,
+        costUsd: usage.cost_usd,
+        running: queueStats ? Number(queueStats.running) || 0 : usage.running,
+        queued: queueStats ? getQueueQueuedJobs(queueStats) : usage.queued,
+        retrying: queueStats ? Number(queueStats.retrying) || 0 : 0,
+        avgDurationS: usage.avg_duration_s,
+        hasUsageMetrics: true,
+      });
+    }
 
-      for (const [queueKey, queueStats] of Object.entries(queues ?? {})) {
-        const totalJobs = getQueueTotalJobs(queueStats);
-        if (mergedRows.has(queueKey) || totalJobs === 0) continue;
+    for (const [queueKey, queueStats] of Object.entries(queues ?? {})) {
+      const totalJobs = getQueueTotalJobs(queueStats);
+      if (mergedRows.has(queueKey) || totalJobs === 0) continue;
 
-        mergedRows.set(queueKey, {
-          key: queueKey,
-          queueKey,
-          model: queueKey,
-          provider: inferProviderFromQueueKey(queueKey),
-          jobCount: totalJobs,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheTokens: 0,
-          costUsd: 0,
-          running: Number(queueStats.running) || 0,
-          queued: getQueueQueuedJobs(queueStats),
-          retrying: Number(queueStats.retrying) || 0,
-          avgDurationS: null,
-          hasUsageMetrics: false,
-        });
-      }
+      mergedRows.set(queueKey, {
+        key: queueKey,
+        queueKey,
+        model: queueKey,
+        provider: inferProviderFromQueueKey(queueKey),
+        jobCount: totalJobs,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheTokens: 0,
+        costUsd: 0,
+        running: Number(queueStats.running) || 0,
+        queued: getQueueQueuedJobs(queueStats),
+        retrying: Number(queueStats.retrying) || 0,
+        avgDurationS: null,
+        hasUsageMetrics: false,
+      });
+    }
 
-      return Array.from(mergedRows.values());
-    },
-    [modelUsage, queues],
-  );
+    return Array.from(mergedRows.values());
+  }, [modelUsage, queues]);
 
   const sortedUsageRows = useMemo(
     () =>
@@ -494,7 +491,7 @@ function UsageOverviewCard({
         if (a.jobCount !== b.jobCount) return b.jobCount - a.jobCount;
         return a.model.localeCompare(b.model);
       }),
-    [usageRows],
+    [usageRows]
   );
 
   const totals = useMemo(
@@ -519,9 +516,9 @@ function UsageOverviewCard({
           running: 0,
           queued: 0,
           retrying: 0,
-        },
+        }
       ),
-    [usageRows],
+    [usageRows]
   );
 
   const selectedWindowValue = timeRange.startsWith("custom:")
@@ -539,7 +536,7 @@ function UsageOverviewCard({
       customUnit === "d" ? 1440 : customUnit === "h" ? 60 : 1;
     const minutes = Math.min(
       86400,
-      Math.max(1, roundedMagnitude * minutesPerUnit),
+      Math.max(1, roundedMagnitude * minutesPerUnit)
     );
     onTimeRangeChange(`custom:${minutes}`);
     setIsCustomPickerOpen(false);
@@ -712,31 +709,29 @@ function UsageOverviewCard({
               )}
               {/* Summary stats row */}
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                <div className="rounded-md border border-[#6f88b4]/18 bg-background/70 p-2 text-center">
+                <div className="border-[#6f88b4]/18 rounded-md border bg-background/70 p-2 text-center">
                   <div className="text-base font-bold tabular-nums">
                     {formatCost(totals.cost)}
                   </div>
                   <div className="text-[10px] text-muted-foreground">Cost</div>
                 </div>
-                <div className="rounded-md border border-[#6f88b4]/18 bg-background/70 p-2 text-center">
+                <div className="border-[#6f88b4]/18 rounded-md border bg-background/70 p-2 text-center">
                   <div className="text-base font-bold tabular-nums">
                     {formatCompactNumber(
-                      totals.inputTokens + totals.outputTokens,
+                      totals.inputTokens + totals.outputTokens
                     )}
                   </div>
                   <div className="text-[10px] text-muted-foreground">
                     Tokens
                   </div>
                 </div>
-                <div className="rounded-md border border-[#6f88b4]/18 bg-background/70 p-2 text-center">
+                <div className="border-[#6f88b4]/18 rounded-md border bg-background/70 p-2 text-center">
                   <div className="text-base font-bold tabular-nums">
                     {totals.jobs}
                   </div>
-                  <div className="text-[10px] text-muted-foreground">
-                    Jobs
-                  </div>
+                  <div className="text-[10px] text-muted-foreground">Jobs</div>
                 </div>
-                <div className="rounded-md border border-[#85b85c]/18 bg-background/70 p-2 text-center">
+                <div className="border-[#85b85c]/18 rounded-md border bg-background/70 p-2 text-center">
                   <div className="text-base font-bold tabular-nums">
                     {totals.running + totals.queued + totals.retrying}
                   </div>
@@ -778,7 +773,7 @@ function UsageOverviewCard({
                                   size={12}
                                 />
                                 <span
-                                  className="text-xs font-medium font-mono"
+                                  className="font-mono text-xs font-medium"
                                   title={row.model}
                                 >
                                   {row.model}
@@ -814,10 +809,10 @@ function UsageOverviewCard({
                                 {row.running === 0 &&
                                   row.queued === 0 &&
                                   row.retrying === 0 && (
-                                  <span className="text-[10px] text-muted-foreground">
-                                    —
-                                  </span>
-                                )}
+                                    <span className="text-[10px] text-muted-foreground">
+                                      —
+                                    </span>
+                                  )}
                               </div>
                             </TableCell>
                             <TableCell className="text-right font-mono text-xs">
@@ -879,8 +874,8 @@ function UsageOverviewCard({
                     {formatCost(totals.cost)}
                   </span>
                   <span>
-                    Statuses include trial, analysis, and verdict jobs; token and
-                    cost metrics come from trial runs.
+                    Statuses include trial, analysis, and verdict jobs; token
+                    and cost metrics come from trial runs.
                   </span>
                 </div>
               )}
@@ -937,8 +932,8 @@ function RecentTasksCard({
   const [isDeleting, setIsDeleting] = useState(false);
   const hasFilters = searchQuery.trim().length > 0 || statusFilter !== "all";
   const statusFilterLabel =
-    STATUS_FILTER_OPTIONS.find((option) => option.value === statusFilter)?.label ??
-    "Filter status";
+    STATUS_FILTER_OPTIONS.find((option) => option.value === statusFilter)
+      ?.label ?? "Filter status";
 
   const handleDeleteExperiment = async () => {
     if (!deleteTarget || isDeleting) return;
@@ -948,13 +943,13 @@ function RecentTasksCard({
     try {
       const res = await fetch(
         `/api/experiments/${encodeExperimentRouteParam(deleteTarget.id)}`,
-        { method: "DELETE" },
+        { method: "DELETE" }
       );
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         throw new Error(
-          errorData.detail || errorData.error || "Failed to delete experiment",
+          errorData.detail || errorData.error || "Failed to delete experiment"
         );
       }
 
@@ -962,7 +957,7 @@ function RecentTasksCard({
       setDeleteTarget(null);
     } catch (error) {
       setDeleteError(
-        error instanceof Error ? error.message : "Failed to delete experiment",
+        error instanceof Error ? error.message : "Failed to delete experiment"
       );
     } finally {
       setIsDeleting(false);
@@ -1006,7 +1001,10 @@ function RecentTasksCard({
                 onValueChange={onStatusFilterChange}
               >
                 {STATUS_FILTER_OPTIONS.map((option) => (
-                  <DropdownMenuRadioItem key={option.value} value={option.value}>
+                  <DropdownMenuRadioItem
+                    key={option.value}
+                    value={option.value}
+                  >
                     {option.label}
                   </DropdownMenuRadioItem>
                 ))}
@@ -1028,7 +1026,7 @@ function RecentTasksCard({
         ) : !isLoading && totalExperiments === 0 && !hasFilters ? (
           <EmptyExperimentsState />
         ) : experiments.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground">
+          <div className="py-8 text-center text-muted-foreground">
             <p>No experiments match the current filters.</p>
           </div>
         ) : (
@@ -1053,7 +1051,7 @@ function RecentTasksCard({
                       ? Math.round(
                           (experiment.reward_success /
                             experiment.reward_total) *
-                            100,
+                            100
                         )
                       : null;
 
@@ -1063,7 +1061,7 @@ function RecentTasksCard({
                         <div className="flex items-center gap-1.5">
                           <Link
                             href={`/experiments/${encodeExperimentRouteParam(
-                              experiment.id,
+                              experiment.id
                             )}`}
                             className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
                           >
@@ -1077,12 +1075,12 @@ function RecentTasksCard({
                           )}
                         </div>
                       </TableCell>
-                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                         <span className="text-foreground/80">
                           {formatTaskAuthor(experiment.last_author)}
                         </span>
                       </TableCell>
-                      <TableCell className="text-xs whitespace-nowrap">
+                      <TableCell className="whitespace-nowrap text-xs">
                         {experiment.last_pr_url ? (
                           <Link
                             href={experiment.last_pr_url}
@@ -1101,7 +1099,7 @@ function RecentTasksCard({
                         )}
                       </TableCell>
                       <TableCell>{experiment.task_count}</TableCell>
-                      <TableCell className="font-mono text-xs whitespace-nowrap">
+                      <TableCell className="whitespace-nowrap font-mono text-xs">
                         {experiment.completed_trials}/{experiment.total_trials}
                         {experiment.failed_trials > 0 && (
                           <span className="text-rose-400">
@@ -1127,7 +1125,7 @@ function RecentTasksCard({
                           </span>
                         )}
                       </TableCell>
-                      <TableCell className="text-muted-foreground text-xs text-right whitespace-nowrap">
+                      <TableCell className="whitespace-nowrap text-right text-xs text-muted-foreground">
                         {experiment.last_created_at
                           ? formatShortDateTime(experiment.last_created_at)
                           : "—"}
@@ -1257,7 +1255,7 @@ export function DashboardClient({
     isRefreshing: usageIsRefreshing,
   } = useDashboardUsage(
     usageMinutes,
-    usageMinutes === 1440 ? initialDashboardData : null,
+    usageMinutes === 1440 ? initialDashboardData : null
   );
   const {
     experiments,
@@ -1273,7 +1271,7 @@ export function DashboardClient({
     statusFilter,
     deferredSearchQuery.trim().length === 0 && statusFilter === "all"
       ? initialDashboardData
-      : null,
+      : null
   );
   const currentExperimentsPage =
     Math.floor(experimentsOffset / EXPERIMENTS_PAGE_SIZE) + 1;
@@ -1337,7 +1335,7 @@ export function DashboardClient({
             <CardTitle className="text-base">Recent Experiments</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-muted-foreground text-sm">Loading table…</p>
+            <p className="text-sm text-muted-foreground">Loading table…</p>
           </CardContent>
         </Card>
       )}

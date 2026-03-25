@@ -58,7 +58,7 @@ async def _enqueue_job(
             "payload": payload_bytes,
         },
     )
-    job_id = result.scalar_one()
+    job_id: int = result.scalar_one()
     await session.execute(
         text(
             """
@@ -141,7 +141,11 @@ async def enqueue_verdict(
     await _enqueue_job(
         session,
         entrypoint=resolved_queue_key,
-        payload={"job_type": "verdict", "task_id": task_id, "queue_key": resolved_queue_key},
+        payload={
+            "job_type": "verdict",
+            "task_id": task_id,
+            "queue_key": resolved_queue_key,
+        },
         priority=priority,
     )
 
@@ -348,9 +352,9 @@ async def _get_or_create_experiment(
     result = await session.execute(
         query.order_by(ExperimentModel.created_at.desc()).limit(1)
     )
-    experiment = result.scalar_one_or_none()
-    if experiment:
-        return experiment
+    existing: ExperimentModel | None = result.scalar_one_or_none()
+    if existing:
+        return existing
 
     experiment = ExperimentModel(name=name, org_id=org_id)
     session.add(experiment)

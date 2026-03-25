@@ -22,7 +22,9 @@ _MODEL_ABSENT_ALIASES: tuple[str, ...] = ("", "-", "none", "null", "nil", "n/a",
 
 async def _table_exists(session: AsyncSession, table_name: str) -> bool:
     row = (
-        await session.execute(text("SELECT to_regclass(:table_name)"), {"table_name": table_name})
+        await session.execute(
+            text("SELECT to_regclass(:table_name)"), {"table_name": table_name}
+        )
     ).scalar_one()
     return row is not None
 
@@ -94,7 +96,7 @@ async def _apply_simple_updates(
                 ),
                 {"old_key": old_key, "new_key": new_key},
             )
-            updated += max(int(result.rowcount or 0), 0)
+            updated += max(int(result.rowcount or 0), 0)  # type: ignore[attr-defined]
         updated_by_table[table_name] = updated
     return updated_by_table
 
@@ -129,8 +131,8 @@ async def _apply_queue_slot_updates(
             text("DELETE FROM queue_slots WHERE queue_key = :old_key"),
             {"old_key": old_key},
         )
-        inserted_total += max(int(inserted.rowcount or 0), 0)
-        deleted_total += max(int(deleted.rowcount or 0), 0)
+        inserted_total += max(int(inserted.rowcount or 0), 0)  # type: ignore[attr-defined]
+        deleted_total += max(int(deleted.rowcount or 0), 0)  # type: ignore[attr-defined]
 
     return {
         "queue_slots_inserted": inserted_total,
@@ -175,7 +177,7 @@ async def _apply_nop_oracle_default_model_updates(session: AsyncSession) -> int:
         ),
         {"aliases": list(_MODEL_ABSENT_ALIASES)},
     )
-    return int(result.rowcount or 0)
+    return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
 
 async def run_backfill(*, apply: bool) -> None:

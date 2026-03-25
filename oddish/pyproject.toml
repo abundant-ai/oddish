@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "oddish"
-version = "0.1.2"
-description = "Postgres-backed eval scheduler for Harbor agent tasks — queuing, retries, and monitoring"
+version = "0.1.3"
+description = "Run Harbor tasks in the cloud with scheduling, monitoring, and persistent state"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
@@ -83,6 +83,7 @@ include = ["src/oddish/analyze/*.txt"]
 
 [tool.mypy]
 python_version = "3.12"
+mypy_path = ["src"]
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
@@ -90,12 +91,15 @@ ignore_missing_imports = false
 namespace_packages = true
 explicit_package_bases = true
 
-# SQLAlchemy 2.0 type stub compatibility
 [[tool.mypy.overrides]]
 module = [
     "sqlalchemy.orm.*",
     "sqlalchemy.ext.asyncio.*",
     "pgqueuer.*",
+    "harbor.*",
+    "asyncpg.*",
+    "aioboto3.*",
+    "google.generativeai.*",
 ]
 ignore_missing_imports = true
 

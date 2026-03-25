@@ -24,7 +24,7 @@ export default function DatasetsLandingPage() {
     {
       refreshInterval: 30000,
       revalidateOnFocus: false,
-    },
+    }
   );
   const datasets = Array.isArray(data) ? data : [];
 
@@ -32,7 +32,7 @@ export default function DatasetsLandingPage() {
     <>
       <Nav />
 
-      <main className="px-4 py-8 max-w-5xl mx-auto w-full space-y-3">
+      <main className="mx-auto w-full max-w-5xl space-y-3 px-4 py-8">
         {error && (
           <Alert variant="destructive">
             <AlertTitle>Failed to load datasets</AlertTitle>

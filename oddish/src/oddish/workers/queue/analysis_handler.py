@@ -29,6 +29,8 @@ async def run_analysis_job(job: Job, queue_key: str) -> None:
     """
     from oddish.analyze import TrialClassifier
 
+    if job.payload is None:
+        raise ValueError("Analysis job has empty payload")
     payload = json.loads(job.payload.decode())
     trial_id = payload.get("trial_id")
 

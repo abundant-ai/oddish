@@ -54,7 +54,7 @@ function getStageDuration(
   stageId: string,
   phaseTiming: PhaseTiming | null | undefined,
   startedAt: string | null | undefined,
-  finishedAt: string | null | undefined,
+  finishedAt: string | null | undefined
 ): string | null {
   if (!phaseTiming) return null;
 
@@ -136,7 +136,7 @@ export function HarborStageTimeline({
               <div className="relative z-10 flex-shrink-0">
                 {isCompleted ? (
                   <div
-                    className={`w-5 h-5 rounded-full border flex items-center justify-center ${completedBg}`}
+                    className={`flex h-5 w-5 items-center justify-center rounded-full border ${completedBg}`}
                   >
                     {isTerminalFailed ? (
                       <AlertCircle className="h-2.5 w-2.5 text-red-400" />
@@ -145,37 +145,37 @@ export function HarborStageTimeline({
                     )}
                   </div>
                 ) : isCurrent ? (
-                  <div className="w-5 h-5 rounded-full bg-blue-500/20 border border-blue-500 flex items-center justify-center">
+                  <div className="flex h-5 w-5 items-center justify-center rounded-full border border-blue-500 bg-blue-500/20">
                     {isFailed || isCancelled ? (
                       <AlertCircle className="h-2.5 w-2.5 text-red-400" />
                     ) : (
-                      <Clock className="h-2.5 w-2.5 text-blue-400 animate-pulse" />
+                      <Clock className="h-2.5 w-2.5 animate-pulse text-blue-400" />
                     )}
                   </div>
                 ) : (
-                  <div className="w-5 h-5 rounded-full bg-muted border border-muted-foreground/20" />
+                  <div className="h-5 w-5 rounded-full border border-muted-foreground/20 bg-muted" />
                 )}
               </div>
 
               {!isLast && (
                 <div
-                  className={`w-0.5 h-6 ${isCompleted ? completedLine : "bg-muted"}`}
+                  className={`h-6 w-0.5 ${isCompleted ? completedLine : "bg-muted"}`}
                 />
               )}
             </div>
 
             {/* Stage info */}
-            <div className="flex-1 flex items-baseline justify-between gap-2 pb-2.5">
+            <div className="flex flex-1 items-baseline justify-between gap-2 pb-2.5">
               {(isCompleted || isCurrent) && onStageClick ? (
                 <Button
                   type="button"
                   variant="ghost"
                   onClick={() => onStageClick(stage.id)}
                   className={cn(
-                    "h-auto -mx-1.5 -my-0.5 px-1.5 py-0.5 text-left text-xs font-medium leading-normal hover:bg-muted hover:underline hover:underline-offset-2",
+                    "-mx-1.5 -my-0.5 h-auto px-1.5 py-0.5 text-left text-xs font-medium leading-normal hover:bg-muted hover:underline hover:underline-offset-2",
                     isCompleted || isCurrent
                       ? "text-foreground"
-                      : "text-muted-foreground",
+                      : "text-muted-foreground"
                   )}
                 >
                   {stageLabel}
@@ -186,7 +186,7 @@ export function HarborStageTimeline({
                     "text-xs font-medium",
                     isCompleted || isCurrent
                       ? "text-foreground"
-                      : "text-muted-foreground",
+                      : "text-muted-foreground"
                   )}
                 >
                   {stageLabel}
@@ -194,7 +194,7 @@ export function HarborStageTimeline({
               )}
 
               {duration && (
-                <span className="text-[10px] tabular-nums text-muted-foreground shrink-0">
+                <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
                   {duration}
                 </span>
               )}
@@ -207,10 +207,10 @@ export function HarborStageTimeline({
         <div className="flex gap-2">
           <div className="relative z-10 flex-shrink-0">
             <div
-              className={`w-5 h-5 rounded-full border flex items-center justify-center ${
+              className={`flex h-5 w-5 items-center justify-center rounded-full border ${
                 isCancelled
-                  ? "bg-red-500/20 border-red-500"
-                  : "bg-gray-500/20 border-gray-500"
+                  ? "border-red-500 bg-red-500/20"
+                  : "border-gray-500 bg-gray-500/20"
               }`}
             >
               <AlertCircle

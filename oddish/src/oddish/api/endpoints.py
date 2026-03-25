@@ -49,7 +49,7 @@ async def get_task_for_org_core(
     if org_id is not None:
         query = query.where(TaskModel.org_id == org_id)
     result = await session.execute(query)
-    task = result.scalar_one_or_none()
+    task: TaskModel | None = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
     return task
@@ -231,14 +231,16 @@ async def get_trial_for_org_core(
 ) -> TrialModel:
     """Fetch a trial with optional org scoping via its task."""
     result = await session.execute(select(TrialModel).where(TrialModel.id == trial_id))
-    trial = result.scalar_one_or_none()
+    trial: TrialModel | None = result.scalar_one_or_none()
     if not trial:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
     if org_id is not None:
         if trial.org_id is not None:
             if trial.org_id != org_id:
-                raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+                raise HTTPException(
+                    status_code=404, detail=f"Trial {trial_id} not found"
+                )
         else:
             # Fallback for legacy rows where trial.org_id is not populated.
             task_org_result = await session.execute(
@@ -246,7 +248,9 @@ async def get_trial_for_org_core(
             )
             task_org_id = task_org_result.scalar_one_or_none()
             if task_org_id != org_id:
-                raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+                raise HTTPException(
+                    status_code=404, detail=f"Trial {trial_id} not found"
+                )
 
     return trial
 
@@ -289,7 +293,9 @@ async def retry_trial_core(
     trial.idempotency_key = None
 
     pgq_priority = 1000 if task.priority == Priority.HIGH else 0
-    queue_key = trial.queue_key or settings.get_queue_key_for_trial(trial.agent, trial.model)
+    queue_key = trial.queue_key or settings.get_queue_key_for_trial(
+        trial.agent, trial.model
+    )
     await enqueue_trial(session, trial_id, queue_key, priority=pgq_priority)
 
     # Move completed tasks back to running once a trial is requeued.
@@ -499,7 +505,8 @@ async def rerun_task_verdict_core(
         )
 
     if any(
-        trial.analysis_status in (None, AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
+        trial.analysis_status
+        in (None, AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
         for trial in task.trials
     ):
         raise HTTPException(

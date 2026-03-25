@@ -8,7 +8,7 @@ import {
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: Promise<{ key_id: string }> },
+  { params }: { params: Promise<{ key_id: string }> }
 ) {
   try {
     const { getToken } = await auth();
@@ -31,7 +31,7 @@ export async function DELETE(
       console.error(`[api-keys] Backend error: ${res.status} - ${errorText}`);
       return NextResponse.json(
         { error: "Failed to revoke API key", details: errorText },
-        { status: res.status },
+        { status: res.status }
       );
     }
 
@@ -40,7 +40,7 @@ export async function DELETE(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }

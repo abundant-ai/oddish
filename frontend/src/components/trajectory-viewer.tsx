@@ -48,7 +48,7 @@ function formatMs(ms: number): string {
 
 function formatStepDuration(
   prevTimestamp: string | null,
-  currentTimestamp: string | null,
+  currentTimestamp: string | null
 ): string | null {
   if (!prevTimestamp || !currentTimestamp) return null;
   const prev = new Date(prevTimestamp).getTime();
@@ -77,7 +77,7 @@ interface ImageError {
 }
 
 function getTextFromContent(
-  content: MessageContent | ObservationContent,
+  content: MessageContent | ObservationContent
 ): string {
   if (content === null || content === undefined) {
     return "";
@@ -88,14 +88,14 @@ function getTextFromContent(
 
   return content
     .filter(
-      (part): part is ContentPart & { type: "text" } => part.type === "text",
+      (part): part is ContentPart & { type: "text" } => part.type === "text"
     )
     .map((part) => part.text || "")
     .join("\n");
 }
 
 function getFirstLine(
-  content: MessageContent | ObservationContent,
+  content: MessageContent | ObservationContent
 ): string | null {
   const text = getTextFromContent(content);
   return text?.split("\n")[0] || null;
@@ -125,20 +125,20 @@ function ImageWithFallback({ src, path }: { src: string; path: string }) {
   if (error) {
     return (
       <div className="my-2">
-        <div className="text-sm bg-muted/50 rounded border border-dashed border-muted-foreground/50 p-4">
-          <div className="flex items-center gap-2 text-muted-foreground mb-2">
+        <div className="rounded border border-dashed border-muted-foreground/50 bg-muted/50 p-4 text-sm">
+          <div className="mb-2 flex items-center gap-2 text-muted-foreground">
             <ImageOff className="h-4 w-4" />
             <span className="font-medium">Image unavailable</span>
             {error.status > 0 && (
-              <span className="text-xs bg-muted px-1.5 py-0.5 rounded">
+              <span className="rounded bg-muted px-1.5 py-0.5 text-xs">
                 {error.status}
               </span>
             )}
           </div>
-          <div className="text-xs font-mono text-muted-foreground/80 break-all">
+          <div className="break-all font-mono text-xs text-muted-foreground/80">
             {path}
           </div>
-          <div className="text-xs text-muted-foreground/60 mt-2">
+          <div className="mt-2 text-xs text-muted-foreground/60">
             {error.message}
           </div>
         </div>
@@ -151,12 +151,12 @@ function ImageWithFallback({ src, path }: { src: string; path: string }) {
       <img
         src={src}
         alt={`Image: ${path}`}
-        className="max-w-full h-auto rounded border border-border"
+        className="h-auto max-w-full rounded border border-border"
         style={{ maxHeight: "400px" }}
         loading="lazy"
         onError={handleError}
       />
-      <div className="text-xs text-muted-foreground mt-1">{path}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{path}</div>
     </div>
   );
 }
@@ -171,14 +171,14 @@ function ContentRenderer({
   apiBaseUrl: string;
 }) {
   if (content === null || content === undefined) {
-    return <span className="text-muted-foreground italic">(empty)</span>;
+    return <span className="italic text-muted-foreground">(empty)</span>;
   }
 
   if (typeof content === "string") {
     return (
-      <div className="text-sm whitespace-pre-wrap break-words">
+      <div className="whitespace-pre-wrap break-words text-sm">
         {content || (
-          <span className="text-muted-foreground italic">(empty)</span>
+          <span className="italic text-muted-foreground">(empty)</span>
         )}
       </div>
     );
@@ -189,7 +189,7 @@ function ContentRenderer({
       {content.map((part, idx) => {
         if (part.type === "text") {
           return (
-            <div key={idx} className="text-sm whitespace-pre-wrap break-words">
+            <div key={idx} className="whitespace-pre-wrap break-words text-sm">
               {part.text}
             </div>
           );
@@ -261,7 +261,7 @@ function StepDurationBar({
   if (totalMs === 0) {
     return (
       <div className="mb-4">
-        <div className="h-6 bg-muted rounded" />
+        <div className="h-6 rounded bg-muted" />
       </div>
     );
   }
@@ -294,7 +294,7 @@ function StepDurationBar({
                 <Tooltip key={step.stepId} open={isHovered}>
                   <TooltipTrigger asChild>
                     <div
-                      className="transition-all duration-150 cursor-pointer hover:brightness-110"
+                      className="cursor-pointer transition-all duration-150 hover:brightness-110"
                       style={{
                         width: `${widthPercent}%`,
                         backgroundColor: getOscillatingColor(idx),
@@ -370,8 +370,8 @@ function TokenUsageBar({ metrics }: { metrics: FinalMetrics | null }) {
   return (
     <TooltipProvider>
       <div className="mb-4">
-        <div className="flex items-center gap-2 mb-1.5">
-          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+        <div className="mb-1.5 flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
             Tokens
           </span>
           <span className="text-xs text-muted-foreground">
@@ -379,7 +379,7 @@ function TokenUsageBar({ metrics }: { metrics: FinalMetrics | null }) {
           </span>
         </div>
         <div className="relative">
-          <div className="flex h-3 overflow-hidden rounded-full gap-0.5">
+          <div className="flex h-3 gap-0.5 overflow-hidden rounded-full">
             {segments.map((segment, idx) => (
               <Tooltip key={segment.key}>
                 <TooltipTrigger asChild>
@@ -397,13 +397,13 @@ function TokenUsageBar({ metrics }: { metrics: FinalMetrics | null }) {
             ))}
           </div>
         </div>
-        <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-1.5">
+        <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1.5">
           {segments.map((segment) => (
             <div
               key={segment.key}
               className="flex items-center gap-1 text-[10px]"
             >
-              <div className={`w-2 h-2 rounded-full ${segment.color}`} />
+              <div className={`h-2 w-2 rounded-full ${segment.color}`} />
               <span className="text-muted-foreground">
                 {segment.label}: {segment.value.toLocaleString()}
               </span>
@@ -450,7 +450,7 @@ function StepMetricsBar({ metrics }: { metrics: TrajectoryStep["metrics"] }) {
       {/* Mini token bar */}
       {total > 0 && (
         <div className="flex items-center gap-1.5">
-          <div className="flex h-1.5 w-16 overflow-hidden rounded-full gap-px">
+          <div className="flex h-1.5 w-16 gap-px overflow-hidden rounded-full">
             {segments.map((segment) => (
               <div
                 key={segment.key}
@@ -465,13 +465,13 @@ function StepMetricsBar({ metrics }: { metrics: TrajectoryStep["metrics"] }) {
       {/* Token breakdown */}
       {segments.map((segment) => (
         <span key={segment.key} className="flex items-center gap-1">
-          <span className={`w-1.5 h-1.5 rounded-full ${segment.color}`} />
+          <span className={`h-1.5 w-1.5 rounded-full ${segment.color}`} />
           {segment.value.toLocaleString()}
         </span>
       ))}
       {/* Cost */}
       {metrics.cost_usd && metrics.cost_usd > 0 && (
-        <span className="text-green-500 font-medium">
+        <span className="font-medium text-green-500">
           ${metrics.cost_usd.toFixed(4)}
         </span>
       )}
@@ -510,9 +510,9 @@ function StepTrigger({
   const firstLine = getFirstLine(step.message)?.slice(0, 60) || null;
 
   return (
-    <div className="flex-1 min-w-0 flex items-center gap-3 overflow-hidden pr-2">
-      <div className="flex items-center gap-2 shrink-0">
-        <span className="text-xs text-muted-foreground font-mono">
+    <div className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden pr-2">
+      <div className="flex shrink-0 items-center gap-2">
+        <span className="font-mono text-xs text-muted-foreground">
           #{step.step_id}
         </span>
         <span
@@ -527,15 +527,15 @@ function StepTrigger({
         )}
       </div>
 
-      <span className="text-xs text-muted-foreground truncate min-w-0 flex-1">
+      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
         {firstLine || <span className="italic">No message</span>}
       </span>
 
-      <div className="flex items-center gap-1.5 shrink-0">
+      <div className="flex shrink-0 items-center gap-1.5">
         {stepDuration && (
           <Badge
             variant="secondary"
-            className="text-[10px] font-normal px-1.5 py-0"
+            className="px-1.5 py-0 text-[10px] font-normal"
           >
             +{stepDuration}
           </Badge>
@@ -543,7 +543,7 @@ function StepTrigger({
         {sinceStart && (
           <Badge
             variant="outline"
-            className="text-[10px] font-normal px-1.5 py-0"
+            className="px-1.5 py-0 text-[10px] font-normal"
           >
             @{sinceStart}
           </Badge>
@@ -567,7 +567,7 @@ function StepContent({
   apiBaseUrl: string;
 }) {
   const [expandedToolCalls, setExpandedToolCalls] = useState<Set<string>>(
-    new Set(),
+    new Set()
   );
 
   const toggleToolCall = (id: string) => {
@@ -596,10 +596,10 @@ function StepContent({
       {/* Reasoning */}
       {step.reasoning_content && (
         <div>
-          <h5 className="text-xs font-medium text-muted-foreground mb-1">
+          <h5 className="mb-1 text-xs font-medium text-muted-foreground">
             Reasoning
           </h5>
-          <div className="text-xs bg-blue-500/10 border border-blue-500/20 p-2 rounded whitespace-pre-wrap">
+          <div className="whitespace-pre-wrap rounded border border-blue-500/20 bg-blue-500/10 p-2 text-xs">
             {step.reasoning_content}
           </div>
         </div>
@@ -608,7 +608,7 @@ function StepContent({
       {/* Tool Calls */}
       {step.tool_calls && step.tool_calls.length > 0 && (
         <div>
-          <h5 className="text-xs font-medium text-muted-foreground mb-1">
+          <h5 className="mb-1 text-xs font-medium text-muted-foreground">
             Tool Calls
           </h5>
           <div className="space-y-2">
@@ -620,19 +620,19 @@ function StepContent({
               return (
                 <div
                   key={tc.tool_call_id}
-                  className="border border-purple-500/20 rounded overflow-hidden"
+                  className="overflow-hidden rounded border border-purple-500/20"
                 >
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
                     onClick={() => toggleToolCall(tc.tool_call_id)}
-                    className="w-full justify-start gap-2 px-2 py-1.5 bg-purple-500/10 hover:bg-purple-500/15 text-left"
+                    className="w-full justify-start gap-2 bg-purple-500/10 px-2 py-1.5 text-left hover:bg-purple-500/15"
                   >
                     <ChevronRight
                       className={`h-3 w-3 text-purple-500 transition-transform ${isExpanded ? "rotate-90" : ""}`}
                     />
-                    <span className="text-xs font-mono text-purple-500">
+                    <span className="font-mono text-xs text-purple-500">
                       {tc.function_name}
                     </span>
                     {!isExpanded && isLongArgs && (
@@ -658,7 +658,7 @@ function StepContent({
       {/* Observations */}
       {step.observation && step.observation.results.length > 0 && (
         <div>
-          <h5 className="text-xs font-medium text-muted-foreground mb-1">
+          <h5 className="mb-1 text-xs font-medium text-muted-foreground">
             Observations
           </h5>
           <div className="space-y-2">
@@ -682,7 +682,7 @@ function StepContent({
               return (
                 <div
                   key={idx}
-                  className="border border-border/60 rounded p-2 bg-muted/20"
+                  className="rounded border border-border/60 bg-muted/20 p-2"
                 >
                   <ContentRenderer
                     content={result.content}
@@ -698,7 +698,7 @@ function StepContent({
 
       {/* Metrics */}
       {step.metrics && (
-        <div className="pt-2 border-t border-border/50">
+        <div className="border-t border-border/50 pt-2">
           <StepMetricsBar metrics={step.metrics} />
         </div>
       )}
@@ -728,7 +728,7 @@ export function TrajectoryViewer({
     fetcher,
     {
       revalidateOnFocus: false,
-    },
+    }
   );
 
   const [expandedSteps, setExpandedSteps] = useState<string[]>([]);
@@ -746,7 +746,7 @@ export function TrajectoryViewer({
   const handleStepClick = (index: number) => {
     const stepKey = `step-${index}`;
     setExpandedSteps((prev) =>
-      prev.includes(stepKey) ? prev : [...prev, stepKey],
+      prev.includes(stepKey) ? prev : [...prev, stepKey]
     );
     // Scroll to step after a brief delay for accordion animation
     setTimeout(() => {
@@ -759,7 +759,7 @@ export function TrajectoryViewer({
 
   if (isLoading) {
     return (
-      <div className="p-4 space-y-3">
+      <div className="space-y-3 p-4">
         <Skeleton className="h-6 w-full" />
         <Skeleton className="h-16 w-full" />
         <Skeleton className="h-16 w-full" />
@@ -771,11 +771,11 @@ export function TrajectoryViewer({
   if (error) {
     return (
       <div className="p-4 text-center">
-        <Route className="h-8 w-8 text-red-500 mx-auto mb-2" />
+        <Route className="mx-auto mb-2 h-8 w-8 text-red-500" />
         <p className="text-sm text-muted-foreground">
           Failed to load trajectory
         </p>
-        <p className="text-xs text-red-500 mt-1">{error.message}</p>
+        <p className="mt-1 text-xs text-red-500">{error.message}</p>
       </div>
     );
   }
@@ -783,11 +783,11 @@ export function TrajectoryViewer({
   if (!trajectory) {
     return (
       <div className="p-6 text-center">
-        <Route className="h-10 w-10 text-muted-foreground/50 mx-auto mb-3" />
+        <Route className="mx-auto mb-3 h-10 w-10 text-muted-foreground/50" />
         <p className="text-sm font-medium text-muted-foreground">
           No trajectory available
         </p>
-        <p className="text-xs text-muted-foreground/70 mt-1 max-w-xs mx-auto">
+        <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground/70">
           This trial doesn't have ATIF trajectory data. Trajectories are
           recorded for agents that support the ATIF format.
         </p>
@@ -799,7 +799,7 @@ export function TrajectoryViewer({
     <div className="p-4">
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-medium flex items-center justify-between">
+          <CardTitle className="flex items-center justify-between text-sm font-medium">
             <span className="flex items-center gap-2">
               <Route className="h-4 w-4" />
               Trajectory
@@ -812,7 +812,7 @@ export function TrajectoryViewer({
             </span>
           </CardTitle>
         </CardHeader>
-        <CardContent className="pt-0 overflow-x-auto">
+        <CardContent className="overflow-x-auto pt-0">
           {/* Token Usage Bar */}
           <TokenUsageBar metrics={trajectory.final_metrics} />
 
@@ -836,7 +836,7 @@ export function TrajectoryViewer({
                   stepRefs.current[idx] = el;
                 }}
               >
-                <AccordionTrigger className="hover:no-underline py-3">
+                <AccordionTrigger className="py-3 hover:no-underline">
                   <StepTrigger
                     step={step}
                     prevTimestamp={

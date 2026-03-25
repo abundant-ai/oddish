@@ -3,7 +3,7 @@ import { getBackendUrl } from "@/lib/backend-config";
 
 export async function GET(
   _request: Request,
-  { params }: { params: Promise<{ trial_id: string }> },
+  { params }: { params: Promise<{ trial_id: string }> }
 ) {
   try {
     const { trial_id } = await params;
@@ -23,7 +23,7 @@ export async function GET(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }

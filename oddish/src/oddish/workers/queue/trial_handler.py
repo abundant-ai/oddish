@@ -140,9 +140,9 @@ async def _touch_trial_execution(
             return
         if worker_id and trial.current_worker_id not in (None, worker_id):
             return
-        if (
-            pgqueuer_job_id is not None
-            and trial.current_pgqueuer_job_id not in (None, pgqueuer_job_id)
+        if pgqueuer_job_id is not None and trial.current_pgqueuer_job_id not in (
+            None,
+            pgqueuer_job_id,
         ):
             return
 
@@ -201,11 +201,12 @@ async def run_trial_job(
     3. Mark trial as success/failed/retrying
     4. Mark task completed once trials complete
     """
+    if job.payload is None:
+        raise ValueError("Trial job has empty payload")
     payload = json.loads(job.payload.decode())
     trial_id = payload.get("trial_id")
 
     if not trial_id:
-        # Fail the pgqueuer job so it retries and doesn't get marked "success" silently.
         raise ValueError(f"Invalid trial job payload (missing trial_id): {payload}")
 
     console.print(
@@ -367,7 +368,6 @@ async def run_trial_job(
                         # Extract result data
                         extracted_reward = None
                         has_error = False
-                        suppress_error = False
                         if hook_event.result:
                             result = hook_event.result
                             if (
@@ -514,7 +514,9 @@ async def run_trial_job(
                 derived_reward = outcome.reward
                 if derived_reward is None and is_timeout:
                     verifier_ran = _verifier_ran_from_job_result(
-                        str(outcome.job_result_path) if outcome.job_result_path else None
+                        str(outcome.job_result_path)
+                        if outcome.job_result_path
+                        else None
                     )
                     if verifier_ran:
                         derived_reward = 0
@@ -563,9 +565,7 @@ async def run_trial_job(
                             settings.normalize_trial_model(trial.agent, trial.model),
                         )
                         pgq_priority = (
-                            1000
-                            if task and task.priority == Priority.HIGH
-                            else 0
+                            1000 if task and task.priority == Priority.HIGH else 0
                         )
                         trial.status = TrialStatus.RETRYING
                         await enqueue_trial(
@@ -581,7 +581,9 @@ async def run_trial_job(
                     else:
                         trial.status = TrialStatus.FAILED
                         trial.finished_at = utcnow()
-                        console.print(f"[red]Trial {trial_id} FAILED (max attempts)[/red]")
+                        console.print(
+                            f"[red]Trial {trial_id} FAILED (max attempts)[/red]"
+                        )
             else:
                 trial.status = TrialStatus.FAILED
                 trial.finished_at = utcnow()

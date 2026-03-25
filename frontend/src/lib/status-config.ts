@@ -56,8 +56,7 @@ export const STATUS_CONFIG: Record<
     symbol: "✗",
     description: "Task did not pass",
     badgeClass: "bg-red-600/90 text-white border-red-500 hover:bg-red-700",
-    matrixClass:
-      "bg-red-500 text-white border-red-500 hover:!bg-red-500/90",
+    matrixClass: "bg-red-500 text-white border-red-500 hover:!bg-red-500/90",
     bracketClass: "bg-red-600 text-white",
     panelBadgeClass: "bg-red-500/20 text-red-400 border-red-500/50",
   },
@@ -81,8 +80,7 @@ export const STATUS_CONFIG: Record<
     symbol: "◌",
     description: "Waiting to be queued",
     badgeClass: "bg-gray-500/50 text-gray-300 border-gray-400 animate-pulse",
-    matrixClass:
-      "bg-gray-500 text-white border-gray-500 hover:!bg-gray-500/90",
+    matrixClass: "bg-gray-500 text-white border-gray-500 hover:!bg-gray-500/90",
     bracketClass: "bg-gray-500/50 text-gray-300 animate-pulse",
     panelBadgeClass: "bg-gray-500/20 text-gray-400 border-gray-500/50",
   },
@@ -118,7 +116,7 @@ export const STATUS_CONFIG: Record<
 export function getMatrixStatus(
   trialStatus: string,
   reward: number | null | undefined,
-  errorMessage?: string | null,
+  errorMessage?: string | null
 ): MatrixStatus {
   const isAgentTimeout =
     !!errorMessage &&

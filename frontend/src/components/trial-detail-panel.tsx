@@ -93,7 +93,7 @@ export function TrialDetailPanel({
 
   const validTabs = useMemo(
     () => new Set(["summary", "files", "trajectory", "artifacts"]),
-    [],
+    []
   );
 
   const [activeTab, setActiveTab] = useState(() => {
@@ -105,8 +105,8 @@ export function TrialDetailPanel({
   const [retryError, setRetryError] = useState<string | null>(null);
   const [analysisRunning, setAnalysisRunning] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [filesTargetPath, setFilesTargetPath] = useState<string | null>(
-    () => searchParams.get("file"),
+  const [filesTargetPath, setFilesTargetPath] = useState<string | null>(() =>
+    searchParams.get("file")
   );
 
   const hydratedFromUrl = useRef(false);
@@ -150,7 +150,9 @@ export function TrialDetailPanel({
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
   const taskHasActiveTrials =
-    task !== null ? Math.max(0, task.total - task.completed - task.failed) > 0 : false;
+    task !== null
+      ? Math.max(0, task.total - task.completed - task.failed) > 0
+      : false;
   const canRunAnalysis =
     allowRetry &&
     !taskHasActiveTrials &&
@@ -158,7 +160,9 @@ export function TrialDetailPanel({
       trial?.analysis_status != null ||
       trial?.analysis != null);
   const analysisLabel =
-    trial?.analysis_status || trial?.analysis ? "Rerun analysis" : "Run analysis";
+    trial?.analysis_status || trial?.analysis
+      ? "Rerun analysis"
+      : "Run analysis";
 
   const handleRetry = async () => {
     if (!trial || retrying || !allowRetry) return;
@@ -190,20 +194,25 @@ export function TrialDetailPanel({
     setAnalysisError(null);
 
     try {
-      const res = await fetch(`${apiBaseUrl}/trials/${trial.id}/analysis/retry`, {
-        method: "POST",
-      });
+      const res = await fetch(
+        `${apiBaseUrl}/trials/${trial.id}/analysis/retry`,
+        {
+          method: "POST",
+        }
+      );
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue analysis");
+        throw new Error(
+          data.detail || data.error || "Failed to queue analysis"
+        );
       }
 
       onRetry?.([task.id]);
       onClose();
     } catch (err) {
       setAnalysisError(
-        err instanceof Error ? err.message : "Failed to queue analysis",
+        err instanceof Error ? err.message : "Failed to queue analysis"
       );
     } finally {
       setAnalysisRunning(false);
@@ -241,7 +250,7 @@ export function TrialDetailPanel({
 
   const orderedList = useMemo(
     () => orderedTrials ?? task?.trials ?? [],
-    [orderedTrials, task?.trials],
+    [orderedTrials, task?.trials]
   );
   const resolvedIndex =
     typeof trialIndex === "number" && trialIndex >= 0
@@ -273,7 +282,7 @@ export function TrialDetailPanel({
       if (!nextTrial) return;
       onNavigate(nextTrial, nextIndex);
     },
-    [onNavigate, orderedList],
+    [onNavigate, orderedList]
   );
 
   useEffect(() => {
@@ -314,7 +323,7 @@ export function TrialDetailPanel({
   const trialStatus = getMatrixStatus(
     trial.status,
     trial.reward,
-    trial.error_message,
+    trial.error_message
   );
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
   const TrialStatusIcon = trialStatusConfig.icon;
@@ -330,13 +339,13 @@ export function TrialDetailPanel({
           },
         ];
   const currentGroupIndex = resolvedGroups.findIndex((group) =>
-    group.trials.some((groupTrial) => groupTrial.id === trial.id),
+    group.trials.some((groupTrial) => groupTrial.id === trial.id)
   );
   const currentGroup =
     currentGroupIndex >= 0 ? resolvedGroups[currentGroupIndex] : null;
   const currentGroupTrials = currentGroup?.trials ?? [];
   const currentGroupTrialIndex = currentGroupTrials.findIndex(
-    (groupTrial) => groupTrial.id === trial.id,
+    (groupTrial) => groupTrial.id === trial.id
   );
 
   const navigateToGroupTrial = (groupIndex: number) => {
@@ -350,15 +359,15 @@ export function TrialDetailPanel({
 
   const content = (
     <>
-      <DrawerHeader className="px-4 sm:px-6 py-3 sm:py-4 border-b border-border">
-        <DrawerTitle className="flex items-center gap-2 font-mono text-sm sm:text-base pr-8 min-w-0">
-          <span className="truncate min-w-0">{trial.name}</span>
+      <DrawerHeader className="border-b border-border px-4 py-3 sm:px-6 sm:py-4">
+        <DrawerTitle className="flex min-w-0 items-center gap-2 pr-8 font-mono text-sm sm:text-base">
+          <span className="min-w-0 truncate">{trial.name}</span>
           <span className="text-muted-foreground/50">·</span>
-          <span className="flex flex-col items-center leading-tight text-center text-muted-foreground min-w-0">
-            <span className="text-[10px] sm:text-xs font-bold truncate">
+          <span className="flex min-w-0 flex-col items-center text-center leading-tight text-muted-foreground">
+            <span className="truncate text-[10px] font-bold sm:text-xs">
               {trial.agent}
             </span>
-            <span className="text-[9px] sm:text-[10px] font-normal truncate flex items-center gap-1 font-mono">
+            <span className="flex items-center gap-1 truncate font-mono text-[9px] font-normal sm:text-[10px]">
               <QueueKeyIcon
                 queueKey={trial.provider}
                 model={trial.model}
@@ -412,7 +421,7 @@ export function TrialDetailPanel({
                   const groupStatus = getMatrixStatus(
                     groupTrial.status,
                     groupTrial.reward,
-                    groupTrial.error_message,
+                    groupTrial.error_message
                   );
                   const groupConfig = STATUS_CONFIG[groupStatus];
                   const isActive = index === currentGroupTrialIndex;
@@ -424,11 +433,11 @@ export function TrialDetailPanel({
                       size="icon"
                       onClick={() => navigateToGroupTrial(index)}
                       className={cn(
-                        "h-5 w-5 rounded-sm border p-0 text-sm font-semibold leading-none transition flex items-center justify-center",
+                        "flex h-5 w-5 items-center justify-center rounded-sm border p-0 text-sm font-semibold leading-none transition",
                         groupConfig.matrixClass,
                         isActive
                           ? "ring-2 ring-primary/60 ring-offset-1 ring-offset-background"
-                          : "",
+                          : ""
                       )}
                       aria-label={`Trial ${index + 1}`}
                       title={`${groupConfig.shortLabel} • Trial ${index + 1}`}
@@ -460,11 +469,11 @@ export function TrialDetailPanel({
               </>
             )}
           </div>
-          <div className="flex items-stretch gap-2 min-w-0">
+          <div className="flex min-w-0 items-stretch gap-2">
             <Card
               className={cn(
                 "min-w-[145px] border",
-                OUTCOME_CARD_TONE[trialStatus],
+                OUTCOME_CARD_TONE[trialStatus]
               )}
             >
               <CardContent className="px-2 py-1">
@@ -486,18 +495,18 @@ export function TrialDetailPanel({
                       (trialStatus === "pending" ||
                         trialStatus === "queued" ||
                         trialStatus === "running") &&
-                        "animate-spin",
+                        "animate-spin"
                     )}
                   />
                   <div className="min-w-0">
-                    <div className="text-[8px] uppercase tracking-wider text-muted-foreground leading-none">
+                    <div className="text-[8px] uppercase leading-none tracking-wider text-muted-foreground">
                       Reward
                     </div>
                     <div className="flex items-baseline gap-1">
-                      <span className="text-sm font-bold font-mono leading-none">
+                      <span className="font-mono text-sm font-bold leading-none">
                         {trial.reward !== null ? trial.reward : "—"}
                       </span>
-                      <span className="text-[9px] text-muted-foreground capitalize leading-none">
+                      <span className="text-[9px] capitalize leading-none text-muted-foreground">
                         {trialStatusConfig.shortLabel}
                       </span>
                     </div>
@@ -515,12 +524,12 @@ export function TrialDetailPanel({
               >
                 {retrying ? (
                   <>
-                    <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
                     Retrying...
                   </>
                 ) : (
                   <>
-                    <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                    <RotateCcw className="mr-1 h-3.5 w-3.5" />
                     Retry Trial
                   </>
                 )}
@@ -536,12 +545,12 @@ export function TrialDetailPanel({
               >
                 {analysisRunning ? (
                   <>
-                    <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
                     Queueing...
                   </>
                 ) : (
                   <>
-                    <Microscope className="h-3.5 w-3.5 mr-1" />
+                    <Microscope className="mr-1 h-3.5 w-3.5" />
                     {analysisLabel}
                   </>
                 )}
@@ -550,46 +559,48 @@ export function TrialDetailPanel({
           </div>
         </div>
         {retryError && (
-          <p className="text-xs text-red-500 text-right pt-1">{retryError}</p>
+          <p className="pt-1 text-right text-xs text-red-500">{retryError}</p>
         )}
         {analysisError && (
-          <p className="text-xs text-red-500 text-right pt-1">{analysisError}</p>
+          <p className="pt-1 text-right text-xs text-red-500">
+            {analysisError}
+          </p>
         )}
       </DrawerHeader>
 
       <Tabs
         value={activeTab}
         onValueChange={setActiveTab}
-        className="flex-1 flex flex-col overflow-hidden"
+        className="flex flex-1 flex-col overflow-hidden"
       >
         <div className="border-b border-border px-4 sm:px-6">
-          <TabsList className="h-10 sm:h-12 bg-transparent border-0 p-0 gap-0">
+          <TabsList className="h-10 gap-0 border-0 bg-transparent p-0 sm:h-12">
             <TabsTrigger
               value="summary"
-              className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-3 sm:px-4 text-xs sm:text-sm"
+              className="rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
             >
-              <FileText className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1 sm:mr-2" />
+              <FileText className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
               Summary
             </TabsTrigger>
             <TabsTrigger
               value="files"
-              className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-3 sm:px-4 text-xs sm:text-sm"
+              className="rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
             >
-              <FolderOpen className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1 sm:mr-2" />
+              <FolderOpen className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
               Files
             </TabsTrigger>
             <TabsTrigger
               value="trajectory"
-              className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-3 sm:px-4 text-xs sm:text-sm"
+              className="rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
             >
-              <Route className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1 sm:mr-2" />
+              <Route className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
               Trajectory
             </TabsTrigger>
             <TabsTrigger
               value="artifacts"
-              className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-3 sm:px-4 text-xs sm:text-sm"
+              className="rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
             >
-              <Package className="h-3.5 w-3.5 sm:h-4 sm:w-4 mr-1 sm:mr-2" />
+              <Package className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
               Artifacts
             </TabsTrigger>
           </TabsList>
@@ -613,29 +624,29 @@ export function TrialDetailPanel({
                           : "border-slate-500/30 bg-slate-500/5"
                   }
                 >
-                  <CardContent className="py-3 px-4">
+                  <CardContent className="px-4 py-3">
                     <div className="flex items-start gap-3">
                       {trial.analysis_status === "running" ||
                       trial.analysis_status === "pending" ||
                       trial.analysis_status === "queued" ? (
-                        <Microscope className="h-5 w-5 text-blue-500 animate-pulse mt-0.5" />
+                        <Microscope className="mt-0.5 h-5 w-5 animate-pulse text-blue-500" />
                       ) : trial.analysis?.classification?.startsWith("GOOD") ? (
-                        <CheckCircle2 className="h-5 w-5 text-emerald-500 mt-0.5" />
+                        <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-500" />
                       ) : trial.analysis?.classification?.startsWith("BAD") ? (
-                        <AlertTriangle className="h-5 w-5 text-amber-500 mt-0.5" />
+                        <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-500" />
                       ) : (
-                        <XCircle className="h-5 w-5 text-slate-500 mt-0.5" />
+                        <XCircle className="mt-0.5 h-5 w-5 text-slate-500" />
                       )}
-                      <div className="flex-1 min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div className="flex flex-col gap-1">
-                          <span className="font-bold font-mono text-sm">
+                          <span className="font-mono text-sm font-bold">
                             {trial.analysis_status === "running" ||
                             trial.analysis_status === "pending" ||
                             trial.analysis_status === "queued"
                               ? "Analyzing..."
                               : trial.analysis?.classification?.replace(
                                   "_",
-                                  " ",
+                                  " "
                                 ) || "Analysis"}
                           </span>
                           {trial.analysis?.subtype && (
@@ -645,19 +656,20 @@ export function TrialDetailPanel({
                           )}
                         </div>
                         {trial.analysis?.evidence && (
-                          <p className="text-xs text-muted-foreground/90 mt-2 leading-relaxed">
+                          <p className="mt-2 text-xs leading-relaxed text-muted-foreground/90">
                             {trial.analysis.evidence}
                           </p>
                         )}
                         {trial.analysis?.root_cause &&
-                          trial.analysis.root_cause !== trial.analysis.evidence && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            {trial.analysis.root_cause}
-                          </p>
-                        )}
+                          trial.analysis.root_cause !==
+                            trial.analysis.evidence && (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {trial.analysis.root_cause}
+                            </p>
+                          )}
                         {trial.analysis?.recommendation &&
                           trial.analysis.recommendation !== "N/A" && (
-                            <p className="text-xs text-muted-foreground/80 mt-1 italic">
+                            <p className="mt-1 text-xs italic text-muted-foreground/80">
                               💡 {trial.analysis.recommendation}
                             </p>
                           )}
@@ -670,8 +682,8 @@ export function TrialDetailPanel({
               {/* Execution Timeline - shows progress during running trials */}
               {trial.harbor_stage && (
                 <Card>
-                  <CardHeader className="pb-1 pt-2 px-4">
-                    <CardTitle className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center justify-between">
+                  <CardHeader className="px-4 pb-1 pt-2">
+                    <CardTitle className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                       <span>Execution Timeline</span>
                       <HarborStageBadge stage={trial.harbor_stage} />
                     </CardTitle>
@@ -703,11 +715,11 @@ export function TrialDetailPanel({
               {/* Error Card */}
               {trial.error_message && (
                 <Card className="border-red-500/30 bg-red-500/5">
-                  <CardContent className="py-3 px-4">
+                  <CardContent className="px-4 py-3">
                     <div className="flex items-start gap-2">
-                      <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 shrink-0" />
+                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
                       <div className="min-w-0 flex-1">
-                        <pre className="text-sm font-mono text-red-600 dark:text-red-400 whitespace-pre-wrap break-words">
+                        <pre className="whitespace-pre-wrap break-words font-mono text-sm text-red-600 dark:text-red-400">
                           {showFullError
                             ? trial.error_message
                             : trial.error_message.slice(0, 300)}
@@ -755,7 +767,10 @@ export function TrialDetailPanel({
             />
           </TabsContent>
 
-          <TabsContent value="artifacts" className="m-0 h-full p-0 overflow-auto">
+          <TabsContent
+            value="artifacts"
+            className="m-0 h-full overflow-auto p-0"
+          >
             <ArtifactsViewer
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
             />
@@ -763,7 +778,7 @@ export function TrialDetailPanel({
 
           <TabsContent
             value="trajectory"
-            className="m-0 h-full p-0 overflow-auto"
+            className="m-0 h-full overflow-auto p-0"
           >
             <TrajectoryViewer trialId={trial.id} apiBaseUrl={apiBaseUrl} />
           </TabsContent>
@@ -774,7 +789,7 @@ export function TrialDetailPanel({
 
   if (contentOnly) {
     return (
-      <div className="flex-1 flex flex-col overflow-hidden h-full">
+      <div className="flex h-full flex-1 flex-col overflow-hidden">
         {content}
       </div>
     );

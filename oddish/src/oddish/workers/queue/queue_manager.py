@@ -50,6 +50,7 @@ def register_queue_entrypoints(
             console.print(f"[dim]{_queue_key} entrypoint received job {job.id}[/dim]")
             await handler(job, _queue_key)
 
+
 async def create_queue_manager() -> QueueManager:
     """Create and configure the QueueManager with model-keyed entrypoints."""
     # Lazy import to avoid circular dependency (api.py imports from workers)
@@ -72,6 +73,8 @@ async def create_queue_manager() -> QueueManager:
 
     async def handle_provider_job(job: Job, queue_key: str) -> None:
         """Route job to appropriate handler based on job_type in payload."""
+        if job.payload is None:
+            raise ValueError(f"Job {job.id} has empty payload")
         payload = json.loads(job.payload.decode())
         job_type = payload["job_type"]
 

@@ -49,6 +49,11 @@ class StorageClient:
         self._client: aioboto3.Client | None = None
         self._session: aioboto3.Session | None = None
 
+    @property
+    def _s3(self) -> aioboto3.Client:
+        assert self._client is not None, "call _ensure_client() first"
+        return self._client  # type: ignore[return-value]
+
     _MAX_CONCURRENT_UPLOADS = 8
 
     async def _ensure_client(self):
@@ -123,13 +128,12 @@ class StorageClient:
         local_path.mkdir(parents=True, exist_ok=True)
 
         # List all objects with this prefix
-        paginator = self._client.get_paginator("list_objects_v2")
+        paginator = self._s3.get_paginator("list_objects_v2")
         async for page in paginator.paginate(
             Bucket=settings.s3_bucket, Prefix=s3_prefix
         ):
             for obj in page.get("Contents", []):
                 s3_key = obj["Key"]
-                # Calculate relative path
                 relative_path = s3_key[len(s3_prefix) :]
                 if not relative_path:
                     continue
@@ -185,14 +189,12 @@ class StorageClient:
         await self._ensure_client()
         local_path.mkdir(parents=True, exist_ok=True)
 
-        # List all objects with this prefix
-        paginator = self._client.get_paginator("list_objects_v2")
+        paginator = self._s3.get_paginator("list_objects_v2")
         async for page in paginator.paginate(
             Bucket=settings.s3_bucket, Prefix=s3_prefix
         ):
             for obj in page.get("Contents", []):
                 s3_key = obj["Key"]
-                # Calculate relative path
                 relative_path = s3_key[len(s3_prefix) :]
                 if not relative_path:
                     continue
@@ -213,8 +215,7 @@ class StorageClient:
         await self._ensure_client()
         logs = []
 
-        # List all log files
-        paginator = self._client.get_paginator("list_objects_v2")
+        paginator = self._s3.get_paginator("list_objects_v2")
         async for page in paginator.paginate(
             Bucket=settings.s3_bucket, Prefix=s3_prefix
         ):
@@ -378,7 +379,7 @@ class StorageClient:
         """Upload a file to S3."""
         await self._ensure_client()
         with open(local_path, "rb") as f:
-            await self._client.put_object(
+            await self._s3.put_object(
                 Bucket=settings.s3_bucket,
                 Key=s3_key,
                 Body=f,
@@ -387,7 +388,7 @@ class StorageClient:
     async def download_file(self, s3_key: str, local_path: Path) -> None:
         """Download a file from S3."""
         await self._ensure_client()
-        response = await self._client.get_object(
+        response = await self._s3.get_object(
             Bucket=settings.s3_bucket,
             Key=s3_key,
         )
@@ -399,18 +400,18 @@ class StorageClient:
     async def download_bytes(self, s3_key: str) -> bytes:
         """Download binary content from S3."""
         await self._ensure_client()
-        response = await self._client.get_object(
+        response = await self._s3.get_object(
             Bucket=settings.s3_bucket,
             Key=s3_key,
         )
         async with response["Body"] as stream:
-            content = await stream.read()
+            content: bytes = await stream.read()
             return content
 
     async def download_text(self, s3_key: str) -> str:
         """Download text content from S3."""
         await self._ensure_client()
-        response = await self._client.get_object(
+        response = await self._s3.get_object(
             Bucket=settings.s3_bucket,
             Key=s3_key,
         )
@@ -422,7 +423,7 @@ class StorageClient:
     async def download_json(self, s3_key: str) -> dict:
         """Download and parse JSON from S3."""
         await self._ensure_client()
-        response = await self._client.get_object(
+        response = await self._s3.get_object(
             Bucket=settings.s3_bucket,
             Key=s3_key,
         )
@@ -435,7 +436,7 @@ class StorageClient:
         """List all keys with a given prefix."""
         await self._ensure_client()
         keys = []
-        paginator = self._client.get_paginator("list_objects_v2")
+        paginator = self._s3.get_paginator("list_objects_v2")
         async for page in paginator.paginate(Bucket=settings.s3_bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 keys.append(obj["Key"])
@@ -445,7 +446,7 @@ class StorageClient:
         """List all objects with metadata (key, size, last_modified) for a given prefix."""
         await self._ensure_client()
         objects = []
-        paginator = self._client.get_paginator("list_objects_v2")
+        paginator = self._s3.get_paginator("list_objects_v2")
         async for page in paginator.paginate(Bucket=settings.s3_bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 objects.append(
@@ -477,7 +478,7 @@ class StorageClient:
         if continuation_token:
             params["ContinuationToken"] = continuation_token
 
-        response = await self._client.list_objects_v2(**params)
+        response = await self._s3.list_objects_v2(**params)
         contents = response.get("Contents", [])
         common_prefixes = response.get("CommonPrefixes", [])
         return {
@@ -508,7 +509,7 @@ class StorageClient:
             Presigned URL
         """
         await self._ensure_client()
-        url: str = await self._client.generate_presigned_url(
+        url: str = await self._s3.generate_presigned_url(
             "get_object",
             Params={"Bucket": settings.s3_bucket, "Key": s3_key},
             ExpiresIn=expiration,
@@ -532,7 +533,7 @@ class StorageClient:
         import asyncio
 
         async def generate_url(key: str) -> tuple[str, str]:
-            url: str = await self._client.generate_presigned_url(
+            url: str = await self._s3.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": settings.s3_bucket, "Key": key},
                 ExpiresIn=expiration,
@@ -622,8 +623,7 @@ async def resolve_trial_directory(
                 if local_trial_path.exists():
                     return local_trial_path, None, resolved_s3_key
             raise ValueError(
-                "Failed to download trial from S3 and no local path available: "
-                f"{exc}"
+                f"Failed to download trial from S3 and no local path available: {exc}"
             ) from exc
 
     if not trial_result_path:

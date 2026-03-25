@@ -42,12 +42,12 @@ interface PassAtKGraphProps {
  */
 function buildAgentStats(
   tasks: Task[],
-  agentSummaries: AgentSummary[],
+  agentSummaries: AgentSummary[]
 ): { agentStats: Record<string, AgentPassAtKStats>; maxN: number } {
   const modelScopedAgents = new Set(
     agentSummaries
       .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent),
+      .map((summary) => summary.agent)
   );
 
   // First, determine the max number of trials per task-agent combination
@@ -103,7 +103,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
 }: PassAtKGraphProps) {
   const visibleAgentSummaries = useMemo(
     () => agentSummaries.filter((summary) => !hiddenAgents.has(summary.key)),
-    [agentSummaries, hiddenAgents],
+    [agentSummaries, hiddenAgents]
   );
 
   const { data, maxK, hasMultipleAttempts } = useMemo(() => {
@@ -125,7 +125,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   }
 
   return (
-    <div className="rounded-lg border border-border bg-card/80 p-6 shadow-sm h-full">
+    <div className="h-full rounded-lg border border-border bg-card/80 p-6 shadow-sm">
       <div className="flex h-full flex-col">
         <h3 className="font-mono text-sm font-bold text-foreground">
           Pass@k{" "}
@@ -161,7 +161,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
               <Tooltip
                 formatter={(
                   value: number | undefined,
-                  name: string | undefined,
+                  name: string | undefined
                 ) => [
                   value !== undefined ? `${(value * 100).toFixed(1)}%` : "N/A",
                   name ?? "",
@@ -177,7 +177,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
               />
               {visibleAgentSummaries.map((summary) => {
                 const originalIdx = agentSummaries.findIndex(
-                  (agent) => agent.key === summary.key,
+                  (agent) => agent.key === summary.key
                 );
                 return (
                   <Line
@@ -207,7 +207,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
                 onClick={() => onToggleAgent(summary.key)}
                 variant="ghost"
                 size="sm"
-                className={`h-auto flex items-center gap-2 rounded px-2 py-1 font-mono text-xs transition-all ${
+                className={`flex h-auto items-center gap-2 rounded px-2 py-1 font-mono text-xs transition-all ${
                   isHidden ? "opacity-40 hover:opacity-60" : "hover:bg-muted"
                 }`}
                 title={isHidden ? "Click to show" : "Click to hide"}

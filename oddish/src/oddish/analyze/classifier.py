@@ -164,7 +164,9 @@ class TrialClassifier:
                 print("-" * 60, flush=True)
 
             try:
-                structured_output = await self._run_claude_cli(prompt, trial_dir, task_dir)
+                structured_output = await self._run_claude_cli(
+                    prompt, trial_dir, task_dir
+                )
             except TimeoutError:
                 if self._verbose:
                     print(
@@ -268,7 +270,9 @@ class TrialClassifier:
             print_process_stream("Claude stderr", stderr_text, Colors.MAGENTA)
 
         if process.returncode != 0:
-            error_text = stderr_text.strip() or stdout_text.strip() or "Unknown Claude CLI error"
+            error_text = (
+                stderr_text.strip() or stdout_text.strip() or "Unknown Claude CLI error"
+            )
             raise RuntimeError(
                 f"Claude CLI exited with code {process.returncode}: {error_text}"
             )
@@ -360,7 +364,9 @@ class TrialClassifier:
     ) -> list[TrialClassification]:
         """Classify multiple trials sequentially."""
         if console:
-            console.print(f"  Classifying {len(trial_dirs)} trial(s) with Claude Code...")
+            console.print(
+                f"  Classifying {len(trial_dirs)} trial(s) with Claude Code..."
+            )
 
         classifications = []
         for i, trial_dir in enumerate(trial_dirs):
