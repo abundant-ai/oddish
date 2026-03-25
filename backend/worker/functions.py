@@ -169,7 +169,9 @@ async def poll_queue():
             console.print(
                 "[yellow]Reconciled orphaned queue state:[/yellow] "
                 + ", ".join(
-                    f"{key}={value}" for key, value in cleanup_counts.items() if value > 0
+                    f"{key}={value}"
+                    for key, value in cleanup_counts.items()
+                    if value > 0
                 )
             )
 
@@ -205,7 +207,10 @@ async def poll_queue():
         # Use Modal's async spawn interface inside this async function to avoid
         # blocking the event loop and spurious AsyncUsageWarning noise.
         await asyncio.gather(
-            *(process_single_job.spawn.aio(queue_key=queue_key) for queue_key in spawn_plan)
+            *(
+                process_single_job.spawn.aio(queue_key=queue_key)
+                for queue_key in spawn_plan
+            )
         )
         for i, queue_key in enumerate(spawn_plan, start=1):
             console.print(

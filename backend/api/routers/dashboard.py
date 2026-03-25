@@ -160,7 +160,7 @@ async def get_dashboard(
         # =====================================================================
         # 3. Per-model cost & token usage (aggregated from trials)
         # =====================================================================
-        model_usage = []
+        model_usage: list[dict[str, Any]] = []
         if include_usage:
             usage_filters = [TrialModel.org_id == auth.org_id]
             if usage_minutes is not None:
@@ -221,9 +221,9 @@ async def get_dashboard(
             )
 
             usage_result = await session.execute(usage_query)
-            merged_usage: dict[
-                tuple[str, str], dict[str, int | float | str | None]
-            ] = {}
+            merged_usage: dict[tuple[str, str], dict[str, int | float | str | None]] = (
+                {}
+            )
             for row in usage_result.all():
                 normalized_provider = (
                     row.provider or "unknown"

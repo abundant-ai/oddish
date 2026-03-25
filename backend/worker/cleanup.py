@@ -75,11 +75,9 @@ async def cleanup_orphaned_queue_state(
     orphaned_picked_jobs_cancelled = 0
 
     async with get_session() as session:
-        issue_rows = list(
-            (
-                await session.execute(
-                    text(
-                        """
+        _issue_result = await session.execute(
+            text(
+                """
                         WITH picked_trial_jobs AS (
                             SELECT id
                             FROM pgqueuer
@@ -151,11 +149,10 @@ async def cleanup_orphaned_queue_state(
                         WHERE issue IS NOT NULL
                         ORDER BY trial_id
                         """
-                    ),
-                    {"stale_after_minutes": stale_after_minutes},
-                )
-            ).all()
+            ),
+            {"stale_after_minutes": stale_after_minutes},
         )
+        issue_rows = [(str(r[0]), str(r[1])) for r in _issue_result.all()]
 
         terminal_trial_job_ids = [
             row[0]
@@ -285,10 +282,16 @@ async def cleanup_orphaned_queue_state(
 
         if trial_ids_to_requeue:
             trials = (
-                await session.execute(
-                    select(TrialModel).where(TrialModel.id.in_(trial_ids_to_requeue))
+                (
+                    await session.execute(
+                        select(TrialModel).where(
+                            TrialModel.id.in_(trial_ids_to_requeue)
+                        )
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
 
             for trial in trials:
                 issue = issue_by_trial_id[trial.id]
@@ -320,10 +323,16 @@ async def cleanup_orphaned_queue_state(
 
         if analysis_trial_ids_to_requeue:
             analysis_trials = (
-                await session.execute(
-                    select(TrialModel).where(TrialModel.id.in_(analysis_trial_ids_to_requeue))
+                (
+                    await session.execute(
+                        select(TrialModel).where(
+                            TrialModel.id.in_(analysis_trial_ids_to_requeue)
+                        )
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
 
             for trial in analysis_trials:
                 if trial.analysis_status != AnalysisStatus.QUEUED:
@@ -337,10 +346,14 @@ async def cleanup_orphaned_queue_state(
 
         if trial_ids_to_fail:
             trials = (
-                await session.execute(
-                    select(TrialModel).where(TrialModel.id.in_(trial_ids_to_fail))
+                (
+                    await session.execute(
+                        select(TrialModel).where(TrialModel.id.in_(trial_ids_to_fail))
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
 
             for trial in trials:
                 issue = issue_by_trial_id[trial.id]
@@ -364,7 +377,8 @@ async def cleanup_orphaned_queue_state(
                 if (
                     task
                     and task.run_analysis
-                    and trial.analysis_status not in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
+                    and trial.analysis_status
+                    not in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
                 ):
                     trial.analysis_status = AnalysisStatus.FAILED
                     trial.analysis_error = (
