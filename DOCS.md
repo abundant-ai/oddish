@@ -21,6 +21,7 @@ export ODDISH_API_KEY="ok_..."
 
 - `oddish run` - submit a job
 - `oddish status` - view progress
+- `oddish cancel` - stop in-flight trials for a task
 - `oddish pull` - download logs and artifacts
 - `oddish clean` - delete task or trial data
 
@@ -117,6 +118,25 @@ oddish status --experiment <experiment_id> --watch
 - `--experiment`, `-e TEXT` - Inspect an experiment instead of a task
 - `--watch`, `-w` - Poll until the task or experiment finishes
 - `--verbose`, `-v` - Request extra system output
+- `--api TEXT` - Override the API URL
+
+</details>
+
+## Cancel In-Flight Runs
+
+Use `oddish cancel` to stop queued or running work for a task without deleting
+the task itself. Completed trials are preserved.
+
+```bash
+# Cancel all active runs for a task
+oddish cancel <task_id>
+```
+
+<details>
+<summary>Options</summary>
+
+- `TASK_ID` - Task ID to cancel
+- `--force`, `-f` - Skip the confirmation prompt
 - `--api TEXT` - Override the API URL
 
 </details>
