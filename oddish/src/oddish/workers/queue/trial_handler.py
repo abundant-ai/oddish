@@ -191,6 +191,7 @@ async def run_trial_job(
     *,
     worker_id: str | None = None,
     queue_slot: int | None = None,
+    modal_function_call_id: str | None = None,
 ) -> None:
     """
     Handle a trial job from PGQueuer.
@@ -287,6 +288,7 @@ async def run_trial_job(
         trial.current_pgqueuer_job_id = job.id
         trial.current_worker_id = worker_id
         trial.current_queue_slot = queue_slot
+        trial.modal_function_call_id = modal_function_call_id
         trial.claimed_at = utcnow()
         trial.heartbeat_at = trial.claimed_at
 
@@ -335,6 +337,27 @@ async def run_trial_job(
                     trial,
                 ):
                     if not trial:
+                        return
+
+                    # If the trial was cancelled by the user (cancel API sets
+                    # max_attempts=attempts), don't let lifecycle hooks
+                    # overwrite the "Cancelled by user" error_message/stage.
+                    user_cancelled = (
+                        trial.error_message == "Cancelled by user"
+                        or (
+                            trial.status == TrialStatus.FAILED
+                            and trial.max_attempts <= trial.attempts
+                            and trial.max_attempts > 0
+                        )
+                    )
+                    if user_cancelled and event in (
+                        TrialEvent.END,
+                        TrialEvent.CANCEL,
+                    ):
+                        console.print(
+                            f"[dim]Trial {trial_id} event {event.value} "
+                            f"ignored (cancelled by user)[/dim]"
+                        )
                         return
 
                     # Log event
@@ -508,6 +531,20 @@ async def run_trial_job(
             if not trial:
                 return None
 
+            # If the trial was cancelled by the user while we were running,
+            # don't overwrite its FAILED/"Cancelled by user" state.
+            # The cancel API sets error_message and also max_attempts=attempts
+            # as a reliable signal (survives even if this code is from an older deploy).
+            if (
+                trial.error_message == "Cancelled by user"
+                or trial.harbor_stage == "cancelled"
+                or (trial.status == TrialStatus.FAILED and trial.max_attempts <= trial.attempts)
+            ):
+                console.print(
+                    f"[dim]Trial {trial_id} was cancelled by user, skipping result update[/dim]"
+                )
+                return None
+
             if outcome:
                 # Always update reward/error/paths from outcome (most authoritative source)
                 is_timeout = _is_agent_timeout_error_message(outcome.error)
@@ -595,6 +632,7 @@ async def run_trial_job(
             trial.current_pgqueuer_job_id = None
             trial.current_worker_id = None
             trial.current_queue_slot = None
+            trial.modal_function_call_id = None
             trial.heartbeat_at = utcnow()
 
             # Immediately enqueue analysis if run_analysis is enabled (don't wait for all trials)

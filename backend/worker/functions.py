@@ -57,6 +57,15 @@ async def process_single_job(queue_key: str):
     console.print(f"[cyan]Job worker starting (queue_key={queue_key})...[/cyan]")
     await configure_storage_paths()
 
+    # Capture Modal function call ID for remote cancellation support
+    fc_id: str | None = None
+    try:
+        fc_id = modal.current_function_call_id()
+    except Exception:
+        pass
+    if fc_id:
+        console.print(f"[dim]Modal function call: {fc_id}[/dim]")
+
     worker_id = f"{queue_key}-{uuid4().hex[:12]}"
     lock_slot: int | None = None
 
@@ -93,6 +102,7 @@ async def process_single_job(queue_key: str):
             queue_key=queue_key,
             worker_id=worker_id,
             queue_slot=lock_slot,
+            modal_function_call_id=fc_id,
         )
         if not job_found:
             console.print(

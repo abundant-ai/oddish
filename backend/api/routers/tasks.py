@@ -43,6 +43,7 @@ from oddish.db import (
 from oddish.queue import (
     cancel_pgqueuer_jobs_for_tasks,
     cancel_pgqueuer_jobs_for_trials,
+    cancel_task_runs,
     create_task,
 )
 from oddish.schemas import (
@@ -431,6 +432,50 @@ async def delete_experiment(
             "tasks": deleted_tasks,
             "experiments": deleted_experiments,
         },
+    }
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_task(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Cancel all in-flight runs for a task without deleting data.
+
+    Cancels queued PGQueuer jobs, marks running trials as failed,
+    and terminates Modal function calls for running workers.
+    """
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        result = await cancel_task_runs(session, task_id, org_id=auth.org_id)
+        if result.get("error") == "not_found":
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        await session.commit()
+
+    modal_fc_ids: list[str] = result.get("modal_function_call_ids", [])
+    modal_cancelled = 0
+    if modal_fc_ids:
+        import modal
+
+        for fc_id in modal_fc_ids:
+            try:
+                fc = modal.FunctionCall.from_id(fc_id)
+                fc.cancel(terminate_containers=True)
+                modal_cancelled += 1
+            except Exception:
+                pass
+
+        # The worker's lifecycle hooks and _store_results guard on
+        # max_attempts<=attempts (set by cancel_task_runs) to avoid
+        # overwriting "Cancelled by user". No timing delay needed.
+
+    return {
+        "status": "cancelled",
+        "task_id": task_id,
+        "trials_cancelled": result.get("trials_cancelled", 0),
+        "pgqueuer_jobs_cancelled": result.get("pgqueuer_jobs_cancelled", 0),
+        "modal_calls_cancelled": modal_cancelled,
     }
 
 

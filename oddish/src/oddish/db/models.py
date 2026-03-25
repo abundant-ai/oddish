@@ -250,6 +250,10 @@ class TrialModel(Base):
         String(160), nullable=True, index=True
     )
     current_queue_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Modal function call ID for remote cancellation (set by Modal workers only)
+    modal_function_call_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
     claimed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

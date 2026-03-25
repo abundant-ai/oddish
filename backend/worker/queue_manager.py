@@ -160,6 +160,7 @@ async def _dispatch_claimed_job(
     queue_key: str,
     worker_id: str,
     queue_slot: int,
+    modal_function_call_id: str | None = None,
 ) -> None:
     raw = job.payload.decode(errors="replace")
     try:
@@ -194,6 +195,7 @@ async def _dispatch_claimed_job(
             queue_key=queue_key,
             worker_id=worker_id,
             queue_slot=queue_slot,
+            modal_function_call_id=modal_function_call_id,
         )
         await notify_github_trial(trial_id)
         return
@@ -223,7 +225,13 @@ async def _dispatch_claimed_job(
     )
 
 
-async def run_single_job(queue_key: str, *, worker_id: str, queue_slot: int) -> bool:
+async def run_single_job(
+    queue_key: str,
+    *,
+    worker_id: str,
+    queue_slot: int,
+    modal_function_call_id: str | None = None,
+) -> bool:
     """Claim, execute, and finalize at most one job with short-lived DB connections."""
     job = await claim_single_job(queue_key)
     if job is None:
@@ -241,6 +249,7 @@ async def run_single_job(queue_key: str, *, worker_id: str, queue_slot: int) -> 
                 queue_key=queue_key,
                 worker_id=worker_id,
                 queue_slot=queue_slot,
+                modal_function_call_id=modal_function_call_id,
             )
         except asyncio.CancelledError:
             raise

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import typer
+from oddish.cli.cancel import cancel
 from oddish.cli.clean import clean
 from oddish.cli.pull import pull
 from oddish.cli.run import run
@@ -13,6 +14,7 @@ app = typer.Typer(
 
 app.command()(run)
 app.command()(status)
+app.command()(cancel)
 app.command()(clean)
 app.command()(pull)
 

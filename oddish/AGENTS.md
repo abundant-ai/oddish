@@ -19,7 +19,7 @@ Python `3.12+` is required.
 
 The `oddish` package includes:
 
-- the `oddish` CLI (`run`, `status`, `pull`, `clean`)
+- the `oddish` CLI (`run`, `status`, `cancel`, `pull`, `clean`)
 - the FastAPI app (`python -m oddish.api`)
 - database models and Alembic migrations
 - PGQueuer-backed trial, analysis, and verdict workers
@@ -157,6 +157,7 @@ uv run python -m oddish.api --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/cla
 | POST | `/tasks/sweep` | Expand a sweep into a task plus trials |
 | GET | `/tasks` | List tasks |
 | GET | `/tasks/{task_id}` | Fetch a task with trials |
+| POST | `/tasks/{task_id}/cancel` | Cancel in-flight runs without deleting data |
 | DELETE | `/tasks/{task_id}` | Delete a task and its trials |
 | POST | `/tasks/{task_id}/analysis/retry` | Queue or rerun task-wide analysis jobs |
 | POST | `/tasks/{task_id}/verdict/retry` | Queue or rerun a task verdict |
@@ -254,7 +255,7 @@ Storage defaults:
 oddish/
 ├── src/oddish/
 │   ├── api/                  # FastAPI app and request handlers
-│   ├── cli/                  # oddish run/status/pull/clean
+│   ├── cli/                  # oddish run/status/cancel/pull/clean
 │   ├── db/                   # models, connection helpers, storage
 │   ├── workers/              # Harbor execution and queue workers
 │   ├── backfill_queue_keys.py
