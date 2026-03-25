@@ -61,6 +61,7 @@ import {
   AlertTriangle,
   Copy,
   Trash2,
+  StopCircle,
 } from "lucide-react";
 import { QueueKeyIcon } from "./queue-key-icon";
 
@@ -89,6 +90,7 @@ type ExperimentTrialsTableProps = {
   topControlsLeft?: ReactNode;
   showPassAtK?: boolean;
   onTaskDelete?: (task: Task) => Promise<void>;
+  onTaskCancel?: (task: Task) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
   allowRerun?: boolean;
   readOnly?: boolean;
@@ -128,6 +130,7 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "fail",
   "harness-error",
   "pending",
+  "cancelled",
 ];
 
 // Analysis classification badge styling
@@ -321,6 +324,7 @@ export function ExperimentTrialsTable({
   topControlsLeft,
   showPassAtK = false,
   onTaskDelete,
+  onTaskCancel,
   onRerun,
   allowRerun = true,
   readOnly = false,
@@ -346,6 +350,9 @@ export function ExperimentTrialsTable({
   const [deleteTargets, setDeleteTargets] = useState<Task[]>([]);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [cancelTargets, setCancelTargets] = useState<Task[]>([]);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [isRerunning, setIsRerunning] = useState(false);
   const [rerunError, setRerunError] = useState<string | null>(null);
   const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
@@ -367,6 +374,7 @@ export function ExperimentTrialsTable({
   } | null>(null);
   const [isResizing, setIsResizing] = useState(false);
   const canDeleteTasks = Boolean(onTaskDelete);
+  const canCancelTasks = Boolean(onTaskCancel);
   const canRerun = allowRerun;
 
   const prevUrlRef = useRef({
@@ -398,7 +406,8 @@ export function ExperimentTrialsTable({
               value === "harness-error" ||
               value === "pending" ||
               value === "queued" ||
-              value === "running"
+              value === "running" ||
+              value === "cancelled"
           )
       );
       setDimmedStatuses(next);
@@ -846,6 +855,76 @@ export function ExperimentTrialsTable({
       setIsDeleting(false);
     }
   };
+
+  const cancelTargetSummary = useMemo(() => {
+    if (cancelTargets.length === 0) {
+      return { label: "", taskCount: 0, trialCount: 0 };
+    }
+    if (cancelTargets.length === 1) {
+      const target = cancelTargets[0];
+      return {
+        label: target.name,
+        taskCount: 1,
+        trialCount: target.total ?? 0,
+      };
+    }
+    const trialCount = cancelTargets.reduce(
+      (sum, task) => sum + (task.total ?? 0),
+      0
+    );
+    return {
+      label: `${cancelTargets.length} tasks`,
+      taskCount: cancelTargets.length,
+      trialCount,
+    };
+  }, [cancelTargets]);
+
+  const handleCancelTasks = async () => {
+    if (cancelTargets.length === 0 || !onTaskCancel || isCancelling) return;
+    setIsCancelling(true);
+    setCancelError(null);
+
+    try {
+      let firstError: string | null = null;
+      const failedTargets: Task[] = [];
+      const nextSelected = new Set(selectedTasks);
+
+      for (const target of cancelTargets) {
+        try {
+          await onTaskCancel(target);
+          nextSelected.delete(target.id);
+        } catch (error) {
+          failedTargets.push(target);
+          if (!firstError) {
+            firstError =
+              error instanceof Error ? error.message : "Failed to cancel task";
+          }
+        }
+      }
+
+      setSelectedTasks(nextSelected);
+      setCancelTargets(failedTargets);
+      if (firstError) {
+        setCancelError(firstError);
+      }
+    } catch (error) {
+      setCancelError(
+        error instanceof Error ? error.message : "Failed to cancel task"
+      );
+    } finally {
+      setIsCancelling(false);
+    }
+  };
+
+  // Filter cancellable tasks - only those that are not completed/failed/cancelled
+  const selectedCancellableTasks = useMemo(() => {
+    return selectedTaskList.filter(
+      (task) =>
+        task.status !== "completed" &&
+        task.status !== "failed" &&
+        task.status !== "cancelled"
+    );
+  }, [selectedTaskList]);
 
   const handleRerunSelectedTasks = async () => {
     if (!canRerun || isRerunning) return;
@@ -1358,6 +1437,22 @@ export function ExperimentTrialsTable({
                     : `Run verdict (${selectedVerdictRunnableTasks.length})`}
                 </Button>
               )}
+              {canCancelTasks && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setCancelTargets(selectedCancellableTasks);
+                    setCancelError(null);
+                  }}
+                  disabled={isCancelling || selectedCancellableTasks.length === 0}
+                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                >
+                  <StopCircle className="mr-1 h-3 w-3" />
+                  Cancel ({selectedCancellableTasks.length})
+                </Button>
+              )}
               {canDeleteTasks && (
                 <Button
                   type="button"
@@ -1384,6 +1479,9 @@ export function ExperimentTrialsTable({
               )}
               {verdictError && (
                 <span className="text-[10px] text-red-500">{verdictError}</span>
+              )}
+              {cancelError && (
+                <span className="text-[10px] text-red-500">{cancelError}</span>
               )}
             </div>
           </div>
@@ -1764,6 +1862,52 @@ export function ExperimentTrialsTable({
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               >
                 {isDeleting ? "Deleting..." : "Delete task"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
+      {canCancelTasks && (
+        <AlertDialog
+          open={cancelTargets.length > 0}
+          onOpenChange={(open) => {
+            if (!open && !isCancelling) {
+              setCancelTargets([]);
+              setCancelError(null);
+            }
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {cancelTargetSummary.taskCount > 1
+                  ? "Cancel selected tasks?"
+                  : "Cancel this task?"}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                This will cancel{" "}
+                <span className="font-medium text-foreground">
+                  {cancelTargetSummary.label}
+                </span>{" "}
+                and stop {cancelTargetSummary.trialCount} pending/running trials.
+                Completed trials will not be affected.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {cancelError && (
+              <Alert variant="destructive">
+                <AlertTitle>Cancel failed</AlertTitle>
+                <AlertDescription>{cancelError}</AlertDescription>
+              </Alert>
+            )}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isCancelling}>
+                Keep running
+              </AlertDialogCancel>
+              <AlertDialogAction
+                onClick={handleCancelTasks}
+                disabled={isCancelling}
+              >
+                {isCancelling ? "Cancelling..." : "Cancel task"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

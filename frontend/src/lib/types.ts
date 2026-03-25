@@ -5,7 +5,8 @@ export type TaskStatus =
   | "analyzing"
   | "verdict_pending"
   | "completed"
-  | "failed";
+  | "failed"
+  | "cancelled";
 
 // Trial/job status
 // - "success": Trial executed to completion (regardless of test result)
@@ -17,7 +18,8 @@ export type TrialStatus =
   | "running"
   | "success"
   | "failed"
-  | "retrying";
+  | "retrying"
+  | "cancelled";
 
 type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 

@@ -60,6 +60,7 @@ class TaskStatus(str, Enum):
     VERDICT_PENDING = "verdict_pending"  # All analyses done, verdict running
     COMPLETED = "completed"  # All stages complete
     FAILED = "failed"  # Terminal failure
+    CANCELLED = "cancelled"  # User cancelled the task
 
 
 class JobStatus(str, Enum):
@@ -81,6 +82,7 @@ class JobStatus(str, Enum):
     SUCCESS = "success"  # Execution completed (regardless of test result)
     FAILED = "failed"  # Execution error (harness/infrastructure failure)
     RETRYING = "retrying"  # Only used by trials
+    CANCELLED = "cancelled"  # User cancelled the job
 
 
 # Aliases for backwards compatibility and clarity

@@ -217,6 +217,21 @@ export function ExperimentClientPage({
     await refreshTaskPages([task.id]);
   };
 
+  const handleCancelTask = async (task: Task) => {
+    const res = await fetch(`/api/tasks/${encodeURIComponent(task.id)}/cancel`, {
+      method: "POST",
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(
+        errorData.detail || errorData.error || "Failed to cancel task"
+      );
+    }
+
+    await refreshTaskPages([task.id]);
+  };
+
   return (
     <div className="space-y-4">
       {!experimentId ? (
@@ -314,6 +329,7 @@ export function ExperimentClientPage({
           readOnly={false}
           allowRetry
           onTaskDelete={handleDeleteTask}
+          onTaskCancel={handleCancelTask}
           onRerun={refreshTaskPages}
         />
       )}

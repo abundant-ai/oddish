@@ -3,6 +3,7 @@ import {
   XCircle,
   Ban,
   Loader2,
+  StopCircle,
   type LucideIcon,
 } from "lucide-react";
 
@@ -16,7 +17,8 @@ export type MatrixStatus =
   | "harness-error"
   | "pending"
   | "queued"
-  | "running";
+  | "running"
+  | "cancelled";
 
 /**
  * Status configuration for consistent styling across the UI.
@@ -108,6 +110,18 @@ export const STATUS_CONFIG: Record<
     bracketClass: "bg-blue-500 text-white animate-pulse",
     panelBadgeClass: "bg-blue-500/20 text-blue-400 border-blue-500/50",
   },
+  cancelled: {
+    icon: StopCircle,
+    label: "CANCELLED",
+    shortLabel: "Cancelled",
+    symbol: "⊗",
+    description: "Cancelled by user",
+    badgeClass: "bg-slate-500/90 text-white border-slate-400",
+    matrixClass:
+      "bg-slate-500 text-white border-slate-500 hover:!bg-slate-500/90",
+    bracketClass: "bg-slate-500 text-white",
+    panelBadgeClass: "bg-slate-500/20 text-slate-400 border-slate-500/50",
+  },
 };
 
 /**
@@ -154,6 +168,11 @@ export function getMatrixStatus(
   // Running = currently executing
   if (trialStatus === "running") {
     return "running";
+  }
+
+  // Cancelled = user cancelled
+  if (trialStatus === "cancelled") {
+    return "cancelled";
   }
 
   // Any other status (pending, retrying) = pending

@@ -46,6 +46,7 @@ interface ExperimentDetailViewProps {
   allowRetry?: boolean;
   apiBaseUrl?: string;
   onTaskDelete?: (task: Task) => Promise<void>;
+  onTaskCancel?: (task: Task) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
 }
 
@@ -188,6 +189,7 @@ export function ExperimentDetailView({
   allowRetry = true,
   apiBaseUrl = "/api",
   onTaskDelete,
+  onTaskCancel,
   onRerun,
 }: ExperimentDetailViewProps) {
   const searchParams = useSearchParams();
@@ -384,6 +386,7 @@ export function ExperimentDetailView({
                 isLoading={isLoading}
                 showPassAtK={showPassAtK}
                 onTaskDelete={onTaskDelete}
+                onTaskCancel={onTaskCancel}
                 onRerun={onRerun}
                 allowRerun={allowRetry}
                 readOnly={readOnly}

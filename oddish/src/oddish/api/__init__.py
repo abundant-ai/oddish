@@ -24,7 +24,9 @@ from oddish.config import settings
 from oddish.db import (
     ExperimentModel,
     TaskModel,
+    TaskStatus,
     TrialModel,
+    TrialStatus,
     get_session,
     init_db,
     get_pool,
@@ -367,6 +369,144 @@ async def delete_experiment(experiment_id: str):
     return {
         "status": "success",
         "deleted": {"experiment_id": experiment_id, "tasks": len(task_ids)},
+    }
+
+
+@api.post("/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    """Cancel a task and its pending/running trials.
+
+    This stops queued jobs and marks the task and trials as cancelled,
+    but does not delete any data.
+    """
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+        # Check if task can be cancelled (not already completed/failed/cancelled)
+        if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Task {task_id} cannot be cancelled (status: {task.status.value})",
+            )
+
+        # Get trial IDs for this task
+        trial_ids_result = await session.execute(
+            select(TrialModel.id).where(TrialModel.task_id == task.id)
+        )
+        trial_ids = [row[0] for row in trial_ids_result.all()]
+
+        # Cancel PGQueuer jobs (queued and picked jobs)
+        cancelled_jobs = await cancel_pgqueuer_jobs_for_trials(session, trial_ids)
+        cancelled_jobs += await cancel_pgqueuer_jobs_for_tasks(session, [task.id])
+
+        # Update trial statuses - only cancel pending/queued/running trials
+        cancelled_trials = 0
+        for trial_id in trial_ids:
+            trial = await session.get(TrialModel, trial_id)
+            if trial and trial.status in (
+                TrialStatus.PENDING,
+                TrialStatus.QUEUED,
+                TrialStatus.RUNNING,
+                TrialStatus.RETRYING,
+            ):
+                trial.status = TrialStatus.CANCELLED
+                cancelled_trials += 1
+
+        # Update task status
+        task.status = TaskStatus.CANCELLED
+        task.finished_at = utcnow()
+
+        await session.commit()
+
+    return {
+        "status": "success",
+        "cancelled": {
+            "task_id": task_id,
+            "trials_cancelled": cancelled_trials,
+            "jobs_cancelled": cancelled_jobs,
+        },
+    }
+
+
+@api.post("/experiments/{experiment_id}/cancel")
+async def cancel_experiment(experiment_id: str):
+    """Cancel all tasks in an experiment.
+
+    This stops queued jobs and marks tasks and trials as cancelled,
+    but does not delete any data.
+    """
+    async with get_session() as session:
+        experiment = await session.get(ExperimentModel, experiment_id)
+        if not experiment:
+            raise HTTPException(
+                status_code=404, detail=f"Experiment {experiment_id} not found"
+            )
+
+        # Get all task IDs for this experiment
+        result = await session.execute(
+            select(TaskModel.id).where(TaskModel.experiment_id == experiment_id)
+        )
+        task_ids = [row[0] for row in result.all()]
+
+        if not task_ids:
+            return {
+                "status": "success",
+                "cancelled": {
+                    "experiment_id": experiment_id,
+                    "tasks_cancelled": 0,
+                    "trials_cancelled": 0,
+                    "jobs_cancelled": 0,
+                },
+            }
+
+        # Get all trial IDs
+        trial_ids_result = await session.execute(
+            select(TrialModel.id).where(TrialModel.task_id.in_(task_ids))
+        )
+        trial_ids = [row[0] for row in trial_ids_result.all()]
+
+        # Cancel PGQueuer jobs
+        cancelled_jobs = await cancel_pgqueuer_jobs_for_trials(session, trial_ids)
+        cancelled_jobs += await cancel_pgqueuer_jobs_for_tasks(session, task_ids)
+
+        # Update trial statuses
+        cancelled_trials = 0
+        for trial_id in trial_ids:
+            trial = await session.get(TrialModel, trial_id)
+            if trial and trial.status in (
+                TrialStatus.PENDING,
+                TrialStatus.QUEUED,
+                TrialStatus.RUNNING,
+                TrialStatus.RETRYING,
+            ):
+                trial.status = TrialStatus.CANCELLED
+                cancelled_trials += 1
+
+        # Update task statuses
+        cancelled_tasks = 0
+        for task_id in task_ids:
+            task = await session.get(TaskModel, task_id)
+            if task and task.status not in (
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+                TaskStatus.CANCELLED,
+            ):
+                task.status = TaskStatus.CANCELLED
+                task.finished_at = utcnow()
+                cancelled_tasks += 1
+
+        await session.commit()
+
+    return {
+        "status": "success",
+        "cancelled": {
+            "experiment_id": experiment_id,
+            "tasks_cancelled": cancelled_tasks,
+            "trials_cancelled": cancelled_trials,
+            "jobs_cancelled": cancelled_jobs,
+        },
     }
 
 

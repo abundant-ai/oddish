@@ -72,6 +72,7 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   pending: "border-gray-500/30 bg-gray-500/10",
   queued: "border-purple-500/30 bg-purple-500/10",
   running: "border-blue-500/30 bg-blue-500/10",
+  cancelled: "border-slate-500/30 bg-slate-500/10",
 };
 
 export function TrialDetailPanel({
