@@ -24,7 +24,7 @@ export default function DatasetsLandingPage() {
     {
       refreshInterval: 30000,
       revalidateOnFocus: false,
-    }
+    },
   );
   const datasets = Array.isArray(data) ? data : [];
 

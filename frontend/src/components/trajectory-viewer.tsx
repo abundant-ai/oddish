@@ -48,7 +48,7 @@ function formatMs(ms: number): string {
 
 function formatStepDuration(
   prevTimestamp: string | null,
-  currentTimestamp: string | null
+  currentTimestamp: string | null,
 ): string | null {
   if (!prevTimestamp || !currentTimestamp) return null;
   const prev = new Date(prevTimestamp).getTime();
@@ -77,7 +77,7 @@ interface ImageError {
 }
 
 function getTextFromContent(
-  content: MessageContent | ObservationContent
+  content: MessageContent | ObservationContent,
 ): string {
   if (content === null || content === undefined) {
     return "";
@@ -88,14 +88,14 @@ function getTextFromContent(
 
   return content
     .filter(
-      (part): part is ContentPart & { type: "text" } => part.type === "text"
+      (part): part is ContentPart & { type: "text" } => part.type === "text",
     )
     .map((part) => part.text || "")
     .join("\n");
 }
 
 function getFirstLine(
-  content: MessageContent | ObservationContent
+  content: MessageContent | ObservationContent,
 ): string | null {
   const text = getTextFromContent(content);
   return text?.split("\n")[0] || null;
@@ -567,7 +567,7 @@ function StepContent({
   apiBaseUrl: string;
 }) {
   const [expandedToolCalls, setExpandedToolCalls] = useState<Set<string>>(
-    new Set()
+    new Set(),
   );
 
   const toggleToolCall = (id: string) => {
@@ -728,7 +728,7 @@ export function TrajectoryViewer({
     fetcher,
     {
       revalidateOnFocus: false,
-    }
+    },
   );
 
   const [expandedSteps, setExpandedSteps] = useState<string[]>([]);
@@ -746,7 +746,7 @@ export function TrajectoryViewer({
   const handleStepClick = (index: number) => {
     const stepKey = `step-${index}`;
     setExpandedSteps((prev) =>
-      prev.includes(stepKey) ? prev : [...prev, stepKey]
+      prev.includes(stepKey) ? prev : [...prev, stepKey],
     );
     // Scroll to step after a brief delay for accordion animation
     setTimeout(() => {

@@ -8,7 +8,7 @@ import {
 
 export async function POST(
   _request: Request,
-  { params }: { params: Promise<{ task_id: string }> }
+  { params }: { params: Promise<{ task_id: string }> },
 ) {
   try {
     const { getToken } = await auth();
@@ -34,7 +34,7 @@ export async function POST(
         data ?? { error: "Failed to queue task analysis" },
         {
           status: res.status,
-        }
+        },
       );
     }
 
@@ -42,7 +42,7 @@ export async function POST(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }

@@ -46,7 +46,7 @@ export interface AgentPassAtKStats {
  */
 export function calculatePassAtKCurve(
   agentStats: Record<string, AgentPassAtKStats>,
-  maxK?: number
+  maxK?: number,
 ): PassAtKDataPoint[] {
   const agents = Object.keys(agentStats);
   if (agents.length === 0) return [];
@@ -71,7 +71,7 @@ export function calculatePassAtKCurve(
 
       // Calculate average pass@k across all tasks for this agent
       const passAtKValues = stats.taskResults.map(({ c }) =>
-        calculatePassAtK(stats.n, c, k)
+        calculatePassAtK(stats.n, c, k),
       );
 
       // Average across tasks

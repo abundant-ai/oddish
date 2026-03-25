@@ -41,12 +41,12 @@ function getPassAtOneValue(trials: Trial[]): number | null {
 
 function calculateRows(
   tasks: Task[],
-  agentSummaries: AgentSummary[]
+  agentSummaries: AgentSummary[],
 ): LeaderboardRow[] {
   const modelScopedAgents = new Set(
     agentSummaries
       .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent)
+      .map((summary) => summary.agent),
   );
   const rows: LeaderboardRow[] = [];
 
@@ -55,7 +55,7 @@ function calculateRows(
     for (const task of tasks) {
       const trials = (task.trials ?? []).filter(
         (trial) =>
-          getExperimentAgentKey(trial, modelScopedAgents) === summary.key
+          getExperimentAgentKey(trial, modelScopedAgents) === summary.key,
       );
       const value = getPassAtOneValue(trials);
       if (value !== null) {
@@ -88,11 +88,11 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
 }: PassAtOneLeaderboardProps) {
   const rows = useMemo(
     () => calculateRows(tasks, agentSummaries),
-    [tasks, agentSummaries]
+    [tasks, agentSummaries],
   );
   const visibleRows = useMemo(
     () => rows.filter((row) => !hiddenAgents.has(row.key)),
-    [rows, hiddenAgents]
+    [rows, hiddenAgents],
   );
   const colorByAgent = useMemo(() => {
     const colors = new Map<string, string>();

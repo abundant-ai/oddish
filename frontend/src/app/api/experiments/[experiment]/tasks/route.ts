@@ -9,7 +9,7 @@ import { decodeExperimentRouteParam } from "@/lib/utils";
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ experiment: string }> }
+  { params }: { params: Promise<{ experiment: string }> },
 ) {
   try {
     const authObj = await auth();
@@ -24,7 +24,7 @@ export async function GET(
       console.error("Failed to get Clerk token for user:", authObj.userId);
       return NextResponse.json(
         { error: "Failed to get authentication token" },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -35,7 +35,7 @@ export async function GET(
     if (!experimentId) {
       return NextResponse.json(
         { error: "Missing experiment" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -59,7 +59,7 @@ export async function GET(
       console.error(`Backend error: ${res.status} - ${errorText}`);
       return NextResponse.json(
         { error: "Failed to fetch experiment tasks", details: errorText },
-        { status: res.status }
+        { status: res.status },
       );
     }
 
@@ -69,7 +69,7 @@ export async function GET(
     console.error("API route error:", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }

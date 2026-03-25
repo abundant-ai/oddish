@@ -196,7 +196,7 @@ export function ExperimentDetailView({
   const hydratedFromUrl = useRef(false);
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(tasksForExperiment),
-    [tasksForExperiment]
+    [tasksForExperiment],
   );
 
   const buildTrialGroups = useCallback(
@@ -227,7 +227,7 @@ export function ExperimentDetailView({
       }
       return { trialGroups, orderedTrials };
     },
-    [modelScopedAgents]
+    [modelScopedAgents],
   );
 
   useEffect(() => {
@@ -305,7 +305,7 @@ export function ExperimentDetailView({
 
   const summary = useMemo(
     () => buildExperimentSummary(tasksForExperiment),
-    [tasksForExperiment]
+    [tasksForExperiment],
   );
 
   const closeDrawer = () => {
@@ -389,7 +389,7 @@ export function ExperimentDetailView({
                 readOnly={readOnly}
                 onTrialSelect={(trial, task, context) => {
                   const taskIndex = tasksForExperiment.findIndex(
-                    (t) => t.id === task.id
+                    (t) => t.id === task.id,
                   );
                   setDrawerState({
                     isOpen: true,

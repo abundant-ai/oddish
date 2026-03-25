@@ -94,7 +94,7 @@ function getWindowSamples(samples: DashboardSample[], rangeMs: number) {
 function getQueueDelta(
   windowSamples: DashboardSample[],
   queueKey: string,
-  key: QueueStatKey
+  key: QueueStatKey,
 ) {
   if (windowSamples.length < 2) return 0;
   const first = windowSamples[0]?.queues?.[queueKey]?.[key] ?? 0;
@@ -106,7 +106,7 @@ function getQueueDelta(
 function getQueueSeries(
   windowSamples: DashboardSample[],
   queueKey: string,
-  selector: (stats: QueueStat | undefined) => number
+  selector: (stats: QueueStat | undefined) => number,
 ) {
   return windowSamples.map((sample) => selector(sample.queues?.[queueKey]));
 }
@@ -114,7 +114,7 @@ function getQueueSeries(
 function getQueueWindowAverage(
   windowSamples: DashboardSample[],
   queueKey: string,
-  key: QueueStatKey
+  key: QueueStatKey,
 ) {
   if (windowSamples.length === 0) return 0;
   const total = windowSamples.reduce((sum, sample) => {
@@ -258,10 +258,10 @@ function QueueKeyMatrix({
     () =>
       queues
         ? Object.keys(queues).filter((key) =>
-            key.toLowerCase().includes(queueFilter.toLowerCase().trim())
+            key.toLowerCase().includes(queueFilter.toLowerCase().trim()),
           )
         : [],
-    [queues, queueFilter]
+    [queues, queueFilter],
   );
 
   const rows = useMemo(() => {
@@ -279,22 +279,22 @@ function QueueKeyMatrix({
         const mixPending = getQueueWindowAverage(
           windowSamples,
           queueKey,
-          "pending"
+          "pending",
         );
         const mixQueued = getQueueWindowAverage(
           windowSamples,
           queueKey,
-          "queued"
+          "queued",
         );
         const mixRetrying = getQueueWindowAverage(
           windowSamples,
           queueKey,
-          "retrying"
+          "retrying",
         );
         const mixRunning = getQueueWindowAverage(
           windowSamples,
           queueKey,
-          "running"
+          "running",
         );
         const deltaSuccess = getQueueDelta(windowSamples, queueKey, "success");
         const deltaFailed = getQueueDelta(windowSamples, queueKey, "failed");
@@ -349,7 +349,7 @@ function QueueKeyMatrix({
         waiting: 0,
         running: 0,
         liveJobs: 0,
-      }
+      },
     );
   }, [queues]);
 
@@ -559,13 +559,13 @@ function QueuesAndPipelineCard() {
     TIME_RANGES.find((range) => range.key === timeRange) ?? TIME_RANGES[1];
   const windowSamples = useMemo(
     () => getWindowSamples(history, rangeConfig.ms),
-    [history, rangeConfig.ms]
+    [history, rangeConfig.ms],
   );
 
   const handleRefresh = () => {
     setHistory([]);
     mutate(
-      (key) => typeof key === "string" && key.startsWith("/api/dashboard")
+      (key) => typeof key === "string" && key.startsWith("/api/dashboard"),
     );
   };
 
@@ -637,7 +637,7 @@ function QueueSlotsCard() {
     fetcher,
     {
       refreshInterval: 10000,
-    }
+    },
   );
 
   const formatTimestamp = (ts: string | null) => {
@@ -848,7 +848,7 @@ function QueueHealthCard() {
   const queueKeys = new Set<string>();
   slotsData?.queue_keys.forEach((p) => queueKeys.add(p.queue_key));
   Object.keys(pgData?.stats?.by_entrypoint ?? {}).forEach((p) =>
-    queueKeys.add(p)
+    queueKeys.add(p),
   );
 
   const queueRows = Array.from(queueKeys).map((queueKey) => {
@@ -891,7 +891,7 @@ function QueueHealthCard() {
   });
   const filteredRows = queueRows
     .filter((row) =>
-      row.queueKey.toLowerCase().includes(queueFilter.toLowerCase().trim())
+      row.queueKey.toLowerCase().includes(queueFilter.toLowerCase().trim()),
     )
     .sort((a, b) => b.queued + b.picked - (a.queued + a.picked))
     .slice(0, 30);
@@ -1028,7 +1028,7 @@ function OrphanedStateCard() {
     fetcher,
     {
       refreshInterval: 10000,
-    }
+    },
   );
 
   const counts = data?.counts;
@@ -1218,7 +1218,7 @@ function PGQueuerCard() {
   const { data, error, isLoading, mutate } = useSWR<PGQueuerResponse>(
     `/api/admin/pgqueuer?${queryParams.toString()}`,
     fetcher,
-    { refreshInterval: 5000 }
+    { refreshInterval: 5000 },
   );
 
   const formatDate = (dateStr: string | null) => {
@@ -1239,7 +1239,7 @@ function PGQueuerCard() {
       .map((job) => job.created as string);
     if (candidates.length === 0) return "—";
     const oldest = candidates.reduce((min, current) =>
-      new Date(current).getTime() < new Date(min).getTime() ? current : min
+      new Date(current).getTime() < new Date(min).getTime() ? current : min,
     );
     return formatAge(oldest);
   };
@@ -1263,7 +1263,7 @@ function PGQueuerCard() {
 
   const entrypoints = data?.stats?.by_entrypoint
     ? Object.keys(data.stats.by_entrypoint).filter((key) =>
-        key.toLowerCase().includes(entrypointQuery.toLowerCase().trim())
+        key.toLowerCase().includes(entrypointQuery.toLowerCase().trim()),
       )
     : [];
   const statuses = data?.stats?.by_status
@@ -1487,7 +1487,7 @@ function EntrypointStatsCard() {
   const { data } = useSWR<PGQueuerResponse>(
     "/api/admin/pgqueuer?page_size=1",
     fetcher,
-    { refreshInterval: 10000 }
+    { refreshInterval: 10000 },
   );
 
   if (!data?.stats?.by_entrypoint) return null;

@@ -81,7 +81,7 @@ const STATUS_FILTER_OPTIONS = [
 
 function useDashboardUsage(
   usageMinutes: number | null,
-  fallbackData?: DashboardResponse | null
+  fallbackData?: DashboardResponse | null,
 ) {
   const params = new URLSearchParams({
     include_tasks: "false",
@@ -102,14 +102,14 @@ function useDashboardUsage(
           (stats) =>
             (Number(stats.running) || 0) > 0 ||
             (Number(stats.queued) || 0) > 0 ||
-            (Number(stats.retrying) || 0) > 0
+            (Number(stats.retrying) || 0) > 0,
         );
         return hasActiveQueue ? 30000 : 90000;
       },
       revalidateOnFocus: false,
       keepPreviousData: true,
       fallbackData: fallbackData ?? undefined,
-    }
+    },
   );
 
   return {
@@ -130,7 +130,7 @@ function useDashboardExperiments(
   experimentsOffset: number,
   experimentsQuery: string,
   experimentsStatus: string,
-  fallbackData?: DashboardResponse | null
+  fallbackData?: DashboardResponse | null,
 ) {
   const params = new URLSearchParams({
     experiments_limit: String(experimentsLimit),
@@ -155,7 +155,7 @@ function useDashboardExperiments(
         experimentsStatus === "all"
           ? (fallbackData ?? undefined)
           : undefined,
-    }
+    },
   );
 
   return {
@@ -406,7 +406,7 @@ function UsageOverviewCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [isCustomPickerOpen, setIsCustomPickerOpen] = useState(
-    timeRange.startsWith("custom:")
+    timeRange.startsWith("custom:"),
   );
   const [customMagnitude, setCustomMagnitude] = useState("2");
   const [customUnit, setCustomUnit] = useState<"m" | "h" | "d">("h");
@@ -491,7 +491,7 @@ function UsageOverviewCard({
         if (a.jobCount !== b.jobCount) return b.jobCount - a.jobCount;
         return a.model.localeCompare(b.model);
       }),
-    [usageRows]
+    [usageRows],
   );
 
   const totals = useMemo(
@@ -516,9 +516,9 @@ function UsageOverviewCard({
           running: 0,
           queued: 0,
           retrying: 0,
-        }
+        },
       ),
-    [usageRows]
+    [usageRows],
   );
 
   const selectedWindowValue = timeRange.startsWith("custom:")
@@ -536,7 +536,7 @@ function UsageOverviewCard({
       customUnit === "d" ? 1440 : customUnit === "h" ? 60 : 1;
     const minutes = Math.min(
       86400,
-      Math.max(1, roundedMagnitude * minutesPerUnit)
+      Math.max(1, roundedMagnitude * minutesPerUnit),
     );
     onTimeRangeChange(`custom:${minutes}`);
     setIsCustomPickerOpen(false);
@@ -718,7 +718,7 @@ function UsageOverviewCard({
                 <div className="border-[#6f88b4]/18 rounded-md border bg-background/70 p-2 text-center">
                   <div className="text-base font-bold tabular-nums">
                     {formatCompactNumber(
-                      totals.inputTokens + totals.outputTokens
+                      totals.inputTokens + totals.outputTokens,
                     )}
                   </div>
                   <div className="text-[10px] text-muted-foreground">
@@ -943,13 +943,13 @@ function RecentTasksCard({
     try {
       const res = await fetch(
         `/api/experiments/${encodeExperimentRouteParam(deleteTarget.id)}`,
-        { method: "DELETE" }
+        { method: "DELETE" },
       );
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         throw new Error(
-          errorData.detail || errorData.error || "Failed to delete experiment"
+          errorData.detail || errorData.error || "Failed to delete experiment",
         );
       }
 
@@ -957,7 +957,7 @@ function RecentTasksCard({
       setDeleteTarget(null);
     } catch (error) {
       setDeleteError(
-        error instanceof Error ? error.message : "Failed to delete experiment"
+        error instanceof Error ? error.message : "Failed to delete experiment",
       );
     } finally {
       setIsDeleting(false);
@@ -1051,7 +1051,7 @@ function RecentTasksCard({
                       ? Math.round(
                           (experiment.reward_success /
                             experiment.reward_total) *
-                            100
+                            100,
                         )
                       : null;
 
@@ -1061,7 +1061,7 @@ function RecentTasksCard({
                         <div className="flex items-center gap-1.5">
                           <Link
                             href={`/experiments/${encodeExperimentRouteParam(
-                              experiment.id
+                              experiment.id,
                             )}`}
                             className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
                           >
@@ -1255,7 +1255,7 @@ export function DashboardClient({
     isRefreshing: usageIsRefreshing,
   } = useDashboardUsage(
     usageMinutes,
-    usageMinutes === 1440 ? initialDashboardData : null
+    usageMinutes === 1440 ? initialDashboardData : null,
   );
   const {
     experiments,
@@ -1271,7 +1271,7 @@ export function DashboardClient({
     statusFilter,
     deferredSearchQuery.trim().length === 0 && statusFilter === "all"
       ? initialDashboardData
-      : null
+      : null,
   );
   const currentExperimentsPage =
     Math.floor(experimentsOffset / EXPERIMENTS_PAGE_SIZE) + 1;

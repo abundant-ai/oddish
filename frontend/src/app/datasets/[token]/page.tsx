@@ -22,20 +22,20 @@ export default function PublicDatasetPage() {
   const { data: experimentInfo, error: experimentError } =
     useSWR<PublicExperimentInfo>(
       token ? `${PUBLIC_API_URL}/experiments/${token}` : null,
-      fetcher
+      fetcher,
     );
 
   const { data, error, isLoading } = useSWR<Task[]>(
     token ? `${PUBLIC_API_URL}/experiments/${token}/tasks?limit=200` : null,
     fetcher,
-    { refreshInterval: 30000, revalidateOnFocus: false }
+    { refreshInterval: 30000, revalidateOnFocus: false },
   );
 
   const tasks = useMemo(() => {
     const taskList = Array.isArray(data) ? [...data] : [];
     return taskList.sort(
       (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
     );
   }, [data]);
 

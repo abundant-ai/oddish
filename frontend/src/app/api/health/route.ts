@@ -10,7 +10,7 @@ export async function GET() {
     if (!res.ok) {
       return NextResponse.json(
         { status: "degraded", error: "Backend health check failed" },
-        { status: 503 }
+        { status: 503 },
       );
     }
 
@@ -20,7 +20,7 @@ export async function GET() {
     console.error("Health route error:", error);
     return NextResponse.json(
       { status: "degraded", error: "Health check unavailable" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }

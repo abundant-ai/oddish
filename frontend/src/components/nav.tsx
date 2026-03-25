@@ -42,7 +42,7 @@ function HealthIndicator() {
     {
       refreshInterval: 30000,
       revalidateOnFocus: false,
-    }
+    },
   );
 
   const status = data?.status;

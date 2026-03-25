@@ -138,7 +138,7 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
   }
 
   const artifactFiles = (data?.files ?? []).filter((f) =>
-    f.path.startsWith("artifacts/")
+    f.path.startsWith("artifacts/"),
   );
 
   if (artifactFiles.length === 0) {
