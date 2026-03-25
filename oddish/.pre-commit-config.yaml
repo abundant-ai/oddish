@@ -19,25 +19,22 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.8.4
     hooks:
-      # Run the linter
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
-        files: ^(src/|alembic/).*\.py$
-      # Run the formatter
+        files: ^(oddish/src/|oddish/alembic/).*\.py$
       - id: ruff-format
-        files: ^(src/|alembic/).*\.py$
+        files: ^(oddish/src/|oddish/alembic/).*\.py$
 
   - repo: https://github.com/psf/black
     rev: 24.10.0
     hooks:
       - id: black
-        files: ^(src/|alembic/).*\.py$
+        files: ^(oddish/src/|oddish/alembic/).*\.py$
 
-  # Mypy type checking
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.13.0
     hooks:
       - id: mypy
-        files: ^src/.*\.py$
+        files: ^oddish/src/.*\.py$
         additional_dependencies: [types-PyYAML, types-requests, sqlalchemy2-stubs]
         args: [--ignore-missing-imports, --no-strict-optional]

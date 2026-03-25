@@ -29,7 +29,7 @@ function getModalUrl(endpointName: string): string {
 
   if (!MODAL_BASE_URL) {
     throw new Error(
-      `Missing NEXT_PUBLIC_MODAL_BASE_URL (or ${envKey}) while NEXT_PUBLIC_BACKEND_TYPE=modal`,
+      `Missing NEXT_PUBLIC_MODAL_BASE_URL (or ${envKey}) while NEXT_PUBLIC_BACKEND_TYPE=modal`
     );
   }
 
@@ -55,7 +55,7 @@ const LOCAL_FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 export function getBackendUrl(
   endpoint: string,
   path: string = "",
-  queryParams?: Record<string, string>,
+  queryParams?: Record<string, string>
 ): string {
   let baseUrl: string;
   const allQueryParams: Record<string, string> = { ...queryParams };
@@ -98,7 +98,7 @@ export function getAuthHeaders(clerkToken?: string | null): HeadersInit {
  * Get a Clerk JWT, preferring a configured template when available.
  */
 export async function getClerkToken(
-  getToken: (options?: { template?: string }) => Promise<string | null>,
+  getToken: (options?: { template?: string }) => Promise<string | null>
 ): Promise<string | null> {
   const template = process.env.CLERK_JWT_TEMPLATE;
   if (template) {

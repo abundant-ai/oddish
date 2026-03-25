@@ -46,7 +46,7 @@ export function ResizableDrawer({
         const deltaX = startX - moveEvent.clientX;
         const newWidth = Math.min(
           maxWidth,
-          Math.max(minWidth, startWidth + deltaX),
+          Math.max(minWidth, startWidth + deltaX)
         );
         setWidth(newWidth);
       };
@@ -60,7 +60,7 @@ export function ResizableDrawer({
       document.addEventListener("mousemove", handleMouseMove);
       document.addEventListener("mouseup", handleMouseUp);
     },
-    [width, minWidth, maxWidth],
+    [width, minWidth, maxWidth]
   );
 
   // Handle escape key to close
@@ -81,7 +81,7 @@ export function ResizableDrawer({
     <>
       {/* Backdrop overlay - click to close */}
       <div
-        className="fixed inset-0 z-30 bg-black/20 animate-in fade-in duration-300"
+        className="fixed inset-0 z-30 bg-black/20 duration-300 animate-in fade-in"
         style={{ top: "56px" }}
         onClick={() => onOpenChange(false)}
       />
@@ -90,11 +90,11 @@ export function ResizableDrawer({
       <div
         ref={drawerRef}
         className={cn(
-          "fixed right-0 z-40 flex bg-background border-l border-border shadow-2xl",
-          "animate-in slide-in-from-right duration-300",
+          "fixed right-0 z-40 flex border-l border-border bg-background shadow-2xl",
+          "duration-300 animate-in slide-in-from-right",
           isResizing && "select-none",
-          "border-t rounded-tl-lg",
-          className,
+          "rounded-tl-lg border-t",
+          className
         )}
         style={{
           width: `${width}px`,
@@ -105,10 +105,10 @@ export function ResizableDrawer({
       >
         {/* Resize handle */}
         <div
-          className="absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-primary/20 active:bg-primary/30 group flex items-center justify-center"
+          className="group absolute bottom-0 left-0 top-0 flex w-1 cursor-ew-resize items-center justify-center hover:bg-primary/20 active:bg-primary/30"
           onMouseDown={handleMouseDown}
         >
-          <div className="absolute left-0 w-4 h-12 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity -translate-x-1/2 bg-muted rounded-l border border-r-0">
+          <div className="absolute left-0 flex h-12 w-4 -translate-x-1/2 items-center justify-center rounded-l border border-r-0 bg-muted opacity-0 transition-opacity group-hover:opacity-100">
             <GripVertical className="h-4 w-4 text-muted-foreground" />
           </div>
         </div>
@@ -131,7 +131,7 @@ export function ResizableDrawer({
         </div>
 
         {/* Content */}
-        <div className="flex-1 flex flex-col overflow-hidden">{children}</div>
+        <div className="flex flex-1 flex-col overflow-hidden">{children}</div>
       </div>
     </>
   );
@@ -168,7 +168,7 @@ export function DrawerDescription({
 }: React.HTMLAttributes<HTMLParagraphElement>) {
   return (
     <p
-      className={cn("text-sm text-muted-foreground sr-only", className)}
+      className={cn("sr-only text-sm text-muted-foreground", className)}
       {...props}
     />
   );

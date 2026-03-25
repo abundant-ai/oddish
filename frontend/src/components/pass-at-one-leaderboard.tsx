@@ -41,12 +41,12 @@ function getPassAtOneValue(trials: Trial[]): number | null {
 
 function calculateRows(
   tasks: Task[],
-  agentSummaries: AgentSummary[],
+  agentSummaries: AgentSummary[]
 ): LeaderboardRow[] {
   const modelScopedAgents = new Set(
     agentSummaries
       .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent),
+      .map((summary) => summary.agent)
   );
   const rows: LeaderboardRow[] = [];
 
@@ -55,7 +55,7 @@ function calculateRows(
     for (const task of tasks) {
       const trials = (task.trials ?? []).filter(
         (trial) =>
-          getExperimentAgentKey(trial, modelScopedAgents) === summary.key,
+          getExperimentAgentKey(trial, modelScopedAgents) === summary.key
       );
       const value = getPassAtOneValue(trials);
       if (value !== null) {
@@ -88,11 +88,11 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
 }: PassAtOneLeaderboardProps) {
   const rows = useMemo(
     () => calculateRows(tasks, agentSummaries),
-    [tasks, agentSummaries],
+    [tasks, agentSummaries]
   );
   const visibleRows = useMemo(
     () => rows.filter((row) => !hiddenAgents.has(row.key)),
-    [rows, hiddenAgents],
+    [rows, hiddenAgents]
   );
   const colorByAgent = useMemo(() => {
     const colors = new Map<string, string>();
@@ -110,7 +110,7 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
   const ticks = [0, 0.2, 0.4, 0.6, 0.8, 1];
 
   return (
-    <div className="rounded-lg border border-border bg-card/80 p-6 shadow-sm h-full">
+    <div className="h-full rounded-lg border border-border bg-card/80 p-6 shadow-sm">
       <div className="flex h-full flex-col">
         <div className="flex items-center justify-between gap-4">
           <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -184,7 +184,7 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
                 onClick={() => onToggleAgent(row.key)}
                 variant="ghost"
                 size="sm"
-                className={`h-auto flex items-center gap-2 rounded px-2 py-1 font-mono text-xs transition-all ${
+                className={`flex h-auto items-center gap-2 rounded px-2 py-1 font-mono text-xs transition-all ${
                   isHidden ? "opacity-40 hover:opacity-60" : "hover:bg-muted"
                 }`}
                 title={isHidden ? "Click to show" : "Click to hide"}

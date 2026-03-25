@@ -18,6 +18,7 @@ from oddish.db.models import Base
 # Ensure we use asyncpg driver explicitly (URL should already have +asyncpg).
 db_url = settings.database_url
 
+
 def _create_engine() -> AsyncEngine:
     # Disable prepared statements for connection poolers (Supavisor, PgBouncer)
     # that run in transaction mode.

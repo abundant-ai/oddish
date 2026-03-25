@@ -9,7 +9,7 @@ import { decodeExperimentRouteParam } from "@/lib/utils";
 
 export async function GET(
   _request: Request,
-  { params }: { params: Promise<{ experiment: string }> },
+  { params }: { params: Promise<{ experiment: string }> }
 ) {
   try {
     const authObj = await auth();
@@ -21,7 +21,7 @@ export async function GET(
     if (!token) {
       return NextResponse.json(
         { error: "Failed to get authentication token" },
-        { status: 401 },
+        { status: 401 }
       );
     }
 
@@ -29,7 +29,7 @@ export async function GET(
     const experimentId = decodeExperimentRouteParam(experiment);
     const url = getBackendUrl(
       "experiments",
-      `/${encodeURIComponent(experimentId)}/share`,
+      `/${encodeURIComponent(experimentId)}/share`
     );
 
     const res = await fetch(url, {
@@ -50,7 +50,7 @@ export async function GET(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }

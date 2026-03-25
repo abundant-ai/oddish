@@ -8,14 +8,7 @@ import { Package, ImageOff } from "lucide-react";
 import { CodeBlock, getLanguageFromFilename } from "@/components/code-block";
 import { fetcher } from "@/lib/api";
 
-const IMAGE_EXTENSIONS = new Set([
-  "png",
-  "jpg",
-  "jpeg",
-  "gif",
-  "webp",
-  "svg",
-]);
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
 const MAX_ARTIFACTS = 10;
 
 function isImageFile(filename: string): boolean {
@@ -43,7 +36,7 @@ function ArtifactImageContent({
 
   if (error) {
     return (
-      <div className="p-4 flex items-center gap-2 text-sm text-muted-foreground">
+      <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
         <ImageOff className="h-4 w-4" />
         Failed to load image: {filePath}
       </div>
@@ -55,7 +48,7 @@ function ArtifactImageContent({
       <img
         src={src}
         alt={filePath}
-        className="max-w-full h-auto rounded border border-border"
+        className="h-auto max-w-full rounded border border-border"
         style={{ maxHeight: "600px" }}
         loading="lazy"
         onError={() => setError(true)}
@@ -103,7 +96,7 @@ function ArtifactFileContent({
 
   if (loading) {
     return (
-      <div className="p-4 space-y-2">
+      <div className="space-y-2 p-4">
         <Skeleton className="h-4 w-full" />
         <Skeleton className="h-4 w-3/4" />
         <Skeleton className="h-4 w-5/6" />
@@ -112,11 +105,7 @@ function ArtifactFileContent({
   }
 
   return (
-    <CodeBlock
-      code={content ?? ""}
-      language={language}
-      maxHeight="24rem"
-    />
+    <CodeBlock code={content ?? ""} language={language} maxHeight="24rem" />
   );
 }
 
@@ -133,7 +122,7 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
 
   if (isLoading) {
     return (
-      <div className="p-4 space-y-2">
+      <div className="space-y-2 p-4">
         <Skeleton className="h-4 w-full" />
         <Skeleton className="h-4 w-3/4" />
       </div>
@@ -149,15 +138,15 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
   }
 
   const artifactFiles = (data?.files ?? []).filter((f) =>
-    f.path.startsWith("artifacts/"),
+    f.path.startsWith("artifacts/")
   );
 
   if (artifactFiles.length === 0) {
     return (
       <div className="p-6 text-center">
-        <Package className="h-8 w-8 text-muted-foreground/50 mx-auto mb-2" />
+        <Package className="mx-auto mb-2 h-8 w-8 text-muted-foreground/50" />
         <p className="text-sm text-muted-foreground">No artifacts</p>
-        <p className="text-xs text-muted-foreground/70 mt-1">
+        <p className="mt-1 text-xs text-muted-foreground/70">
           No artifacts were collected from the sandbox
         </p>
       </div>
@@ -182,12 +171,12 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
   return (
     <div className="p-3">
       <Tabs defaultValue={tabs[0].id}>
-        <TabsList className="h-8 bg-muted/50 flex-wrap">
+        <TabsList className="h-8 flex-wrap bg-muted/50">
           {tabs.map((tab) => (
             <TabsTrigger
               key={tab.id}
               value={tab.id}
-              className="text-xs px-3 py-1"
+              className="px-3 py-1 text-xs"
             >
               {tab.label}
             </TabsTrigger>
@@ -211,7 +200,7 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
         ))}
       </Tabs>
       {truncated && (
-        <p className="text-xs text-muted-foreground mt-2">
+        <p className="mt-2 text-xs text-muted-foreground">
           Showing first {MAX_ARTIFACTS} of {artifactFiles.length} artifacts.
         </p>
       )}

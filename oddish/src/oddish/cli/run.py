@@ -429,11 +429,8 @@ def run(
 
     # Determine task sources using Harbor's dataset models
     task_paths: list[Path] = []
-    dataset_name: str | None = None
 
     if dataset:
-        # Registry dataset mode - use Harbor's RegistryDatasetConfig
-        dataset_name = dataset.split("@")[0] if "@" in dataset else dataset
         task_paths = get_task_paths_from_registry(
             dataset_name=dataset,
             task_names=task_names,
@@ -468,7 +465,6 @@ def run(
                     "A task directory must contain: task.toml, instruction.md, environment/, tests/"
                 )
                 raise typer.Exit(1)
-            dataset_name = local_path.name
             if not quiet:
                 console.print(
                     f"[dim]Found {len(task_paths)} tasks in {local_path}[/dim]"

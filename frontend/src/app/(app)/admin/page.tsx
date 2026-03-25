@@ -94,7 +94,7 @@ function getWindowSamples(samples: DashboardSample[], rangeMs: number) {
 function getQueueDelta(
   windowSamples: DashboardSample[],
   queueKey: string,
-  key: QueueStatKey,
+  key: QueueStatKey
 ) {
   if (windowSamples.length < 2) return 0;
   const first = windowSamples[0]?.queues?.[queueKey]?.[key] ?? 0;
@@ -106,7 +106,7 @@ function getQueueDelta(
 function getQueueSeries(
   windowSamples: DashboardSample[],
   queueKey: string,
-  selector: (stats: QueueStat | undefined) => number,
+  selector: (stats: QueueStat | undefined) => number
 ) {
   return windowSamples.map((sample) => selector(sample.queues?.[queueKey]));
 }
@@ -114,7 +114,7 @@ function getQueueSeries(
 function getQueueWindowAverage(
   windowSamples: DashboardSample[],
   queueKey: string,
-  key: QueueStatKey,
+  key: QueueStatKey
 ) {
   if (windowSamples.length === 0) return 0;
   const total = windowSamples.reduce((sum, sample) => {
@@ -258,10 +258,10 @@ function QueueKeyMatrix({
     () =>
       queues
         ? Object.keys(queues).filter((key) =>
-            key.toLowerCase().includes(queueFilter.toLowerCase().trim()),
+            key.toLowerCase().includes(queueFilter.toLowerCase().trim())
           )
         : [],
-    [queues, queueFilter],
+    [queues, queueFilter]
   );
 
   const rows = useMemo(() => {
@@ -279,22 +279,22 @@ function QueueKeyMatrix({
         const mixPending = getQueueWindowAverage(
           windowSamples,
           queueKey,
-          "pending",
+          "pending"
         );
         const mixQueued = getQueueWindowAverage(
           windowSamples,
           queueKey,
-          "queued",
+          "queued"
         );
         const mixRetrying = getQueueWindowAverage(
           windowSamples,
           queueKey,
-          "retrying",
+          "retrying"
         );
         const mixRunning = getQueueWindowAverage(
           windowSamples,
           queueKey,
-          "running",
+          "running"
         );
         const deltaSuccess = getQueueDelta(windowSamples, queueKey, "success");
         const deltaFailed = getQueueDelta(windowSamples, queueKey, "failed");
@@ -349,7 +349,7 @@ function QueueKeyMatrix({
         waiting: 0,
         running: 0,
         liveJobs: 0,
-      },
+      }
     );
   }, [queues]);
 
@@ -405,11 +405,11 @@ function QueueKeyMatrix({
             </AlertDescription>
           </Alert>
         ) : !hasQueueKeys ? (
-          <div className="text-center py-6 text-muted-foreground text-sm">
+          <div className="py-6 text-center text-sm text-muted-foreground">
             No active queue keys yet.
           </div>
         ) : rows.length === 0 ? (
-          <div className="text-center py-6 text-muted-foreground text-sm">
+          <div className="py-6 text-center text-sm text-muted-foreground">
             No queue keys match the current filter.
           </div>
         ) : (
@@ -464,7 +464,9 @@ function QueueKeyMatrix({
                     <TableCell className="font-medium">
                       <span className="inline-flex items-center gap-2">
                         <QueueKeyIcon queueKey={row.queueKey} size={13} />
-                        <span className="font-mono text-xs">{row.queueKey}</span>
+                        <span className="font-mono text-xs">
+                          {row.queueKey}
+                        </span>
                       </span>
                     </TableCell>
                     <TableCell className="text-right">
@@ -557,13 +559,13 @@ function QueuesAndPipelineCard() {
     TIME_RANGES.find((range) => range.key === timeRange) ?? TIME_RANGES[1];
   const windowSamples = useMemo(
     () => getWindowSamples(history, rangeConfig.ms),
-    [history, rangeConfig.ms],
+    [history, rangeConfig.ms]
   );
 
   const handleRefresh = () => {
     setHistory([]);
     mutate(
-      (key) => typeof key === "string" && key.startsWith("/api/dashboard"),
+      (key) => typeof key === "string" && key.startsWith("/api/dashboard")
     );
   };
 
@@ -635,7 +637,7 @@ function QueueSlotsCard() {
     fetcher,
     {
       refreshInterval: 10000,
-    },
+    }
   );
 
   const formatTimestamp = (ts: string | null) => {
@@ -705,8 +707,8 @@ function QueueSlotsCard() {
         ) : isLoading ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : !data || data.queue_keys.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground">
-            <Server className="h-12 w-12 mx-auto mb-3 opacity-50" />
+          <div className="py-8 text-center text-muted-foreground">
+            <Server className="mx-auto mb-3 h-12 w-12 opacity-50" />
             <p>No queue slots configured</p>
           </div>
         ) : (
@@ -724,14 +726,16 @@ function QueueSlotsCard() {
                   <AccordionItem
                     key={queueKey}
                     value={queueKey}
-                    className="border rounded-lg px-3"
+                    className="rounded-lg border px-3"
                   >
-                    <AccordionTrigger className="hover:no-underline py-3">
-                      <div className="flex items-center justify-between w-full pr-2">
+                    <AccordionTrigger className="py-3 hover:no-underline">
+                      <div className="flex w-full items-center justify-between pr-2">
                         <span className="font-medium">
                           <span className="inline-flex items-center gap-2">
                             <QueueKeyIcon queueKey={queueKey} size={13} />
-                            <span className="font-mono text-xs">{queueKey}</span>
+                            <span className="font-mono text-xs">
+                              {queueKey}
+                            </span>
                           </span>
                         </span>
                         <div className="flex items-center gap-2">
@@ -741,7 +745,7 @@ function QueueSlotsCard() {
                             }).map((_, i) => (
                               <div
                                 key={i}
-                                className={`w-2 h-2 rounded-full ${
+                                className={`h-2 w-2 rounded-full ${
                                   i < queueSummary.active_slots
                                     ? "bg-blue-500"
                                     : "bg-muted-foreground/30"
@@ -789,7 +793,7 @@ function QueueSlotsCard() {
                               <TableCell className="text-right text-xs">
                                 {slot.is_active ? (
                                   <Badge variant="outline" className="text-xs">
-                                    <Clock className="h-3 w-3 mr-1" />
+                                    <Clock className="mr-1 h-3 w-3" />
                                     {formatTimestamp(slot.locked_until)}
                                   </Badge>
                                 ) : (
@@ -844,7 +848,7 @@ function QueueHealthCard() {
   const queueKeys = new Set<string>();
   slotsData?.queue_keys.forEach((p) => queueKeys.add(p.queue_key));
   Object.keys(pgData?.stats?.by_entrypoint ?? {}).forEach((p) =>
-    queueKeys.add(p),
+    queueKeys.add(p)
   );
 
   const queueRows = Array.from(queueKeys).map((queueKey) => {
@@ -887,7 +891,7 @@ function QueueHealthCard() {
   });
   const filteredRows = queueRows
     .filter((row) =>
-      row.queueKey.toLowerCase().includes(queueFilter.toLowerCase().trim()),
+      row.queueKey.toLowerCase().includes(queueFilter.toLowerCase().trim())
     )
     .sort((a, b) => b.queued + b.picked - (a.queued + a.picked))
     .slice(0, 30);
@@ -943,8 +947,8 @@ function QueueHealthCard() {
         ) : slotsLoading || pgLoading ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : queueRows.length === 0 ? (
-          <div className="text-center py-6 text-muted-foreground">
-            <Server className="h-10 w-10 mx-auto mb-2 opacity-50" />
+          <div className="py-6 text-center text-muted-foreground">
+            <Server className="mx-auto mb-2 h-10 w-10 opacity-50" />
             <p>No queue data available</p>
           </div>
         ) : (
@@ -971,7 +975,9 @@ function QueueHealthCard() {
                     <TableCell>
                       <span className="inline-flex items-center gap-2">
                         <QueueKeyIcon queueKey={row.queueKey} size={13} />
-                        <span className="font-mono text-xs">{row.queueKey}</span>
+                        <span className="font-mono text-xs">
+                          {row.queueKey}
+                        </span>
                       </span>
                     </TableCell>
                     <TableCell className="text-right font-mono text-xs">
@@ -1022,7 +1028,7 @@ function OrphanedStateCard() {
     fetcher,
     {
       refreshInterval: 10000,
-    },
+    }
   );
 
   const counts = data?.counts;
@@ -1141,9 +1147,13 @@ function OrphanedStateCard() {
                 </div>
 
                 <div className="space-y-2">
-                  <div className="text-sm font-medium">Task-stage job samples</div>
+                  <div className="text-sm font-medium">
+                    Task-stage job samples
+                  </div>
                   {data.task_samples.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">No task samples.</p>
+                    <p className="text-xs text-muted-foreground">
+                      No task samples.
+                    </p>
                   ) : (
                     <Table>
                       <TableHeader>
@@ -1164,7 +1174,9 @@ function OrphanedStateCard() {
                             <TableCell className="font-mono text-xs">
                               {sample.task_id}
                             </TableCell>
-                            <TableCell className="text-xs">{sample.status}</TableCell>
+                            <TableCell className="text-xs">
+                              {sample.status}
+                            </TableCell>
                             <TableCell className="text-xs">
                               {sample.verdict_status || "—"}
                             </TableCell>
@@ -1206,7 +1218,7 @@ function PGQueuerCard() {
   const { data, error, isLoading, mutate } = useSWR<PGQueuerResponse>(
     `/api/admin/pgqueuer?${queryParams.toString()}`,
     fetcher,
-    { refreshInterval: 5000 },
+    { refreshInterval: 5000 }
   );
 
   const formatDate = (dateStr: string | null) => {
@@ -1227,7 +1239,7 @@ function PGQueuerCard() {
       .map((job) => job.created as string);
     if (candidates.length === 0) return "—";
     const oldest = candidates.reduce((min, current) =>
-      new Date(current).getTime() < new Date(min).getTime() ? current : min,
+      new Date(current).getTime() < new Date(min).getTime() ? current : min
     );
     return formatAge(oldest);
   };
@@ -1251,7 +1263,7 @@ function PGQueuerCard() {
 
   const entrypoints = data?.stats?.by_entrypoint
     ? Object.keys(data.stats.by_entrypoint).filter((key) =>
-        key.toLowerCase().includes(entrypointQuery.toLowerCase().trim()),
+        key.toLowerCase().includes(entrypointQuery.toLowerCase().trim())
       )
     : [];
   const statuses = data?.stats?.by_status
@@ -1291,14 +1303,14 @@ function PGQueuerCard() {
       <CardContent className="space-y-4">
         {/* Stats Overview */}
         {data && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
             {Object.entries(data.stats.by_status).map(([status, count]) => (
               <div
                 key={status}
-                className="p-2 rounded-md border border-border text-center"
+                className="rounded-md border border-border p-2 text-center"
               >
                 <div className="text-lg font-bold">{count}</div>
-                <div className="text-xs text-muted-foreground capitalize">
+                <div className="text-xs capitalize text-muted-foreground">
                   {status}
                 </div>
               </div>
@@ -1363,8 +1375,8 @@ function PGQueuerCard() {
         ) : isLoading && !data ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : !data || data.jobs.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground">
-            <Database className="h-12 w-12 mx-auto mb-3 opacity-50" />
+          <div className="py-8 text-center text-muted-foreground">
+            <Database className="mx-auto mb-3 h-12 w-12 opacity-50" />
             <p>No jobs in queue</p>
           </div>
         ) : (
@@ -1405,20 +1417,22 @@ function PGQueuerCard() {
                         <TableCell className="text-xs">
                           <span className="inline-flex items-center gap-1.5">
                             <QueueKeyIcon queueKey={job.entrypoint} size={12} />
-                            <span className="font-mono text-xs">{job.entrypoint}</span>
+                            <span className="font-mono text-xs">
+                              {job.entrypoint}
+                            </span>
                           </span>
                         </TableCell>
                         <TableCell className="text-xs">
                           {jobType ? (
                             <Badge variant="secondary" className="text-xs">
-                              <Zap className="h-3 w-3 mr-1" />
+                              <Zap className="mr-1 h-3 w-3" />
                               {jobType}
                             </Badge>
                           ) : (
                             "—"
                           )}
                         </TableCell>
-                        <TableCell className="font-mono text-xs max-w-[120px] truncate">
+                        <TableCell className="max-w-[120px] truncate font-mono text-xs">
                           {targetId}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
@@ -1473,7 +1487,7 @@ function EntrypointStatsCard() {
   const { data } = useSWR<PGQueuerResponse>(
     "/api/admin/pgqueuer?page_size=1",
     fetcher,
-    { refreshInterval: 10000 },
+    { refreshInterval: 10000 }
   );
 
   if (!data?.stats?.by_entrypoint) return null;
@@ -1503,17 +1517,17 @@ function EntrypointStatsCard() {
                     {total} total
                   </span>
                 </div>
-                <div className="flex gap-1 h-2">
+                <div className="flex h-2 gap-1">
                   {queued > 0 && (
                     <div
-                      className="bg-purple-500 rounded-sm"
+                      className="rounded-sm bg-purple-500"
                       style={{ width: `${(queued / total) * 100}%` }}
                       title={`Queued: ${queued}`}
                     />
                   )}
                   {picked > 0 && (
                     <div
-                      className="bg-blue-500 rounded-sm"
+                      className="rounded-sm bg-blue-500"
                       style={{ width: `${(picked / total) * 100}%` }}
                       title={`Picked: ${picked}`}
                     />
@@ -1544,7 +1558,7 @@ export default function AdminPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Admin Dashboard</h1>
-        <p className="text-muted-foreground text-sm">
+        <p className="text-sm text-muted-foreground">
           Internal system monitoring for workers and job queues
         </p>
       </div>

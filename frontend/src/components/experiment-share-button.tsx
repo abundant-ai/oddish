@@ -35,7 +35,7 @@ export function ExperimentShareButton({
   const [isUpdating, setIsUpdating] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [statusTone, setStatusTone] = useState<"success" | "error" | null>(
-    null,
+    null
   );
 
   const encodedId = encodeExperimentRouteParam(experimentId);
@@ -43,7 +43,7 @@ export function ExperimentShareButton({
   // Share metadata is only needed when the publish dialog is opened.
   const { data, mutate } = useSWR<ExperimentShareInfo>(
     isOpen ? shareKey : null,
-    fetcher,
+    fetcher
   );
 
   const shareUrl = useMemo(() => {
@@ -73,9 +73,7 @@ export function ExperimentShareButton({
     } catch (error) {
       setStatusTone("error");
       setStatusMessage(
-        error instanceof Error
-          ? error.message
-          : "Unable to publish experiment.",
+        error instanceof Error ? error.message : "Unable to publish experiment."
       );
     } finally {
       setIsUpdating(false);
@@ -93,7 +91,7 @@ export function ExperimentShareButton({
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(
-          payload.detail || payload.error || "Failed to unpublish",
+          payload.detail || payload.error || "Failed to unpublish"
         );
       }
       await mutate(payload, false);
@@ -104,7 +102,7 @@ export function ExperimentShareButton({
       setStatusMessage(
         error instanceof Error
           ? error.message
-          : "Unable to unpublish experiment.",
+          : "Unable to unpublish experiment."
       );
     } finally {
       setIsUpdating(false);
@@ -208,7 +206,7 @@ export function ExperimentShareButton({
             >
               {isUpdating ? (
                 <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Unpublishing...
                 </>
               ) : (
@@ -219,7 +217,7 @@ export function ExperimentShareButton({
             <Button type="button" onClick={handlePublish} disabled={isUpdating}>
               {isUpdating ? (
                 <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Publishing...
                 </>
               ) : (

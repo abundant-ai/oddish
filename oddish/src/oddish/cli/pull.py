@@ -56,7 +56,9 @@ def _make_client(api_url: str) -> httpx.Client:
         base_url=api_url,
         timeout=60.0,
         headers=get_auth_headers(),
-        limits=httpx.Limits(max_connections=MAX_WORKERS + 2, max_keepalive_connections=MAX_WORKERS + 2),
+        limits=httpx.Limits(
+            max_connections=MAX_WORKERS + 2, max_keepalive_connections=MAX_WORKERS + 2
+        ),
     )
 
 
@@ -69,11 +71,13 @@ def _get_json(
 ) -> dict | list | None:
     response = client.get(private_path, params=params)
     if response.status_code == 200:
-        return response.json()
+        result: dict | list | None = response.json()
+        return result
     if public_path:
         response = client.get(public_path, params=params)
         if response.status_code == 200:
-            return response.json()
+            result = response.json()
+            return result
     return None
 
 
@@ -311,12 +315,19 @@ def _pull_trial(
             error_dir = trial_root / "_pull_errors"
             total_downloads = len(to_download)
             if status_update and total_downloads:
-                status_update(f"Pulling trial {trial_id}: downloading files (0/{total_downloads})")
+                status_update(
+                    f"Pulling trial {trial_id}: downloading files (0/{total_downloads})"
+                )
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
                 futures = {
                     pool.submit(
                         _download_and_save_trial_file,
-                        client, trial_id, remote_path, local_file, error_dir, rel,
+                        client,
+                        trial_id,
+                        remote_path,
+                        local_file,
+                        error_dir,
+                        rel,
                     ): rel
                     for remote_path, local_file, rel in to_download
                 }
@@ -377,12 +388,19 @@ def _pull_task_files(
     error_dir = task_root / "errors"
     total_downloads = len(to_download)
     if status_update and total_downloads:
-        status_update(f"Pulling task {task_id}: downloading task files (0/{total_downloads})")
+        status_update(
+            f"Pulling task {task_id}: downloading task files (0/{total_downloads})"
+        )
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {
             pool.submit(
                 _download_and_save_task_file,
-                client, task_id, remote_path, local_file, error_dir, rel,
+                client,
+                task_id,
+                remote_path,
+                local_file,
+                error_dir,
+                rel,
             ): rel
             for remote_path, local_file, rel in to_download
         }
@@ -412,7 +430,9 @@ def _trial_task_id(trial_id: str) -> str | None:
 
 
 def _resolve_target(
-    client: httpx.Client, value: str, kind: TargetType | None,
+    client: httpx.Client,
+    value: str,
+    kind: TargetType | None,
 ) -> tuple[TargetType, str, dict | list[dict] | None]:
     """Returns (type, id, cached_data) so _pull_once can reuse the fetched data."""
     if kind:
@@ -432,7 +452,9 @@ def _resolve_target(
     if experiment_tasks:
         return "experiment", value, experiment_tasks
 
-    raise typer.BadParameter(f"Unable to resolve '{value}' as trial, task, or experiment.")
+    raise typer.BadParameter(
+        f"Unable to resolve '{value}' as trial, task, or experiment."
+    )
 
 
 def _is_trial_terminal(client: httpx.Client, trial_id: str) -> bool:
@@ -503,25 +525,35 @@ def _pull_once(
     if target_type == "task":
         if status_update:
             status_update(f"Pulling task {target_id}: fetching task metadata")
-        task = cached_data if isinstance(cached_data, dict) else _get_task_status(client, target_id)
+        task = (
+            cached_data
+            if isinstance(cached_data, dict)
+            else _get_task_status(client, target_id)
+        )
         if not task:
             raise typer.BadParameter(f"Task '{target_id}' not found.")
         _write_json(output_root / "tasks" / target_id / "task.json", task)
         run_manifest["tasks"].append(
-            {"task_id": target_id, "status": task.get("status"), "experiment_id": task.get("experiment_id")}
+            {
+                "task_id": target_id,
+                "status": task.get("status"),
+                "experiment_id": task.get("experiment_id"),
+            }
         )
 
-        trial_ids = [
-            t.get("id") for t in (task.get("trials", []) or []) if t.get("id")
-        ]
+        trial_ids = [t.get("id") for t in (task.get("trials", []) or []) if t.get("id")]
         total_trials = len(trial_ids)
         if status_update and total_trials:
-            status_update(f"Pulling task {target_id}: downloading trials (0/{total_trials})")
+            status_update(
+                f"Pulling task {target_id}: downloading trials (0/{total_trials})"
+            )
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             futures = {
                 pool.submit(
                     _pull_trial,
-                    client, tid, output_root,
+                    client,
+                    tid,
+                    output_root,
                     include_logs=include_logs,
                     include_files=include_files,
                     include_structured_logs=include_structured_logs,
@@ -562,8 +594,14 @@ def _pull_once(
         if not task_id:
             continue
         if status_update:
-            status_update(f"Pulling experiment {target_id}: preparing task {task_index}/{total_tasks} ({task_id})")
-        full_task = task if task.get("trials") is not None else (_get_task_status(client, task_id) or task)
+            status_update(
+                f"Pulling experiment {target_id}: preparing task {task_index}/{total_tasks} ({task_id})"
+            )
+        full_task = (
+            task
+            if task.get("trials") is not None
+            else (_get_task_status(client, task_id) or task)
+        )
         _write_json(output_root / "tasks" / task_id / "task.json", full_task)
         task_summary: dict = {
             "task_id": task_id,
@@ -585,12 +623,16 @@ def _pull_once(
 
     total_trials = len(all_trial_work)
     if status_update and total_trials:
-        status_update(f"Pulling experiment {target_id}: downloading trials (0/{total_trials})")
+        status_update(
+            f"Pulling experiment {target_id}: downloading trials (0/{total_trials})"
+        )
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {
             pool.submit(
                 _pull_trial,
-                client, trial_id, output_root,
+                client,
+                trial_id,
+                output_root,
                 include_logs=include_logs,
                 include_files=include_files,
                 include_structured_logs=include_structured_logs,
@@ -668,7 +710,9 @@ def pull(
         raise typer.BadParameter("--interval must be >= 1")
 
     with _make_client(api_url) as client:
-        resolved_type, resolved_id, cached_data = _resolve_target(client, target, target_type)
+        resolved_type, resolved_id, cached_data = _resolve_target(
+            client, target, target_type
+        )
         output_root = out or (Path.cwd() / "oddish-pulls" / resolved_id)
         output_root.mkdir(parents=True, exist_ok=True)
 
@@ -698,7 +742,11 @@ def pull(
             cached_data = None
 
             manifest = {
-                "source": {"api_url": api_url, "target_type": resolved_type, "target_id": resolved_id},
+                "source": {
+                    "api_url": api_url,
+                    "target_type": resolved_type,
+                    "target_id": resolved_id,
+                },
                 "pulled_at": _utc_now(),
                 "watch": watch,
                 "watch_iteration": iteration,
@@ -726,7 +774,9 @@ def pull(
                 done = _is_experiment_terminal(client, resolved_id)
 
             if done:
-                console.print("[green]Target reached terminal state; stopping watch.[/green]")
+                console.print(
+                    "[green]Target reached terminal state; stopping watch.[/green]"
+                )
                 break
 
             console.print(

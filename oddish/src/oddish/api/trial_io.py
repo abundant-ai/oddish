@@ -86,10 +86,12 @@ def _resolve_local_job_dir(trial: TrialModel) -> Path | None:
     return job_dir
 
 
-def _resolve_scanned_trial_dir(job_dir: Path, preferred_name: str | None) -> Path | None:
+def _resolve_scanned_trial_dir(
+    job_dir: Path, preferred_name: str | None
+) -> Path | None:
     """Use Harbor's JobScanner to identify the per-trial directory inside a job."""
     scanner = JobScanner(job_dir.parent)
-    trial_names = scanner.list_trials(job_dir.name)
+    trial_names: list[str] = scanner.list_trials(job_dir.name)
     if not trial_names:
         return None
 
@@ -456,21 +458,19 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
             try:
                 content = await storage.download_text(trajectory_key)
                 if content:
-                    return _json.loads(content)
+                    parsed: dict = _json.loads(content)
+                    return parsed
             except Exception:
                 continue
 
-        # If not found, look for trial subdirectory (Harbor's actual structure)
         try:
-            # List files to find the trial subdirectory
             files = await storage.list_keys(s3_prefix)
-            # Look for pattern like: s3_prefix/trial-0/agent/trajectory.json
-            # or s3_prefix/some-name/agent/trajectory.json
             for f in files:
                 if f.endswith("/agent/trajectory.json"):
                     content = await storage.download_text(f)
                     if content:
-                        return _json.loads(content)
+                        parsed = _json.loads(content)
+                        return parsed
         except Exception as e:
             logging.getLogger(__name__).debug(
                 f"No trajectory in S3 for {trial.id} at {s3_prefix}: {e}"
@@ -494,7 +494,10 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
         return None
 
     try:
-        return _json.loads(trajectory_path_resolved.read_text(errors="replace"))
+        local_parsed: dict = _json.loads(
+            trajectory_path_resolved.read_text(errors="replace")
+        )
+        return local_parsed
     except Exception:
         return None
 
@@ -623,7 +626,8 @@ async def read_trial_result(trial: TrialModel) -> dict:
         )
 
     try:
-        return _json.loads(result_path_resolved.read_text(errors="replace"))
+        parsed: dict = _json.loads(result_path_resolved.read_text(errors="replace"))
+        return parsed
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to parse local result.json: {e}"

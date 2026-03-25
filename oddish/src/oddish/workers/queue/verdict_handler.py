@@ -34,6 +34,8 @@ async def run_verdict_job(job: Job, queue_key: str) -> None:
         compute_task_verdict,
     )
 
+    if job.payload is None:
+        raise ValueError("Verdict job has empty payload")
     payload = json.loads(job.payload.decode())
     task_id = payload.get("task_id")
 
@@ -92,7 +94,7 @@ async def run_verdict_job(job: Job, queue_key: str) -> None:
     )
     for i, c in enumerate(classifications):
         console.print(
-            f"  [{i+1}] {c.classification.value}: {c.subtype} (reward={c.reward})"
+            f"  [{i + 1}] {c.classification.value}: {c.subtype} (reward={c.reward})"
         )
 
     # Run verdict synthesis
@@ -154,7 +156,9 @@ async def run_verdict_job(job: Job, queue_key: str) -> None:
                 task.verdict_finished_at = utcnow()
                 task.status = TaskStatus.COMPLETED
                 task.finished_at = utcnow()
-                console.print(f"[green]Verdict {task_id} SUCCESS - Task COMPLETED[/green]")
+                console.print(
+                    f"[green]Verdict {task_id} SUCCESS - Task COMPLETED[/green]"
+                )
             else:
                 task.verdict_status = VerdictStatus.FAILED
                 task.verdict_error = (

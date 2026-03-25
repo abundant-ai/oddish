@@ -42,7 +42,7 @@ function HealthIndicator() {
     {
       refreshInterval: 30000,
       revalidateOnFocus: false,
-    },
+    }
   );
 
   const status = data?.status;
@@ -81,8 +81,8 @@ export function Nav() {
 
   return (
     <nav className="sticky top-0 z-50 border-b border-[#6f88b4]/15 bg-card/80 backdrop-blur-sm">
-      <div className="max-w-screen-2xl mx-auto px-4 h-14 flex items-center">
-        <div className="flex items-center justify-between w-full">
+      <div className="mx-auto flex h-14 max-w-screen-2xl items-center px-4">
+        <div className="flex w-full items-center justify-between">
           {/* Left side - primary nav */}
           <div className="flex items-center gap-4">
             <Button

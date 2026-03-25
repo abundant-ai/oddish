@@ -66,7 +66,9 @@ def build_compact_trial_response(
                 "evidence": trial.analysis.get("evidence"),
             }
     else:
-        resolved_analysis_summary = analysis_summary if analysis_summary else None
+        resolved_analysis_summary = (
+            analysis_summary if isinstance(analysis_summary, dict) else None
+        )
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
 
     return TrialResponse(

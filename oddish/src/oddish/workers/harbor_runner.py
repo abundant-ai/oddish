@@ -39,7 +39,9 @@ class _TeeTextIO:
 
     def write(self, data: str) -> int:
         self._primary.write(data)
-        cleaned = _ANSI_ESCAPE_RE.sub("", data).replace("\r\n", "\n").replace("\r", "\n")
+        cleaned = (
+            _ANSI_ESCAPE_RE.sub("", data).replace("\r\n", "\n").replace("\r", "\n")
+        )
         if cleaned:
             self._secondary.write(cleaned)
         return len(data)
@@ -144,7 +146,9 @@ def _extract_tokens_from_trajectory(
 
 
 @contextlib.contextmanager
-def _capture_modal_output(job_dir: Path, environment: EnvironmentType) -> Iterator[Path | None]:
+def _capture_modal_output(
+    job_dir: Path, environment: EnvironmentType
+) -> Iterator[Path | None]:
     """Capture Modal SDK output into a trial-local log file."""
     if environment != EnvironmentType.MODAL:
         yield None
@@ -161,8 +165,12 @@ def _capture_modal_output(job_dir: Path, environment: EnvironmentType) -> Iterat
         )
         log_file.flush()
 
-        stack.enter_context(contextlib.redirect_stdout(_TeeTextIO(sys.stdout, log_file)))
-        stack.enter_context(contextlib.redirect_stderr(_TeeTextIO(sys.stderr, log_file)))
+        stack.enter_context(
+            contextlib.redirect_stdout(_TeeTextIO(sys.stdout, log_file))  # type: ignore[type-var]
+        )
+        stack.enter_context(
+            contextlib.redirect_stderr(_TeeTextIO(sys.stderr, log_file))  # type: ignore[type-var]
+        )
 
         try:
             import modal
@@ -204,7 +212,9 @@ def _write_debug_result_json(
     }
     if debug_log_path is not None:
         payload["debug_artifacts"]["modal_output_log"] = debug_log_path.name
-    result_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    result_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
     return result_path
 
 
@@ -327,7 +337,11 @@ def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
 
     if hc.mcp_servers:
         task_config.environment.mcp_servers = [
-            MCPServerConfig.model_validate(s.model_dump()) if not isinstance(s, MCPServerConfig) else s
+            (
+                MCPServerConfig.model_validate(s.model_dump())
+                if not isinstance(s, MCPServerConfig)
+                else s
+            )
             for s in hc.mcp_servers
         ]
         changed = True

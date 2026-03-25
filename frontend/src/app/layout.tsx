@@ -48,7 +48,7 @@ export default function RootLayout({
       afterSignUpUrl={toAbsoluteUrl(afterSignUpUrl)}
     >
       <html lang="en">
-        <body className="antialiased min-h-screen">
+        <body className="min-h-screen antialiased">
           <Providers>{children}</Providers>
         </body>
       </html>

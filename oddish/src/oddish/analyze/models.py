@@ -90,14 +90,13 @@ class TaskVerdictModel(BaseModel):
     is_good: bool = Field(
         description="Whether the task is good (true) or needs review (false)"
     )
-    confidence: Literal["high", "medium", "low"] = Field(
-        description="Confidence level"
-    )
+    confidence: Literal["high", "medium", "low"] = Field(description="Confidence level")
     primary_issue: str | None = Field(
         default=None, description="Primary issue if task needs review, else null"
     )
     recommendations: list[str] = Field(
-        default_factory=list, description="Actionable recommendations (3-5 for bad tasks)"
+        default_factory=list,
+        description="Actionable recommendations (3-5 for bad tasks)",
     )
     reasoning: str | None = Field(
         default=None, description="1-2 sentence explanation of the verdict (optional)"

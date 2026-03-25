@@ -26,7 +26,7 @@ export async function GET() {
       console.error(`[api-keys] Backend error: ${res.status} - ${errorText}`);
       return NextResponse.json(
         { error: "Failed to fetch API keys", details: errorText },
-        { status: res.status },
+        { status: res.status }
       );
     }
 
@@ -35,7 +35,7 @@ export async function GET() {
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }
@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
       console.error(`[api-keys] Backend error: ${res.status} - ${errorText}`);
       return NextResponse.json(
         { error: "Failed to create API key", details: errorText },
-        { status: res.status },
+        { status: res.status }
       );
     }
 
@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }

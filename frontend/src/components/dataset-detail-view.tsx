@@ -61,7 +61,7 @@ function aggregateModels(tasks: Task[]): ModelAggregate[] {
           : null,
     }))
     .sort(
-      (a, b) => (b.passRate ?? -1) - (a.passRate ?? -1) || b.scored - a.scored,
+      (a, b) => (b.passRate ?? -1) - (a.passRate ?? -1) || b.scored - a.scored
     );
 }
 
@@ -133,7 +133,7 @@ export function DatasetDetailView({
           passRate: passRateForTask(task),
         };
       }),
-    [tasks],
+    [tasks]
   );
 
   const summary = useMemo(() => {
@@ -160,12 +160,12 @@ export function DatasetDetailView({
       ]
         .join(" ")
         .toLowerCase()
-        .includes(query),
+        .includes(query)
     );
   }, [taskRows, deferredSearch]);
 
   return (
-    <div className="min-h-[calc(100vh-3.5rem)] bg-background text-foreground -mx-4 -my-4">
+    <div className="-mx-4 -my-4 min-h-[calc(100vh-3.5rem)] bg-background text-foreground">
       {hasError && (
         <div className="px-6 pt-6">
           <Alert variant="destructive">
@@ -187,7 +187,7 @@ export function DatasetDetailView({
               onClick={() => setView("overview")}
               className={cn(
                 "w-full justify-start gap-2 px-2 py-1.5 text-left font-normal",
-                view !== "overview" && "text-muted-foreground hover:bg-muted",
+                view !== "overview" && "text-muted-foreground hover:bg-muted"
               )}
             >
               <LayoutDashboard className="h-4 w-4" />
@@ -199,7 +199,7 @@ export function DatasetDetailView({
               onClick={() => setView("tasks")}
               className={cn(
                 "w-full justify-start gap-2 px-2 py-1.5 text-left font-normal",
-                view !== "tasks" && "text-muted-foreground hover:bg-muted",
+                view !== "tasks" && "text-muted-foreground hover:bg-muted"
               )}
             >
               <TableProperties className="h-4 w-4" />
@@ -240,12 +240,12 @@ export function DatasetDetailView({
                         const score = model.passRate ?? 0;
                         const widthPct = Math.max(
                           0,
-                          Math.min(100, (score / chartRangeMax) * 100),
+                          Math.min(100, (score / chartRangeMax) * 100)
                         );
                         return (
                           <div key={model.key} className="space-y-1.5">
                             <div className="flex items-center justify-between text-sm">
-                              <div className="truncate flex items-center gap-2">
+                              <div className="flex items-center gap-2 truncate">
                                 <QueueKeyIcon
                                   queueKey={model.queueKey}
                                   model={model.model}

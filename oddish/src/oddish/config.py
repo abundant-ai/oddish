@@ -18,7 +18,16 @@ _FIXED_AGENT_PROVIDERS: dict[str, str] = {
     AgentName.CODEX.value: "openai",
 }
 
-_MODEL_ABSENT_ALIASES: set[str] = {"", "-", "none", "null", "nil", "n/a", "na", "default"}
+_MODEL_ABSENT_ALIASES: set[str] = {
+    "",
+    "-",
+    "none",
+    "null",
+    "nil",
+    "n/a",
+    "na",
+    "default",
+}
 _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "openai",
     "anthropic",
@@ -314,10 +323,10 @@ class Settings(BaseSettings):
                 return "default"
             return normalized
 
-        provider_prefix = _infer_provider_prefix(normalized)
-        if not provider_prefix:
+        inferred_prefix = _infer_provider_prefix(normalized)
+        if not inferred_prefix:
             return normalized
-        return f"{provider_prefix}/{normalized}"
+        return f"{inferred_prefix}/{normalized}"
 
     def get_queue_key_for_trial(self, agent: str, model: str | None) -> str:
         """Resolve queue key from model first, fallback to provider bucket."""
@@ -343,5 +352,6 @@ class Settings(BaseSettings):
         keys = {self.get_analysis_queue_key(), self.get_verdict_queue_key()}
         keys.update(self.model_concurrency_overrides.keys())
         return keys
+
 
 settings = Settings()

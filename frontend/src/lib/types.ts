@@ -64,10 +64,26 @@ export interface Trial {
   started_at?: string | null;
   finished_at?: string | null;
   phase_timing?: {
-    environment_setup?: { started_at: string; finished_at: string; duration_sec: number };
-    agent_setup?: { started_at: string; finished_at: string; duration_sec: number };
-    agent_execution?: { started_at: string; finished_at: string; duration_sec: number };
-    verifier?: { started_at: string; finished_at: string; duration_sec: number };
+    environment_setup?: {
+      started_at: string;
+      finished_at: string;
+      duration_sec: number;
+    };
+    agent_setup?: {
+      started_at: string;
+      finished_at: string;
+      duration_sec: number;
+    };
+    agent_execution?: {
+      started_at: string;
+      finished_at: string;
+      duration_sec: number;
+    };
+    verifier?: {
+      started_at: string;
+      finished_at: string;
+      duration_sec: number;
+    };
   } | null;
 }
 

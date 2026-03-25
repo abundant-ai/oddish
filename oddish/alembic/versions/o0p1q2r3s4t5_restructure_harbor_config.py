@@ -33,7 +33,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute(r"""
+    op.execute(
+        r"""
         UPDATE trials
         SET harbor_config = (
             SELECT jsonb_strip_nulls(jsonb_build_object(
@@ -74,11 +75,13 @@ def upgrade() -> None:
         )
         WHERE harbor_config IS NOT NULL
           AND NOT harbor_config ? 'environment'
-    """)
+    """
+    )
 
 
 def downgrade() -> None:
-    op.execute(r"""
+    op.execute(
+        r"""
         UPDATE trials
         SET harbor_config = (
             SELECT jsonb_strip_nulls(jsonb_build_object(
@@ -111,4 +114,5 @@ def downgrade() -> None:
         )
         WHERE harbor_config IS NOT NULL
           AND harbor_config ? 'environment'
-    """)
+    """
+    )

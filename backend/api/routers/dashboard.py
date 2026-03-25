@@ -212,18 +212,22 @@ async def get_dashboard(
                             )
                         )
                     ).label("avg_duration_s"),
-                    func.count(
-                        case((TrialModel.finished_at.isnot(None), 1))
-                    ).label("duration_count"),
+                    func.count(case((TrialModel.finished_at.isnot(None), 1))).label(
+                        "duration_count"
+                    ),
                 )
                 .where(*usage_filters)
                 .group_by(TrialModel.model, TrialModel.provider)
             )
 
             usage_result = await session.execute(usage_query)
-            merged_usage: dict[tuple[str, str], dict[str, int | float | str | None]] = {}
+            merged_usage: dict[
+                tuple[str, str], dict[str, int | float | str | None]
+            ] = {}
             for row in usage_result.all():
-                normalized_provider = (row.provider or "unknown").strip().lower() or "unknown"
+                normalized_provider = (
+                    row.provider or "unknown"
+                ).strip().lower() or "unknown"
                 normalized_model = _normalize_dashboard_model(
                     row.model, normalized_provider
                 )
@@ -277,7 +281,9 @@ async def get_dashboard(
                 aggregate["duration_total_s"] = float(
                     aggregate["duration_total_s"]
                 ) + float((row.avg_duration_s or 0) * duration_count)
-                aggregate["duration_count"] = int(aggregate["duration_count"]) + duration_count
+                aggregate["duration_count"] = (
+                    int(aggregate["duration_count"]) + duration_count
+                )
 
             model_usage = []
             for aggregate in merged_usage.values():

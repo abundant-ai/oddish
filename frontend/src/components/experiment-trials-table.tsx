@@ -68,7 +68,7 @@ const PassAtKGraph = dynamic(
   () => import("./pass-at-k-graph").then((mod) => mod.PassAtKGraph),
   {
     ssr: false,
-  },
+  }
 );
 
 const PassAtOneLeaderboard = dynamic(
@@ -76,7 +76,7 @@ const PassAtOneLeaderboard = dynamic(
     import("./pass-at-one-leaderboard").then((mod) => mod.PassAtOneLeaderboard),
   {
     ssr: false,
-  },
+  }
 );
 
 export type AgentSummary = ExperimentAgentSummary;
@@ -103,11 +103,11 @@ type ExperimentTrialsTableProps = {
         model: string | null;
         trials: Trial[];
       }>;
-    },
+    }
   ) => void;
   onTaskSelect?: (
     task: Task,
-    context: { orderedTasks: Task[]; taskIndex: number },
+    context: { orderedTasks: Task[]; taskIndex: number }
   ) => void;
 };
 
@@ -192,10 +192,7 @@ function getAnalysisLegendKey(trial: Trial): AnalysisLegendKey | null {
     ) {
       return "good";
     }
-    if (
-      classification === "BAD_SUCCESS" ||
-      classification === "BAD_FAILURE"
-    ) {
+    if (classification === "BAD_SUCCESS" || classification === "BAD_FAILURE") {
       return "bad";
     }
     if (classification === "HARNESS_ERROR") {
@@ -254,8 +251,8 @@ function VerdictIndicator({ task }: { task: Task }) {
   // Still processing
   if (status === "pending" || status === "queued" || status === "running") {
     return (
-      <span className="inline-flex items-center ml-1">
-        <Microscope className="h-3 w-3 text-muted-foreground animate-pulse" />
+      <span className="ml-1 inline-flex items-center">
+        <Microscope className="h-3 w-3 animate-pulse text-muted-foreground" />
       </span>
     );
   }
@@ -263,7 +260,7 @@ function VerdictIndicator({ task }: { task: Task }) {
   // Verdict available
   if (status === "success" && verdict) {
     return (
-      <span className="inline-flex items-center ml-1">
+      <span className="ml-1 inline-flex items-center">
         {verdict.is_good ? (
           <Check className="h-3 w-3 text-emerald-500" />
         ) : (
@@ -276,7 +273,7 @@ function VerdictIndicator({ task }: { task: Task }) {
   // Analysis failed
   if (status === "failed") {
     return (
-      <span className="inline-flex items-center ml-1">
+      <span className="ml-1 inline-flex items-center">
         <Microscope className="h-3 w-3 text-red-400" />
       </span>
     );
@@ -284,7 +281,7 @@ function VerdictIndicator({ task }: { task: Task }) {
 
   // run_analysis is true but no verdict yet (trials still running)
   return (
-    <span className="inline-flex items-center ml-1">
+    <span className="ml-1 inline-flex items-center">
       <Microscope className="h-3 w-3 text-muted-foreground/50" />
     </span>
   );
@@ -292,7 +289,7 @@ function VerdictIndicator({ task }: { task: Task }) {
 
 function groupTrialsByAgent(
   trials: Trial[] | null | undefined,
-  modelScopedAgents: ReadonlySet<string>,
+  modelScopedAgents: ReadonlySet<string>
 ) {
   const grouped = new Map<string, Trial[]>();
   if (!trials) return grouped;
@@ -338,7 +335,7 @@ export function ExperimentTrialsTable({
   const deferredTaskSearch = useDeferredValue(taskSearch);
   const [hiddenAgents, setHiddenAgents] = useState<Set<string>>(new Set());
   const [dimmedStatuses, setDimmedStatuses] = useState<Set<MatrixStatus>>(
-    new Set(),
+    new Set()
   );
   const [dimmedAnalysisKeys, setDimmedAnalysisKeys] = useState<
     Set<AnalysisLegendKey>
@@ -401,8 +398,8 @@ export function ExperimentTrialsTable({
               value === "harness-error" ||
               value === "pending" ||
               value === "queued" ||
-              value === "running",
-          ),
+              value === "running"
+          )
       );
       setDimmedStatuses(next);
       prevUrlRef.current.dim = urlDim;
@@ -502,21 +499,20 @@ export function ExperimentTrialsTable({
   }, [agentSummaries]);
 
   const visibleAgents = useMemo(
-    () =>
-      sortedAgentSummaries.filter((agent) => !hiddenAgents.has(agent.key)),
-    [sortedAgentSummaries, hiddenAgents],
+    () => sortedAgentSummaries.filter((agent) => !hiddenAgents.has(agent.key)),
+    [sortedAgentSummaries, hiddenAgents]
   );
 
   const columnOrder = useMemo(
     () => ["task", ...visibleAgents.map((agent) => agent.key)],
-    [visibleAgents],
+    [visibleAgents]
   );
 
   const baseTableWidth = useMemo(() => {
     const agentTotal = visibleAgents.reduce(
       (sum, agent) =>
         sum + (agentColumnWidths[agent.key] ?? DEFAULT_AGENT_WIDTH),
-      0,
+      0
     );
     return taskColumnWidth + agentTotal;
   }, [visibleAgents, agentColumnWidths, taskColumnWidth, DEFAULT_AGENT_WIDTH]);
@@ -582,7 +578,10 @@ export function ExperimentTrialsTable({
       const cached = contextCache.get(task.id);
       if (cached) return cached;
 
-      const groupedTrialsByAgent = groupTrialsByAgent(task.trials, modelScopedAgents);
+      const groupedTrialsByAgent = groupTrialsByAgent(
+        task.trials,
+        modelScopedAgents
+      );
       const orderedTrials: Trial[] = [];
       const trialIndexById = new Map<string, number>();
       const trialGroups: Array<{
@@ -619,7 +618,7 @@ export function ExperimentTrialsTable({
 
   const selectedTaskList = useMemo(
     () => tasks.filter((task) => selectedTasks.has(task.id)),
-    [tasks, selectedTasks],
+    [tasks, selectedTasks]
   );
 
   const selectedRetryableTrials = useMemo(() => {
@@ -645,17 +644,17 @@ export function ExperimentTrialsTable({
         const trials = task.trials ?? [];
         if (trials.length === 0) return false;
         const allTrialsTerminal = trials.every(
-          (trial) => trial.status === "failed" || trial.status === "success",
+          (trial) => trial.status === "failed" || trial.status === "success"
         );
         const hasAnalysisInFlight = trials.some((trial) =>
-          ["pending", "queued", "running"].includes(trial.analysis_status ?? ""),
+          ["pending", "queued", "running"].includes(trial.analysis_status ?? "")
         );
         const verdictInFlight = ["pending", "queued", "running"].includes(
-          task.verdict_status ?? "",
+          task.verdict_status ?? ""
         );
         return allTrialsTerminal && !hasAnalysisInFlight && !verdictInFlight;
       }),
-    [selectedTaskList],
+    [selectedTaskList]
   );
 
   const selectedVerdictRunnableTasks = useMemo(
@@ -664,19 +663,19 @@ export function ExperimentTrialsTable({
         const trials = task.trials ?? [];
         if (trials.length === 0) return false;
         const allTrialsTerminal = trials.every(
-          (trial) => trial.status === "failed" || trial.status === "success",
+          (trial) => trial.status === "failed" || trial.status === "success"
         );
         const allAnalysesComplete = trials.every(
           (trial) =>
             trial.analysis_status === "success" ||
-            trial.analysis_status === "failed",
+            trial.analysis_status === "failed"
         );
         const verdictInFlight = ["pending", "queued", "running"].includes(
-          task.verdict_status ?? "",
+          task.verdict_status ?? ""
         );
         return allTrialsTerminal && allAnalysesComplete && !verdictInFlight;
       }),
-    [selectedTaskList],
+    [selectedTaskList]
   );
 
   const rowVirtualizer = useVirtualizer({
@@ -770,7 +769,7 @@ export function ExperimentTrialsTable({
             const status = getMatrixStatus(
               trial.status,
               trial.reward,
-              trial.error_message,
+              trial.error_message
             );
             return STATUS_CONFIG[status].shortLabel;
           });
@@ -802,7 +801,7 @@ export function ExperimentTrialsTable({
     }
     const trialCount = deleteTargets.reduce(
       (sum, task) => sum + (task.total ?? 0),
-      0,
+      0
     );
     return {
       label: `${deleteTargets.length} tasks`,
@@ -841,7 +840,7 @@ export function ExperimentTrialsTable({
       }
     } catch (error) {
       setDeleteError(
-        error instanceof Error ? error.message : "Failed to delete task",
+        error instanceof Error ? error.message : "Failed to delete task"
       );
     } finally {
       setIsDeleting(false);
@@ -867,10 +866,10 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to retry trial",
+              data.detail || data.error || "Failed to retry trial"
             );
           }
-        }),
+        })
       );
 
       const failures = results.filter((result) => result.status === "rejected");
@@ -904,16 +903,16 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task analysis",
+              data.detail || data.error || "Failed to queue task analysis"
             );
           }
-        }),
+        })
       );
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
         setAnalysisError(
-          `Failed to queue analysis for ${failures.length} task(s).`,
+          `Failed to queue analysis for ${failures.length} task(s).`
         );
       } else {
         setAnalysisError(null);
@@ -943,16 +942,16 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task verdict",
+              data.detail || data.error || "Failed to queue task verdict"
             );
           }
-        }),
+        })
       );
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
         setVerdictError(
-          `Failed to queue verdict for ${failures.length} task(s).`,
+          `Failed to queue verdict for ${failures.length} task(s).`
         );
       } else {
         setVerdictError(null);
@@ -966,7 +965,7 @@ export function ExperimentTrialsTable({
   const startResize = (
     event: ReactMouseEvent,
     columnKey: "task" | string,
-    startWidth: number,
+    startWidth: number
   ) => {
     event.preventDefault();
     const currentIndex = columnOrder.indexOf(columnKey);
@@ -1078,7 +1077,7 @@ export function ExperimentTrialsTable({
                 onClick={() => toggleStatus(status)}
                 variant="ghost"
                 size="sm"
-                className={`h-auto flex items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition ${
+                className={`flex h-auto items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition ${
                   isDimmed
                     ? "border-border text-muted-foreground line-through"
                     : "border-transparent hover:border-border"
@@ -1123,7 +1122,7 @@ export function ExperimentTrialsTable({
           Filter agents ({visibleAgents.length}/{sortedAgentSummaries.length})
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-64 max-h-64 overflow-auto p-2">
+      <PopoverContent align="end" className="max-h-64 w-64 overflow-auto p-2">
         <div className="flex items-center justify-between px-1 pb-2 text-[10px] text-muted-foreground">
           <span>Show/hide agent columns</span>
           <Button
@@ -1157,7 +1156,7 @@ export function ExperimentTrialsTable({
                 <span className={`${isVisible ? "" : "line-through"}`}>
                   {agent.label}
                 </span>
-                <span className="text-[10px] text-muted-foreground flex items-center gap-1 font-mono">
+                <span className="flex items-center gap-1 font-mono text-[10px] text-muted-foreground">
                   <QueueKeyIcon
                     queueKey={agent.queueKey}
                     model={agent.model}
@@ -1184,7 +1183,7 @@ export function ExperimentTrialsTable({
       <div className="flex items-center font-semibold uppercase tracking-wide text-foreground/80">
         Analyzer
       </div>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
         {ANALYSIS_LEGEND_ITEMS.map((item) => (
           <Tooltip key={item.key}>
             <TooltipTrigger asChild>
@@ -1193,7 +1192,7 @@ export function ExperimentTrialsTable({
                 onClick={() => toggleAnalysisKey(item.key)}
                 variant="ghost"
                 size="sm"
-                className={`h-auto flex items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition ${
+                className={`flex h-auto items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition ${
                   dimmedAnalysisKeys.has(item.key)
                     ? "border-border text-muted-foreground line-through"
                     : "border-transparent hover:border-border"
@@ -1208,7 +1207,8 @@ export function ExperimentTrialsTable({
               </Button>
             </TooltipTrigger>
             <TooltipContent>
-              {item.label} ({dimmedAnalysisKeys.has(item.key) ? "dimmed" : "visible"})
+              {item.label} (
+              {dimmedAnalysisKeys.has(item.key) ? "dimmed" : "visible"})
             </TooltipContent>
           </Tooltip>
         ))}
@@ -1234,8 +1234,8 @@ export function ExperimentTrialsTable({
         ) : null}
         {/* Pass@k Graph - only shows when there are multiple trials per task-agent */}
         {showPassAtK ? (
-          <div className="grid gap-4 xl:grid-cols-2 items-stretch">
-            <div className="min-w-0 h-full">
+          <div className="grid items-stretch gap-4 xl:grid-cols-2">
+            <div className="h-full min-w-0">
               <PassAtKGraph
                 tasks={tasks}
                 agentSummaries={sortedAgentSummaries}
@@ -1243,7 +1243,7 @@ export function ExperimentTrialsTable({
                 onToggleAgent={toggleAgent}
               />
             </div>
-            <div className="min-w-0 h-full">
+            <div className="h-full min-w-0">
               <PassAtOneLeaderboard
                 tasks={tasks}
                 agentSummaries={sortedAgentSummaries}
@@ -1254,8 +1254,8 @@ export function ExperimentTrialsTable({
           </div>
         ) : null}
 
-        <div className="rounded-lg border border-border bg-card shadow-sm max-w-full overflow-hidden">
-          <div className="border-b border-border bg-card/70 px-3 py-2 space-y-2 relative z-30">
+        <div className="max-w-full overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+          <div className="relative z-30 space-y-2 border-b border-border bg-card/70 px-3 py-2">
             <div className="flex flex-wrap items-start gap-3">
               <div className="w-full min-w-[200px] max-w-[420px] md:w-auto md:flex-1">
                 <Input
@@ -1282,12 +1282,12 @@ export function ExperimentTrialsTable({
                     >
                       {copiedTable ? (
                         <>
-                          <Check className="h-3 w-3 mr-1 text-emerald-500" />
+                          <Check className="mr-1 h-3 w-3 text-emerald-500" />
                           Copied
                         </>
                       ) : (
                         <>
-                          <Copy className="h-3 w-3 mr-1" />
+                          <Copy className="mr-1 h-3 w-3" />
                           Copy TSV
                         </>
                       )}
@@ -1331,7 +1331,8 @@ export function ExperimentTrialsTable({
                   size="sm"
                   onClick={handleRunAnalysisForSelectedTasks}
                   disabled={
-                    isRunningAnalysis || selectedAnalysisRunnableTasks.length === 0
+                    isRunningAnalysis ||
+                    selectedAnalysisRunnableTasks.length === 0
                   }
                   className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
                 >
@@ -1347,7 +1348,8 @@ export function ExperimentTrialsTable({
                   size="sm"
                   onClick={handleRunVerdictForSelectedTasks}
                   disabled={
-                    isRunningVerdict || selectedVerdictRunnableTasks.length === 0
+                    isRunningVerdict ||
+                    selectedVerdictRunnableTasks.length === 0
                   }
                   className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
                 >
@@ -1368,7 +1370,7 @@ export function ExperimentTrialsTable({
                   disabled={isDeleting || selectedTaskList.length === 0}
                   className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
                 >
-                  <Trash2 className="h-3 w-3 mr-1" />
+                  <Trash2 className="mr-1 h-3 w-3" />
                   Delete
                 </Button>
               )}
@@ -1376,7 +1378,9 @@ export function ExperimentTrialsTable({
                 <span className="text-[10px] text-red-500">{rerunError}</span>
               )}
               {analysisError && (
-                <span className="text-[10px] text-red-500">{analysisError}</span>
+                <span className="text-[10px] text-red-500">
+                  {analysisError}
+                </span>
               )}
               {verdictError && (
                 <span className="text-[10px] text-red-500">{verdictError}</span>
@@ -1385,10 +1389,10 @@ export function ExperimentTrialsTable({
           </div>
           <div
             ref={tableContainerRef}
-            className={`overflow-x-auto overflow-y-auto max-h-[70vh] ${isResizing ? "select-none" : ""}`}
+            className={`max-h-[70vh] overflow-x-auto overflow-y-auto ${isResizing ? "select-none" : ""}`}
           >
             <table
-              className="w-full caption-bottom text-sm min-w-[960px]"
+              className="w-full min-w-[960px] caption-bottom text-sm"
               style={{ tableLayout: "fixed", width: tableWidth }}
             >
               <colgroup>
@@ -1403,13 +1407,13 @@ export function ExperimentTrialsTable({
                 ))}
               </colgroup>
               <TableHeader className="sticky top-0 z-20 bg-muted">
-                <TableRow className="hover:bg-transparent border-b-2 border-border">
+                <TableRow className="border-b-2 border-border hover:bg-transparent">
                   <TableHead
-                    className="sticky left-0 z-30 bg-muted font-mono font-bold text-foreground border-r border-border shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] relative"
+                    className="relative sticky left-0 z-30 border-r border-border bg-muted font-mono font-bold text-foreground shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]"
                     style={{ width: getDisplayedWidth("task") }}
                   >
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] text-muted-foreground w-5 text-right flex-shrink-0">
+                      <span className="w-5 flex-shrink-0 text-right text-[10px] text-muted-foreground">
                         #
                       </span>
                       {!readOnly && (
@@ -1440,13 +1444,13 @@ export function ExperimentTrialsTable({
                   {visibleAgents.map((agent, agentIndex) => (
                     <TableHead
                       key={agent.key}
-                      className="text-center font-mono border-r border-border last:border-r-0 px-1 sm:px-2 bg-muted relative"
+                      className="relative border-r border-border bg-muted px-1 text-center font-mono last:border-r-0 sm:px-2"
                       style={{
                         width: getDisplayedWidth(agent.key),
                       }}
                     >
-                      <div className="flex flex-col gap-0.5 items-center min-w-[60px] sm:min-w-[80px] md:min-w-[100px]">
-                        <div className="text-[10px] sm:text-xs font-bold text-foreground truncate max-w-[70px] sm:max-w-[110px] md:max-w-none">
+                      <div className="flex min-w-[60px] flex-col items-center gap-0.5 sm:min-w-[80px] md:min-w-[100px]">
+                        <div className="max-w-[70px] truncate text-[10px] font-bold text-foreground sm:max-w-[110px] sm:text-xs md:max-w-none">
                           {agent.agent}
                         </div>
                         <Tooltip>
@@ -1477,7 +1481,7 @@ export function ExperimentTrialsTable({
                               event,
                               agent.key,
                               agentColumnWidths[agent.key] ??
-                                DEFAULT_AGENT_WIDTH,
+                                DEFAULT_AGENT_WIDTH
                             )
                           }
                         />
@@ -1526,11 +1530,11 @@ export function ExperimentTrialsTable({
                       }
                     >
                       <TableCell
-                        className={`sticky left-0 z-10 font-mono text-xs border-r border-border shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] ${index % 2 === 0 ? "bg-background" : "bg-muted/20"}`}
+                        className={`sticky left-0 z-10 border-r border-border font-mono text-xs shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] ${index % 2 === 0 ? "bg-background" : "bg-muted/20"}`}
                         style={{ width: getDisplayedWidth("task") }}
                       >
                         <div className="flex min-w-0 items-center gap-2">
-                          <span className="text-[10px] text-muted-foreground w-5 text-right flex-shrink-0">
+                          <span className="w-5 flex-shrink-0 text-right text-[10px] text-muted-foreground">
                             {index + 1}
                           </span>
                           {!readOnly && (
@@ -1601,7 +1605,7 @@ export function ExperimentTrialsTable({
                         return (
                           <TableCell
                             key={`${task.id}-${agent.key}`}
-                            className="text-center border-r border-border last:border-r-0"
+                            className="border-r border-border text-center last:border-r-0"
                             style={{
                               width: getDisplayedWidth(agent.key),
                             }}
@@ -1616,7 +1620,7 @@ export function ExperimentTrialsTable({
                                   const status = getMatrixStatus(
                                     trial.status,
                                     trial.reward,
-                                    trial.error_message,
+                                    trial.error_message
                                   );
                                   const config = STATUS_CONFIG[status];
                                   const isDimmed = dimmedStatuses.has(status);
@@ -1637,7 +1641,7 @@ export function ExperimentTrialsTable({
                                   // Build enhanced title with analysis info
                                   const baseTitle = getTrialTitle(
                                     trial,
-                                    status,
+                                    status
                                   );
                                   const analysisTitle = analysisIndicator
                                     ? ` • ${analysisIndicator.title}`
@@ -1677,7 +1681,7 @@ export function ExperimentTrialsTable({
                                       </Button>
                                       {analysisIndicator && (
                                         <span
-                                          className={`absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full ring-1 ring-background ${analysisIndicator.dotClass} ${analysisIndicator.animate ? "animate-pulse" : ""}`}
+                                          className={`absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full ring-1 ring-background ${analysisIndicator.dotClass} ${analysisIndicator.animate ? "animate-pulse" : ""}`}
                                         />
                                       )}
                                     </div>
@@ -1707,7 +1711,7 @@ export function ExperimentTrialsTable({
                   <TableRow>
                     <TableCell
                       colSpan={Math.max(1, visibleAgents.length + 1)}
-                      className="text-center text-muted-foreground py-8"
+                      className="py-8 text-center text-muted-foreground"
                     >
                       No tasks found for this experiment
                     </TableCell>

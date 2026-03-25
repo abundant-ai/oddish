@@ -23,20 +23,20 @@ export default function PublicExperimentPage() {
   const { data: experimentInfo, error: experimentError } =
     useSWR<PublicExperimentInfo>(
       token ? `${PUBLIC_API_URL}/experiments/${token}` : null,
-      fetcher,
+      fetcher
     );
 
   const { data, error, isLoading } = useSWR<Task[]>(
     token ? `${PUBLIC_API_URL}/experiments/${token}/tasks?limit=200` : null,
     fetcher,
-    { refreshInterval: 30000 },
+    { refreshInterval: 30000 }
   );
 
   const tasksForExperiment = useMemo(() => {
     const taskList = Array.isArray(data) ? [...data] : [];
     return taskList.sort(
       (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     );
   }, [data]);
 
@@ -47,7 +47,7 @@ export default function PublicExperimentPage() {
     <>
       <Nav />
 
-      <main className="px-4 py-4 max-w-screen-2xl mx-auto w-full">
+      <main className="mx-auto w-full max-w-screen-2xl px-4 py-4">
         <div className="space-y-4">
           <ExperimentDetailView
             tasksForExperiment={tasksForExperiment}

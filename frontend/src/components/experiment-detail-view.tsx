@@ -5,9 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  ExperimentTrialsTable,
-} from "@/components/experiment-trials-table";
+import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { TrialDetailPanel } from "@/components/trial-detail-panel";
 import { TaskFilesPanel } from "@/components/task-files-panel";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
@@ -198,36 +196,39 @@ export function ExperimentDetailView({
   const hydratedFromUrl = useRef(false);
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(tasksForExperiment),
-    [tasksForExperiment],
+    [tasksForExperiment]
   );
 
-  const buildTrialGroups = useCallback((task: Task) => {
-    const trialGroups: Array<{
-      agent: string;
-      model: string | null;
-      trials: Trial[];
-    }> = [];
-    const trialsByAgent = new Map<string, Trial[]>();
-    for (const trial of task.trials ?? []) {
-      const key = getExperimentAgentKey(trial, modelScopedAgents);
-      const existing = trialsByAgent.get(key) ?? [];
-      existing.push(trial);
-      trialsByAgent.set(key, existing);
-    }
-    for (const [key, trials] of trialsByAgent) {
-      const model = trials.find((t) => t.model)?.model ?? null;
-      trialGroups.push({
-        agent: key,
-        model,
-        trials,
-      });
-    }
-    const orderedTrials: Trial[] = [];
-    for (const group of trialGroups) {
-      orderedTrials.push(...group.trials);
-    }
-    return { trialGroups, orderedTrials };
-  }, [modelScopedAgents]);
+  const buildTrialGroups = useCallback(
+    (task: Task) => {
+      const trialGroups: Array<{
+        agent: string;
+        model: string | null;
+        trials: Trial[];
+      }> = [];
+      const trialsByAgent = new Map<string, Trial[]>();
+      for (const trial of task.trials ?? []) {
+        const key = getExperimentAgentKey(trial, modelScopedAgents);
+        const existing = trialsByAgent.get(key) ?? [];
+        existing.push(trial);
+        trialsByAgent.set(key, existing);
+      }
+      for (const [key, trials] of trialsByAgent) {
+        const model = trials.find((t) => t.model)?.model ?? null;
+        trialGroups.push({
+          agent: key,
+          model,
+          trials,
+        });
+      }
+      const orderedTrials: Trial[] = [];
+      for (const group of trialGroups) {
+        orderedTrials.push(...group.trials);
+      }
+      return { trialGroups, orderedTrials };
+    },
+    [modelScopedAgents]
+  );
 
   useEffect(() => {
     if (!hydratedFromUrl.current) return;
@@ -304,7 +305,7 @@ export function ExperimentDetailView({
 
   const summary = useMemo(
     () => buildExperimentSummary(tasksForExperiment),
-    [tasksForExperiment],
+    [tasksForExperiment]
   );
 
   const closeDrawer = () => {
@@ -388,7 +389,7 @@ export function ExperimentDetailView({
                 readOnly={readOnly}
                 onTrialSelect={(trial, task, context) => {
                   const taskIndex = tasksForExperiment.findIndex(
-                    (t) => t.id === task.id,
+                    (t) => t.id === task.id
                   );
                   setDrawerState({
                     isOpen: true,
