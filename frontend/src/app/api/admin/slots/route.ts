@@ -20,7 +20,7 @@ export async function GET() {
       console.error("Failed to get Clerk token for user:", authObj.userId);
       return NextResponse.json(
         { error: "Failed to get authentication token" },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -34,11 +34,11 @@ export async function GET() {
     if (!res.ok) {
       const errorText = await res.text();
       console.error(
-        `[admin/slots] Backend error: ${res.status} - ${errorText}`
+        `[admin/slots] Backend error: ${res.status} - ${errorText}`,
       );
       return NextResponse.json(
         { error: "Failed to fetch queue slots", details: errorText },
-        { status: res.status }
+        { status: res.status },
       );
     }
 
@@ -48,7 +48,7 @@ export async function GET() {
     console.error("Admin slots API route error:", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }

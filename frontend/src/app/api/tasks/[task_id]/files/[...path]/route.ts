@@ -8,7 +8,7 @@ import {
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ task_id: string; path: string[] }> }
+  { params }: { params: Promise<{ task_id: string; path: string[] }> },
 ) {
   try {
     const { getToken } = await auth();
@@ -20,7 +20,7 @@ export async function GET(
 
     const url = getBackendUrl(
       "tasks",
-      `/${task_id}/files/${filePath}${search}`
+      `/${task_id}/files/${filePath}${search}`,
     );
     const res = await fetch(url, {
       headers: getAuthHeaders(token),
@@ -42,7 +42,7 @@ export async function GET(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }

@@ -23,6 +23,8 @@ repos:
         files: ^(backend|oddish)/.*\.py$
       - id: ruff-format
         files: ^(backend|oddish)/.*\.py$
+        # Ruff formatter and Black disagree on some long annotations here; Black runs next.
+        exclude: ^backend/api/routers/dashboard\.py$
 
   - repo: https://github.com/psf/black
     rev: 24.10.0

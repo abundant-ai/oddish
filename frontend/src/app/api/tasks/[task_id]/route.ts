@@ -8,7 +8,7 @@ import {
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ task_id: string }> }
+  { params }: { params: Promise<{ task_id: string }> },
 ) {
   try {
     const { getToken } = await auth();
@@ -16,7 +16,7 @@ export async function GET(
 
     const { task_id } = await params;
     const queryParams = Object.fromEntries(
-      request.nextUrl.searchParams.entries()
+      request.nextUrl.searchParams.entries(),
     );
 
     const url = getBackendUrl("tasks", `/${task_id}`, queryParams);
@@ -35,14 +35,14 @@ export async function GET(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }
 
 export async function DELETE(
   _request: Request,
-  { params }: { params: Promise<{ task_id: string }> }
+  { params }: { params: Promise<{ task_id: string }> },
 ) {
   try {
     const authObj = await auth();
@@ -54,7 +54,7 @@ export async function DELETE(
     if (!token) {
       return NextResponse.json(
         { error: "Failed to get authentication token" },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -74,7 +74,7 @@ export async function DELETE(
       if (!res.ok) {
         return NextResponse.json(
           { error: text || "Upstream error" },
-          { status: res.status }
+          { status: res.status },
         );
       }
     }
@@ -89,7 +89,7 @@ export async function DELETE(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }

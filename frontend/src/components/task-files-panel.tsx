@@ -27,6 +27,7 @@ import {
   AlertTriangle,
   XCircle,
   Loader2,
+  OctagonX,
 } from "lucide-react";
 import { fetcher } from "@/lib/api";
 import { CodeBlock, getLanguageFromFilename } from "@/components/code-block";
@@ -107,7 +108,7 @@ function formatFileSize(bytes: number): string {
 
 function buildNodesFromListing(
   files: TaskFile[] = [],
-  dirs: TaskDirectory[] = []
+  dirs: TaskDirectory[] = [],
 ): TreeNode[] {
   const dirNodes = dirs.map((dir) => ({
     name: getNodeName(dir.path),
@@ -178,7 +179,7 @@ function buildTreeFromPaths(files: TaskFile[]): TreeNode[] {
 function updateTree(
   nodes: TreeNode[],
   targetPath: string,
-  updater: (node: TreeNode) => TreeNode
+  updater: (node: TreeNode) => TreeNode,
 ): TreeNode[] {
   return nodes.map((node) => {
     if (node.path === targetPath) {
@@ -304,13 +305,15 @@ export function TaskFilesPanel({
   const [error, setError] = useState<string | null>(null);
   const [isRerunning, setIsRerunning] = useState(false);
   const [rerunError, setRerunError] = useState<string | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
   const [analysisActionError, setAnalysisActionError] = useState<string | null>(
-    null
+    null,
   );
   const [isRunningVerdict, setIsRunningVerdict] = useState(false);
   const [verdictActionError, setVerdictActionError] = useState<string | null>(
-    null
+    null,
   );
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
@@ -360,28 +363,35 @@ export function TaskFilesPanel({
   const retryableTrials = useMemo(() => {
     if (!task?.trials) return [];
     return task.trials.filter(
-      (trial) => trial.status === "failed" || trial.status === "success"
+      (trial) => trial.status === "failed" || trial.status === "success",
     );
   }, [task]);
 
   const canRetryTask = allowRetry && retryableTrials.length > 0;
+  const activeTrials = useMemo(() => {
+    if (!task?.trials) return [];
+    return task.trials.filter((trial) =>
+      ["running", "queued", "retrying", "pending"].includes(trial.status),
+    );
+  }, [task]);
+  const canCancelTask = allowRetry && activeTrials.length > 0;
   const allTrialsTerminal =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(
-      (trial) => trial.status === "failed" || trial.status === "success"
+      (trial) => trial.status === "failed" || trial.status === "success",
     );
   const hasAnalysisInFlight = (task?.trials ?? []).some((trial) =>
-    ["pending", "queued", "running"].includes(trial.analysis_status ?? "")
+    ["pending", "queued", "running"].includes(trial.analysis_status ?? ""),
   );
   const allAnalysesComplete =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(
       (trial) =>
         trial.analysis_status === "success" ||
-        trial.analysis_status === "failed"
+        trial.analysis_status === "failed",
     );
   const verdictInFlight = ["pending", "queued", "running"].includes(
-    verdictSource?.verdict_status ?? ""
+    verdictSource?.verdict_status ?? "",
   );
   const canRunTaskAnalysis =
     allowRetry &&
@@ -396,7 +406,7 @@ export function TaskFilesPanel({
     allAnalysesComplete &&
     !verdictInFlight;
   const analysisActionLabel = (task?.trials ?? []).some(
-    (trial) => trial.analysis_status || trial.analysis
+    (trial) => trial.analysis_status || trial.analysis,
   )
     ? "Rerun analyses"
     : "Run analyses";
@@ -412,7 +422,7 @@ export function TaskFilesPanel({
       if (!nextTask) return;
       onNavigate(nextTask, nextIndex);
     },
-    [onNavigate, orderedList]
+    [onNavigate, orderedList],
   );
 
   const handleRetryTask = async () => {
@@ -429,10 +439,10 @@ export function TaskFilesPanel({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to retry trial"
+              data.detail || data.error || "Failed to retry trial",
             );
           }
-        })
+        }),
       );
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
@@ -443,6 +453,31 @@ export function TaskFilesPanel({
       onRetryComplete?.(task?.id ? [task.id] : taskId ? [taskId] : undefined);
     } finally {
       setIsRerunning(false);
+    }
+  };
+
+  const handleCancelTask = async () => {
+    if (!canCancelTask || isCancelling) return;
+    setIsCancelling(true);
+    setCancelError(null);
+
+    try {
+      const id = task?.id ?? taskId;
+      const res = await fetch(`${baseUrl}/tasks/${id}/cancel`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || data.error || "Failed to cancel task");
+      }
+      setCancelError(null);
+      onRetryComplete?.(id ? [id] : undefined);
+    } catch (err) {
+      setCancelError(
+        err instanceof Error ? err.message : "Failed to cancel task",
+      );
+    } finally {
+      setIsCancelling(false);
     }
   };
 
@@ -458,13 +493,13 @@ export function TaskFilesPanel({
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue task analysis"
+          data.detail || data.error || "Failed to queue task analysis",
         );
       }
       onRetryComplete?.([task.id]);
     } catch (err) {
       setAnalysisActionError(
-        err instanceof Error ? err.message : "Failed to queue task analysis"
+        err instanceof Error ? err.message : "Failed to queue task analysis",
       );
     } finally {
       setIsRunningAnalysis(false);
@@ -487,7 +522,7 @@ export function TaskFilesPanel({
       onRetryComplete?.([task.id]);
     } catch (err) {
       setVerdictActionError(
-        err instanceof Error ? err.message : "Failed to queue verdict"
+        err instanceof Error ? err.message : "Failed to queue verdict",
       );
     } finally {
       setIsRunningVerdict(false);
@@ -567,7 +602,7 @@ export function TaskFilesPanel({
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(
-            data.detail || `Failed to fetch files: ${res.statusText}`
+            data.detail || `Failed to fetch files: ${res.statusText}`,
           );
         }
         const data = await res.json();
@@ -585,7 +620,7 @@ export function TaskFilesPanel({
       } catch (err) {
         if (!cancelled) {
           setError(
-            err instanceof Error ? err.message : "Failed to fetch files"
+            err instanceof Error ? err.message : "Failed to fetch files",
           );
         }
       } finally {
@@ -609,7 +644,7 @@ export function TaskFilesPanel({
       try {
         const prefix = encodeURIComponent(path);
         const res = await fetch(
-          `${resolvedFilesUrl}?recursive=0&prefix=${prefix}`
+          `${resolvedFilesUrl}?recursive=0&prefix=${prefix}`,
         );
         if (!res.ok) {
           throw new Error("Failed to fetch directory");
@@ -623,11 +658,11 @@ export function TaskFilesPanel({
             ...node,
             children,
             isLoaded: true,
-          }))
+          })),
         );
       } catch (err) {
         setError(
-          err instanceof Error ? err.message : "Failed to fetch directory"
+          err instanceof Error ? err.message : "Failed to fetch directory",
         );
       } finally {
         setLoadingDirs((prev) => {
@@ -637,7 +672,7 @@ export function TaskFilesPanel({
         });
       }
     },
-    [taskId, filesUrl, resolvedFilesUrl]
+    [taskId, filesUrl, resolvedFilesUrl],
   );
 
   // Fetch file content when a file is selected
@@ -1187,6 +1222,25 @@ export function TaskFilesPanel({
                     </span>
                   </div>
                 </div>
+                {canCancelTask && (
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    onClick={handleCancelTask}
+                    disabled={isCancelling}
+                    className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
+                  >
+                    {isCancelling ? (
+                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <OctagonX className="mr-1 h-3.5 w-3.5" />
+                    )}
+                    {isCancelling
+                      ? "Cancelling..."
+                      : `Cancel (${activeTrials.length})`}
+                  </Button>
+                )}
                 {allowRetry && (
                   <Button
                     type="button"
@@ -1241,8 +1295,12 @@ export function TaskFilesPanel({
               </div>
             </div>
 
-            {(rerunError || analysisActionError || verdictActionError) && (
+            {(cancelError ||
+              rerunError ||
+              analysisActionError ||
+              verdictActionError) && (
               <div className="flex flex-wrap items-center justify-end gap-3 text-red-500">
+                {cancelError && <span>{cancelError}</span>}
                 {rerunError && <span>{rerunError}</span>}
                 {analysisActionError && <span>{analysisActionError}</span>}
                 {verdictActionError && <span>{verdictActionError}</span>}
@@ -1329,7 +1387,7 @@ export function TaskFilesPanel({
                                 >
                                   💡 {rec}
                                 </p>
-                              )
+                              ),
                             )}
                           </div>
                         )}

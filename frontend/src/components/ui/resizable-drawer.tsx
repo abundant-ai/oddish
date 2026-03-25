@@ -46,7 +46,7 @@ export function ResizableDrawer({
         const deltaX = startX - moveEvent.clientX;
         const newWidth = Math.min(
           maxWidth,
-          Math.max(minWidth, startWidth + deltaX)
+          Math.max(minWidth, startWidth + deltaX),
         );
         setWidth(newWidth);
       };
@@ -60,7 +60,7 @@ export function ResizableDrawer({
       document.addEventListener("mousemove", handleMouseMove);
       document.addEventListener("mouseup", handleMouseUp);
     },
-    [width, minWidth, maxWidth]
+    [width, minWidth, maxWidth],
   );
 
   // Handle escape key to close
@@ -94,7 +94,7 @@ export function ResizableDrawer({
           "duration-300 animate-in slide-in-from-right",
           isResizing && "select-none",
           "rounded-tl-lg border-t",
-          className
+          className,
         )}
         style={{
           width: `${width}px`,

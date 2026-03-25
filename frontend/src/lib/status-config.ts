@@ -116,7 +116,7 @@ export const STATUS_CONFIG: Record<
 export function getMatrixStatus(
   trialStatus: string,
   reward: number | null | undefined,
-  errorMessage?: string | null
+  errorMessage?: string | null,
 ): MatrixStatus {
   const isAgentTimeout =
     !!errorMessage &&

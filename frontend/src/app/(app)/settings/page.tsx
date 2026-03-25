@@ -579,7 +579,7 @@ function WorkspaceSelectorCard() {
                     "h-auto w-full justify-between rounded-xl border px-3 py-3 text-left font-normal transition-colors",
                     isActive
                       ? "hover:bg-[#85b85c]/12 border-[#85b85c]/35 bg-[#85b85c]/10"
-                      : "border-[#6f88b4]/16 bg-background/70 hover:border-[#85b85c]/25 hover:bg-muted/60"
+                      : "border-[#6f88b4]/16 bg-background/70 hover:border-[#85b85c]/25 hover:bg-muted/60",
                   )}
                 >
                   <div className="flex min-w-0 items-center gap-3">
@@ -588,7 +588,7 @@ function WorkspaceSelectorCard() {
                         "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border text-sm font-semibold",
                         isActive
                           ? "bg-[#85b85c]/12 border-[#85b85c]/30 text-[#5c8e43]"
-                          : "border-[#6f88b4]/18 bg-muted/50 text-muted-foreground"
+                          : "border-[#6f88b4]/18 bg-muted/50 text-muted-foreground",
                       )}
                     >
                       {membership.organization.name.slice(0, 1).toUpperCase()}

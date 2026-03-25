@@ -47,10 +47,10 @@ export function ExperimentClientPage({
       }
       const offset = pageIndex * TASKS_PAGE_SIZE;
       return `/api/experiments/${encodeExperimentRouteParam(
-        experimentId
+        experimentId,
       )}/tasks?limit=${TASKS_PAGE_SIZE}&offset=${offset}&include_trials=true`;
     },
-    [experimentId]
+    [experimentId],
   );
 
   const { data, error, isLoading, isValidating, size, setSize, mutate } =
@@ -73,7 +73,7 @@ export function ExperimentClientPage({
     const taskList = Array.from(deduped.values());
     return taskList.sort(
       (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
     );
   }, [data]);
   const lastPage = data?.[data.length - 1] ?? null;
@@ -85,7 +85,7 @@ export function ExperimentClientPage({
     const hasActiveTasks = tasksForExperiment.some((task) => {
       const activeTrials = Math.max(
         0,
-        task.total - task.completed - task.failed
+        task.total - task.completed - task.failed,
       );
       return activeTrials > 0 || ACTIVE_TASK_STATUSES.has(task.status);
     });
@@ -125,10 +125,10 @@ export function ExperimentClientPage({
             pageIndex === 0 ? null : (pages[pageIndex - 1] ?? null);
           const key = getTasksPageKey(pageIndex, previousPageData);
           return key ? mutateKey(key) : Promise.resolve(undefined);
-        })
+        }),
       );
     },
-    [data, firstPageKey, getTasksPageKey, mutateKey]
+    [data, firstPageKey, getTasksPageKey, mutateKey],
   );
 
   useEffect(() => {
@@ -168,13 +168,13 @@ export function ExperimentClientPage({
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: nextName }),
-        }
+        },
       );
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         throw new Error(
-          errorData.detail || errorData.error || "Failed to rename experiment"
+          errorData.detail || errorData.error || "Failed to rename experiment",
         );
       }
 
@@ -185,9 +185,9 @@ export function ExperimentClientPage({
             page?.map((task) => ({
               ...task,
               experiment_name: nextName,
-            }))
+            })),
           ),
-        { revalidate: false }
+        { revalidate: false },
       );
       void refreshTaskPages();
     } catch (err) {
@@ -205,14 +205,14 @@ export function ExperimentClientPage({
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       throw new Error(
-        errorData.detail || errorData.error || "Failed to delete task"
+        errorData.detail || errorData.error || "Failed to delete task",
       );
     }
 
     await mutate(
       (pages) =>
         pages?.map((page) => page?.filter((item) => item.id !== task.id)),
-      { revalidate: false }
+      { revalidate: false },
     );
     await refreshTaskPages([task.id]);
   };

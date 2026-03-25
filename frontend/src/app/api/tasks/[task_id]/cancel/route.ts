@@ -6,19 +6,23 @@ import {
   getClerkToken,
 } from "@/lib/backend-config";
 
-export async function GET(
+export async function POST(
   _request: Request,
-  { params }: { params: Promise<{ trial_id: string }> },
+  { params }: { params: Promise<{ task_id: string }> },
 ) {
   try {
     const { getToken } = await auth();
     const token = await getClerkToken(getToken);
 
-    const { trial_id } = await params;
+    if (!token) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-    const url = getBackendUrl("trials", `/${trial_id}/trajectory`);
+    const { task_id } = await params;
+
+    const url = getBackendUrl("tasks", `/${task_id}/cancel`);
     const res = await fetch(url, {
-      cache: "no-store",
+      method: "POST",
       headers: getAuthHeaders(token),
     });
 
@@ -26,12 +30,11 @@ export async function GET(
     const data = text ? JSON.parse(text) : null;
 
     if (!res.ok) {
-      return NextResponse.json(data ?? { error: "Upstream error" }, {
+      return NextResponse.json(data ?? { error: "Failed to cancel task" }, {
         status: res.status,
       });
     }
 
-    // Return null as valid response if no trajectory exists
     return NextResponse.json(data);
   } catch (error) {
     return NextResponse.json(

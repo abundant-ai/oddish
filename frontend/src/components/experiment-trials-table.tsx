@@ -60,6 +60,7 @@ import {
   Check,
   AlertTriangle,
   Copy,
+  OctagonX,
   Trash2,
 } from "lucide-react";
 import { QueueKeyIcon } from "./queue-key-icon";
@@ -68,7 +69,7 @@ const PassAtKGraph = dynamic(
   () => import("./pass-at-k-graph").then((mod) => mod.PassAtKGraph),
   {
     ssr: false,
-  }
+  },
 );
 
 const PassAtOneLeaderboard = dynamic(
@@ -76,7 +77,7 @@ const PassAtOneLeaderboard = dynamic(
     import("./pass-at-one-leaderboard").then((mod) => mod.PassAtOneLeaderboard),
   {
     ssr: false,
-  }
+  },
 );
 
 export type AgentSummary = ExperimentAgentSummary;
@@ -103,11 +104,11 @@ type ExperimentTrialsTableProps = {
         model: string | null;
         trials: Trial[];
       }>;
-    }
+    },
   ) => void;
   onTaskSelect?: (
     task: Task,
-    context: { orderedTasks: Task[]; taskIndex: number }
+    context: { orderedTasks: Task[]; taskIndex: number },
   ) => void;
 };
 
@@ -289,7 +290,7 @@ function VerdictIndicator({ task }: { task: Task }) {
 
 function groupTrialsByAgent(
   trials: Trial[] | null | undefined,
-  modelScopedAgents: ReadonlySet<string>
+  modelScopedAgents: ReadonlySet<string>,
 ) {
   const grouped = new Map<string, Trial[]>();
   if (!trials) return grouped;
@@ -335,7 +336,7 @@ export function ExperimentTrialsTable({
   const deferredTaskSearch = useDeferredValue(taskSearch);
   const [hiddenAgents, setHiddenAgents] = useState<Set<string>>(new Set());
   const [dimmedStatuses, setDimmedStatuses] = useState<Set<MatrixStatus>>(
-    new Set()
+    new Set(),
   );
   const [dimmedAnalysisKeys, setDimmedAnalysisKeys] = useState<
     Set<AnalysisLegendKey>
@@ -348,6 +349,8 @@ export function ExperimentTrialsTable({
   const [isDeleting, setIsDeleting] = useState(false);
   const [isRerunning, setIsRerunning] = useState(false);
   const [rerunError, setRerunError] = useState<string | null>(null);
+  const [isCancellingSelected, setIsCancellingSelected] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isRunningVerdict, setIsRunningVerdict] = useState(false);
@@ -398,8 +401,8 @@ export function ExperimentTrialsTable({
               value === "harness-error" ||
               value === "pending" ||
               value === "queued" ||
-              value === "running"
-          )
+              value === "running",
+          ),
       );
       setDimmedStatuses(next);
       prevUrlRef.current.dim = urlDim;
@@ -500,19 +503,19 @@ export function ExperimentTrialsTable({
 
   const visibleAgents = useMemo(
     () => sortedAgentSummaries.filter((agent) => !hiddenAgents.has(agent.key)),
-    [sortedAgentSummaries, hiddenAgents]
+    [sortedAgentSummaries, hiddenAgents],
   );
 
   const columnOrder = useMemo(
     () => ["task", ...visibleAgents.map((agent) => agent.key)],
-    [visibleAgents]
+    [visibleAgents],
   );
 
   const baseTableWidth = useMemo(() => {
     const agentTotal = visibleAgents.reduce(
       (sum, agent) =>
         sum + (agentColumnWidths[agent.key] ?? DEFAULT_AGENT_WIDTH),
-      0
+      0,
     );
     return taskColumnWidth + agentTotal;
   }, [visibleAgents, agentColumnWidths, taskColumnWidth, DEFAULT_AGENT_WIDTH]);
@@ -580,7 +583,7 @@ export function ExperimentTrialsTable({
 
       const groupedTrialsByAgent = groupTrialsByAgent(
         task.trials,
-        modelScopedAgents
+        modelScopedAgents,
       );
       const orderedTrials: Trial[] = [];
       const trialIndexById = new Map<string, number>();
@@ -618,7 +621,7 @@ export function ExperimentTrialsTable({
 
   const selectedTaskList = useMemo(
     () => tasks.filter((task) => selectedTasks.has(task.id)),
-    [tasks, selectedTasks]
+    [tasks, selectedTasks],
   );
 
   const selectedRetryableTrials = useMemo(() => {
@@ -638,23 +641,35 @@ export function ExperimentTrialsTable({
     return retryable;
   }, [selectedTaskList]);
 
+  const selectedCancellableTasks = useMemo(
+    () =>
+      selectedTaskList.filter((task) =>
+        (task.trials ?? []).some((trial) =>
+          ["running", "queued", "retrying", "pending"].includes(trial.status),
+        ),
+      ),
+    [selectedTaskList],
+  );
+
   const selectedAnalysisRunnableTasks = useMemo(
     () =>
       selectedTaskList.filter((task) => {
         const trials = task.trials ?? [];
         if (trials.length === 0) return false;
         const allTrialsTerminal = trials.every(
-          (trial) => trial.status === "failed" || trial.status === "success"
+          (trial) => trial.status === "failed" || trial.status === "success",
         );
         const hasAnalysisInFlight = trials.some((trial) =>
-          ["pending", "queued", "running"].includes(trial.analysis_status ?? "")
+          ["pending", "queued", "running"].includes(
+            trial.analysis_status ?? "",
+          ),
         );
         const verdictInFlight = ["pending", "queued", "running"].includes(
-          task.verdict_status ?? ""
+          task.verdict_status ?? "",
         );
         return allTrialsTerminal && !hasAnalysisInFlight && !verdictInFlight;
       }),
-    [selectedTaskList]
+    [selectedTaskList],
   );
 
   const selectedVerdictRunnableTasks = useMemo(
@@ -663,19 +678,19 @@ export function ExperimentTrialsTable({
         const trials = task.trials ?? [];
         if (trials.length === 0) return false;
         const allTrialsTerminal = trials.every(
-          (trial) => trial.status === "failed" || trial.status === "success"
+          (trial) => trial.status === "failed" || trial.status === "success",
         );
         const allAnalysesComplete = trials.every(
           (trial) =>
             trial.analysis_status === "success" ||
-            trial.analysis_status === "failed"
+            trial.analysis_status === "failed",
         );
         const verdictInFlight = ["pending", "queued", "running"].includes(
-          task.verdict_status ?? ""
+          task.verdict_status ?? "",
         );
         return allTrialsTerminal && allAnalysesComplete && !verdictInFlight;
       }),
-    [selectedTaskList]
+    [selectedTaskList],
   );
 
   const rowVirtualizer = useVirtualizer({
@@ -769,7 +784,7 @@ export function ExperimentTrialsTable({
             const status = getMatrixStatus(
               trial.status,
               trial.reward,
-              trial.error_message
+              trial.error_message,
             );
             return STATUS_CONFIG[status].shortLabel;
           });
@@ -801,7 +816,7 @@ export function ExperimentTrialsTable({
     }
     const trialCount = deleteTargets.reduce(
       (sum, task) => sum + (task.total ?? 0),
-      0
+      0,
     );
     return {
       label: `${deleteTargets.length} tasks`,
@@ -840,7 +855,7 @@ export function ExperimentTrialsTable({
       }
     } catch (error) {
       setDeleteError(
-        error instanceof Error ? error.message : "Failed to delete task"
+        error instanceof Error ? error.message : "Failed to delete task",
       );
     } finally {
       setIsDeleting(false);
@@ -866,10 +881,10 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to retry trial"
+              data.detail || data.error || "Failed to retry trial",
             );
           }
-        })
+        }),
       );
 
       const failures = results.filter((result) => result.status === "rejected");
@@ -881,6 +896,39 @@ export function ExperimentTrialsTable({
       onRerun?.(selectedTaskList.map((task) => task.id));
     } finally {
       setIsRerunning(false);
+    }
+  };
+
+  const handleCancelSelectedTasks = async () => {
+    if (isCancellingSelected || selectedCancellableTasks.length === 0) return;
+
+    setIsCancellingSelected(true);
+    setCancelError(null);
+
+    try {
+      const results = await Promise.allSettled(
+        selectedCancellableTasks.map(async (task) => {
+          const res = await fetch(`/api/tasks/${task.id}/cancel`, {
+            method: "POST",
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(
+              data.detail || data.error || "Failed to cancel task",
+            );
+          }
+        }),
+      );
+
+      const failures = results.filter((result) => result.status === "rejected");
+      if (failures.length > 0) {
+        setCancelError(`Failed to cancel ${failures.length} task(s).`);
+      } else {
+        setCancelError(null);
+      }
+      onRerun?.(selectedCancellableTasks.map((task) => task.id));
+    } finally {
+      setIsCancellingSelected(false);
     }
   };
 
@@ -903,16 +951,16 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task analysis"
+              data.detail || data.error || "Failed to queue task analysis",
             );
           }
-        })
+        }),
       );
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
         setAnalysisError(
-          `Failed to queue analysis for ${failures.length} task(s).`
+          `Failed to queue analysis for ${failures.length} task(s).`,
         );
       } else {
         setAnalysisError(null);
@@ -942,16 +990,16 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task verdict"
+              data.detail || data.error || "Failed to queue task verdict",
             );
           }
-        })
+        }),
       );
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
         setVerdictError(
-          `Failed to queue verdict for ${failures.length} task(s).`
+          `Failed to queue verdict for ${failures.length} task(s).`,
         );
       } else {
         setVerdictError(null);
@@ -965,7 +1013,7 @@ export function ExperimentTrialsTable({
   const startResize = (
     event: ReactMouseEvent,
     columnKey: "task" | string,
-    startWidth: number
+    startWidth: number,
   ) => {
     event.preventDefault();
     const currentIndex = columnOrder.indexOf(columnKey);
@@ -1324,6 +1372,28 @@ export function ExperimentTrialsTable({
                     : `Rerun trials (${selectedRetryableTrials.length})`}
                 </Button>
               )}
+              {canRerun && selectedCancellableTasks.length > 0 && (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleCancelSelectedTasks}
+                  disabled={isCancellingSelected}
+                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                >
+                  {isCancellingSelected ? (
+                    <>
+                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                      Cancelling...
+                    </>
+                  ) : (
+                    <>
+                      <OctagonX className="mr-1 h-3 w-3" />
+                      {`Cancel (${selectedCancellableTasks.length})`}
+                    </>
+                  )}
+                </Button>
+              )}
               {canRerun && (
                 <Button
                   type="button"
@@ -1373,6 +1443,9 @@ export function ExperimentTrialsTable({
                   <Trash2 className="mr-1 h-3 w-3" />
                   Delete
                 </Button>
+              )}
+              {cancelError && (
+                <span className="text-[10px] text-red-500">{cancelError}</span>
               )}
               {rerunError && (
                 <span className="text-[10px] text-red-500">{rerunError}</span>
@@ -1481,7 +1554,7 @@ export function ExperimentTrialsTable({
                               event,
                               agent.key,
                               agentColumnWidths[agent.key] ??
-                                DEFAULT_AGENT_WIDTH
+                                DEFAULT_AGENT_WIDTH,
                             )
                           }
                         />
@@ -1620,7 +1693,7 @@ export function ExperimentTrialsTable({
                                   const status = getMatrixStatus(
                                     trial.status,
                                     trial.reward,
-                                    trial.error_message
+                                    trial.error_message,
                                   );
                                   const config = STATUS_CONFIG[status];
                                   const isDimmed = dimmedStatuses.has(status);
@@ -1641,7 +1714,7 @@ export function ExperimentTrialsTable({
                                   // Build enhanced title with analysis info
                                   const baseTitle = getTrialTitle(
                                     trial,
-                                    status
+                                    status,
                                   );
                                   const analysisTitle = analysisIndicator
                                     ? ` • ${analysisIndicator.title}`

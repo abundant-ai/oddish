@@ -42,12 +42,12 @@ interface PassAtKGraphProps {
  */
 function buildAgentStats(
   tasks: Task[],
-  agentSummaries: AgentSummary[]
+  agentSummaries: AgentSummary[],
 ): { agentStats: Record<string, AgentPassAtKStats>; maxN: number } {
   const modelScopedAgents = new Set(
     agentSummaries
       .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent)
+      .map((summary) => summary.agent),
   );
 
   // First, determine the max number of trials per task-agent combination
@@ -103,7 +103,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
 }: PassAtKGraphProps) {
   const visibleAgentSummaries = useMemo(
     () => agentSummaries.filter((summary) => !hiddenAgents.has(summary.key)),
-    [agentSummaries, hiddenAgents]
+    [agentSummaries, hiddenAgents],
   );
 
   const { data, maxK, hasMultipleAttempts } = useMemo(() => {
@@ -161,7 +161,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
               <Tooltip
                 formatter={(
                   value: number | undefined,
-                  name: string | undefined
+                  name: string | undefined,
                 ) => [
                   value !== undefined ? `${(value * 100).toFixed(1)}%` : "N/A",
                   name ?? "",
@@ -177,7 +177,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
               />
               {visibleAgentSummaries.map((summary) => {
                 const originalIdx = agentSummaries.findIndex(
-                  (agent) => agent.key === summary.key
+                  (agent) => agent.key === summary.key,
                 );
                 return (
                   <Line

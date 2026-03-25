@@ -9,7 +9,7 @@ import { decodeExperimentRouteParam } from "@/lib/utils";
 
 export async function POST(
   _request: Request,
-  { params }: { params: Promise<{ experiment: string }> }
+  { params }: { params: Promise<{ experiment: string }> },
 ) {
   try {
     const authObj = await auth();
@@ -19,7 +19,7 @@ export async function POST(
     if (!["org:admin", "org:owner"].includes(authObj.orgRole ?? "")) {
       return NextResponse.json(
         { error: "Forbidden: admin privileges required" },
-        { status: 403 }
+        { status: 403 },
       );
     }
 
@@ -27,7 +27,7 @@ export async function POST(
     if (!token) {
       return NextResponse.json(
         { error: "Failed to get authentication token" },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -35,7 +35,7 @@ export async function POST(
     const experimentId = decodeExperimentRouteParam(experiment);
     const url = getBackendUrl(
       "experiments",
-      `/${encodeURIComponent(experimentId)}/unpublish`
+      `/${encodeURIComponent(experimentId)}/unpublish`,
     );
 
     const res = await fetch(url, {
@@ -57,7 +57,7 @@ export async function POST(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }

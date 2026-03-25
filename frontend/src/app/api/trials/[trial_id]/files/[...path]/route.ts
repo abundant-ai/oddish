@@ -8,7 +8,7 @@ import {
 
 export async function GET(
   _request: Request,
-  { params }: { params: Promise<{ trial_id: string; path: string[] }> }
+  { params }: { params: Promise<{ trial_id: string; path: string[] }> },
 ) {
   try {
     const { getToken } = await auth();
@@ -48,7 +48,7 @@ export async function GET(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }

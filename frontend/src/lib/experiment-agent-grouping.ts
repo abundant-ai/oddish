@@ -30,13 +30,13 @@ export function getModelScopedAgents(tasks: Task[]): Set<string> {
   return new Set(
     Array.from(modelsByAgent.entries())
       .filter(([, models]) => models.size > 1)
-      .map(([agent]) => agent)
+      .map(([agent]) => agent),
   );
 }
 
 export function getExperimentAgentKey(
   trial: Pick<Trial, "agent" | "model">,
-  modelScopedAgents: ReadonlySet<string>
+  modelScopedAgents: ReadonlySet<string>,
 ): string {
   if (!modelScopedAgents.has(trial.agent)) {
     return trial.agent;

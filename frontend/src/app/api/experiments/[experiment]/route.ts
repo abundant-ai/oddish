@@ -9,7 +9,7 @@ import { decodeExperimentRouteParam } from "@/lib/utils";
 
 export async function PATCH(
   request: Request,
-  { params }: { params: Promise<{ experiment: string }> }
+  { params }: { params: Promise<{ experiment: string }> },
 ) {
   try {
     const authObj = await auth();
@@ -21,7 +21,7 @@ export async function PATCH(
     if (!token) {
       return NextResponse.json(
         { error: "Failed to get authentication token" },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -29,7 +29,7 @@ export async function PATCH(
     if (!body || typeof body.name !== "string") {
       return NextResponse.json(
         { error: "Missing experiment name" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -37,7 +37,7 @@ export async function PATCH(
     const experimentId = decodeExperimentRouteParam(experiment);
     const url = getBackendUrl(
       "experiments",
-      `/${encodeURIComponent(experimentId)}`
+      `/${encodeURIComponent(experimentId)}`,
     );
 
     const res = await fetch(url, {
@@ -63,14 +63,14 @@ export async function PATCH(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }
 
 export async function DELETE(
   _request: Request,
-  { params }: { params: Promise<{ experiment: string }> }
+  { params }: { params: Promise<{ experiment: string }> },
 ) {
   try {
     const authObj = await auth();
@@ -82,7 +82,7 @@ export async function DELETE(
     if (!token) {
       return NextResponse.json(
         { error: "Failed to get authentication token" },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -90,7 +90,7 @@ export async function DELETE(
     const experimentId = decodeExperimentRouteParam(experiment);
     const url = getBackendUrl(
       "experiments",
-      `/${encodeURIComponent(experimentId)}`
+      `/${encodeURIComponent(experimentId)}`,
     );
 
     const res = await fetch(url, {
@@ -112,7 +112,7 @@ export async function DELETE(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }

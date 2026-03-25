@@ -54,7 +54,7 @@ function getStageDuration(
   stageId: string,
   phaseTiming: PhaseTiming | null | undefined,
   startedAt: string | null | undefined,
-  finishedAt: string | null | undefined
+  finishedAt: string | null | undefined,
 ): string | null {
   if (!phaseTiming) return null;
 
@@ -175,7 +175,7 @@ export function HarborStageTimeline({
                     "-mx-1.5 -my-0.5 h-auto px-1.5 py-0.5 text-left text-xs font-medium leading-normal hover:bg-muted hover:underline hover:underline-offset-2",
                     isCompleted || isCurrent
                       ? "text-foreground"
-                      : "text-muted-foreground"
+                      : "text-muted-foreground",
                   )}
                 >
                   {stageLabel}
@@ -186,7 +186,7 @@ export function HarborStageTimeline({
                     "text-xs font-medium",
                     isCompleted || isCurrent
                       ? "text-foreground"
-                      : "text-muted-foreground"
+                      : "text-muted-foreground",
                   )}
                 >
                   {stageLabel}

@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
       console.error("Failed to get Clerk token for user:", authObj.userId);
       return NextResponse.json(
         { error: "Failed to get authentication token" },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -39,11 +39,11 @@ export async function GET(request: NextRequest) {
     if (!res.ok) {
       const errorText = await res.text();
       console.error(
-        `[admin/orphaned-state] Backend error: ${res.status} - ${errorText}`
+        `[admin/orphaned-state] Backend error: ${res.status} - ${errorText}`,
       );
       return NextResponse.json(
         { error: "Failed to fetch orphaned queue state", details: errorText },
-        { status: res.status }
+        { status: res.status },
       );
     }
 
@@ -53,7 +53,7 @@ export async function GET(request: NextRequest) {
     console.error("Admin orphaned-state API route error:", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }
