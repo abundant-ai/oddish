@@ -194,7 +194,7 @@ oddish pull <task_id> --watch --interval 5
 oddish pull <experiment_id> --include-task-files
 ```
 
-By default, pull output is written to `./oddish-pulls/<target>`.
+By default, pull output is written to `./.oddish/<target>`.
 
 ### `oddish delete`
 

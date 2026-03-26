@@ -33,3 +33,5 @@ backend/jobs/
 .idea/
 oddish-pulls/
 **/oddish-pulls/
+.oddish/
+**/.oddish/
