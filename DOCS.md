@@ -153,7 +153,7 @@ oddish pull <trial_id>
 oddish pull <experiment_id> --include-task-files --out ./downloads
 ```
 
-By default, files are written to `./oddish-pulls/<target>`.
+By default, files are written to `./.oddish/<target>`.
 
 <details>
 <summary>Options</summary>

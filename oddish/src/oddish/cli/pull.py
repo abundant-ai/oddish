@@ -669,7 +669,7 @@ def pull(
         typer.Option(
             "--out",
             "-o",
-            help="Output directory (default: ./oddish-pulls/<target>).",
+            help="Output directory (default: ./.oddish/<target>).",
         ),
     ] = None,
     logs: Annotated[
@@ -713,7 +713,7 @@ def pull(
         resolved_type, resolved_id, cached_data = _resolve_target(
             client, target, target_type
         )
-        output_root = out or (Path.cwd() / "oddish-pulls" / resolved_id)
+        output_root = out or (Path.cwd() / ".oddish" / resolved_id)
         output_root.mkdir(parents=True, exist_ok=True)
 
         console.print(
