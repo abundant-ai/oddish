@@ -9,6 +9,7 @@ on:
       - closed
 
 concurrency:
+  # Shared preview environment with one Modal app per PR.
   group: modal-preview-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
