@@ -5,15 +5,29 @@ import modal
 from dotenv import dotenv_values
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return int(value)
+
+
 MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
 MODAL_VOLUME_NAME = os.environ.get("MODAL_VOLUME_NAME", "oddish")
-MODAL_SECRET_ENVIRONMENT = "main"
-ENABLE_BACKGROUND_WORKERS = True
-API_MIN_CONTAINERS = 1
-API_BUFFER_CONTAINERS = 2
-API_MAX_CONTAINERS = 16
-API_CONCURRENCY_TARGET = 8
-API_CONCURRENCY_MAX = 16
+MODAL_SECRET_ENVIRONMENT = os.environ.get("MODAL_SECRET_ENVIRONMENT", "main")
+ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
+API_MIN_CONTAINERS = _env_int("ODDISH_MODAL_API_MIN_CONTAINERS", 1)
+API_BUFFER_CONTAINERS = _env_int("ODDISH_MODAL_API_BUFFER_CONTAINERS", 2)
+API_MAX_CONTAINERS = _env_int("ODDISH_MODAL_API_MAX_CONTAINERS", 16)
+API_CONCURRENCY_TARGET = _env_int("ODDISH_MODAL_API_CONCURRENCY_TARGET", 8)
+API_CONCURRENCY_MAX = _env_int("ODDISH_MODAL_API_CONCURRENCY_MAX", 16)
 LOCAL_DOTENV_PATH = Path(__file__).with_name(".env")
 LOCAL_DOTENV_VARS = {
     key: value
@@ -31,17 +45,26 @@ VOLUME_MOUNT_PATH = "/data"
 # Worker configuration
 POLL_INTERVAL_SECONDS = 60  # How often to check for new jobs
 # Allow ~30 min trials with small shutdown buffer.
-WORKER_TIMEOUT_SECONDS = 18000  # 5 hours max per job worker
-SHUTDOWN_TIMEOUT_SECONDS = 10  # How long to wait for graceful shutdown
-WORKER_MIN_CONTAINERS = 1  # Keep one job worker warm to reduce cold starts
-WORKER_BUFFER_CONTAINERS = 4  # Keep a few extra warm workers during active bursts.
-WORKER_SCALEDOWN_WINDOW_SECONDS = 300  # Keep idle workers warm for 5 minutes
+WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 18000)
+SHUTDOWN_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_SHUTDOWN_TIMEOUT_SECONDS", 10)
+WORKER_MIN_CONTAINERS = _env_int(
+    "ODDISH_MODAL_WORKER_MIN_CONTAINERS", 1
+)  # Keep one job worker warm to reduce cold starts
+WORKER_BUFFER_CONTAINERS = _env_int(
+    "ODDISH_MODAL_WORKER_BUFFER_CONTAINERS", 4
+)  # Keep a few extra warm workers during active bursts.
+WORKER_SCALEDOWN_WINDOW_SECONDS = _env_int(
+    "ODDISH_MODAL_WORKER_SCALEDOWN_WINDOW_SECONDS", 300
+)  # Keep idle workers warm for 5 minutes
 WORKER_MAX_CONTAINERS = (
-    256  # High global cap so several queue keys can scale, but still not unbounded.
+    _env_int(
+        "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
+        256,
+    )  # High global cap so several queue keys can scale, but still not unbounded.
 )
 
 # Max number of workers spawned per poll cycle (rate limiter)
-MAX_WORKERS_PER_POLL = 16
+MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 16)
 
 # Always attach the production Modal secret. Local deploys can layer a backend
 # `.env` file on top for developer-specific overrides.
@@ -64,7 +87,7 @@ ENV_VARS = {
 # Queue-key concurrency default for Modal runtime.
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
-MODEL_CONCURRENCY_DEFAULT = 64
+MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_MODEL_CONCURRENCY_DEFAULT", 64)
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
