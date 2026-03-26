@@ -1,0 +1,297 @@
+name: Modal Preview
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - closed
+
+concurrency:
+  group: modal-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-preview:
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: preview
+      MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
+      MODAL_VOLUME_NAME: oddish-preview
+      MODAL_SECRET_ENVIRONMENT: main
+      VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
+      VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+      ODDISH_ENABLE_MODAL_WORKERS: "0"
+      ODDISH_MODAL_API_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
+      ODDISH_MODAL_API_MAX_CONTAINERS: "2"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Sync backend dependencies
+        run: uv sync --frozen
+
+      - name: Deploy preview backend
+        id: deploy_modal
+        run: |
+          deploy_log="$(mktemp)"
+          uv run modal deploy deploy.py 2>&1 | tee "$deploy_log"
+          modal_api_url="$(python - "$deploy_log" "$MODAL_APP_NAME" <<'PY'
+          import pathlib
+          import re
+          import sys
+          
+          log_path = pathlib.Path(sys.argv[1])
+          app_name = sys.argv[2]
+          text = log_path.read_text()
+          
+          candidates = []
+          for line in text.splitlines():
+              if "modal.run" not in line:
+                  continue
+              if "api" not in line.lower():
+                  continue
+              match = re.search(r"https://[^\s]+\.modal\.run", line)
+              if match:
+                  candidates.append(match.group(0))
+          
+          if not candidates:
+              raise SystemExit(
+                  f"Could not determine Modal API URL for {app_name} from deploy output"
+              )
+          print(candidates[-1])
+          PY
+          )"
+          echo "modal_api_url=$modal_api_url" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for preview backend health
+        run: |
+          python - "${{ steps.deploy_modal.outputs.modal_api_url }}" <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          base_url = sys.argv[1].rstrip("/")
+          health_url = f"{base_url}/health"
+          deadline = time.time() + 180
+          last_error = "no health response yet"
+
+          while time.time() < deadline:
+              try:
+                  with urllib.request.urlopen(health_url, timeout=10) as response:
+                      payload = json.load(response)
+                  if response.status == 200 and payload.get("status") == "healthy":
+                      print(f"Modal preview healthy at {health_url}")
+                      break
+                  last_error = f"unexpected response: {payload!r}"
+              except urllib.error.HTTPError as exc:
+                  last_error = f"http {exc.code}"
+              except Exception as exc:  # noqa: BLE001
+                  last_error = str(exc)
+              time.sleep(5)
+          else:
+              raise SystemExit(
+                  f"Modal preview never became healthy at {health_url}: {last_error}"
+              )
+          PY
+
+      - name: Install Node
+        if: ${{ secrets.VERCEL_TOKEN != '' && secrets.VERCEL_ORG_ID != '' && secrets.VERCEL_PROJECT_ID != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Vercel CLI
+        if: ${{ secrets.VERCEL_TOKEN != '' && secrets.VERCEL_ORG_ID != '' && secrets.VERCEL_PROJECT_ID != '' }}
+        run: npm install --global vercel@latest
+
+      - name: Link Vercel project
+        if: ${{ secrets.VERCEL_TOKEN != '' && secrets.VERCEL_ORG_ID != '' && secrets.VERCEL_PROJECT_ID != '' }}
+        working-directory: frontend
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: vercel pull --yes --environment=preview --git-branch="$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
+
+      - name: Point Vercel preview to Modal preview
+        if: ${{ secrets.VERCEL_TOKEN != '' && secrets.VERCEL_ORG_ID != '' && secrets.VERCEL_PROJECT_ID != '' }}
+        working-directory: frontend
+        env:
+          MODAL_API_URL: ${{ steps.deploy_modal.outputs.modal_api_url }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          vercel env rm NEXT_PUBLIC_BACKEND_TYPE preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+          printf '%s' "modal" | vercel env add NEXT_PUBLIC_BACKEND_TYPE preview "$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
+          vercel env rm NEXT_PUBLIC_MODAL_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+          printf '%s' "$MODAL_API_URL" | vercel env add NEXT_PUBLIC_MODAL_API_URL preview "$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
+          vercel env rm NEXT_PUBLIC_MODAL_BASE_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+          vercel env rm NEXT_PUBLIC_MODAL_ENV preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+
+      - name: Redeploy Vercel preview with updated env
+        id: redeploy_vercel
+        if: ${{ secrets.VERCEL_TOKEN != '' && secrets.VERCEL_ORG_ID != '' && secrets.VERCEL_PROJECT_ID != '' }}
+        working-directory: frontend
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          deployment_json="$(python <<'PY'
+          import json
+          import os
+          import time
+          import urllib.parse
+          import urllib.request
+          
+          token = os.environ["VERCEL_TOKEN"]
+          project_id = os.environ["VERCEL_PROJECT_ID"]
+          team_id = os.environ["VERCEL_ORG_ID"]
+          branch = os.environ["VERCEL_GIT_BRANCH"]
+          commit_sha = os.environ["VERCEL_GIT_COMMIT_SHA"]
+          
+          params = urllib.parse.urlencode(
+              {
+                  "projectId": project_id,
+                  "teamId": team_id,
+                  "limit": 20,
+                  "target": "preview",
+                  "branch": branch,
+              }
+          )
+          url = f"https://api.vercel.com/v6/deployments?{params}"
+          headers = {"Authorization": f"Bearer {token}"}
+
+          def deployment_commit_sha(deployment):
+              meta = deployment.get("meta") or {}
+              git_source = deployment.get("gitSource") or {}
+              candidates = [
+                  meta.get("githubCommitSha"),
+                  meta.get("githubCommitSHA"),
+                  meta.get("gitCommitSha"),
+                  git_source.get("sha"),
+              ]
+              for candidate in candidates:
+                  if candidate:
+                      return candidate
+              return None
+          
+          for _ in range(18):
+              request = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(request) as response:
+                  payload = json.load(response)
+              deployments = payload.get("deployments", [])
+              for deployment in deployments:
+                  if deployment_commit_sha(deployment) == commit_sha:
+                      print(json.dumps(deployment))
+                      raise SystemExit(0)
+              time.sleep(10)
+          raise SystemExit(
+              "No Vercel preview deployment found yet for "
+              f"branch {branch!r} at commit {commit_sha!r}"
+          )
+          PY
+          )"
+          deployment_id="$(printf '%s' "$deployment_json" | python -c 'import json,sys; print(json.load(sys.stdin)["uid"])')"
+          project_name="$(printf '%s' "$deployment_json" | python -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
+          redeploy_json="$(curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://api.vercel.com/v13/deployments?teamId=$VERCEL_ORG_ID&forceNew=1" \
+            -d "{\"name\":\"$project_name\",\"deploymentId\":\"$deployment_id\"}")"
+          preview_url="$(printf '%s' "$redeploy_json" | python -c 'import json,sys; print("https://" + json.load(sys.stdin)["url"])')"
+          echo "preview_url=$preview_url" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize preview URLs
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## Preview deployment"
+            echo
+            echo "- Modal API: ${{ steps.deploy_modal.outputs.modal_api_url }}"
+            if [ -n "${{ steps.redeploy_vercel.outputs.preview_url }}" ]; then
+              echo "- Vercel preview: ${{ steps.redeploy_vercel.outputs.preview_url }}"
+            fi
+            echo "- PR head SHA: ${{ github.event.pull_request.head.sha }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  stop-preview:
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: preview
+      VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Modal
+        run: python -m pip install modal
+
+      - name: Stop preview backend
+        continue-on-error: true
+        run: modal app stop oddish-pr-${{ github.event.pull_request.number }}
+
+      - name: Install Node
+        if: ${{ secrets.VERCEL_TOKEN != '' && secrets.VERCEL_ORG_ID != '' && secrets.VERCEL_PROJECT_ID != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Vercel CLI
+        if: ${{ secrets.VERCEL_TOKEN != '' && secrets.VERCEL_ORG_ID != '' && secrets.VERCEL_PROJECT_ID != '' }}
+        run: npm install --global vercel@latest
+
+      - name: Link Vercel project
+        if: ${{ secrets.VERCEL_TOKEN != '' && secrets.VERCEL_ORG_ID != '' && secrets.VERCEL_PROJECT_ID != '' }}
+        working-directory: frontend
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: vercel pull --yes --environment=preview --git-branch="$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
+
+      - name: Remove Vercel preview overrides
+        if: ${{ secrets.VERCEL_TOKEN != '' && secrets.VERCEL_ORG_ID != '' && secrets.VERCEL_PROJECT_ID != '' }}
+        working-directory: frontend
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          vercel env rm NEXT_PUBLIC_BACKEND_TYPE preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+          vercel env rm NEXT_PUBLIC_MODAL_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+          vercel env rm NEXT_PUBLIC_MODAL_BASE_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+          vercel env rm NEXT_PUBLIC_MODAL_ENV preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
