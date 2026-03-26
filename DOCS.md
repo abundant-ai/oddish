@@ -23,7 +23,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish status` - view progress
 - `oddish cancel` - stop in-flight trials for a task
 - `oddish pull` - download logs and artifacts
-- `oddish clean` - delete task or trial data
+- `oddish delete` - delete task data or reset local infrastructure
 
 ## Submit a Job
 
@@ -171,16 +171,16 @@ By default, files are written to `./oddish-pulls/<target>`.
 
 </details>
 
-## Clean Up
+## Delete Data
 
-Use `oddish clean` to delete task data.
+Use `oddish delete` to delete task data.
 
 ```bash
 # Delete task
-oddish clean <task_id>
+oddish delete <task_id>
 
 # Delete an experiment
-oddish clean --experiment <experiment_id>
+oddish delete --experiment <experiment_id>
 ```
 
 <details>

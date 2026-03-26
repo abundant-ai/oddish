@@ -70,7 +70,7 @@ Available commands:
 - `oddish status` shows system, task, or experiment status
 - `oddish cancel` stops all in-flight runs for a task
 - `oddish pull` downloads logs and artifact files locally
-- `oddish clean` deletes task data or resets local infrastructure
+- `oddish delete` deletes task data or resets local infrastructure
 
 ### `oddish run`
 
@@ -196,19 +196,19 @@ oddish pull <experiment_id> --include-task-files
 
 By default, pull output is written to `./oddish-pulls/<target>`.
 
-### `oddish clean`
+### `oddish delete`
 
 Examples:
 
 ```bash
 # Delete a task and its trials
-oddish clean <task_id>
+oddish delete <task_id>
 
 # Delete an entire experiment
-oddish clean --experiment <experiment_id>
+oddish delete --experiment <experiment_id>
 
 # Stop local infrastructure but keep data
-oddish clean --stop-only
+oddish delete --stop-only
 ```
 
 ## Typical Workflow

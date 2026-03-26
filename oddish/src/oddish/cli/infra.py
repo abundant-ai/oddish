@@ -190,7 +190,7 @@ def ensure_infrastructure(
         if not quiet:
             console.print("[dim]Using existing Oddish API server[/dim]")
             console.print(
-                "[dim]Tip: Use --fresh to restart with new settings, or 'oddish clean' to stop[/dim]"
+                "[dim]Tip: Use --fresh to restart with new settings, or 'oddish delete' to stop[/dim]"
             )
         return
 
