@@ -19,7 +19,7 @@ Python `3.12+` is required.
 
 The `oddish` package includes:
 
-- the `oddish` CLI (`run`, `status`, `cancel`, `pull`, `clean`)
+- the `oddish` CLI (`run`, `status`, `cancel`, `pull`, `delete`)
 - the FastAPI app (`python -m oddish.api`)
 - database models and Alembic migrations
 - PGQueuer-backed trial, analysis, and verdict workers
@@ -255,7 +255,7 @@ Storage defaults:
 oddish/
 ├── src/oddish/
 │   ├── api/                  # FastAPI app and request handlers
-│   ├── cli/                  # oddish run/status/cancel/pull/clean
+│   ├── cli/                  # oddish run/status/cancel/pull/delete
 │   ├── db/                   # models, connection helpers, storage
 │   ├── workers/              # Harbor execution and queue workers
 │   ├── backfill_queue_keys.py

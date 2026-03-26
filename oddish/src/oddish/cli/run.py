@@ -361,7 +361,7 @@ def run(
         oddish run ./task -a claude-code -q             # Quiet mode
 
     NOTE: The Oddish API server persists between runs (unlike 'harbor run').
-    Use --fresh to restart it, or 'oddish clean' to stop it.
+    Use --fresh to restart it, or 'oddish delete' to stop it.
     """
     # Resolve API URL
     if not api_url:
