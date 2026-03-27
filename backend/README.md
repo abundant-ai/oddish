@@ -26,7 +26,7 @@ Modal API (FastAPI in `endpoints.py` and `api/routers/*`)
 Postgres (oddish + cloud tables)
   │
   ▼
-Worker dispatcher (`worker.py`, every 30s)
+Worker dispatcher (`worker/functions.py`, every 30s)
   │  - Spawns single-job workers by queue key
   ▼
 Single-job workers (process one job, then exit)
@@ -105,7 +105,7 @@ The API layer enforces this scope in all list/read/write queries.
 | `auth/verification.py` | API key + Clerk JWT verification and auth caches |
 | `auth/provisioning.py` | Clerk user/org provisioning helpers |
 | `models.py` | Cloud auth models (orgs/users/api keys) |
-| `worker.py` | Dispatcher and single-job worker orchestration |
+| `worker/` | Dispatcher and single-job worker orchestration |
 | `integrations/github/` | PR comment formatting, metadata parsing, and notification client |
 | `alembic/` | Cloud migrations (auth + cloud table extensions) |
 
@@ -118,7 +118,7 @@ cp .env.example .env
 Use `backend/.env.example` as the starting point for local backend config.
 For the API and worker runtime, the minimum required values are:
 
-- `DATABASE_URL`
+- `ODDISH_DATABASE_URL`
 - `CLERK_DOMAIN`
 
 Required for Clerk-backed org invites, membership lookups, and GitHub username enrichment:
@@ -148,7 +148,7 @@ Modal runtime knobs are read directly by `modal_app.py`, including:
 
 ### oddish runtime patching
 
-`endpoints.py` and `worker.py` patch oddish settings for Modal execution:
+`endpoints.py` and `worker/runtime.py` patch oddish settings for Modal execution:
 
 - disable auto-started local workers
 - point storage paths to mounted Modal volumes

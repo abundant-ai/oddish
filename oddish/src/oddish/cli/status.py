@@ -109,7 +109,7 @@ def status(
 
             db_url = get_db_url_from_env()
             if db_url:
-                console.print("  [green]✓[/green] DATABASE_URL configured")
+                console.print("  [green]✓[/green] ODDISH_DATABASE_URL configured")
             else:
                 if docker_available():
                     console.print("  [green]✓[/green] Docker available")

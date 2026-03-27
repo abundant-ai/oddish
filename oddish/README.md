@@ -111,8 +111,13 @@ Common flags:
 - `-l, --n-tasks` limits how many tasks run
 - `-e, --env` selects the execution environment
 - `--experiment` groups runs into an explicit experiment
+- `-w, --watch / --no-watch` watches task progress until completion
 - `--background` submits and returns immediately
+- `-q, --quiet` suppresses output
 - `--run-analysis` runs post-trial analysis and verdict generation
+- `--publish` publishes experiment for public read-only access
+- `--priority` sets priority (low or high)
+- `--disable-verification` skips running task tests
 
 Supported `--env` values:
 
@@ -158,9 +163,6 @@ Examples:
 # System overview
 oddish status
 
-# System overview with extra queue details
-oddish status --verbose
-
 # Watch a task
 oddish status <task_id> --watch
 
@@ -194,7 +196,7 @@ oddish pull <task_id> --watch --interval 5
 oddish pull <experiment_id> --include-task-files
 ```
 
-By default, pull output is written to `./.oddish/<target>`.
+By default, pull output is written to `./.oddish/<target>`. You can also configure what to download using `--no-logs`, `--no-files`, and `--structured` (for structured logs), or change the output directory with `--out`.
 
 ### `oddish delete`
 
