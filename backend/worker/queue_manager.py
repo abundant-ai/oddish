@@ -8,11 +8,12 @@ from pgqueuer.models import Job, TracebackRecord
 from pgqueuer.qb import QueryQueueBuilder
 from pgqueuer.queries import EntrypointExecutionParameter, Queries
 
+from cloud_policy import enforce_trial_environment
 from oddish.config import settings
 from oddish.workers.queue import run_analysis_job, run_trial_job, run_verdict_job
 
 from .github import notify_github_analysis, notify_github_trial, notify_github_verdict
-from .runtime import console, enforce_trial_environment
+from .runtime import console
 
 _QUEUE_QB = QueryQueueBuilder()
 _QUEUE_TABLE = _QUEUE_QB.settings.queue_table
