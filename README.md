@@ -53,22 +53,22 @@ oddish run -d terminal-bench@2.0 -a codex -m gpt-5.2-codex --n-trials 3
 
 ```bash
 # Or sweep multiple agents
-oddish run -d terminal-bench@2.0 -c sweep.yaml
+oddish run -d terminal-bench@2.0 -c job.yaml
 ```
 
 <details>
-<summary>Example <a href="assets/job.yaml">sweep.yaml</a></summary>
+<summary>Example <a href="assets/light-run.yaml">job.yaml</a></summary>
 
 ```yaml
 agents:
   - name: claude-code
-    model_name: anthropic/claude-opus-4-6
+    model_name: anthropic/claude-haiku-4-5
     n_trials: 3
   - name: codex
-    model_name: openai/gpt-5.4
+    model_name: openai/gpt-5.4-mini
     n_trials: 3
   - name: terminus-2
-    model_name: gemini/gemini-3-flash-preview
+    model_name: gemini/gemini-3.1-flash-lite-preview
     n_trials: 3
 ```
 
@@ -83,10 +83,10 @@ oddish status
 ## Documentation
 
 - [CLI docs](DOCS.md)
-- [core library](oddish/README.md)
-- [dashboard](frontend/README.md)
-- [cloud backend](backend/README.md)
-- [self-hosting](SELF_HOSTING.md)
+- [Core library](oddish/README.md)
+- [Web dashboard](frontend/README.md)
+- [Cloud backend](backend/README.md)
+- [Self-hosting](SELF_HOSTING.md)
 
 ## License
 
