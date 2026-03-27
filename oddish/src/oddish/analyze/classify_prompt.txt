@@ -51,33 +51,43 @@ This result is FINAL and has been verified by running the tests. Your job is to 
 - If result = 'pass' → classify as GOOD_SUCCESS or BAD_SUCCESS
 - If result = 'fail' → classify as GOOD_FAILURE, BAD_FAILURE, or HARNESS_ERROR
 
-## Where to Look (For YOUR Analysis - NOT What Agent Saw)
+## Where to Look — YOU Must Read Everything
 
-**Task Definition ({task_dir}):** (for your analysis)
-- instruction.md - What the agent was told (ONLY thing agent sees from task)
-- solution/solve.sh - Reference solution (agent CANNOT see this)
-- tests/ - Test files that verify (agent CANNOT see these)
+**You are the grader. You have full access to all task artifacts.** Read them thoroughly before classifying — the agent was sandboxed but you are not.
+
+**Task Definition ({task_dir}):**
+- `instruction.md` — what the agent was told (the ONLY thing the agent sees from the task definition)
+- `solution/` — reference solution (`solve.sh`, `fix.patch`). Read this to understand the intended fix.
+- `tests/` — verification tests (`test.sh` plus test source files). Read the actual test code to understand what is being checked and whether it is reasonable.
+- `environment/Dockerfile` — container setup, determines what packages/tools are available
 
 **Trial Execution ({trial_dir}):**
-- agent/ - Agent execution logs and trajectory
-- verifier/test-stdout.txt - Test output
-- result.json - Contains verifier_result.rewards.reward
+- `agent/` — agent execution logs and trajectory. Read this to see what the agent actually did.
+- `verifier/test-stdout.txt` — raw test output. Read this to see exactly which tests passed/failed and why.
+- `result.json` — contains `verifier_result.rewards.reward`
 
-Read the relevant files to understand WHY the result occurred, then classify accordingly.
+**Start by reading the key files.** Before classifying, you MUST read at minimum:
+1. `{task_dir}/instruction.md` — to know what the agent was asked to do
+2. The test source files under `{task_dir}/tests/` — to know what the tests actually verify
+3. `{task_dir}/solution/solve.sh` or `{task_dir}/solution/fix.patch` — to understand the intended solution
+4. `{trial_dir}/verifier/test-stdout.txt` — to see the actual test results
+5. The agent trajectory under `{trial_dir}/agent/` — to see what the agent attempted
+
+Only after reading these can you make an informed classification. A holistic view of all artifacts is essential — the instruction alone is not enough context to judge whether a failure is the task's fault or the agent's.
 
 **Task directory structure:**
 
 ```
 <task-dir>
-├── instruction.md
+├── instruction.md          ← agent's only view of the task
 ├── task.toml
 ├── environment
 │   ├── Dockerfile
 │   └── bug.patch
-├── solution
+├── solution                ← YOU read this, agent cannot
 │   ├── solve.sh
 │   └── fix.patch
-└── tests
+└── tests                   ← YOU read this, agent cannot
     ├── test.sh
     └── # test files (e.g., test_*.py, *.test.ts, *_test.go, etc.)
 ```
@@ -193,13 +203,13 @@ Agent "passed" but through illegitimate means:
 
 ## How to Analyze
 
-1. **Remember agent visibility** - Agent only saw instruction.md + buggy code. No tests, no solution, no patches.
-2. **Read the test output** (verifier/test-stdout.txt) - What specifically failed or passed?
-3. **Compare instruction vs tests** - Are tests checking for things NOT in instructions?
-4. **Examine agent trajectory** (agent/) - Did the agent try reasonable approaches given what they could see?
-5. **Check for cheating patterns** - Did agent hardcode values? (Accessing tests/solution should be impossible)
-6. **Consider consistency** - Would other agents likely have the same outcome?
-7. **Alternative solution test** - Would a different valid approach (that matches instruction) pass the tests?
+1. **Read all task artifacts first** — instruction.md, the test source files, and the reference solution. You need to understand the full picture before judging.
+2. **Read the test output** (verifier/test-stdout.txt) — what specifically failed or passed?
+3. **Read the agent trajectory** (agent/) — what did the agent actually try? Was the approach reasonable given what they could see (instruction.md + buggy codebase only)?
+4. **Compare instruction vs tests** — are tests checking for things NOT in instructions and NOT discoverable from the codebase?
+5. **Compare agent's solution vs reference solution** — did the agent take a valid alternative approach, or miss the mark entirely?
+6. **Check for cheating patterns** — did agent hardcode values or somehow access hidden files?
+7. **Consider the alternative solution test** — would a different valid approach (consistent with instruction) pass the tests, or do tests only accept one specific implementation?
 
 ## Key Questions for Task Quality
 

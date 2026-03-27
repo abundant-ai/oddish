@@ -82,10 +82,10 @@ oddish status
 
 ## Documentation
 
-- [cli docs](DOCS.md)
+- [CLI docs](DOCS.md)
 - [core library](oddish/README.md)
 - [dashboard](frontend/README.md)
-- [cloud workers](backend/README.md)
+- [cloud backend](backend/README.md)
 - [self-hosting](SELF_HOSTING.md)
 
 ## License

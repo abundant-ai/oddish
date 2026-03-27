@@ -30,6 +30,7 @@ from oddish.cli.api import (
     resolve_task_path,
     submit_sweep,
     upload_task,
+    validate_tasks,
     watch_task,
 )
 from oddish.cli.config import (
@@ -469,6 +470,9 @@ def run(
                 console.print(
                     f"[dim]Found {len(task_paths)} tasks in {local_path}[/dim]"
                 )
+
+    # Validate task configs (parses task.toml, checks instruction.md, etc.)
+    task_paths = validate_tasks(task_paths)
 
     # Ensure each run uses a single experiment unless specified.
     if not experiment_id:
