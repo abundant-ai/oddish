@@ -3,6 +3,7 @@ from oddish.db.models import (
     Base,
     JobStatus,
     Priority,
+    QueueSlotModel,
     TaskStatus,
     TrialStatus,
     VerdictStatus,
@@ -51,6 +52,7 @@ __all__ = [
     "Priority",
     # ORM Models
     "ExperimentModel",
+    "QueueSlotModel",
     "TaskModel",
     "TrialModel",
     # Helpers

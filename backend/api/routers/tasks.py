@@ -8,14 +8,17 @@ from sqlalchemy import delete, select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor.models.environment_type import EnvironmentType
+from cloud_policy import (
+    ALLOWED_CLOUD_ENVIRONMENTS,
+    get_default_cloud_environment,
+)
 from oddish.api.endpoints import (
     get_task_for_org_core,
     get_task_status_core,
     rerun_task_analysis_core,
     rerun_task_verdict_core,
 )
-from api.routers._helpers import (
+from oddish.api.public_helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
     list_task_files_s3,
@@ -55,18 +58,11 @@ from oddish.schemas import (
 
 router = APIRouter(tags=["Tasks"])
 
-ALLOWED_CLOUD_ENVIRONMENTS = {EnvironmentType.MODAL, EnvironmentType.DAYTONA}
-
 
 def _apply_github_attribution(submission: TaskSweepSubmission) -> None:
     if submission.github_username:
         submission.tags = submission.tags or {}
         submission.tags.setdefault("github_username", submission.github_username)
-
-
-def _get_default_cloud_environment() -> EnvironmentType:
-    """Return cloud default sandbox env."""
-    return EnvironmentType.MODAL
 
 
 def _compact_trial_payloads(
@@ -167,7 +163,7 @@ async def create_task_sweep(
     _apply_github_attribution(submission)
     trials = build_trial_specs_from_sweep(
         submission,
-        default_environment=_get_default_cloud_environment(),
+        default_environment=get_default_cloud_environment(),
         allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
     )
     expanded = build_task_submission_from_sweep(

@@ -39,6 +39,21 @@ config.set_main_option("sqlalchemy.url", db_url)
 # for 'autogenerate' support
 target_metadata = Base.metadata
 
+_BACKEND_EXCLUDED_OBJECT_NAMES = {
+    "queue_slots",
+    "idx_queue_slots_queue_key_locked_until",
+}
+
+
+def _include_backend_object(
+    obj, name: str | None, type_: str, reflected: bool, compare_to
+) -> bool:
+    if type_ == "table" and name and name.startswith("pgqueuer"):
+        return False
+    if name in _BACKEND_EXCLUDED_OBJECT_NAMES:
+        return False
+    return True
+
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
@@ -60,10 +75,7 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
         version_table="alembic_version_backend",
-        include_object=lambda obj, name, type_, reflected, compare_to: (
-            # Exclude pgqueuer tables from autogenerate
-            not (type_ == "table" and name and name.startswith("pgqueuer"))
-        ),
+        include_object=_include_backend_object,
     )
 
     with context.begin_transaction():
@@ -77,10 +89,7 @@ def do_run_migrations(connection: Connection) -> None:
         compare_type=True,
         include_schemas=False,
         version_table="alembic_version_backend",
-        include_object=lambda obj, name, type_, reflected, compare_to: (
-            # Exclude pgqueuer tables from autogenerate
-            not (type_ == "table" and name and name.startswith("pgqueuer"))
-        ),
+        include_object=_include_backend_object,
     )
 
     with context.begin_transaction():

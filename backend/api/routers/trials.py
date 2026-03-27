@@ -17,7 +17,7 @@ from oddish.api.trial_io import (
     read_trial_result,
     read_trial_trajectory,
 )
-from api.routers._helpers import (
+from oddish.api.public_helpers import (
     get_trial_file_content_s3,
     list_task_trials_for_task,
     list_trial_files_s3,
