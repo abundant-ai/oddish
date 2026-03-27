@@ -8,9 +8,6 @@ The recommended path is:
 - Postgres you control (Neon, RDS, Supabase, etc.)
 - optional frontend deployment for dashboard + API key management
 
-If you want fully local infrastructure (Docker + local API), see the optional
-section at the end.
-
 ## 1) Prerequisites
 
 - Modal account + CLI (`modal`)
@@ -155,21 +152,3 @@ ODDISH_DEFAULT_MODEL_CONCURRENCY=64
 ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-sonnet-4-5": 32}'
 ```
 
-## Optional: Fully local self-hosting
-
-If you want to run everything locally (instead of Modal), use:
-
-```bash
-cd oddish
-cp env.example .env
-docker compose up -d db
-uv sync
-uv run python -m oddish.db setup
-uv run python -m oddish.api
-```
-
-Then point CLI to local API:
-
-```bash
-export ODDISH_API_URL="http://localhost:8000"
-```

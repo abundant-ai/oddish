@@ -15,16 +15,10 @@ from oddish.cli.api import (
     watch_task,
 )
 from oddish.cli.config import (
+    check_api_health,
     get_api_url,
     get_auth_headers,
-    is_local_api_url,
     require_api_key,
-)
-from oddish.cli.infra import check_api_health
-from oddish.infra import (
-    docker_available,
-    postgres_container_exists,
-    postgres_container_running,
 )
 
 console = Console()
@@ -83,7 +77,6 @@ def status(
     if not api_url:
         api_url = get_api_url()
     require_api_key(api_url)
-    is_local_api = is_local_api_url(api_url)
 
     if task_id and experiment_id:
         console.print("[red]Provide either a task_id or --experiment, not both.[/red]")
@@ -100,34 +93,8 @@ def status(
     if task_id is None:
         console.print("[bold]Oddish System Status[/bold]\n")
 
-        # Health checks
         console.print("[bold cyan]Infrastructure:[/bold cyan]")
         issues = 0
-
-        if is_local_api:
-            from oddish.cli.infra import get_db_url_from_env
-
-            db_url = get_db_url_from_env()
-            if db_url:
-                console.print("  [green]✓[/green] ODDISH_DATABASE_URL configured")
-            else:
-                if docker_available():
-                    console.print("  [green]✓[/green] Docker available")
-                else:
-                    console.print("  [red]✗[/red] Docker not available")
-                    issues += 1
-
-                if postgres_container_exists():
-                    if postgres_container_running():
-                        console.print("  [green]✓[/green] Postgres running")
-                    else:
-                        console.print("  [yellow]⚠[/yellow] Postgres stopped")
-                        issues += 1
-                else:
-                    console.print("  [yellow]⚠[/yellow] Postgres not found")
-                    issues += 1
-        else:
-            console.print("  [green]✓[/green] Hosted API configured")
 
         if check_api_health(api_url):
             console.print("  [green]✓[/green] API healthy")
@@ -241,9 +208,6 @@ def status(
         console.print()
         if issues > 0:
             console.print(f"[yellow]{issues} issue(s) detected[/yellow]")
-            console.print(
-                "[dim]Run: oddish run <task_dir> to auto-start infrastructure[/dim]"
-            )
         else:
             console.print("[green]All systems operational ✓[/green]")
 

@@ -1,6 +1,6 @@
 # Oddish CLI
 
-> Run Harbor tasks on local or hosted Oddish infrastructure.
+> Run Harbor tasks on Oddish infrastructure.
 
 `oddish` is a Python CLI for submitting Harbor tasks, running multi-trial sweeps,
 monitoring experiments, and pulling logs and artifacts back to disk. If you
@@ -14,11 +14,7 @@ Python `3.12+` is required.
 ```bash
 uv pip install oddish
 
-# Hosted Oddish
 export ODDISH_API_KEY="ok_..."
-
-# For local/self-hosted Oddish instead:
-# export ODDISH_API_URL="http://localhost:8000"
 
 # Submit a run
 oddish run -d swebench@1.0 -a codex -m openai/gpt-5.2 --n-trials 3
@@ -30,9 +26,8 @@ oddish status
 oddish pull <task_id> --watch
 ```
 
-For hosted usage, the CLI targets Oddish Cloud by default and expects
-`ODDISH_API_KEY`. For local/self-hosted usage, point the CLI at your API with
-`ODDISH_API_URL`; localhost does not require auth by default.
+The CLI targets Oddish Cloud by default. Set `ODDISH_API_KEY` to authenticate.
+For self-deployed instances, also set `ODDISH_API_URL`.
 
 ## Installation
 
@@ -43,14 +38,13 @@ uv pip install oddish
 Common environment variables:
 
 ```bash
-# Hosted Oddish
 export ODDISH_API_KEY="ok_..."
 
-# Local or self-hosted Oddish
-export ODDISH_API_URL="http://localhost:8000"
+# Point at a self-deployed instance instead of Oddish Cloud
+# export ODDISH_API_URL="https://<workspace>--api.modal.run"
 
 # Optional dashboard override
-export ODDISH_DASHBOARD_URL="https://www.oddish.app"
+# export ODDISH_DASHBOARD_URL="https://www.oddish.app"
 ```
 
 Need to deploy your own stack? See [`../SELF_HOSTING.md`](../SELF_HOSTING.md).
@@ -130,9 +124,8 @@ Supported `--env` values:
 
 When `--env` is omitted:
 
-- local API URLs default to `docker`
 - hosted Oddish (`*.modal.run`) defaults to `modal`
-- other remote APIs default to `docker`
+- other API URLs default to `docker`
 
 ### Sweep Configs
 
@@ -208,9 +201,6 @@ oddish delete <task_id>
 
 # Delete an entire experiment
 oddish delete --experiment <experiment_id>
-
-# Stop local infrastructure but keep data
-oddish delete --stop-only
 ```
 
 ## Typical Workflow

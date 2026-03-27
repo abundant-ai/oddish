@@ -23,7 +23,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish status` - view progress
 - `oddish cancel` - stop in-flight trials for a task
 - `oddish pull` - download logs and artifacts
-- `oddish delete` - delete task data or reset local infrastructure
+- `oddish delete` - delete task data
 
 ## Submit a Job
 
@@ -61,7 +61,7 @@ oddish run ./my-task -c sweep.yaml
 - `--publish` - Publish the experiment for public read-only access
 - `--watch/--no-watch`, `-w` - Watch progress after submission; enabled by default
 - `--background`, `--async`, `-b` - Submit and return immediately
-- `--quiet`, `-q` - Suppress local infrastructure startup logs
+- `--quiet`, `-q` - Suppress startup logs
 - `--run-analysis` - Run trial analysis and compute a task verdict
 - `--disable-verification` - Skip task verification or tests
 - `--override-cpus INTEGER` - Override environment CPU count
@@ -73,7 +73,6 @@ oddish run ./my-task -c sweep.yaml
 - `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times
 - `--artifact TEXT` - Download an environment path as an artifact after the trial
 - `--api TEXT` - Override the API URL
-- `--fresh` - Restart the local API server before running
 - `--json` - Emit JSON for scripts and CI; implies `--background`
 
 </details>
@@ -188,7 +187,6 @@ oddish delete --experiment <experiment_id>
 
 - `TASK_ID` - Task ID to delete when not using `--experiment`
 - `--experiment`, `-e TEXT` - Delete an experiment instead of a task
-- `--stop-only` - Stop local infrastructure without deleting data
-- `--api-url`, `-u TEXT` - Override the API URL used for cleanup
+- `--api-url`, `-u TEXT` - Override the API URL
 
 </details>
