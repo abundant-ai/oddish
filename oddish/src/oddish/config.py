@@ -162,44 +162,44 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # HARDCODED DEFAULTS - Edit this file to change
+    # Defaults — all configurable via ODDISH_<FIELD> env vars
     # ==========================================================================
 
     # Worker behavior
-    max_retries: ClassVar[int] = 5
-    retry_backoff_base: ClassVar[int] = 60  # seconds
-    retry_backoff_max: ClassVar[int] = 3600  # seconds
-    worker_poll_interval: ClassVar[float] = 10.0  # seconds
-    worker_batch_size: ClassVar[int] = 1
-    trial_retry_timer_minutes: ClassVar[int] = 60
-    auto_start_workers: ClassVar[bool] = True
+    max_retries: int = 5
+    retry_backoff_base: int = 60  # seconds
+    retry_backoff_max: int = 3600  # seconds
+    worker_poll_interval: float = 10.0  # seconds
+    worker_batch_size: int = 1
+    trial_retry_timer_minutes: int = 60
+    auto_start_workers: bool = True
 
     # Storage paths
-    harbor_jobs_dir: ClassVar[str] = "/tmp/harbor-jobs"
-    local_storage_dir: ClassVar[str] = "/tmp/oddish-tasks"
+    harbor_jobs_dir: str = "/tmp/harbor-jobs"
+    local_storage_dir: str = "/tmp/oddish-tasks"
 
-    # Default execution environment (daytona or docker)
-    # Can be overridden via CLI: oddish run --env daytona
-    harbor_environment: ClassVar[str] = "daytona"
+    # Default execution environment (daytona, docker, or modal)
+    harbor_environment: str = "daytona"
 
     # API server
-    api_host: ClassVar[str] = "0.0.0.0"
-    api_port: ClassVar[int] = 8000
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
 
-    # Database connection pools
+    # Database connection pools (constants — override on Settings class
+    # in entry modules for different deployment targets)
     db_pool_min_size: ClassVar[int] = 2
     db_pool_max_size: ClassVar[int] = 20
     db_pool_max_overflow: ClassVar[int] = 10
     db_pool_size: ClassVar[int] = 5
 
-    # Queue limits are now model-keyed. Use ODDISH_MODEL_CONCURRENCY_OVERRIDES
-    # for per-model values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
+    # Queue limits — use ODDISH_MODEL_CONCURRENCY_OVERRIDES for per-model
+    # values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
     default_model_concurrency: int = 8
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
-    analysis_model: ClassVar[str] = ANALYSIS_MODEL
-    verdict_model: ClassVar[str] = VERDICT_MODEL
+    analysis_model: str = ANALYSIS_MODEL
+    verdict_model: str = VERDICT_MODEL
 
-    # Agent to provider mapping
+    # Agent to provider mapping (computed from Harbor's AgentName enum)
     agent_to_provider: ClassVar[dict[str, str]] = _build_agent_provider_map()
 
     # ==========================================================================

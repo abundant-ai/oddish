@@ -2,37 +2,27 @@ import os
 
 from rich.console import Console
 
-from cloud_policy import get_default_cloud_environment
-from modal_app import MODEL_CONCURRENCY_DEFAULT, VOLUME_MOUNT_PATH
-from oddish.config import Settings, settings
+from oddish.config import settings
 from oddish.db import reconfigure_database_connections
 
 console = Console()
 
 
 async def configure_storage_paths() -> None:
-    """Configure storage paths to use Modal Volume."""
-    Settings.local_storage_dir = f"{VOLUME_MOUNT_PATH}/tasks"
-    Settings.harbor_jobs_dir = f"{VOLUME_MOUNT_PATH}/harbor"
-    Settings.harbor_environment = get_default_cloud_environment().value
-    # Keep pools small: each worker processes one job.
-    # Modal can burst many containers at once, so keep both SQLAlchemy and
-    # asyncpg pools tiny to avoid exhausting Supabase connection limits.
-    Settings.db_pool_min_size = 1
-    Settings.db_pool_max_size = 2
-    Settings.db_pool_size = 1
-    Settings.db_pool_max_overflow = 0
-    settings.asyncpg_pool_min_size = 0
-    settings.asyncpg_pool_max_size = 1
-    settings.default_model_concurrency = MODEL_CONCURRENCY_DEFAULT
+    """Prepare storage directories and refresh DB connections for Modal workers.
 
-    # Modal containers are frequently reused. Rebuild the DB clients here so the
-    # smaller worker pool sizes actually take effect for this invocation.
+    Settings (storage dirs, pool sizes, harbor environment, etc.) are loaded
+    from ODDISH_* env vars baked into the Modal image — see modal_app.py
+    ENV_VARS and worker/functions.py for details.
+
+    We still call reconfigure_database_connections() because Modal reuses
+    containers and we want fresh connection pools per invocation.
+    """
     await reconfigure_database_connections()
 
-    os.makedirs(Settings.local_storage_dir, exist_ok=True)
-    os.makedirs(Settings.harbor_jobs_dir, exist_ok=True)
+    os.makedirs(settings.local_storage_dir, exist_ok=True)
+    os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
 
-    console.print(f"[dim]Storage: {Settings.local_storage_dir}[/dim]")
-    console.print(f"[dim]Harbor jobs: {Settings.harbor_jobs_dir}[/dim]")
-    console.print(f"[dim]Default environment: {Settings.harbor_environment}[/dim]")
+    console.print(f"[dim]Storage: {settings.local_storage_dir}[/dim]")
+    console.print(f"[dim]Harbor jobs: {settings.harbor_jobs_dir}[/dim]")
+    console.print(f"[dim]Default environment: {settings.harbor_environment}[/dim]")
