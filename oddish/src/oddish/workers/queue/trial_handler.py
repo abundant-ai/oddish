@@ -298,7 +298,10 @@ async def _store_trial_results(
         if (
             trial.error_message == "Cancelled by user"
             or trial.harbor_stage == "cancelled"
-            or (trial.status == TrialStatus.FAILED and trial.max_attempts <= trial.attempts)
+            or (
+                trial.status == TrialStatus.FAILED
+                and trial.max_attempts <= trial.attempts
+            )
         ):
             console.print(
                 f"[dim]Trial {trial_id} was cancelled by user, skipping result update[/dim]"
@@ -359,7 +362,9 @@ async def _store_trial_results(
                         trial.agent,
                         settings.normalize_trial_model(trial.agent, trial.model),
                     )
-                    pgq_priority = 1000 if task and task.priority == Priority.HIGH else 0
+                    pgq_priority = (
+                        1000 if task and task.priority == Priority.HIGH else 0
+                    )
                     trial.status = TrialStatus.RETRYING
                     await enqueue_trial(
                         session,
@@ -378,7 +383,9 @@ async def _store_trial_results(
         else:
             trial.status = TrialStatus.FAILED
             trial.finished_at = utcnow()
-            trial.error_message = execution_error or "Trial execution failed with exception"
+            trial.error_message = (
+                execution_error or "Trial execution failed with exception"
+            )
             console.print(f"[red]Trial {trial_id} FAILED (exception)[/red]")
 
         trial.current_pgqueuer_job_id = None
@@ -559,7 +566,9 @@ async def _execute_trial(
     try:
         try:
             env_type = EnvironmentType(
-                (prepared_trial.trial_environment or Settings.harbor_environment).lower()
+                (
+                    prepared_trial.trial_environment or Settings.harbor_environment
+                ).lower()
             )
         except ValueError as exc:
             raise ValueError(
