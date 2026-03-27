@@ -1,3 +1,10 @@
+from oddish.config import Settings
+
+# Worker containers process one job each; keep DB pools minimal to avoid
+# exhausting connection limits when Modal bursts many containers.
+Settings.db_pool_size = 1
+Settings.db_pool_max_overflow = 0
+
 import asyncio
 from uuid import uuid4
 

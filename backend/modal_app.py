@@ -72,20 +72,27 @@ runtime_secrets = [
 if LOCAL_DOTENV_VARS:
     runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 
-# Environment configuration for Modal functions
-# Note: Storage paths and harbor_environment are ClassVars in oddish.config,
-# so we need to patch them at runtime or configure via trial submission.
+# Queue-key concurrency default for Modal runtime.
+# Example:
+# ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
+MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_MODEL_CONCURRENCY_DEFAULT", 64)
+
 ENV_VARS = {
     "UV_LINK_MODE": "copy",
     # Claude CLI refuses --dangerously-skip-permissions when running as root (Modal default).
     # Setting IS_SANDBOX=1 tells it we're in a sandboxed environment and bypasses this check.
     "IS_SANDBOX": "1",
+    # Oddish cloud settings — configures pydantic-settings fields in
+    # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
+    # sizes are set in the entry modules (endpoints.py, worker/functions.py).
+    "ODDISH_LOCAL_STORAGE_DIR": f"{VOLUME_MOUNT_PATH}/tasks",
+    "ODDISH_HARBOR_JOBS_DIR": f"{VOLUME_MOUNT_PATH}/harbor",
+    "ODDISH_HARBOR_ENVIRONMENT": "modal",
+    "ODDISH_AUTO_START_WORKERS": "false",
+    "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",
+    "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
+    "ODDISH_DEFAULT_MODEL_CONCURRENCY": str(MODEL_CONCURRENCY_DEFAULT),
 }
-
-# Queue-key concurrency default for Modal runtime.
-# Example:
-# ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
-MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_MODEL_CONCURRENCY_DEFAULT", 64)
 
 image = (
     modal.Image.debian_slim(python_version="3.12")

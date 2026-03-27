@@ -14,7 +14,7 @@ from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
 from pgqueuer.models import Job
 
-from oddish.config import Settings, settings
+from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
     Priority,
@@ -567,13 +567,13 @@ async def _execute_trial(
         try:
             env_type = EnvironmentType(
                 (
-                    prepared_trial.trial_environment or Settings.harbor_environment
+                    prepared_trial.trial_environment or settings.harbor_environment
                 ).lower()
             )
         except ValueError as exc:
             raise ValueError(
                 "Invalid harbor environment: "
-                f"{prepared_trial.trial_environment or Settings.harbor_environment}"
+                f"{prepared_trial.trial_environment or settings.harbor_environment}"
             ) from exc
 
         outcome = await run_harbor_trial_async(
