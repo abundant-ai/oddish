@@ -56,12 +56,10 @@ WORKER_BUFFER_CONTAINERS = _env_int(
 WORKER_SCALEDOWN_WINDOW_SECONDS = _env_int(
     "ODDISH_MODAL_WORKER_SCALEDOWN_WINDOW_SECONDS", 300
 )  # Keep idle workers warm for 5 minutes
-WORKER_MAX_CONTAINERS = (
-    _env_int(
-        "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
-        256,
-    )  # High global cap so several queue keys can scale, but still not unbounded.
-)
+WORKER_MAX_CONTAINERS = _env_int(
+    "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
+    256,
+)  # High global cap so several queue keys can scale, but still not unbounded.
 
 # Max number of workers spawned per poll cycle (rate limiter)
 MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 16)

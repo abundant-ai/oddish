@@ -62,11 +62,11 @@ jobs:
           import pathlib
           import re
           import sys
-          
+
           log_path = pathlib.Path(sys.argv[1])
           app_name = sys.argv[2]
           text = log_path.read_text()
-          
+
           candidates = []
           for line in text.splitlines():
               if "modal.run" not in line:
@@ -76,7 +76,7 @@ jobs:
               match = re.search(r"https://[^\s]+\.modal\.run", line)
               if match:
                   candidates.append(match.group(0))
-          
+
           if not candidates:
               raise SystemExit(
                   f"Could not determine Modal API URL for {app_name} from deploy output"
@@ -158,13 +158,13 @@ jobs:
           import time
           import urllib.parse
           import urllib.request
-          
+
           token = os.environ["VERCEL_TOKEN"]
           project_id = os.environ["VERCEL_PROJECT_ID"]
           team_id = os.environ["VERCEL_ORG_ID"]
           branch = os.environ["VERCEL_GIT_BRANCH"]
           commit_sha = os.environ["VERCEL_GIT_COMMIT_SHA"]
-          
+
           params = urllib.parse.urlencode(
               {
                   "projectId": project_id,
@@ -190,7 +190,7 @@ jobs:
                   if candidate:
                       return candidate
               return None
-          
+
           for _ in range(18):
               request = urllib.request.Request(url, headers=headers)
               with urllib.request.urlopen(request) as response:
