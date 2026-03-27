@@ -325,3 +325,24 @@ class TrialModel(Base):
         Index("idx_trials_org_provider_status", "org_id", "provider", "status"),
         Index("idx_trials_org_queue_key_status", "org_id", "queue_key", "status"),
     )
+
+
+class QueueSlotModel(Base):
+    """Worker slot lease keyed by queue key."""
+
+    __tablename__ = "queue_slots"
+
+    queue_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    slot: Mapped[int] = mapped_column(Integer, primary_key=True)
+    locked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_queue_slots_queue_key_locked_until",
+            "queue_key",
+            "locked_until",
+        ),
+    )

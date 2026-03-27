@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from uuid import UUID, uuid4
 
@@ -8,17 +11,18 @@ from pgqueuer.models import Job, TracebackRecord
 from pgqueuer.qb import QueryQueueBuilder
 from pgqueuer.queries import EntrypointExecutionParameter, Queries
 
-from cloud_policy import enforce_trial_environment
 from oddish.config import settings
-from oddish.workers.queue import run_analysis_job, run_trial_job, run_verdict_job
-
-from .github import notify_github_analysis, notify_github_trial, notify_github_verdict
-from .runtime import console
+from oddish.workers.queue.analysis_handler import run_analysis_job
+from oddish.workers.queue.shared import console
+from oddish.workers.queue.trial_handler import run_trial_job
+from oddish.workers.queue.verdict_handler import run_verdict_job
 
 _QUEUE_QB = QueryQueueBuilder()
 _QUEUE_TABLE = _QUEUE_QB.settings.queue_table
 _QUEUE_LOG_TABLE = _QUEUE_QB.settings.queue_table_log
 _QUEUE_STATUS_TYPE = _QUEUE_QB.settings.queue_status_type
+
+IdHook = Callable[[str], Awaitable[None]]
 
 
 def _job_owner(job: Job) -> UUID:
@@ -155,6 +159,11 @@ async def _finalize_claimed_job(
     return row is not None
 
 
+async def _run_hook(hook: IdHook | None, value: str) -> None:
+    if hook is not None:
+        await hook(value)
+
+
 async def _dispatch_claimed_job(
     *,
     job: Job,
@@ -162,7 +171,14 @@ async def _dispatch_claimed_job(
     worker_id: str,
     queue_slot: int,
     modal_function_call_id: str | None = None,
+    prepare_trial: IdHook | None = None,
+    on_trial_complete: IdHook | None = None,
+    on_analysis_complete: IdHook | None = None,
+    on_verdict_complete: IdHook | None = None,
 ) -> None:
+    if job.payload is None:
+        raise ValueError(f"Job {job.id} has empty payload")
+
     raw = job.payload.decode(errors="replace")
     try:
         payload = json.loads(raw)
@@ -190,7 +206,7 @@ async def _dispatch_claimed_job(
                 f"Trial job missing trial_id (queue_key={queue_key}, job_id={job.id})"
             )
         trial_id = payload["trial_id"]
-        await enforce_trial_environment(trial_id)
+        await _run_hook(prepare_trial, trial_id)
         await run_trial_job(
             job,
             queue_key=queue_key,
@@ -198,7 +214,7 @@ async def _dispatch_claimed_job(
             queue_slot=queue_slot,
             modal_function_call_id=modal_function_call_id,
         )
-        await notify_github_trial(trial_id)
+        await _run_hook(on_trial_complete, trial_id)
         return
 
     if job_type == "analysis":
@@ -208,7 +224,7 @@ async def _dispatch_claimed_job(
             )
         trial_id = payload["trial_id"]
         await run_analysis_job(job, queue_key=queue_key)
-        await notify_github_analysis(trial_id)
+        await _run_hook(on_analysis_complete, trial_id)
         return
 
     if job_type == "verdict":
@@ -218,7 +234,7 @@ async def _dispatch_claimed_job(
             )
         task_id = payload["task_id"]
         await run_verdict_job(job, queue_key=queue_key)
-        await notify_github_verdict(task_id)
+        await _run_hook(on_verdict_complete, task_id)
         return
 
     raise ValueError(
@@ -232,6 +248,10 @@ async def run_single_job(
     worker_id: str,
     queue_slot: int,
     modal_function_call_id: str | None = None,
+    prepare_trial: IdHook | None = None,
+    on_trial_complete: IdHook | None = None,
+    on_analysis_complete: IdHook | None = None,
+    on_verdict_complete: IdHook | None = None,
 ) -> bool:
     """Claim, execute, and finalize at most one job with short-lived DB connections."""
     job = await claim_single_job(queue_key)
@@ -251,6 +271,10 @@ async def run_single_job(
                 worker_id=worker_id,
                 queue_slot=queue_slot,
                 modal_function_call_id=modal_function_call_id,
+                prepare_trial=prepare_trial,
+                on_trial_complete=on_trial_complete,
+                on_analysis_complete=on_analysis_complete,
+                on_verdict_complete=on_verdict_complete,
             )
         except asyncio.CancelledError:
             raise
