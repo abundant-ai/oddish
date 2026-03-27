@@ -21,7 +21,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column as mapped_column  # type: ignore[attr-defined]
 
-# Import base from OSS oddish
+# Import shared base from OSS oddish
 from oddish.db.models import Base
 
 
@@ -215,27 +215,6 @@ class APIKeyModel(Base):
     __table_args__ = (
         Index("idx_api_keys_org_id", "org_id"),
         Index("idx_api_keys_key_hash", "key_hash"),
-    )
-
-
-class QueueSlotModel(Base):
-    """Worker slot lease keyed by queue key (model entrypoint)."""
-
-    __tablename__ = "queue_slots"
-
-    queue_key: Mapped[str] = mapped_column(Text, primary_key=True)
-    slot: Mapped[int] = mapped_column(Integer, primary_key=True)
-    locked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
-    locked_until: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
-    __table_args__ = (
-        Index(
-            "idx_queue_slots_queue_key_locked_until",
-            "queue_key",
-            "locked_until",
-        ),
     )
 
 

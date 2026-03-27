@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import modal
-from harbor.models.environment_type import EnvironmentType
 
 from modal_app import (
     API_BUFFER_CONTAINERS,
@@ -16,18 +15,14 @@ from modal_app import (
     runtime_secrets,
     volume,
 )
+from cloud_policy import get_default_cloud_environment
 from oddish.config import Settings, settings
-
-
-def _get_default_cloud_environment() -> str:
-    return EnvironmentType.MODAL.value
-
 
 def _configure_modal_settings() -> None:
     """Patch Oddish Settings ClassVars for Modal."""
     Settings.local_storage_dir = f"{VOLUME_MOUNT_PATH}/tasks"
     Settings.harbor_jobs_dir = f"{VOLUME_MOUNT_PATH}/harbor"
-    Settings.harbor_environment = _get_default_cloud_environment()
+    Settings.harbor_environment = get_default_cloud_environment().value
     # Workers run separately in Modal (see backend/worker/)
     Settings.auto_start_workers = False
     # Keep API containers cheap in DB terms so request bursts scale with

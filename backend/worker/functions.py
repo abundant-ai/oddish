@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import modal
 
+from cloud_policy import enforce_trial_environment
 from modal_app import (
     MAX_WORKERS_PER_POLL,
     POLL_INTERVAL_SECONDS,
@@ -19,16 +20,21 @@ from modal_app import (
 )
 from oddish.config import settings
 from oddish.db import close_database_connections
+from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
 from oddish.workers.queue.dispatch_planner import (
     build_spawn_plan,
     discover_active_queue_keys,
     get_queue_counts,
 )
+from oddish.workers.queue.single_job import run_single_job
+from oddish.workers.queue.slots import (
+    acquire_queue_slot,
+    cleanup_stale_queue_slots,
+    release_queue_slot,
+)
 
-from .cleanup import cleanup_orphaned_queue_state
-from .queue_manager import run_single_job
+from .github import notify_github_analysis, notify_github_trial, notify_github_verdict
 from .runtime import configure_storage_paths, console
-from .slots import acquire_queue_slot, cleanup_stale_queue_slots, release_queue_slot
 
 
 @app.function(
@@ -103,6 +109,10 @@ async def process_single_job(queue_key: str):
             worker_id=worker_id,
             queue_slot=lock_slot,
             modal_function_call_id=fc_id,
+            prepare_trial=enforce_trial_environment,
+            on_trial_complete=notify_github_trial,
+            on_analysis_complete=notify_github_analysis,
+            on_verdict_complete=notify_github_verdict,
         )
         if not job_found:
             console.print(

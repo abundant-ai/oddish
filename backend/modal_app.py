@@ -120,6 +120,7 @@ image = (
     .add_local_python_source(
         "api",
         "auth",
+        "cloud_policy",
         "endpoints",
         "modal_app",
         "models",
