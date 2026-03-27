@@ -64,24 +64,24 @@
     @apply border-border;
   }
   html {
-    overflow-y: scroll;
+    overflow-y: scroll !important;
     overflow-x: clip;
-    scrollbar-gutter: stable both-edges;
+    scrollbar-gutter: stable;
   }
   body {
     @apply bg-background text-foreground;
     overflow-x: clip;
   }
-  html[data-scroll-locked],
-  body[data-scroll-locked] {
-    /* Keep the viewport width stable when modal libraries lock page scroll. */
+  /*
+   * react-remove-scroll-bar injects a <style> tag with
+   * body[data-scroll-locked] { margin-right: Xpx !important; }
+   * at specificity 0-1-1. Doubling the attribute selector bumps ours to
+   * 0-2-1 so we always win regardless of document order.
+   */
+  body[data-scroll-locked][data-scroll-locked] {
     margin-right: 0 !important;
     padding-right: 0 !important;
   }
-  html[data-scroll-locked] {
-    overflow-y: scroll !important;
-  }
-  body[data-scroll-locked],
   body[style*="padding-right"],
   body[style*="margin-right"] {
     margin-right: 0 !important;

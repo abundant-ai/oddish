@@ -111,15 +111,21 @@ export default function LandingPage() {
                     Sign Up
                   </Button>
                 </SignUpButton>
-                <a
-                  href="https://github.com/abundant-ai/oddish"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center justify-center rounded-full border border-[#6f88b4]/30 bg-background/60 p-2 text-[#5c7096] transition-colors hover:border-emerald-600/35 hover:bg-emerald-500/10 hover:text-foreground dark:text-[#9db0cf]"
-                  aria-label="Oddish GitHub"
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  asChild
+                  className="rounded-full border border-[#6f88b4]/30 bg-background/60 text-[#5c7096] hover:border-emerald-600/35 hover:bg-emerald-500/10 hover:text-foreground dark:text-[#9db0cf]"
                 >
-                  <Github className="h-4 w-4" />
-                </a>
+                  <a
+                    href="https://github.com/abundant-ai/oddish"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="Oddish GitHub"
+                  >
+                    <Github className="h-4 w-4" />
+                  </a>
+                </Button>
               </div>
             </div>
           </header>

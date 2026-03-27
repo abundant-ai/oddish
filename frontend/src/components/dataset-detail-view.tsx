@@ -3,6 +3,7 @@
 import { useDeferredValue, useMemo, useState } from "react";
 import { LayoutDashboard, Search, TableProperties } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import type { Task } from "@/lib/types";
@@ -212,16 +213,18 @@ export function DatasetDetailView({
           {view === "overview" ? (
             <div className="space-y-5">
               <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_480px]">
-                <div className="rounded-xl border border-border bg-card p-4">
-                  <div className="text-sm">{datasetName}</div>
-                  <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-                    Oddish dataset explorer for public benchmarks. Browse tasks,
-                    compare model outcomes, and inspect aggregate benchmark
-                    signals.
-                  </p>
-                </div>
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="text-sm">{datasetName}</div>
+                    <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
+                      Oddish dataset explorer for public benchmarks. Browse tasks,
+                      compare model outcomes, and inspect aggregate benchmark
+                      signals.
+                    </p>
+                  </CardContent>
+                </Card>
 
-                <div className="rounded-xl border border-border bg-card p-4">
+                <Card><CardContent className="p-4">
                   <div className="mb-3 flex items-center justify-between">
                     <div className="text-xs font-medium text-muted-foreground">
                       Model
@@ -294,16 +297,18 @@ export function DatasetDetailView({
                       </span>
                     </div>
                   </div>
-                </div>
+                </CardContent></Card>
               </div>
 
               <div className="grid grid-cols-1 gap-3">
-                <div className="rounded-lg border border-border bg-card p-3">
-                  <div className="text-xs text-muted-foreground">Tasks</div>
-                  <div className="text-lg font-semibold">
-                    {summary.taskCount}
-                  </div>
-                </div>
+                <Card>
+                  <CardContent className="p-3">
+                    <div className="text-xs text-muted-foreground">Tasks</div>
+                    <div className="text-lg font-semibold">
+                      {summary.taskCount}
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
             </div>
           ) : (
@@ -326,28 +331,29 @@ export function DatasetDetailView({
               ) : (
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {filteredTasks.map((row) => (
-                    <div
-                      key={row.task.id}
-                      className="rounded-lg border border-border bg-card p-3"
-                    >
-                      <div className="text-sm font-medium">{row.task.name}</div>
-                      <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-                        <span>{row.domain}</span>
-                        <span>
-                          {row.passRate === null
-                            ? "—"
-                            : `${row.passRate}% pass`}
-                        </span>
-                      </div>
-                    </div>
+                    <Card key={row.task.id}>
+                      <CardContent className="p-3">
+                        <div className="text-sm font-medium">{row.task.name}</div>
+                        <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+                          <span>{row.domain}</span>
+                          <span>
+                            {row.passRate === null
+                              ? "—"
+                              : `${row.passRate}% pass`}
+                          </span>
+                        </div>
+                      </CardContent>
+                    </Card>
                   ))}
                 </div>
               )}
 
               {!isLoading && filteredTasks.length === 0 && (
-                <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
-                  No tasks match the current filters.
-                </div>
+                <Card>
+                  <CardContent className="p-4 text-sm text-muted-foreground">
+                    No tasks match the current filters.
+                  </CardContent>
+                </Card>
               )}
             </div>
           )}

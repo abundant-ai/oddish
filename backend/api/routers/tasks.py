@@ -457,7 +457,7 @@ async def cancel_task(
         for fc_id in modal_fc_ids:
             try:
                 fc = modal.FunctionCall.from_id(fc_id)
-                fc.cancel(terminate_containers=True)
+                await fc.cancel.aio(terminate_containers=True)
                 modal_cancelled += 1
             except Exception:
                 pass

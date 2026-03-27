@@ -321,4 +321,3 @@ export function ExperimentClientPage({
   );
 }
 
-export default ExperimentClientPage;
