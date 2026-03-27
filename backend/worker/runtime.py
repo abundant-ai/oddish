@@ -1,18 +1,13 @@
 import os
 
-from harbor.models.environment_type import EnvironmentType
 from rich.console import Console
 
+from cloud_policy import get_default_cloud_environment
 from modal_app import MODEL_CONCURRENCY_DEFAULT, VOLUME_MOUNT_PATH
 from oddish.config import Settings, settings
-from oddish.db import TrialModel, get_session, reconfigure_database_connections
+from oddish.db import reconfigure_database_connections
 
 console = Console()
-ALLOWED_CLOUD_ENVIRONMENTS = {EnvironmentType.MODAL, EnvironmentType.DAYTONA}
-
-
-def get_default_cloud_environment() -> EnvironmentType:
-    return EnvironmentType.MODAL
 
 
 async def configure_storage_paths() -> None:
@@ -41,30 +36,3 @@ async def configure_storage_paths() -> None:
     console.print(f"[dim]Storage: {Settings.local_storage_dir}[/dim]")
     console.print(f"[dim]Harbor jobs: {Settings.harbor_jobs_dir}[/dim]")
     console.print(f"[dim]Default environment: {Settings.harbor_environment}[/dim]")
-
-
-async def enforce_trial_environment(trial_id: str) -> None:
-    """
-    Ensure trial env stays within allowed cloud sandboxes.
-
-    If an unsupported env (e.g. docker) is stored on a trial, rewrite it to the
-    configured cloud default so worker execution never tries disallowed backends.
-    """
-    default_env = get_default_cloud_environment().value
-    async with get_session() as session:
-        trial = await session.get(TrialModel, trial_id)
-        if not trial:
-            return
-        current = (trial.environment or "").strip().lower()
-
-        if not current:
-            trial.environment = default_env
-            await session.commit()
-            return
-
-        if current not in {env.value for env in ALLOWED_CLOUD_ENVIRONMENTS}:
-            console.print(
-                f"[yellow]Overriding disallowed trial env {trial.environment!r} -> {default_env!r} (trial_id={trial_id})[/yellow]"
-            )
-            trial.environment = default_env
-            await session.commit()

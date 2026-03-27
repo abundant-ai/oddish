@@ -12,7 +12,7 @@ from oddish.api.trial_io import (
     read_trial_result,
     read_trial_trajectory,
 )
-from api.routers._helpers import (
+from oddish.api.public_helpers import (
     get_public_experiment,
     get_public_task,
     get_public_trial,
