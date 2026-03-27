@@ -91,6 +91,7 @@ The API layer enforces this scope in all list/read/write queries.
 | `deploy.py` | Modal app entrypoint (imports API + worker functions) |
 | `modal_app.py` | Modal image, volumes, and shared runtime setup |
 | `endpoints.py` | ASGI entrypoint and oddish settings patching for Modal |
+| `cloud_policy.py` | Hosted-only environment policy (allowed sandboxes, default cloud env) |
 | `api/app.py` | FastAPI app factory + startup/lifespan wiring |
 | `api/schemas.py` | Pydantic models for org/auth/share responses |
 | `api/routers/tasks.py` | Task CRUD, uploads, sweep creation, sharing, and file access |
@@ -105,7 +106,9 @@ The API layer enforces this scope in all list/read/write queries.
 | `auth/verification.py` | API key + Clerk JWT verification and auth caches |
 | `auth/provisioning.py` | Clerk user/org provisioning helpers |
 | `models.py` | Cloud auth models (orgs/users/api keys) |
-| `worker/` | Dispatcher and single-job worker orchestration |
+| `worker/functions.py` | Modal dispatcher and worker spawn orchestration |
+| `worker/runtime.py` | Modal runtime patching and storage setup |
+| `worker/github.py` | GitHub notification hooks around shared queue execution |
 | `integrations/github/` | PR comment formatting, metadata parsing, and notification client |
 | `alembic/` | Cloud migrations (auth + cloud table extensions) |
 

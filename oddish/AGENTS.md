@@ -23,6 +23,8 @@ The `oddish` package includes:
 - the FastAPI app (`python -m oddish.api`)
 - database models and Alembic migrations
 - PGQueuer-backed trial, analysis, and verdict workers
+- shared queue coordination primitives such as queue-slot leasing, single-job
+  processing, and orphan cleanup reconciliation
 - local task storage plus optional S3-compatible artifact storage
 
 ## Architecture
@@ -49,6 +51,22 @@ High-level flow:
 2. Submit a sweep of agent/model trials for that task.
 3. Workers execute trials and optionally run analysis and verdict stages.
 4. Use the CLI or API to watch progress and pull logs and artifacts back locally.
+
+## Hosted Boundary
+
+`oddish` owns the self-hostable execution core plus the shared queue/runtime
+primitives reused by Oddish Cloud:
+
+- core models and migrations, including `queue_slots`
+- shared queue-slot leasing and one-job worker execution helpers
+- orphaned queue-state reconciliation
+
+`backend/` keeps the hosted-only layer on top of that core:
+
+- Clerk/API key auth and org-scoped APIs
+- Modal worker spawning and runtime patching
+- cloud environment policy and GitHub notification hooks
+- public sharing routes and other product-specific endpoints
 
 ## Entry Points
 
@@ -255,7 +273,7 @@ oddish/
 │   ├── api/                  # FastAPI app and request handlers
 │   ├── cli/                  # oddish run/status/cancel/pull/delete
 │   ├── db/                   # models, connection helpers, storage
-│   ├── workers/              # Harbor execution and queue workers
+│   ├── workers/              # Harbor execution plus shared queue runtime
 │   ├── backfill_queue_keys.py
 │   ├── config.py
 │   ├── experiment.py
