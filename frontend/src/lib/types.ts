@@ -163,6 +163,7 @@ export interface ModelUsage {
   cache_tokens: number;
   output_tokens: number;
   cost_usd: number;
+  estimated_cost_usd: number;
   running: number;
   queued: number;
   succeeded: number;
@@ -254,6 +255,7 @@ interface StepMetrics {
   completion_tokens: number | null;
   cached_tokens: number | null;
   cost_usd: number | null;
+  cost_is_estimated?: boolean;
 }
 
 export interface TrajectoryStep {
@@ -279,6 +281,7 @@ export interface FinalMetrics {
   total_completion_tokens: number | null;
   total_cached_tokens: number | null;
   total_cost_usd: number | null;
+  cost_is_estimated?: boolean;
   total_steps: number | null;
 }
 

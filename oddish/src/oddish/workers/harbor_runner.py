@@ -85,6 +85,8 @@ class HarborOutcome:
     cache_tokens: int | None = None
     output_tokens: int | None = None
     cost_usd: float | None = None
+    cost_is_estimated: bool | None = None
+    cost_estimation_method: str | None = None
 
     # Per-phase timing breakdown (seconds)
     phase_timing: dict[str, Any] | None = None
@@ -228,6 +230,28 @@ def _maybe_add_modal_debug_hint(error_message: str, debug_log_path: Path | None)
     )
 
 
+def _extract_model_name_from_job(job_result: JobResult) -> str | None:
+    """Best-effort model name extraction from a Harbor JobResult."""
+    for trial_result in job_result.trial_results:
+        # Try agent_info.model_info.name first
+        agent_info = getattr(trial_result, "agent_info", None)
+        if agent_info:
+            model_info = getattr(agent_info, "model_info", None)
+            if model_info:
+                name = getattr(model_info, "name", None)
+                if name:
+                    return str(name)
+        # Try config.agent.model_name
+        config = getattr(trial_result, "config", None)
+        if config:
+            agent_cfg = getattr(config, "agent", None)
+            if agent_cfg:
+                model_name = getattr(agent_cfg, "model_name", None)
+                if model_name:
+                    return str(model_name)
+    return None
+
+
 def _extract_outcome_from_job_result(
     job_result: JobResult,
     job_result_path: Path,
@@ -250,7 +274,10 @@ def _extract_outcome_from_job_result(
     cache_tokens: int | None = None
     output_tokens: int | None = None
     cost_usd: float | None = None
+    cost_is_estimated: bool | None = None
+    cost_estimation_method: str | None = None
     phase_timing: dict[str, Any] | None = None
+    token_source: str | None = None  # tracks where tokens came from
 
     for trial_result in job_result.trial_results:
         ctx = trial_result.agent_result
@@ -259,6 +286,7 @@ def _extract_outcome_from_job_result(
             cache_tokens = ctx.n_cache_tokens
             output_tokens = ctx.n_output_tokens
             cost_usd = ctx.cost_usd
+            token_source = "agent_context"
             break
 
     # Fallback: read from ATIF trajectory final_metrics if AgentContext was empty
@@ -267,8 +295,31 @@ def _extract_outcome_from_job_result(
         input_tokens = t_in
         output_tokens = t_out
         cache_tokens = t_cache
+        token_source = "trajectory" if t_in is not None else None
         if cost_usd is None:
             cost_usd = t_cost
+
+    # Determine cost estimation method
+    if cost_usd is not None:
+        # We have a native cost from the agent or trajectory
+        cost_is_estimated = False
+        cost_estimation_method = "native"
+    elif input_tokens is not None or output_tokens is not None:
+        # We have tokens but no native cost — try to estimate from pricing table
+        from oddish.model_pricing import CostEstimationMethod, estimate_cost_usd
+
+        model_name = _extract_model_name_from_job(job_result)
+        estimated = estimate_cost_usd(
+            model_name, input_tokens or 0, output_tokens or 0, cache_tokens
+        )
+        if estimated is not None:
+            cost_usd = estimated
+            cost_is_estimated = True
+            cost_estimation_method = (
+                CostEstimationMethod.AGENT_CONTEXT_TOKENS
+                if token_source == "agent_context"
+                else CostEstimationMethod.TRAJECTORY_TOKENS
+            )
 
     # Extract per-phase timing from the first trial result
     for trial_result in job_result.trial_results:
@@ -290,6 +341,8 @@ def _extract_outcome_from_job_result(
             cache_tokens=cache_tokens,
             output_tokens=output_tokens,
             cost_usd=cost_usd,
+            cost_is_estimated=cost_is_estimated,
+            cost_estimation_method=cost_estimation_method,
             phase_timing=phase_timing,
             has_trajectory=has_trajectory,
         )

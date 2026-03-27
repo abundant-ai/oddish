@@ -176,6 +176,12 @@ async def get_dashboard(
                     func.sum(TrialModel.cache_tokens).label("cache_tokens"),
                     func.sum(TrialModel.output_tokens).label("output_tokens"),
                     func.sum(TrialModel.cost_usd).label("cost_usd"),
+                    func.sum(
+                        case(
+                            (TrialModel.cost_is_estimated == True, TrialModel.cost_usd),  # noqa: E712
+                            else_=0,
+                        )
+                    ).label("estimated_cost_usd"),
                     func.count(
                         case((TrialModel.status == TrialStatus.RUNNING, 1))
                     ).label("running"),
@@ -243,6 +249,7 @@ async def get_dashboard(
                         "cache_tokens": 0,
                         "output_tokens": 0,
                         "cost_usd": 0.0,
+                        "estimated_cost_usd": 0.0,
                         "running": 0,
                         "retrying": 0,
                         "queued": 0,
@@ -269,6 +276,9 @@ async def get_dashboard(
                 aggregate["cost_usd"] = float(aggregate["cost_usd"]) + float(
                     row.cost_usd or 0
                 )
+                aggregate["estimated_cost_usd"] = float(
+                    aggregate["estimated_cost_usd"]
+                ) + float(row.estimated_cost_usd or 0)
                 aggregate["running"] = int(aggregate["running"]) + int(row.running or 0)
                 aggregate["retrying"] = int(aggregate["retrying"]) + int(
                     row.retrying or 0
@@ -302,6 +312,7 @@ async def get_dashboard(
                         "cache_tokens": int(aggregate["cache_tokens"]),
                         "output_tokens": int(aggregate["output_tokens"]),
                         "cost_usd": round(float(aggregate["cost_usd"]), 4),
+                        "estimated_cost_usd": round(float(aggregate["estimated_cost_usd"]), 4),
                         "running": int(aggregate["running"]),
                         "retrying": int(aggregate["retrying"]),
                         "queued": int(aggregate["queued"]),
