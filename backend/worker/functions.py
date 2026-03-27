@@ -20,6 +20,7 @@ from modal_app import (
 )
 from oddish.config import settings
 from oddish.db import close_database_connections
+from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
 from oddish.workers.queue.dispatch_planner import (
     build_spawn_plan,
     discover_active_queue_keys,
@@ -32,7 +33,6 @@ from oddish.workers.queue.slots import (
     release_queue_slot,
 )
 
-from .cleanup import cleanup_orphaned_queue_state
 from .github import notify_github_analysis, notify_github_trial, notify_github_verdict
 from .runtime import configure_storage_paths, console
 

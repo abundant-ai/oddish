@@ -1,4 +1,5 @@
 from oddish.workers.queue.analysis_handler import run_analysis_job
+from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
 from oddish.workers.queue.queue_manager import (
     create_queue_manager,
     create_queue_manager_base,
@@ -20,6 +21,7 @@ __all__ = [
     "create_queue_manager_base",
     "register_queue_entrypoints",
     "claim_single_job",
+    "cleanup_orphaned_queue_state",
     "run_analysis_job",
     "run_single_job",
     "run_trial_job",
