@@ -1,0 +1,16 @@
+agents:
+  - name: claude-code
+    model_name: bedrock/lobal.anthropic.claude-opus-4-6-v1
+    n_trials: 3
+  - name: codex
+    model_name: openai/gpt-5.4-pro
+    n_trials: 3
+  - name: gemini-cli
+    model_name: gemini/gemini-3.1-pro-preview
+    n_trials: 3
+  - name: nop
+    model_name: default
+    n_trials: 3
+  - name: oracle
+    model_name: default
+    n_trials: 3
