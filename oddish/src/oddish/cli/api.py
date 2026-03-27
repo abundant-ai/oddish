@@ -17,6 +17,7 @@ from rich.table import Table
 
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.task.paths import TaskPaths
+from harbor.models.task.task import Task
 from harbor.models.registry import RemoteRegistryInfo
 from harbor.models.trial.config import AgentConfig
 from harbor.models.job.config import LocalDatasetConfig, RegistryDatasetConfig
@@ -50,6 +51,47 @@ def resolve_task_path(path_arg: Path | None, path_option: Path | None) -> Path |
 def is_task_dir(path: Path) -> bool:
     """Check if a path is a valid Harbor task directory."""
     return cast(bool, TaskPaths(path).is_valid(disable_verification=False))
+
+
+def validate_tasks(task_paths: list[Path]) -> list[Path]:
+    """Validate task configs by loading each task with Harbor's Task model.
+
+    Returns the list of valid task paths. Prints warnings for invalid tasks
+    and exits if all tasks are invalid.
+    """
+    valid: list[Path] = []
+    errors: list[tuple[Path, str]] = []
+
+    for task_path in task_paths:
+        try:
+            Task(task_path)
+            valid.append(task_path)
+        except FileNotFoundError as e:
+            errors.append((task_path, f"Missing file: {e.filename or e}"))
+        except Exception as e:
+            label = type(e).__name__
+            errors.append((task_path, f"{label}: {e}"))
+
+    if errors:
+        error_console.print(
+            f"\n[yellow]Task validation: {len(errors)} of {len(task_paths)} "
+            f"task(s) have issues:[/yellow]"
+        )
+        for task_path, msg in errors:
+            error_console.print(f"  [red]✗[/red] {task_path.name}: {msg}")
+
+    if not valid:
+        error_console.print(
+            "\n[red]All tasks failed validation. Nothing to run.[/red]"
+        )
+        raise typer.Exit(1)
+
+    if errors:
+        error_console.print(
+            f"\n[dim]Continuing with {len(valid)} valid task(s).[/dim]\n"
+        )
+
+    return valid
 
 
 def get_task_paths_from_local(
