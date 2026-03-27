@@ -288,8 +288,6 @@ class TrialModel(Base):
     cache_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
-    cost_is_estimated: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    cost_estimation_method: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
     phase_timing: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

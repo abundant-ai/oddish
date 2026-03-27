@@ -8,14 +8,43 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.db import TaskModel, TaskStatus, TrialModel, TrialStatus
+from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import TaskStatusResponse, TrialResponse
 
 _ANALYSIS_SUMMARY_UNSET = object()
 
 
+def _resolve_cost(
+    trial: TrialModel, model_name: str | None
+) -> tuple[float | None, bool | None, str | None]:
+    """Return (cost_usd, cost_is_estimated, cost_estimation_method) for a trial.
+
+    If the trial already has a native cost_usd, returns it as-is.
+    Otherwise estimates from tokens × pricing table if possible.
+    """
+    if trial.cost_usd is not None:
+        return trial.cost_usd, False, "native"
+
+    # No native cost — try to estimate from token counts
+    if trial.input_tokens is not None or trial.output_tokens is not None:
+        estimated = estimate_cost_usd(
+            model_name,
+            trial.input_tokens or 0,
+            trial.output_tokens or 0,
+            trial.cache_tokens,
+        )
+        if estimated is not None:
+            return estimated, True, "estimated_from_tokens"
+
+    return None, None, None
+
+
 def build_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
+    cost_usd, cost_is_estimated, cost_estimation_method = _resolve_cost(
+        trial, normalized_model or trial.model
+    )
     return TrialResponse(
         id=trial.id,
         name=trial.name,
@@ -35,9 +64,9 @@ def build_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
         input_tokens=trial.input_tokens,
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
-        cost_usd=trial.cost_usd,
-        cost_is_estimated=trial.cost_is_estimated,
-        cost_estimation_method=trial.cost_estimation_method,
+        cost_usd=cost_usd,
+        cost_is_estimated=cost_is_estimated,
+        cost_estimation_method=cost_estimation_method,
         phase_timing=trial.phase_timing,
         has_trajectory=trial.has_trajectory,
         analysis_status=trial.analysis_status,

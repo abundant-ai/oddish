@@ -10,15 +10,6 @@ varying formats (e.g. "claude-sonnet-4-5-20250929", "gemini-3-flash-preview").
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
-
-
-class CostEstimationMethod(str, Enum):
-    """How the cost_usd value was determined."""
-
-    NATIVE = "native"  # Reported directly by the agent/provider
-    AGENT_CONTEXT_TOKENS = "agent_context_tokens"  # Estimated from Harbor AgentContext token counts
-    TRAJECTORY_TOKENS = "trajectory_tokens"  # Estimated from ATIF trajectory final_metrics tokens
 
 
 @dataclass(frozen=True)
