@@ -204,10 +204,8 @@ while provider credentials use their usual environment variable names.
 ### Required for local development
 
 ```bash
-DATABASE_URL=postgresql+asyncpg://oddish:oddish@localhost:5432/oddish
+ODDISH_DATABASE_URL=postgresql+asyncpg://oddish:oddish@localhost:5432/oddish
 ```
-
-`DATABASE_URL` takes precedence over `ODDISH_DATABASE_URL`.
 
 ### Common optional settings
 

@@ -206,7 +206,7 @@ class Settings(BaseSettings):
     # ENV-VAR CONFIGURABLE - Secrets and infrastructure only
     # ==========================================================================
 
-    # Database (supports DATABASE_URL or ODDISH_DATABASE_URL)
+    # Database
     database_url: str = "postgresql+asyncpg://oddish:oddish@localhost:5432/oddish"
 
     # Asyncpg pool (pgqueuer) sizing
@@ -214,15 +214,6 @@ class Settings(BaseSettings):
     # many worker processes are spawned.
     asyncpg_pool_min_size: int = 1
     asyncpg_pool_max_size: int = 4
-
-    @model_validator(mode="before")
-    @classmethod
-    def check_database_url(cls, data: dict | None) -> dict:
-        """Prefer DATABASE_URL, fallback to ODDISH_DATABASE_URL."""
-        data = data or {}
-        if db_url := os.getenv("DATABASE_URL") or os.getenv("ODDISH_DATABASE_URL"):
-            data["database_url"] = db_url
-        return data
 
     @property
     def asyncpg_url(self) -> str:

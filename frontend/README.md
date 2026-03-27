@@ -8,9 +8,10 @@ Current app surface:
 
 - `/` public landing page for signed-out users; signed-in users are redirected to `/dashboard`
 - `/dashboard` main dashboard and experiment entrypoint
+- `/experiments` base page directing users to select an experiment
 - `/experiments/[experiment]` experiment detail, task and trial inspection, logs, results, files, share controls, and **cancel** for in-flight work (task drawer **Cancel (N)** or experiment table bulk **Cancel** when tasks are selected; same as `POST /tasks/{task_id}/cancel`—stops all active trials on each task)
 - `/settings` organization management and API key management
-- `/admin` queue slots, queue health, and PGQueuer monitoring
+- `/admin` worker queues, queue slots, queue health, orphaned state, and PGQueuer monitoring
 - `/share/[token]` read-only public experiment view
 - `/datasets` and `/datasets/[token]` public dataset listing and detail pages
 
@@ -76,12 +77,14 @@ Open [http://localhost:3000](http://localhost:3000).
 ## Scripts
 
 ```bash
-pnpm dev         # Next.js dev server
-pnpm dev:local   # Force local backend
-pnpm dev:modal   # Force Modal backend
-pnpm build       # Production build
-pnpm start       # Run production server
-pnpm lint        # ESLint
+pnpm dev           # Next.js dev server
+pnpm dev:local     # Force local backend
+pnpm dev:modal     # Force Modal backend
+pnpm build         # Production build
+pnpm start         # Run production server
+pnpm lint          # ESLint
+pnpm format        # Prettier formatting
+pnpm format:check  # Check Prettier formatting
 ```
 
 ## Architecture
@@ -137,7 +140,7 @@ The frontend proxies backend requests through `src/app/api/*`. Main groups:
 - `/api/trials/*` for trial logs, structured logs, result payloads, retries, trajectories, and files
 - `/api/experiments/*` for experiment detail, task listing, publish, unpublish, and share
 - `/api/settings/api-keys*` for API key management
-- `/api/admin/*` for queue slots and PGQueuer monitoring
+- `/api/admin/*` for queue slots, PGQueuer monitoring, and orphaned state detection
 - `/api/public/*` for public experiment, dataset, and artifact access
 - `/api/health` for backend connectivity checks used by the nav health indicator
 
@@ -155,11 +158,11 @@ frontend/
 │   │   │   └── admin/
 │   │   ├── share/[token]/        # Public experiment page
 │   │   ├── datasets/             # Public dataset pages
-│   │   └── api/                  # Backend proxy route handlers
+│   │   ├── api/                  # Backend proxy route handlers
+│   │   └── providers.tsx         # Shared SWR config
 │   ├── components/               # Dashboard, detail panels, charts, nav, UI primitives
 │   ├── lib/                      # API helpers, backend config, shared types, utilities
-│   ├── middleware.ts             # Clerk route protection
-│   └── providers.tsx             # Shared SWR config
+│   └── middleware.ts             # Clerk route protection
 ├── public/oddish.png
 └── run-prod-clerk-local.sh       # Local HTTPS helper for production Clerk keys
 ```

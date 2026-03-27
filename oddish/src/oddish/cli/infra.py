@@ -33,8 +33,8 @@ console = Console()
 
 
 def get_db_url_from_env() -> str | None:
-    """Read DATABASE_URL or ODDISH_DATABASE_URL from environment."""
-    return os.environ.get("DATABASE_URL") or os.environ.get("ODDISH_DATABASE_URL")
+    """Read ODDISH_DATABASE_URL from environment."""
+    return os.environ.get("ODDISH_DATABASE_URL")
 
 
 def append_log(message: str) -> None:
@@ -115,7 +115,7 @@ def stop_api() -> bool:
 
 def run_db_setup(db_url: str, quiet: bool = False) -> bool:
     """Run database setup (migrations + PGQueuer). Returns True on success."""
-    env = {**os.environ, "DATABASE_URL": db_url}
+    env = {**os.environ, "ODDISH_DATABASE_URL": db_url}
 
     # Run alembic migrations
     if not quiet:
@@ -213,9 +213,9 @@ def ensure_infrastructure(
 
     db_url = get_db_url_from_env()
     if db_url:
-        os.environ["DATABASE_URL"] = db_url
+        os.environ["ODDISH_DATABASE_URL"] = db_url
         if not quiet:
-            console.print("[dim]Using DATABASE_URL from environment[/dim]")
+            console.print("[dim]Using ODDISH_DATABASE_URL from environment[/dim]")
     else:
         # Check Docker
         if not docker_available():
@@ -229,7 +229,7 @@ def ensure_infrastructure(
         if check_port_in_use(5432) and not postgres_container_running():
             console.print(
                 "[yellow]Port 5432 is already in use.[/yellow]\n"
-                "If another Postgres is running, set DATABASE_URL or stop it.\n"
+                "If another Postgres is running, set ODDISH_DATABASE_URL or stop it.\n"
                 "If this is the oddish container, try: oddish run <task_dir>"
             )
 
@@ -249,7 +249,7 @@ def ensure_infrastructure(
                 if not quiet:
                     console.print("[dim]Starting local database...[/dim]")
             db_url = ensure_postgres()
-            os.environ["DATABASE_URL"] = db_url
+            os.environ["ODDISH_DATABASE_URL"] = db_url
         except RuntimeError as e:
             error_console.print(f"[red]Failed to start Postgres:[/red] {e}")
             raise typer.Exit(1)
@@ -276,7 +276,7 @@ def ensure_infrastructure(
         api_cmd,
         stdout=log_file,
         stderr=log_file,
-        env={**os.environ, "DATABASE_URL": db_url},
+        env={**os.environ, "ODDISH_DATABASE_URL": db_url},
     )
     try:
         API_PID_PATH.write_text(str(process.pid))
