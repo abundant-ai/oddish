@@ -8,6 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -37,7 +38,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import dynamic from "next/dynamic";
@@ -87,7 +87,6 @@ type ExperimentTrialsTableProps = {
   agentSummaries: AgentSummary[];
   modelScopedAgents: ReadonlySet<string>;
   isLoading: boolean;
-  topControlsLeft?: ReactNode;
   showPassAtK?: boolean;
   onTaskDelete?: (task: Task) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
@@ -319,7 +318,6 @@ export function ExperimentTrialsTable({
   agentSummaries,
   modelScopedAgents,
   isLoading,
-  topControlsLeft,
   showPassAtK = false,
   onTaskDelete,
   onRerun,
@@ -1190,9 +1188,9 @@ export function ExperimentTrialsTable({
           {sortedAgentSummaries.map((agent) => {
             const isVisible = !hiddenAgents.has(agent.key);
             return (
-              <label
+              <Label
                 key={agent.key}
-                className={`flex items-center gap-2 rounded px-2 py-1 text-xs ${
+                className={`flex items-center gap-2 rounded px-2 py-1 text-xs font-normal ${
                   isVisible ? "hover:bg-muted" : "text-muted-foreground"
                 }`}
               >
@@ -1214,7 +1212,7 @@ export function ExperimentTrialsTable({
                   />
                   {agent.model ?? "—"}
                 </span>
-              </label>
+              </Label>
             );
           })}
         </div>
@@ -1275,11 +1273,6 @@ export function ExperimentTrialsTable({
   return (
     <TooltipProvider>
       <div className="space-y-4">
-        {topControlsLeft ? (
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">{topControlsLeft}</div>
-          </div>
-        ) : null}
         {/* Pass@k Graph - only shows when there are multiple trials per task-agent */}
         {showPassAtK ? (
           <div className="grid items-stretch gap-4 xl:grid-cols-2">

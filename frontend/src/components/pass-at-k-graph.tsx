@@ -14,7 +14,8 @@ import type { Task, Trial } from "@/lib/types";
 import { calculatePassAtKCurve, type AgentPassAtKStats } from "@/lib/pass-at-k";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import type { AgentSummary } from "./experiment-trials-table";
-import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { AgentLegend } from "@/components/agent-legend";
 
 // Color palette for different agents
 export const AGENT_COLORS = [
@@ -125,8 +126,8 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   }
 
   return (
-    <div className="h-full rounded-lg border border-border bg-card/80 p-6 shadow-sm">
-      <div className="flex h-full flex-col">
+    <Card className="h-full bg-card/80 shadow-sm">
+      <CardContent className="flex h-full flex-col p-6">
         <h3 className="font-mono text-sm font-bold text-foreground">
           Pass@k{" "}
           <span className="font-normal text-muted-foreground">
@@ -195,42 +196,16 @@ export const PassAtKGraph = memo(function PassAtKGraph({
           </ResponsiveContainer>
         </div>
 
-        {/* Interactive Legend */}
-        <div className="mt-3 flex flex-wrap gap-2">
-          {agentSummaries.map((summary, idx) => {
-            const isHidden = hiddenAgents.has(summary.key);
-            const color = AGENT_COLORS[idx % AGENT_COLORS.length];
-            return (
-              <Button
-                key={summary.key}
-                type="button"
-                onClick={() => onToggleAgent(summary.key)}
-                variant="ghost"
-                size="sm"
-                className={`flex h-auto items-center gap-2 rounded px-2 py-1 font-mono text-xs transition-all ${
-                  isHidden ? "opacity-40 hover:opacity-60" : "hover:bg-muted"
-                }`}
-                title={isHidden ? "Click to show" : "Click to hide"}
-              >
-                <span
-                  className="h-3 w-3 flex-shrink-0 rounded-sm"
-                  style={{
-                    backgroundColor: isHidden ? "transparent" : color,
-                    border: `2px solid ${color}`,
-                  }}
-                />
-                <span
-                  className={
-                    isHidden ? "text-muted-foreground line-through" : ""
-                  }
-                >
-                  {summary.label}
-                </span>
-              </Button>
-            );
-          })}
-        </div>
-      </div>
-    </div>
+        <AgentLegend
+          items={agentSummaries.map((summary, idx) => ({
+            key: summary.key,
+            label: summary.label,
+            color: AGENT_COLORS[idx % AGENT_COLORS.length],
+          }))}
+          hiddenKeys={hiddenAgents}
+          onToggle={onToggleAgent}
+        />
+      </CardContent>
+    </Card>
   );
 });

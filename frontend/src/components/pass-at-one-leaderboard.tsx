@@ -2,7 +2,8 @@
 
 import { memo, useMemo } from "react";
 import type { Task, Trial } from "@/lib/types";
-import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { AgentLegend } from "@/components/agent-legend";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import type { AgentSummary } from "./experiment-trials-table";
 import { QueueKeyIcon } from "./queue-key-icon";
@@ -110,8 +111,8 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
   const ticks = [0, 0.2, 0.4, 0.6, 0.8, 1];
 
   return (
-    <div className="h-full rounded-lg border border-border bg-card/80 p-6 shadow-sm">
-      <div className="flex h-full flex-col">
+    <Card className="h-full bg-card/80 shadow-sm">
+      <CardContent className="flex h-full flex-col p-6">
         <div className="flex items-center justify-between gap-4">
           <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Leaderboard
@@ -173,41 +174,16 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
           </div>
         </div>
 
-        <div className="mt-3 flex flex-wrap gap-2">
-          {rows.map((row) => {
-            const isHidden = hiddenAgents.has(row.key);
-            const color = colorByAgent.get(row.key) ?? AGENT_COLORS[0];
-            return (
-              <Button
-                key={row.key}
-                type="button"
-                onClick={() => onToggleAgent(row.key)}
-                variant="ghost"
-                size="sm"
-                className={`flex h-auto items-center gap-2 rounded px-2 py-1 font-mono text-xs transition-all ${
-                  isHidden ? "opacity-40 hover:opacity-60" : "hover:bg-muted"
-                }`}
-                title={isHidden ? "Click to show" : "Click to hide"}
-              >
-                <span
-                  className="h-3 w-3 flex-shrink-0 rounded-sm"
-                  style={{
-                    backgroundColor: isHidden ? "transparent" : color,
-                    border: `2px solid ${color}`,
-                  }}
-                />
-                <span
-                  className={
-                    isHidden ? "text-muted-foreground line-through" : ""
-                  }
-                >
-                  {row.label}
-                </span>
-              </Button>
-            );
-          })}
-        </div>
-      </div>
-    </div>
+        <AgentLegend
+          items={rows.map((row) => ({
+            key: row.key,
+            label: row.label,
+            color: colorByAgent.get(row.key) ?? AGENT_COLORS[0],
+          }))}
+          hiddenKeys={hiddenAgents}
+          onToggle={onToggleAgent}
+        />
+      </CardContent>
+    </Card>
   );
 });

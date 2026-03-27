@@ -144,7 +144,8 @@ function ExperimentSummaryBar({
   summary: ExperimentSummary;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card/70 px-3 py-1.5 text-xs">
+    <Card className="bg-card/70">
+    <div className="flex flex-wrap items-center gap-3 px-3 py-1.5 text-xs">
       <div className="text-muted-foreground">{taskCount} tasks</div>
       <div className="text-muted-foreground">•</div>
       <div className="font-mono text-muted-foreground">
@@ -172,6 +173,7 @@ function ExperimentSummaryBar({
         )}
       </div>
     </div>
+    </Card>
   );
 }
 

@@ -30,21 +30,7 @@ import type {
   ContentPart,
 } from "@/lib/types";
 
-// =============================================================================
-// Utility Functions
-// =============================================================================
-
-function formatMs(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return `${hours}h ${remainingMinutes}m`;
-}
+import { formatMs } from "@/lib/utils";
 
 function formatStepDuration(
   prevTimestamp: string | null,
@@ -478,10 +464,6 @@ function StepMetricsBar({ metrics }: { metrics: TrajectoryStep["metrics"] }) {
     </div>
   );
 }
-
-// =============================================================================
-// Re-export CodeBlock from shared component
-// =============================================================================
 
 // =============================================================================
 // StepTrigger Component

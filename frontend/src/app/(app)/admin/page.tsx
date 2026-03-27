@@ -1305,15 +1305,14 @@ function PGQueuerCard() {
         {data && (
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
             {Object.entries(data.stats.by_status).map(([status, count]) => (
-              <div
-                key={status}
-                className="rounded-md border border-border p-2 text-center"
-              >
-                <div className="text-lg font-bold">{count}</div>
-                <div className="text-xs capitalize text-muted-foreground">
-                  {status}
-                </div>
-              </div>
+              <Card key={status}>
+                <CardContent className="p-2 text-center">
+                  <div className="text-lg font-bold">{count}</div>
+                  <div className="text-xs capitalize text-muted-foreground">
+                    {status}
+                  </div>
+                </CardContent>
+              </Card>
             ))}
           </div>
         )}

@@ -957,7 +957,7 @@ export function TaskFilesPanel({
               }`}
             />
             {node.type === "dir" && isLoadingDir && (
-              <span className="h-3 w-3 animate-spin rounded-full border border-muted-foreground border-t-transparent" />
+              <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
             )}
             <span className="truncate">{node.name}</span>
           </Button>
@@ -1054,7 +1054,7 @@ export function TaskFilesPanel({
       {isListingLoading ? (
         <div className="flex flex-1 items-center justify-center">
           <div className="flex items-center gap-2 text-muted-foreground">
-            <div className="h-5 w-5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+            <Loader2 className="h-5 w-5 animate-spin" />
             <span className="text-sm">Loading files...</span>
           </div>
         </div>

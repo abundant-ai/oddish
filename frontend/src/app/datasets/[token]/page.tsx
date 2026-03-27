@@ -5,15 +5,9 @@ import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { DatasetDetailView } from "@/components/dataset-detail-view";
 import { Nav } from "@/components/nav";
-import type { Task } from "@/lib/types";
+import type { Task, PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
-
-interface PublicExperimentInfo {
-  name: string;
-  public_token: string;
-}
-
-const PUBLIC_API_URL = "/api/public";
+import { PUBLIC_API_URL } from "@/lib/utils";
 
 export default function PublicDatasetPage() {
   const params = useParams();

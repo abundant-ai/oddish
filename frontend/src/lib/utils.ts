@@ -5,27 +5,6 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-/**
- * Returns the task's display name.
- */
-export function taskDisplayName(task: { name: string }) {
-  return task.name;
-}
-
-/**
- * Returns a short ID suffix for display (the UUID portion of the task ID).
- * e.g. if id is "axios-12345678", this returns "12345678".
- */
-export function taskIdSuffix(task: { id: string; name: string }) {
-  // If the ID starts with the name, extract the suffix
-  if (task.id.startsWith(task.name)) {
-    let suffix = task.id.slice(task.name.length);
-    if (suffix.startsWith("-")) suffix = suffix.slice(1);
-    if (suffix) return suffix;
-  }
-  return task.id;
-}
-
 export function formatShortDateTime(iso: string) {
   const d = new Date(iso);
   // e.g. "01/15 14:03"
@@ -48,3 +27,17 @@ export function decodeExperimentRouteParam(value: string) {
     return value;
   }
 }
+
+export function formatMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
+}
+
+export const PUBLIC_API_URL = "/api/public";

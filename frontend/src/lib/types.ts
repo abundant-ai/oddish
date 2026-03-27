@@ -381,3 +381,8 @@ export interface OrphanedStateResponse {
   stale_after_minutes: number;
   timestamp: string;
 }
+
+export interface PublicExperimentInfo {
+  name: string;
+  public_token: string;
+}
