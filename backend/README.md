@@ -269,9 +269,10 @@ For full-stack local development, use one of these flows:
 
 ```bash
 # Flow A: Frontend + local core API
-# Terminal 1
+# Terminal 1 — start Postgres, then the API
+docker run -d --name oddish-db -e POSTGRES_USER=oddish -e POSTGRES_PASSWORD=oddish -e POSTGRES_DB=oddish -p 5432:5432 postgres:16-alpine
 cd oddish
-docker compose up -d db
+uv run python -m oddish.db setup
 uv run python -m oddish.api
 
 # Terminal 2

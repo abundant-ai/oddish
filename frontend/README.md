@@ -171,10 +171,12 @@ frontend/
 
 ### Local backend
 
-From the repo root in one terminal:
+From the repo root in one terminal (start Postgres first, then the API):
 
 ```bash
-docker compose up -d db
+docker run -d --name oddish-db -e POSTGRES_USER=oddish -e POSTGRES_PASSWORD=oddish -e POSTGRES_DB=oddish -p 5432:5432 postgres:16-alpine
+cd oddish
+uv run python -m oddish.db setup
 uv run python -m oddish.api
 ```
 

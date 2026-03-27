@@ -3,7 +3,7 @@
 This file is the technical guide for the `oddish/` package. End-user CLI docs
 live in `README.md`.
 
-`oddish` is the self-hostable core behind Oddish: a Python CLI, FastAPI server,
+`oddish` is the core behind Oddish: a Python CLI, FastAPI server,
 Postgres-backed queueing layer, and worker runtime for Harbor tasks.
 
 Python `3.12+` is required.
@@ -54,8 +54,8 @@ High-level flow:
 
 ## Hosted Boundary
 
-`oddish` owns the self-hostable execution core plus the shared queue/runtime
-primitives reused by Oddish Cloud:
+`oddish` owns the execution core plus the shared queue/runtime primitives
+reused by Oddish Cloud:
 
 - core models and migrations, including `queue_slots`
 - shared queue-slot leasing and one-job worker execution helpers
@@ -80,10 +80,13 @@ primitives reused by Oddish Cloud:
 
 ### Quick start
 
+You need a running Postgres instance. Start one however you prefer (e.g.
+`docker run -d --name oddish-db -e POSTGRES_USER=oddish -e POSTGRES_PASSWORD=oddish -e POSTGRES_DB=oddish -p 5432:5432 postgres:16-alpine`),
+then:
+
 ```bash
 cd oddish
 cp env.example .env
-docker compose up -d db
 uv sync
 uv run python -m oddish.db setup
 uv run python -m oddish.api
@@ -91,7 +94,6 @@ uv run python -m oddish.api
 
 That gives you:
 
-- Postgres on `localhost:5432`
 - the API on `http://localhost:8000`
 - background workers started by the API process
 
@@ -186,33 +188,7 @@ uv run python -m oddish.api --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/cla
 | GET | `/trials/{trial_id}/logs` | Fetch logs for a trial |
 | GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
 
-Local `localhost` usage does not require API auth by default. Remote APIs
-typically require `ODDISH_API_KEY`.
-
-## Docker Compose
-
-`docker-compose.yml` is primarily for local development:
-
-```bash
-# Database only, while running Python directly on the host
-docker compose up -d db
-
-# Containerized API with its built-in background workers
-docker compose up -d db api
-
-# Add a dedicated worker service as well
-docker compose up -d db api worker
-
-# One-time DB initialization in a container
-docker compose run --rm db-init
-```
-
-Services:
-
-- `db`: Postgres 16
-- `api`: FastAPI server
-- `worker`: standalone queue worker
-- `db-init`: one-shot DB setup task
+Remote APIs require `ODDISH_API_KEY`.
 
 ## Configuration
 
@@ -277,12 +253,9 @@ oddish/
 │   ├── backfill_queue_keys.py
 │   ├── config.py
 │   ├── experiment.py
-│   ├── infra.py
 │   ├── queue.py
 │   └── schemas.py
 ├── alembic/                  # DB migrations
-├── docker-compose.yml
-├── Dockerfile
 ├── env.example
 ├── pyproject.toml
 ├── README.md
@@ -306,7 +279,6 @@ from oddish.workers import create_queue_manager
 ### API does not start
 
 ```bash
-docker compose ps
 uv run python -m oddish.db setup
 curl http://localhost:8000/health
 ```
@@ -322,5 +294,5 @@ curl http://localhost:8000/health
 ### Pulling from a remote API fails
 
 - verify `ODDISH_API_URL`
-- verify `ODDISH_API_KEY` for non-local APIs
+- verify `ODDISH_API_KEY`
 - try `oddish status` first to confirm auth and connectivity

@@ -34,14 +34,13 @@ from oddish.cli.api import (
     watch_task,
 )
 from oddish.cli.config import (
+    check_api_health,
     error_console,
     get_api_url,
     get_dashboard_url,
-    is_local_api_url,
     is_modal_api_url,
     require_api_key,
 )
-from oddish.cli.infra import check_api_health, ensure_infrastructure
 from oddish.experiment import generate_experiment_name
 
 console = Console()
@@ -134,7 +133,7 @@ def run(
             "-e",
             help=(
                 "Execution environment (docker, daytona, e2b, modal, runloop, gke). "
-                "Defaults: docker for local API, daytona for Modal Cloud."
+                "Defaults: modal for Modal Cloud, docker otherwise."
             ),
         ),
     ] = None,
@@ -285,16 +284,9 @@ def run(
         str,
         typer.Option(
             "--api",
-            help="API URL (default: http://localhost:8000)",
+            help="API URL (defaults to ODDISH_API_URL or Oddish Cloud)",
         ),
     ] = "",
-    fresh: Annotated[
-        bool,
-        typer.Option(
-            "--fresh",
-            help="Restart the API server with new settings",
-        ),
-    ] = False,
     json_output: Annotated[
         bool,
         typer.Option(
@@ -361,14 +353,11 @@ def run(
         oddish run ./task -a claude-code --background   # Submit and return
         oddish run ./task -a claude-code -q             # Quiet mode
 
-    NOTE: The Oddish API server persists between runs (unlike 'harbor run').
-    Use --fresh to restart it, or 'oddish delete' to stop it.
     """
     # Resolve API URL
     if not api_url:
         api_url = get_api_url()
     require_api_key(api_url)
-    is_local_api = is_local_api_url(api_url)
     is_modal_api = is_modal_api_url(api_url)
 
     # Handle config file vs CLI mode for agent configs
@@ -482,29 +471,16 @@ def run(
     if not user:
         user = getpass.getuser()
 
-    # Ensure infrastructure is running (local only)
-    if is_local_api:
-        ensure_infrastructure(api_url, quiet=quiet, fresh=fresh)
-    else:
-        if fresh:
-            console.print(
-                "[yellow]--fresh only applies to local API; ignoring for remote.[/yellow]"
-            )
-        # Use longer timeout for remote APIs (Modal cold starts can take a few seconds)
-        if not check_api_health(api_url, timeout=10.0):
-            error_console.print(
-                "[red]API is not reachable or authentication failed.[/red]\n"
-                "Verify ODDISH_API_URL and ODDISH_API_KEY."
-            )
-            raise typer.Exit(1)
-
-    # Default + cloud safety: Modal cannot run Docker-in-Docker.
-    if environment is None:
-        environment = (
-            EnvironmentType.DOCKER
-            if is_local_api
-            else (EnvironmentType.MODAL if is_modal_api else EnvironmentType.DOCKER)
+    # Check API health (use longer timeout for Modal cold starts)
+    if not check_api_health(api_url, timeout=10.0):
+        error_console.print(
+            "[red]API is not reachable or authentication failed.[/red]\n"
+            "Verify ODDISH_API_URL and ODDISH_API_KEY."
         )
+        raise typer.Exit(1)
+
+    if environment is None:
+        environment = EnvironmentType.MODAL if is_modal_api else EnvironmentType.DOCKER
     elif is_modal_api and environment != EnvironmentType.MODAL:
         console.print(
             "[yellow]Oddish Cloud runs on Modal (no Docker-in-Docker); forcing --env modal[/yellow]"
