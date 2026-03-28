@@ -58,6 +58,9 @@ export interface Trial {
   reward: number | null;
   error_message?: string | null;
   result?: Record<string, unknown> | null;
+  cost_usd?: number | null;
+  cost_is_estimated?: boolean | null;
+  cost_estimation_method?: string | null;
   analysis_status?: JobStatus | null;
   analysis?: TrialAnalysis | null;
   created_at: string;
@@ -163,6 +166,7 @@ export interface ModelUsage {
   cache_tokens: number;
   output_tokens: number;
   cost_usd: number;
+  estimated_cost_usd: number;
   running: number;
   queued: number;
   succeeded: number;
@@ -254,6 +258,7 @@ interface StepMetrics {
   completion_tokens: number | null;
   cached_tokens: number | null;
   cost_usd: number | null;
+  cost_is_estimated?: boolean;
 }
 
 export interface TrajectoryStep {
@@ -279,6 +284,7 @@ export interface FinalMetrics {
   total_completion_tokens: number | null;
   total_cached_tokens: number | null;
   total_cost_usd: number | null;
+  cost_is_estimated?: boolean;
   total_steps: number | null;
 }
 

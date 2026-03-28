@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from oddish.api.helpers import build_task_status_responses_from_counts
 from oddish.config import normalize_model_id
+from oddish.model_pricing import estimate_cost_usd
 from auth import APIKeyScope, AuthContext, require_auth
 from oddish.db import (
     ExperimentModel,
@@ -175,7 +176,17 @@ async def get_dashboard(
                     func.sum(TrialModel.input_tokens).label("input_tokens"),
                     func.sum(TrialModel.cache_tokens).label("cache_tokens"),
                     func.sum(TrialModel.output_tokens).label("output_tokens"),
-                    func.sum(TrialModel.cost_usd).label("cost_usd"),
+                    func.sum(TrialModel.cost_usd).label("native_cost_usd"),
+                    # Tokens from trials WITHOUT native cost (for estimation)
+                    func.coalesce(
+                        func.sum(case((TrialModel.cost_usd.is_(None), TrialModel.input_tokens), else_=0)), 0
+                    ).label("est_input_tokens"),
+                    func.coalesce(
+                        func.sum(case((TrialModel.cost_usd.is_(None), TrialModel.output_tokens), else_=0)), 0
+                    ).label("est_output_tokens"),
+                    func.coalesce(
+                        func.sum(case((TrialModel.cost_usd.is_(None), TrialModel.cache_tokens), else_=0)), 0
+                    ).label("est_cache_tokens"),
                     func.count(
                         case((TrialModel.status == TrialStatus.RUNNING, 1))
                     ).label("running"),
@@ -242,7 +253,10 @@ async def get_dashboard(
                         "input_tokens": 0,
                         "cache_tokens": 0,
                         "output_tokens": 0,
-                        "cost_usd": 0.0,
+                        "native_cost_usd": 0.0,
+                        "est_input_tokens": 0,
+                        "est_output_tokens": 0,
+                        "est_cache_tokens": 0,
                         "running": 0,
                         "retrying": 0,
                         "queued": 0,
@@ -266,8 +280,17 @@ async def get_dashboard(
                 aggregate["output_tokens"] = int(aggregate["output_tokens"]) + int(
                     row.output_tokens or 0
                 )
-                aggregate["cost_usd"] = float(aggregate["cost_usd"]) + float(
-                    row.cost_usd or 0
+                aggregate["native_cost_usd"] = float(aggregate["native_cost_usd"]) + float(
+                    row.native_cost_usd or 0
+                )
+                aggregate["est_input_tokens"] = int(aggregate["est_input_tokens"]) + int(
+                    row.est_input_tokens or 0
+                )
+                aggregate["est_output_tokens"] = int(aggregate["est_output_tokens"]) + int(
+                    row.est_output_tokens or 0
+                )
+                aggregate["est_cache_tokens"] = int(aggregate["est_cache_tokens"]) + int(
+                    row.est_cache_tokens or 0
                 )
                 aggregate["running"] = int(aggregate["running"]) + int(row.running or 0)
                 aggregate["retrying"] = int(aggregate["retrying"]) + int(
@@ -293,6 +316,13 @@ async def get_dashboard(
                     if duration_count > 0
                     else None
                 )
+                native_cost = float(aggregate["native_cost_usd"])
+                estimated_portion = estimate_cost_usd(
+                    str(aggregate["model"]),
+                    int(aggregate["est_input_tokens"]),
+                    int(aggregate["est_output_tokens"]),
+                    int(aggregate["est_cache_tokens"]),
+                ) or 0.0
                 model_usage.append(
                     {
                         "model": str(aggregate["model"]),
@@ -301,7 +331,8 @@ async def get_dashboard(
                         "input_tokens": int(aggregate["input_tokens"]),
                         "cache_tokens": int(aggregate["cache_tokens"]),
                         "output_tokens": int(aggregate["output_tokens"]),
-                        "cost_usd": round(float(aggregate["cost_usd"]), 4),
+                        "cost_usd": round(native_cost + estimated_portion, 4),
+                        "estimated_cost_usd": round(estimated_portion, 4),
                         "running": int(aggregate["running"]),
                         "retrying": int(aggregate["retrying"]),
                         "queued": int(aggregate["queued"]),

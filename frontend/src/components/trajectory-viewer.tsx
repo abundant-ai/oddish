@@ -457,8 +457,14 @@ function StepMetricsBar({ metrics }: { metrics: TrajectoryStep["metrics"] }) {
       ))}
       {/* Cost */}
       {metrics.cost_usd && metrics.cost_usd > 0 && (
-        <span className="font-medium text-green-500">
-          ${metrics.cost_usd.toFixed(4)}
+        <span
+          className={`font-medium ${metrics.cost_is_estimated ? "text-yellow-500" : "text-green-500"}`}
+          title={metrics.cost_is_estimated ? "Estimated from token counts" : "Native cost from provider"}
+        >
+          {metrics.cost_is_estimated ? "~" : ""}${metrics.cost_usd.toFixed(4)}
+          {metrics.cost_is_estimated && (
+            <span className="ml-0.5 text-[10px] opacity-70">est.</span>
+          )}
         </span>
       )}
     </div>
@@ -789,7 +795,14 @@ export function TrajectoryViewer({
             <span className="text-xs font-normal text-muted-foreground">
               {trajectory.steps.length} steps
               {trajectory.final_metrics?.total_cost_usd && (
-                <> · ${trajectory.final_metrics.total_cost_usd.toFixed(4)}</>
+                <span title={trajectory.final_metrics.cost_is_estimated ? "Estimated from token counts" : "Native cost from provider"}>
+                  {" · "}
+                  {trajectory.final_metrics.cost_is_estimated ? "~" : ""}
+                  ${trajectory.final_metrics.total_cost_usd.toFixed(4)}
+                  {trajectory.final_metrics.cost_is_estimated && (
+                    <span className="ml-0.5 text-[10px] opacity-70">est.</span>
+                  )}
+                </span>
               )}
             </span>
           </CardTitle>
