@@ -101,6 +101,9 @@ def build_compact_trial_response(
             analysis_summary if isinstance(analysis_summary, dict) else None
         )
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
+    cost_usd, cost_is_estimated, cost_estimation_method = _resolve_cost(
+        trial, normalized_model or trial.model
+    )
 
     return TrialResponse(
         id=trial.id,
@@ -121,9 +124,9 @@ def build_compact_trial_response(
         input_tokens=None,
         cache_tokens=None,
         output_tokens=None,
-        cost_usd=None,
-        cost_is_estimated=None,
-        cost_estimation_method=None,
+        cost_usd=cost_usd,
+        cost_is_estimated=cost_is_estimated,
+        cost_estimation_method=cost_estimation_method,
         phase_timing=trial.phase_timing,
         has_trajectory=trial.has_trajectory,
         analysis_status=trial.analysis_status,

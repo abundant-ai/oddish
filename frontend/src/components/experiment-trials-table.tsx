@@ -121,6 +121,14 @@ const EMPTY_TRIAL_INDEX: ReadonlyMap<string, number> = new Map<
   string,
   number
 >();
+function formatCostCompact(usd: number): string {
+  if (usd >= 100) return `$${usd.toFixed(0)}`;
+  if (usd >= 1) return `$${usd.toFixed(2)}`;
+  if (usd >= 0.01) return `$${usd.toFixed(3)}`;
+  if (usd > 0) return `$${usd.toFixed(4)}`;
+  return "$0";
+}
+
 const VIRTUALIZATION_THRESHOLD = 50;
 const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "queued",
@@ -505,6 +513,22 @@ export function ExperimentTrialsTable({
     () => sortedAgentSummaries.filter((agent) => !hiddenAgents.has(agent.key)),
     [sortedAgentSummaries, hiddenAgents],
   );
+
+  // Per-agent cost aggregation from all trials
+  const agentCosts = useMemo(() => {
+    const costs: Record<string, { total: number; hasEstimated: boolean }> = {};
+    for (const task of tasks) {
+      for (const trial of task.trials ?? []) {
+        const key = getExperimentAgentKey(trial, modelScopedAgents);
+        if (trial.cost_usd != null && trial.cost_usd > 0) {
+          if (!costs[key]) costs[key] = { total: 0, hasEstimated: false };
+          costs[key].total += trial.cost_usd;
+          if (trial.cost_is_estimated) costs[key].hasEstimated = true;
+        }
+      }
+    }
+    return costs;
+  }, [tasks, modelScopedAgents]);
 
   const columnOrder = useMemo(
     () => ["task", ...visibleAgents.map((agent) => agent.key)],
@@ -1545,6 +1569,19 @@ export function ExperimentTrialsTable({
                             {agent.model ?? "—"}
                           </TooltipContent>
                         </Tooltip>
+                        {agentCosts[agent.key] && agentCosts[agent.key].total > 0 && (
+                          <div
+                            className="font-mono text-[9px] font-normal text-muted-foreground sm:text-[10px]"
+                            title={
+                              agentCosts[agent.key].hasEstimated
+                                ? "Includes estimates from token counts"
+                                : "Native cost from provider"
+                            }
+                          >
+                            {agentCosts[agent.key].hasEstimated ? "~" : ""}
+                            {formatCostCompact(agentCosts[agent.key].total)}
+                          </div>
+                        )}
                       </div>
                       {agentIndex < visibleAgents.length - 1 && (
                         <div

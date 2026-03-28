@@ -22,6 +22,8 @@ type LeaderboardRow = {
   model: string | null;
   queueKey: string | null;
   mean: number;
+  totalCostUsd: number;
+  hasEstimatedCost: boolean;
 };
 
 const GRADIENTS: Array<[string, string]> = [
@@ -32,6 +34,14 @@ const GRADIENTS: Array<[string, string]> = [
   ["#2563eb", "#a855f7"],
   ["#22d3ee", "#a3e635"],
 ];
+
+function formatCostCompact(usd: number): string {
+  if (usd >= 100) return `$${usd.toFixed(0)}`;
+  if (usd >= 1) return `$${usd.toFixed(2)}`;
+  if (usd >= 0.01) return `$${usd.toFixed(3)}`;
+  if (usd > 0) return `$${usd.toFixed(4)}`;
+  return "$0";
+}
 
 function getPassAtOneValue(trials: Trial[]): number | null {
   if (trials.length === 0) return null;
@@ -52,6 +62,8 @@ function calculateRows(
 
   for (const summary of agentSummaries) {
     const taskValues: number[] = [];
+    let totalCostUsd = 0;
+    let hasEstimatedCost = false;
     for (const task of tasks) {
       const trials = (task.trials ?? []).filter(
         (trial) =>
@@ -60,6 +72,12 @@ function calculateRows(
       const value = getPassAtOneValue(trials);
       if (value !== null) {
         taskValues.push(value);
+      }
+      for (const trial of trials) {
+        if (trial.cost_usd != null && trial.cost_usd > 0) {
+          totalCostUsd += trial.cost_usd;
+          if (trial.cost_is_estimated) hasEstimatedCost = true;
+        }
       }
     }
 
@@ -74,6 +92,8 @@ function calculateRows(
       model: summary.model,
       queueKey: summary.queueKey,
       mean,
+      totalCostUsd,
+      hasEstimatedCost,
     });
   }
 
@@ -141,8 +161,23 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
                       <span className="font-semibold">{row.label}</span>
                     </span>
                   </div>
-                  <div className="text-right font-mono text-sm text-foreground">
-                    {(row.mean * 100).toFixed(1)}%
+                  <div className="flex items-baseline gap-2 text-right font-mono text-sm">
+                    {row.totalCostUsd > 0 && (
+                      <span
+                        className="text-[10px] text-muted-foreground"
+                        title={
+                          row.hasEstimatedCost
+                            ? "Includes estimates from token counts"
+                            : "Native cost from provider"
+                        }
+                      >
+                        {row.hasEstimatedCost ? "~" : ""}
+                        {formatCostCompact(row.totalCostUsd)}
+                      </span>
+                    )}
+                    <span className="text-foreground">
+                      {(row.mean * 100).toFixed(1)}%
+                    </span>
                   </div>
                 </div>
                 <div className="relative h-3 rounded-full bg-muted/70">

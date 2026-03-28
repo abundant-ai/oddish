@@ -58,6 +58,9 @@ export interface Trial {
   reward: number | null;
   error_message?: string | null;
   result?: Record<string, unknown> | null;
+  cost_usd?: number | null;
+  cost_is_estimated?: boolean | null;
+  cost_estimation_method?: string | null;
   analysis_status?: JobStatus | null;
   analysis?: TrialAnalysis | null;
   created_at: string;

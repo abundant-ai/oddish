@@ -51,15 +51,22 @@ PRICING_TABLE: list[tuple[str, ModelPricing]] = [
     ("gpt-5.4-pro", ModelPricing(input=30e-6, output=180e-6, cache_read=3e-6)),
     ("gpt-5.4", ModelPricing(input=2.5e-6, output=15e-6, cache_read=2.5e-7)),
     # OpenAI — GPT-5.x
+    ("gpt-5.3-codex", ModelPricing(input=1.75e-6, output=14e-6, cache_read=1.75e-7)),
     ("gpt-5.3", ModelPricing(input=1.75e-6, output=14e-6, cache_read=1.75e-7)),
+    ("gpt-5.2-codex", ModelPricing(input=1.75e-6, output=14e-6, cache_read=1.75e-7)),
     ("gpt-5.2-pro", ModelPricing(input=21e-6, output=168e-6)),
     ("gpt-5.2", ModelPricing(input=1.75e-6, output=14e-6, cache_read=1.75e-7)),
+    ("gpt-5.1-codex-mini", ModelPricing(input=2.5e-7, output=2e-6, cache_read=2.5e-8)),
+    ("gpt-5.1-codex", ModelPricing(input=1.25e-6, output=10e-6, cache_read=1.25e-7)),
     ("gpt-5.1", ModelPricing(input=1.25e-6, output=10e-6, cache_read=1.25e-7)),
     # OpenAI — GPT-5 base
+    ("gpt-5-codex", ModelPricing(input=1.25e-6, output=10e-6, cache_read=1.25e-7)),
     ("gpt-5-mini", ModelPricing(input=2.5e-7, output=2e-6, cache_read=2.5e-8)),
     ("gpt-5-nano", ModelPricing(input=5e-8, output=4e-7, cache_read=5e-9)),
     ("gpt-5-pro", ModelPricing(input=15e-6, output=120e-6)),
     ("gpt-5", ModelPricing(input=1.25e-6, output=10e-6, cache_read=1.25e-7)),
+    # OpenAI — Codex
+    ("codex-mini", ModelPricing(input=1.5e-6, output=6e-6, cache_read=3.75e-7)),
     # OpenAI — GPT-4.1
     ("gpt-4.1-mini", ModelPricing(input=4e-7, output=1.6e-6, cache_read=1e-7)),
     ("gpt-4.1-nano", ModelPricing(input=1e-7, output=4e-7, cache_read=2.5e-8)),
