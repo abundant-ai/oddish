@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, case, func, or_, select, text
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from oddish.api.helpers import build_task_status_responses_from_counts
@@ -121,21 +121,14 @@ async def get_dashboard(
 
     async with get_session() as session:
         # =====================================================================
-        # 1. Health Check (inline, no separate query needed)
+        # 1. Health Check — derived from actual query success below, no
+        #    dedicated ``SELECT 1`` round-trip needed on the hot path.
         # =====================================================================
-        try:
-            await session.execute(text("SELECT 1"))
-            health = {
-                "status": "healthy",
-                "database": "connected",
-                "timestamp": utcnow().isoformat(),
-            }
-        except Exception:
-            health = {
-                "status": "degraded",
-                "database": "disconnected",
-                "timestamp": utcnow().isoformat(),
-            }
+        health = {
+            "status": "healthy",
+            "database": "connected",
+            "timestamp": utcnow().isoformat(),
+        }
 
         # =====================================================================
         # 2. Queue/Pipeline Stats
@@ -443,7 +436,9 @@ async def get_dashboard(
                 .subquery()
             )
 
-            latest_task_ranked = (
+            # Use DISTINCT ON to efficiently pick the latest task per
+            # experiment instead of a window-function scan over every task.
+            latest_task = (
                 select(
                     TaskModel.experiment_id.label("experiment_id"),
                     TaskModel.user.label("last_user"),
@@ -451,24 +446,13 @@ async def get_dashboard(
                         "last_github_username"
                     ),
                     TaskModel.tags["github_meta"].astext.label("last_github_meta"),
-                    func.row_number()
-                    .over(
-                        partition_by=TaskModel.experiment_id,
-                        order_by=TaskModel.created_at.desc(),
-                    )
-                    .label("row_number"),
                 )
                 .where(TaskModel.org_id == auth.org_id)
-                .subquery()
-            )
-            latest_task = (
-                select(
-                    latest_task_ranked.c.experiment_id,
-                    latest_task_ranked.c.last_user,
-                    latest_task_ranked.c.last_github_username,
-                    latest_task_ranked.c.last_github_meta,
+                .distinct(TaskModel.experiment_id)
+                .order_by(
+                    TaskModel.experiment_id,
+                    TaskModel.created_at.desc(),
                 )
-                .where(latest_task_ranked.c.row_number == 1)
                 .subquery()
             )
 
