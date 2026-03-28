@@ -134,6 +134,8 @@ class TaskModel(Base):
     __table_args__ = (
         Index("idx_tasks_org_created_at", "org_id", "created_at"),
         Index("idx_tasks_experiment_id", "experiment_id"),
+        # Supports DISTINCT ON (experiment_id) ORDER BY created_at DESC
+        Index("idx_tasks_experiment_created_at", "experiment_id", "created_at"),
     )
 
     # Override id to add auto-generation
@@ -324,6 +326,8 @@ class TrialModel(Base):
         # Composite index for efficient queue stats aggregation (no JOIN needed)
         Index("idx_trials_org_provider_status", "org_id", "provider", "status"),
         Index("idx_trials_org_queue_key_status", "org_id", "queue_key", "status"),
+        # Covers the dashboard usage GROUP BY (model, provider) with org_id filter
+        Index("idx_trials_org_model_provider", "org_id", "model", "provider"),
     )
 
 
