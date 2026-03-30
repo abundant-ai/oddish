@@ -116,7 +116,6 @@ Public routes:
 - `/`
 - `/share/*`
 - `/datasets/*`
-- `/api/health`
 - `/api/public/*`
 
 Everything else is protected by Clerk middleware.
@@ -142,7 +141,6 @@ The frontend proxies backend requests through `src/app/api/*`. Main groups:
 - `/api/settings/api-keys*` for API key management
 - `/api/admin/*` for queue slots, PGQueuer monitoring, and orphaned state detection
 - `/api/public/*` for public experiment, dataset, and artifact access
-- `/api/health` for backend connectivity checks used by the nav health indicator
 
 ## Project Structure
 
@@ -244,8 +242,8 @@ NEXT_PUBLIC_APP_URL=https://local.oddish.app
 Check that the selected backend is running and reachable:
 
 ```bash
-curl http://localhost:8000/health
-curl https://abundant-ai--api.modal.run/health
+curl http://localhost:8000/openapi.json
+curl https://abundant-ai--api.modal.run/openapi.json
 ```
 
 ### Clerk auth issues

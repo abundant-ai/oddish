@@ -47,7 +47,7 @@ const LOCAL_FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8000";
 
 /**
  * Get the backend URL for a specific endpoint
- * @param endpoint - The endpoint name (e.g., 'health', 'tasks', 'queues')
+ * @param endpoint - The endpoint name (e.g., 'dashboard', 'tasks', 'queues')
  * @param path - Additional path parameters (e.g., '/123' for task ID)
  * @param queryParams - Optional query parameters
  * @returns The full URL to use for the API call
