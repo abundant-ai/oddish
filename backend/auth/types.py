@@ -13,7 +13,7 @@ class AuthMethod(str, Enum):
 
     API_KEY = "api_key"
     CLERK_JWT = "clerk_jwt"
-    ANONYMOUS = "anonymous"  # For health checks, public endpoints
+    ANONYMOUS = "anonymous"  # For public endpoints
 
 
 @dataclass

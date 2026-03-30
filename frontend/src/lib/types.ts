@@ -141,12 +141,6 @@ export interface QueueStats {
   };
 }
 
-export interface HealthStatus {
-  status: "healthy" | "degraded";
-  database: "connected" | "disconnected";
-  timestamp: string;
-}
-
 // Pipeline statistics (analysis/verdict progress)
 export interface PipelineStats {
   trials: Record<string, number>;
@@ -200,7 +194,6 @@ export interface DashboardExperiment {
 
 // Combined dashboard response (single API call)
 export interface DashboardResponse {
-  health: HealthStatus;
   queues: QueueStats;
   pipeline: PipelineStats;
   model_usage: ModelUsage[];

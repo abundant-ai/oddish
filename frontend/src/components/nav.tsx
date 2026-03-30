@@ -10,7 +10,6 @@ import {
   useClerk,
   useUser,
 } from "@clerk/nextjs";
-import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -21,58 +20,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ThemeToggle } from "@/components/theme-toggle";
-import {
-  ChevronDown,
-  User,
-  LogOut,
-  Activity,
-  Shield,
-  BookOpen,
-} from "lucide-react";
-import { fetcher } from "@/lib/api";
-
-type HealthResponse = {
-  status?: string;
-};
-
-function HealthIndicator() {
-  const { data, error, isLoading } = useSWR<HealthResponse>(
-    "/api/health",
-    fetcher,
-    {
-      refreshInterval: 30000,
-      revalidateOnFocus: false,
-    },
-  );
-
-  const status = data?.status;
-
-  let statusText = "Loading...";
-  let colorClass = "text-yellow-400";
-
-  if (error) {
-    statusText = "Disconnected";
-    colorClass = "text-red-400";
-  } else if (status === "healthy") {
-    statusText = "Healthy";
-    colorClass = "text-green-400";
-  } else if (status) {
-    statusText = status;
-    colorClass = "text-yellow-400";
-  } else if (!isLoading && !status) {
-    statusText = "Unknown";
-    colorClass = "text-yellow-400";
-  }
-
-  return (
-    <div className="flex items-center gap-1.5 rounded-md border border-[#85b85c]/20 bg-muted/40 px-2 py-1">
-      <Activity className={`h-3.5 w-3.5 ${colorClass}`} />
-      <span className={`text-xs font-medium capitalize ${colorClass}`}>
-        {statusText}
-      </span>
-    </div>
-  );
-}
+import { ChevronDown, User, LogOut, Shield, BookOpen } from "lucide-react";
 
 export function Nav() {
   const pathname = usePathname();
@@ -127,7 +75,6 @@ export function Nav() {
                   <span className="hidden sm:inline">Docs</span>
                 </a>
               </Button>
-              <HealthIndicator />
               <DropdownMenu modal={false}>
                 <DropdownMenuTrigger asChild>
                   <Button

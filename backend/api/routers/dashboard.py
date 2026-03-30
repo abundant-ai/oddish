@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, case, func, or_, select, text
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from oddish.api.helpers import build_task_status_responses_from_counts
@@ -19,7 +19,6 @@ from oddish.db import (
     TrialModel,
     VerdictStatus,
     get_session,
-    utcnow,
 )
 from oddish.db.models import TrialStatus
 from oddish.queue import get_pipeline_stats, get_queue_stats_with_concurrency
@@ -97,7 +96,7 @@ async def get_dashboard(
     include_experiments: bool = Query(True),
 ) -> dict:
     """
-    Combined dashboard endpoint returning health, queues, and recent tasks.
+    Combined dashboard endpoint returning queues and recent tasks.
 
     This eliminates 3 separate API calls, reducing latency significantly.
     Response is cached for 10 seconds per organization.
@@ -121,24 +120,7 @@ async def get_dashboard(
 
     async with get_session() as session:
         # =====================================================================
-        # 1. Health Check (inline, no separate query needed)
-        # =====================================================================
-        try:
-            await session.execute(text("SELECT 1"))
-            health = {
-                "status": "healthy",
-                "database": "connected",
-                "timestamp": utcnow().isoformat(),
-            }
-        except Exception:
-            health = {
-                "status": "degraded",
-                "database": "disconnected",
-                "timestamp": utcnow().isoformat(),
-            }
-
-        # =====================================================================
-        # 2. Queue/Pipeline Stats
+        # 1. Queue/Pipeline Stats
         # =====================================================================
         # Usage-only requests back the dashboard usage card and do not render
         # queue/pipeline sections. Skip these expensive aggregations to reduce
@@ -158,7 +140,7 @@ async def get_dashboard(
             pipeline_stats = await get_pipeline_stats(session, auth.org_id)
 
         # =====================================================================
-        # 3. Per-model cost & token usage (aggregated from trials)
+        # 2. Per-model cost & token usage (aggregated from trials)
         # =====================================================================
         model_usage: list[dict[str, Any]] = []
         if include_usage:
@@ -312,7 +294,7 @@ async def get_dashboard(
                 )
 
         # =====================================================================
-        # 4. Recent Tasks (optimized two-phase query)
+        # 3. Recent Tasks (optimized two-phase query)
         # =====================================================================
         # Phase 1: Fetch paginated tasks
         tasks_response = []
@@ -341,7 +323,7 @@ async def get_dashboard(
                 ]
 
         # =====================================================================
-        # 5. Experiment table data (server-side pagination + search)
+        # 4. Experiment table data (server-side pagination + search)
         # =====================================================================
         experiments_response = []
         experiments_total = 0
@@ -626,7 +608,6 @@ async def get_dashboard(
                 )
 
     response = {
-        "health": health,
         "queues": queue_stats,
         "pipeline": pipeline_stats,
         "model_usage": model_usage,
