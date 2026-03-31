@@ -43,7 +43,7 @@ from oddish.cli.config import (
 from oddish.experiment import generate_experiment_name
 
 console = Console()
-TASK_UPLOAD_CONCURRENCY = 4
+TASK_UPLOAD_CONCURRENCY = 1
 
 
 def run(
