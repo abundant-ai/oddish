@@ -381,12 +381,39 @@ async def _store_trial_results(
                     trial.finished_at = utcnow()
                     console.print(f"[red]Trial {trial_id} FAILED (max attempts)[/red]")
         else:
-            trial.status = TrialStatus.FAILED
-            trial.finished_at = utcnow()
-            trial.error_message = (
-                execution_error or "Trial execution failed with exception"
-            )
-            console.print(f"[red]Trial {trial_id} FAILED (exception)[/red]")
+            # outcome is None — usually a CancelledError (worker killed, OOM,
+            # Modal timeout during environment build, etc.).  These are
+            # typically transient, so retry when possible.
+            if trial.attempts < trial.max_attempts:
+                task = await session.get(TaskModel, trial.task_id)
+                queue_key = trial.queue_key or settings.get_queue_key_for_trial(
+                    trial.agent,
+                    settings.normalize_trial_model(trial.agent, trial.model),
+                )
+                pgq_priority = (
+                    1000 if task and task.priority == Priority.HIGH else 0
+                )
+                trial.status = TrialStatus.RETRYING
+                trial.error_message = (
+                    execution_error or "Trial execution failed with exception"
+                )
+                await enqueue_trial(
+                    session,
+                    trial_id,
+                    queue_key,
+                    priority=pgq_priority,
+                )
+                console.print(
+                    f"[yellow]Trial {trial_id} re-enqueued after exception "
+                    f"({trial.attempts}/{trial.max_attempts})[/yellow]"
+                )
+            else:
+                trial.status = TrialStatus.FAILED
+                trial.finished_at = utcnow()
+                trial.error_message = (
+                    execution_error or "Trial execution failed with exception"
+                )
+                console.print(f"[red]Trial {trial_id} FAILED (exception, max attempts)[/red]")
 
         trial.current_pgqueuer_job_id = None
         trial.current_worker_id = None
