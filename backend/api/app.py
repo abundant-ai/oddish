@@ -65,9 +65,4 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    @api.get("/health")
-    async def health_check():
-        """Simple health check endpoint (no auth required)."""
-        return {"status": "healthy"}
-
     return api
