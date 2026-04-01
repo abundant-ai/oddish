@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from oddish.config import Settings
 
-# API containers handle concurrent requests; use slightly larger DB pools
-# than the single-job worker defaults.
-Settings.db_pool_size = 2
-Settings.db_pool_max_overflow = 1
+# API containers handle many concurrent requests in a warm Modal container.
+# Use fresh DB connections per request here so stale pooled connections do not
+# get reused across requests and tiny QueuePool settings do not become a
+# bottleneck for auth/dashboard traffic.
+Settings.db_use_null_pool = True
 
 import modal
 
