@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 
-import httpx
 import typer
 from rich.console import Console
 
@@ -86,18 +85,3 @@ def get_auth_headers(api_url: str | None = None) -> dict[str, str]:
         return {}
     return {"Authorization": f"Bearer {api_key}"}
 
-
-# =============================================================================
-# API Health
-# =============================================================================
-
-
-def check_api_health(api_url: str, timeout: float = 2.0) -> bool:
-    """Check if the API is healthy."""
-    try:
-        with httpx.Client(timeout=timeout, headers=get_auth_headers()) as client:
-            response = client.get(f"{api_url}/health")
-            result: bool = response.status_code == 200
-            return result
-    except Exception:
-        return False

@@ -15,7 +15,6 @@ from oddish.cli.api import (
     watch_task,
 )
 from oddish.cli.config import (
-    check_api_health,
     get_api_url,
     get_auth_headers,
     require_api_key,
@@ -95,12 +94,6 @@ def status(
 
         console.print("[bold cyan]Infrastructure:[/bold cyan]")
         issues = 0
-
-        if check_api_health(api_url):
-            console.print("  [green]✓[/green] API healthy")
-        else:
-            console.print("  [yellow]⚠[/yellow] API not responding")
-            issues += 1
 
         console.print()
 

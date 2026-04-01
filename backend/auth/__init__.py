@@ -28,7 +28,7 @@ async def get_auth_context(
 
     Supports:
     - Bearer token (API key): Authorization: Bearer ok_<key>
-    - No auth (for health checks): returns anonymous context
+    - No auth (for public endpoints): returns anonymous context
 
     Uses in-memory caching to avoid repeated DB queries for the same user/key.
 

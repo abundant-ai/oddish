@@ -113,7 +113,6 @@ function useDashboardUsage(
   );
 
   return {
-    health: data?.health ?? null,
     queues: data?.queues ?? null,
     pipeline: data?.pipeline ?? null,
     modelUsage: data?.model_usage ?? [],

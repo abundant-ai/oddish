@@ -1,7 +1,7 @@
 // Shared API utilities
 export const API_URL = "/api";
 
-// Shared SWR key for dashboard data - used by Nav health indicator and Dashboard page
+// Shared SWR key for dashboard data.
 export const DASHBOARD_SWR_KEY = "/api/dashboard";
 
 export const fetcher = async <T>(url: string): Promise<T> => {

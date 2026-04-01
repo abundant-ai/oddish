@@ -19,7 +19,6 @@ from oddish.db import (
     TrialModel,
     VerdictStatus,
     get_session,
-    utcnow,
 )
 from oddish.db.models import TrialStatus
 from oddish.queue import get_pipeline_stats, get_queue_stats_with_concurrency
@@ -97,7 +96,7 @@ async def get_dashboard(
     include_experiments: bool = Query(True),
 ) -> dict:
     """
-    Combined dashboard endpoint returning health, queues, and recent tasks.
+    Combined dashboard endpoint returning queues and recent tasks.
 
     This eliminates 3 separate API calls, reducing latency significantly.
     Response is cached for 10 seconds per organization.
@@ -121,17 +120,7 @@ async def get_dashboard(
 
     async with get_session() as session:
         # =====================================================================
-        # 1. Health Check — derived from actual query success below, no
-        #    dedicated ``SELECT 1`` round-trip needed on the hot path.
-        # =====================================================================
-        health = {
-            "status": "healthy",
-            "database": "connected",
-            "timestamp": utcnow().isoformat(),
-        }
-
-        # =====================================================================
-        # 2. Queue/Pipeline Stats
+        # 1. Queue/Pipeline Stats
         # =====================================================================
         # Usage-only requests back the dashboard usage card and do not render
         # queue/pipeline sections. Skip these expensive aggregations to reduce
@@ -151,7 +140,7 @@ async def get_dashboard(
             pipeline_stats = await get_pipeline_stats(session, auth.org_id)
 
         # =====================================================================
-        # 3. Per-model cost & token usage (aggregated from trials)
+        # 2. Per-model cost & token usage (aggregated from trials)
         # =====================================================================
         model_usage: list[dict[str, Any]] = []
         if include_usage:
@@ -305,7 +294,7 @@ async def get_dashboard(
                 )
 
         # =====================================================================
-        # 4. Recent Tasks (optimized two-phase query)
+        # 3. Recent Tasks (optimized two-phase query)
         # =====================================================================
         # Phase 1: Fetch paginated tasks
         tasks_response = []
@@ -334,7 +323,7 @@ async def get_dashboard(
                 ]
 
         # =====================================================================
-        # 5. Experiment table data (server-side pagination + search)
+        # 4. Experiment table data (server-side pagination + search)
         # =====================================================================
         experiments_response = []
         experiments_total = 0
@@ -610,7 +599,6 @@ async def get_dashboard(
                 )
 
     response = {
-        "health": health,
         "queues": queue_stats,
         "pipeline": pipeline_stats,
         "model_usage": model_usage,

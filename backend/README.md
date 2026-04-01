@@ -96,7 +96,7 @@ The API layer enforces this scope in all list/read/write queries.
 | `api/schemas.py` | Pydantic models for org/auth/share responses |
 | `api/routers/tasks.py` | Task CRUD, uploads, sweep creation, sharing, and file access |
 | `api/routers/trials.py` | Trial listing, retry, logs, result, trajectory, and debug file inspection |
-| `api/routers/dashboard.py` | Cached aggregate dashboard endpoint (health, queues, usage, tasks, experiments) |
+| `api/routers/dashboard.py` | Cached aggregate dashboard endpoint (queues, usage, tasks, experiments) |
 | `api/routers/orgs.py` | Current org lookup and Clerk-backed user management |
 | `api/routers/api_keys.py` | Org API key listing, creation, and revocation |
 | `api/routers/public.py` | Public token-based read routes (no auth) |
@@ -165,8 +165,7 @@ All routes require auth unless marked public.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/health` | Liveness check (no auth) |
-| GET | `/dashboard` | Cached aggregate response for health, queues, pipeline stats, usage, tasks, and experiments |
+| GET | `/dashboard` | Cached aggregate response for queues, pipeline stats, usage, tasks, and experiments |
 | POST | `/tasks/upload` | Upload task archive |
 | POST | `/tasks/sweep` | Expand one task into multiple trials |
 | GET | `/tasks` | List tasks (org-scoped, paginated/filtered) |
@@ -294,9 +293,6 @@ pnpm dev:modal
 ### Smoke tests
 
 ```bash
-# health
-curl "$ODDISH_MODAL_API_URL/health" | jq
-
 # authenticated list
 curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_MODAL_API_URL/tasks" | jq
 

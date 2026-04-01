@@ -34,7 +34,6 @@ from oddish.cli.api import (
     watch_task,
 )
 from oddish.cli.config import (
-    check_api_health,
     error_console,
     get_api_url,
     get_dashboard_url,
@@ -44,7 +43,7 @@ from oddish.cli.config import (
 from oddish.experiment import generate_experiment_name
 
 console = Console()
-TASK_UPLOAD_CONCURRENCY = 4
+TASK_UPLOAD_CONCURRENCY = 1
 
 
 def run(
@@ -470,14 +469,6 @@ def run(
     # Default user to OS username
     if not user:
         user = getpass.getuser()
-
-    # Check API health (use longer timeout for Modal cold starts)
-    if not check_api_health(api_url, timeout=10.0):
-        error_console.print(
-            "[red]API is not reachable or authentication failed.[/red]\n"
-            "Verify ODDISH_API_URL and ODDISH_API_KEY."
-        )
-        raise typer.Exit(1)
 
     if environment is None:
         environment = EnvironmentType.MODAL if is_modal_api else EnvironmentType.DOCKER

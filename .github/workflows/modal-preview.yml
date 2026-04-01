@@ -86,26 +86,25 @@ jobs:
           )"
           echo "modal_api_url=$modal_api_url" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for preview backend health
+      - name: Wait for preview backend readiness
         run: |
           python - "${{ steps.deploy_modal.outputs.modal_api_url }}" <<'PY'
-          import json
           import sys
           import time
           import urllib.error
           import urllib.request
 
           base_url = sys.argv[1].rstrip("/")
-          health_url = f"{base_url}/health"
+          readiness_url = f"{base_url}/openapi.json"
           deadline = time.time() + 180
-          last_error = "no health response yet"
+          last_error = "no readiness response yet"
 
           while time.time() < deadline:
               try:
-                  with urllib.request.urlopen(health_url, timeout=10) as response:
-                      payload = json.load(response)
-                  if response.status == 200 and payload.get("status") == "healthy":
-                      print(f"Modal preview healthy at {health_url}")
+                  with urllib.request.urlopen(readiness_url, timeout=10) as response:
+                      payload = response.read(64)
+                  if response.status == 200 and payload:
+                      print(f"Modal preview ready at {readiness_url}")
                       break
                   last_error = f"unexpected response: {payload!r}"
               except urllib.error.HTTPError as exc:
@@ -115,7 +114,7 @@ jobs:
               time.sleep(5)
           else:
               raise SystemExit(
-                  f"Modal preview never became healthy at {health_url}: {last_error}"
+                  f"Modal preview never became ready at {readiness_url}: {last_error}"
               )
           PY
 
