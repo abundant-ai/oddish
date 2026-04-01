@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy.exc import DBAPIError
 
 from models import APIKeyScope, UserRole, hash_api_key
 from oddish.db import get_session
@@ -16,6 +18,14 @@ from auth.verification import (
     verify_api_key,
     verify_clerk_jwt,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _is_retryable_disconnect(exc: DBAPIError) -> bool:
+    if exc.connection_invalidated:
+        return True
+    return "ConnectionDoesNotExistError" in str(exc.orig)
 
 
 async def get_auth_context(
@@ -68,39 +78,47 @@ async def get_auth_context(
             )
 
         # Cache miss - validate and cache
-        async with get_session() as session:
-            result = await verify_api_key(session, token)
+        for attempt in range(2):
+            try:
+                cached_auth: CachedAuthData | None = None
+                auth_context: AuthContext | None = None
+                async with get_session() as session:
+                    result = await verify_api_key(session, token)
 
-            if result is None:
-                # Only show "ok_***" like standard SaaS apps (Stripe, etc.)
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid or expired API key",
-                    headers={"WWW-Authenticate": "Bearer"},
+                    if result is None:
+                        # Only show "ok_***" like standard SaaS apps (Stripe, etc.)
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Invalid or expired API key",
+                            headers={"WWW-Authenticate": "Bearer"},
+                        )
+
+                    api_key, org = result
+                    cached_auth = CachedAuthData(
+                        method=AuthMethod.API_KEY,
+                        org_id=org.id,
+                        api_key_id=api_key.id,
+                        scope=api_key.scope,
+                    )
+                    auth_context = AuthContext(
+                        method=AuthMethod.API_KEY,
+                        org_id=org.id,
+                        org=org,
+                        api_key_id=api_key.id,
+                        api_key=api_key,
+                        scope=api_key.scope,
+                    )
+
+                if cached_auth is not None and auth_context is not None:
+                    set_cached_auth(cache_key, cached_auth)
+                    return auth_context
+            except DBAPIError as exc:
+                if attempt == 1 or not _is_retryable_disconnect(exc):
+                    raise
+                logger.warning(
+                    "Retrying API key auth after transient DB disconnect: %s",
+                    exc,
                 )
-
-            api_key, org = result
-            await session.commit()  # Persist last_used_at update
-
-            # Cache the result
-            set_cached_auth(
-                cache_key,
-                CachedAuthData(
-                    method=AuthMethod.API_KEY,
-                    org_id=org.id,
-                    api_key_id=api_key.id,
-                    scope=api_key.scope,
-                ),
-            )
-
-            return AuthContext(
-                method=AuthMethod.API_KEY,
-                org_id=org.id,
-                org=org,
-                api_key_id=api_key.id,
-                api_key=api_key,
-                scope=api_key.scope,
-            )
 
     # Clerk JWT authentication (JWT format - contains dots)
     if "." in token:
@@ -135,44 +153,53 @@ async def get_auth_context(
             )
 
         # Cache miss - lookup user/org and cache
-        async with get_session() as session:
-            result = await get_or_create_user_from_clerk(
-                session, clerk_user_id, clerk_org_id, email, org_role
-            )
+        for attempt in range(2):
+            try:
+                cached_auth: CachedAuthData | None = None
+                auth_context: AuthContext | None = None
+                async with get_session() as session:
+                    result = await get_or_create_user_from_clerk(
+                        session, clerk_user_id, clerk_org_id, email, org_role
+                    )
 
-            if result is None:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=(
-                        "Organization not found. Create or select an organization "
-                        "in Clerk, then ensure it has been provisioned in Oddish."
-                    ),
+                    if result is None:
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail=(
+                                "Organization not found. Create or select an organization "
+                                "in Clerk, then ensure it has been provisioned in Oddish."
+                            ),
+                        )
+
+                    user, org = result
+                    cached_auth = CachedAuthData(
+                        method=AuthMethod.CLERK_JWT,
+                        org_id=org.id,
+                        user_id=user.id,
+                        user_role=user.role,
+                        scope=APIKeyScope.FULL,
+                    )
+                    auth_context = AuthContext(
+                        method=AuthMethod.CLERK_JWT,
+                        org_id=org.id,
+                        org=org,
+                        user_id=user.id,
+                        user=user,
+                        user_role=user.role,
+                        scope=APIKeyScope.FULL,
+                    )
+
+                if cached_auth is not None and auth_context is not None:
+                    set_cached_auth(cache_key, cached_auth)
+                    return auth_context
+            except DBAPIError as exc:
+                if attempt == 1 or not _is_retryable_disconnect(exc):
+                    raise
+                logger.warning(
+                    "Retrying Clerk auth after transient DB disconnect for %s: %s",
+                    clerk_user_id,
+                    exc,
                 )
-
-            user, org = result
-            await session.commit()
-
-            # Cache the result
-            set_cached_auth(
-                cache_key,
-                CachedAuthData(
-                    method=AuthMethod.CLERK_JWT,
-                    org_id=org.id,
-                    user_id=user.id,
-                    user_role=user.role,
-                    scope=APIKeyScope.FULL,
-                ),
-            )
-
-            return AuthContext(
-                method=AuthMethod.CLERK_JWT,
-                org_id=org.id,
-                org=org,
-                user_id=user.id,
-                user=user,
-                user_role=user.role,
-                scope=APIKeyScope.FULL,
-            )
 
     # Unknown token format
     raise HTTPException(
