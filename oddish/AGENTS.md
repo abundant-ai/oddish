@@ -187,6 +187,11 @@ uv run python -m oddish.api --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/cla
 
 Remote APIs require `ODDISH_API_KEY`.
 
+Trial-bearing task responses now include a live `queue_info` snapshot for
+queued/retrying trials so UIs can show current queue position, queued depth,
+running count, and configured concurrency. Treat it as advisory state: the
+fair scheduler can reshuffle positions as other trials start or finish.
+
 ## Configuration
 
 Settings are loaded from `.env`. Most package settings use the `ODDISH_` prefix,
