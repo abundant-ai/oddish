@@ -36,6 +36,8 @@ class PreparedTrialRun:
     task_path: str | None
     task_s3_key: str | None
     task_id: str
+    task_name: str | None
+    task_user: str | None
     trial_agent: str
     trial_model: str
     trial_environment: str | None
@@ -225,6 +227,8 @@ async def _prepare_trial_run(
             task_path=task_path,
             task_s3_key=task_s3_key,
             task_id=task_id,
+            task_name=task.name if task else None,
+            task_user=task.user if task else None,
             trial_agent=trial_agent,
             trial_model=trial_model,
             trial_environment=trial_environment,
@@ -516,6 +520,8 @@ async def _execute_trial(
             trial_id=trial_id,
             harbor_config=prepared_trial.trial_harbor_config,
             task_tags=prepared_trial.task_tags,
+            task_name=prepared_trial.task_name,
+            task_user=prepared_trial.task_user,
         )
     except asyncio.CancelledError:
         # CancelledError inherits from BaseException, not Exception, so must be caught explicitly.

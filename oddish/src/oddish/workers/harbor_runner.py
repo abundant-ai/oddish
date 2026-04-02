@@ -422,6 +422,8 @@ async def run_harbor_trial_async(
     trial_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
     task_tags: dict[str, str] | None = None,
+    task_name: str | None = None,
+    task_user: str | None = None,
 ) -> HarborOutcome:
     """
     Execute a Harbor trial using Harbor's Python API with lifecycle hooks.
@@ -436,6 +438,8 @@ async def run_harbor_trial_async(
         trial_id: Optional trial ID for traceability
         harbor_config: Optional dict (serialized HarborConfig + Harbor AgentConfig)
         task_tags: Optional task-level tags (from TaskSubmission.tags)
+        task_name: Optional task name (used as default Bedrock project tag)
+        task_user: Optional submitting user (injected as BEDROCK_USER_TAG)
 
     Returns:
         HarborOutcome with reward, error, tokens, cost, timing, trajectory, and paths
@@ -486,14 +490,17 @@ async def run_harbor_trial_async(
         raw_harbor_config=raw,
     )
 
-    # Inject Bedrock project tag for AWS cost allocation (if configured).
-    # Priority: per-submission tags["bedrock_project"] > global setting.
+    # Inject Bedrock tags for AWS cost allocation.
+    # Project tag priority: per-submission tag > global setting > task name.
     bedrock_tag = (
         (task_tags or {}).get("bedrock_project")
         or settings.bedrock_project_tag
+        or task_name
     )
     if bedrock_tag:
         agent_config.env.setdefault("BEDROCK_PROJECT_TAG", bedrock_tag)
+    if task_user:
+        agent_config.env.setdefault("BEDROCK_USER_TAG", task_user)
 
     config = JobConfig(
         tasks=[TaskConfig(path=effective_task_path)],
