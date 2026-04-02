@@ -28,6 +28,7 @@ from pgqueuer.types import JobId
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
 from oddish.schemas import TaskSubmission, TrialSpec
+from oddish.task_timeouts import validate_task_timeout_config
 
 logger = logging.getLogger(__name__)
 
@@ -535,12 +536,6 @@ def _build_harbor_config_for_trial(
         agent_config_payload.pop("name", None)
         agent_config_payload.pop("model_name", None)
 
-    if (
-        spec.timeout_minutes > 0
-        and agent_config_payload.get("override_timeout_sec") is None
-    ):
-        agent_config_payload["override_timeout_sec"] = float(spec.timeout_minutes * 60)
-
     if agent_config_payload:
         base["agent_config"] = agent_config_payload
 
@@ -575,8 +570,13 @@ async def create_task(
         # Legacy: upload local directory to S3
         local_path = Path(task_path)
         if local_path.exists() and local_path.is_dir():
+            validate_task_timeout_config(local_path)
             storage = get_storage_client()
             task_s3_key = await storage.upload_task_directory(task_id, local_path)
+    elif not task_s3_key:
+        local_path = Path(task_path)
+        if local_path.exists() and local_path.is_dir():
+            validate_task_timeout_config(local_path)
 
     # Resolve experiment by ID or name (creates if not found)
     if submission.experiment_id:

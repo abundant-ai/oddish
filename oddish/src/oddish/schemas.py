@@ -65,7 +65,10 @@ class TrialSpec(BaseModel):
     model: str | None = Field(
         None, description="Model name (e.g., 'claude-sonnet-4-20250514')"
     )
-    timeout_minutes: int = Field(60, description="Trial timeout in minutes")
+    timeout_minutes: int | None = Field(
+        None,
+        description="Deprecated. Oddish now requires timeouts to be declared in task.toml.",
+    )
     environment: EnvironmentType | None = Field(
         None, description="Execution backend override"
     )
@@ -77,6 +80,16 @@ class TrialSpec(BaseModel):
     @model_validator(mode="after")
     def normalize_model_aliases(self) -> "TrialSpec":
         self.model = normalize_model_id(self.model)
+        return self
+
+    @model_validator(mode="after")
+    def reject_timeout_override(self) -> "TrialSpec":
+        if "timeout_minutes" in self.model_fields_set and self.timeout_minutes is not None:
+            raise ValueError(
+                "timeout_minutes is no longer supported. "
+                "Set explicit [agent].timeout_sec, [verifier].timeout_sec, "
+                "and [environment].build_timeout_sec in task.toml."
+            )
         return self
 
 
@@ -164,7 +177,10 @@ class TaskSweepSubmission(BaseModel):
     priority: Priority = Field(Priority.LOW, description="Priority: 'high' or 'low'")
     experiment_id: str | None = Field(None, description="Optional experiment ID")
     tags: dict[str, str] = Field(default_factory=dict, description="Optional tags")
-    timeout_minutes: int = Field(60, description="Default trial timeout in minutes")
+    timeout_minutes: int | None = Field(
+        None,
+        description="Deprecated. Oddish now requires timeouts to be declared in task.toml.",
+    )
     environment: EnvironmentType | None = Field(
         None, description="Default execution backend override"
     )
@@ -191,6 +207,16 @@ class TaskSweepSubmission(BaseModel):
         for config in self.configs:
             if config.agent not in allowed_missing and not config.model:
                 raise ValueError("Model is required for all agents except nop/oracle")
+        return self
+
+    @model_validator(mode="after")
+    def reject_timeout_override(self) -> "TaskSweepSubmission":
+        if "timeout_minutes" in self.model_fields_set and self.timeout_minutes is not None:
+            raise ValueError(
+                "timeout_minutes is no longer supported. "
+                "Set explicit [agent].timeout_sec, [verifier].timeout_sec, "
+                "and [environment].build_timeout_sec in task.toml."
+            )
         return self
 
 
