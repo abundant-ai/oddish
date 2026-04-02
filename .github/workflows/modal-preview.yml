@@ -35,6 +35,7 @@ jobs:
       ODDISH_MODAL_API_MIN_CONTAINERS: "1"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_API_MAX_CONTAINERS: "2"
+      MODAL_WEBHOOK_LABEL: api-pr-${{ github.event.pull_request.number }}
     defaults:
       run:
         working-directory: backend

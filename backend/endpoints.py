@@ -8,6 +8,8 @@ from oddish.config import Settings
 # bottleneck for auth/dashboard traffic.
 Settings.db_use_null_pool = True
 
+import os
+
 import modal
 
 from modal_app import (
@@ -68,7 +70,7 @@ api.include_router(admin.router)
     target_inputs=API_CONCURRENCY_TARGET,
     max_inputs=API_CONCURRENCY_MAX,
 )
-@modal.asgi_app(label="api")
+@modal.asgi_app(label=os.environ.get("MODAL_WEBHOOK_LABEL", "api"))
 def api_app():
     """Single ASGI endpoint for all API routes."""
     return api
