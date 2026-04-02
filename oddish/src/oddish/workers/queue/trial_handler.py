@@ -334,6 +334,8 @@ async def _store_trial_results(
                         trial_id,
                         queue_key,
                         priority=pgq_priority,
+                        org_id=trial.org_id,
+                        task_id=trial.task_id,
                     )
                     console.print(
                         f"[yellow]Trial {trial_id} re-enqueued "

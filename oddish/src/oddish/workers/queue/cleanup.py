@@ -523,6 +523,8 @@ async def cleanup_orphaned_queue_state(
                 trial.id,
                 queue_key,
                 priority=pgq_priority,
+                org_id=trial.org_id,
+                task_id=trial.task_id,
             )
             if issue == "queued_without_job":
                 queued_without_job_reenqueued += 1
