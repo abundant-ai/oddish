@@ -1339,7 +1339,7 @@ export function ExperimentTrialsTable({
               </div>
             </div>
             <div
-              className={`flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground ${!readOnly && selectedTasks.size > 0 ? "" : "hidden"}`}
+              className={`flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground ${!readOnly ? "" : "hidden"}`}
             >
               <span>{selectedTasks.size} selected</span>
               <Button
@@ -1347,7 +1347,8 @@ export function ExperimentTrialsTable({
                 variant="link"
                 size="sm"
                 onClick={clearSelection}
-                className="h-auto p-0 text-[10px]"
+                disabled={selectedTasks.size === 0}
+                className="h-auto p-0 text-[10px] disabled:text-muted-foreground"
               >
                 Clear
               </Button>
@@ -1358,21 +1359,21 @@ export function ExperimentTrialsTable({
                   size="sm"
                   onClick={handleRerunSelectedTasks}
                   disabled={isRerunning || selectedRetryableTrials.length === 0}
-                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:border-muted disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
                 >
                   {isRerunning
                     ? "Rerunning..."
                     : `Rerun trials (${selectedRetryableTrials.length})`}
                 </Button>
               )}
-              {canRerun && selectedCancellableTasks.length > 0 && (
+              {canRerun && (
                 <Button
                   type="button"
                   variant="destructive"
                   size="sm"
                   onClick={handleCancelSelectedTasks}
-                  disabled={isCancellingSelected}
-                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                  disabled={isCancellingSelected || selectedCancellableTasks.length === 0}
+                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
                 >
                   {isCancellingSelected ? (
                     <>
@@ -1397,7 +1398,7 @@ export function ExperimentTrialsTable({
                     isRunningAnalysis ||
                     selectedAnalysisRunnableTasks.length === 0
                   }
-                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:border-muted disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
                 >
                   {isRunningAnalysis
                     ? "Queueing..."
@@ -1414,7 +1415,7 @@ export function ExperimentTrialsTable({
                     isRunningVerdict ||
                     selectedVerdictRunnableTasks.length === 0
                   }
-                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:border-muted disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
                 >
                   {isRunningVerdict
                     ? "Queueing..."
@@ -1431,7 +1432,7 @@ export function ExperimentTrialsTable({
                     setDeleteError(null);
                   }}
                   disabled={isDeleting || selectedTaskList.length === 0}
-                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
                 >
                   <Trash2 className="mr-1 h-3 w-3" />
                   Delete
@@ -1596,8 +1597,14 @@ export function ExperimentTrialsTable({
                       }
                     >
                       <TableCell
-                        className={`sticky left-0 z-10 border-r border-border font-mono text-xs shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] ${index % 2 === 0 ? "bg-background" : "bg-muted/20"}`}
-                        style={{ width: getDisplayedWidth("task") }}
+                        className={`sticky left-0 z-10 border-r border-border font-mono text-xs shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] ${index % 2 === 0 ? "bg-background" : ""}`}
+                        style={{
+                          width: getDisplayedWidth("task"),
+                          ...(index % 2 !== 0 && {
+                            backgroundColor:
+                              "color-mix(in srgb, hsl(var(--muted)) 20%, hsl(var(--background)))",
+                          }),
+                        }}
                       >
                         <div className="flex min-w-0 items-center gap-2">
                           <span className="w-5 flex-shrink-0 text-right text-[10px] text-muted-foreground">

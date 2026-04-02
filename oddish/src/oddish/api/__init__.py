@@ -39,6 +39,7 @@ from oddish.schemas import (
     TrialResponse,
     UploadResponse,
 )
+from oddish.task_timeouts import TaskTimeoutValidationError
 
 from oddish.queue import (
     cancel_pgqueuer_jobs_for_tasks,
@@ -254,6 +255,8 @@ async def create_task_sweep(submission: TaskSweepSubmission):
     async with get_session() as session:
         try:
             task = await create_task(session, expanded, task_id=submission.task_id)
+        except TaskTimeoutValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

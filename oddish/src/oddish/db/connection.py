@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 import asyncpg
 from sqlalchemy import text
+from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore[attr-defined]
 from pgqueuer.db import AsyncpgPoolDriver
@@ -17,17 +18,34 @@ from oddish.db.models import Base
 
 # Ensure we use asyncpg driver explicitly (URL should already have +asyncpg).
 db_url = settings.database_url
+DB_CONNECT_ARGS = {
+    "statement_cache_size": 0,
+    "timeout": 10,
+    "command_timeout": 30,
+}
 
 
 def _create_engine() -> AsyncEngine:
     # Disable prepared statements for connection poolers (Supavisor, PgBouncer)
-    # that run in transaction mode.
+    # that run in transaction mode. Pre-ping and LIFO checkout reduce failures
+    # from stale pooled connections in long-lived API containers.
+    if settings.db_use_null_pool:
+        return create_async_engine(
+            db_url,
+            echo=False,
+            connect_args=DB_CONNECT_ARGS,
+            poolclass=pool.NullPool,
+        )
+
     return create_async_engine(
         db_url,
         echo=False,
-        connect_args={"statement_cache_size": 0},
+        connect_args=DB_CONNECT_ARGS,
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_pool_max_overflow,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        pool_use_lifo=True,
     )
 
 
@@ -55,6 +73,8 @@ async def get_pool() -> asyncpg.Pool:
             # Disable prepared statement caching for compatibility with
             # transaction/statement poolers (PgBouncer, Supavisor, etc).
             statement_cache_size=0,
+            timeout=10,
+            command_timeout=30,
         )
     return _pool
 

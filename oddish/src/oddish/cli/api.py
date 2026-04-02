@@ -392,6 +392,13 @@ def load_sweep_config(config_path: Path) -> dict:
         raise typer.Exit(1)
 
     # Normalize and validate agent entries using Harbor's AgentConfig
+    if "timeout_minutes" in config:
+        error_console.print(
+            "[red]Top-level 'timeout_minutes' is no longer supported.[/red]\n"
+            "Declare explicit timeouts in task.toml instead."
+        )
+        raise typer.Exit(1)
+
     normalized_agents = []
     for i, agent_entry in enumerate(config["agents"]):
         agent_data = {
@@ -439,7 +446,11 @@ def load_sweep_config(config_path: Path) -> dict:
             entry["agent_config"] = agent_config_overrides
 
         if "timeout_minutes" in agent_entry:
-            entry["timeout_minutes"] = agent_entry["timeout_minutes"]
+            error_console.print(
+                f"[red]Agent entry {i + 1} includes 'timeout_minutes', which is no longer supported.[/red]\n"
+                "Declare explicit timeouts in task.toml instead."
+            )
+            raise typer.Exit(1)
         normalized_agents.append(entry)
 
     config["agents"] = normalized_agents
