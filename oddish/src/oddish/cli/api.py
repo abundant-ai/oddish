@@ -222,7 +222,7 @@ def submit_sweep(
     api_url: str,
     task_id: str,
     configs: list[dict],
-    environment: EnvironmentType,
+    environment: EnvironmentType | None,
     user: str,
     priority: str,
     experiment_id: str | None,
@@ -239,12 +239,14 @@ def submit_sweep(
     agent_env: list[str] | None = None,
     agent_kwargs: list[str] | None = None,
     artifact_paths: list[str] | None = None,
+    append_to_task: bool = False,
 ) -> dict:
     """Submit a task sweep to the API."""
-    env_value = environment.value
+    env_value = environment.value if environment else None
 
-    for config in configs:
-        config["environment"] = env_value
+    if env_value is not None:
+        for config in configs:
+            config["environment"] = env_value
 
     harbor: dict = {}
     env_overrides: dict = {}
@@ -282,10 +284,12 @@ def submit_sweep(
         "configs": configs,
         "user": user,
         "priority": priority,
-        "experiment_id": experiment_id,
-        "environment": env_value,
         "run_analysis": run_analysis,
     }
+    if experiment_id:
+        payload["experiment_id"] = experiment_id
+    if env_value is not None:
+        payload["environment"] = env_value
 
     if github_username:
         payload["github_username"] = github_username
@@ -294,6 +298,8 @@ def submit_sweep(
     payload["publish_experiment"] = publish_experiment
     if harbor:
         payload["harbor"] = harbor
+    if append_to_task:
+        payload["append_to_task"] = True
 
     with httpx.Client(
         timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()

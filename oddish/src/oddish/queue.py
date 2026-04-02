@@ -218,6 +218,23 @@ def _build_harbor_config_for_trial(
     return base or None
 
 
+def _get_next_trial_index(task_id: str, existing_trials: list[TrialModel]) -> int:
+    """Return the next numeric suffix for ``{task_id}-{index}`` trial IDs."""
+    prefix = f"{task_id}-"
+    max_index = -1
+
+    for trial in existing_trials:
+        if not trial.id.startswith(prefix):
+            continue
+        suffix = trial.id[len(prefix) :]
+        if suffix.isdigit():
+            max_index = max(max_index, int(suffix))
+
+    if max_index >= 0:
+        return max_index + 1
+    return len(existing_trials)
+
+
 async def create_task(
     session: AsyncSession,
     submission: TaskSubmission,
@@ -301,6 +318,70 @@ async def create_task(
     await session.flush()
     await session.refresh(task, attribute_names=["trials"])
     return task
+
+
+async def append_trials_to_task(
+    session: AsyncSession,
+    *,
+    task: TaskModel,
+    submission: TaskSubmission,
+) -> list[TrialModel]:
+    """Append new queued trials to an existing task."""
+    trial_rows = await session.execute(
+        select(TrialModel)
+        .where(TrialModel.task_id == task.id)
+        .order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
+    )
+    existing_trials = list(trial_rows.scalars().all())
+    next_index = _get_next_trial_index(task.id, existing_trials)
+
+    new_trials: list[TrialModel] = []
+    for spec in submission.trials:
+        model = settings.normalize_trial_model(spec.agent, spec.model)
+        provider = settings.get_provider_for_trial(spec.agent, model)
+        queue_key = settings.get_queue_key_for_trial(spec.agent, model)
+        trial_id = f"{task.id}-{next_index}"
+        trial_name = f"{task.name}-{next_index}"
+
+        harbor_config = _build_harbor_config_for_trial(submission, spec)
+
+        trial = TrialModel(
+            id=trial_id,
+            name=trial_name,
+            task_id=task.id,
+            org_id=task.org_id,
+            agent=spec.agent,
+            provider=provider,
+            queue_key=queue_key,
+            model=model,
+            timeout_minutes=spec.timeout_minutes,
+            environment=spec.environment,
+            harbor_config=harbor_config,
+            status=TrialStatus.QUEUED,
+        )
+        session.add(trial)
+        new_trials.append(trial)
+        next_index += 1
+
+    if new_trials and task.status in (
+        TaskStatus.COMPLETED,
+        TaskStatus.FAILED,
+        TaskStatus.ANALYZING,
+        TaskStatus.VERDICT_PENDING,
+    ):
+        task.status = TaskStatus.RUNNING
+        task.finished_at = None
+
+    if new_trials and task.run_analysis:
+        task.verdict = None
+        task.verdict_status = None
+        task.verdict_error = None
+        task.verdict_started_at = None
+        task.verdict_finished_at = None
+
+    await session.flush()
+    await session.refresh(task, attribute_names=["trials"])
+    return new_trials
 
 
 # =============================================================================

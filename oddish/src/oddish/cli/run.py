@@ -69,6 +69,13 @@ def run(
             help="Registry dataset (e.g., 'swebench@1.0' or 'swebench' for latest)",
         ),
     ] = None,
+    existing_task_id: Annotated[
+        Optional[str],
+        typer.Option(
+            "--task",
+            help="Append trials to an existing task ID instead of uploading task files",
+        ),
+    ] = None,
     config: Annotated[
         Optional[Path],
         typer.Option(
@@ -351,6 +358,8 @@ def run(
 
         oddish run ./task -a claude-code --background   # Submit and return
         oddish run ./task -a claude-code -q             # Quiet mode
+        oddish run --task task_123 -a gemini-cli -m google/gemini-3.1-pro-preview
+                                                        # Append trials to an existing task
 
     """
     # Resolve API URL
@@ -418,8 +427,26 @@ def run(
 
     # Determine task sources using Harbor's dataset models
     task_paths: list[Path] = []
+    existing_task_ids: list[str] = []
 
-    if dataset:
+    if existing_task_id:
+        if dataset or path or path_option:
+            error_console.print(
+                "[red]Provide either --task, a path, or --dataset, not multiple task sources.[/red]"
+            )
+            raise typer.Exit(1)
+        if task_names or exclude_task_names or n_tasks is not None:
+            error_console.print(
+                "[red]--task does not support task filtering flags.[/red]"
+            )
+            raise typer.Exit(1)
+        if experiment_id:
+            error_console.print(
+                "[red]--experiment cannot be used with --task because the task already belongs to an experiment.[/red]"
+            )
+            raise typer.Exit(1)
+        existing_task_ids = [existing_task_id]
+    elif dataset:
         task_paths = get_task_paths_from_registry(
             dataset_name=dataset,
             task_names=task_names,
@@ -460,19 +487,20 @@ def run(
                 )
 
     # Validate task configs (parses task.toml, checks instruction.md, etc.)
-    task_paths = validate_tasks(task_paths)
+    if task_paths:
+        task_paths = validate_tasks(task_paths)
 
     # Ensure each run uses a single experiment unless specified.
-    if not experiment_id:
+    if not experiment_id and not existing_task_ids:
         experiment_id = generate_experiment_name()
 
     # Default user to OS username
     if not user:
         user = getpass.getuser()
 
-    if environment is None:
+    if environment is None and not existing_task_ids:
         environment = EnvironmentType.MODAL if is_modal_api else EnvironmentType.DOCKER
-    elif is_modal_api and environment != EnvironmentType.MODAL:
+    elif environment is not None and is_modal_api and environment != EnvironmentType.MODAL:
         console.print(
             "[yellow]Oddish Cloud runs on Modal (no Docker-in-Docker); forcing --env modal[/yellow]"
         )
@@ -481,16 +509,13 @@ def run(
     # Upload and submit all tasks
     all_results = []
     total_trials_submitted = 0
+    append_mode = bool(existing_task_ids)
 
-    def upload_and_submit_task(task_path: Path) -> dict:
-        task_id = upload_task(api_url, task_path)
-
+    def submit_task(task_id: str, *, append_to_task: bool) -> dict:
         tags: dict[str, str] = {}
         if github_meta:
             tags["github_meta"] = github_meta
 
-        # submit_sweep mutates config entries to set environment, so each worker
-        # needs its own copy when uploads run concurrently.
         task_configs = copy.deepcopy(configs)
         return submit_sweep(
             api_url=api_url,
@@ -513,7 +538,24 @@ def run(
             agent_env=agent_env,
             agent_kwargs=agent_kwargs,
             artifact_paths=artifact_paths,
+            append_to_task=append_to_task,
         )
+
+    def upload_and_submit_task(task_path: Path) -> dict:
+        task_id = upload_task(api_url, task_path)
+        return submit_task(task_id, append_to_task=False)
+
+    def append_to_existing_task(task_id: str) -> dict:
+        return submit_task(task_id, append_to_task=True)
+
+    task_targets: list[Path | str]
+    progress_verb: str
+    if existing_task_ids:
+        task_targets = existing_task_ids
+        progress_verb = "Submitting"
+    else:
+        task_targets = task_paths
+        progress_verb = "Uploading"
 
     show_progress = not quiet and not json_output
     progress = Progress(
@@ -526,21 +568,29 @@ def run(
     )
     with progress:
         upload_task_progress = progress.add_task(
-            f"Uploading {len(task_paths)} tasks...", total=len(task_paths)
+            f"{progress_verb} {len(task_targets)} tasks...", total=len(task_targets)
         )
-        if len(task_paths) <= 1:
-            for task_path in task_paths:
-                result = upload_and_submit_task(task_path)
+        if len(task_targets) <= 1:
+            for task_target in task_targets:
+                result = (
+                    append_to_existing_task(task_target)
+                    if isinstance(task_target, str)
+                    else upload_and_submit_task(task_target)
+                )
                 all_results.append(result)
                 total_trials_submitted += result["trials_count"]
                 progress.update(upload_task_progress, advance=1)
         else:
-            results_by_index: list[dict | None] = [None] * len(task_paths)
-            max_workers = min(TASK_UPLOAD_CONCURRENCY, len(task_paths))
+            results_by_index: list[dict | None] = [None] * len(task_targets)
+            max_workers = min(TASK_UPLOAD_CONCURRENCY, len(task_targets))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_index = {
-                    executor.submit(upload_and_submit_task, task_path): index
-                    for index, task_path in enumerate(task_paths)
+                    (
+                        executor.submit(append_to_existing_task, task_target)
+                        if isinstance(task_target, str)
+                        else executor.submit(upload_and_submit_task, task_target)
+                    ): index
+                    for index, task_target in enumerate(task_targets)
                 }
 
                 for future in as_completed(future_to_index):
@@ -616,15 +666,24 @@ def run(
             if experiment_ref
             else f"{dashboard_url}/dashboard"
         )
-        console.print("[bold green]Task submitted![/bold green]")
+        console.print(
+            "[bold green]Task updated![/bold green]"
+            if append_mode
+            else "[bold green]Task submitted![/bold green]"
+        )
         console.print(f"  Task ID:    {result['id']}")
-        console.print(f"  Trials:     {result['trials_count']}")
+        console.print(
+            f"  {'New trials' if append_mode else 'Trials'}:     {result['trials_count']}"
+        )
         console.print(f"  Providers:  {', '.join(result['providers'].keys())}")
         console.print(f"  View:       {task_url}")
         if public_experiment_url:
             console.print(f"  Public:     {public_experiment_url}")
     else:
-        console.print(f"[bold green]{len(all_results)} tasks submitted![/bold green]")
+        summary_verb = "updated" if append_mode else "submitted"
+        console.print(
+            f"[bold green]{len(all_results)} tasks {summary_verb}![/bold green]"
+        )
         console.print(f"  Total trials: {total_trials_submitted}")
         console.print(f"  Experiment:   {experiment_name}")
         experiment_ref = experiment_id_resolved or experiment_name

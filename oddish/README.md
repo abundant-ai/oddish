@@ -90,6 +90,9 @@ oddish run -d swebench@1.0 -a codex -m openai/gpt-5.2 --n-trials 3
 # Filter a dataset
 oddish run -d swebench@1.0 -t "django__*" -l 10 -a claude-code
 
+# Append new trials to an existing task
+oddish run --task task_123 -a gemini-cli -m google/gemini-3.1-pro-preview --n-trials 3
+
 # Submit in the background
 oddish run ./my-task -a claude-code --background
 ```
@@ -100,6 +103,7 @@ Common flags:
 - `-m, --model` selects the model
 - `--n-trials` runs multiple trials per task
 - `-d, --dataset` pulls tasks from the Harbor registry
+- `--task` appends trials to an existing task ID without re-uploading task files
 - `-c, --config` loads a YAML or JSON sweep config
 - `-t, --task-name` and `-x, --exclude-task-name` filter tasks by glob
 - `-l, --n-tasks` limits how many tasks run
@@ -126,6 +130,7 @@ When `--env` is omitted:
 
 - hosted Oddish (`*.modal.run`) defaults to `modal`
 - other API URLs default to `docker`
+- `--task` preserves the existing task's environment unless you override it
 
 ### Sweep Configs
 
