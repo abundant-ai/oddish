@@ -42,12 +42,9 @@ from oddish.schemas import (
 from oddish.task_timeouts import TaskTimeoutValidationError
 
 from oddish.queue import (
-    cancel_pgqueuer_jobs_for_tasks,
-    cancel_pgqueuer_jobs_for_trials,
     cancel_task_runs,
     create_task,
 )
-from oddish.workers import create_queue_manager
 
 console = Console()
 
@@ -109,33 +106,19 @@ async def lifespan(app: FastAPI):
             f"[yellow]Warning: Could not pre-warm connection pool: {e}[/yellow]"
         )
 
-    # Start workers automatically if enabled (in background, non-blocking)
     worker_task = None
     if settings.auto_start_workers:
-        # Start worker initialization in background (don't block API startup)
+        from oddish.workers.queue.queue_manager import run_polling_worker
+
         async def start_workers():
             try:
-                # Small delay to let API server start responding first
                 await asyncio.sleep(0.5)
-
-                console.print("[green]Auto-starting PGQueuer workers...[/green]")
-
-                # Create queue manager using the same function as standalone worker
-                # Pool is already warmed up, so this should be fast
-                qm = await create_queue_manager()
-
-                console.print(
-                    f"[dim]Queue concurrency overrides: {_get_concurrency_overrides() or settings.model_concurrency_overrides}[/dim]"
-                )
-
-                # Run the queue manager (this blocks, but that's OK in background task)
-                # verify_structure() runs here, but it's in background so API is already responding
-                await qm.run()
+                console.print("[green]Auto-starting queue workers...[/green]")
+                await run_polling_worker()
             except asyncio.CancelledError:
                 console.print("[yellow]Worker task cancelled[/yellow]")
             except Exception as e:
                 console.print(f"[red]Worker error: {e}[/red]")
-                # Don't raise - log and continue (API server should keep running)
 
         worker_task = asyncio.create_task(start_workers())
 
@@ -329,7 +312,6 @@ async def cancel_task(task_id: str):
         "status": "cancelled",
         "task_id": task_id,
         "trials_cancelled": result.get("trials_cancelled", 0),
-        "pgqueuer_jobs_cancelled": result.get("pgqueuer_jobs_cancelled", 0),
         "modal_calls_cancelled": 0,
     }
 
@@ -341,13 +323,6 @@ async def delete_task(task_id: str):
         task = await session.get(TaskModel, task_id)
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-
-        trial_ids_result = await session.execute(
-            select(TrialModel.id).where(TrialModel.task_id == task.id)
-        )
-        trial_ids = [row[0] for row in trial_ids_result.all()]
-        await cancel_pgqueuer_jobs_for_trials(session, trial_ids)
-        await cancel_pgqueuer_jobs_for_tasks(session, [task.id])
 
         await session.delete(task)
         await session.commit()
@@ -371,13 +346,6 @@ async def delete_experiment(experiment_id: str):
         task_ids = [row[0] for row in result.all()]
 
         if task_ids:
-            trial_ids_result = await session.execute(
-                select(TrialModel.id).where(TrialModel.task_id.in_(task_ids))
-            )
-            trial_ids = [row[0] for row in trial_ids_result.all()]
-            await cancel_pgqueuer_jobs_for_trials(session, trial_ids)
-            await cancel_pgqueuer_jobs_for_tasks(session, task_ids)
-
             await session.execute(
                 delete(TrialModel).where(TrialModel.task_id.in_(task_ids))
             )

@@ -24,20 +24,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const searchParams = request.nextUrl.searchParams;
-    const params: Record<string, string> = {};
-
-    const page = searchParams.get("page");
-    const pageSize = searchParams.get("page_size");
-    const status = searchParams.get("status");
-    const entrypoint = searchParams.get("entrypoint");
-
-    if (page) params.page = page;
-    if (pageSize) params.page_size = pageSize;
-    if (status) params.status = status;
-    if (entrypoint) params.entrypoint = entrypoint;
-
-    const url = getBackendUrl("admin/pgqueuer", "", params);
+    const url = getBackendUrl("admin/queue-status");
 
     const res = await fetch(url, {
       cache: "no-store",
@@ -47,10 +34,10 @@ export async function GET(request: NextRequest) {
     if (!res.ok) {
       const errorText = await res.text();
       console.error(
-        `[admin/pgqueuer] Backend error: ${res.status} - ${errorText}`,
+        `[admin/queue-status] Backend error: ${res.status} - ${errorText}`,
       );
       return NextResponse.json(
-        { error: "Failed to fetch pgqueuer jobs", details: errorText },
+        { error: "Failed to fetch queue status", details: errorText },
         { status: res.status },
       );
     }
@@ -58,7 +45,7 @@ export async function GET(request: NextRequest) {
     const data = await res.json();
     return NextResponse.json(data);
   } catch (error) {
-    console.error("Admin pgqueuer API route error:", error);
+    console.error("Admin queue-status API route error:", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
       { status: 503 },

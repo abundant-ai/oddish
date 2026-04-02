@@ -5,7 +5,7 @@ description = "Cloud deployment layer for Oddish - Modal API with multi-tenant a
 requires-python = ">=3.12,<3.14"
 
 dependencies = [
-    # Core oddish library (includes fastapi, sqlalchemy, pgqueuer, etc.)
+    # Core oddish library (includes fastapi, sqlalchemy, etc.)
     "oddish",
 
     # pyparsing for pyiceberg compatibility

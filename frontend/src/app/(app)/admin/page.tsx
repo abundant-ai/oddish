@@ -33,10 +33,9 @@ import type {
   DashboardResponse,
   QueueStats,
   QueueSlotsResponse,
-  PGQueuerResponse,
+  QueueStatusResponse,
   OrphanedStateResponse,
   QueueSlotSummary,
-  PGQueuerJob,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
@@ -837,26 +836,26 @@ function QueueHealthCard() {
   });
 
   const {
-    data: pgData,
-    error: pgError,
-    isLoading: pgLoading,
-  } = useSWR<PGQueuerResponse>("/api/admin/pgqueuer?page_size=1", fetcher, {
+    data: qsData,
+    error: qsError,
+    isLoading: qsLoading,
+  } = useSWR<QueueStatusResponse>("/api/admin/queue-status", fetcher, {
     refreshInterval: 10000,
   });
   const [queueFilter, setQueueFilter] = useState("");
 
   const queueKeys = new Set<string>();
   slotsData?.queue_keys.forEach((p) => queueKeys.add(p.queue_key));
-  Object.keys(pgData?.stats?.by_entrypoint ?? {}).forEach((p) =>
-    queueKeys.add(p),
-  );
+  qsData?.trial_queues?.forEach((q) => queueKeys.add(q.queue_key));
 
   const queueRows = Array.from(queueKeys).map((queueKey) => {
     const slotSummary =
       slotsData?.queue_keys.find((p) => p.queue_key === queueKey) ?? null;
-    const statusCounts = pgData?.stats?.by_entrypoint?.[queueKey] ?? {};
-    const queued = statusCounts.queued ?? 0;
-    const picked = statusCounts.picked ?? 0;
+    const trialEntry = qsData?.trial_queues?.find(
+      (q) => q.queue_key === queueKey,
+    );
+    const queued = trialEntry?.queued ?? 0;
+    const running = trialEntry?.running ?? 0;
     const totalSlots = slotSummary?.total_slots ?? 0;
     const activeSlots = slotSummary?.active_slots ?? 0;
     const staleLocks =
@@ -864,7 +863,7 @@ function QueueHealthCard() {
         .length ?? 0;
 
     const notes: string[] = [];
-    if (totalSlots === 0 && (queued > 0 || picked > 0)) {
+    if (totalSlots === 0 && (queued > 0 || running > 0)) {
       notes.push("No slots configured");
     }
     if (queued > 0 && totalSlots > 0 && activeSlots === 0) {
@@ -873,9 +872,6 @@ function QueueHealthCard() {
     if (queued > 0 && totalSlots > 0 && activeSlots >= totalSlots) {
       notes.push("At capacity");
     }
-    if (picked > activeSlots && activeSlots > 0) {
-      notes.push("Picked exceeds slots");
-    }
     if (staleLocks > 0) {
       notes.push(`${staleLocks} stale lock${staleLocks > 1 ? "s" : ""}`);
     }
@@ -883,7 +879,7 @@ function QueueHealthCard() {
     return {
       queueKey,
       queued,
-      picked,
+      running,
       totalSlots,
       activeSlots,
       notes,
@@ -893,11 +889,11 @@ function QueueHealthCard() {
     .filter((row) =>
       row.queueKey.toLowerCase().includes(queueFilter.toLowerCase().trim()),
     )
-    .sort((a, b) => b.queued + b.picked - (a.queued + a.picked))
+    .sort((a, b) => b.queued + b.running - (a.queued + a.running))
     .slice(0, 30);
 
   const totalQueued = queueRows.reduce((sum, row) => sum + row.queued, 0);
-  const totalPicked = queueRows.reduce((sum, row) => sum + row.picked, 0);
+  const totalRunning = queueRows.reduce((sum, row) => sum + row.running, 0);
   const totalSlots = slotsData?.total_slots ?? 0;
   const totalActive = slotsData?.total_active ?? 0;
 
@@ -914,37 +910,37 @@ function QueueHealthCard() {
               </Badge>
             )}
           </div>
-          {pgData && (
+          {qsData && (
             <div className="flex gap-2">
               <Badge variant="outline" className="text-xs">
                 {totalQueued} queued
               </Badge>
               <Badge variant="outline" className="text-xs">
-                {totalPicked} picked
+                {totalRunning} running
               </Badge>
             </div>
           )}
         </div>
-        {pgData && (
+        {qsData && (
           <p className="text-xs text-muted-foreground">
-            Last updated: {new Date(pgData.timestamp).toLocaleTimeString()}
+            Last updated: {new Date(qsData.timestamp).toLocaleTimeString()}
           </p>
         )}
       </CardHeader>
       <CardContent>
-        {slotsError || pgError ? (
+        {slotsError || qsError ? (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>Failed to load queue health</AlertTitle>
             <AlertDescription>
               {slotsError instanceof Error
                 ? slotsError.message
-                : pgError instanceof Error
-                  ? pgError.message
+                : qsError instanceof Error
+                  ? qsError.message
                   : "Check if you have admin access."}
             </AlertDescription>
           </Alert>
-        ) : slotsLoading || pgLoading ? (
+        ) : slotsLoading || qsLoading ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : queueRows.length === 0 ? (
           <div className="py-6 text-center text-muted-foreground">
@@ -964,7 +960,7 @@ function QueueHealthCard() {
                 <TableRow>
                   <TableHead>Queue Key</TableHead>
                   <TableHead className="text-right">Queued</TableHead>
-                  <TableHead className="text-right">Picked</TableHead>
+                  <TableHead className="text-right">Running</TableHead>
                   <TableHead className="text-right">Slots</TableHead>
                   <TableHead>Notes</TableHead>
                 </TableRow>
@@ -984,7 +980,7 @@ function QueueHealthCard() {
                       {row.queued}
                     </TableCell>
                     <TableCell className="text-right font-mono text-xs">
-                      {row.picked}
+                      {row.running}
                     </TableCell>
                     <TableCell className="text-right text-xs">
                       {row.activeSlots}/{row.totalSlots || "—"}
@@ -997,7 +993,7 @@ function QueueHealthCard() {
               </TableBody>
             </Table>
             <p className="text-xs text-muted-foreground">
-              Picked tracks running workers. If queued &gt; 0 with no active
+              Running tracks active workers. If queued &gt; 0 with no active
               slots, workers are not spawning or slots are locked.
             </p>
           </div>
@@ -1009,14 +1005,10 @@ function QueueHealthCard() {
 
 function formatIssueLabel(issue: string) {
   switch (issue) {
-    case "queued_without_job":
-      return "Queued row without job";
-    case "running_without_picked_job":
-      return "Running row without picked job";
     case "running_stale_heartbeat":
-      return "Running row with stale heartbeat";
+      return "Running trial with stale heartbeat";
     case "active_task_without_active_trials":
-      return "Active task without active jobs";
+      return "Active task without active trials";
     default:
       return issue.replaceAll("_", " ");
   }
@@ -1033,10 +1025,7 @@ function OrphanedStateCard() {
 
   const counts = data?.counts;
   const totalIssues = counts
-    ? counts.queued_without_job +
-      counts.running_without_picked_job +
-      counts.running_stale_heartbeat +
-      counts.picked_without_active_slot +
+    ? counts.running_stale_heartbeat +
       counts.active_tasks_without_active_trials
     : 0;
 
@@ -1080,19 +1069,10 @@ function OrphanedStateCard() {
           <div className="space-y-4">
             <div className="flex flex-wrap gap-2 text-xs">
               <Badge variant="outline">
-                queued/no-job {counts.queued_without_job}
-              </Badge>
-              <Badge variant="outline">
-                running/no-pick {counts.running_without_picked_job}
-              </Badge>
-              <Badge variant="outline">
                 stale-heartbeat {counts.running_stale_heartbeat}
               </Badge>
               <Badge variant="outline">
-                picked/no-slot {counts.picked_without_active_slot}
-              </Badge>
-              <Badge variant="outline">
-                active-tasks/no-jobs {counts.active_tasks_without_active_trials}
+                stuck-tasks {counts.active_tasks_without_active_trials}
               </Badge>
             </div>
 
@@ -1199,76 +1179,24 @@ function OrphanedStateCard() {
 }
 
 // =============================================================================
-// PGQueuer Jobs Card
+// Queue Status Card
 // =============================================================================
 
-function PGQueuerCard() {
-  const [page, setPage] = useState(1);
-  const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [entrypointFilter, setEntrypointFilter] = useState<string>("all");
-  const [entrypointQuery, setEntrypointQuery] = useState("");
-
-  const queryParams = new URLSearchParams();
-  queryParams.set("page", String(page));
-  queryParams.set("page_size", "50");
-  if (statusFilter !== "all") queryParams.set("status", statusFilter);
-  if (entrypointFilter !== "all")
-    queryParams.set("entrypoint", entrypointFilter);
-
-  const { data, error, isLoading, mutate } = useSWR<PGQueuerResponse>(
-    `/api/admin/pgqueuer?${queryParams.toString()}`,
+function QueueStatusCard() {
+  const { data, error, isLoading, mutate } = useSWR<QueueStatusResponse>(
+    "/api/admin/queue-status",
     fetcher,
     { refreshInterval: 5000 },
   );
 
-  const formatDate = (dateStr: string | null) => {
-    if (!dateStr) return "—";
-    return new Date(dateStr).toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-  };
-
-  const getOldestAge = (status: string) => {
-    if (!data?.jobs) return "—";
-    const candidates = data.jobs
-      .filter((job) => job.status === status && job.created)
-      .map((job) => job.created as string);
-    if (candidates.length === 0) return "—";
-    const oldest = candidates.reduce((min, current) =>
-      new Date(current).getTime() < new Date(min).getTime() ? current : min,
-    );
-    return formatAge(oldest);
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "queued":
-        return "bg-purple-500/10 text-purple-400 border-purple-500/30";
-      case "picked":
-        return "bg-blue-500/10 text-blue-400 border-blue-500/30";
-      case "success":
-        return "bg-green-500/10 text-green-400 border-green-500/30";
-      case "failed":
-        return "bg-red-500/10 text-red-400 border-red-500/30";
-      case "cancelled":
-        return "bg-gray-500/10 text-gray-400 border-gray-500/30";
-      default:
-        return "bg-yellow-500/10 text-yellow-400 border-yellow-500/30";
-    }
-  };
-
-  const entrypoints = data?.stats?.by_entrypoint
-    ? Object.keys(data.stats.by_entrypoint).filter((key) =>
-        key.toLowerCase().includes(entrypointQuery.toLowerCase().trim()),
-      )
-    : [];
-  const statuses = data?.stats?.by_status
-    ? Object.keys(data.stats.by_status)
-    : [];
+  const totalQueued =
+    (data?.trial_queues?.reduce((sum, q) => sum + q.queued, 0) ?? 0) +
+    (data?.analysis_queued ?? 0) +
+    (data?.verdict_queued ?? 0);
+  const totalRunning =
+    (data?.trial_queues?.reduce((sum, q) => sum + q.running, 0) ?? 0) +
+    (data?.analysis_running ?? 0) +
+    (data?.verdict_running ?? 0);
 
   return (
     <Card>
@@ -1276,11 +1204,16 @@ function PGQueuerCard() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Database className="h-5 w-5" />
-            <CardTitle className="text-base">PGQueuer Jobs</CardTitle>
+            <CardTitle className="text-base">Queue Status</CardTitle>
             {data && (
-              <Badge variant="outline" className="text-xs">
-                {data.stats.total} total
-              </Badge>
+              <div className="flex gap-2">
+                <Badge variant="outline" className="text-xs">
+                  {totalQueued} queued
+                </Badge>
+                <Badge variant="outline" className="text-xs">
+                  {totalRunning} running
+                </Badge>
+              </div>
             )}
           </div>
           <Button
@@ -1301,70 +1234,10 @@ function PGQueuerCard() {
         )}
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Stats Overview */}
-        {data && (
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-            {Object.entries(data.stats.by_status).map(([status, count]) => (
-              <Card key={status}>
-                <CardContent className="p-2 text-center">
-                  <div className="text-lg font-bold">{count}</div>
-                  <div className="text-xs capitalize text-muted-foreground">
-                    {status}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
-        {data && (
-          <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-            <span>Oldest queued (page): {getOldestAge("queued")}</span>
-            <span>Oldest picked (page): {getOldestAge("picked")}</span>
-          </div>
-        )}
-
-        {/* Filters */}
-        <div className="flex flex-wrap gap-2">
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-[140px]">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All statuses</SelectItem>
-              {statuses.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {s}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select value={entrypointFilter} onValueChange={setEntrypointFilter}>
-            <SelectTrigger className="w-[220px]">
-              <SelectValue placeholder="Queue key" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All queue keys</SelectItem>
-              {entrypoints.map((ep) => (
-                <SelectItem key={ep} value={ep}>
-                  {ep}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Input
-            value={entrypointQuery}
-            onChange={(event) => setEntrypointQuery(event.target.value)}
-            placeholder="Search queue keys..."
-            className="h-9 w-[220px] text-xs"
-          />
-        </div>
-
-        {/* Jobs Table */}
         {error ? (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
-            <AlertTitle>Failed to load jobs</AlertTitle>
+            <AlertTitle>Failed to load queue status</AlertTitle>
             <AlertDescription>
               {error instanceof Error
                 ? error.message
@@ -1373,176 +1246,76 @@ function PGQueuerCard() {
           </Alert>
         ) : isLoading && !data ? (
           <p className="text-muted-foreground">Loading...</p>
-        ) : !data || data.jobs.length === 0 ? (
+        ) : !data || (data.trial_queues.length === 0 && data.analysis_queued === 0 && data.verdict_queued === 0) ? (
           <div className="py-8 text-center text-muted-foreground">
             <Database className="mx-auto mb-3 h-12 w-12 opacity-50" />
-            <p>No jobs in queue</p>
+            <p>No active queue items</p>
           </div>
         ) : (
-          <>
-            <div className="max-h-[400px] overflow-y-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-16">ID</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Queue Key</TableHead>
-                    <TableHead>Job Type</TableHead>
-                    <TableHead>Target ID</TableHead>
-                    <TableHead>Age</TableHead>
-                    <TableHead className="text-right">Created</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {data.jobs.map((job: PGQueuerJob) => {
-                    const jobType = job.payload?.job_type as string | undefined;
-                    const trialId = job.payload?.trial_id as string | undefined;
-                    const taskId = job.payload?.task_id as string | undefined;
-                    const targetId = trialId || taskId || "—";
-
-                    return (
-                      <TableRow key={job.id}>
-                        <TableCell className="font-mono text-xs">
-                          {job.id}
-                        </TableCell>
-                        <TableCell>
-                          <Badge
-                            variant="outline"
-                            className={`text-xs ${getStatusColor(job.status)}`}
-                          >
-                            {job.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          <span className="inline-flex items-center gap-1.5">
-                            <QueueKeyIcon queueKey={job.entrypoint} size={12} />
-                            <span className="font-mono text-xs">
-                              {job.entrypoint}
-                            </span>
+          <div className="space-y-4">
+            {data.trial_queues.length > 0 && (
+              <div className="space-y-3">
+                <div className="text-sm font-medium">Trial Queues</div>
+                {data.trial_queues.map((q) => {
+                  const total = q.queued + q.running;
+                  return (
+                    <div key={q.queue_key} className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="inline-flex items-center gap-1.5">
+                          <QueueKeyIcon queueKey={q.queue_key} size={12} />
+                          <span className="font-mono text-xs">
+                            {q.queue_key}
                           </span>
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          {jobType ? (
-                            <Badge variant="secondary" className="text-xs">
-                              <Zap className="mr-1 h-3 w-3" />
-                              {jobType}
-                            </Badge>
-                          ) : (
-                            "—"
-                          )}
-                        </TableCell>
-                        <TableCell className="max-w-[120px] truncate font-mono text-xs">
-                          {targetId}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {formatAge(job.created)}
-                        </TableCell>
-                        <TableCell className="text-right text-xs text-muted-foreground">
-                          {formatDate(job.created)}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {q.queued} queued · {q.running} running
+                        </span>
+                      </div>
+                      <div className="flex h-2 gap-1">
+                        {q.queued > 0 && (
+                          <div
+                            className="rounded-sm bg-purple-500"
+                            style={{
+                              width: `${(q.queued / total) * 100}%`,
+                            }}
+                            title={`Queued: ${q.queued}`}
+                          />
+                        )}
+                        {q.running > 0 && (
+                          <div
+                            className="rounded-sm bg-blue-500"
+                            style={{
+                              width: `${(q.running / total) * 100}%`,
+                            }}
+                            title={`Running: ${q.running}`}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
-            {/* Pagination */}
-            <div className="flex items-center justify-between">
-              <div className="text-xs text-muted-foreground">
-                Page {data.page}
+            {(data.analysis_queued > 0 || data.analysis_running > 0) && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-medium">Analysis</span>
+                <span className="text-muted-foreground">
+                  {data.analysis_queued} queued · {data.analysis_running}{" "}
+                  running
+                </span>
               </div>
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page === 1}
-                >
-                  Previous
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPage((p) => p + 1)}
-                  disabled={!data.has_more}
-                >
-                  Next
-                </Button>
+            )}
+            {(data.verdict_queued > 0 || data.verdict_running > 0) && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-medium">Verdict</span>
+                <span className="text-muted-foreground">
+                  {data.verdict_queued} queued · {data.verdict_running} running
+                </span>
               </div>
-            </div>
-          </>
+            )}
+          </div>
         )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// =============================================================================
-// Entrypoint Stats Card
-// =============================================================================
-
-function EntrypointStatsCard() {
-  const { data } = useSWR<PGQueuerResponse>(
-    "/api/admin/pgqueuer?page_size=1",
-    fetcher,
-    { refreshInterval: 10000 },
-  );
-
-  if (!data?.stats?.by_entrypoint) return null;
-
-  const entrypoints = Object.entries(data.stats.by_entrypoint);
-  if (entrypoints.length === 0) return null;
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Queue by Key</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-3">
-          {entrypoints.map(([entrypoint, statuses]) => {
-            const total = Object.values(statuses).reduce((a, b) => a + b, 0);
-            const queued = statuses.queued || 0;
-            const picked = statuses.picked || 0;
-
-            return (
-              <div key={entrypoint} className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-sm font-medium">
-                    {entrypoint}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {total} total
-                  </span>
-                </div>
-                <div className="flex h-2 gap-1">
-                  {queued > 0 && (
-                    <div
-                      className="rounded-sm bg-purple-500"
-                      style={{ width: `${(queued / total) * 100}%` }}
-                      title={`Queued: ${queued}`}
-                    />
-                  )}
-                  {picked > 0 && (
-                    <div
-                      className="rounded-sm bg-blue-500"
-                      style={{ width: `${(picked / total) * 100}%` }}
-                      title={`Picked: ${picked}`}
-                    />
-                  )}
-                </div>
-                <div className="flex gap-3 text-xs text-muted-foreground">
-                  {Object.entries(statuses).map(([status, count]) => (
-                    <span key={status}>
-                      {status}: {count}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
       </CardContent>
     </Card>
   );
@@ -1566,23 +1339,21 @@ export default function AdminPage() {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="slots">Worker Slots</TabsTrigger>
-          <TabsTrigger value="pgqueuer">Job Queue</TabsTrigger>
+          <TabsTrigger value="queue">Queue Status</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
           <QueuesAndPipelineCard />
           <QueueHealthCard />
           <OrphanedStateCard />
-          <EntrypointStatsCard />
-          <PGQueuerCard />
         </TabsContent>
 
         <TabsContent value="slots">
           <QueueSlotsCard />
         </TabsContent>
 
-        <TabsContent value="pgqueuer">
-          <PGQueuerCard />
+        <TabsContent value="queue">
+          <QueueStatusCard />
         </TabsContent>
       </Tabs>
     </div>

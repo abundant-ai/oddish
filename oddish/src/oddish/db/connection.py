@@ -10,9 +10,6 @@ from sqlalchemy import text
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore[attr-defined]
-from pgqueuer.db import AsyncpgPoolDriver
-from pgqueuer.queries import Queries
-
 from oddish.config import settings
 from oddish.db.models import Base
 
@@ -58,7 +55,7 @@ def _create_session_maker(
 engine = _create_engine()
 async_session_maker = _create_session_maker(engine)
 
-# Global connection pool for asyncpg (used by PGQueuer)
+# Global connection pool for asyncpg (used by queue workers)
 _pool: asyncpg.Pool | None = None
 
 
@@ -204,35 +201,6 @@ async def purge_db_data(
 
 
 # =============================================================================
-# PGQueuer Setup
-# =============================================================================
-
-
-async def install_pgqueuer():
-    """Install PGQueuer tables.
-
-    This creates the pgqueuer queue tables. Run this once during setup.
-    """
-    pool = await get_pool()
-    driver = AsyncpgPoolDriver(pool)
-    queries = Queries(driver)
-    try:
-        await queries.install()
-    except asyncpg.exceptions.DuplicateObjectError:
-        # Re-running setup against an existing dev DB is common; treat this as
-        # "already installed" rather than failing the whole setup.
-        return
-
-
-async def uninstall_pgqueuer():
-    """Uninstall PGQueuer tables."""
-    pool = await get_pool()
-    driver = AsyncpgPoolDriver(pool)
-    queries = Queries(driver)
-    await queries.uninstall()
-
-
-# =============================================================================
 # CLI entry point for `python -m oddish.db`
 # =============================================================================
 
@@ -251,27 +219,13 @@ def _run_cli():
             sys.exit(1)
 
     elif command == "setup":
-        print("Full setup: Alembic migrations + PGQueuer...")
+        print("Full setup: running Alembic migrations...")
         print("Running: alembic upgrade head")
         result = subprocess.run(["alembic", "upgrade", "head"], capture_output=False)
         if result.returncode != 0:
             print("✗ Alembic migration failed")
             sys.exit(1)
-
-        print("\nInstalling PGQueuer tables...")
-        asyncio.run(install_pgqueuer())
-        print("✓ PGQueuer installed!")
         print("\n✓ Full setup complete!")
-
-    elif command == "install-pgqueuer":
-        print("Installing PGQueuer tables...")
-        asyncio.run(install_pgqueuer())
-        print("✓ PGQueuer installed!")
-
-    elif command == "uninstall-pgqueuer":
-        print("Uninstalling PGQueuer tables...")
-        asyncio.run(uninstall_pgqueuer())
-        print("✓ PGQueuer uninstalled!")
 
     elif command == "reset":
         print("WARNING: This will drop all tables and recreate them!")
@@ -289,8 +243,6 @@ def _run_cli():
         if result.returncode != 0:
             print("✗ Alembic migration failed")
             sys.exit(1)
-        print("Installing PGQueuer...")
-        asyncio.run(install_pgqueuer())
         print("✓ Database reset complete!")
 
     elif command == "purge":
@@ -311,9 +263,7 @@ def _run_cli():
         print(f"Unknown command: {command}")
         print("\nAvailable commands:")
         print("  init             - Run Alembic migrations")
-        print("  setup            - Full setup (Alembic + PGQueuer)")
-        print("  install-pgqueuer - Install PGQueuer tables")
-        print("  uninstall-pgqueuer - Remove PGQueuer tables")
+        print("  setup            - Full setup (Alembic migrations)")
         print(
             "  reset            - Drop and recreate all tables (WARNING: destructive)"
         )

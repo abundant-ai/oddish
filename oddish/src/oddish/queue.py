@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -20,332 +19,14 @@ from oddish.db import (
     TrialStatus,
     VerdictStatus,
     generate_id,
-    get_pool,
     utcnow,
 )
-from pgqueuer.queries import Queries
-from pgqueuer.types import JobId
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
 from oddish.schemas import TaskSubmission, TrialSpec
 from oddish.task_timeouts import validate_task_timeout_config
 
 logger = logging.getLogger(__name__)
-
-
-async def _enqueue_job(
-    session: AsyncSession,
-    entrypoint: str,
-    payload: dict,
-    priority: int = 0,
-) -> int:
-    """Enqueue a job to PGQueuer within the current DB transaction.
-
-    This must run in the same transaction as model inserts to prevent race conditions.
-    """
-    payload_bytes = json.dumps(payload).encode()
-
-    result = await session.execute(
-        text(
-            """
-            INSERT INTO pgqueuer (priority, entrypoint, payload, status)
-            VALUES (:priority, :entrypoint, :payload, 'queued')
-            RETURNING id
-            """
-        ),
-        {
-            "priority": priority,
-            "entrypoint": entrypoint,
-            "payload": payload_bytes,
-        },
-    )
-    job_id: int = result.scalar_one()
-    await session.execute(
-        text(
-            """
-            INSERT INTO pgqueuer_log (job_id, status, entrypoint, priority)
-            VALUES (:job_id, 'queued', :entrypoint, :priority)
-            """
-        ),
-        {
-            "job_id": job_id,
-            "entrypoint": entrypoint,
-            "priority": priority,
-        },
-    )
-    return job_id
-
-
-async def enqueue_trial(
-    session: AsyncSession,
-    trial_id: str,
-    queue_key: str,
-    priority: int = 0,
-    org_id: str | None = None,
-    task_id: str | None = None,
-) -> None:
-    """Enqueue a trial job to PGQueuer *within the current DB transaction*.
-
-    This must run in the same transaction as `TaskModel`/`TrialModel` inserts.
-    Otherwise, a worker can dequeue the PGQueuer job before the trial row is
-    committed and permanently "drop" the job (leaving the trial stuck QUEUED).
-
-    ``org_id`` and ``task_id`` are stored in the payload so the fair-dequeue
-    query can determine ownership without extra joins.  They are optional for
-    backwards compatibility; the dequeue query falls back to a trials-table
-    lookup when they are absent.
-    """
-    resolved_queue_key = settings.normalize_queue_key(queue_key)
-    payload: dict[str, object] = {
-        "job_type": "trial",
-        "trial_id": trial_id,
-        "queue_key": resolved_queue_key,
-    }
-    if org_id is not None:
-        payload["org_id"] = org_id
-    if task_id is not None:
-        payload["task_id"] = task_id
-    await _enqueue_job(
-        session,
-        entrypoint=resolved_queue_key,
-        payload=payload,
-        priority=priority,
-    )
-
-
-async def enqueue_analysis(
-    session: AsyncSession,
-    trial_id: str,
-    queue_key: str | None = None,
-    priority: int = 0,
-) -> None:
-    """Enqueue an analysis job for a trial.
-
-    Analysis jobs classify trial outcomes using LLM.
-    """
-    resolved_queue_key = settings.normalize_queue_key(
-        queue_key or settings.get_analysis_queue_key()
-    )
-    await _enqueue_job(
-        session,
-        entrypoint=resolved_queue_key,
-        payload={
-            "job_type": "analysis",
-            "trial_id": trial_id,
-            "queue_key": resolved_queue_key,
-        },
-        priority=priority,
-    )
-
-
-async def enqueue_verdict(
-    session: AsyncSession,
-    task_id: str,
-    queue_key: str | None = None,
-    priority: int = 0,
-) -> None:
-    """Enqueue a verdict job for a task.
-
-    Verdict jobs synthesize trial classifications into a final task verdict.
-    """
-    resolved_queue_key = settings.normalize_queue_key(
-        queue_key or settings.get_verdict_queue_key()
-    )
-    await _enqueue_job(
-        session,
-        entrypoint=resolved_queue_key,
-        payload={
-            "job_type": "verdict",
-            "task_id": task_id,
-            "queue_key": resolved_queue_key,
-        },
-        priority=priority,
-    )
-
-
-async def _ensure_trials_have_pgqueuer_rows(
-    session: AsyncSession,
-    *,
-    trials_to_enqueue: list[tuple[str, str]],
-    priority: int,
-    org_id: str | None = None,
-    task_id: str | None = None,
-) -> int:
-    """Backfill any missing queued PGQueuer rows before commit.
-
-    This is a defensive consistency check for the cloud submission path: if a
-    burst submission leaves trial rows in `QUEUED` without a matching pgqueuer
-    row, workers will never see them.
-    """
-    if not trials_to_enqueue:
-        return 0
-
-    trial_ids = [trial_id for trial_id, _ in trials_to_enqueue]
-    result = await session.execute(
-        text(
-            """
-            SELECT DISTINCT convert_from(payload, 'UTF8')::jsonb ->> 'trial_id' AS trial_id
-            FROM pgqueuer
-            WHERE payload IS NOT NULL
-              AND status = 'queued'
-              AND (convert_from(payload, 'UTF8')::jsonb ->> 'trial_id') = ANY(:trial_ids)
-            """
-        ),
-        {"trial_ids": trial_ids},
-    )
-    present_trial_ids = {str(row[0]) for row in result.all() if row[0]}
-
-    inserted = 0
-    for trial_id, queue_key in trials_to_enqueue:
-        if trial_id in present_trial_ids:
-            continue
-        await enqueue_trial(
-            session, trial_id, queue_key,
-            priority=priority, org_id=org_id, task_id=task_id,
-        )
-        inserted += 1
-
-    return inserted
-
-
-# =============================================================================
-# PGQueuer Cleanup
-# =============================================================================
-
-
-async def _cancel_pgqueuer_jobs(
-    session: AsyncSession,
-    job_ids: list[int],
-    *,
-    suppress_errors: bool = True,
-) -> int:
-    del session
-    if not job_ids:
-        return 0
-
-    try:
-        unique_job_ids = sorted({int(job_id) for job_id in job_ids})
-        pool = await get_pool()
-        rows = await pool.fetch(
-            """
-            WITH deleted AS (
-                DELETE FROM pgqueuer
-                WHERE id = ANY($1::integer[])
-                RETURNING id, entrypoint, priority
-            ),
-            inserted AS (
-                INSERT INTO pgqueuer_log (job_id, status, entrypoint, priority)
-                SELECT id, 'canceled', entrypoint, priority
-                FROM deleted
-                RETURNING job_id
-            )
-            SELECT job_id FROM inserted
-            """,
-            unique_job_ids,
-        )
-        deleted_job_ids = [int(row["job_id"]) for row in rows]
-        if deleted_job_ids:
-            async with pool.acquire() as conn:
-                queries = Queries.from_asyncpg_connection(conn)
-                await queries.notify_job_cancellation(
-                    [JobId(job_id) for job_id in deleted_job_ids]
-                )
-        return len(deleted_job_ids)
-    except Exception:
-        if suppress_errors:
-            logger.exception("Failed to cancel PGQueuer jobs")
-            return 0
-        raise
-
-
-async def cancel_pgqueuer_job_ids(
-    session: AsyncSession,
-    job_ids: list[int],
-    *,
-    suppress_errors: bool = True,
-) -> int:
-    """Cancel specific PGQueuer job IDs directly."""
-    return await _cancel_pgqueuer_jobs(
-        session,
-        job_ids,
-        suppress_errors=suppress_errors,
-    )
-
-
-async def cancel_pgqueuer_jobs_for_trials(
-    session: AsyncSession,
-    trial_ids: list[str],
-    *,
-    suppress_errors: bool = True,
-) -> int:
-    """Cancel PGQueuer jobs tied to trial IDs (trials + analyses).
-
-    Best-effort: returns 0 if the pgqueuer table is missing or the query fails.
-    """
-    if not trial_ids:
-        return 0
-
-    try:
-        pool = await get_pool()
-        rows = await pool.fetch(
-            """
-            SELECT id
-            FROM pgqueuer
-            WHERE payload IS NOT NULL
-              AND status IN ('queued', 'picked')
-              AND (convert_from(payload, 'UTF8')::jsonb ->> 'trial_id') = ANY($1)
-            """,
-            trial_ids,
-        )
-        job_ids = [int(row["id"]) for row in rows]
-        return await _cancel_pgqueuer_jobs(
-            session,
-            job_ids,
-            suppress_errors=suppress_errors,
-        )
-    except Exception:
-        if suppress_errors:
-            logger.exception("Failed to cancel PGQueuer jobs for trials")
-            return 0
-        raise
-
-
-async def cancel_pgqueuer_jobs_for_tasks(
-    session: AsyncSession,
-    task_ids: list[str],
-    *,
-    suppress_errors: bool = True,
-) -> int:
-    """Cancel PGQueuer jobs tied to task IDs (verdict jobs).
-
-    Best-effort: returns 0 if the pgqueuer table is missing or the query fails.
-    """
-    if not task_ids:
-        return 0
-
-    try:
-        pool = await get_pool()
-        rows = await pool.fetch(
-            """
-            SELECT id
-            FROM pgqueuer
-            WHERE payload IS NOT NULL
-              AND status IN ('queued', 'picked')
-              AND (convert_from(payload, 'UTF8')::jsonb ->> 'task_id') = ANY($1)
-            """,
-            task_ids,
-        )
-        job_ids = [int(row["id"]) for row in rows]
-        return await _cancel_pgqueuer_jobs(
-            session,
-            job_ids,
-            suppress_errors=suppress_errors,
-        )
-    except Exception:
-        if suppress_errors:
-            logger.exception("Failed to cancel PGQueuer jobs for tasks")
-            return 0
-        raise
 
 
 # =============================================================================
@@ -360,9 +41,8 @@ async def cancel_task_runs(
 ) -> dict:
     """Cancel all in-flight runs for a task without deleting data.
 
-    1. Cancel queued PGQueuer jobs (trials, analyses, verdicts)
-    2. Mark running/queued/retrying trials as FAILED
-    3. Return Modal function call IDs so callers can cancel them remotely
+    1. Mark running/queued/retrying trials as FAILED
+    2. Return Modal function call IDs so callers can cancel them remotely
 
     Returns a summary dict with counts and modal_function_call_ids to cancel.
     """
@@ -374,19 +54,11 @@ async def cancel_task_runs(
     if not task:
         return {"error": "not_found"}
 
-    # Gather trial IDs for this task
     trial_rows = await session.execute(
         select(TrialModel).where(TrialModel.task_id == task_id)
     )
     trials = list(trial_rows.scalars().all())
-    trial_ids = [t.id for t in trials]
 
-    # Cancel PGQueuer jobs (queued + picked)
-    pgq_cancelled = 0
-    pgq_cancelled += await cancel_pgqueuer_jobs_for_trials(session, trial_ids)
-    pgq_cancelled += await cancel_pgqueuer_jobs_for_tasks(session, [task_id])
-
-    # Collect Modal function call IDs before clearing them
     active_statuses = {
         TrialStatus.PENDING,
         TrialStatus.QUEUED,
@@ -415,10 +87,7 @@ async def cancel_task_runs(
         trial.error_message = "Cancelled by user"
         trial.finished_at = now
         trial.harbor_stage = "cancelled"
-        # Prevent the dying container's error handler from re-queuing:
-        # the retry logic checks `attempts < max_attempts`.
         trial.max_attempts = trial.attempts
-        trial.current_pgqueuer_job_id = None
         trial.current_worker_id = None
         trial.current_queue_slot = None
         trial.modal_function_call_id = None
@@ -428,7 +97,6 @@ async def cancel_task_runs(
             trial.analysis_finished_at = now
         trials_cancelled += 1
 
-    # Update task status
     if task.status in (
         TaskStatus.PENDING,
         TaskStatus.RUNNING,
@@ -447,7 +115,6 @@ async def cancel_task_runs(
     return {
         "task_id": task_id,
         "trials_cancelled": trials_cancelled,
-        "pgqueuer_jobs_cancelled": pgq_cancelled,
         "modal_function_call_ids": modal_fc_ids,
     }
 
@@ -462,13 +129,11 @@ async def _get_or_create_experiment(
 ) -> ExperimentModel:
     """Fetch an experiment by name (and org_id if provided) or create it if missing."""
     if org_id:
-        # Multi-tenant: lookup by (org_id, name)
         query = select(ExperimentModel).where(
             ExperimentModel.org_id == org_id,
             ExperimentModel.name == name,
         )
     else:
-        # OSS single-tenant: lookup by name only
         query = select(ExperimentModel).where(ExperimentModel.name == name)
 
     result = await session.execute(
@@ -498,16 +163,11 @@ async def _get_experiment_by_id(
 async def _get_experiment_by_id_or_name(
     session: AsyncSession, experiment_id_or_name: str, org_id: str | None = None
 ) -> ExperimentModel | None:
-    """Fetch an experiment by ID or name with optional org scoping.
-
-    First tries to match by ID, then falls back to name lookup.
-    """
-    # Try by ID first
+    """Fetch an experiment by ID or name with optional org scoping."""
     experiment = await _get_experiment_by_id(session, experiment_id_or_name, org_id)
     if experiment:
         return experiment
 
-    # Fall back to name lookup
     query = select(ExperimentModel).where(ExperimentModel.name == experiment_id_or_name)
     if org_id:
         query = query.where(ExperimentModel.org_id == org_id)
@@ -518,27 +178,18 @@ async def _get_experiment_by_id_or_name(
 
 
 def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
-    """Derive a human-readable task name from task_path or task_id.
-
-    Strips common prefixes (s3://, tasks/) and UUID/hash suffixes.
-    """
+    """Derive a human-readable task name from task_path or task_id."""
     import re
 
-    # Remove s3:// prefix and trailing slashes
     name = task_path.replace("s3://", "").rstrip("/")
 
-    # Get the last path component
     parts = name.split("/")
     name = parts[-1] if parts else name
 
-    # Strip "tasks" prefix if that's all we have
     if name == "tasks" and len(parts) > 1:
         name = parts[-2]
 
-    # If the name looks like it's just the task_id (from s3://tasks/<id>/),
-    # try to strip the UUID suffix to get the clean name
     if task_id and name == task_id:
-        # Strip 8-char hex suffix (e.g., "axios-12345678" -> "axios")
         cleaned = re.sub(r"-[0-9a-f]{8}$", "", name, flags=re.IGNORECASE)
         if cleaned and cleaned != name:
             return cleaned
@@ -550,14 +201,7 @@ def _build_harbor_config_for_trial(
     submission: TaskSubmission,
     spec: TrialSpec,
 ) -> dict[str, Any] | None:
-    """Build the harbor_config JSONB payload for a single trial row.
-
-    Combines the submission-level HarborConfig with the full Harbor AgentConfig
-    payload from TrialSpec.agent_config. Older rows stored a reduced
-    ``agent_overrides`` blob; we still write the richer ``agent_config`` field so
-    Harbor-specific fields like ``import_path`` and ``max_timeout_sec`` survive
-    end-to-end.
-    """
+    """Build the harbor_config JSONB payload for a single trial row."""
     base = submission.harbor.model_dump(mode="json", exclude_defaults=True)
 
     agent_config_payload: dict[str, Any] = {}
@@ -565,9 +209,6 @@ def _build_harbor_config_for_trial(
         agent_config_payload = spec.agent_config.model_dump(
             mode="json", exclude_defaults=True
         )
-        # Trial rows already store the source-of-truth agent/model separately.
-        # Dropping these avoids Harbor's implicit AgentConfig(name="oracle")
-        # default from overriding the intended trial agent at execution time.
         agent_config_payload.pop("name", None)
         agent_config_payload.pop("model_name", None)
 
@@ -583,26 +224,19 @@ async def create_task(
     task_id: str | None = None,
     org_id: str | None = None,
 ) -> TaskModel:
-    """Create a task with its trials and enqueue them to PGQueuer.
+    """Create a task with its trials.
 
-    Args:
-        session: Database session
-        submission: Task submission data
-        task_id: Optional custom task ID
-        org_id: Optional organization ID for multi-tenant deployments.
-                When provided, propagates to experiment and all trials.
+    Trials are created with status=QUEUED which makes them immediately
+    visible to the fair-scheduling claim query in workers.
     """
     if task_id is None:
         task_id = generate_id()
 
-    # Derive task name (use explicit name if provided, otherwise derive from path)
     task_name = submission.name or _derive_task_name(submission.task_path, task_id)
 
-    # Handle task storage based on path format
     task_path = submission.task_path
     task_s3_key = extract_s3_key_from_path(task_path)
     if not task_s3_key and settings.s3_enabled:
-        # Legacy: upload local directory to S3
         local_path = Path(task_path)
         if local_path.exists() and local_path.is_dir():
             validate_task_timeout_config(local_path)
@@ -613,14 +247,11 @@ async def create_task(
         if local_path.exists() and local_path.is_dir():
             validate_task_timeout_config(local_path)
 
-    # Resolve experiment by ID or name (creates if not found)
     if submission.experiment_id:
-        # First try to find by ID or name
         experiment = await _get_experiment_by_id_or_name(
             session, submission.experiment_id, org_id
         )
         if not experiment:
-            # Not found - create with the given name
             experiment = await _get_or_create_experiment(
                 session, submission.experiment_id, org_id
             )
@@ -628,7 +259,6 @@ async def create_task(
         experiment_name = generate_experiment_name()
         experiment = await _get_or_create_experiment(session, experiment_name, org_id)
 
-    # Create task
     task = TaskModel(
         id=task_id,
         name=task_name,
@@ -643,11 +273,6 @@ async def create_task(
     )
     session.add(task)
 
-    # Priority for PGQueuer (higher number = higher priority)
-    pgq_priority = 1000 if submission.priority == Priority.HIGH else 0
-
-    # Create trials
-    trials_to_enqueue: list[tuple[str, str]] = []  # (trial_id, queue_key)
     for i, spec in enumerate(submission.trials):
         model = settings.normalize_trial_model(spec.agent, spec.model)
         provider = settings.get_provider_for_trial(spec.agent, model)
@@ -672,35 +297,8 @@ async def create_task(
             status=TrialStatus.QUEUED,
         )
         session.add(trial)
-        trials_to_enqueue.append((trial_id, queue_key))
 
     await session.flush()
-
-    # Enqueue all trials to PGQueuer
-    for trial_id, queue_key in trials_to_enqueue:
-        await enqueue_trial(
-            session,
-            trial_id,
-            queue_key,
-            priority=pgq_priority,
-            org_id=org_id,
-            task_id=task_id,
-        )
-
-    missing_rows_backfilled = await _ensure_trials_have_pgqueuer_rows(
-        session,
-        trials_to_enqueue=trials_to_enqueue,
-        priority=pgq_priority,
-        org_id=org_id,
-        task_id=task_id,
-    )
-    if missing_rows_backfilled > 0:
-        print(
-            f"[oddish] Backfilled {missing_rows_backfilled} missing PGQueuer rows "
-            f"for task {task_id}"
-        )
-
-    # Refresh to load the trials relationship
     await session.refresh(task, attribute_names=["trials"])
     return task
 
@@ -711,16 +309,12 @@ async def create_task(
 
 
 async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bool:
-    """
-    Check if all trials for a task are done and transition task status.
+    """Check if all trials for a task are done and transition task status.
 
-    If run_analysis is enabled → status becomes ANALYZING (analysis jobs already enqueued per-trial)
-    If run_analysis is disabled → status becomes COMPLETED
+    If run_analysis is enabled -> status becomes ANALYZING
+    If run_analysis is disabled -> status becomes COMPLETED
 
-    Uses SELECT FOR UPDATE to prevent race conditions when multiple trials
-    complete simultaneously.
-
-    Returns True if task transitioned to next stage.
+    Uses SELECT FOR UPDATE to prevent race conditions.
     """
     trial = await session.get(TrialModel, trial_id)
     if not trial:
@@ -728,7 +322,6 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
 
     task_id = trial.task_id
 
-    # Lock the task row to prevent concurrent updates
     result = await session.execute(
         select(TaskModel).where(TaskModel.id == task_id).with_for_update()
     )
@@ -737,11 +330,9 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
     if not task:
         return False
 
-    # If task has already moved past RUNNING, another trial beat us to it
     if task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING):
         return False
 
-    # Check if any trials are still pending/queued/running
     pending_count = await session.scalar(
         select(func.count(TrialModel.id)).where(
             and_(
@@ -761,14 +352,10 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
     if pending_count > 0:
         return False
 
-    # All trials done - transition task status
     if task.run_analysis:
-        # Analysis jobs were enqueued per-trial in run_trial_job
         task.status = TaskStatus.ANALYZING
         await session.flush()
 
-        # If analyses already finished before we reached ANALYZING,
-        # enqueue verdict immediately to avoid getting stuck.
         analysis_pending_count = await session.scalar(
             select(func.count(TrialModel.id)).where(
                 and_(
@@ -789,7 +376,6 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
         if analysis_pending_count == 0:
             task.status = TaskStatus.VERDICT_PENDING
             task.verdict_status = VerdictStatus.QUEUED
-            await enqueue_verdict(session, task_id)
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
@@ -799,23 +385,16 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
 
 
 async def maybe_start_verdict_stage(session: AsyncSession, trial_id: str) -> bool:
-    """
-    Check if all analyses for a task are done. If so, transition to VERDICT_PENDING
-    and enqueue the verdict job.
+    """Check if all analyses for a task are done. If so, transition to VERDICT_PENDING.
 
-    Uses SELECT FOR UPDATE to prevent race conditions when multiple analyses
-    complete simultaneously.
-
-    Returns True if task transitioned to verdict stage.
+    Uses SELECT FOR UPDATE to prevent race conditions.
     """
-    # Get task_id from trial
     trial = await session.get(TrialModel, trial_id)
     if not trial:
         return False
 
     task_id = trial.task_id
 
-    # Lock the task row to prevent concurrent updates
     result = await session.execute(
         select(TaskModel).where(TaskModel.id == task_id).with_for_update()
     )
@@ -824,12 +403,9 @@ async def maybe_start_verdict_stage(session: AsyncSession, trial_id: str) -> boo
     if not task:
         return False
 
-    # If task has already moved past ANALYZING, another analysis beat us to it
     if task.status != TaskStatus.ANALYZING:
         return False
 
-    # Check if any analyses are still missing or pending/queued/running.
-    # Manual re-analysis can temporarily clear a trial's analysis state.
     pending_count = await session.scalar(
         select(func.count(TrialModel.id)).where(
             and_(
@@ -851,10 +427,8 @@ async def maybe_start_verdict_stage(session: AsyncSession, trial_id: str) -> boo
     if pending_count > 0:
         return False
 
-    # All analyses done - transition to VERDICT_PENDING and enqueue verdict job
     task.status = TaskStatus.VERDICT_PENDING
     task.verdict_status = VerdictStatus.QUEUED
-    await enqueue_verdict(session, task_id)
     await session.flush()
 
     return True
@@ -876,12 +450,7 @@ async def get_task_with_trials(session: AsyncSession, task_id: str) -> TaskModel
 
 
 async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> dict:
-    """Get queue statistics by queue_key across trial/analysis/verdict jobs.
-
-    Args:
-        session: Database session
-        org_id: Optional organization ID for multi-tenant filtering
-    """
+    """Get queue statistics by queue_key across trial/analysis/verdict jobs."""
     stats: dict[str, dict[str, int]] = {}
     valid_statuses = {"pending", "queued", "running", "success", "failed", "retrying"}
     analysis_queue_key = settings.get_analysis_queue_key()
@@ -932,7 +501,6 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
     for queue_key, status, count in result.all():
         _add(str(queue_key), str(status), int(count))
 
-    # Analysis jobs are provider-queued jobs represented by Trial.analysis_status.
     analysis_query = (
         select(TrialModel.analysis_status, func.count(TrialModel.id))
         .where(TrialModel.analysis_status.isnot(None))
@@ -944,7 +512,6 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
     for analysis_status, count in analysis_result.all():
         _add(analysis_queue_key, analysis_status.value, int(count))
 
-    # Verdict jobs are provider-queued jobs represented by Task.verdict_status.
     verdict_query = (
         select(TaskModel.verdict_status, func.count(TaskModel.id))
         .where(TaskModel.verdict_status.isnot(None))
@@ -986,13 +553,7 @@ async def get_queue_stats_with_concurrency(
 
 
 async def get_pipeline_stats(session: AsyncSession, org_id: str | None = None) -> dict:
-    """Get statistics for each pipeline stage.
-
-    Args:
-        session: Database session
-        org_id: Optional organization ID for multi-tenant filtering
-    """
-    # Trials - count by status
+    """Get statistics for each pipeline stage."""
     trial_query = select(TrialModel.status, func.count(TrialModel.id)).group_by(
         TrialModel.status
     )
@@ -1001,7 +562,6 @@ async def get_pipeline_stats(session: AsyncSession, org_id: str | None = None) -
     trial_stats = await session.execute(trial_query)
     trials = {status.value: count for status, count in trial_stats.all()}
 
-    # Analyses (from trial.analysis_status field)
     analysis_query = (
         select(TrialModel.analysis_status, func.count(TrialModel.id))
         .where(TrialModel.analysis_status.isnot(None))
@@ -1012,7 +572,6 @@ async def get_pipeline_stats(session: AsyncSession, org_id: str | None = None) -
     analysis_stats = await session.execute(analysis_query)
     analyses = {status.value: count for status, count in analysis_stats.all()}
 
-    # Verdicts (from task.verdict_status field)
     verdict_query = (
         select(TaskModel.verdict_status, func.count(TaskModel.id))
         .where(TaskModel.verdict_status.isnot(None))

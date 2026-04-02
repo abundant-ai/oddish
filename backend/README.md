@@ -100,7 +100,7 @@ The API layer enforces this scope in all list/read/write queries.
 | `api/routers/orgs.py` | Current org lookup and Clerk-backed user management |
 | `api/routers/api_keys.py` | Org API key listing, creation, and revocation |
 | `api/routers/public.py` | Public token-based read routes (no auth) |
-| `api/routers/admin.py` | Queue-slot and pgqueuer inspection endpoints |
+| `api/routers/admin.py` | Queue-slot and queue-status inspection endpoints |
 | `api/routers/clerk_webhooks.py` | Clerk org/user synchronization |
 | `api/routers/github_webhooks.py` | GitHub status/refresh integrations |
 | `auth/verification.py` | API key + Clerk JWT verification and auth caches |
@@ -230,7 +230,8 @@ All routes require auth unless marked public.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/admin/slots` | Queue slot lease state |
-| GET | `/admin/pgqueuer` | pgqueuer queue inspection |
+| GET | `/admin/queue-status` | Queue status (trials/analysis/verdict counts) |
+| GET | `/admin/orphaned-state` | Orphaned queue state diagnostics |
 | POST | `/webhooks/clerk` | Clerk webhook ingestion |
 | POST | `/github/tasks/{task_id}/refresh` | Refresh task PR comment |
 | POST | `/github/experiments/{experiment_id}/refresh` | Refresh experiment PR comments |

@@ -61,7 +61,7 @@ def cancel(
 
     result = response.json()
     trials = result.get("trials_cancelled", 0)
-    pgq = result.get("pgqueuer_jobs_cancelled", 0)
+    pgq = 0  # Legacy field, no longer tracked
     modal = result.get("modal_calls_cancelled", 0)
 
     console.print(f"[green]Cancelled task {task_id}[/green]")

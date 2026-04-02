@@ -59,12 +59,12 @@ async def process_single_job(queue_key: str):
     """
     Process exactly ONE job from the queue.
 
-    This function:
-    1. Claims one job using PGQueuer (atomic SKIP LOCKED)
-    2. Processes the job completely (trial, analysis, or verdict)
-    3. Exits after completion
+    1. Acquires a concurrency slot for the queue key
+    2. Claims one job directly from the trials/tasks table (atomic SKIP LOCKED)
+    3. Processes the job completely (trial, analysis, or verdict)
+    4. Exits after completion
 
-    Multiple instances run in parallel - PGQueuer ensures no duplicates.
+    Multiple instances run in parallel.
     Each worker gets the full timeout budget for its single job.
     """
     console.print(f"[cyan]Job worker starting (queue_key={queue_key})...[/cyan]")

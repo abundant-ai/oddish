@@ -210,7 +210,7 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://oddish:oddish@localhost:5432/oddish"
 
-    # Asyncpg pool (pgqueuer) sizing
+    # Asyncpg pool sizing
     # Defaults are intentionally small to avoid exhausting DB connections when
     # many worker processes are spawned.
     asyncpg_pool_min_size: int = 1
@@ -295,7 +295,7 @@ class Settings(BaseSettings):
         return cleaned
 
     def normalize_queue_key(self, model: str) -> str:
-        """Normalize queue keys for PGQueuer entrypoints.
+        """Normalize queue keys.
 
         For model-like inputs without an explicit provider prefix, this attempts
         to infer the provider and returns `provider/model` so bare and prefixed

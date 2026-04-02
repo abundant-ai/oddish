@@ -11,7 +11,7 @@ Current app surface:
 - `/experiments` base page directing users to select an experiment
 - `/experiments/[experiment]` experiment detail, task and trial inspection, logs, results, files, share controls, and **cancel** for in-flight work (task drawer **Cancel (N)** or experiment table bulk **Cancel** when tasks are selected; same as `POST /tasks/{task_id}/cancel`—stops all active trials on each task)
 - `/settings` organization management and API key management
-- `/admin` worker queues, queue slots, queue health, orphaned state, and PGQueuer monitoring
+- `/admin` worker queues, queue slots, queue health, and orphaned state monitoring
 - `/share/[token]` read-only public experiment view
 - `/datasets` and `/datasets/[token]` public dataset listing and detail pages
 
@@ -139,7 +139,7 @@ The frontend proxies backend requests through `src/app/api/*`. Main groups:
 - `/api/trials/*` for trial logs, structured logs, result payloads, retries, trajectories, and files
 - `/api/experiments/*` for experiment detail, task listing, publish, unpublish, and share
 - `/api/settings/api-keys*` for API key management
-- `/api/admin/*` for queue slots, PGQueuer monitoring, and orphaned state detection
+- `/api/admin/*` for queue slots, queue status, and orphaned state detection
 - `/api/public/*` for public experiment, dataset, and artifact access
 
 ## Project Structure
