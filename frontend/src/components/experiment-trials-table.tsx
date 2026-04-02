@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -87,6 +88,7 @@ type ExperimentTrialsTableProps = {
   agentSummaries: AgentSummary[];
   modelScopedAgents: ReadonlySet<string>;
   isLoading: boolean;
+  isLoadingTrials?: boolean;
   showPassAtK?: boolean;
   onTaskDelete?: (task: Task) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
@@ -121,6 +123,17 @@ const EMPTY_TRIAL_INDEX: ReadonlyMap<string, number> = new Map<
   number
 >();
 const VIRTUALIZATION_THRESHOLD = 50;
+const INITIAL_LOADING_COLUMN_COUNT = 4;
+const INITIAL_LOADING_ROW_COUNT = 8;
+const SEARCH_INPUT_WIDTH = 320;
+const LOADING_AGENT_COLUMNS: AgentSummary[] = Array.from({ length: 4 }, (_, index) => ({
+  key: `__loading_agent_${index}`,
+  label: `loading-${index}`,
+  agent: "Loading",
+  model: null,
+  queueKey: null,
+  isModelScoped: false,
+}));
 const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "queued",
   "running",
@@ -310,7 +323,21 @@ function getTrialTitle(trial: Trial, status: MatrixStatus) {
         ? "reward 1"
         : "reward 0";
   const error = trial.error_message ? ` • ${trial.error_message}` : "";
-  return `${STATUS_CONFIG[status].shortLabel} • ${trial.status} • ${reward}${error}`;
+  const queueInfo = trial.queue_info;
+  const queueSnapshot = queueInfo
+    ? [
+        queueInfo.position != null
+          ? `queue #${queueInfo.position}/${queueInfo.queued_count}`
+          : null,
+        queueInfo.ahead != null ? `${queueInfo.ahead} ahead` : null,
+        `${queueInfo.running_count} running`,
+        `${queueInfo.concurrency_limit} slots`,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join(" • ")
+    : null;
+  const queue = queueSnapshot ? ` • ${queueSnapshot}` : "";
+  return `${STATUS_CONFIG[status].shortLabel} • ${trial.status} • ${reward}${error}${queue}`;
 }
 
 export function ExperimentTrialsTable({
@@ -318,6 +345,7 @@ export function ExperimentTrialsTable({
   agentSummaries,
   modelScopedAgents,
   isLoading,
+  isLoadingTrials = false,
   showPassAtK = false,
   onTaskDelete,
   onRerun,
@@ -358,7 +386,6 @@ export function ExperimentTrialsTable({
     Record<string, number>
   >({});
   const tableContainerRef = useRef<HTMLDivElement | null>(null);
-  const [containerWidth, setContainerWidth] = useState<number | null>(null);
   const resizeRef = useRef<{
     columnKey: "task" | string;
     neighborKey: "task" | string;
@@ -419,17 +446,6 @@ export function ExperimentTrialsTable({
       setVerdictError(null);
     }
   }, [selectedTasks]);
-
-  useEffect(() => {
-    if (!tableContainerRef.current) return;
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      setContainerWidth(Math.floor(entry.contentRect.width));
-    });
-    observer.observe(tableContainerRef.current);
-    return () => observer.disconnect();
-  }, []);
 
   useEffect(() => {
     // Skip the first render -- the initial state was just read from URL params
@@ -503,42 +519,40 @@ export function ExperimentTrialsTable({
     () => sortedAgentSummaries.filter((agent) => !hiddenAgents.has(agent.key)),
     [sortedAgentSummaries, hiddenAgents],
   );
+  const showLoadingMatrixColumns = isLoadingTrials && visibleAgents.length === 0;
+  const renderedAgents = showLoadingMatrixColumns
+    ? LOADING_AGENT_COLUMNS
+    : visibleAgents;
 
   const columnOrder = useMemo(
-    () => ["task", ...visibleAgents.map((agent) => agent.key)],
-    [visibleAgents],
+    () => ["task", ...renderedAgents.map((agent) => agent.key)],
+    [renderedAgents],
   );
 
   const baseTableWidth = useMemo(() => {
-    const agentTotal = visibleAgents.reduce(
+    const agentTotal = renderedAgents.reduce(
       (sum, agent) =>
         sum + (agentColumnWidths[agent.key] ?? DEFAULT_AGENT_WIDTH),
       0,
     );
     return taskColumnWidth + agentTotal;
-  }, [visibleAgents, agentColumnWidths, taskColumnWidth, DEFAULT_AGENT_WIDTH]);
-
-  const extraSpace =
-    containerWidth !== null ? Math.max(0, containerWidth - baseTableWidth) : 0;
-  const columnCount = Math.max(1, columnOrder.length);
-  const extraPerColumn = extraSpace / columnCount;
-  const tableWidth =
-    containerWidth !== null
-      ? Math.max(containerWidth, baseTableWidth)
-      : baseTableWidth;
+  }, [renderedAgents, agentColumnWidths, taskColumnWidth, DEFAULT_AGENT_WIDTH]);
   const getDisplayedWidth = (key: "task" | string) => {
-    const baseWidth =
-      key === "task"
-        ? taskColumnWidth
-        : (agentColumnWidths[key] ?? DEFAULT_AGENT_WIDTH);
-    return baseWidth + extraPerColumn;
+    return key === "task"
+      ? taskColumnWidth
+      : (agentColumnWidths[key] ?? DEFAULT_AGENT_WIDTH);
   };
+  const tableMinWidth = Math.max(
+    960,
+    baseTableWidth,
+    columnOrder.length * AGENT_COLUMN_MIN,
+  );
 
   useEffect(() => {
     setAgentColumnWidths((prev) => {
       const next: Record<string, number> = { ...prev };
       let hasChange = false;
-      for (const agent of visibleAgents) {
+      for (const agent of renderedAgents) {
         if (next[agent.key] == null) {
           next[agent.key] = DEFAULT_AGENT_WIDTH;
           hasChange = true;
@@ -546,7 +560,7 @@ export function ExperimentTrialsTable({
       }
       return hasChange ? next : prev;
     });
-  }, [visibleAgents]);
+  }, [renderedAgents]);
 
   const filteredTasks = useMemo(() => {
     if (!deferredTaskSearch.trim()) return tasks;
@@ -1110,8 +1124,109 @@ export function ExperimentTrialsTable({
     };
   }, [isResizing]);
 
+  const isInitialLoading = isLoading && tasks.length === 0;
+
+  if (isInitialLoading) {
+    return (
+      <div className="space-y-4">
+        {showPassAtK ? (
+          <div className="grid items-stretch gap-4 xl:grid-cols-2">
+            <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
+              <Skeleton className="h-5 w-36" />
+              <Skeleton className="mt-4 h-56 w-full" />
+            </div>
+            <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
+              <Skeleton className="h-5 w-40" />
+              <Skeleton className="mt-4 h-56 w-full" />
+            </div>
+          </div>
+        ) : null}
+
+        <div className="max-w-full overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+          <div className="relative z-30 space-y-3 border-b border-border bg-card/70 px-3 py-3">
+            <div className="flex flex-wrap items-start gap-3">
+              <Skeleton className="h-9 w-full sm:w-[320px]" />
+              <div className="min-w-0 flex-1">
+                <div className="grid w-full min-w-0 grid-cols-[56px_minmax(0,1fr)] gap-x-3 gap-y-2 sm:ml-auto sm:w-fit">
+                  <Skeleton className="h-4 w-10 self-center" />
+                  <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
+                    {Array.from({ length: 6 }).map((_, index) => (
+                      <Skeleton key={index} className="h-6 w-24" />
+                    ))}
+                  </div>
+                  <Skeleton className="h-4 w-14 self-center" />
+                  <div className="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
+                    {Array.from({ length: 4 }).map((_, index) => (
+                      <Skeleton key={index} className="h-6 w-28" />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading experiment tasks and trial matrix...
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                <Skeleton className="h-7 w-32" />
+                <Skeleton className="h-7 w-24" />
+                <Skeleton className="h-7 w-28" />
+                <Skeleton className="h-7 w-24" />
+              </div>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto p-3">
+            <div className="w-full min-w-[960px] space-y-2">
+              <div
+                className="grid gap-2 rounded-md bg-muted/40 p-2"
+                style={{
+                  gridTemplateColumns: `240px repeat(${INITIAL_LOADING_COLUMN_COUNT}, minmax(0, 1fr))`,
+                }}
+              >
+                <Skeleton className="h-5 w-24" />
+                {Array.from({ length: INITIAL_LOADING_COLUMN_COUNT }).map(
+                  (_, index) => (
+                    <Skeleton key={index} className="h-5 w-full" />
+                  ),
+                )}
+              </div>
+
+              {Array.from({ length: INITIAL_LOADING_ROW_COUNT }).map(
+                (_, rowIndex) => (
+                  <div
+                    key={rowIndex}
+                    className="grid gap-2 rounded-md border border-border/60 p-2"
+                    style={{
+                      gridTemplateColumns: `240px repeat(${INITIAL_LOADING_COLUMN_COUNT}, minmax(0, 1fr))`,
+                    }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Skeleton className="h-4 w-4 rounded-sm" />
+                      <Skeleton className="h-4 w-40" />
+                    </div>
+                    {Array.from({ length: INITIAL_LOADING_COLUMN_COUNT }).map(
+                      (_, columnIndex) => (
+                        <div
+                          key={columnIndex}
+                          className="flex items-center justify-center gap-1"
+                        >
+                          <Skeleton className="h-5 w-5 rounded-sm" />
+                          <Skeleton className="h-5 w-5 rounded-sm" />
+                        </div>
+                      ),
+                    )}
+                  </div>
+                ),
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const renderStatusFilters = () => (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
       {STATUS_FILTER_ORDER.map((status) => {
         const config = STATUS_CONFIG[status];
         const isDimmed = dimmedStatuses.has(status);
@@ -1221,7 +1336,7 @@ export function ExperimentTrialsTable({
   );
 
   const renderLegendBlock = () => (
-    <div className="grid grid-cols-[56px_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-[10px] text-muted-foreground">
+    <div className="grid w-full min-w-0 grid-cols-[56px_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-[10px] text-muted-foreground sm:ml-auto sm:w-fit">
       <div className="flex items-center font-semibold uppercase tracking-wide text-foreground/80">
         Trial
       </div>
@@ -1229,35 +1344,35 @@ export function ExperimentTrialsTable({
       <div className="flex items-center font-semibold uppercase tracking-wide text-foreground/80">
         Analyzer
       </div>
-      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-        {ANALYSIS_LEGEND_ITEMS.map((item) => (
-          <Tooltip key={item.key}>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                onClick={() => toggleAnalysisKey(item.key)}
-                variant="ghost"
-                size="sm"
-                className={`flex h-auto items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition ${
-                  dimmedAnalysisKeys.has(item.key)
-                    ? "border-border text-muted-foreground line-through"
-                    : "border-transparent hover:border-border"
-                }`}
-              >
-                <span
-                  className={`inline-flex h-2.5 w-2.5 rounded-full ${item.dotClass} ${
-                    item.animate ? "animate-pulse" : ""
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 sm:justify-end">
+          {ANALYSIS_LEGEND_ITEMS.map((item) => (
+            <Tooltip key={item.key}>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  onClick={() => toggleAnalysisKey(item.key)}
+                  variant="ghost"
+                  size="sm"
+                  className={`flex h-auto items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition ${
+                    dimmedAnalysisKeys.has(item.key)
+                      ? "border-border text-muted-foreground line-through"
+                      : "border-transparent hover:border-border"
                   }`}
-                />
-                <span>{item.label}</span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {item.label} (
-              {dimmedAnalysisKeys.has(item.key) ? "dimmed" : "visible"})
-            </TooltipContent>
-          </Tooltip>
-        ))}
+                >
+                  <span
+                    className={`inline-flex h-2.5 w-2.5 rounded-full ${item.dotClass} ${
+                      item.animate ? "animate-pulse" : ""
+                    }`}
+                  />
+                  <span>{item.label}</span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {item.label} (
+                {dimmedAnalysisKeys.has(item.key) ? "dimmed" : "visible"})
+              </TooltipContent>
+            </Tooltip>
+          ))}
       </div>
     </div>
   );
@@ -1298,7 +1413,7 @@ export function ExperimentTrialsTable({
         <div className="max-w-full overflow-hidden rounded-lg border border-border bg-card shadow-sm">
           <div className="relative z-30 space-y-2 border-b border-border bg-card/70 px-3 py-2">
             <div className="flex flex-wrap items-start gap-3">
-              <div className="w-full min-w-[200px] max-w-[420px] md:w-auto md:flex-1">
+              <div className="w-full sm:w-[320px]">
                 <Input
                   type="search"
                   value={taskSearch}
@@ -1310,7 +1425,124 @@ export function ExperimentTrialsTable({
                 />
               </div>
               <div className="min-w-0 flex-1">{renderLegendBlock()}</div>
-              <div className="ml-auto flex shrink-0 items-center gap-2">
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
+              {!readOnly && (
+                <>
+                  <span>{selectedTasks.size} selected</span>
+                  <Button
+                    type="button"
+                    variant="link"
+                    size="sm"
+                    onClick={clearSelection}
+                    disabled={selectedTasks.size === 0}
+                    className="h-auto p-0 text-[10px] disabled:text-muted-foreground"
+                  >
+                    Clear
+                  </Button>
+                  {canRerun && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleRerunSelectedTasks}
+                      disabled={isRerunning || selectedRetryableTrials.length === 0}
+                      className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:border-muted disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
+                    >
+                      {isRerunning
+                        ? "Rerunning..."
+                        : `Rerun trials (${selectedRetryableTrials.length})`}
+                    </Button>
+                  )}
+                  {canRerun && (
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="sm"
+                      onClick={handleCancelSelectedTasks}
+                      disabled={isCancellingSelected || selectedCancellableTasks.length === 0}
+                      className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
+                    >
+                      {isCancellingSelected ? (
+                        <>
+                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                          Cancelling...
+                        </>
+                      ) : (
+                        <>
+                          <OctagonX className="mr-1 h-3 w-3" />
+                          {`Cancel (${selectedCancellableTasks.length})`}
+                        </>
+                      )}
+                    </Button>
+                  )}
+                  {canRerun && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleRunAnalysisForSelectedTasks}
+                      disabled={
+                        isRunningAnalysis ||
+                        selectedAnalysisRunnableTasks.length === 0
+                      }
+                      className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:border-muted disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
+                    >
+                      {isRunningAnalysis
+                        ? "Queueing..."
+                        : `Run analysis (${selectedAnalysisRunnableTasks.length})`}
+                    </Button>
+                  )}
+                  {canRerun && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleRunVerdictForSelectedTasks}
+                      disabled={
+                        isRunningVerdict ||
+                        selectedVerdictRunnableTasks.length === 0
+                      }
+                      className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:border-muted disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
+                    >
+                      {isRunningVerdict
+                        ? "Queueing..."
+                        : `Run verdict (${selectedVerdictRunnableTasks.length})`}
+                    </Button>
+                  )}
+                  {canDeleteTasks && (
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => {
+                        setDeleteTargets(selectedTaskList);
+                        setDeleteError(null);
+                      }}
+                      disabled={isDeleting || selectedTaskList.length === 0}
+                      className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
+                    >
+                      <Trash2 className="mr-1 h-3 w-3" />
+                      Delete
+                    </Button>
+                  )}
+                </>
+              )}
+              {cancelError && (
+                <span className="text-[10px] text-red-500">{cancelError}</span>
+              )}
+              {rerunError && (
+                <span className="text-[10px] text-red-500">{rerunError}</span>
+              )}
+              {analysisError && (
+                <span className="text-[10px] text-red-500">
+                  {analysisError}
+                </span>
+              )}
+              {verdictError && (
+                <span className="text-[10px] text-red-500">{verdictError}</span>
+              )}
+              <div className={`flex flex-wrap items-center gap-2 ${readOnly ? "" : "ml-auto"}`}>
                 {renderAgentFilterMenu()}
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -1338,121 +1570,6 @@ export function ExperimentTrialsTable({
                 </Tooltip>
               </div>
             </div>
-            <div
-              className={`flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground ${!readOnly ? "" : "hidden"}`}
-            >
-              <span>{selectedTasks.size} selected</span>
-              <Button
-                type="button"
-                variant="link"
-                size="sm"
-                onClick={clearSelection}
-                disabled={selectedTasks.size === 0}
-                className="h-auto p-0 text-[10px] disabled:text-muted-foreground"
-              >
-                Clear
-              </Button>
-              {canRerun && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handleRerunSelectedTasks}
-                  disabled={isRerunning || selectedRetryableTrials.length === 0}
-                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:border-muted disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
-                >
-                  {isRerunning
-                    ? "Rerunning..."
-                    : `Rerun trials (${selectedRetryableTrials.length})`}
-                </Button>
-              )}
-              {canRerun && (
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="sm"
-                  onClick={handleCancelSelectedTasks}
-                  disabled={isCancellingSelected || selectedCancellableTasks.length === 0}
-                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
-                >
-                  {isCancellingSelected ? (
-                    <>
-                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                      Cancelling...
-                    </>
-                  ) : (
-                    <>
-                      <OctagonX className="mr-1 h-3 w-3" />
-                      {`Cancel (${selectedCancellableTasks.length})`}
-                    </>
-                  )}
-                </Button>
-              )}
-              {canRerun && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handleRunAnalysisForSelectedTasks}
-                  disabled={
-                    isRunningAnalysis ||
-                    selectedAnalysisRunnableTasks.length === 0
-                  }
-                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:border-muted disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
-                >
-                  {isRunningAnalysis
-                    ? "Queueing..."
-                    : `Run analysis (${selectedAnalysisRunnableTasks.length})`}
-                </Button>
-              )}
-              {canRerun && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handleRunVerdictForSelectedTasks}
-                  disabled={
-                    isRunningVerdict ||
-                    selectedVerdictRunnableTasks.length === 0
-                  }
-                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:border-muted disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
-                >
-                  {isRunningVerdict
-                    ? "Queueing..."
-                    : `Run verdict (${selectedVerdictRunnableTasks.length})`}
-                </Button>
-              )}
-              {canDeleteTasks && (
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => {
-                    setDeleteTargets(selectedTaskList);
-                    setDeleteError(null);
-                  }}
-                  disabled={isDeleting || selectedTaskList.length === 0}
-                  className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
-                >
-                  <Trash2 className="mr-1 h-3 w-3" />
-                  Delete
-                </Button>
-              )}
-              {cancelError && (
-                <span className="text-[10px] text-red-500">{cancelError}</span>
-              )}
-              {rerunError && (
-                <span className="text-[10px] text-red-500">{rerunError}</span>
-              )}
-              {analysisError && (
-                <span className="text-[10px] text-red-500">
-                  {analysisError}
-                </span>
-              )}
-              {verdictError && (
-                <span className="text-[10px] text-red-500">{verdictError}</span>
-              )}
-            </div>
           </div>
           <div
             ref={tableContainerRef}
@@ -1460,11 +1577,11 @@ export function ExperimentTrialsTable({
           >
             <table
               className="w-full min-w-[960px] caption-bottom text-sm"
-              style={{ tableLayout: "fixed", width: tableWidth }}
+              style={{ tableLayout: "fixed", width: "100%", minWidth: tableMinWidth }}
             >
               <colgroup>
                 <col style={{ width: `${getDisplayedWidth("task")}px` }} />
-                {visibleAgents.map((agent) => (
+                {renderedAgents.map((agent) => (
                   <col
                     key={`col-${agent.key}`}
                     style={{
@@ -1508,7 +1625,7 @@ export function ExperimentTrialsTable({
                       }
                     />
                   </TableHead>
-                  {visibleAgents.map((agent, agentIndex) => (
+                  {renderedAgents.map((agent, agentIndex) => (
                     <TableHead
                       key={agent.key}
                       className="relative border-r border-border bg-muted px-1 text-center font-mono last:border-r-0 sm:px-2"
@@ -1516,31 +1633,38 @@ export function ExperimentTrialsTable({
                         width: getDisplayedWidth(agent.key),
                       }}
                     >
-                      <div className="flex min-w-[60px] flex-col items-center gap-0.5 sm:min-w-[80px] md:min-w-[100px]">
-                        <div className="max-w-[70px] truncate text-[10px] font-bold text-foreground sm:max-w-[110px] sm:text-xs md:max-w-none">
-                          {agent.agent}
+                      {showLoadingMatrixColumns ? (
+                        <div className="flex min-w-[60px] flex-col items-center gap-2 py-1 sm:min-w-[80px] md:min-w-[100px]">
+                          <Skeleton className="h-3 w-16" />
+                          <Skeleton className="h-3 w-20" />
                         </div>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <div className="flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal text-muted-foreground sm:text-[10px]">
-                              <QueueKeyIcon
-                                queueKey={agent.queueKey}
-                                model={agent.model}
-                                agent={agent.agent}
-                                size={11}
-                                className="shrink-0"
-                              />
-                              <span className="min-w-0 truncate">
-                                {agent.model ?? "—"}
-                              </span>
-                            </div>
-                          </TooltipTrigger>
-                          <TooltipContent side="bottom">
-                            {agent.model ?? "—"}
-                          </TooltipContent>
-                        </Tooltip>
-                      </div>
-                      {agentIndex < visibleAgents.length - 1 && (
+                      ) : (
+                        <div className="flex min-w-[60px] flex-col items-center gap-0.5 sm:min-w-[80px] md:min-w-[100px]">
+                          <div className="max-w-[70px] truncate text-[10px] font-bold text-foreground sm:max-w-[110px] sm:text-xs md:max-w-none">
+                            {agent.agent}
+                          </div>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <div className="flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal text-muted-foreground sm:text-[10px]">
+                                <QueueKeyIcon
+                                  queueKey={agent.queueKey}
+                                  model={agent.model}
+                                  agent={agent.agent}
+                                  size={11}
+                                  className="shrink-0"
+                                />
+                                <span className="min-w-0 truncate">
+                                  {agent.model ?? "—"}
+                                </span>
+                              </div>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom">
+                              {agent.model ?? "—"}
+                            </TooltipContent>
+                          </Tooltip>
+                        </div>
+                      )}
+                      {agentIndex < renderedAgents.length - 1 && !showLoadingMatrixColumns && (
                         <div
                           className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize"
                           onMouseDown={(event) =>
@@ -1561,7 +1685,7 @@ export function ExperimentTrialsTable({
                 {shouldVirtualize && paddingTop > 0 && (
                   <TableRow aria-hidden>
                     <TableCell
-                      colSpan={Math.max(1, visibleAgents.length + 1)}
+                      colSpan={Math.max(1, renderedAgents.length + 1)}
                       style={{
                         height: `${paddingTop}px`,
                         padding: 0,
@@ -1574,6 +1698,7 @@ export function ExperimentTrialsTable({
                   const task = row.task;
                   const index = row.index;
                   if (!task) return null;
+                  const isTrialDataPending = isLoadingTrials && task.trials == null;
                   const context = getTaskContext(task);
                   const grouped =
                     context?.groupedTrialsByAgent ?? EMPTY_TRIAL_MAP;
@@ -1673,7 +1798,7 @@ export function ExperimentTrialsTable({
                           </div>
                         </div>
                       </TableCell>
-                      {visibleAgents.map((agent) => {
+                      {renderedAgents.map((agent) => {
                         const trials = grouped.get(agent.key) ?? EMPTY_TRIALS;
                         return (
                           <TableCell
@@ -1684,9 +1809,16 @@ export function ExperimentTrialsTable({
                             }}
                           >
                             {trials.length === 0 ? (
+                              isTrialDataPending ? (
+                                <div className="flex items-center justify-center gap-1">
+                                  <Skeleton className="h-5 w-5 rounded-sm" />
+                                  <Skeleton className="h-5 w-5 rounded-sm" />
+                                </div>
+                              ) : (
                               <span className="text-xs text-muted-foreground">
                                 —
                               </span>
+                              )
                             ) : (
                               <div className="flex flex-wrap justify-center gap-1">
                                 {trials.map((trial, trialIndex) => {
@@ -1771,7 +1903,7 @@ export function ExperimentTrialsTable({
                 {shouldVirtualize && paddingBottom > 0 && (
                   <TableRow aria-hidden>
                     <TableCell
-                      colSpan={Math.max(1, visibleAgents.length + 1)}
+                      colSpan={Math.max(1, renderedAgents.length + 1)}
                       style={{
                         height: `${paddingBottom}px`,
                         padding: 0,
@@ -1783,7 +1915,7 @@ export function ExperimentTrialsTable({
                 {filteredTasks.length === 0 && !isLoading && (
                   <TableRow>
                     <TableCell
-                      colSpan={Math.max(1, visibleAgents.length + 1)}
+                      colSpan={Math.max(1, renderedAgents.length + 1)}
                       className="py-8 text-center text-muted-foreground"
                     >
                       No tasks found for this experiment
