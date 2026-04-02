@@ -48,8 +48,6 @@ _BACKEND_EXCLUDED_OBJECT_NAMES = {
 def _include_backend_object(
     obj, name: str | None, type_: str, reflected: bool, compare_to
 ) -> bool:
-    if type_ == "table" and name and name.startswith("pgqueuer"):
-        return False
     if name in _BACKEND_EXCLUDED_OBJECT_NAMES:
         return False
     return True

@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-
-from pgqueuer.models import Job
 
 from oddish.config import settings
 from oddish.db import (
@@ -18,11 +15,10 @@ from oddish.db import (
 from oddish.workers.queue.shared import console
 
 
-async def run_verdict_job(job: Job, queue_key: str) -> None:
+async def run_verdict_job(task_id: str, queue_key: str) -> None:
     """
-    Handle a verdict job from PGQueuer.
+    Execute verdict synthesis for a claimed task.
 
-    This synthesizes trial classifications into a task verdict:
     1. Load all trial classifications from database
     2. Run verdict synthesis with Claude
     3. Store verdict in task.verdict
@@ -34,16 +30,8 @@ async def run_verdict_job(job: Job, queue_key: str) -> None:
         compute_task_verdict,
     )
 
-    if job.payload is None:
-        raise ValueError("Verdict job has empty payload")
-    payload = json.loads(job.payload.decode())
-    task_id = payload.get("task_id")
-
-    if not task_id:
-        raise ValueError(f"Invalid verdict job payload (missing task_id): {payload}")
-
     console.print(
-        f"[cyan]Processing verdict[/cyan] {task_id} (queue_key={queue_key}, pgqueuer_job_id={job.id})"
+        f"[cyan]Processing verdict[/cyan] {task_id} (queue_key={queue_key})"
     )
 
     # Mark as running and load classifications

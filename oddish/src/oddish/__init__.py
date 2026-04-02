@@ -17,7 +17,6 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "init_db": ("oddish.db", "init_db"),
     "get_session": ("oddish.db", "get_session"),
     "get_pool": ("oddish.db", "get_pool"),
-    "install_pgqueuer": ("oddish.db", "install_pgqueuer"),
     # Schemas - Request
     "TaskSubmission": ("oddish.schemas", "TaskSubmission"),
     "TaskSweepSubmission": ("oddish.schemas", "TaskSweepSubmission"),
@@ -32,7 +31,6 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "get_task_with_trials": ("oddish.queue", "get_task_with_trials"),
     "get_queue_stats": ("oddish.queue", "get_queue_stats"),
     "get_pipeline_stats": ("oddish.queue", "get_pipeline_stats"),
-    "enqueue_trial": ("oddish.queue", "enqueue_trial"),
     # Harbor
     "run_harbor_trial": ("oddish.workers", "run_harbor_trial"),
     "HarborOutcome": ("oddish.workers", "HarborOutcome"),

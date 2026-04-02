@@ -20,18 +20,14 @@ from oddish.db.models import (
 from oddish.db.connection import (
     close_database_connections,
     close_engine,
-    # Session/Pool
     close_pool,
     engine,
     get_pool,
     reconfigure_database_connections,
     get_session,
-    # Setup
     drop_db,
     init_db,
-    install_pgqueuer,
     reset_db,
-    uninstall_pgqueuer,
 )
 
 # Storage
@@ -70,8 +66,6 @@ __all__ = [
     "init_db",
     "drop_db",
     "reset_db",
-    "install_pgqueuer",
-    "uninstall_pgqueuer",
     # Storage
     "StorageClient",
     "get_storage_client",

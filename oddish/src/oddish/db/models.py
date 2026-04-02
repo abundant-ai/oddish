@@ -76,7 +76,7 @@ class JobStatus(str, Enum):
     """
 
     PENDING = "pending"
-    QUEUED = "queued"  # Enqueued in PGQueuer
+    QUEUED = "queued"
     RUNNING = "running"
     SUCCESS = "success"  # Execution completed (regardless of test result)
     FAILED = "failed"  # Execution error (harness/infrastructure failure)
@@ -242,10 +242,7 @@ class TrialModel(Base):
     # Harbor execution stage (from lifecycle hooks)
     harbor_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
-    # Current execution claim metadata (best-effort runtime correlation)
-    current_pgqueuer_job_id: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, index=True
-    )
+    # Current execution claim metadata
     current_worker_id: Mapped[str | None] = mapped_column(
         String(160), nullable=True, index=True
     )

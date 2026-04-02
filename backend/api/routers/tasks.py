@@ -44,8 +44,6 @@ from oddish.db import (
     get_session,
 )
 from oddish.queue import (
-    cancel_pgqueuer_jobs_for_tasks,
-    cancel_pgqueuer_jobs_for_trials,
     cancel_task_runs,
     create_task,
 )
@@ -389,8 +387,6 @@ async def delete_experiment(
                 select(TrialModel.id).where(TrialModel.task_id.in_(task_ids))
             )
             trial_ids = [row[0] for row in trial_ids_result.all()]
-            await cancel_pgqueuer_jobs_for_trials(session, trial_ids)
-            await cancel_pgqueuer_jobs_for_tasks(session, task_ids)
 
         trials_result = await session.execute(
             delete(TrialModel).where(TrialModel.task_id.in_(task_ids))
@@ -438,7 +434,7 @@ async def cancel_task(
 ) -> dict:
     """Cancel all in-flight runs for a task without deleting data.
 
-    Cancels queued PGQueuer jobs, marks running trials as failed,
+    Marks running/queued trials as failed,
     and terminates Modal function calls for running workers.
     """
     auth.require_scope(APIKeyScope.TASKS)
@@ -470,7 +466,6 @@ async def cancel_task(
         "status": "cancelled",
         "task_id": task_id,
         "trials_cancelled": result.get("trials_cancelled", 0),
-        "pgqueuer_jobs_cancelled": result.get("pgqueuer_jobs_cancelled", 0),
         "modal_calls_cancelled": modal_cancelled,
     }
 
@@ -488,8 +483,6 @@ async def delete_task(
             select(TrialModel.id).where(TrialModel.task_id == task.id)
         )
         trial_ids = [row[0] for row in trial_ids_result.all()]
-        await cancel_pgqueuer_jobs_for_trials(session, trial_ids)
-        await cancel_pgqueuer_jobs_for_tasks(session, [task.id])
 
         await session.delete(task)
         await session.commit()

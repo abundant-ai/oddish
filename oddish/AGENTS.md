@@ -22,9 +22,10 @@ The `oddish` package includes:
 - the `oddish` CLI (`run`, `status`, `cancel`, `pull`, `delete`)
 - the FastAPI app (`python -m oddish.api`)
 - database models and Alembic migrations
-- PGQueuer-backed trial, analysis, and verdict workers
+- Postgres-native trial, analysis, and verdict workers (fair scheduling via
+  `FOR UPDATE SKIP LOCKED` directly on the `trials` table)
 - shared queue coordination primitives such as queue-slot leasing, single-job
-  processing, and orphan cleanup reconciliation
+  processing, and stale-heartbeat cleanup
 - local task storage plus optional S3-compatible artifact storage
 
 ## Architecture
@@ -36,7 +37,7 @@ oddish CLI / API client
 FastAPI server (`python -m oddish.api`)
         |
         v
-Postgres + PGQueuer tables
+Postgres (trials table = the queue)
         |
         v
 Workers (`oddish.api` auto-start or standalone worker process)
@@ -59,7 +60,7 @@ reused by Oddish Cloud:
 
 - core models and migrations, including `queue_slots`
 - shared queue-slot leasing and one-job worker execution helpers
-- orphaned queue-state reconciliation
+- stale-heartbeat cleanup and pipeline stage reconciliation
 
 `backend/` keeps the hosted-only layer on top of that core:
 
@@ -135,8 +136,6 @@ Use the DB helper CLI through `python -m oddish.db`:
 ```bash
 uv run python -m oddish.db init
 uv run python -m oddish.db setup
-uv run python -m oddish.db install-pgqueuer
-uv run python -m oddish.db uninstall-pgqueuer
 uv run python -m oddish.db reset
 uv run python -m oddish.db purge
 ```
@@ -144,9 +143,7 @@ uv run python -m oddish.db purge
 What they do:
 
 - `init`: run Alembic migrations
-- `setup`: run Alembic migrations and install PGQueuer tables
-- `install-pgqueuer`: install queue tables only
-- `uninstall-pgqueuer`: remove queue tables
+- `setup`: run Alembic migrations (alias for `init`)
 - `reset`: drop and recreate all tables
 - `purge`: delete data from public-schema tables while preserving migration state
 
@@ -271,7 +268,7 @@ from oddish.config import settings
 from oddish.db import TaskModel, TrialModel, get_session, init_db
 from oddish.queue import create_task
 from oddish.schemas import HarborConfig, TaskSubmission, TaskSweepSubmission, TrialSpec
-from oddish.workers import create_queue_manager
+from oddish.workers import run_polling_worker
 ```
 
 ## Troubleshooting
@@ -288,8 +285,8 @@ curl http://localhost:8000/health
 - make sure the API is healthy
 - remember `oddish.api` auto-starts workers, or run `python -m oddish.workers.queue.worker`
 - check queue concurrency settings if a model-specific queue is saturated
-- orphan cleanup should only cancel trial-execution jobs; analysis jobs for completed
-  trials are valid and stale queued analyses should be re-enqueued automatically
+- stale-heartbeat cleanup runs periodically and will fail trials whose workers
+  crashed; stuck analyses and verdicts are automatically re-queued
 
 ### Pulling from a remote API fails
 

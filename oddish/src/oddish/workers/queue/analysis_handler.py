@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import shutil
 from pathlib import Path
-
-from pgqueuer.models import Job
 
 from oddish.config import settings
 from oddish.db import AnalysisStatus, TaskModel, utcnow
@@ -17,28 +14,19 @@ from oddish.workers.queue.shared import console
 ANALYSIS_TIMEOUT = 900  # 15 minutes
 
 
-async def run_analysis_job(job: Job, queue_key: str) -> None:
+async def run_analysis_job(trial_id: str, queue_key: str) -> None:
     """
-    Handle an analysis job from PGQueuer.
+    Execute analysis for a claimed trial.
 
-    This classifies a trial outcome using oddish's TrialClassifier:
     1. Download task and trial from S3
     2. Run classification with Claude Code
     3. Store classification in trial.analysis
-    4. Check if all analyses done → enqueue verdict
+    4. Check if all analyses done -> start verdict stage
     """
     from oddish.analyze import TrialClassifier
 
-    if job.payload is None:
-        raise ValueError("Analysis job has empty payload")
-    payload = json.loads(job.payload.decode())
-    trial_id = payload.get("trial_id")
-
-    if not trial_id:
-        raise ValueError(f"Invalid analysis job payload (missing trial_id): {payload}")
-
     console.print(
-        f"[cyan]Processing analysis[/cyan] {trial_id} (queue_key={queue_key}, pgqueuer_job_id={job.id})"
+        f"[cyan]Processing analysis[/cyan] {trial_id} (queue_key={queue_key})"
     )
     console.print(
         f"[dim]S3 enabled: {settings.s3_enabled}, bucket: {settings.s3_bucket}[/dim]"

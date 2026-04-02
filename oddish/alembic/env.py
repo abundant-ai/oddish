@@ -59,10 +59,6 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
         version_table="alembic_version_oddish",
-        include_object=lambda obj, name, type_, reflected, compare_to: (
-            # Exclude pgqueuer tables from autogenerate
-            not (type_ == "table" and name and name.startswith("pgqueuer"))
-        ),
     )
 
     with context.begin_transaction():
@@ -76,10 +72,6 @@ def do_run_migrations(connection: Connection) -> None:
         compare_type=True,
         include_schemas=False,
         version_table="alembic_version_oddish",
-        include_object=lambda obj, name, type_, reflected, compare_to: (
-            # Exclude pgqueuer tables from autogenerate
-            not (type_ == "table" and name and name.startswith("pgqueuer"))
-        ),
     )
 
     with context.begin_transaction():

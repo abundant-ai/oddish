@@ -22,18 +22,11 @@ from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
-    Priority,
     TaskModel,
     TaskStatus,
     TrialModel,
     TrialStatus,
     VerdictStatus,
-)
-from oddish.queue import (
-    cancel_pgqueuer_jobs_for_tasks,
-    enqueue_analysis,
-    enqueue_trial,
-    enqueue_verdict,
 )
 from oddish.schemas import TaskStatusResponse, TrialResponse
 
@@ -289,17 +282,10 @@ async def retry_trial_core(
     trial.harbor_result_path = None
     trial.trial_s3_key = None
     trial.attempts = 0
-    # Clear idempotency key so worker can process this retry.
     trial.idempotency_key = None
-
-    pgq_priority = 1000 if task.priority == Priority.HIGH else 0
-    queue_key = trial.queue_key or settings.get_queue_key_for_trial(
-        trial.agent, trial.model
-    )
-    await enqueue_trial(
-        session, trial_id, queue_key,
-        priority=pgq_priority, org_id=trial.org_id, task_id=trial.task_id,
-    )
+    trial.current_worker_id = None
+    trial.current_queue_slot = None
+    trial.modal_function_call_id = None
 
     # Move completed tasks back to running once a trial is requeued.
     if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
@@ -403,9 +389,6 @@ async def rerun_trial_analysis_core(
     task.finished_at = None
     trial.analysis_status = AnalysisStatus.QUEUED
 
-    await cancel_pgqueuer_jobs_for_tasks(session, [task.id])
-    await enqueue_analysis(session, trial_id)
-
     await session.commit()
     return {"status": "queued", "trial_id": trial_id}
 
@@ -466,10 +449,6 @@ async def rerun_task_analysis_core(
     task.run_analysis = True
     task.status = TaskStatus.ANALYZING
     task.finished_at = None
-
-    await cancel_pgqueuer_jobs_for_tasks(session, [task.id])
-    for trial in task.trials:
-        await enqueue_analysis(session, trial.id)
 
     await session.commit()
     return {
@@ -534,9 +513,6 @@ async def rerun_task_verdict_core(
     task.verdict_status = VerdictStatus.QUEUED
     task.verdict_started_at = None
     task.verdict_finished_at = None
-
-    await cancel_pgqueuer_jobs_for_tasks(session, [task.id])
-    await enqueue_verdict(session, task.id)
 
     await session.commit()
     return {"status": "queued", "task_id": task_id}

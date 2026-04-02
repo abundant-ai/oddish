@@ -13,8 +13,6 @@ from oddish.db import get_session
 
 _KEY_TABLES: tuple[tuple[str, str], ...] = (
     ("trials", "queue_key"),
-    ("pgqueuer", "entrypoint"),
-    ("pgqueuer_log", "entrypoint"),
 )
 
 _MODEL_ABSENT_ALIASES: tuple[str, ...] = ("", "-", "none", "null", "nil", "n/a", "na")

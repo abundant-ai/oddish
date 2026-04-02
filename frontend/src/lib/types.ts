@@ -310,28 +310,18 @@ export interface QueueSlotsResponse {
   timestamp: string;
 }
 
-export interface PGQueuerJob {
-  id: number;
-  priority: number;
-  created: string | null;
-  updated: string | null;
-  status: string;
-  entrypoint: string;
-  payload: Record<string, unknown> | null;
+export interface QueueStatusEntry {
+  queue_key: string;
+  queued: number;
+  running: number;
 }
 
-export interface PGQueuerStats {
-  total: number;
-  by_status: Record<string, number>;
-  by_entrypoint: Record<string, Record<string, number>>;
-}
-
-export interface PGQueuerResponse {
-  jobs: PGQueuerJob[];
-  stats: PGQueuerStats;
-  page: number;
-  page_size: number;
-  has_more: boolean;
+export interface QueueStatusResponse {
+  trial_queues: QueueStatusEntry[];
+  analysis_queued: number;
+  analysis_running: number;
+  verdict_queued: number;
+  verdict_running: number;
   timestamp: string;
 }
 
@@ -342,7 +332,6 @@ export interface OrphanedTrialSample {
   status: string;
   issue: string;
   harbor_stage: string | null;
-  current_pgqueuer_job_id: number | null;
   current_worker_id: string | null;
   current_queue_slot: number | null;
   claimed_at: string | null;
@@ -360,10 +349,7 @@ export interface OrphanedTaskSample {
 }
 
 export interface OrphanedStateCounts {
-  queued_without_job: number;
-  running_without_picked_job: number;
   running_stale_heartbeat: number;
-  picked_without_active_slot: number;
   active_tasks_without_active_trials: number;
 }
 

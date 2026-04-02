@@ -12,7 +12,6 @@ from pathlib import Path
 from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
-from pgqueuer.models import Job
 
 from oddish.config import settings
 from oddish.db import (
@@ -24,7 +23,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
-from oddish.queue import enqueue_analysis, enqueue_trial, maybe_start_analysis_stage
+from oddish.queue import maybe_start_analysis_stage
 from oddish.workers.harbor_runner import HarborOutcome, run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
@@ -116,7 +115,6 @@ async def _touch_trial_execution(
     *,
     trial_id: str,
     worker_id: str | None,
-    pgqueuer_job_id: int | None,
     queue_slot: int | None,
     claimed: bool = False,
 ) -> None:
@@ -125,14 +123,8 @@ async def _touch_trial_execution(
             return
         if worker_id and trial.current_worker_id not in (None, worker_id):
             return
-        if pgqueuer_job_id is not None and trial.current_pgqueuer_job_id not in (
-            None,
-            pgqueuer_job_id,
-        ):
-            return
 
         now = utcnow()
-        trial.current_pgqueuer_job_id = pgqueuer_job_id
         trial.current_worker_id = worker_id
         trial.current_queue_slot = queue_slot
         if claimed:
@@ -144,7 +136,6 @@ async def _heartbeat_trial_execution(
     *,
     trial_id: str,
     worker_id: str | None,
-    pgqueuer_job_id: int | None,
     queue_slot: int | None,
     stop_event: asyncio.Event,
 ) -> None:
@@ -163,7 +154,6 @@ async def _heartbeat_trial_execution(
             await _touch_trial_execution(
                 trial_id=trial_id,
                 worker_id=worker_id,
-                pgqueuer_job_id=pgqueuer_job_id,
                 queue_slot=queue_slot,
             )
         except Exception as exc:
@@ -173,7 +163,6 @@ async def _heartbeat_trial_execution(
 async def _prepare_trial_run(
     *,
     trial_id: str,
-    job_id: int | None,
     worker_id: str | None,
     queue_slot: int | None,
     modal_function_call_id: str | None,
@@ -225,7 +214,6 @@ async def _prepare_trial_run(
             trial.queue_key = canonical_queue_key
         trial_environment = trial.environment
         trial_harbor_config = trial.harbor_config
-        trial.current_pgqueuer_job_id = job_id
         trial.current_worker_id = worker_id
         trial.current_queue_slot = queue_slot
         trial.modal_function_call_id = modal_function_call_id
@@ -320,25 +308,9 @@ async def _store_trial_results(
             else:
                 # No reward - trial encountered an error or didn't complete verification.
                 if trial.attempts < trial.max_attempts:
-                    task = await session.get(TaskModel, trial.task_id)
-                    queue_key = trial.queue_key or settings.get_queue_key_for_trial(
-                        trial.agent,
-                        settings.normalize_trial_model(trial.agent, trial.model),
-                    )
-                    pgq_priority = (
-                        1000 if task and task.priority == Priority.HIGH else 0
-                    )
                     trial.status = TrialStatus.RETRYING
-                    await enqueue_trial(
-                        session,
-                        trial_id,
-                        queue_key,
-                        priority=pgq_priority,
-                        org_id=trial.org_id,
-                        task_id=trial.task_id,
-                    )
                     console.print(
-                        f"[yellow]Trial {trial_id} re-enqueued "
+                        f"[yellow]Trial {trial_id} re-queued for retry "
                         f"({trial.attempts}/{trial.max_attempts})[/yellow]"
                     )
                 else:
@@ -353,23 +325,16 @@ async def _store_trial_results(
             )
             console.print(f"[red]Trial {trial_id} FAILED (exception)[/red]")
 
-        trial.current_pgqueuer_job_id = None
         trial.current_worker_id = None
         trial.current_queue_slot = None
         trial.modal_function_call_id = None
         trial.heartbeat_at = utcnow()
 
-        # Immediately enqueue analysis if run_analysis is enabled (don't wait for all trials)
         if trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED):
             task = await session.get(TaskModel, trial.task_id)
             if task and task.run_analysis and trial.analysis_status is None:
                 trial.analysis_status = AnalysisStatus.QUEUED
-                await enqueue_analysis(
-                    session,
-                    trial_id,
-                    queue_key=settings.get_analysis_queue_key(),
-                )
-                console.print(f"[cyan]Enqueued analysis for {trial_id}[/cyan]")
+                console.print(f"[cyan]Queued analysis for {trial_id}[/cyan]")
 
             # Check if all trials done → transition task status
             started = await maybe_start_analysis_stage(session, trial_id)
@@ -515,7 +480,6 @@ async def _execute_trial(
     prepared_trial: PreparedTrialRun,
     worker_id: str | None,
     queue_slot: int | None,
-    pgqueuer_job_id: int | None,
 ) -> TrialExecutionResult:
     execution_error: str | None = None
     heartbeat_stop = asyncio.Event()
@@ -523,7 +487,6 @@ async def _execute_trial(
         _heartbeat_trial_execution(
             trial_id=trial_id,
             worker_id=worker_id,
-            pgqueuer_job_id=pgqueuer_job_id,
             queue_slot=queue_slot,
             stop_event=heartbeat_stop,
         )
@@ -553,7 +516,7 @@ async def _execute_trial(
         )
     except asyncio.CancelledError:
         # CancelledError inherits from BaseException, not Exception, so must be caught explicitly.
-        # This can happen if the worker is shutdown mid-trial or pgqueuer cancels the job.
+        # This can happen if the worker is shutdown mid-trial.
         import traceback
 
         tb = traceback.format_exc()
@@ -580,7 +543,7 @@ async def _execute_trial(
 
 
 async def run_trial_job(
-    job: Job,
+    trial_id: str,
     queue_key: str,
     *,
     worker_id: str | None = None,
@@ -588,37 +551,26 @@ async def run_trial_job(
     modal_function_call_id: str | None = None,
 ) -> None:
     """
-    Handle a trial job from PGQueuer.
+    Execute a claimed trial.
 
-    This is the core trial execution logic:
-    1. Mark trial as running
+    1. Prepare trial (set metadata, bump attempts)
     2. Execute Harbor trial
     3. Mark trial as success/failed/retrying
-    4. Mark task completed once trials complete
+    4. Transition task once all trials complete
     """
-    if job.payload is None:
-        raise ValueError("Trial job has empty payload")
-    payload = json.loads(job.payload.decode())
-    trial_id = payload.get("trial_id")
-
-    if not trial_id:
-        raise ValueError(f"Invalid trial job payload (missing trial_id): {payload}")
-
     console.print(
-        f"[cyan]Processing trial[/cyan] {trial_id} (queue_key={queue_key}, pgqueuer_job_id={job.id})"
+        f"[cyan]Processing trial[/cyan] {trial_id} (queue_key={queue_key})"
     )
 
-    # Check idempotency - prevent duplicate processing
+    # Check idempotency
     async with _trial_session(trial_id) as (session, trial):
         if not trial:
-            # If the trial row isn't visible, retry rather than silently dropping the job.
             raise RuntimeError(f"Trial {trial_id} not found in database")
 
         console.print(
             f"[dim]Trial {trial_id} current status: {trial.status.value}, agent: {trial.agent}[/dim]"
         )
 
-        # If idempotency key is set and trial is already complete, skip
         if trial.idempotency_key and trial.status in (
             TrialStatus.SUCCESS,
             TrialStatus.FAILED,
@@ -630,7 +582,6 @@ async def run_trial_job(
 
     prepared_trial = await _prepare_trial_run(
         trial_id=trial_id,
-        job_id=job.id,
         worker_id=worker_id,
         queue_slot=queue_slot,
         modal_function_call_id=modal_function_call_id,
@@ -667,7 +618,6 @@ async def run_trial_job(
         prepared_trial=prepared_trial,
         worker_id=worker_id,
         queue_slot=queue_slot,
-        pgqueuer_job_id=job.id,
     )
 
     # Upload trial results to S3.
