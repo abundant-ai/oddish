@@ -240,6 +240,29 @@ class UploadResponse(BaseModel):
     s3_key: str | None = None
 
 
+class TrialQueueInfo(BaseModel):
+    position: int | None = Field(
+        None,
+        description="1-based live queue position for queued/retrying trials in the current scheduler snapshot",
+    )
+    ahead: int | None = Field(
+        None,
+        description="Number of queued/retrying trials currently ahead of this trial",
+    )
+    queued_count: int = Field(
+        ...,
+        description="Total queued/retrying trials currently in this queue",
+    )
+    running_count: int = Field(
+        ...,
+        description="Total running trials currently in this queue",
+    )
+    concurrency_limit: int = Field(
+        ...,
+        description="Configured concurrency limit for this queue key",
+    )
+
+
 class TrialResponse(BaseModel):
     id: str
     name: str
@@ -290,6 +313,10 @@ class TrialResponse(BaseModel):
     analysis_error: str | None = Field(
         None,
         description="Error message if analysis failed",
+    )
+    queue_info: TrialQueueInfo | None = Field(
+        None,
+        description="Live queue snapshot for queued/retrying trials",
     )
     created_at: datetime
     started_at: datetime | None

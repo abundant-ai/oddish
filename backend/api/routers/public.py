@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
-from oddish.api.helpers import build_task_status_response
+from oddish.api.helpers import build_task_status_response, fetch_trial_queue_info
 from oddish.api.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
@@ -130,7 +130,17 @@ async def list_public_experiment_tasks(
 
         result = await session.execute(query)
         tasks = result.scalars().all()
-        return [build_task_status_response(task) for task in tasks]
+        queue_info_by_trial_id = await fetch_trial_queue_info(
+            session,
+            trials=[trial for task in tasks for trial in task.trials],
+        )
+        return [
+            build_task_status_response(
+                task,
+                queue_info_by_trial_id=queue_info_by_trial_id,
+            )
+            for task in tasks
+        ]
 
 
 @router.get("/public/tasks/{task_id}", response_model=TaskStatusResponse)
@@ -144,7 +154,14 @@ async def get_public_task_status(
             task = await get_public_task(session, task_id)
             if not task:
                 raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-            return build_task_status_response(task)
+            queue_info_by_trial_id = await fetch_trial_queue_info(
+                session,
+                trials=task.trials,
+            )
+            return build_task_status_response(
+                task,
+                queue_info_by_trial_id=queue_info_by_trial_id,
+            )
 
         return await get_task_status_counts(
             session,

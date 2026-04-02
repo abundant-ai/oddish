@@ -1,19 +1,183 @@
 from __future__ import annotations
 
+import heapq
 import json
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Sequence
 
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
-from oddish.db import TaskModel, TaskStatus, TrialModel, TrialStatus
-from oddish.schemas import TaskStatusResponse, TrialResponse
+from oddish.db import Priority, TaskModel, TaskStatus, TrialModel, TrialStatus
+from oddish.schemas import TaskStatusResponse, TrialQueueInfo, TrialResponse
 
 _ANALYSIS_SUMMARY_UNSET = object()
+_QUEUE_PENDING_STATUSES = {TrialStatus.QUEUED, TrialStatus.RETRYING}
+_QUEUE_ACTIVE_STATUSES = _QUEUE_PENDING_STATUSES | {TrialStatus.RUNNING}
 
 
-def build_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
+@dataclass(frozen=True)
+class _QueueSnapshotTrial:
+    trial_id: str
+    queue_key: str
+    status: TrialStatus
+    created_at: datetime
+    priority: Priority
+    fairness_key: str
+
+
+def _build_trial_queue_info_snapshot(
+    active_trials: Sequence[_QueueSnapshotTrial],
+    *,
+    target_trial_ids: set[str],
+) -> dict[str, TrialQueueInfo]:
+    """Simulate claim order for the current queue snapshot."""
+    trials_by_queue: dict[str, list[_QueueSnapshotTrial]] = defaultdict(list)
+    for trial in active_trials:
+        trials_by_queue[trial.queue_key].append(trial)
+
+    queue_info_by_trial_id: dict[str, TrialQueueInfo] = {}
+
+    for queue_key, queue_trials in trials_by_queue.items():
+        running_by_fairness: dict[str, int] = defaultdict(int)
+        queued_by_priority: dict[Priority, dict[str, list[_QueueSnapshotTrial]]] = {
+            Priority.HIGH: defaultdict(list),
+            Priority.LOW: defaultdict(list),
+        }
+        queued_count = 0
+        running_count = 0
+
+        for trial in queue_trials:
+            if trial.status == TrialStatus.RUNNING:
+                running_count += 1
+                running_by_fairness[trial.fairness_key] += 1
+                continue
+
+            if trial.status in _QUEUE_PENDING_STATUSES:
+                queued_count += 1
+                queued_by_priority[trial.priority][trial.fairness_key].append(trial)
+
+        for fairness_groups in queued_by_priority.values():
+            for queued_trials in fairness_groups.values():
+                queued_trials.sort(key=lambda trial: (trial.created_at, trial.trial_id))
+
+        position = 1
+        concurrency_limit = settings.get_model_concurrency(queue_key)
+
+        for priority in (Priority.HIGH, Priority.LOW):
+            fairness_groups = queued_by_priority[priority]
+            heap: list[tuple[int, datetime, str, str, int]] = []
+
+            for fairness_key, queued_trials in fairness_groups.items():
+                first_trial = queued_trials[0]
+                heap.append(
+                    (
+                        running_by_fairness.get(fairness_key, 0),
+                        first_trial.created_at,
+                        first_trial.trial_id,
+                        fairness_key,
+                        0,
+                    )
+                )
+
+            heapq.heapify(heap)
+
+            while heap:
+                current_running_count, _, trial_id, fairness_key, trial_index = (
+                    heapq.heappop(heap)
+                )
+
+                if trial_id in target_trial_ids:
+                    queue_info_by_trial_id[trial_id] = TrialQueueInfo(
+                        position=position,
+                        ahead=position - 1,
+                        queued_count=queued_count,
+                        running_count=running_count,
+                        concurrency_limit=concurrency_limit,
+                    )
+
+                position += 1
+                next_running_count = current_running_count + 1
+                running_by_fairness[fairness_key] = next_running_count
+
+                next_trial_index = trial_index + 1
+                queued_trials = fairness_groups[fairness_key]
+                if next_trial_index >= len(queued_trials):
+                    continue
+
+                next_trial = queued_trials[next_trial_index]
+                heapq.heappush(
+                    heap,
+                    (
+                        next_running_count,
+                        next_trial.created_at,
+                        next_trial.trial_id,
+                        fairness_key,
+                        next_trial_index,
+                    ),
+                )
+
+    return queue_info_by_trial_id
+
+
+async def fetch_trial_queue_info(
+    session: AsyncSession, *, trials: Sequence[TrialModel]
+) -> dict[str, TrialQueueInfo]:
+    """Return live queue snapshots for queued/retrying trials."""
+    queued_trials = [trial for trial in trials if trial.status in _QUEUE_PENDING_STATUSES]
+    if not queued_trials:
+        return {}
+
+    target_trial_ids = {trial.id for trial in queued_trials}
+    queue_keys = sorted({trial.queue_key for trial in queued_trials if trial.queue_key})
+    if not queue_keys:
+        return {}
+
+    result = await session.execute(
+        select(
+            TrialModel.id,
+            TrialModel.queue_key,
+            TrialModel.status,
+            TrialModel.created_at,
+            TaskModel.priority,
+            func.coalesce(TaskModel.created_by_user_id, TaskModel.user).label(
+                "fairness_key"
+            ),
+        )
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .where(
+            TrialModel.queue_key.in_(queue_keys),
+            TrialModel.status.in_(tuple(_QUEUE_ACTIVE_STATUSES)),
+        )
+    )
+
+    active_trials = [
+        _QueueSnapshotTrial(
+            trial_id=row.id,
+            queue_key=str(row.queue_key),
+            status=row.status,
+            created_at=row.created_at,
+            priority=row.priority,
+            fairness_key=str(row.fairness_key),
+        )
+        for row in result.all()
+    ]
+
+    return _build_trial_queue_info_snapshot(
+        active_trials,
+        target_trial_ids=target_trial_ids,
+    )
+
+
+def build_trial_response(
+    trial: TrialModel,
+    task_path: str,
+    *,
+    queue_info: TrialQueueInfo | None = None,
+) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
     return TrialResponse(
@@ -41,6 +205,7 @@ def build_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
         analysis_status=trial.analysis_status,
         analysis=trial.analysis,
         analysis_error=trial.analysis_error,
+        queue_info=queue_info,
         created_at=trial.created_at,
         started_at=trial.started_at,
         finished_at=trial.finished_at,
@@ -52,6 +217,7 @@ def build_compact_trial_response(
     task_path: str,
     *,
     analysis_summary: dict[str, str | None] | None | object = _ANALYSIS_SUMMARY_UNSET,
+    queue_info: TrialQueueInfo | None = None,
 ) -> TrialResponse:
     """Build a compact TrialResponse for table views.
 
@@ -96,6 +262,7 @@ def build_compact_trial_response(
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
         analysis_error=None,
+        queue_info=queue_info,
         created_at=trial.created_at,
         started_at=trial.started_at,
         finished_at=trial.finished_at,
@@ -185,7 +352,10 @@ def _build_task_status_response(
 
 
 def build_task_status_response(
-    task: TaskModel, *, include_empty_rewards: bool = True
+    task: TaskModel,
+    *,
+    include_empty_rewards: bool = True,
+    queue_info_by_trial_id: dict[str, TrialQueueInfo] | None = None,
 ) -> TaskStatusResponse:
     """Build a TaskStatusResponse from a TaskModel with eagerly loaded trials."""
     total = len(task.trials)
@@ -193,7 +363,18 @@ def build_task_status_response(
     failed = sum(1 for t in task.trials if t.status == TrialStatus.FAILED)
     reward_success = sum(1 for t in task.trials if t.reward == 1)
     reward_total = sum(1 for t in task.trials if t.reward is not None)
-    trials = [build_trial_response(t, task.task_path) for t in task.trials]
+    trials = [
+        build_trial_response(
+            t,
+            task.task_path,
+            queue_info=(
+                queue_info_by_trial_id.get(t.id)
+                if queue_info_by_trial_id is not None
+                else None
+            ),
+        )
+        for t in task.trials
+    ]
 
     return _build_task_status_response(
         task,
@@ -212,6 +393,7 @@ def build_task_status_response_compact(
     *,
     include_empty_rewards: bool = True,
     analysis_summaries: dict[str, dict[str, str | None]] | None = None,
+    queue_info_by_trial_id: dict[str, TrialQueueInfo] | None = None,
 ) -> TaskStatusResponse:
     """Build TaskStatusResponse with compact per-trial payloads."""
     total = len(task.trials)
@@ -227,6 +409,11 @@ def build_task_status_response_compact(
                 analysis_summaries.get(t.id, {})
                 if analysis_summaries is not None
                 else _ANALYSIS_SUMMARY_UNSET
+            ),
+            queue_info=(
+                queue_info_by_trial_id.get(t.id)
+                if queue_info_by_trial_id is not None
+                else None
             ),
         )
         for t in task.trials
