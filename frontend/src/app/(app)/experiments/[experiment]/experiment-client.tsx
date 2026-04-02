@@ -282,8 +282,10 @@ export function ExperimentClientPage({
         </Alert>
       ) : (
         <ExperimentDetailView
+          experimentId={experimentId}
           tasksForExperiment={tasksForExperiment}
           isLoading={isLoading}
+          isLoadingTrials={isLoadingTrials}
           hasError={Boolean(lightweightError)}
           headerLeft={
             <div className="flex items-center gap-2">

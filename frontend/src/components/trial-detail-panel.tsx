@@ -74,6 +74,20 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   running: "border-blue-500/30 bg-blue-500/10",
 };
 
+function getQueueSnapshotItems(trial: Trial): string[] {
+  const queueInfo = trial.queue_info;
+  if (!queueInfo) return [];
+
+  return [
+    queueInfo.position != null
+      ? `Queue #${queueInfo.position} of ${queueInfo.queued_count}`
+      : null,
+    queueInfo.ahead != null ? `${queueInfo.ahead} ahead` : null,
+    `${queueInfo.running_count} running`,
+    `${queueInfo.concurrency_limit} slots`,
+  ].filter((value): value is string => Boolean(value));
+}
+
 export function TrialDetailPanel({
   isOpen,
   onClose,
@@ -609,6 +623,31 @@ export function TrialDetailPanel({
         <div className="flex-1 overflow-auto">
           <TabsContent value="summary" className="m-0 p-4 sm:p-6">
             <div className="space-y-4 pb-4">
+              {trial.queue_info && (
+                <Card className="border-purple-500/30 bg-purple-500/5">
+                  <CardHeader className="px-4 pb-1 pt-2">
+                    <CardTitle className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Queue Snapshot
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-3">
+                    <div className="flex flex-wrap gap-2">
+                      {getQueueSnapshotItems(trial).map((item) => (
+                        <span
+                          key={item}
+                          className="rounded border border-purple-500/20 bg-background/60 px-2 py-1 font-mono text-[11px] text-foreground"
+                        >
+                          {item}
+                        </span>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Live scheduler snapshot. This can move as other trials
+                      start, finish, or get retried.
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
               {/* Analysis Card - only show if analysis is enabled/running/complete */}
               {(trial.analysis_status || trial.analysis) && (
                 <Card
