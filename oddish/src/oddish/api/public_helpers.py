@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from oddish.api.helpers import (
     build_task_status_responses_from_counts,
     build_trial_response,
+    fetch_trial_queue_info,
 )
 from oddish.config import settings
 from oddish.db import (
@@ -126,7 +127,16 @@ async def list_task_trials_for_task(
         .order_by(TrialModel.created_at.asc())
     )
     rows = result.all()
-    return [build_trial_response(trial, task_path) for trial, task_path in rows]
+    trials = [trial for trial, _ in rows]
+    queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
+    return [
+        build_trial_response(
+            trial,
+            task_path,
+            queue_info=queue_info_by_trial_id.get(trial.id),
+        )
+        for trial, task_path in rows
+    ]
 
 
 # =============================================================================
