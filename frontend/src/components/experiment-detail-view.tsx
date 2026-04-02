@@ -10,9 +10,11 @@ import { TrialDetailPanel } from "@/components/trial-detail-panel";
 import { TaskFilesPanel } from "@/components/task-files-panel";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import type { Task, Trial } from "@/lib/types";
+import { Loader2 } from "lucide-react";
 import {
   buildExperimentAgentSummaries,
   getExperimentAgentKey,
+  type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 
 type DrawerMode = "task" | "trial";
@@ -34,8 +36,10 @@ type DrawerState = {
 } | null;
 
 interface ExperimentDetailViewProps {
+  experimentId?: string;
   tasksForExperiment: Task[];
   isLoading: boolean;
+  isLoadingTrials?: boolean;
   hasError?: boolean;
   errorTitle?: string;
   errorDescription?: string;
@@ -47,6 +51,16 @@ interface ExperimentDetailViewProps {
   apiBaseUrl?: string;
   onTaskDelete?: (task: Task) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
+}
+
+const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
+
+function getModelScopedAgentsFromSummaries(
+  summaries: ExperimentAgentSummary[],
+): Set<string> {
+  return new Set(
+    summaries.filter((summary) => summary.isModelScoped).map((summary) => summary.agent),
+  );
 }
 
 type ExperimentSummary = {
@@ -108,11 +122,13 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
 
 function ExperimentHeaderMeta({
   isLoading,
+  isInitialLoading,
   showPassAtK,
   onToggleShowPassAtK,
   headerRight,
 }: {
   isLoading: boolean;
+  isInitialLoading: boolean;
   showPassAtK: boolean;
   onToggleShowPassAtK: () => void;
   headerRight?: React.ReactNode;
@@ -120,14 +136,17 @@ function ExperimentHeaderMeta({
   return (
     <div className="flex items-center gap-3">
       {isLoading && (
-        <div className="text-xs text-muted-foreground">Loading...</div>
+        <div className="inline-flex items-center gap-1.5 rounded-md border border-border/70 bg-muted/50 px-2 py-1 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <span>{isInitialLoading ? "Loading tasks..." : "Refreshing..."}</span>
+        </div>
       )}
       <Button
         type="button"
-        variant="ghost"
+        variant="outline"
         size="sm"
         onClick={onToggleShowPassAtK}
-        className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
+        className="h-8 text-xs font-medium"
       >
         {showPassAtK ? "Hide graph" : "Show graph"}
       </Button>
@@ -139,47 +158,62 @@ function ExperimentHeaderMeta({
 function ExperimentSummaryBar({
   taskCount,
   summary,
+  isInitialLoading,
 }: {
   taskCount: number;
   summary: ExperimentSummary;
+  isInitialLoading: boolean;
 }) {
+  if (isInitialLoading) {
+    return (
+      <Card className="bg-card/70">
+        <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Loading experiment summary...
+        </div>
+      </Card>
+    );
+  }
+
   return (
     <Card className="bg-card/70">
-    <div className="flex flex-wrap items-center gap-3 px-3 py-1.5 text-xs">
-      <div className="text-muted-foreground">{taskCount} tasks</div>
-      <div className="text-muted-foreground">•</div>
-      <div className="font-mono text-muted-foreground">
-        {summary.completedTrials}/{summary.totalTrials} trials
-        {summary.failedTrials > 0 && (
-          <span className="text-red-400"> ({summary.failedTrials}F)</span>
-        )}
+      <div className="flex flex-wrap items-center gap-3 px-3 py-1.5 text-xs">
+        <div className="text-muted-foreground">{taskCount} tasks</div>
+        <div className="text-muted-foreground">•</div>
+        <div className="font-mono text-muted-foreground">
+          {summary.completedTrials}/{summary.totalTrials} trials
+          {summary.failedTrials > 0 && (
+            <span className="text-red-400"> ({summary.failedTrials}F)</span>
+          )}
+        </div>
+        <div className="text-muted-foreground">•</div>
+        <div className="font-mono text-muted-foreground">
+          Pass rate{" "}
+          {summary.rewardTotal > 0
+            ? `${Math.round((summary.rewardSuccess / summary.rewardTotal) * 100)}%`
+            : "—"}
+        </div>
+        <div className="text-muted-foreground">•</div>
+        <div className="flex items-center gap-2 font-mono text-muted-foreground">
+          <span className="text-emerald-400">{summary.passCount}✓</span>
+          <span className="text-red-400">{summary.failCount}✗</span>
+          {summary.harnessErrorCount > 0 && (
+            <span className="text-yellow-400">{summary.harnessErrorCount}⊘</span>
+          )}
+          {summary.pendingCount > 0 && (
+            <span className="text-muted-foreground">{summary.pendingCount}◌</span>
+          )}
+        </div>
       </div>
-      <div className="text-muted-foreground">•</div>
-      <div className="font-mono text-muted-foreground">
-        Pass rate{" "}
-        {summary.rewardTotal > 0
-          ? `${Math.round((summary.rewardSuccess / summary.rewardTotal) * 100)}%`
-          : "—"}
-      </div>
-      <div className="text-muted-foreground">•</div>
-      <div className="flex items-center gap-2 font-mono text-muted-foreground">
-        <span className="text-emerald-400">{summary.passCount}✓</span>
-        <span className="text-red-400">{summary.failCount}✗</span>
-        {summary.harnessErrorCount > 0 && (
-          <span className="text-yellow-400">{summary.harnessErrorCount}⊘</span>
-        )}
-        {summary.pendingCount > 0 && (
-          <span className="text-muted-foreground">{summary.pendingCount}◌</span>
-        )}
-      </div>
-    </div>
     </Card>
   );
 }
 
 export function ExperimentDetailView({
+  experimentId,
   tasksForExperiment,
   isLoading,
+  isLoadingTrials = false,
   hasError = false,
   errorTitle = "Failed to load experiment",
   errorDescription = "Check the API connection and try again.",
@@ -195,11 +229,61 @@ export function ExperimentDetailView({
   const searchParams = useSearchParams();
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
   const [showPassAtK, setShowPassAtK] = useState(false);
+  const [cachedAgentSummaries, setCachedAgentSummaries] = useState<
+    ExperimentAgentSummary[]
+  >([]);
   const hydratedFromUrl = useRef(false);
+  const isInitialLoading = isLoading && tasksForExperiment.length === 0;
+  const agentSummaryStorageKey = experimentId
+    ? `${AGENT_SUMMARY_STORAGE_PREFIX}${experimentId}`
+    : null;
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(tasksForExperiment),
     [tasksForExperiment],
   );
+  const displayAgentSummaries =
+    agentSummaries.length > 0 ? agentSummaries : cachedAgentSummaries;
+  const displayModelScopedAgents = useMemo(
+    () =>
+      agentSummaries.length > 0
+        ? modelScopedAgents
+        : getModelScopedAgentsFromSummaries(cachedAgentSummaries),
+    [agentSummaries, modelScopedAgents, cachedAgentSummaries],
+  );
+
+  useEffect(() => {
+    if (!agentSummaryStorageKey) {
+      setCachedAgentSummaries([]);
+      return;
+    }
+
+    try {
+      const raw = window.sessionStorage.getItem(agentSummaryStorageKey);
+      if (!raw) {
+        setCachedAgentSummaries([]);
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        setCachedAgentSummaries(parsed as ExperimentAgentSummary[]);
+      }
+    } catch {
+      setCachedAgentSummaries([]);
+    }
+  }, [agentSummaryStorageKey]);
+
+  useEffect(() => {
+    if (!agentSummaryStorageKey || agentSummaries.length === 0) return;
+    setCachedAgentSummaries(agentSummaries);
+    try {
+      window.sessionStorage.setItem(
+        agentSummaryStorageKey,
+        JSON.stringify(agentSummaries),
+      );
+    } catch {
+      // Ignore storage failures; the live data still drives the table.
+    }
+  }, [agentSummaryStorageKey, agentSummaries]);
 
   const buildTrialGroups = useCallback(
     (task: Task) => {
@@ -210,7 +294,7 @@ export function ExperimentDetailView({
       }> = [];
       const trialsByAgent = new Map<string, Trial[]>();
       for (const trial of task.trials ?? []) {
-        const key = getExperimentAgentKey(trial, modelScopedAgents);
+        const key = getExperimentAgentKey(trial, displayModelScopedAgents);
         const existing = trialsByAgent.get(key) ?? [];
         existing.push(trial);
         trialsByAgent.set(key, existing);
@@ -229,7 +313,7 @@ export function ExperimentDetailView({
       }
       return { trialGroups, orderedTrials };
     },
-    [modelScopedAgents],
+    [displayModelScopedAgents],
   );
 
   useEffect(() => {
@@ -359,10 +443,12 @@ export function ExperimentDetailView({
                 <ExperimentSummaryBar
                   taskCount={tasksForExperiment.length}
                   summary={summary}
+                  isInitialLoading={isInitialLoading}
                 />
               </div>
               <ExperimentHeaderMeta
                 isLoading={isLoading}
+                isInitialLoading={isInitialLoading}
                 showPassAtK={showPassAtK}
                 onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
                 headerRight={headerRight}
@@ -381,9 +467,10 @@ export function ExperimentDetailView({
               {inlineAlert}
               <ExperimentTrialsTable
                 tasks={tasksForExperiment}
-                agentSummaries={agentSummaries}
-                modelScopedAgents={modelScopedAgents}
+                agentSummaries={displayAgentSummaries}
+                modelScopedAgents={displayModelScopedAgents}
                 isLoading={isLoading}
+                isLoadingTrials={isLoadingTrials}
                 showPassAtK={showPassAtK}
                 onTaskDelete={onTaskDelete}
                 onRerun={onRerun}

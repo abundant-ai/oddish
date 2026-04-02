@@ -42,6 +42,14 @@ interface TrialAnalysis {
   reward?: number | null;
 }
 
+interface TrialQueueInfo {
+  position?: number | null;
+  ahead?: number | null;
+  queued_count: number;
+  running_count: number;
+  concurrency_limit: number;
+}
+
 // Trial
 export interface Trial {
   id: string;
@@ -60,6 +68,7 @@ export interface Trial {
   result?: Record<string, unknown> | null;
   analysis_status?: JobStatus | null;
   analysis?: TrialAnalysis | null;
+  queue_info?: TrialQueueInfo | null;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;

@@ -10,6 +10,7 @@ from oddish.api.helpers import (
     build_task_status_response,
     build_task_status_responses_from_counts,
     build_trial_response,
+    fetch_trial_queue_info,
     fetch_trial_analysis_summaries,
 )
 from oddish.api.trial_io import (
@@ -133,6 +134,10 @@ async def list_tasks_core(
     tasks = result.scalars().all()
 
     if include_trials:
+        queue_info_by_trial_id = await fetch_trial_queue_info(
+            session,
+            trials=[trial for task in tasks for trial in task.trials],
+        )
         if compact_trials:
             analysis_summaries = await fetch_trial_analysis_summaries(
                 session, task_ids=[task.id for task in tasks]
@@ -142,12 +147,15 @@ async def list_tasks_core(
                     task,
                     include_empty_rewards=include_empty_rewards,
                     analysis_summaries=analysis_summaries,
+                    queue_info_by_trial_id=queue_info_by_trial_id,
                 )
                 for task in tasks
             ]
         return [
             build_task_status_response(
-                task, include_empty_rewards=include_empty_rewards
+                task,
+                include_empty_rewards=include_empty_rewards,
+                queue_info_by_trial_id=queue_info_by_trial_id,
             )
             for task in tasks
         ]
@@ -180,8 +188,11 @@ async def get_task_status_core(
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
     if include_trials:
+        queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=task.trials)
         return build_task_status_response(
-            task, include_empty_rewards=include_empty_rewards
+            task,
+            include_empty_rewards=include_empty_rewards,
+            queue_info_by_trial_id=queue_info_by_trial_id,
         )
 
     return (
@@ -213,7 +224,12 @@ async def get_trial_by_index_core(
     if org_id is not None and task_org_id != org_id:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
-    return build_trial_response(trial, task_path)
+    queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=[trial])
+    return build_trial_response(
+        trial,
+        task_path,
+        queue_info=queue_info_by_trial_id.get(trial.id),
+    )
 
 
 async def get_trial_for_org_core(

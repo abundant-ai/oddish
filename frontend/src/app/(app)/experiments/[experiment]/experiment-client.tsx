@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
 import { useSWRConfig } from "swr";
 import { useAuth } from "@clerk/nextjs";
@@ -11,10 +12,10 @@ import { ExperimentShareButton } from "@/components/experiment-share-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import type { Task } from "@/lib/types";
 import { fetcher } from "@/lib/api";
-import { Beaker, Pencil } from "lucide-react";
+import { Beaker, Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 
-const TASKS_PAGE_SIZE = 10;
+const TRIALS_BATCH_SIZE = 50;
 const ACTIVE_TASK_STATUSES = new Set([
   "pending",
   "queued",
@@ -25,12 +26,10 @@ const ACTIVE_TASK_STATUSES = new Set([
 
 type ExperimentClientPageProps = {
   experimentId: string;
-  initialTasksPage?: Task[] | null;
 };
 
 export function ExperimentClientPage({
   experimentId,
-  initialTasksPage = null,
 }: ExperimentClientPageProps) {
   const { orgRole } = useAuth();
   const { mutate: mutateKey } = useSWRConfig();
@@ -39,47 +38,114 @@ export function ExperimentClientPage({
   const [nameDraft, setNameDraft] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [isSavingName, setIsSavingName] = useState(false);
-  const getTasksPageKey = useCallback(
+
+  const encodedId = experimentId
+    ? encodeExperimentRouteParam(experimentId)
+    : "";
+
+  // Phase 1: Fetch ALL tasks without trial data (lightweight).
+  // Populates the full task list immediately.
+  const allTasksUrl = experimentId
+    ? `/api/experiments/${encodedId}/tasks?limit=2000&offset=0&include_trials=false`
+    : null;
+
+  const {
+    data: lightweightTasks,
+    error: lightweightError,
+    isLoading: isLoadingTasks,
+    mutate: mutateLightweight,
+  } = useSWR<Task[]>(allTasksUrl, fetcher, {
+    refreshInterval: 0,
+    revalidateOnFocus: false,
+  });
+
+  // Phase 2: Progressively fetch compact trial data in batches.
+  const getTrialsPageKey = useCallback(
     (pageIndex: number, previousPageData: Task[] | null) => {
-      if (!experimentId) return null;
-      if (previousPageData && previousPageData.length < TASKS_PAGE_SIZE) {
+      if (!experimentId || !encodedId) return null;
+      if (previousPageData && previousPageData.length < TRIALS_BATCH_SIZE)
         return null;
-      }
-      const offset = pageIndex * TASKS_PAGE_SIZE;
-      return `/api/experiments/${encodeExperimentRouteParam(
-        experimentId,
-      )}/tasks?limit=${TASKS_PAGE_SIZE}&offset=${offset}&include_trials=true`;
+      const offset = pageIndex * TRIALS_BATCH_SIZE;
+      return `/api/experiments/${encodedId}/tasks?limit=${TRIALS_BATCH_SIZE}&offset=${offset}&include_trials=true`;
     },
-    [experimentId],
+    [experimentId, encodedId],
   );
 
-  const { data, error, isLoading, isValidating, size, setSize, mutate } =
-    useSWRInfinite<Task[]>(getTasksPageKey, fetcher, {
-      refreshInterval: 0,
-      revalidateOnFocus: false,
-      revalidateFirstPage: true,
-      persistSize: true,
-      fallbackData: initialTasksPage ? [initialTasksPage] : undefined,
-    });
+  const {
+    data: trialPages,
+    isLoading: isLoadingTrialPages,
+    isValidating: isValidatingTrials,
+    size: trialsSize,
+    setSize: setTrialsSize,
+    mutate: mutateTrials,
+  } = useSWRInfinite<Task[]>(getTrialsPageKey, fetcher, {
+    refreshInterval: 0,
+    revalidateOnFocus: false,
+    revalidateFirstPage: false,
+    persistSize: true,
+  });
 
+  // Auto-advance: once a batch arrives and there's more data, request next
+  const trialsLastPage = trialPages?.[trialPages.length - 1] ?? null;
+  const hasMoreTrials = Boolean(
+    trialsLastPage && trialsLastPage.length === TRIALS_BATCH_SIZE,
+  );
+  const allTrialPagesLoaded = trialPages
+    ? trialPages.length === trialsSize
+    : false;
+
+  useEffect(() => {
+    if (
+      allTrialPagesLoaded &&
+      !isValidatingTrials &&
+      hasMoreTrials
+    ) {
+      const timeout = setTimeout(() => {
+        setTrialsSize((s) => s + 1);
+      }, 50);
+      return () => clearTimeout(timeout);
+    }
+  }, [allTrialPagesLoaded, isValidatingTrials, hasMoreTrials, setTrialsSize]);
+
+  // Merge lightweight task shells with trial-enriched data
   const tasksForExperiment = useMemo(() => {
-    const pages = Array.isArray(data) ? data : [];
-    const deduped = new Map<string, Task>();
-    for (const page of pages) {
+    const trialDataById = new Map<string, Task>();
+    for (const page of trialPages ?? []) {
       for (const task of page ?? []) {
-        deduped.set(task.id, task);
+        trialDataById.set(task.id, task);
       }
     }
-    const taskList = Array.from(deduped.values());
-    return taskList.sort(
+
+    const base = lightweightTasks ?? [];
+    const seenIds = new Set<string>();
+    const merged: Task[] = [];
+
+    for (const task of base) {
+      seenIds.add(task.id);
+      merged.push(trialDataById.get(task.id) ?? task);
+    }
+
+    for (const [id, task] of trialDataById) {
+      if (!seenIds.has(id)) {
+        merged.push(task);
+      }
+    }
+
+    return merged.sort(
       (a, b) =>
         new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
     );
-  }, [data]);
-  const lastPage = data?.[data.length - 1] ?? null;
-  const hasMore = Boolean(lastPage && lastPage.length === TASKS_PAGE_SIZE);
-  const isLoadingMore = isValidating && !isLoading;
-  const firstPageKey = getTasksPageKey(0, null);
+  }, [lightweightTasks, trialPages]);
+
+  const isLoading = isLoadingTasks;
+  const isLoadingTrials =
+    (lightweightTasks?.length ?? 0) > 0 &&
+    (isLoadingTrialPages || isValidatingTrials || hasMoreTrials);
+  const trialsLoadedCount = useMemo(() => {
+    if (!trialPages) return 0;
+    return trialPages.reduce((sum, page) => sum + (page?.length ?? 0), 0);
+  }, [trialPages]);
+
   const refreshIntervalMs = useMemo(() => {
     if (tasksForExperiment.length === 0) return 5000;
     const hasActiveTasks = tasksForExperiment.some((task) => {
@@ -99,36 +165,10 @@ export function ExperimentClientPage({
     orgRole === "org:admin" || orgRole === "org:owner";
 
   const refreshTaskPages = useCallback(
-    async (taskIds?: string[]) => {
-      if (!firstPageKey) return;
-
-      const pages = Array.isArray(data) ? data : [];
-      if (!taskIds?.length || pages.length === 0) {
-        await mutateKey(firstPageKey);
-        return;
-      }
-
-      const pageIndexes = new Set<number>();
-      for (const [pageIndex, page] of pages.entries()) {
-        if (page?.some((task) => taskIds.includes(task.id))) {
-          pageIndexes.add(pageIndex);
-        }
-      }
-
-      if (pageIndexes.size === 0) {
-        pageIndexes.add(0);
-      }
-
-      await Promise.all(
-        Array.from(pageIndexes).map((pageIndex) => {
-          const previousPageData =
-            pageIndex === 0 ? null : (pages[pageIndex - 1] ?? null);
-          const key = getTasksPageKey(pageIndex, previousPageData);
-          return key ? mutateKey(key) : Promise.resolve(undefined);
-        }),
-      );
+    async (_taskIds?: string[]) => {
+      await Promise.all([mutateLightweight(), mutateTrials()]);
     },
-    [data, firstPageKey, getTasksPageKey, mutateKey],
+    [mutateLightweight, mutateTrials],
   );
 
   useEffect(() => {
@@ -139,16 +179,24 @@ export function ExperimentClientPage({
   }, [initialName, isEditingName]);
 
   useEffect(() => {
-    if (!firstPageKey) return;
+    if (!allTasksUrl) return;
 
     const intervalId = window.setInterval(() => {
-      void mutateKey(firstPageKey);
+      void mutateLightweight();
+      const firstTrialKey = getTrialsPageKey(0, null);
+      if (firstTrialKey) void mutateKey(firstTrialKey);
     }, refreshIntervalMs);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [firstPageKey, refreshIntervalMs, mutateKey]);
+  }, [
+    allTasksUrl,
+    refreshIntervalMs,
+    mutateLightweight,
+    mutateKey,
+    getTrialsPageKey,
+  ]);
 
   const handleRename = async () => {
     if (!experimentId) return;
@@ -179,13 +227,15 @@ export function ExperimentClientPage({
       }
 
       setIsEditingName(false);
-      await mutate(
+      await mutateLightweight(
+        (tasks) =>
+          tasks?.map((task) => ({ ...task, experiment_name: nextName })),
+        { revalidate: false },
+      );
+      await mutateTrials(
         (pages) =>
           pages?.map((page) =>
-            page?.map((task) => ({
-              ...task,
-              experiment_name: nextName,
-            })),
+            page?.map((task) => ({ ...task, experiment_name: nextName })),
           ),
         { revalidate: false },
       );
@@ -209,12 +259,16 @@ export function ExperimentClientPage({
       );
     }
 
-    await mutate(
+    await mutateLightweight(
+      (tasks) => tasks?.filter((item) => item.id !== task.id),
+      { revalidate: false },
+    );
+    await mutateTrials(
       (pages) =>
         pages?.map((page) => page?.filter((item) => item.id !== task.id)),
       { revalidate: false },
     );
-    await refreshTaskPages([task.id]);
+    await refreshTaskPages();
   };
 
   return (
@@ -228,9 +282,11 @@ export function ExperimentClientPage({
         </Alert>
       ) : (
         <ExperimentDetailView
+          experimentId={experimentId}
           tasksForExperiment={tasksForExperiment}
           isLoading={isLoading}
-          hasError={Boolean(error)}
+          isLoadingTrials={isLoadingTrials}
+          hasError={Boolean(lightweightError)}
           headerLeft={
             <div className="flex items-center gap-2">
               <Beaker className="h-4 w-4 text-muted-foreground" />
@@ -283,17 +339,17 @@ export function ExperimentClientPage({
           }
           headerRight={
             <>
-              {hasMore && !isLoading && experimentId && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-7 px-2 text-[10px] uppercase tracking-wide"
-                  onClick={() => setSize(size + 1)}
-                  disabled={isLoadingMore}
-                >
-                  {isLoadingMore ? "Loading..." : "Load more"}
-                </Button>
+              {isLoadingTrials && (
+                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span>
+                    Loading trials
+                    {lightweightTasks
+                      ? ` ${trialsLoadedCount}/${lightweightTasks.length}`
+                      : ""}
+                    …
+                  </span>
+                </div>
               )}
               {experimentId && (
                 <ExperimentShareButton
@@ -320,4 +376,3 @@ export function ExperimentClientPage({
     </div>
   );
 }
-
