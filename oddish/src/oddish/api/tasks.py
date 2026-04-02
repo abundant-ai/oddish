@@ -11,6 +11,10 @@ from fastapi import HTTPException, UploadFile
 from oddish.config import settings
 from oddish.db.storage import get_storage_client
 from oddish.schemas import UploadResponse
+from oddish.task_timeouts import (
+    TaskTimeoutValidationError,
+    validate_task_timeout_config,
+)
 
 
 async def _write_upload_to_file(
@@ -81,6 +85,11 @@ async def handle_task_upload(file: UploadFile) -> UploadResponse:
             raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid tarball: {str(e)}")
+
+        try:
+            validate_task_timeout_config(task_dir)
+        except TaskTimeoutValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         if settings.s3_enabled:
             storage = get_storage_client()

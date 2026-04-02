@@ -28,6 +28,7 @@ from pgqueuer.types import JobId
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
 from oddish.schemas import TaskSubmission, TrialSpec
+from oddish.task_timeouts import validate_task_timeout_config
 
 logger = logging.getLogger(__name__)
 
@@ -375,17 +376,27 @@ async def cancel_task_runs(
         TrialStatus.RUNNING,
         TrialStatus.RETRYING,
     }
+    active_pipeline_statuses = {
+        AnalysisStatus.PENDING,
+        AnalysisStatus.QUEUED,
+        AnalysisStatus.RUNNING,
+    }
     modal_fc_ids: list[str] = []
     trials_cancelled = 0
+    now = utcnow()
 
     for trial in trials:
         if trial.status not in active_statuses:
+            if trial.analysis_status in active_pipeline_statuses:
+                trial.analysis_status = AnalysisStatus.FAILED
+                trial.analysis_error = "Cancelled by user"
+                trial.analysis_finished_at = now
             continue
         if trial.modal_function_call_id:
             modal_fc_ids.append(trial.modal_function_call_id)
         trial.status = TrialStatus.FAILED
         trial.error_message = "Cancelled by user"
-        trial.finished_at = utcnow()
+        trial.finished_at = now
         trial.harbor_stage = "cancelled"
         # Prevent the dying container's error handler from re-queuing:
         # the retry logic checks `attempts < max_attempts`.
@@ -394,6 +405,10 @@ async def cancel_task_runs(
         trial.current_worker_id = None
         trial.current_queue_slot = None
         trial.modal_function_call_id = None
+        if trial.analysis_status in active_pipeline_statuses:
+            trial.analysis_status = AnalysisStatus.FAILED
+            trial.analysis_error = "Cancelled by user"
+            trial.analysis_finished_at = now
         trials_cancelled += 1
 
     # Update task status
@@ -404,7 +419,11 @@ async def cancel_task_runs(
         TaskStatus.VERDICT_PENDING,
     ):
         task.status = TaskStatus.FAILED
-        task.finished_at = utcnow()
+        task.finished_at = now
+    if task.verdict_status in active_pipeline_statuses:
+        task.verdict_status = VerdictStatus.FAILED
+        task.verdict_error = "Cancelled by user"
+        task.verdict_finished_at = now
 
     await session.flush()
 
@@ -535,12 +554,6 @@ def _build_harbor_config_for_trial(
         agent_config_payload.pop("name", None)
         agent_config_payload.pop("model_name", None)
 
-    if (
-        spec.timeout_minutes > 0
-        and agent_config_payload.get("override_timeout_sec") is None
-    ):
-        agent_config_payload["override_timeout_sec"] = float(spec.timeout_minutes * 60)
-
     if agent_config_payload:
         base["agent_config"] = agent_config_payload
 
@@ -575,8 +588,13 @@ async def create_task(
         # Legacy: upload local directory to S3
         local_path = Path(task_path)
         if local_path.exists() and local_path.is_dir():
+            validate_task_timeout_config(local_path)
             storage = get_storage_client()
             task_s3_key = await storage.upload_task_directory(task_id, local_path)
+    elif not task_s3_key:
+        local_path = Path(task_path)
+        if local_path.exists() and local_path.is_dir():
+            validate_task_timeout_config(local_path)
 
     # Resolve experiment by ID or name (creates if not found)
     if submission.experiment_id:

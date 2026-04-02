@@ -45,8 +45,6 @@ def build_trial_specs_from_sweep(
             allowed_environments=allowed_environments,
         )
 
-    submission_timeout_explicit = "timeout_minutes" in submission.model_fields_set
-
     for config in submission.configs:
         trial_environment = config.environment or effective_default_environment
         if trial_environment and allowed_environments:
@@ -56,18 +54,12 @@ def build_trial_specs_from_sweep(
                 allowed_environments=allowed_environments,
             )
 
-        config_timeout_explicit = "timeout_minutes" in config.model_fields_set
-        timeout_explicit = config_timeout_explicit or submission_timeout_explicit
-        timeout_minutes = config.timeout_minutes or submission.timeout_minutes
-
         for _ in range(config.n_trials):
             trial_kwargs: dict = {
                 "agent": config.agent,
                 "model": config.model,
                 "environment": trial_environment,
             }
-            if timeout_explicit:
-                trial_kwargs["timeout_minutes"] = timeout_minutes
             if config.agent_config:
                 trial_kwargs["agent_config"] = config.agent_config
             trials.append(TrialSpec(**trial_kwargs))

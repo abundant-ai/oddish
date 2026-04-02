@@ -187,6 +187,7 @@ class Settings(BaseSettings):
 
     # Database connection pools (constants — override on Settings class
     # in entry modules for different deployment targets)
+    db_use_null_pool: ClassVar[bool] = False
     db_pool_min_size: ClassVar[int] = 2
     db_pool_max_size: ClassVar[int] = 20
     db_pool_max_overflow: ClassVar[int] = 10

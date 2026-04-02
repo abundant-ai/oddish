@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from oddish.config import settings
-from oddish.db import close_database_connections, init_db
+from oddish.db import close_database_connections
 
 
 def _get_cors_origins() -> list[str]:
@@ -33,11 +33,14 @@ def _get_cors_origins() -> list[str]:
 
 @asynccontextmanager
 async def lifespan(_api: FastAPI):
-    """Initialize DB in Modal web containers."""
+    """Prepare lightweight API container resources.
+
+    Hosted environments should rely on Alembic migrations, not runtime
+    `metadata.create_all()`. Avoiding a startup-time DB handshake keeps the
+    ASGI app from hard-failing when the Supabase pooler is briefly unavailable.
+    """
     Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.local_storage_dir).mkdir(parents=True, exist_ok=True)
-
-    await init_db()
 
     yield
 
