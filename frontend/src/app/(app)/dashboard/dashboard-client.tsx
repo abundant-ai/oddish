@@ -340,6 +340,40 @@ function formatCost(usd: number): string {
   return "$0";
 }
 
+function CostWithEstimation({
+  totalCost,
+  estimatedCost,
+  className,
+}: {
+  totalCost: number;
+  estimatedCost: number;
+  className?: string;
+}) {
+  const nativeCost = totalCost - estimatedCost;
+  const hasEstimated = estimatedCost > 0;
+  const allEstimated = hasEstimated && nativeCost <= 0;
+
+  if (totalCost <= 0) return <span className={className}>$0</span>;
+
+  const tooltip = hasEstimated
+    ? allEstimated
+      ? "Fully estimated from token counts"
+      : `${formatCost(nativeCost)} native + ~${formatCost(estimatedCost)} estimated from tokens`
+    : "Native cost from provider";
+
+  return (
+    <span className={className} title={tooltip}>
+      {allEstimated && "~"}
+      {formatCost(totalCost)}
+      {hasEstimated && !allEstimated && (
+        <span className="ml-0.5 text-[10px] text-yellow-500" title={`~${formatCost(estimatedCost)} estimated`}>
+          *
+        </span>
+      )}
+    </span>
+  );
+}
+
 function formatDuration(seconds: number | null): string {
   if (seconds === null) return "—";
   if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -379,6 +413,7 @@ type UsageRow = {
   outputTokens: number;
   cacheTokens: number;
   costUsd: number;
+  estimatedCostUsd: number;
   running: number;
   queued: number;
   retrying: number;
@@ -444,6 +479,7 @@ function UsageOverviewCard({
         outputTokens: usage.output_tokens,
         cacheTokens: usage.cache_tokens,
         costUsd: usage.cost_usd,
+        estimatedCostUsd: usage.estimated_cost_usd ?? 0,
         running: queueStats ? Number(queueStats.running) || 0 : usage.running,
         queued: queueStats ? getQueueQueuedJobs(queueStats) : usage.queued,
         retrying: queueStats ? Number(queueStats.retrying) || 0 : 0,
@@ -466,6 +502,7 @@ function UsageOverviewCard({
         outputTokens: 0,
         cacheTokens: 0,
         costUsd: 0,
+        estimatedCostUsd: 0,
         running: Number(queueStats.running) || 0,
         queued: getQueueQueuedJobs(queueStats),
         retrying: Number(queueStats.retrying) || 0,
@@ -502,6 +539,7 @@ function UsageOverviewCard({
           outputTokens: acc.outputTokens + row.outputTokens,
           cacheTokens: acc.cacheTokens + row.cacheTokens,
           cost: acc.cost + row.costUsd,
+          estimatedCost: acc.estimatedCost + row.estimatedCostUsd,
           running: acc.running + row.running,
           queued: acc.queued + row.queued,
           retrying: acc.retrying + row.retrying,
@@ -512,6 +550,7 @@ function UsageOverviewCard({
           outputTokens: 0,
           cacheTokens: 0,
           cost: 0,
+          estimatedCost: 0,
           running: 0,
           queued: 0,
           retrying: 0,
@@ -710,7 +749,7 @@ function UsageOverviewCard({
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <div className="border-[#6f88b4]/18 rounded-md border bg-background/70 p-2 text-center">
                   <div className="text-base font-bold tabular-nums">
-                    {formatCost(totals.cost)}
+                    <CostWithEstimation totalCost={totals.cost} estimatedCost={totals.estimatedCost} />
                   </div>
                   <div className="text-[10px] text-muted-foreground">Cost</div>
                 </div>
@@ -833,9 +872,14 @@ function UsageOverviewCard({
                                 : "—"}
                             </TableCell>
                             <TableCell className="text-right font-mono text-xs">
-                              {row.hasUsageMetrics && row.costUsd > 0
-                                ? formatCost(row.costUsd)
-                                : "—"}
+                              {row.hasUsageMetrics && row.costUsd > 0 ? (
+                                <CostWithEstimation
+                                  totalCost={row.costUsd}
+                                  estimatedCost={row.estimatedCostUsd}
+                                />
+                              ) : (
+                                "—"
+                              )}
                             </TableCell>
                             <TableCell className="text-right text-xs text-muted-foreground">
                               {row.hasUsageMetrics
@@ -869,9 +913,11 @@ function UsageOverviewCard({
                       Cached: {formatCompactNumber(totals.cacheTokens)}
                     </span>
                   )}
-                  <span className="font-medium text-foreground">
-                    {formatCost(totals.cost)}
-                  </span>
+                  <CostWithEstimation
+                    totalCost={totals.cost}
+                    estimatedCost={totals.estimatedCost}
+                    className="font-medium text-foreground"
+                  />
                   <span>
                     Statuses include trial, analysis, and verdict jobs; token
                     and cost metrics come from trial runs.

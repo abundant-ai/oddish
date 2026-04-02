@@ -269,7 +269,15 @@ class TrialResponse(BaseModel):
     )
     cache_tokens: int | None = Field(None, description="Cache tokens used")
     output_tokens: int | None = Field(None, description="Output tokens generated")
-    cost_usd: float | None = Field(None, description="Estimated cost in USD")
+    cost_usd: float | None = Field(None, description="Cost in USD (native or estimated)")
+    cost_is_estimated: bool | None = Field(
+        None,
+        description="True if cost was estimated from tokens × pricing table, False if native",
+    )
+    cost_estimation_method: str | None = Field(
+        None,
+        description="How cost was determined: 'native', 'agent_context_tokens', or 'trajectory_tokens'",
+    )
 
     # Per-phase timing breakdown
     phase_timing: dict | None = Field(
