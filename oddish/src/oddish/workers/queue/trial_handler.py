@@ -16,6 +16,7 @@ from harbor.viewer.scanner import JobScanner
 from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
+    ExperimentModel,
     Priority,
     TaskModel,
     TaskStatus,
@@ -36,7 +37,7 @@ class PreparedTrialRun:
     task_path: str | None
     task_s3_key: str | None
     task_id: str
-    task_name: str | None
+    experiment_name: str | None
     task_user: str | None
     trial_agent: str
     trial_model: str
@@ -223,11 +224,16 @@ async def _prepare_trial_run(
         trial.claimed_at = utcnow()
         trial.heartbeat_at = trial.claimed_at
 
+        experiment_name: str | None = None
+        if task:
+            experiment = await session.get(ExperimentModel, task.experiment_id)
+            experiment_name = experiment.name if experiment else None
+
         return PreparedTrialRun(
             task_path=task_path,
             task_s3_key=task_s3_key,
             task_id=task_id,
-            task_name=task.name if task else None,
+            experiment_name=experiment_name,
             task_user=task.user if task else None,
             trial_agent=trial_agent,
             trial_model=trial_model,
@@ -520,7 +526,7 @@ async def _execute_trial(
             trial_id=trial_id,
             harbor_config=prepared_trial.trial_harbor_config,
             task_tags=prepared_trial.task_tags,
-            task_name=prepared_trial.task_name,
+            experiment_name=prepared_trial.experiment_name,
             task_user=prepared_trial.task_user,
         )
     except asyncio.CancelledError:

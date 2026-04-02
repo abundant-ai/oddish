@@ -422,7 +422,7 @@ async def run_harbor_trial_async(
     trial_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
     task_tags: dict[str, str] | None = None,
-    task_name: str | None = None,
+    experiment_name: str | None = None,
     task_user: str | None = None,
 ) -> HarborOutcome:
     """
@@ -438,7 +438,7 @@ async def run_harbor_trial_async(
         trial_id: Optional trial ID for traceability
         harbor_config: Optional dict (serialized HarborConfig + Harbor AgentConfig)
         task_tags: Optional task-level tags (from TaskSubmission.tags)
-        task_name: Optional task name (used as default project tag for cost tracking)
+        experiment_name: Optional experiment name (used as default project tag for cost tracking)
         task_user: Optional submitting user (injected as COST_TAG_USER)
 
     Returns:
@@ -493,11 +493,11 @@ async def run_harbor_trial_async(
     # Inject cost-tracking tags into the agent environment.
     # Downstream tools map these to provider-specific mechanisms
     # (e.g. Bedrock requestMetadata, litellm metadata).
-    # Project priority: per-submission tags["project"] > global setting > task name.
+    # Project priority: per-submission tags["project"] > global setting > experiment name.
     cost_project = (
         (task_tags or {}).get("project")
         or settings.cost_tag_project
-        or task_name
+        or experiment_name
     )
     if cost_project:
         agent_config.env.setdefault("COST_TAG_PROJECT", cost_project)
