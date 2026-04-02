@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, TimeoutError as SATimeoutError
 
 from models import APIKeyScope, UserRole, hash_api_key
 from oddish.db import get_session
@@ -22,10 +23,24 @@ from auth.verification import (
 logger = logging.getLogger(__name__)
 
 
-def _is_retryable_disconnect(exc: DBAPIError) -> bool:
-    if exc.connection_invalidated:
+def _is_retryable_disconnect(exc: Exception) -> bool:
+    if isinstance(exc, (TimeoutError, SATimeoutError)):
         return True
-    return "ConnectionDoesNotExistError" in str(exc.orig)
+    if isinstance(exc, DBAPIError) and exc.connection_invalidated:
+        return True
+    return "ConnectionDoesNotExistError" in str(exc)
+
+
+async def _retry_after_disconnect(log_message: str, *log_args: object) -> None:
+    logger.warning(log_message, *log_args)
+    await asyncio.sleep(0.5)
+
+
+def _database_unavailable_http_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Temporary database connectivity issue. Please retry.",
+    )
 
 
 async def get_auth_context(
@@ -112,10 +127,14 @@ async def get_auth_context(
                 if cached_auth is not None and auth_context is not None:
                     set_cached_auth(cache_key, cached_auth)
                     return auth_context
-            except DBAPIError as exc:
-                if attempt == 1 or not _is_retryable_disconnect(exc):
+            except Exception as exc:
+                if isinstance(exc, HTTPException):
                     raise
-                logger.warning(
+                if not _is_retryable_disconnect(exc):
+                    raise
+                if attempt == 1:
+                    raise _database_unavailable_http_error() from exc
+                await _retry_after_disconnect(
                     "Retrying API key auth after transient DB disconnect: %s",
                     exc,
                 )
@@ -192,10 +211,14 @@ async def get_auth_context(
                 if cached_auth is not None and auth_context is not None:
                     set_cached_auth(cache_key, cached_auth)
                     return auth_context
-            except DBAPIError as exc:
-                if attempt == 1 or not _is_retryable_disconnect(exc):
+            except Exception as exc:
+                if isinstance(exc, HTTPException):
                     raise
-                logger.warning(
+                if not _is_retryable_disconnect(exc):
+                    raise
+                if attempt == 1:
+                    raise _database_unavailable_http_error() from exc
+                await _retry_after_disconnect(
                     "Retrying Clerk auth after transient DB disconnect for %s: %s",
                     clerk_user_id,
                     exc,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta, timezone
 from datetime import timedelta
 from uuid import UUID, uuid4
 
@@ -159,6 +160,28 @@ async def _finalize_claimed_job(
     return row is not None
 
 
+def _cancellation_traceback_record(
+    *,
+    job: Job,
+    worker_id: str,
+    queue_slot: int,
+    exc: asyncio.CancelledError,
+) -> TracebackRecord:
+    return TracebackRecord(
+        job_id=job.id,
+        timestamp=datetime.now(timezone.utc),
+        exception_type=exc.__class__.__name__,
+        exception_message=str(exc) or "Worker task was cancelled",
+        traceback="",
+        additional_context={
+            "entrypoint": job.entrypoint,
+            "queue_manager_id": str(_job_owner(job)),
+            "worker_id": worker_id,
+            "queue_slot": queue_slot,
+        },
+    )
+
+
 async def _run_hook(hook: IdHook | None, value: str) -> None:
     if hook is not None:
         await hook(value)
@@ -276,7 +299,21 @@ async def run_single_job(
                 on_analysis_complete=on_analysis_complete,
                 on_verdict_complete=on_verdict_complete,
             )
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
+            finalized = await _finalize_claimed_job(
+                job=job,
+                status="canceled",
+                traceback_record=_cancellation_traceback_record(
+                    job=job,
+                    worker_id=worker_id,
+                    queue_slot=queue_slot,
+                    exc=exc,
+                ),
+            )
+            if not finalized:
+                console.print(
+                    f"[yellow]Skipped cancellation finalization for job {job.id}; worker no longer owns it[/yellow]"
+                )
             raise
         except Exception as exc:
             console.print(f"[red]Job {job.id} failed: {exc}[/red]")

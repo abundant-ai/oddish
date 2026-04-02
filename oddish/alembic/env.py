@@ -90,12 +90,13 @@ async def run_async_migrations() -> None:
     """Run migrations in 'online' mode with async support."""
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    # Use the asyncpg URL to avoid psycopg2 dependency.
     connectable = create_async_engine(
         db_url,
-        # Disable prepared statement caching for compatibility with
-        # transaction/statement poolers (PgBouncer, Supavisor, etc).
-        connect_args={"statement_cache_size": 0},
+        connect_args={
+            "statement_cache_size": 0,
+            "timeout": 30,
+            "command_timeout": 120,
+        },
         poolclass=pool.NullPool,
     )
 

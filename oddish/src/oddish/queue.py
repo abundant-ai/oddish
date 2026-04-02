@@ -376,17 +376,27 @@ async def cancel_task_runs(
         TrialStatus.RUNNING,
         TrialStatus.RETRYING,
     }
+    active_pipeline_statuses = {
+        AnalysisStatus.PENDING,
+        AnalysisStatus.QUEUED,
+        AnalysisStatus.RUNNING,
+    }
     modal_fc_ids: list[str] = []
     trials_cancelled = 0
+    now = utcnow()
 
     for trial in trials:
         if trial.status not in active_statuses:
+            if trial.analysis_status in active_pipeline_statuses:
+                trial.analysis_status = AnalysisStatus.FAILED
+                trial.analysis_error = "Cancelled by user"
+                trial.analysis_finished_at = now
             continue
         if trial.modal_function_call_id:
             modal_fc_ids.append(trial.modal_function_call_id)
         trial.status = TrialStatus.FAILED
         trial.error_message = "Cancelled by user"
-        trial.finished_at = utcnow()
+        trial.finished_at = now
         trial.harbor_stage = "cancelled"
         # Prevent the dying container's error handler from re-queuing:
         # the retry logic checks `attempts < max_attempts`.
@@ -395,6 +405,10 @@ async def cancel_task_runs(
         trial.current_worker_id = None
         trial.current_queue_slot = None
         trial.modal_function_call_id = None
+        if trial.analysis_status in active_pipeline_statuses:
+            trial.analysis_status = AnalysisStatus.FAILED
+            trial.analysis_error = "Cancelled by user"
+            trial.analysis_finished_at = now
         trials_cancelled += 1
 
     # Update task status
@@ -405,7 +419,11 @@ async def cancel_task_runs(
         TaskStatus.VERDICT_PENDING,
     ):
         task.status = TaskStatus.FAILED
-        task.finished_at = utcnow()
+        task.finished_at = now
+    if task.verdict_status in active_pipeline_statuses:
+        task.verdict_status = VerdictStatus.FAILED
+        task.verdict_error = "Cancelled by user"
+        task.verdict_finished_at = now
 
     await session.flush()
 

@@ -18,6 +18,11 @@ from oddish.db.models import Base
 
 # Ensure we use asyncpg driver explicitly (URL should already have +asyncpg).
 db_url = settings.database_url
+DB_CONNECT_ARGS = {
+    "statement_cache_size": 0,
+    "timeout": 10,
+    "command_timeout": 30,
+}
 
 
 def _create_engine() -> AsyncEngine:
@@ -28,14 +33,14 @@ def _create_engine() -> AsyncEngine:
         return create_async_engine(
             db_url,
             echo=False,
-            connect_args={"statement_cache_size": 0},
+            connect_args=DB_CONNECT_ARGS,
             poolclass=pool.NullPool,
         )
 
     return create_async_engine(
         db_url,
         echo=False,
-        connect_args={"statement_cache_size": 0},
+        connect_args=DB_CONNECT_ARGS,
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_pool_max_overflow,
         pool_pre_ping=True,
@@ -68,6 +73,8 @@ async def get_pool() -> asyncpg.Pool:
             # Disable prepared statement caching for compatibility with
             # transaction/statement poolers (PgBouncer, Supavisor, etc).
             statement_cache_size=0,
+            timeout=10,
+            command_timeout=30,
         )
     return _pool
 
