@@ -59,40 +59,6 @@ def _is_agent_timeout_error_message(error: str | None) -> bool:
     return "AgentTimeoutError" in error or "Agent execution timed out" in error
 
 
-def _apply_default_trial_timeout(
-    harbor_config: dict | None,
-    timeout_minutes: int | None,
-) -> dict | None:
-    """Ensure Harbor sees the trial timeout even for legacy rows."""
-    if timeout_minutes is None or timeout_minutes <= 0:
-        return harbor_config
-
-    effective_config = dict(harbor_config or {})
-
-    raw_agent_config = effective_config.get("agent_config")
-    agent_config_payload = (
-        dict(raw_agent_config) if isinstance(raw_agent_config, dict) else {}
-    )
-    # Trial rows already carry the canonical agent/model, so keep only override
-    # fields here and avoid Harbor's implicit AgentConfig(name="oracle") default.
-    agent_config_payload.pop("name", None)
-    agent_config_payload.pop("model_name", None)
-    if agent_config_payload.get("override_timeout_sec") is None:
-        agent_config_payload["override_timeout_sec"] = float(timeout_minutes * 60)
-    if agent_config_payload:
-        effective_config["agent_config"] = agent_config_payload
-
-    raw_agent_overrides = effective_config.get("agent_overrides")
-    agent_overrides = (
-        dict(raw_agent_overrides) if isinstance(raw_agent_overrides, dict) else {}
-    )
-    if agent_overrides.get("override_timeout_sec") is None:
-        agent_overrides["override_timeout_sec"] = float(timeout_minutes * 60)
-    if agent_overrides:
-        effective_config["agent_overrides"] = agent_overrides
-    return effective_config
-
-
 def _verifier_ran_from_job_result(job_result_path: str | None) -> bool:
     if not job_result_path:
         return False
@@ -258,10 +224,7 @@ async def _prepare_trial_run(
         if trial.queue_key != canonical_queue_key:
             trial.queue_key = canonical_queue_key
         trial_environment = trial.environment
-        trial_harbor_config = _apply_default_trial_timeout(
-            trial.harbor_config,
-            trial.timeout_minutes,
-        )
+        trial_harbor_config = trial.harbor_config
         trial.current_pgqueuer_job_id = job_id
         trial.current_worker_id = worker_id
         trial.current_queue_slot = queue_slot

@@ -226,7 +226,7 @@ class TrialModel(Base):
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     queue_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    timeout_minutes: Mapped[int] = mapped_column(Integer, default=60)
+    timeout_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     environment: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     # Harbor passthrough config (agent env/kwargs, verifier, environment resources)

@@ -25,6 +25,7 @@ from harbor.trial.hooks import TrialHookEvent
 from harbor.models.job.result import JobResult
 
 from oddish.schemas import HarborConfig
+from oddish.task_timeouts import validate_task_timeout_config
 
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -458,6 +459,7 @@ async def run_harbor_trial_async(
 
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
+    validate_task_timeout_config(task_path)
 
     # ── Task patching ────────────────────────────────────────────────────
     needs_task_patch = bool(hc.docker_image or hc.mcp_servers)
