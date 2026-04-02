@@ -232,11 +232,11 @@ class Settings(BaseSettings):
     # Task upload limits (MB)
     max_task_upload_mb: int = 50
 
-    # Bedrock cost-tracking tag — passed as BEDROCK_PROJECT_TAG env var to
-    # agents so that downstream tools (Claude Code CLI, litellm, etc.) can
-    # include it in the Bedrock Converse/InvokeModel ``requestMetadata`` for
-    # AWS Cost Allocation.  Activate the tag in Billing → Cost Allocation Tags.
-    bedrock_project_tag: str | None = None
+    # Default project tag for cost tracking — injected as COST_TAG_PROJECT
+    # env var into agent containers.  Downstream tools map this to provider-
+    # specific mechanisms (e.g. Bedrock requestMetadata, litellm metadata).
+    # Override per-submission via tags["project"].
+    cost_tag_project: str | None = None
 
     # API keys (read from env without ODDISH_ prefix)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
