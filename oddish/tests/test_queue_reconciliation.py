@@ -7,18 +7,21 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from harbor.models.environment_type import EnvironmentType
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.db import (
     AnalysisStatus,
+    Priority,
     TaskModel,
     TaskStatus,
     TrialModel,
     TrialStatus,
     VerdictStatus,
 )
-from oddish.queue import cancel_task_runs
+from oddish.queue import append_trials_to_task, cancel_task_runs
+from oddish.schemas import TaskSubmission, TrialSpec
 from oddish.workers.queue import single_job
 from oddish.workers.queue.single_job import ClaimedJob
 
@@ -43,6 +46,8 @@ class _FakeSession:
     def __init__(self, task, trials):
         self.task = task
         self.trials = trials
+        self.added = []
+        self.refreshed = []
 
     async def execute(self, statement):
         entity = statement.column_descriptions[0]["entity"]
@@ -58,6 +63,13 @@ class _FakeSession:
         return None
 
     async def flush(self):
+        return None
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def refresh(self, obj, attribute_names=None):
+        self.refreshed.append((obj, attribute_names))
         return None
 
 
@@ -156,3 +168,79 @@ async def test_cancel_task_runs_fails_active_analysis_and_verdict_state(monkeypa
     assert task.verdict_status == VerdictStatus.FAILED
     assert task.verdict_error == "Cancelled by user"
     assert task.verdict_finished_at is not None
+
+
+@pytest.mark.asyncio
+async def test_append_trials_to_task_resets_completed_task_state():
+    task = SimpleNamespace(
+        id="task-1",
+        name="demo-task",
+        org_id="org-1",
+        task_path="/tmp/demo-task",
+        user="rishi",
+        priority=Priority.LOW,
+        tags={"source": "test"},
+        run_analysis=True,
+        status=TaskStatus.COMPLETED,
+        finished_at="done",
+        verdict={"classification": "success"},
+        verdict_status=VerdictStatus.SUCCESS,
+        verdict_error=None,
+        verdict_started_at="started",
+        verdict_finished_at="finished",
+    )
+    existing_trials = [
+        SimpleNamespace(
+            id="task-1-0",
+            task_id=task.id,
+            agent="codex",
+            model="openai/gpt-5.2-codex",
+        ),
+        SimpleNamespace(
+            id="task-1-1",
+            task_id=task.id,
+            agent="oracle",
+            model="default",
+        ),
+    ]
+    session = _FakeSession(task=task, trials=existing_trials)
+    submission = TaskSubmission(
+        task_path=task.task_path,
+        name=task.name,
+        trials=[
+            TrialSpec(
+                agent="gemini-cli",
+                model="google/gemini-3.1-pro-preview",
+                environment=EnvironmentType.MODAL,
+            ),
+            TrialSpec(
+                agent="claude-code",
+                model="anthropic/claude-sonnet-4-6",
+                environment=EnvironmentType.MODAL,
+            ),
+        ],
+        user=task.user,
+        priority=task.priority,
+        experiment_id="exp-1",
+        tags=task.tags,
+        run_analysis=task.run_analysis,
+        harbor={},
+    )
+
+    new_trials = await append_trials_to_task(session, task=task, submission=submission)
+
+    assert len(new_trials) == 2
+    assert [trial.id for trial in session.added] == ["task-1-2", "task-1-3"]
+    assert [trial.name for trial in session.added] == ["demo-task-2", "demo-task-3"]
+    assert session.added[0].queue_key == "google/gemini-3.1-pro-preview"
+    assert session.added[1].queue_key == "anthropic/claude-sonnet-4-6"
+    assert all(trial.status == TrialStatus.QUEUED for trial in session.added)
+
+    assert task.status == TaskStatus.RUNNING
+    assert task.finished_at is None
+    assert task.verdict is None
+    assert task.verdict_status is None
+    assert task.verdict_error is None
+    assert task.verdict_started_at is None
+    assert task.verdict_finished_at is None
+    assert session.refreshed == [(task, ["trials"])]

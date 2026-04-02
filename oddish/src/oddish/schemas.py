@@ -162,7 +162,20 @@ class TaskSweepSubmission(BaseModel):
         }
     """
 
-    task_id: str = Field(..., description="Task ID from /tasks/upload")
+    task_id: str = Field(
+        ...,
+        description=(
+            "Task ID from /tasks/upload, or an existing task ID when "
+            "append_to_task is true"
+        ),
+    )
+    append_to_task: bool = Field(
+        False,
+        description=(
+            "If true, append new trials to an existing task instead of creating "
+            "a new task row"
+        ),
+    )
     name: str | None = Field(
         None,
         description="Human-readable task name (derived from task_id if not provided)",

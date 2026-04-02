@@ -4,6 +4,7 @@ from collections import Counter
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import delete, select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,10 +41,12 @@ from oddish.api.endpoints import list_tasks_core
 from oddish.db import (
     ExperimentModel,
     TaskModel,
+    TaskStatus,
     TrialModel,
     get_session,
 )
 from oddish.queue import (
+    append_trials_to_task,
     cancel_task_runs,
     create_task,
 )
@@ -157,18 +160,99 @@ async def create_task_sweep(
     auth.require_scope(APIKeyScope.TASKS)
 
     validate_sweep_submission(submission)
-    task_path, task_s3_key = await resolve_task_storage(submission.task_id)
     _apply_github_attribution(submission)
-    trials = build_trial_specs_from_sweep(
-        submission,
-        default_environment=get_default_cloud_environment(),
-        allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
-    )
-    expanded = build_task_submission_from_sweep(
-        submission, task_path=task_path, trials=trials
-    )
 
     async with get_session() as session:
+        if submission.append_to_task:
+            if submission.experiment_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Cannot set experiment_id when appending to an existing task"
+                    ),
+                )
+
+            task = await get_task_for_org_core(
+                session, task_id=submission.task_id, org_id=auth.org_id
+            )
+            if task.status in (TaskStatus.ANALYZING, TaskStatus.VERDICT_PENDING):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Cannot append trials while task analysis or verdict "
+                        "is in progress"
+                    ),
+                )
+            if submission.run_analysis and not task.run_analysis:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Cannot enable run_analysis when appending to a task "
+                        "that was created without it"
+                    ),
+                )
+
+            existing_env_result = await session.execute(
+                select(TrialModel.environment)
+                .where(
+                    TrialModel.task_id == task.id,
+                    TrialModel.environment.is_not(None),
+                )
+                .order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
+                .limit(1)
+            )
+            existing_environment = existing_env_result.scalar_one_or_none()
+            default_environment = (
+                EnvironmentType(existing_environment)
+                if existing_environment
+                else get_default_cloud_environment()
+            )
+
+            trials = build_trial_specs_from_sweep(
+                submission,
+                default_environment=default_environment,
+                allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
+            )
+            append_submission = submission.model_copy(
+                update={
+                    "name": task.name,
+                    "priority": task.priority,
+                    "experiment_id": task.experiment_id,
+                    "tags": task.tags or {},
+                    "run_analysis": task.run_analysis,
+                    "user": task.user,
+                }
+            )
+            expanded = build_task_submission_from_sweep(
+                append_submission, task_path=task.task_path, trials=trials
+            )
+            new_trials = await append_trials_to_task(
+                session, task=task, submission=expanded
+            )
+            await _maybe_publish_experiment(session, task, submission, auth)
+            await session.commit()
+
+            provider_counts: Counter[str] = Counter(t.provider for t in new_trials)
+            return TaskResponse(
+                id=task.id,
+                name=task.name,
+                status=task.status,
+                priority=task.priority,
+                trials_count=len(new_trials),
+                providers=dict(provider_counts),
+                created_at=task.created_at,
+            )
+
+        task_path, task_s3_key = await resolve_task_storage(submission.task_id)
+        trials = build_trial_specs_from_sweep(
+            submission,
+            default_environment=get_default_cloud_environment(),
+            allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
+        )
+        expanded = build_task_submission_from_sweep(
+            submission, task_path=task_path, trials=trials
+        )
+
         # Pass org_id to create_task - it propagates to experiment and trials
         try:
             task = await create_task(
