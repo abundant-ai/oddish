@@ -24,6 +24,7 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialHookEvent
 from harbor.models.job.result import JobResult
 
+from oddish.config import settings
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 
@@ -482,6 +483,12 @@ async def run_harbor_trial_async(
         model=model,
         raw_harbor_config=raw,
     )
+
+    # Inject Bedrock project tag for AWS cost allocation (if configured).
+    if settings.bedrock_project_tag:
+        agent_config.env.setdefault(
+            "BEDROCK_PROJECT_TAG", settings.bedrock_project_tag
+        )
 
     config = JobConfig(
         tasks=[TaskConfig(path=effective_task_path)],
