@@ -40,6 +40,7 @@ class PreparedTrialRun:
     trial_model: str
     trial_environment: str | None
     trial_harbor_config: dict | None
+    task_tags: dict | None
 
 
 @dataclass(slots=True)
@@ -228,6 +229,7 @@ async def _prepare_trial_run(
             trial_model=trial_model,
             trial_environment=trial_environment,
             trial_harbor_config=trial_harbor_config,
+            task_tags=task.tags if task else None,
         )
 
 
@@ -513,6 +515,7 @@ async def _execute_trial(
             hook_callback=partial(_handle_harbor_event, trial_id=trial_id),
             trial_id=trial_id,
             harbor_config=prepared_trial.trial_harbor_config,
+            task_tags=prepared_trial.task_tags,
         )
     except asyncio.CancelledError:
         # CancelledError inherits from BaseException, not Exception, so must be caught explicitly.
