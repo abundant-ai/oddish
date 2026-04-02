@@ -296,7 +296,10 @@ async def retry_trial_core(
     queue_key = trial.queue_key or settings.get_queue_key_for_trial(
         trial.agent, trial.model
     )
-    await enqueue_trial(session, trial_id, queue_key, priority=pgq_priority)
+    await enqueue_trial(
+        session, trial_id, queue_key,
+        priority=pgq_priority, org_id=trial.org_id, task_id=trial.task_id,
+    )
 
     # Move completed tasks back to running once a trial is requeued.
     if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):

@@ -81,22 +81,34 @@ async def enqueue_trial(
     trial_id: str,
     queue_key: str,
     priority: int = 0,
+    org_id: str | None = None,
+    task_id: str | None = None,
 ) -> None:
     """Enqueue a trial job to PGQueuer *within the current DB transaction*.
 
     This must run in the same transaction as `TaskModel`/`TrialModel` inserts.
     Otherwise, a worker can dequeue the PGQueuer job before the trial row is
     committed and permanently "drop" the job (leaving the trial stuck QUEUED).
+
+    ``org_id`` and ``task_id`` are stored in the payload so the fair-dequeue
+    query can determine ownership without extra joins.  They are optional for
+    backwards compatibility; the dequeue query falls back to a trials-table
+    lookup when they are absent.
     """
     resolved_queue_key = settings.normalize_queue_key(queue_key)
+    payload: dict[str, object] = {
+        "job_type": "trial",
+        "trial_id": trial_id,
+        "queue_key": resolved_queue_key,
+    }
+    if org_id is not None:
+        payload["org_id"] = org_id
+    if task_id is not None:
+        payload["task_id"] = task_id
     await _enqueue_job(
         session,
         entrypoint=resolved_queue_key,
-        payload={
-            "job_type": "trial",
-            "trial_id": trial_id,
-            "queue_key": resolved_queue_key,
-        },
+        payload=payload,
         priority=priority,
     )
 
@@ -156,6 +168,8 @@ async def _ensure_trials_have_pgqueuer_rows(
     *,
     trials_to_enqueue: list[tuple[str, str]],
     priority: int,
+    org_id: str | None = None,
+    task_id: str | None = None,
 ) -> int:
     """Backfill any missing queued PGQueuer rows before commit.
 
@@ -185,7 +199,10 @@ async def _ensure_trials_have_pgqueuer_rows(
     for trial_id, queue_key in trials_to_enqueue:
         if trial_id in present_trial_ids:
             continue
-        await enqueue_trial(session, trial_id, queue_key, priority=priority)
+        await enqueue_trial(
+            session, trial_id, queue_key,
+            priority=priority, org_id=org_id, task_id=task_id,
+        )
         inserted += 1
 
     return inserted
@@ -661,12 +678,21 @@ async def create_task(
 
     # Enqueue all trials to PGQueuer
     for trial_id, queue_key in trials_to_enqueue:
-        await enqueue_trial(session, trial_id, queue_key, priority=pgq_priority)
+        await enqueue_trial(
+            session,
+            trial_id,
+            queue_key,
+            priority=pgq_priority,
+            org_id=org_id,
+            task_id=task_id,
+        )
 
     missing_rows_backfilled = await _ensure_trials_have_pgqueuer_rows(
         session,
         trials_to_enqueue=trials_to_enqueue,
         priority=pgq_priority,
+        org_id=org_id,
+        task_id=task_id,
     )
     if missing_rows_backfilled > 0:
         print(

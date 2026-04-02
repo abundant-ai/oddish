@@ -4,13 +4,11 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
-from datetime import timedelta
 from uuid import UUID, uuid4
 
 import asyncpg
 from pgqueuer.models import Job, TracebackRecord
 from pgqueuer.qb import QueryQueueBuilder
-from pgqueuer.queries import EntrypointExecutionParameter, Queries
 
 from oddish.config import settings
 from oddish.workers.queue.analysis_handler import run_analysis_job
@@ -24,6 +22,72 @@ _QUEUE_LOG_TABLE = _QUEUE_QB.settings.queue_table_log
 _QUEUE_STATUS_TYPE = _QUEUE_QB.settings.queue_status_type
 
 IdHook = Callable[[str], Awaitable[None]]
+
+# ---------------------------------------------------------------------------
+# Fair dequeue SQL
+#
+# Replaces PGQueuer's built-in FIFO dequeue with least-loaded-first
+# scheduling so one user can't monopolize the queue.
+#
+# Strategy (within a single queue_key / entrypoint):
+#   1. Stale picked jobs (past retry timer) get top priority
+#   2. HIGH-priority jobs before LOW-priority jobs
+#   3. Among same-priority jobs, prefer the *user* with fewer running trials
+#   4. FIFO within a user
+#
+# Fairness key = COALESCE(tasks.created_by_user_id, tasks.user):
+#   - Hosted: created_by_user_id (Clerk user ID) distinguishes individuals
+#   - OSS:    tasks.user (submission label) is the fallback
+#   Users within the same org get fair shares; users across orgs do too.
+# ---------------------------------------------------------------------------
+_FAIR_DEQUEUE_SQL = f"""
+WITH updated AS (
+    UPDATE {_QUEUE_TABLE}
+    SET status = 'picked',
+        updated = NOW(),
+        heartbeat = NOW(),
+        queue_manager_id = $2
+    WHERE id = (
+        SELECT q.id
+        FROM {_QUEUE_TABLE} q
+        LEFT JOIN trials t ON t.id = (
+            CASE WHEN q.payload IS NOT NULL
+                 THEN convert_from(q.payload, 'UTF8')::jsonb ->> 'trial_id'
+            END
+        )
+        LEFT JOIN tasks tk ON tk.id = t.task_id
+        LEFT JOIN (
+            SELECT COALESCE(tk2.created_by_user_id, tk2.user) AS fairness_key,
+                   COUNT(*) AS running_count
+            FROM trials tr
+            JOIN tasks tk2 ON tk2.id = tr.task_id
+            WHERE tr.status = 'running' AND tr.queue_key = $1
+            GROUP BY COALESCE(tk2.created_by_user_id, tk2.user)
+        ) rpg ON rpg.fairness_key = COALESCE(tk.created_by_user_id, tk.user)
+        WHERE q.entrypoint = $1
+          AND q.execute_after < NOW()
+          AND (
+              q.status = 'queued'
+              OR (q.status = 'picked'
+                  AND $3 > interval '0'
+                  AND q.heartbeat < NOW() - $3)
+          )
+        ORDER BY
+            CASE WHEN q.status = 'picked' THEN 0 ELSE 1 END,
+            q.priority DESC,
+            COALESCE(rpg.running_count, 0) ASC,
+            q.id ASC
+        LIMIT 1
+        FOR UPDATE OF q SKIP LOCKED
+    )
+    RETURNING *
+),
+_log AS (
+    INSERT INTO {_QUEUE_LOG_TABLE} (job_id, status, entrypoint, priority)
+    SELECT id, status, entrypoint, priority FROM updated
+)
+SELECT * FROM updated;
+"""
 
 
 def _job_owner(job: Job) -> UUID:
@@ -40,26 +104,26 @@ async def _open_connection() -> asyncpg.Connection:
 
 
 async def claim_single_job(queue_key: str) -> Job | None:
-    """Claim at most one job without keeping the DB connection open."""
+    """Claim at most one job using fair round-robin scheduling.
+
+    Uses least-loaded-first ordering: the job chosen belongs to the org/task
+    group with the fewest currently running trials in this queue.  Within a
+    group, priority then FIFO ordering is preserved.  Stale picked jobs (past
+    the retry timer) are always prioritized over new queued jobs.
+    """
     retry_timer = timedelta(minutes=settings.trial_retry_timer_minutes)
     connection = await _open_connection()
     try:
-        queries = Queries.from_asyncpg_connection(connection)
-        jobs = await queries.dequeue(
-            batch_size=1,
-            entrypoints={
-                queue_key: EntrypointExecutionParameter(
-                    retry_after=retry_timer,
-                    serialized=False,
-                    concurrency_limit=1,
-                )
-            },
-            queue_manager_id=uuid4(),
-            global_concurrency_limit=1,
+        qmid = uuid4()
+        row = await connection.fetchrow(
+            _FAIR_DEQUEUE_SQL,
+            queue_key,
+            qmid,
+            retry_timer,
         )
-        if not jobs:
+        if row is None:
             return None
-        job = jobs[0]
+        job = Job.model_validate(dict(row))
         _job_owner(job)
         return job
     finally:
