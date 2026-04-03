@@ -6,10 +6,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import asyncpg
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore[attr-defined]
+from sqlalchemy.orm import ORMExecuteState
 from oddish.config import settings
 from oddish.db.models import Base
 
@@ -54,6 +55,38 @@ def _create_session_maker(
 
 engine = _create_engine()
 async_session_maker = _create_session_maker(engine)
+
+
+# ---------------------------------------------------------------------------
+# Soft-delete filter: automatically add `deleted_at IS NULL` to all SELECT
+# queries on models that inherit from Base (which have a deleted_at column).
+# To bypass this filter (e.g. for admin/restore queries), use:
+#   session.execute(stmt.execution_options(include_deleted=True))
+# ---------------------------------------------------------------------------
+
+
+@event.listens_for(AsyncSession, "do_orm_execute")
+def _apply_soft_delete_filter(execute_state: ORMExecuteState) -> None:
+    if not execute_state.is_select:
+        return
+    if execute_state.execution_options.get("include_deleted", False):
+        return
+
+    # Collect all Base-derived entities in the statement and add filters.
+    # This covers select(), session.get(), and relationship loads.
+    mapped_entities = set()
+    try:
+        for column_desc in execute_state.statement.column_descriptions:
+            entity = column_desc.get("entity")
+            if entity is not None and issubclass(entity, Base):
+                mapped_entities.add(entity)
+    except Exception:
+        return
+
+    if mapped_entities:
+        conditions = [e.deleted_at.is_(None) for e in mapped_entities]
+        execute_state.statement = execute_state.statement.where(*conditions)
+
 
 # Global connection pool for asyncpg (used by queue workers)
 _pool: asyncpg.Pool | None = None

@@ -7,7 +7,7 @@ import json
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text, select, delete
+from sqlalchemy import text, select, delete, update
 from typing import cast
 import uvicorn
 from rich.console import Console
@@ -318,13 +318,19 @@ async def cancel_task(task_id: str):
 
 @api.delete("/tasks/{task_id}")
 async def delete_task(task_id: str):
-    """Delete a task and its trials."""
+    """Soft-delete a task and its trials."""
     async with get_session() as session:
         task = await session.get(TaskModel, task_id)
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        await session.delete(task)
+        now = utcnow()
+        await session.execute(
+            update(TrialModel)
+            .where(TrialModel.task_id == task.id)
+            .values(deleted_at=now)
+        )
+        task.deleted_at = now
         await session.commit()
 
     return {"status": "success", "deleted": {"task_id": task_id}}
@@ -332,7 +338,7 @@ async def delete_task(task_id: str):
 
 @api.delete("/experiments/{experiment_id}")
 async def delete_experiment(experiment_id: str):
-    """Delete an experiment and all associated tasks/trials."""
+    """Soft-delete an experiment and all associated tasks/trials."""
     async with get_session() as session:
         experiment = await session.get(ExperimentModel, experiment_id)
         if not experiment:
@@ -340,6 +346,7 @@ async def delete_experiment(experiment_id: str):
                 status_code=404, detail=f"Experiment {experiment_id} not found"
             )
 
+        now = utcnow()
         result = await session.execute(
             select(TaskModel.id).where(TaskModel.experiment_id == experiment_id)
         )
@@ -347,11 +354,17 @@ async def delete_experiment(experiment_id: str):
 
         if task_ids:
             await session.execute(
-                delete(TrialModel).where(TrialModel.task_id.in_(task_ids))
+                update(TrialModel)
+                .where(TrialModel.task_id.in_(task_ids))
+                .values(deleted_at=now)
             )
-            await session.execute(delete(TaskModel).where(TaskModel.id.in_(task_ids)))
+            await session.execute(
+                update(TaskModel)
+                .where(TaskModel.id.in_(task_ids))
+                .values(deleted_at=now)
+            )
 
-        await session.delete(experiment)
+        experiment.deleted_at = now
         await session.commit()
 
     return {
