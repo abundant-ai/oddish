@@ -159,7 +159,6 @@ function useDashboardExperiments(
 
   return {
     experiments: data?.experiments ?? [],
-    experimentsTotal: data?.experiments_total ?? 0,
     hasMoreExperiments: data?.experiments_has_more ?? false,
     swrKey,
     error,
@@ -892,7 +891,6 @@ function UsageOverviewCard({
 
 function RecentTasksCard({
   experiments,
-  totalExperiments,
   searchQuery,
   onSearchQueryChange,
   statusFilter,
@@ -907,7 +905,6 @@ function RecentTasksCard({
   currentExperimentsPage,
 }: {
   experiments: DashboardExperiment[];
-  totalExperiments: number;
   searchQuery: string;
   onSearchQueryChange: (value: string) => void;
   statusFilter: string;
@@ -969,7 +966,7 @@ function RecentTasksCard({
         <div className="space-y-1">
           <CardTitle className="text-base">Recent Experiments</CardTitle>
           <div className="text-[11px] text-muted-foreground">
-            Showing {experiments.length} of {totalExperiments}
+            Showing {experiments.length}
             {" • "}
             Page {currentExperimentsPage}
             {isPageTransitioning ? " • Loading..." : ""}
@@ -1022,7 +1019,7 @@ function RecentTasksCard({
           </Alert>
         ) : isLoading && experiments.length === 0 ? (
           <p className="text-muted-foreground">Loading...</p>
-        ) : !isLoading && totalExperiments === 0 && !hasFilters ? (
+        ) : !isLoading && experiments.length === 0 && !hasMoreExperiments && !hasFilters ? (
           <EmptyExperimentsState />
         ) : experiments.length === 0 ? (
           <div className="py-8 text-center text-muted-foreground">
@@ -1258,7 +1255,6 @@ export function DashboardClient({
   );
   const {
     experiments,
-    experimentsTotal,
     hasMoreExperiments,
     swrKey: experimentsSwrKey,
     error: experimentsError,
@@ -1274,6 +1270,14 @@ export function DashboardClient({
   );
   const currentExperimentsPage =
     Math.floor(experimentsOffset / EXPERIMENTS_PAGE_SIZE) + 1;
+  const isDefaultExperimentsEmpty =
+    experiments.length === 0 &&
+    !hasMoreExperiments &&
+    !isExperimentsLoading &&
+    !experimentsError &&
+    currentExperimentsPage === 1 &&
+    deferredSearchQuery.trim().length === 0 &&
+    statusFilter === "all";
 
   useEffect(() => {
     setExperimentsOffset(0);
@@ -1299,9 +1303,7 @@ export function DashboardClient({
 
   return (
     <div className="space-y-4">
-      {experimentsTotal === 0 && !isExperimentsLoading && !experimentsError && (
-        <FirstRunCard />
-      )}
+      {isDefaultExperimentsEmpty && <FirstRunCard />}
       <UsageOverviewCard
         queues={queues}
         modelUsage={modelUsage}
@@ -1314,7 +1316,6 @@ export function DashboardClient({
       {showRecentTasks ? (
         <RecentTasksCard
           experiments={experiments}
-          totalExperiments={experimentsTotal}
           searchQuery={searchQuery}
           onSearchQueryChange={setSearchQuery}
           statusFilter={statusFilter}

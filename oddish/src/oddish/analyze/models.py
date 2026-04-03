@@ -187,6 +187,7 @@ class TaskVerdict:
     is_good: bool
     confidence: Literal["high", "medium", "low"]
     primary_issue: str | None
+    reasoning: str | None = None
     recommendations: list[str] = field(default_factory=list)
     task_problem_count: int = 0
     agent_problem_count: int = 0
@@ -197,5 +198,5 @@ class TaskVerdict:
 
     def summary(self) -> str:
         if self.is_good:
-            return f"GOOD TASK (confidence: {self.confidence})"
+            return self.reasoning or f"GOOD TASK (confidence: {self.confidence})"
         return f"NEEDS REVIEW: {self.primary_issue}"
