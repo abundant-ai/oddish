@@ -334,6 +334,7 @@ async def _store_trial_results(
             task = await session.get(TaskModel, trial.task_id)
             if task and task.run_analysis and trial.analysis_status is None:
                 trial.analysis_status = AnalysisStatus.QUEUED
+                trial.analysis_modal_function_call_id = None
                 console.print(f"[cyan]Queued analysis for {trial_id}[/cyan]")
 
             # Check if all trials done → transition task status

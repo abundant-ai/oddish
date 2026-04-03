@@ -927,27 +927,23 @@ export function ExperimentTrialsTable({
     setCancelError(null);
 
     try {
-      const results = await Promise.allSettled(
-        selectedCancellableTasks.map(async (task) => {
-          const res = await fetch(`/api/tasks/${task.id}/cancel`, {
-            method: "POST",
-          });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            throw new Error(
-              data.detail || data.error || "Failed to cancel task",
-            );
-          }
-        }),
-      );
-
-      const failures = results.filter((result) => result.status === "rejected");
-      if (failures.length > 0) {
-        setCancelError(`Failed to cancel ${failures.length} task(s).`);
-      } else {
-        setCancelError(null);
+      const taskIds = selectedCancellableTasks.map((task) => task.id);
+      const res = await fetch(`/api/tasks/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_ids: taskIds }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || data.error || "Failed to cancel tasks");
       }
+
+      setCancelError(null);
       onRerun?.(selectedCancellableTasks.map((task) => task.id));
+    } catch (error) {
+      setCancelError(
+        error instanceof Error ? error.message : "Failed to cancel tasks",
+      );
     } finally {
       setIsCancellingSelected(false);
     }

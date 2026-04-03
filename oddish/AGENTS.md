@@ -174,7 +174,7 @@ uv run python -m oddish.api --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/cla
 | POST | `/tasks/sweep` | Expand a sweep into a task plus trials |
 | GET | `/tasks` | List tasks |
 | GET | `/tasks/{task_id}` | Fetch a task with trials |
-| POST | `/tasks/{task_id}/cancel` | Cancel in-flight runs without deleting data |
+| POST | `/tasks/cancel` | Cancel many tasks in one request |
 | DELETE | `/tasks/{task_id}` | Delete a task and its trials |
 | POST | `/tasks/{task_id}/analysis/retry` | Queue or rerun task-wide analysis jobs |
 | POST | `/tasks/{task_id}/verdict/retry` | Queue or rerun a task verdict |
@@ -186,11 +186,6 @@ uv run python -m oddish.api --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/cla
 | GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
 
 Remote APIs require `ODDISH_API_KEY`.
-
-Trial-bearing task responses now include a live `queue_info` snapshot for
-queued/retrying trials so UIs can show current queue position, queued depth,
-running count, and configured concurrency. Treat it as advisory state: the
-fair scheduler can reshuffle positions as other trials start or finish.
 
 ## Configuration
 

@@ -442,6 +442,16 @@ class StorageClient:
                 keys.append(obj["Key"])
         return keys
 
+    async def prefix_exists(self, prefix: str) -> bool:
+        """Return whether at least one object exists for a prefix."""
+        await self._ensure_client()
+        response = await self._s3.list_objects_v2(
+            Bucket=settings.s3_bucket,
+            Prefix=prefix,
+            MaxKeys=1,
+        )
+        return bool(response.get("Contents"))
+
     async def list_objects_all(self, prefix: str) -> list[dict]:
         """List all objects with metadata (key, size, last_modified) for a given prefix."""
         await self._ensure_client()

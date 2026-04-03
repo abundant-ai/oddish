@@ -9,7 +9,7 @@ Current app surface:
 - `/` public landing page for signed-out users; signed-in users are redirected to `/dashboard`
 - `/dashboard` main dashboard and experiment entrypoint
 - `/experiments` base page directing users to select an experiment
-- `/experiments/[experiment]` experiment detail, task and trial inspection, logs, results, files, share controls, and **cancel** for in-flight work (task drawer **Cancel (N)** or experiment table bulk **Cancel** when tasks are selected; same as `POST /tasks/{task_id}/cancel`—stops all active trials on each task)
+- `/experiments/[experiment]` experiment detail, task and trial inspection, logs, results, files, share controls, and **cancel** for in-flight work (task drawer **Cancel (N)** or experiment table bulk **Cancel** when tasks are selected; both use `POST /tasks/cancel` with one or more task ids)
 - `/settings` organization management and API key management
 - `/admin` worker queues, queue slots, queue health, and orphaned state monitoring
 - `/share/[token]` read-only public experiment view
@@ -135,7 +135,7 @@ If you want backend JWTs to include org context, configure a Clerk JWT template 
 The frontend proxies backend requests through `src/app/api/*`. Main groups:
 
 - `/api/dashboard` for dashboard data
-- `/api/tasks/*` for task listing, task detail, trials, files, and `POST /api/tasks/[task_id]/cancel` (proxies to backend `POST /tasks/{task_id}/cancel`)
+- `/api/tasks/*` for task listing, task detail, trials, files, and `POST /api/tasks/cancel` (proxies to backend `POST /tasks/cancel`)
 - `/api/trials/*` for trial logs, structured logs, result payloads, retries, trajectories, and files
 - `/api/experiments/*` for experiment detail, task listing, publish, unpublish, and share
 - `/api/settings/api-keys*` for API key management

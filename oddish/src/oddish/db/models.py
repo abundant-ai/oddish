@@ -188,6 +188,10 @@ class TaskModel(Base):
     verdict_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Modal function call ID for a running verdict worker (hosted only)
+    verdict_modal_function_call_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
 
     # Relationships
     experiment: Mapped["ExperimentModel"] = relationship(  # type: ignore[assignment]
@@ -305,6 +309,10 @@ class TrialModel(Base):
     )
     analysis_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # Modal function call ID for a running analysis worker (hosted only)
+    analysis_modal_function_call_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
     )
 
     # Relationships
