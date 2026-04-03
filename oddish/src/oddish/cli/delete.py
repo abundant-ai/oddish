@@ -9,7 +9,6 @@ from rich.console import Console
 from oddish.cli.config import (
     get_api_url,
     get_auth_headers,
-    is_modal_api_url,
     require_api_key,
 )
 
@@ -57,12 +56,6 @@ def delete(
     if not task_id and not experiment_id:
         console.print(
             "[yellow]Provide a task ID or --experiment to delete.[/yellow]"
-        )
-        raise typer.Exit(1)
-
-    if is_modal_api_url(api_url):
-        console.print(
-            "[yellow]Cleanup is not available for hosted Oddish instances.[/yellow]"
         )
         raise typer.Exit(1)
 

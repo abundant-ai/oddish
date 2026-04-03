@@ -563,15 +563,21 @@ async def delete_task(
 
     async with get_session() as session:
         task = await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
-        trial_ids_result = await session.execute(
-            select(TrialModel.id).where(TrialModel.task_id == task.id)
-        )
-        trial_ids = [row[0] for row in trial_ids_result.all()]
 
-        await session.delete(task)
+        # Use explicit SQL deletion to avoid ORM relationship/cascade issues
+        trials_result = await session.execute(
+            delete(TrialModel).where(TrialModel.task_id == task.id)
+        )
+        await session.execute(
+            delete(TaskModel).where(TaskModel.id == task.id)
+        )
         await session.commit()
 
-    return {"status": "success", "deleted": {"task_id": task_id}}
+    return {
+        "status": "success",
+        "message": f"Task deleted ({trials_result.rowcount} trials removed)",
+        "deleted": {"task_id": task_id},
+    }
 
 
 @router.post("/tasks/{task_id}/analysis/retry")
