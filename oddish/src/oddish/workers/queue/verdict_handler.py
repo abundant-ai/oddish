@@ -109,6 +109,7 @@ async def run_verdict_job(task_id: str, queue_key: str) -> None:
             "is_good": verdict.is_good,
             "confidence": verdict.confidence,
             "primary_issue": verdict.primary_issue,
+            "reasoning": verdict.reasoning,
             "recommendations": verdict.recommendations,
             "task_problem_count": verdict.task_problem_count,
             "agent_problem_count": verdict.agent_problem_count,

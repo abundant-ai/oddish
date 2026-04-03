@@ -321,6 +321,13 @@ class TrialModel(Base):
         # Composite index for efficient queue stats aggregation (no JOIN needed)
         Index("idx_trials_org_provider_status", "org_id", "provider", "status"),
         Index("idx_trials_org_queue_key_status", "org_id", "queue_key", "status"),
+        Index(
+            "idx_trials_dashboard_usage",
+            "org_id",
+            "created_at",
+            "model",
+            "provider",
+        ),
     )
 
 

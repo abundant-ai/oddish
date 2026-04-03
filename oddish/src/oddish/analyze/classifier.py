@@ -416,6 +416,7 @@ def _compute_task_verdict_openai(
             is_good=False,
             confidence="low",
             primary_issue="No trials to analyze",
+            reasoning="No verdict could be computed because the task has no analyzed trials yet.",
             recommendations=["Run agent trials first"],
         )
 
@@ -515,6 +516,7 @@ def _compute_task_verdict_openai(
         is_good=verdict_model.is_good,
         confidence=verdict_model.confidence,
         primary_issue=verdict_model.primary_issue,
+        reasoning=verdict_model.reasoning,
         recommendations=verdict_model.recommendations,
         task_problem_count=task_problem_count,
         agent_problem_count=agent_problem_count,

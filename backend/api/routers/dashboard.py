@@ -1,23 +1,20 @@
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import selectinload
 
+from ..dashboard_experiments import load_dashboard_experiments
 from oddish.api.helpers import build_task_status_responses_from_counts
 from oddish.config import normalize_model_id
 from auth import APIKeyScope, AuthContext, require_auth
 from oddish.db import (
-    ExperimentModel,
     TaskModel,
-    TaskStatus,
     TrialModel,
-    VerdictStatus,
     get_session,
 )
 from oddish.db.models import TrialStatus
@@ -326,286 +323,16 @@ async def get_dashboard(
         # 4. Experiment table data (server-side pagination + search)
         # =====================================================================
         experiments_response = []
-        experiments_total = 0
         experiments_has_more = False
         if include_experiments:
-            task_agg = (
-                select(
-                    TaskModel.experiment_id.label("experiment_id"),
-                    func.max(ExperimentModel.name).label("experiment_name"),
-                    func.max(
-                        case((ExperimentModel.is_public.is_(True), 1), else_=0)
-                    ).label("experiment_is_public"),
-                    func.count(TaskModel.id).label("task_count"),
-                    func.count(case((TaskModel.run_analysis.is_(True), 1))).label(
-                        "analysis_tasks"
-                    ),
-                    func.count(
-                        case(
-                            (
-                                and_(
-                                    TaskModel.verdict_status == VerdictStatus.SUCCESS,
-                                    TaskModel.verdict["is_good"].astext == "true",
-                                ),
-                                1,
-                            )
-                        )
-                    ).label("verdict_good"),
-                    func.count(
-                        case(
-                            (
-                                and_(
-                                    TaskModel.verdict_status == VerdictStatus.SUCCESS,
-                                    TaskModel.verdict["is_good"].astext == "false",
-                                ),
-                                1,
-                            )
-                        )
-                    ).label("verdict_needs_review"),
-                    func.count(
-                        case((TaskModel.verdict_status == VerdictStatus.FAILED, 1))
-                    ).label("verdict_failed"),
-                    func.count(
-                        case(
-                            (
-                                and_(
-                                    TaskModel.run_analysis.is_(True),
-                                    or_(
-                                        TaskModel.verdict_status.is_(None),
-                                        TaskModel.verdict_status.in_(
-                                            [
-                                                VerdictStatus.PENDING,
-                                                VerdictStatus.QUEUED,
-                                                VerdictStatus.RUNNING,
-                                            ]
-                                        ),
-                                        TaskModel.status.in_(
-                                            [
-                                                TaskStatus.ANALYZING,
-                                                TaskStatus.VERDICT_PENDING,
-                                            ]
-                                        ),
-                                    ),
-                                ),
-                                1,
-                            )
-                        )
-                    ).label("verdict_pending"),
-                    func.max(TaskModel.created_at).label("last_created_at"),
-                )
-                .join(ExperimentModel, ExperimentModel.id == TaskModel.experiment_id)
-                .where(
-                    TaskModel.org_id == auth.org_id,
-                    ExperimentModel.org_id == auth.org_id,
-                )
-                .group_by(TaskModel.experiment_id)
-                .subquery()
+            experiments_response, experiments_has_more = await load_dashboard_experiments(
+                session,
+                org_id=auth.org_id,
+                experiments_limit=experiments_limit,
+                experiments_offset=experiments_offset,
+                experiments_query=experiments_query,
+                experiments_status=experiments_status,
             )
-
-            trial_agg = (
-                select(
-                    TaskModel.experiment_id.label("experiment_id"),
-                    func.count(TrialModel.id).label("total_trials"),
-                    func.count(
-                        case((TrialModel.status == TrialStatus.SUCCESS, 1))
-                    ).label("completed_trials"),
-                    func.count(
-                        case((TrialModel.status == TrialStatus.FAILED, 1))
-                    ).label("failed_trials"),
-                    func.count(case((TrialModel.reward == 1, 1))).label(
-                        "reward_success"
-                    ),
-                    func.count(case((TrialModel.reward.isnot(None), 1))).label(
-                        "reward_total"
-                    ),
-                )
-                .join(TaskModel, TaskModel.id == TrialModel.task_id)
-                .where(TaskModel.org_id == auth.org_id)
-                .group_by(TaskModel.experiment_id)
-                .subquery()
-            )
-
-            latest_task_ranked = (
-                select(
-                    TaskModel.experiment_id.label("experiment_id"),
-                    TaskModel.user.label("last_user"),
-                    TaskModel.tags["github_username"].astext.label(
-                        "last_github_username"
-                    ),
-                    TaskModel.tags["github_meta"].astext.label("last_github_meta"),
-                    func.row_number()
-                    .over(
-                        partition_by=TaskModel.experiment_id,
-                        order_by=TaskModel.created_at.desc(),
-                    )
-                    .label("row_number"),
-                )
-                .where(TaskModel.org_id == auth.org_id)
-                .subquery()
-            )
-            latest_task = (
-                select(
-                    latest_task_ranked.c.experiment_id,
-                    latest_task_ranked.c.last_user,
-                    latest_task_ranked.c.last_github_username,
-                    latest_task_ranked.c.last_github_meta,
-                )
-                .where(latest_task_ranked.c.row_number == 1)
-                .subquery()
-            )
-
-            experiment_rows = (
-                select(
-                    task_agg.c.experiment_id,
-                    task_agg.c.experiment_name,
-                    task_agg.c.experiment_is_public,
-                    task_agg.c.task_count,
-                    task_agg.c.analysis_tasks,
-                    task_agg.c.verdict_good,
-                    task_agg.c.verdict_needs_review,
-                    task_agg.c.verdict_failed,
-                    task_agg.c.verdict_pending,
-                    task_agg.c.last_created_at,
-                    func.coalesce(trial_agg.c.total_trials, 0).label("total_trials"),
-                    func.coalesce(trial_agg.c.completed_trials, 0).label(
-                        "completed_trials"
-                    ),
-                    func.coalesce(trial_agg.c.failed_trials, 0).label("failed_trials"),
-                    func.coalesce(trial_agg.c.reward_success, 0).label(
-                        "reward_success"
-                    ),
-                    func.coalesce(trial_agg.c.reward_total, 0).label("reward_total"),
-                    latest_task.c.last_user,
-                    latest_task.c.last_github_username,
-                    latest_task.c.last_github_meta,
-                )
-                .outerjoin(
-                    trial_agg, trial_agg.c.experiment_id == task_agg.c.experiment_id
-                )
-                .outerjoin(
-                    latest_task, latest_task.c.experiment_id == task_agg.c.experiment_id
-                )
-                .subquery()
-            )
-
-            active_trials_expr = (
-                experiment_rows.c.total_trials
-                - experiment_rows.c.completed_trials
-                - experiment_rows.c.failed_trials
-            )
-            filtered_query = select(experiment_rows)
-            filters: list[Any] = []
-
-            normalized_query = (experiments_query or "").strip().lower()
-            if normalized_query:
-                query_like = f"%{normalized_query}%"
-                filters.append(
-                    or_(
-                        func.lower(experiment_rows.c.experiment_name).like(query_like),
-                        func.lower(experiment_rows.c.experiment_id).like(query_like),
-                        func.lower(func.coalesce(experiment_rows.c.last_user, "")).like(
-                            query_like
-                        ),
-                        func.lower(
-                            func.coalesce(
-                                experiment_rows.c.last_github_username,
-                                "",
-                            )
-                        ).like(query_like),
-                    )
-                )
-
-            if experiments_status == "active":
-                filters.append(active_trials_expr > 0)
-            elif experiments_status == "needs-review":
-                filters.append(experiment_rows.c.verdict_needs_review > 0)
-            elif experiments_status == "pending-verdict":
-                filters.append(experiment_rows.c.verdict_pending > 0)
-            elif experiments_status == "failed":
-                filters.append(
-                    or_(
-                        experiment_rows.c.failed_trials > 0,
-                        experiment_rows.c.verdict_failed > 0,
-                    )
-                )
-            elif experiments_status == "completed":
-                filters.append(active_trials_expr <= 0)
-
-            if filters:
-                filtered_query = filtered_query.where(*filters)
-
-            filtered_subquery = filtered_query.subquery()
-            total_result = await session.execute(
-                select(func.count()).select_from(filtered_subquery)
-            )
-            experiments_total = int(total_result.scalar_one() or 0)
-
-            paged_result = await session.execute(
-                select(filtered_subquery)
-                .order_by(filtered_subquery.c.last_created_at.desc())
-                .limit(experiments_limit + 1)
-                .offset(experiments_offset)
-            )
-            paged_rows = paged_result.all()
-            experiments_has_more = len(paged_rows) > experiments_limit
-
-            for row in paged_rows[:experiments_limit]:
-                github_meta = None
-                if row.last_github_meta:
-                    try:
-                        parsed = json.loads(row.last_github_meta)
-                        if isinstance(parsed, dict):
-                            github_meta = parsed
-                    except (TypeError, json.JSONDecodeError):
-                        github_meta = None
-
-                last_author_name = row.last_github_username or row.last_user
-                last_author_source = "github" if row.last_github_username else "api"
-                last_author = (
-                    {"name": last_author_name, "source": last_author_source}
-                    if last_author_name
-                    else None
-                )
-
-                experiments_response.append(
-                    {
-                        "id": row.experiment_id,
-                        "name": row.experiment_name,
-                        "is_public": bool(row.experiment_is_public),
-                        "task_count": int(row.task_count or 0),
-                        "total_trials": int(row.total_trials or 0),
-                        "completed_trials": int(row.completed_trials or 0),
-                        "failed_trials": int(row.failed_trials or 0),
-                        "active_trials": max(
-                            0,
-                            int(row.total_trials or 0)
-                            - int(row.completed_trials or 0)
-                            - int(row.failed_trials or 0),
-                        ),
-                        "reward_success": int(row.reward_success or 0),
-                        "reward_total": int(row.reward_total or 0),
-                        "analysis_tasks": int(row.analysis_tasks or 0),
-                        "verdict_good": int(row.verdict_good or 0),
-                        "verdict_needs_review": int(row.verdict_needs_review or 0),
-                        "verdict_failed": int(row.verdict_failed or 0),
-                        "verdict_pending": int(row.verdict_pending or 0),
-                        "last_created_at": (
-                            row.last_created_at.isoformat()
-                            if row.last_created_at
-                            else None
-                        ),
-                        "last_author": last_author,
-                        "last_pr_url": (
-                            github_meta.get("pr_url") if github_meta else None
-                        ),
-                        "last_pr_title": (
-                            github_meta.get("pr_title") if github_meta else None
-                        ),
-                        "last_pr_number": (
-                            github_meta.get("pr_number") if github_meta else None
-                        ),
-                    }
-                )
 
     response = {
         "queues": queue_stats,
@@ -618,7 +345,6 @@ async def get_dashboard(
         "experiments": experiments_response,
         "experiments_limit": experiments_limit,
         "experiments_offset": experiments_offset,
-        "experiments_total": experiments_total,
         "experiments_has_more": experiments_has_more,
         "cached": False,
     }

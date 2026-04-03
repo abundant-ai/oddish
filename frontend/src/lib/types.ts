@@ -101,6 +101,7 @@ interface TaskVerdict {
   is_good: boolean;
   confidence: "high" | "medium" | "low";
   primary_issue?: string | null;
+  reasoning?: string | null;
   recommendations?: string[];
   task_problem_count?: number;
   agent_problem_count?: number;
@@ -213,7 +214,6 @@ export interface DashboardResponse {
   has_more?: boolean;
   experiments_limit?: number;
   experiments_offset?: number;
-  experiments_total?: number;
   experiments_has_more?: boolean;
   cached: boolean;
 }

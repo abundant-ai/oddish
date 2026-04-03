@@ -1038,6 +1038,7 @@ export function TaskFilesPanel({
     Boolean(verdictSource) &&
     Boolean(verdictSource?.verdict_status || verdictSource?.verdict);
   const taskSummary = verdictSource ?? task;
+  const verdictReasoning = verdictSource?.verdict?.reasoning?.trim() || null;
   const rewardSuccess =
     taskSummary?.reward_success ?? task?.reward_success ?? null;
   const rewardTotal = taskSummary?.reward_total ?? task?.reward_total ?? null;
@@ -1371,7 +1372,13 @@ export function TaskFilesPanel({
                           </span>
                         )}
                       </div>
-                      {verdictSource?.verdict?.primary_issue && (
+                      {verdictSource?.verdict?.is_good && verdictReasoning && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {verdictReasoning}
+                        </p>
+                      )}
+                      {verdictSource?.verdict?.primary_issue &&
+                        verdictSource?.verdict?.is_good === false && (
                         <p className="mt-1 text-xs text-muted-foreground">
                           {verdictSource.verdict.primary_issue}
                         </p>
