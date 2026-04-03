@@ -29,6 +29,25 @@ from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
+
+
+def _repo_from_task_path(task_path: Path) -> str | None:
+    """Extract 'owner/repo' from a task directory name like 'owner__repo-1234'.
+
+    Returns None for non-repo task names (e.g. 'circuit-breaker-resilience').
+    """
+    name = task_path.name
+    if "__" not in name:
+        return None
+    owner, rest = name.split("__", 1)
+    # Strip trailing issue number: "repo-1234" → "repo"
+    # Walk backwards to find where the repo name ends and issue number begins.
+    parts = rest.rsplit("-", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        repo = parts[0]
+    else:
+        repo = rest
+    return f"{owner}/{repo}"
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -493,10 +512,11 @@ async def run_harbor_trial_async(
     # Inject cost-tracking tags into the agent environment.
     # Downstream tools map these to provider-specific mechanisms
     # (e.g. Bedrock requestMetadata, litellm metadata).
-    # Project priority: per-submission tags["project"] > global setting > experiment name.
+    # Project priority: per-submission tag > global setting > repo name > experiment name.
     cost_project = (
         (task_tags or {}).get("project")
         or settings.cost_tag_project
+        or _repo_from_task_path(task_path)
         or experiment_name
     )
     if cost_project:
