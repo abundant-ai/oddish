@@ -44,6 +44,7 @@ interface ExperimentDetailViewProps {
   errorTitle?: string;
   errorDescription?: string;
   headerLeft: React.ReactNode;
+  headerStatus?: React.ReactNode;
   headerRight?: React.ReactNode;
   inlineAlert?: React.ReactNode;
   readOnly?: boolean;
@@ -123,24 +124,30 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
 function ExperimentHeaderMeta({
   isLoading,
   isInitialLoading,
+  summary,
+  headerStatus,
   showPassAtK,
   onToggleShowPassAtK,
   headerRight,
 }: {
   isLoading: boolean;
   isInitialLoading: boolean;
+  summary?: React.ReactNode;
+  headerStatus?: React.ReactNode;
   showPassAtK: boolean;
   onToggleShowPassAtK: () => void;
   headerRight?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex flex-wrap items-center justify-end gap-3">
       {isLoading && (
         <div className="inline-flex items-center gap-1.5 rounded-md border border-border/70 bg-muted/50 px-2 py-1 text-xs text-muted-foreground">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
           <span>{isInitialLoading ? "Loading tasks..." : "Refreshing..."}</span>
         </div>
       )}
+      {headerStatus}
+      {summary}
       <Button
         type="button"
         variant="outline"
@@ -218,6 +225,7 @@ export function ExperimentDetailView({
   errorTitle = "Failed to load experiment",
   errorDescription = "Check the API connection and try again.",
   headerLeft,
+  headerStatus,
   headerRight,
   inlineAlert,
   readOnly = false,
@@ -234,6 +242,7 @@ export function ExperimentDetailView({
   >([]);
   const hydratedFromUrl = useRef(false);
   const isInitialLoading = isLoading && tasksForExperiment.length === 0;
+
   const agentSummaryStorageKey = experimentId
     ? `${AGENT_SUMMARY_STORAGE_PREFIX}${experimentId}`
     : null;
@@ -434,83 +443,97 @@ export function ExperimentDetailView({
 
   return (
     <>
-      <Card>
-        <CardHeader className="py-3">
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
-                {headerLeft}
-                <ExperimentSummaryBar
-                  taskCount={tasksForExperiment.length}
-                  summary={summary}
+      {isInitialLoading ? (
+        <Card>
+          <CardContent className="flex min-h-[240px] items-center justify-center py-10">
+            <div className="inline-flex items-center gap-2 rounded-md border border-border/70 bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Loading experiment...</span>
+            </div>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardHeader className="py-3">
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
+                  {headerLeft}
+                </div>
+                <ExperimentHeaderMeta
+                  isLoading={isLoading}
                   isInitialLoading={isInitialLoading}
+                  headerStatus={headerStatus}
+                  summary={
+                    <ExperimentSummaryBar
+                      taskCount={tasksForExperiment.length}
+                      summary={summary}
+                      isInitialLoading={isInitialLoading}
+                    />
+                  }
+                  showPassAtK={showPassAtK}
+                  onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
+                  headerRight={headerRight}
                 />
               </div>
-              <ExperimentHeaderMeta
-                isLoading={isLoading}
-                isInitialLoading={isInitialLoading}
-                showPassAtK={showPassAtK}
-                onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
-                headerRight={headerRight}
-              />
             </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {hasError ? (
-            <Alert variant="destructive">
-              <AlertTitle>{errorTitle}</AlertTitle>
-              <AlertDescription>{errorDescription}</AlertDescription>
-            </Alert>
-          ) : (
-            <div className="space-y-3">
-              {inlineAlert}
-              <ExperimentTrialsTable
-                tasks={tasksForExperiment}
-                agentSummaries={displayAgentSummaries}
-                modelScopedAgents={displayModelScopedAgents}
-                isLoading={isLoading}
-                isLoadingTrials={isLoadingTrials}
-                showPassAtK={showPassAtK}
-                onTaskDelete={onTaskDelete}
-                onRerun={onRerun}
-                allowRerun={allowRetry}
-                readOnly={readOnly}
-                onTrialSelect={(trial, task, context) => {
-                  const taskIndex = tasksForExperiment.findIndex(
-                    (t) => t.id === task.id,
-                  );
-                  setDrawerState({
-                    isOpen: true,
-                    mode: "trial",
-                    task,
-                    taskIndex: taskIndex >= 0 ? taskIndex : 0,
-                    orderedTasks: tasksForExperiment,
-                    trial,
-                    trialIndex: context.trialIndex,
-                    orderedTrials: context.orderedTrials,
-                    trialGroups: context.trialGroups,
-                  });
-                }}
-                onTaskSelect={(task, context) => {
-                  const { trialGroups, orderedTrials } = buildTrialGroups(task);
-                  setDrawerState({
-                    isOpen: true,
-                    mode: "task",
-                    task,
-                    taskIndex: context.taskIndex,
-                    orderedTasks: context.orderedTasks,
-                    trial: null,
-                    trialIndex: null,
-                    orderedTrials,
-                    trialGroups,
-                  });
-                }}
-              />
-            </div>
-          )}
-        </CardContent>
-      </Card>
+          </CardHeader>
+          <CardContent>
+            {hasError ? (
+              <Alert variant="destructive">
+                <AlertTitle>{errorTitle}</AlertTitle>
+                <AlertDescription>{errorDescription}</AlertDescription>
+              </Alert>
+            ) : (
+              <div className="space-y-3">
+                {inlineAlert}
+                <ExperimentTrialsTable
+                  tasks={tasksForExperiment}
+                  agentSummaries={displayAgentSummaries}
+                  modelScopedAgents={displayModelScopedAgents}
+                  isLoading={isLoading}
+                  isLoadingTrials={isLoadingTrials}
+                  showPassAtK={showPassAtK}
+                  onTaskDelete={onTaskDelete}
+                  onRerun={onRerun}
+                  allowRerun={allowRetry}
+                  readOnly={readOnly}
+                  onTrialSelect={(trial, task, context) => {
+                    const taskIndex = tasksForExperiment.findIndex(
+                      (t) => t.id === task.id,
+                    );
+                    setDrawerState({
+                      isOpen: true,
+                      mode: "trial",
+                      task,
+                      taskIndex: taskIndex >= 0 ? taskIndex : 0,
+                      orderedTasks: tasksForExperiment,
+                      trial,
+                      trialIndex: context.trialIndex,
+                      orderedTrials: context.orderedTrials,
+                      trialGroups: context.trialGroups,
+                    });
+                  }}
+                  onTaskSelect={(task, context) => {
+                    const { trialGroups, orderedTrials } = buildTrialGroups(task);
+                    setDrawerState({
+                      isOpen: true,
+                      mode: "task",
+                      task,
+                      taskIndex: context.taskIndex,
+                      orderedTasks: context.orderedTasks,
+                      trial: null,
+                      trialIndex: null,
+                      orderedTrials,
+                      trialGroups,
+                    });
+                  }}
+                />
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {drawerState && (
         <UnifiedDrawerWrapper

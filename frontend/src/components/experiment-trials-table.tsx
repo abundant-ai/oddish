@@ -368,7 +368,8 @@ export function ExperimentTrialsTable({
     Set<AnalysisLegendKey>
   >(new Set());
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
-  const [copiedTaskId, setCopiedTaskId] = useState<string | null>(null);
+  const [copiedAgentNameKey, setCopiedAgentNameKey] = useState<string | null>(null);
+  const [copiedAgentModelKey, setCopiedAgentModelKey] = useState<string | null>(null);
   const [copiedTable, setCopiedTable] = useState(false);
   const [deleteTargets, setDeleteTargets] = useState<Task[]>([]);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -767,11 +768,19 @@ export function ExperimentTrialsTable({
     setTaskSearch(value);
   };
 
-  const handleCopyTaskName = async (taskId: string, taskName: string) => {
-    await navigator.clipboard.writeText(taskName);
-    setCopiedTaskId(taskId);
-    setTimeout(() => {
-      setCopiedTaskId((prev) => (prev === taskId ? null : prev));
+  const handleCopyAgentName = async (agentKey: string, agentName: string) => {
+    await navigator.clipboard.writeText(agentName);
+    setCopiedAgentNameKey(agentKey);
+    window.setTimeout(() => {
+      setCopiedAgentNameKey((prev) => (prev === agentKey ? null : prev));
+    }, 2000);
+  };
+
+  const handleCopyAgentModel = async (agentKey: string, modelId: string) => {
+    await navigator.clipboard.writeText(modelId);
+    setCopiedAgentModelKey(agentKey);
+    window.setTimeout(() => {
+      setCopiedAgentModelKey((prev) => (prev === agentKey ? null : prev));
     }, 2000);
   };
 
@@ -1640,26 +1649,72 @@ export function ExperimentTrialsTable({
                         </div>
                       ) : (
                         <div className="flex min-w-[60px] flex-col items-center gap-0.5 sm:min-w-[80px] md:min-w-[100px]">
-                          <div className="max-w-[70px] truncate text-[10px] font-bold text-foreground sm:max-w-[110px] sm:text-xs md:max-w-none">
-                            {agent.agent}
-                          </div>
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <div className="flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal text-muted-foreground sm:text-[10px]">
-                                <QueueKeyIcon
-                                  queueKey={agent.queueKey}
-                                  model={agent.model}
-                                  agent={agent.agent}
-                                  size={11}
-                                  className="shrink-0"
-                                />
-                                <span className="min-w-0 truncate">
-                                  {agent.model ?? "—"}
-                                </span>
-                              </div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleCopyAgentName(agent.key, agent.agent)
+                                }
+                                className="max-w-[70px] truncate rounded-sm px-1 text-[10px] font-bold text-foreground transition hover:bg-background/70 hover:text-blue-400 sm:max-w-[110px] sm:text-xs md:max-w-none"
+                                aria-label={`Copy agent name ${agent.agent}`}
+                                title="Copy agent name"
+                              >
+                                {copiedAgentNameKey === agent.key
+                                  ? "Copied"
+                                  : agent.agent}
+                              </button>
                             </TooltipTrigger>
                             <TooltipContent side="bottom">
-                              {agent.model ?? "—"}
+                              {copiedAgentNameKey === agent.key
+                                ? "Copied agent name"
+                                : agent.agent}
+                            </TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              {agent.model ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleCopyAgentModel(agent.key, agent.model!)
+                                  }
+                                  className="flex w-full min-w-0 items-center justify-center gap-1 rounded-sm px-1 font-mono text-[9px] font-normal text-muted-foreground transition hover:bg-background/70 hover:text-foreground sm:text-[10px]"
+                                  aria-label={`Copy model id ${agent.model}`}
+                                  title="Copy model id"
+                                >
+                                  {copiedAgentModelKey === agent.key ? (
+                                    <Check className="h-3 w-3 shrink-0 text-emerald-500" />
+                                  ) : (
+                                    <QueueKeyIcon
+                                      queueKey={agent.queueKey}
+                                      model={agent.model}
+                                      agent={agent.agent}
+                                      size={11}
+                                      className="shrink-0"
+                                    />
+                                  )}
+                                  <span className="min-w-0 truncate">
+                                    {agent.model}
+                                  </span>
+                                </button>
+                              ) : (
+                                <div className="flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal text-muted-foreground sm:text-[10px]">
+                                  <QueueKeyIcon
+                                    queueKey={agent.queueKey}
+                                    model={agent.model}
+                                    agent={agent.agent}
+                                    size={11}
+                                    className="shrink-0"
+                                  />
+                                  <span className="min-w-0 truncate">—</span>
+                                </div>
+                              )}
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom">
+                              {copiedAgentModelKey === agent.key
+                                ? "Copied model id"
+                                : agent.model ?? "—"}
                             </TooltipContent>
                           </Tooltip>
                         </div>
@@ -1773,27 +1828,6 @@ export function ExperimentTrialsTable({
                                 <TooltipContent>View task files</TooltipContent>
                               </Tooltip>
                               <VerdictIndicator task={task} />
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={() =>
-                                      handleCopyTaskName(task.id, task.name)
-                                    }
-                                    className="h-5 w-5 text-muted-foreground hover:text-foreground"
-                                    aria-label="Copy task name"
-                                  >
-                                    {copiedTaskId === task.id ? (
-                                      <Check className="h-3.5 w-3.5 text-emerald-500" />
-                                    ) : (
-                                      <Copy className="h-3.5 w-3.5" />
-                                    )}
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Copy task name</TooltipContent>
-                              </Tooltip>
                             </div>
                           </div>
                         </div>
