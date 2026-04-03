@@ -324,7 +324,9 @@ export function TaskFilesPanel({
   const [isTruncated, setIsTruncated] = useState(false);
   const [fullFileSize, setFullFileSize] = useState<number | null>(null);
   const [loadingFullFile, setLoadingFullFile] = useState(false);
+  const [copiedTaskName, setCopiedTaskName] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
+  const copiedTaskNameTimeoutRef = useRef<number | null>(null);
   const verdictTaskKey =
     isOpen && taskId ? `${baseUrl}/tasks/${taskId}?include_trials=false` : null;
   const { data: verdictTask } = useSWR<Task>(verdictTaskKey, fetcher, {
@@ -1028,12 +1030,40 @@ export function TaskFilesPanel({
     );
   };
 
+  const resolvedTaskId = task?.id ?? taskId ?? "—";
+  const taskName = task?.name ?? resolvedTaskId;
+  useEffect(() => {
+    setCopiedTaskName(false);
+    if (copiedTaskNameTimeoutRef.current !== null) {
+      window.clearTimeout(copiedTaskNameTimeoutRef.current);
+      copiedTaskNameTimeoutRef.current = null;
+    }
+  }, [taskName]);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTaskNameTimeoutRef.current !== null) {
+        window.clearTimeout(copiedTaskNameTimeoutRef.current);
+      }
+    };
+  }, []);
+
   if (!taskId && !filesUrl) {
     return null;
   }
 
-  const resolvedTaskId = task?.id ?? taskId ?? "—";
-  const taskName = task?.name ?? resolvedTaskId;
+  const handleCopyTaskName = async () => {
+    await navigator.clipboard.writeText(taskName);
+    setCopiedTaskName(true);
+    if (copiedTaskNameTimeoutRef.current !== null) {
+      window.clearTimeout(copiedTaskNameTimeoutRef.current);
+    }
+    copiedTaskNameTimeoutRef.current = window.setTimeout(() => {
+      setCopiedTaskName(false);
+      copiedTaskNameTimeoutRef.current = null;
+    }, 2000);
+  };
+
   const showVerdictCard =
     Boolean(verdictSource) &&
     Boolean(verdictSource?.verdict_status || verdictSource?.verdict);
@@ -1112,9 +1142,20 @@ export function TaskFilesPanel({
       <DrawerHeader className="shrink-0 border-b border-border px-4 py-3">
         <div className="mb-2 flex flex-wrap items-start justify-between gap-3 pr-20">
           <div className="min-w-0 flex-1">
-            <DrawerTitle className="truncate font-mono text-base font-semibold">
-              {taskName}
+            <DrawerTitle className="font-mono text-base font-semibold">
+              <button
+                type="button"
+                onClick={handleCopyTaskName}
+                className="block max-w-full truncate text-left transition hover:text-blue-400"
+                title="Copy task name"
+                aria-label={`Copy task name ${taskName}`}
+              >
+                {taskName}
+              </button>
             </DrawerTitle>
+            <div className="mt-1 min-h-3 text-[10px] text-emerald-600">
+              {copiedTaskName ? "Copied to clipboard" : null}
+            </div>
           </div>
         </div>
 

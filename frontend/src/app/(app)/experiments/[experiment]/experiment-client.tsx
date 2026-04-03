@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
 import { useSWRConfig } from "swr";
@@ -12,7 +12,7 @@ import { ExperimentShareButton } from "@/components/experiment-share-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import type { Task } from "@/lib/types";
 import { fetcher } from "@/lib/api";
-import { Beaker, Loader2, Pencil } from "lucide-react";
+import { Beaker, Check, Copy, Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 
 const TRIALS_BATCH_SIZE = 50;
@@ -38,6 +38,8 @@ export function ExperimentClientPage({
   const [nameDraft, setNameDraft] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [isSavingName, setIsSavingName] = useState(false);
+  const [copiedExperimentName, setCopiedExperimentName] = useState(false);
+  const copiedExperimentNameTimeoutRef = useRef<number | null>(null);
 
   const encodedId = experimentId
     ? encodeExperimentRouteParam(experimentId)
@@ -179,6 +181,22 @@ export function ExperimentClientPage({
   }, [initialName, isEditingName]);
 
   useEffect(() => {
+    setCopiedExperimentName(false);
+    if (copiedExperimentNameTimeoutRef.current !== null) {
+      window.clearTimeout(copiedExperimentNameTimeoutRef.current);
+      copiedExperimentNameTimeoutRef.current = null;
+    }
+  }, [displayName]);
+
+  useEffect(() => {
+    return () => {
+      if (copiedExperimentNameTimeoutRef.current !== null) {
+        window.clearTimeout(copiedExperimentNameTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!allTasksUrl) return;
 
     const intervalId = window.setInterval(() => {
@@ -271,6 +289,18 @@ export function ExperimentClientPage({
     await refreshTaskPages();
   };
 
+  const handleCopyExperimentName = async () => {
+    await navigator.clipboard.writeText(displayName);
+    setCopiedExperimentName(true);
+    if (copiedExperimentNameTimeoutRef.current !== null) {
+      window.clearTimeout(copiedExperimentNameTimeoutRef.current);
+    }
+    copiedExperimentNameTimeoutRef.current = window.setTimeout(() => {
+      setCopiedExperimentName(false);
+      copiedExperimentNameTimeoutRef.current = null;
+    }, 2000);
+  };
+
   return (
     <div className="space-y-4">
       {!experimentId ? (
@@ -320,7 +350,20 @@ export function ExperimentClientPage({
                 </div>
               ) : (
                 <div className="flex items-center gap-2">
-                  <div className="text-sm font-medium">{displayName}</div>
+                  <button
+                    type="button"
+                    onClick={handleCopyExperimentName}
+                    className="inline-flex items-center gap-1 rounded-sm px-1 py-0.5 text-sm font-medium transition hover:bg-muted hover:text-blue-400"
+                    aria-label={`Copy experiment name ${displayName}`}
+                    title="Copy experiment name"
+                  >
+                    <span>{displayName}</span>
+                    {copiedExperimentName ? (
+                      <Check className="h-3.5 w-3.5 text-emerald-500" />
+                    ) : (
+                      <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+                    )}
+                  </button>
                   <Button
                     type="button"
                     variant="ghost"
@@ -337,27 +380,27 @@ export function ExperimentClientPage({
               )}
             </div>
           }
+          headerStatus={
+            isLoadingTrials ? (
+              <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                <span>
+                  Loading trials
+                  {lightweightTasks
+                    ? ` ${trialsLoadedCount}/${lightweightTasks.length}`
+                    : ""}
+                  …
+                </span>
+              </div>
+            ) : null
+          }
           headerRight={
-            <>
-              {isLoadingTrials && (
-                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  <span>
-                    Loading trials
-                    {lightweightTasks
-                      ? ` ${trialsLoadedCount}/${lightweightTasks.length}`
-                      : ""}
-                    …
-                  </span>
-                </div>
-              )}
-              {experimentId && (
-                <ExperimentShareButton
-                  experimentId={experimentId}
-                  canManageShare={canManageExperimentShare}
-                />
-              )}
-            </>
+            experimentId ? (
+              <ExperimentShareButton
+                experimentId={experimentId}
+                canManageShare={canManageExperimentShare}
+              />
+            ) : null
           }
           inlineAlert={
             nameError ? (
