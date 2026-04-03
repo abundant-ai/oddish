@@ -15,11 +15,11 @@ from oddish.cli.config import (
 console = Console()
 
 
-def delete(
+def restore(
     task_id: Annotated[
         Optional[str],
         typer.Argument(
-            help="Task ID to delete (or use --experiment)"
+            help="Task ID to restore (or use --experiment)"
         ),
     ] = None,
     experiment_id: Annotated[
@@ -27,7 +27,7 @@ def delete(
         typer.Option(
             "--experiment",
             "-e",
-            help="Experiment ID to delete (cannot be used with task_id)",
+            help="Experiment ID to restore (cannot be used with task_id)",
         ),
     ] = None,
     api_url: Annotated[
@@ -39,11 +39,11 @@ def delete(
         ),
     ] = None,
 ):
-    """Delete a task or experiment (soft-delete, recoverable with 'oddish restore').
+    """Restore a soft-deleted task or experiment.
 
     Examples:
-        oddish delete <task_id>            # Delete a specific task
-        oddish delete --experiment <id>    # Delete a specific experiment
+        oddish restore <task_id>            # Restore a specific task
+        oddish restore --experiment <id>    # Restore a specific experiment
     """
     if not api_url:
         api_url = get_api_url()
@@ -55,38 +55,27 @@ def delete(
 
     if not task_id and not experiment_id:
         console.print(
-            "[yellow]Provide a task ID or --experiment to delete.[/yellow]"
+            "[yellow]Provide a task ID or --experiment to restore.[/yellow]"
         )
         raise typer.Exit(1)
-
-    if task_id:
-        confirm = typer.confirm(
-            f"Delete task {task_id} and its trials?", default=False
-        )
-        if not confirm:
-            raise typer.Abort()
-    elif experiment_id:
-        confirm = typer.confirm(
-            f"Delete experiment {experiment_id} and all its tasks?", default=False
-        )
-        if not confirm:
-            raise typer.Abort()
 
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
         try:
             if task_id:
-                response = client.delete(f"{api_url}/tasks/{task_id}")
+                response = client.post(f"{api_url}/tasks/{task_id}/restore")
             elif experiment_id:
-                response = client.delete(f"{api_url}/experiments/{experiment_id}")
+                response = client.post(
+                    f"{api_url}/experiments/{experiment_id}/restore"
+                )
 
             if response.status_code == 200:
                 data = response.json()
-                message = data.get("message") or "Delete successful"
+                message = data.get("message") or "Restore successful"
                 console.print(f"[green]{message}[/green]")
                 return
 
             console.print(
-                f"[red]Delete failed:[/red] {response.status_code} - {response.text}"
+                f"[red]Restore failed:[/red] {response.status_code} - {response.text}"
             )
             raise typer.Exit(1)
         except httpx.RequestError as e:
