@@ -170,7 +170,7 @@ All routes require auth unless marked public.
 | POST | `/tasks/sweep` | Expand one task into multiple trials |
 | GET | `/tasks` | List tasks (org-scoped, paginated/filtered) |
 | GET | `/tasks/{task_id}` | Task details |
-| POST | `/tasks/{task_id}/cancel` | Cancel in-flight trials and queue jobs for the task (org-scoped); Modal workers terminated when applicable |
+| POST | `/tasks/cancel` | Cancel in-flight trials and queue jobs for one or more tasks (org-scoped); Modal workers terminated when applicable |
 | DELETE | `/tasks/{task_id}` | Delete task and queued jobs |
 | GET | `/tasks/{task_id}/trials` | Trials for task |
 | GET | `/tasks/{task_id}/trials/{index}` | Trial by index |

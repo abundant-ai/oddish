@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from typing import Annotated
 
@@ -47,10 +48,11 @@ from oddish.db import (
 )
 from oddish.queue import (
     append_trials_to_task,
-    cancel_task_runs,
+    cancel_tasks_runs,
     create_task,
 )
 from oddish.schemas import (
+    TaskBatchCancelRequest,
     TaskResponse,
     TaskStatusResponse,
     TaskSweepSubmission,
@@ -58,6 +60,32 @@ from oddish.schemas import (
 )
 
 router = APIRouter(tags=["Tasks"])
+MODAL_CANCEL_BATCH_SIZE = 32
+
+
+async def _cancel_modal_function_calls(modal_fc_ids: list[str]) -> int:
+    if not modal_fc_ids:
+        return 0
+
+    import modal
+
+    unique_fc_ids = list(dict.fromkeys(modal_fc_ids))
+    cancelled = 0
+
+    async def cancel_one(fc_id: str) -> bool:
+        try:
+            fc = modal.FunctionCall.from_id(fc_id)
+            await fc.cancel.aio(terminate_containers=True)
+            return True
+        except Exception:
+            return False
+
+    for start in range(0, len(unique_fc_ids), MODAL_CANCEL_BATCH_SIZE):
+        batch = unique_fc_ids[start : start + MODAL_CANCEL_BATCH_SIZE]
+        results = await asyncio.gather(*(cancel_one(fc_id) for fc_id in batch))
+        cancelled += sum(1 for result in results if result)
+
+    return cancelled
 
 
 def _apply_github_attribution(submission: TaskSweepSubmission) -> None:
@@ -511,44 +539,32 @@ async def delete_experiment(
     }
 
 
-@router.post("/tasks/{task_id}/cancel")
-async def cancel_task(
-    task_id: str,
+@router.post("/tasks/cancel")
+async def cancel_tasks(
+    payload: TaskBatchCancelRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """Cancel all in-flight runs for a task without deleting data.
-
-    Marks running/queued trials as failed,
-    and terminates Modal function calls for running workers.
-    """
+    """Cancel in-flight runs for many tasks without deleting data."""
     auth.require_scope(APIKeyScope.TASKS)
+    if not payload.task_ids:
+        raise HTTPException(status_code=400, detail="Provide at least one task_id")
 
     async with get_session() as session:
-        result = await cancel_task_runs(session, task_id, org_id=auth.org_id)
+        result = await cancel_tasks_runs(session, payload.task_ids, org_id=auth.org_id)
         if result.get("error") == "not_found":
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+            raise HTTPException(status_code=404, detail="No matching tasks found")
         await session.commit()
 
-    modal_fc_ids: list[str] = result.get("modal_function_call_ids", [])
-    modal_cancelled = 0
-    if modal_fc_ids:
-        import modal
-
-        for fc_id in modal_fc_ids:
-            try:
-                fc = modal.FunctionCall.from_id(fc_id)
-                await fc.cancel.aio(terminate_containers=True)
-                modal_cancelled += 1
-            except Exception:
-                pass
-
-        # The worker's lifecycle hooks and _store_results guard on
-        # max_attempts<=attempts (set by cancel_task_runs) to avoid
-        # overwriting "Cancelled by user". No timing delay needed.
+    modal_cancelled = await _cancel_modal_function_calls(
+        result.get("modal_function_call_ids", [])
+    )
 
     return {
         "status": "cancelled",
-        "task_id": task_id,
+        "task_ids": result.get("task_ids", []),
+        "not_found_task_ids": result.get("not_found_task_ids", []),
+        "tasks_found": result.get("tasks_found", 0),
+        "tasks_cancelled": result.get("tasks_cancelled", 0),
         "trials_cancelled": result.get("trials_cancelled", 0),
         "modal_calls_cancelled": modal_cancelled,
     }

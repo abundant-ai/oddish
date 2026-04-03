@@ -121,8 +121,8 @@ async def resolve_task_storage(
         task_s3_key = f"tasks/{task_id}/"
         storage = get_storage_client()
         try:
-            keys = await storage.list_keys(task_s3_key)
-            if not keys:
+            exists = await storage.prefix_exists(task_s3_key)
+            if not exists:
                 raise HTTPException(
                     status_code=404,
                     detail=s3_missing_detail or f"Task {task_id} not found in S3",

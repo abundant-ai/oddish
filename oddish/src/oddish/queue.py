@@ -28,10 +28,135 @@ from oddish.task_timeouts import validate_task_timeout_config
 
 logger = logging.getLogger(__name__)
 
+USER_CANCELLED_MESSAGE = "Cancelled by user"
+CANCELLED_HARBOR_STAGE = "cancelled"
+ACTIVE_TRIAL_STATUSES = (
+    TrialStatus.PENDING,
+    TrialStatus.QUEUED,
+    TrialStatus.RUNNING,
+    TrialStatus.RETRYING,
+)
+ACTIVE_PIPELINE_STATUSES = (
+    AnalysisStatus.PENDING,
+    AnalysisStatus.QUEUED,
+    AnalysisStatus.RUNNING,
+)
+ACTIVE_TASK_STATUSES = (
+    TaskStatus.PENDING,
+    TaskStatus.RUNNING,
+    TaskStatus.ANALYZING,
+    TaskStatus.VERDICT_PENDING,
+)
+
 
 # =============================================================================
 # Task/Trial Cancellation (user-initiated)
 # =============================================================================
+
+
+async def cancel_tasks_runs(
+    session: AsyncSession,
+    task_ids: list[str],
+    org_id: str | None = None,
+) -> dict:
+    """Cancel in-flight runs for a batch of tasks without deleting data."""
+    requested_task_ids = list(dict.fromkeys(task_ids))
+    if not requested_task_ids:
+        return {
+            "task_ids": [],
+            "not_found_task_ids": [],
+            "tasks_found": 0,
+            "tasks_cancelled": 0,
+            "trials_cancelled": 0,
+            "modal_function_call_ids": [],
+        }
+
+    query = select(TaskModel).where(TaskModel.id.in_(requested_task_ids))
+    if org_id:
+        query = query.where(TaskModel.org_id == org_id)
+    result = await session.execute(query)
+    tasks = list(result.scalars().all())
+    if not tasks:
+        return {"error": "not_found"}
+
+    tasks_by_id = {task.id: task for task in tasks}
+    found_task_ids = [
+        task_id for task_id in requested_task_ids if task_id in tasks_by_id
+    ]
+    not_found_task_ids = [
+        task_id for task_id in requested_task_ids if task_id not in tasks_by_id
+    ]
+
+    trial_rows = await session.execute(
+        select(TrialModel).where(
+            TrialModel.task_id.in_(found_task_ids),
+            or_(
+                TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+                TrialModel.analysis_status.in_(ACTIVE_PIPELINE_STATUSES),
+            ),
+        )
+    )
+    trials = list(trial_rows.scalars().all())
+
+    modal_fc_ids: list[str] = []
+    trials_cancelled = 0
+    tasks_cancelled = 0
+    now = utcnow()
+
+    for trial in trials:
+        trial_updated = False
+        if trial.status in ACTIVE_TRIAL_STATUSES:
+            if trial.modal_function_call_id:
+                modal_fc_ids.append(trial.modal_function_call_id)
+            trial.status = TrialStatus.FAILED
+            trial.error_message = USER_CANCELLED_MESSAGE
+            trial.finished_at = now
+            trial.harbor_stage = CANCELLED_HARBOR_STAGE
+            trial.max_attempts = trial.attempts
+            trial.current_worker_id = None
+            trial.current_queue_slot = None
+            trial.modal_function_call_id = None
+            trials_cancelled += 1
+            trial_updated = True
+        if trial.analysis_status in ACTIVE_PIPELINE_STATUSES:
+            if trial.analysis_modal_function_call_id:
+                modal_fc_ids.append(trial.analysis_modal_function_call_id)
+            trial.analysis_status = AnalysisStatus.FAILED
+            trial.analysis_error = USER_CANCELLED_MESSAGE
+            trial.analysis_finished_at = now
+            trial.analysis_modal_function_call_id = None
+            trial_updated = True
+
+        if not trial_updated:
+            continue
+
+    for task in tasks:
+        task_updated = False
+        if task.status in ACTIVE_TASK_STATUSES:
+            task.status = TaskStatus.FAILED
+            task.finished_at = now
+            task_updated = True
+        if task.verdict_status in ACTIVE_PIPELINE_STATUSES:
+            if task.verdict_modal_function_call_id:
+                modal_fc_ids.append(task.verdict_modal_function_call_id)
+            task.verdict_status = VerdictStatus.FAILED
+            task.verdict_error = USER_CANCELLED_MESSAGE
+            task.verdict_finished_at = now
+            task.verdict_modal_function_call_id = None
+            task_updated = True
+        if task_updated:
+            tasks_cancelled += 1
+
+    await session.flush()
+
+    return {
+        "task_ids": found_task_ids,
+        "not_found_task_ids": not_found_task_ids,
+        "tasks_found": len(found_task_ids),
+        "tasks_cancelled": tasks_cancelled,
+        "trials_cancelled": trials_cancelled,
+        "modal_function_call_ids": list(dict.fromkeys(modal_fc_ids)),
+    }
 
 
 async def cancel_task_runs(
@@ -46,76 +171,14 @@ async def cancel_task_runs(
 
     Returns a summary dict with counts and modal_function_call_ids to cancel.
     """
-    query = select(TaskModel).where(TaskModel.id == task_id)
-    if org_id:
-        query = query.where(TaskModel.org_id == org_id)
-    result = await session.execute(query)
-    task = result.scalar_one_or_none()
-    if not task:
+    result = await cancel_tasks_runs(session, [task_id], org_id=org_id)
+    if result.get("error") == "not_found":
         return {"error": "not_found"}
-
-    trial_rows = await session.execute(
-        select(TrialModel).where(TrialModel.task_id == task_id)
-    )
-    trials = list(trial_rows.scalars().all())
-
-    active_statuses = {
-        TrialStatus.PENDING,
-        TrialStatus.QUEUED,
-        TrialStatus.RUNNING,
-        TrialStatus.RETRYING,
-    }
-    active_pipeline_statuses = {
-        AnalysisStatus.PENDING,
-        AnalysisStatus.QUEUED,
-        AnalysisStatus.RUNNING,
-    }
-    modal_fc_ids: list[str] = []
-    trials_cancelled = 0
-    now = utcnow()
-
-    for trial in trials:
-        if trial.status not in active_statuses:
-            if trial.analysis_status in active_pipeline_statuses:
-                trial.analysis_status = AnalysisStatus.FAILED
-                trial.analysis_error = "Cancelled by user"
-                trial.analysis_finished_at = now
-            continue
-        if trial.modal_function_call_id:
-            modal_fc_ids.append(trial.modal_function_call_id)
-        trial.status = TrialStatus.FAILED
-        trial.error_message = "Cancelled by user"
-        trial.finished_at = now
-        trial.harbor_stage = "cancelled"
-        trial.max_attempts = trial.attempts
-        trial.current_worker_id = None
-        trial.current_queue_slot = None
-        trial.modal_function_call_id = None
-        if trial.analysis_status in active_pipeline_statuses:
-            trial.analysis_status = AnalysisStatus.FAILED
-            trial.analysis_error = "Cancelled by user"
-            trial.analysis_finished_at = now
-        trials_cancelled += 1
-
-    if task.status in (
-        TaskStatus.PENDING,
-        TaskStatus.RUNNING,
-        TaskStatus.ANALYZING,
-        TaskStatus.VERDICT_PENDING,
-    ):
-        task.status = TaskStatus.FAILED
-        task.finished_at = now
-    if task.verdict_status in active_pipeline_statuses:
-        task.verdict_status = VerdictStatus.FAILED
-        task.verdict_error = "Cancelled by user"
-        task.verdict_finished_at = now
-
-    await session.flush()
 
     return {
         "task_id": task_id,
-        "trials_cancelled": trials_cancelled,
-        "modal_function_call_ids": modal_fc_ids,
+        "trials_cancelled": result.get("trials_cancelled", 0),
+        "modal_function_call_ids": result.get("modal_function_call_ids", []),
     }
 
 
@@ -378,6 +441,7 @@ async def append_trials_to_task(
         task.verdict_error = None
         task.verdict_started_at = None
         task.verdict_finished_at = None
+        task.verdict_modal_function_call_id = None
 
     await session.flush()
     await session.refresh(task, attribute_names=["trials"])
@@ -457,6 +521,7 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
         if analysis_pending_count == 0:
             task.status = TaskStatus.VERDICT_PENDING
             task.verdict_status = VerdictStatus.QUEUED
+            task.verdict_modal_function_call_id = None
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
@@ -510,6 +575,7 @@ async def maybe_start_verdict_stage(session: AsyncSession, trial_id: str) -> boo
 
     task.status = TaskStatus.VERDICT_PENDING
     task.verdict_status = VerdictStatus.QUEUED
+    task.verdict_modal_function_call_id = None
     await session.flush()
 
     return True

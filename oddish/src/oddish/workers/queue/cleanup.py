@@ -22,6 +22,14 @@ def _clear_trial_runtime_refs(trial: TrialModel) -> None:
     trial.modal_function_call_id = None
 
 
+def _clear_analysis_runtime_refs(trial: TrialModel) -> None:
+    trial.analysis_modal_function_call_id = None
+
+
+def _clear_verdict_runtime_refs(task: TaskModel) -> None:
+    task.verdict_modal_function_call_id = None
+
+
 async def cleanup_orphaned_queue_state(
     *,
     stale_after_minutes: int = STALE_HEARTBEAT_MINUTES,
@@ -125,6 +133,7 @@ async def cleanup_orphaned_queue_state(
             trial.analysis_error = None
             trial.analysis_started_at = None
             trial.analysis_finished_at = None
+            _clear_analysis_runtime_refs(trial)
             stale_analysis_reset += 1
 
         # ---------------------------------------------------------------
@@ -151,6 +160,7 @@ async def cleanup_orphaned_queue_state(
             task.verdict_error = None
             task.verdict_started_at = None
             task.verdict_finished_at = None
+            _clear_verdict_runtime_refs(task)
             stale_verdict_reset += 1
 
         # ---------------------------------------------------------------
@@ -229,6 +239,7 @@ async def cleanup_orphaned_queue_state(
                 task.verdict_error = None
                 task.verdict_started_at = None
                 task.verdict_finished_at = None
+                _clear_verdict_runtime_refs(task)
                 stale_verdict_reset += 1
 
         # ---------------------------------------------------------------

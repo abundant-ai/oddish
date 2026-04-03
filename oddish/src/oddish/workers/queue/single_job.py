@@ -194,14 +194,22 @@ async def _dispatch_claimed_job(
     if job.job_type == "analysis":
         if not job.trial_id:
             raise ValueError("Analysis job missing trial_id")
-        await run_analysis_job(job.trial_id, queue_key=queue_key)
+        await run_analysis_job(
+            job.trial_id,
+            queue_key=queue_key,
+            modal_function_call_id=modal_function_call_id,
+        )
         await _run_hook(on_analysis_complete, job.trial_id)
         return
 
     if job.job_type == "verdict":
         if not job.task_id:
             raise ValueError("Verdict job missing task_id")
-        await run_verdict_job(job.task_id, queue_key=queue_key)
+        await run_verdict_job(
+            job.task_id,
+            queue_key=queue_key,
+            modal_function_call_id=modal_function_call_id,
+        )
         await _run_hook(on_verdict_complete, job.task_id)
         return
 
