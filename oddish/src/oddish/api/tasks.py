@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import HTTPException, UploadFile
 
 from oddish.config import settings
-from oddish.db.storage import get_storage_client
+from oddish.db.storage import extract_task_tarfile, get_storage_client
 from oddish.schemas import UploadResponse
 from oddish.task_timeouts import (
     TaskTimeoutValidationError,
@@ -61,28 +61,11 @@ async def handle_task_upload(file: UploadFile) -> UploadResponse:
 
         try:
             with tarfile.open(tarball_path, "r:gz") as tar:
-                members = tar.getmembers()
-                for member in members:
-                    if member.islnk() or member.issym():
-                        raise HTTPException(
-                            status_code=400, detail="Invalid tarball: links not allowed"
-                        )
-                    member_path = Path(member.name)
-                    if member_path.is_absolute():
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Invalid tarball: absolute paths not allowed",
-                        )
-                    resolved = (task_dir / member.name).resolve()
-                    if task_dir not in resolved.parents and resolved != task_dir:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Invalid tarball: path traversal",
-                        )
-                for member in members:
-                    tar.extract(member, path=task_dir)
+                extract_task_tarfile(tar, task_dir)
         except HTTPException:
             raise
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid tarball: {str(e)}")
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid tarball: {str(e)}")
 
@@ -94,7 +77,7 @@ async def handle_task_upload(file: UploadFile) -> UploadResponse:
         if settings.s3_enabled:
             storage = get_storage_client()
             try:
-                s3_key = await storage.upload_task_directory(task_id, task_dir)
+                s3_key = await storage.upload_task_archive(task_id, tarball_path)
                 return UploadResponse(task_id=task_id, name=task_name, s3_key=s3_key)
             except Exception as e:
                 raise HTTPException(

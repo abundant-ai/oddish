@@ -235,10 +235,11 @@ MODAL_TOKEN_SECRET=...
 
 Storage defaults:
 
-- uploaded task bundles: `/tmp/oddish-tasks`
+- uploaded task bundles: `/tmp/oddish-tasks` locally, or a single
+  `tasks/<task_id>/.oddish-task.tar.gz` archive in S3 when remote storage is enabled
 - Harbor job outputs: `/tmp/harbor-jobs`
 - Modal workers also check the fixed mount path `/mnt/oddish-tasks` for
-  `tasks/` objects before falling back to the normal S3 download path
+  extracted `tasks/` objects before falling back to the normal S3 download path
 
 ## Repository Layout
 

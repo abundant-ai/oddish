@@ -46,9 +46,9 @@ WORKER_TASK_MOUNT_PATH = "/mnt/oddish-tasks"
 WORKER_TASK_MOUNT_KEY_PREFIX = "tasks/"
 
 # Worker configuration
-POLL_INTERVAL_SECONDS = 60  # How often to check for new jobs
-# Allow ~30 min trials with small shutdown buffer.
-WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 18000)
+POLL_INTERVAL_SECONDS = 120  # How often to check for new jobs
+# Allow ~12 hour trials with small shutdown buffer.
+WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 43200)
 SHUTDOWN_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_SHUTDOWN_TIMEOUT_SECONDS", 10)
 WORKER_MIN_CONTAINERS = _env_int(
     "ODDISH_MODAL_WORKER_MIN_CONTAINERS", 1
