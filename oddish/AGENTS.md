@@ -237,6 +237,8 @@ Storage defaults:
 
 - uploaded task bundles: `/tmp/oddish-tasks`
 - Harbor job outputs: `/tmp/harbor-jobs`
+- Modal workers also check the fixed mount path `/mnt/oddish-tasks` for
+  `tasks/` objects before falling back to the normal S3 download path
 
 ## Repository Layout
 

@@ -22,6 +22,7 @@ def _env_int(name: str, default: int) -> int:
 MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
 MODAL_VOLUME_NAME = os.environ.get("MODAL_VOLUME_NAME", "oddish")
 MODAL_SECRET_ENVIRONMENT = os.environ.get("MODAL_SECRET_ENVIRONMENT", "main")
+RUNTIME_SECRET_NAME = "oddish-prod"
 ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
 API_MIN_CONTAINERS = _env_int("ODDISH_MODAL_API_MIN_CONTAINERS", 1)
 API_BUFFER_CONTAINERS = _env_int("ODDISH_MODAL_API_BUFFER_CONTAINERS", 2)
@@ -41,6 +42,8 @@ app = modal.App(MODAL_APP_NAME)
 # the volume isn't really used for anything
 volume = modal.Volume.from_name(MODAL_VOLUME_NAME, create_if_missing=True)
 VOLUME_MOUNT_PATH = "/data"
+WORKER_TASK_MOUNT_PATH = "/mnt/oddish-tasks"
+WORKER_TASK_MOUNT_KEY_PREFIX = "tasks/"
 
 # Worker configuration
 POLL_INTERVAL_SECONDS = 60  # How often to check for new jobs
@@ -66,9 +69,10 @@ MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 16)
 
 # Always attach the production Modal secret. Local deploys can layer a backend
 # `.env` file on top for developer-specific overrides.
-runtime_secrets = [
-    modal.Secret.from_name("oddish-prod", environment_name=MODAL_SECRET_ENVIRONMENT)
-]
+runtime_secret = modal.Secret.from_name(
+    RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
+)
+runtime_secrets = [runtime_secret]
 if LOCAL_DOTENV_VARS:
     runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 
@@ -93,6 +97,74 @@ ENV_VARS = {
     "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
     "ODDISH_DEFAULT_MODEL_CONCURRENCY": str(MODEL_CONCURRENCY_DEFAULT),
 }
+
+
+def _lookup_env(name: str) -> str | None:
+    return os.environ.get(name) or LOCAL_DOTENV_VARS.get(name)
+
+
+def _build_worker_task_mount_secret() -> modal.Secret:
+    """
+    Reuse the existing runtime secret when possible.
+
+    CloudBucketMount expects AWS-style credential names, so local deploys that only
+    provide Oddish's ODDISH_S3_* vars still need a tiny remap for the mount.
+    """
+    aws_access_key = _lookup_env("AWS_ACCESS_KEY_ID")
+    aws_secret_key = _lookup_env("AWS_SECRET_ACCESS_KEY")
+    aws_region = _lookup_env("AWS_REGION")
+    aws_session_token = _lookup_env("AWS_SESSION_TOKEN")
+    if aws_access_key and aws_secret_key:
+        payload = {
+            "AWS_ACCESS_KEY_ID": aws_access_key,
+            "AWS_SECRET_ACCESS_KEY": aws_secret_key,
+        }
+        if aws_region:
+            payload["AWS_REGION"] = aws_region
+        if aws_session_token:
+            payload["AWS_SESSION_TOKEN"] = aws_session_token
+        return modal.Secret.from_dict(payload)
+
+    oddish_access_key = _lookup_env("ODDISH_S3_ACCESS_KEY")
+    oddish_secret_key = _lookup_env("ODDISH_S3_SECRET_KEY")
+    oddish_region = _lookup_env("ODDISH_S3_REGION")
+    if oddish_access_key and oddish_secret_key:
+        payload = {
+            "AWS_ACCESS_KEY_ID": oddish_access_key,
+            "AWS_SECRET_ACCESS_KEY": oddish_secret_key,
+        }
+        if oddish_region:
+            payload["AWS_REGION"] = oddish_region
+        if aws_session_token:
+            payload["AWS_SESSION_TOKEN"] = aws_session_token
+        return modal.Secret.from_dict(payload)
+
+    return runtime_secret
+
+
+def _build_worker_task_bucket_mount() -> modal.CloudBucketMount | None:
+    """Create a read-only bucket mount for worker task inputs when possible."""
+    bucket_name = _lookup_env("ODDISH_S3_BUCKET")
+    endpoint_url = _lookup_env("ODDISH_S3_ENDPOINT_URL")
+
+    # Keep this worker optimization AWS-native for now; custom S3 endpoints still
+    # use the existing SDK download path.
+    if endpoint_url or not bucket_name:
+        return None
+
+    return modal.CloudBucketMount(
+        bucket_name=bucket_name,
+        key_prefix=WORKER_TASK_MOUNT_KEY_PREFIX,
+        secret=_build_worker_task_mount_secret(),
+        read_only=True,
+    )
+
+
+worker_task_bucket_mount = _build_worker_task_bucket_mount()
+api_volumes = {VOLUME_MOUNT_PATH: volume}
+worker_volumes = dict(api_volumes)
+if worker_task_bucket_mount is not None:
+    worker_volumes[WORKER_TASK_MOUNT_PATH] = worker_task_bucket_mount
 
 image = (
     modal.Image.debian_slim(python_version="3.12")

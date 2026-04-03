@@ -16,11 +16,10 @@ from modal_app import (
     API_CONCURRENCY_TARGET,
     API_MAX_CONTAINERS,
     API_MIN_CONTAINERS,
-    VOLUME_MOUNT_PATH,
+    api_volumes,
     app,
     image,
     runtime_secrets,
-    volume,
 )
 from api.app import create_app
 from api.routers import (
@@ -57,7 +56,7 @@ api.include_router(admin.router)
 
 @app.function(
     image=image,
-    volumes={VOLUME_MOUNT_PATH: volume},
+    volumes=api_volumes,
     secrets=runtime_secrets,
     timeout=600,
     min_containers=API_MIN_CONTAINERS,
