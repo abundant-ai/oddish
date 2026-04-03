@@ -34,6 +34,39 @@ class _FakeStorage:
         (local_path / "task.toml").write_text("name = 'demo'\n")
 
 
+class _FakePaginator:
+    def __init__(self, pages: list[dict]):
+        self.pages = pages
+
+    async def paginate(self, **_: object):
+        for page in self.pages:
+            yield page
+
+
+class _FakeS3Client:
+    def __init__(self, pages: list[dict] | None = None):
+        self.pages = pages or []
+        self.delete_calls: list[dict] = []
+
+    def get_paginator(self, operation_name: str) -> _FakePaginator:
+        assert operation_name == "list_objects_v2"
+        return _FakePaginator(self.pages)
+
+    async def delete_objects(self, **kwargs: object) -> dict:
+        self.delete_calls.append(kwargs)
+        return {"Deleted": kwargs["Delete"]["Objects"]}
+
+
+class _FakeDeleteStorage:
+    def __init__(self, *, deleted: int):
+        self.deleted = deleted
+        self.delete_prefixes_calls: list[list[str]] = []
+
+    async def delete_prefixes(self, prefixes: list[str]) -> int:
+        self.delete_prefixes_calls.append(prefixes)
+        return self.deleted
+
+
 @pytest.mark.asyncio
 async def test_resolve_task_storage_uses_prefix_probe_for_s3(monkeypatch):
     storage = _FakeStorage(exists=True)
@@ -96,3 +129,71 @@ async def test_resolve_task_directory_falls_back_to_download_when_mount_missing(
     assert temp_dir == task_dir
     assert task_dir.exists()
     assert storage.download_task_directory_calls
+
+
+@pytest.mark.asyncio
+async def test_delete_prefix_deletes_all_matching_s3_objects(monkeypatch):
+    fake_client = _FakeS3Client(
+        pages=[
+            {
+                "Contents": [
+                    {"Key": "tasks/task-123/task.toml"},
+                    {"Key": "tasks/task-123/instruction.md"},
+                ]
+            }
+        ]
+    )
+    storage = storage_mod.StorageClient()
+    storage._client = fake_client
+    monkeypatch.setattr(settings, "s3_bucket", "test-bucket")
+
+    deleted = await storage.delete_prefix("tasks/task-123/")
+
+    assert deleted == 2
+    assert fake_client.delete_calls == [
+        {
+            "Bucket": "test-bucket",
+            "Delete": {
+                "Objects": [
+                    {"Key": "tasks/task-123/task.toml"},
+                    {"Key": "tasks/task-123/instruction.md"},
+                ],
+                "Quiet": True,
+            },
+        }
+    ]
+
+
+def test_collect_s3_prefixes_for_deletion_normalizes_and_dedupes():
+    prefixes = storage_mod.collect_s3_prefixes_for_deletion(
+        tasks=[
+            ("tasks/task-123", None),
+            (None, "s3://tasks/task-123/"),
+            (None, "/tmp/local-task"),
+        ],
+        trials=[
+            ("task-123-0", None),
+            ("task-123-0", "tasks/task-123/trials/task-123-0/"),
+            ("task-123-1", "tasks/task-123/trials/task-123-1"),
+        ],
+    )
+
+    assert prefixes == [
+        "tasks/task-123/",
+        "tasks/task-123/trials/task-123-0/",
+        "tasks/task-123/trials/task-123-1/",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_delete_s3_prefixes_skips_duplicates_and_empty_values(monkeypatch):
+    storage = _FakeDeleteStorage(deleted=3)
+    monkeypatch.setattr(settings, "s3_enabled", True)
+    monkeypatch.setattr(storage_mod, "get_storage_client", lambda: storage)
+
+    deleted = await storage_mod.delete_s3_prefixes(
+        ["tasks/task-123/", "tasks/task-123/", ""]
+    )
+
+    assert deleted == 3
+    assert storage.delete_prefixes_calls == [["tasks/task-123/"]]

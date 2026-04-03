@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -46,6 +47,7 @@ from oddish.db import (
     TrialModel,
     get_session,
 )
+from oddish.db.storage import collect_s3_prefixes_for_deletion, delete_s3_prefixes
 from oddish.queue import (
     append_trials_to_task,
     cancel_tasks_runs,
@@ -60,6 +62,7 @@ from oddish.schemas import (
 )
 
 router = APIRouter(tags=["Tasks"])
+logger = logging.getLogger(__name__)
 MODAL_CANCEL_BATCH_SIZE = 32
 
 
@@ -493,12 +496,25 @@ async def delete_experiment(
             .where(TaskModel.org_id == auth.org_id)
         )
         task_ids = [row[0] for row in task_ids_result.all()]
-        trial_ids: list[str] = []
+        task_rows_result = await session.execute(
+            select(TaskModel.task_s3_key, TaskModel.task_path)
+            .where(TaskModel.experiment_id == experiment.id)
+            .where(TaskModel.org_id == auth.org_id)
+        )
+        task_rows = [(row[0], row[1]) for row in task_rows_result.all()]
+        trial_rows: list[tuple[str, str | None]] = []
         if task_ids:
-            trial_ids_result = await session.execute(
-                select(TrialModel.id).where(TrialModel.task_id.in_(task_ids))
+            trial_rows_result = await session.execute(
+                select(TrialModel.id, TrialModel.trial_s3_key).where(
+                    TrialModel.task_id.in_(task_ids)
+                )
             )
-            trial_ids = [row[0] for row in trial_ids_result.all()]
+            trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
+
+        s3_prefixes = collect_s3_prefixes_for_deletion(
+            tasks=task_rows,
+            trials=trial_rows,
+        )
 
         trials_result = await session.execute(
             delete(TrialModel).where(TrialModel.task_id.in_(task_ids))
@@ -523,6 +539,14 @@ async def delete_experiment(
             raise TypeError("Expected CursorResult for experiment delete")
 
         await session.commit()
+
+    if s3_prefixes:
+        try:
+            await delete_s3_prefixes(s3_prefixes)
+        except Exception:
+            logger.exception(
+                "Failed to delete S3 artifacts for experiment %s", experiment_id
+            )
 
     deleted_trials = int(trials_result.rowcount or 0)
     deleted_tasks = int(tasks_result.rowcount or 0)
@@ -579,13 +603,25 @@ async def delete_task(
 
     async with get_session() as session:
         task = await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
-        trial_ids_result = await session.execute(
-            select(TrialModel.id).where(TrialModel.task_id == task.id)
+        trial_rows_result = await session.execute(
+            select(TrialModel.id, TrialModel.trial_s3_key).where(
+                TrialModel.task_id == task.id
+            )
         )
-        trial_ids = [row[0] for row in trial_ids_result.all()]
+        trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
+        s3_prefixes = collect_s3_prefixes_for_deletion(
+            tasks=[(task.task_s3_key, task.task_path)],
+            trials=trial_rows,
+        )
 
         await session.delete(task)
         await session.commit()
+
+    if s3_prefixes:
+        try:
+            await delete_s3_prefixes(s3_prefixes)
+        except Exception:
+            logger.exception("Failed to delete S3 artifacts for task %s", task_id)
 
     return {"status": "success", "deleted": {"task_id": task_id}}
 

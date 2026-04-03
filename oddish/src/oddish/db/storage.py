@@ -445,6 +445,41 @@ class StorageClient:
                 keys.append(obj["Key"])
         return keys
 
+    async def delete_prefix(self, prefix: str) -> int:
+        """Delete every object stored under an S3 prefix."""
+        await self._ensure_client()
+        keys = await self.list_keys(prefix)
+        if not keys:
+            return 0
+
+        deleted = 0
+        for start in range(0, len(keys), 1000):
+            batch = keys[start : start + 1000]
+            response = await self._s3.delete_objects(
+                Bucket=settings.s3_bucket,
+                Delete={
+                    "Objects": [{"Key": key} for key in batch],
+                    "Quiet": True,
+                },
+            )
+            errors = response.get("Errors", [])
+            if errors:
+                first_error = errors[0]
+                raise RuntimeError(
+                    "Failed to delete S3 objects under prefix "
+                    f"{prefix}: {first_error.get('Key')}: "
+                    f"{first_error.get('Message', 'unknown error')}"
+                )
+            deleted += len(batch)
+        return deleted
+
+    async def delete_prefixes(self, prefixes: list[str]) -> int:
+        """Delete objects for many prefixes, skipping duplicates."""
+        deleted = 0
+        for prefix in dict.fromkeys(prefixes):
+            deleted += await self.delete_prefix(prefix)
+        return deleted
+
     async def prefix_exists(self, prefix: str) -> bool:
         """Return whether at least one object exists for a prefix."""
         await self._ensure_client()
@@ -569,9 +604,65 @@ def get_storage_client() -> StorageClient:
     return _storage_client
 
 
+def normalize_s3_prefix(prefix: str | None) -> str | None:
+    """Normalize an S3 prefix and keep it directory-shaped."""
+    if not prefix:
+        return None
+    normalized = normalize_s3_relative_path(prefix).rstrip("/")
+    if not normalized:
+        return None
+    return f"{normalized}/"
+
+
 def resolve_s3_key(task_s3_key: str | None, task_path: str | None) -> str | None:
     """Resolve an S3 key from a stored key or s3:// path."""
     return task_s3_key or extract_s3_key_from_path(task_path)
+
+
+def resolve_trial_s3_prefix(
+    trial_id: str,
+    *,
+    trial_s3_key: str | None,
+    trial_result_path: str | None = None,
+) -> str:
+    """Resolve a trial S3 prefix, falling back to the default trial layout."""
+    resolved = resolve_s3_key(trial_s3_key, trial_result_path)
+    return normalize_s3_prefix(resolved or StorageClient._trial_prefix(trial_id)) or (
+        StorageClient._trial_prefix(trial_id)
+    )
+
+
+def collect_s3_prefixes_for_deletion(
+    *,
+    tasks: list[tuple[str | None, str | None]],
+    trials: list[tuple[str, str | None]],
+) -> list[str]:
+    """Collect unique task and trial S3 prefixes that should be deleted."""
+    prefixes: list[str] = []
+
+    for task_s3_key, task_path in tasks:
+        resolved = normalize_s3_prefix(resolve_s3_key(task_s3_key, task_path))
+        if resolved:
+            prefixes.append(resolved)
+
+    for trial_id, trial_s3_key in trials:
+        prefixes.append(resolve_trial_s3_prefix(trial_id, trial_s3_key=trial_s3_key))
+
+    return list(dict.fromkeys(prefixes))
+
+
+async def delete_s3_prefixes(prefixes: list[str]) -> int:
+    """Delete S3 objects for the provided prefixes when S3 is enabled."""
+    normalized: list[str] = []
+    for prefix in prefixes:
+        resolved = normalize_s3_prefix(prefix)
+        if resolved:
+            normalized.append(resolved)
+    normalized = list(dict.fromkeys(normalized))
+    if not normalized or not settings.s3_enabled:
+        return 0
+    storage = get_storage_client()
+    return await storage.delete_prefixes(normalized)
 
 
 def resolve_mounted_task_directory(task_s3_key: str | None) -> Path | None:
