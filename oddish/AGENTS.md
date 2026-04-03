@@ -175,10 +175,10 @@ uv run python -m oddish.api --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/cla
 | GET | `/tasks` | List tasks |
 | GET | `/tasks/{task_id}` | Fetch a task with trials |
 | POST | `/tasks/cancel` | Cancel many tasks in one request |
-| DELETE | `/tasks/{task_id}` | Delete a task and its trials |
+| DELETE | `/tasks/{task_id}` | Delete a task, its trials, and associated S3 artifacts when enabled |
 | POST | `/tasks/{task_id}/analysis/retry` | Queue or rerun task-wide analysis jobs |
 | POST | `/tasks/{task_id}/verdict/retry` | Queue or rerun a task verdict |
-| DELETE | `/experiments/{experiment_id}` | Delete an experiment and its tasks |
+| DELETE | `/experiments/{experiment_id}` | Delete an experiment, its tasks/trials, and associated S3 artifacts when enabled |
 | PATCH | `/experiments/{experiment_id}` | Update experiment metadata |
 | GET | `/tasks/{task_id}/trials/{index}` | Fetch a trial by 0-based index |
 | POST | `/trials/{trial_id}/analysis/retry` | Queue or rerun analysis for one trial |

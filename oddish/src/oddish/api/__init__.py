@@ -1,9 +1,10 @@
 from collections import Counter
 from contextlib import asynccontextmanager
 import argparse
-from pathlib import Path
 import asyncio
 import json
+import logging
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +31,7 @@ from oddish.db import (
     get_pool,
     utcnow,
 )
+from oddish.db.storage import collect_s3_prefixes_for_deletion, delete_s3_prefixes
 from oddish.schemas import (
     TaskBatchCancelRequest,
     ExperimentUpdateRequest,
@@ -48,6 +50,7 @@ from oddish.queue import (
 )
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 _CONCURRENCY_OVERRIDES: dict[str, int] = {}
 
@@ -331,8 +334,26 @@ async def delete_task(task_id: str):
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
+        task_rows = [(task.task_s3_key, task.task_path)]
+        trial_rows_result = await session.execute(
+            select(TrialModel.id, TrialModel.trial_s3_key).where(
+                TrialModel.task_id == task.id
+            )
+        )
+        trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
+        s3_prefixes = collect_s3_prefixes_for_deletion(
+            tasks=task_rows,
+            trials=trial_rows,
+        )
+
         await session.delete(task)
         await session.commit()
+
+    if s3_prefixes:
+        try:
+            await delete_s3_prefixes(s3_prefixes)
+        except Exception:
+            logger.exception("Failed to delete S3 artifacts for task %s", task_id)
 
     return {"status": "success", "deleted": {"task_id": task_id}}
 
@@ -351,15 +372,41 @@ async def delete_experiment(experiment_id: str):
             select(TaskModel.id).where(TaskModel.experiment_id == experiment_id)
         )
         task_ids = [row[0] for row in result.all()]
+        task_rows_result = await session.execute(
+            select(TaskModel.task_s3_key, TaskModel.task_path).where(
+                TaskModel.experiment_id == experiment_id
+            )
+        )
+        task_rows = [(row[0], row[1]) for row in task_rows_result.all()]
+        trial_rows: list[tuple[str, str | None]] = []
 
         if task_ids:
+            trial_rows_result = await session.execute(
+                select(TrialModel.id, TrialModel.trial_s3_key).where(
+                    TrialModel.task_id.in_(task_ids)
+                )
+            )
+            trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
             await session.execute(
                 delete(TrialModel).where(TrialModel.task_id.in_(task_ids))
             )
             await session.execute(delete(TaskModel).where(TaskModel.id.in_(task_ids)))
 
+        s3_prefixes = collect_s3_prefixes_for_deletion(
+            tasks=task_rows,
+            trials=trial_rows,
+        )
+
         await session.delete(experiment)
         await session.commit()
+
+    if s3_prefixes:
+        try:
+            await delete_s3_prefixes(s3_prefixes)
+        except Exception:
+            logger.exception(
+                "Failed to delete S3 artifacts for experiment %s", experiment_id
+            )
 
     return {
         "status": "success",
