@@ -10,6 +10,9 @@ import aioboto3
 from fastapi import HTTPException
 from oddish.config import settings
 
+WORKER_TASK_MOUNT_PATH = Path("/mnt/oddish-tasks")
+WORKER_TASK_KEY_PREFIX = "tasks/"
+
 
 def normalize_s3_relative_path(value: str | None) -> str:
     """Normalize and validate an S3 relative path."""
@@ -571,6 +574,30 @@ def resolve_s3_key(task_s3_key: str | None, task_path: str | None) -> str | None
     return task_s3_key or extract_s3_key_from_path(task_path)
 
 
+def resolve_mounted_task_directory(task_s3_key: str | None) -> Path | None:
+    """Return a mounted task path when worker bucket mounts are configured."""
+    if not task_s3_key:
+        return None
+
+    key_prefix = normalize_s3_relative_path(WORKER_TASK_KEY_PREFIX)
+    normalized_key = normalize_s3_relative_path(task_s3_key).rstrip("/")
+    if not key_prefix:
+        return None
+
+    normalized_prefix = f"{key_prefix.rstrip('/')}/"
+    if not normalized_key.startswith(normalized_prefix):
+        return None
+
+    relative_path = normalized_key[len(normalized_prefix) :]
+    if not relative_path:
+        return None
+
+    candidate = WORKER_TASK_MOUNT_PATH / relative_path
+    if candidate.exists():
+        return candidate
+    return None
+
+
 async def resolve_task_directory(
     task_id: str,
     *,
@@ -584,6 +611,10 @@ async def resolve_task_directory(
     """
     resolved_s3_key = resolve_s3_key(task_s3_key, task_path)
     if resolved_s3_key:
+        mounted_task_path = resolve_mounted_task_directory(resolved_s3_key)
+        if mounted_task_path is not None:
+            return mounted_task_path, None, resolved_s3_key
+
         storage = get_storage_client()
         temp_dir = Path(tempfile.mkdtemp(prefix=f"task-{task_id}-"))
         try:
