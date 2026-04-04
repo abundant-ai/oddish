@@ -348,6 +348,13 @@ class TaskResponse(BaseModel):
     created_at: datetime
 
 
+class TaskBatchCancelRequest(BaseModel):
+    task_ids: list[str] = Field(
+        default_factory=list,
+        description="Task IDs to cancel in one request",
+    )
+
+
 class ExperimentUpdateResponse(BaseModel):
     id: str
     name: str

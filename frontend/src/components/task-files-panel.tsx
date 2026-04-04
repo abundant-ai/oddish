@@ -465,8 +465,10 @@ export function TaskFilesPanel({
 
     try {
       const id = task?.id ?? taskId;
-      const res = await fetch(`${baseUrl}/tasks/${id}/cancel`, {
+      const res = await fetch(`${baseUrl}/tasks/cancel`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_ids: id ? [id] : [] }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));

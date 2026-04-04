@@ -319,6 +319,7 @@ def _reset_task_verdict(task: TaskModel) -> None:
     task.verdict_error = None
     task.verdict_started_at = None
     task.verdict_finished_at = None
+    task.verdict_modal_function_call_id = None
 
 
 def _reset_trial_analysis(trial: TrialModel) -> None:
@@ -328,6 +329,7 @@ def _reset_trial_analysis(trial: TrialModel) -> None:
     trial.analysis_error = None
     trial.analysis_started_at = None
     trial.analysis_finished_at = None
+    trial.analysis_modal_function_call_id = None
 
 
 async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
