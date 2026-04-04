@@ -7,8 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from harbor.models.environment_type import EnvironmentType
-from sqlalchemy import delete, select
-from sqlalchemy.engine import CursorResult
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_policy import (
@@ -46,8 +45,8 @@ from oddish.db import (
     TaskStatus,
     TrialModel,
     get_session,
+    utcnow,
 )
-from oddish.db.storage import collect_s3_prefixes_for_deletion, delete_s3_prefixes
 from oddish.queue import (
     append_trials_to_task,
     cancel_tasks_runs,
@@ -477,7 +476,7 @@ async def delete_experiment(
     experiment_id: str,
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> dict:
-    """Delete an experiment and all associated tasks/trials."""
+    """Soft-delete an experiment and all associated tasks/trials."""
 
     async with get_session() as session:
         result = await session.execute(
@@ -490,75 +489,41 @@ async def delete_experiment(
         if not experiment:
             raise HTTPException(status_code=404, detail="Experiment not found")
 
+        now = utcnow()
+
         task_ids_result = await session.execute(
             select(TaskModel.id)
             .where(TaskModel.experiment_id == experiment.id)
             .where(TaskModel.org_id == auth.org_id)
         )
         task_ids = [row[0] for row in task_ids_result.all()]
-        task_rows_result = await session.execute(
-            select(TaskModel.task_s3_key, TaskModel.task_path)
-            .where(TaskModel.experiment_id == experiment.id)
-            .where(TaskModel.org_id == auth.org_id)
-        )
-        task_rows = [(row[0], row[1]) for row in task_rows_result.all()]
-        trial_rows: list[tuple[str, str | None]] = []
+
+        deleted_trials = 0
         if task_ids:
-            trial_rows_result = await session.execute(
-                select(TrialModel.id, TrialModel.trial_s3_key).where(
-                    TrialModel.task_id.in_(task_ids)
-                )
+            trials_result = await session.execute(
+                update(TrialModel)
+                .where(TrialModel.task_id.in_(task_ids))
+                .values(deleted_at=now)
             )
-            trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
-
-        s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=task_rows,
-            trials=trial_rows,
-        )
-
-        trials_result = await session.execute(
-            delete(TrialModel).where(TrialModel.task_id.in_(task_ids))
-        )
-        if not isinstance(trials_result, CursorResult):
-            raise TypeError("Expected CursorResult for trial delete")
+            deleted_trials = int(trials_result.rowcount or 0)
 
         tasks_result = await session.execute(
-            delete(TaskModel)
+            update(TaskModel)
             .where(TaskModel.experiment_id == experiment.id)
             .where(TaskModel.org_id == auth.org_id)
+            .values(deleted_at=now)
         )
-        if not isinstance(tasks_result, CursorResult):
-            raise TypeError("Expected CursorResult for task delete")
 
-        experiments_result = await session.execute(
-            delete(ExperimentModel)
-            .where(ExperimentModel.id == experiment.id)
-            .where(ExperimentModel.org_id == auth.org_id)
-        )
-        if not isinstance(experiments_result, CursorResult):
-            raise TypeError("Expected CursorResult for experiment delete")
-
+        experiment.deleted_at = now
         await session.commit()
-
-    if s3_prefixes:
-        try:
-            await delete_s3_prefixes(s3_prefixes)
-        except Exception:
-            logger.exception(
-                "Failed to delete S3 artifacts for experiment %s", experiment_id
-            )
-
-    deleted_trials = int(trials_result.rowcount or 0)
-    deleted_tasks = int(tasks_result.rowcount or 0)
-    deleted_experiments = int(experiments_result.rowcount or 0)
 
     return {
         "status": "success",
-        "message": "Experiment deleted",
+        "message": "Experiment soft-deleted",
         "deleted": {
             "trials": deleted_trials,
-            "tasks": deleted_tasks,
-            "experiments": deleted_experiments,
+            "tasks": int(tasks_result.rowcount or 0),
+            "experiments": 1,
         },
     }
 
@@ -599,31 +564,121 @@ async def delete_task(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> dict:
-    """Delete a task and its trials."""
+    """Soft-delete a task and its trials (sets deleted_at, data is recoverable)."""
 
     async with get_session() as session:
         task = await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
-        trial_rows_result = await session.execute(
-            select(TrialModel.id, TrialModel.trial_s3_key).where(
-                TrialModel.task_id == task.id
-            )
-        )
-        trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
-        s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=[(task.task_s3_key, task.task_path)],
-            trials=trial_rows,
-        )
+        now = utcnow()
 
-        await session.delete(task)
+        trials_result = await session.execute(
+            update(TrialModel)
+            .where(TrialModel.task_id == task.id)
+            .values(deleted_at=now)
+        )
+        await session.execute(
+            update(TaskModel)
+            .where(TaskModel.id == task.id)
+            .values(deleted_at=now)
+        )
         await session.commit()
 
-    if s3_prefixes:
-        try:
-            await delete_s3_prefixes(s3_prefixes)
-        except Exception:
-            logger.exception("Failed to delete S3 artifacts for task %s", task_id)
+    return {
+        "status": "success",
+        "message": f"Task soft-deleted ({trials_result.rowcount} trials)",
+        "deleted": {"task_id": task_id},
+    }
 
-    return {"status": "success", "deleted": {"task_id": task_id}}
+
+@router.post("/tasks/{task_id}/restore")
+async def restore_task(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> dict:
+    """Restore a soft-deleted task and its trials."""
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(TaskModel)
+            .where(TaskModel.id == task_id, TaskModel.org_id == auth.org_id)
+            .execution_options(include_deleted=True)
+        )
+        task = result.scalar_one_or_none()
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        if not task.is_deleted:
+            return {"status": "success", "message": "Task is not deleted"}
+
+        trials_result = await session.execute(
+            update(TrialModel)
+            .where(TrialModel.task_id == task.id)
+            .values(deleted_at=None)
+        )
+        task.deleted_at = None
+        await session.commit()
+
+    return {
+        "status": "success",
+        "message": f"Task restored ({trials_result.rowcount} trials)",
+        "restored": {"task_id": task_id},
+    }
+
+
+@router.post("/experiments/{experiment_id}/restore")
+async def restore_experiment(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> dict:
+    """Restore a soft-deleted experiment and all its tasks/trials."""
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(ExperimentModel)
+            .where(
+                ExperimentModel.id == experiment_id,
+                ExperimentModel.org_id == auth.org_id,
+            )
+            .execution_options(include_deleted=True)
+        )
+        experiment = result.scalar_one_or_none()
+        if not experiment:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+        if not experiment.is_deleted:
+            return {"status": "success", "message": "Experiment is not deleted"}
+
+        task_ids_result = await session.execute(
+            select(TaskModel.id)
+            .where(TaskModel.experiment_id == experiment.id)
+            .execution_options(include_deleted=True)
+        )
+        task_ids = [row[0] for row in task_ids_result.all()]
+
+        restored_trials = 0
+        if task_ids:
+            trials_result = await session.execute(
+                update(TrialModel)
+                .where(TrialModel.task_id.in_(task_ids))
+                .values(deleted_at=None)
+            )
+            restored_trials = int(trials_result.rowcount or 0)
+
+        await session.execute(
+            update(TaskModel)
+            .where(TaskModel.experiment_id == experiment.id)
+            .values(deleted_at=None)
+        )
+
+        experiment.deleted_at = None
+        await session.commit()
+
+    return {
+        "status": "success",
+        "message": "Experiment restored",
+        "restored": {
+            "experiment_id": experiment_id,
+            "tasks": len(task_ids),
+            "trials": restored_trials,
+        },
+    }
 
 
 @router.post("/tasks/{task_id}/analysis/retry")

@@ -40,6 +40,18 @@ class Base(DeclarativeBase):
         DateTime(timezone=True), nullable=True
     )
 
+    def soft_delete(self) -> None:
+        """Mark this record as soft-deleted."""
+        self.deleted_at = utcnow()
+
+    def restore(self) -> None:
+        """Restore a soft-deleted record."""
+        self.deleted_at = None
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.deleted_at is not None
+
 
 def generate_id() -> str:
     """Generate a short unique ID."""

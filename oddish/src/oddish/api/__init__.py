@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text, select, delete
+from sqlalchemy import text, select, update
 from typing import cast
 import uvicorn
 from rich.console import Console
@@ -31,7 +31,6 @@ from oddish.db import (
     get_pool,
     utcnow,
 )
-from oddish.db.storage import collect_s3_prefixes_for_deletion, delete_s3_prefixes
 from oddish.schemas import (
     TaskBatchCancelRequest,
     ExperimentUpdateRequest,
@@ -328,39 +327,27 @@ async def cancel_tasks(payload: TaskBatchCancelRequest):
 
 @api.delete("/tasks/{task_id}")
 async def delete_task(task_id: str):
-    """Delete a task and its trials."""
+    """Soft-delete a task and its trials."""
     async with get_session() as session:
         task = await session.get(TaskModel, task_id)
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        task_rows = [(task.task_s3_key, task.task_path)]
-        trial_rows_result = await session.execute(
-            select(TrialModel.id, TrialModel.trial_s3_key).where(
-                TrialModel.task_id == task.id
-            )
+        now = utcnow()
+        await session.execute(
+            update(TrialModel)
+            .where(TrialModel.task_id == task.id)
+            .values(deleted_at=now)
         )
-        trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
-        s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=task_rows,
-            trials=trial_rows,
-        )
-
-        await session.delete(task)
+        task.deleted_at = now
         await session.commit()
-
-    if s3_prefixes:
-        try:
-            await delete_s3_prefixes(s3_prefixes)
-        except Exception:
-            logger.exception("Failed to delete S3 artifacts for task %s", task_id)
 
     return {"status": "success", "deleted": {"task_id": task_id}}
 
 
 @api.delete("/experiments/{experiment_id}")
 async def delete_experiment(experiment_id: str):
-    """Delete an experiment and all associated tasks/trials."""
+    """Soft-delete an experiment and all associated tasks/trials."""
     async with get_session() as session:
         experiment = await session.get(ExperimentModel, experiment_id)
         if not experiment:
@@ -368,45 +355,26 @@ async def delete_experiment(experiment_id: str):
                 status_code=404, detail=f"Experiment {experiment_id} not found"
             )
 
+        now = utcnow()
         result = await session.execute(
             select(TaskModel.id).where(TaskModel.experiment_id == experiment_id)
         )
         task_ids = [row[0] for row in result.all()]
-        task_rows_result = await session.execute(
-            select(TaskModel.task_s3_key, TaskModel.task_path).where(
-                TaskModel.experiment_id == experiment_id
-            )
-        )
-        task_rows = [(row[0], row[1]) for row in task_rows_result.all()]
-        trial_rows: list[tuple[str, str | None]] = []
 
         if task_ids:
-            trial_rows_result = await session.execute(
-                select(TrialModel.id, TrialModel.trial_s3_key).where(
-                    TrialModel.task_id.in_(task_ids)
-                )
-            )
-            trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
             await session.execute(
-                delete(TrialModel).where(TrialModel.task_id.in_(task_ids))
+                update(TrialModel)
+                .where(TrialModel.task_id.in_(task_ids))
+                .values(deleted_at=now)
             )
-            await session.execute(delete(TaskModel).where(TaskModel.id.in_(task_ids)))
+            await session.execute(
+                update(TaskModel)
+                .where(TaskModel.id.in_(task_ids))
+                .values(deleted_at=now)
+            )
 
-        s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=task_rows,
-            trials=trial_rows,
-        )
-
-        await session.delete(experiment)
+        experiment.deleted_at = now
         await session.commit()
-
-    if s3_prefixes:
-        try:
-            await delete_s3_prefixes(s3_prefixes)
-        except Exception:
-            logger.exception(
-                "Failed to delete S3 artifacts for experiment %s", experiment_id
-            )
 
     return {
         "status": "success",
