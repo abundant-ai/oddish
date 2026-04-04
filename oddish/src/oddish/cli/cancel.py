@@ -49,7 +49,10 @@ def cancel(
             raise typer.Exit(0)
 
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        response = client.post(f"{api_url}/tasks/{task_id}/cancel")
+        response = client.post(
+            f"{api_url}/tasks/cancel",
+            json={"task_ids": [task_id]},
+        )
 
     if response.status_code == 404:
         console.print(f"[red]Task {task_id} not found[/red]")

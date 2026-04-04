@@ -174,11 +174,11 @@ uv run python -m oddish.api --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/cla
 | POST | `/tasks/sweep` | Expand a sweep into a task plus trials |
 | GET | `/tasks` | List tasks |
 | GET | `/tasks/{task_id}` | Fetch a task with trials |
-| POST | `/tasks/{task_id}/cancel` | Cancel in-flight runs without deleting data |
-| DELETE | `/tasks/{task_id}` | Delete a task and its trials |
+| POST | `/tasks/cancel` | Cancel many tasks in one request |
+| DELETE | `/tasks/{task_id}` | Delete a task, its trials, and associated S3 artifacts when enabled |
 | POST | `/tasks/{task_id}/analysis/retry` | Queue or rerun task-wide analysis jobs |
 | POST | `/tasks/{task_id}/verdict/retry` | Queue or rerun a task verdict |
-| DELETE | `/experiments/{experiment_id}` | Delete an experiment and its tasks |
+| DELETE | `/experiments/{experiment_id}` | Delete an experiment, its tasks/trials, and associated S3 artifacts when enabled |
 | PATCH | `/experiments/{experiment_id}` | Update experiment metadata |
 | GET | `/tasks/{task_id}/trials/{index}` | Fetch a trial by 0-based index |
 | POST | `/trials/{trial_id}/analysis/retry` | Queue or rerun analysis for one trial |
@@ -186,11 +186,6 @@ uv run python -m oddish.api --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/cla
 | GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
 
 Remote APIs require `ODDISH_API_KEY`.
-
-Trial-bearing task responses now include a live `queue_info` snapshot for
-queued/retrying trials so UIs can show current queue position, queued depth,
-running count, and configured concurrency. Treat it as advisory state: the
-fair scheduler can reshuffle positions as other trials start or finish.
 
 ## Configuration
 
@@ -240,8 +235,11 @@ MODAL_TOKEN_SECRET=...
 
 Storage defaults:
 
-- uploaded task bundles: `/tmp/oddish-tasks`
+- uploaded task bundles: `/tmp/oddish-tasks` locally, or a single
+  `tasks/<task_id>/.oddish-task.tar.gz` archive in S3 when remote storage is enabled
 - Harbor job outputs: `/tmp/harbor-jobs`
+- Modal workers also check the fixed mount path `/mnt/oddish-tasks` for
+  extracted `tasks/` objects before falling back to the normal S3 download path
 
 ## Repository Layout
 

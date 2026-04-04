@@ -1,13 +1,14 @@
 from collections import Counter
 from contextlib import asynccontextmanager
 import argparse
-from pathlib import Path
 import asyncio
 import json
+import logging
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text, select, delete, update
+from sqlalchemy import text, select, update
 from typing import cast
 import uvicorn
 from rich.console import Console
@@ -31,6 +32,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.schemas import (
+    TaskBatchCancelRequest,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
     TaskResponse,
@@ -42,11 +44,12 @@ from oddish.schemas import (
 from oddish.task_timeouts import TaskTimeoutValidationError
 
 from oddish.queue import (
-    cancel_task_runs,
+    cancel_tasks_runs,
     create_task,
 )
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 _CONCURRENCY_OVERRIDES: dict[str, int] = {}
 
@@ -299,18 +302,24 @@ async def get_task_status(task_id: str):
         )
 
 
-@api.post("/tasks/{task_id}/cancel")
-async def cancel_task(task_id: str):
-    """Cancel all in-flight runs for a task without deleting data."""
+@api.post("/tasks/cancel")
+async def cancel_tasks(payload: TaskBatchCancelRequest):
+    """Cancel in-flight runs for many tasks without deleting data."""
+    if not payload.task_ids:
+        raise HTTPException(status_code=400, detail="Provide at least one task_id")
+
     async with get_session() as session:
-        result = await cancel_task_runs(session, task_id)
+        result = await cancel_tasks_runs(session, payload.task_ids)
         if result.get("error") == "not_found":
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+            raise HTTPException(status_code=404, detail="No matching tasks found")
         await session.commit()
 
     return {
         "status": "cancelled",
-        "task_id": task_id,
+        "task_ids": result.get("task_ids", []),
+        "not_found_task_ids": result.get("not_found_task_ids", []),
+        "tasks_found": result.get("tasks_found", 0),
+        "tasks_cancelled": result.get("tasks_cancelled", 0),
         "trials_cancelled": result.get("trials_cancelled", 0),
         "modal_calls_cancelled": 0,
     }

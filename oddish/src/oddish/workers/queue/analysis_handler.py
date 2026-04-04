@@ -14,7 +14,11 @@ from oddish.workers.queue.shared import console
 ANALYSIS_TIMEOUT = 900  # 15 minutes
 
 
-async def run_analysis_job(trial_id: str, queue_key: str) -> None:
+async def run_analysis_job(
+    trial_id: str,
+    queue_key: str,
+    modal_function_call_id: str | None = None,
+) -> None:
     """
     Execute analysis for a claimed trial.
 
@@ -46,6 +50,7 @@ async def run_analysis_job(trial_id: str, queue_key: str) -> None:
 
         trial.analysis_status = AnalysisStatus.RUNNING
         trial.analysis_started_at = utcnow()
+        trial.analysis_modal_function_call_id = modal_function_call_id
 
         # Get task info for downloads
         task = await session.get(TaskModel, trial.task_id)
@@ -164,6 +169,7 @@ async def run_analysis_job(trial_id: str, queue_key: str) -> None:
                 trial.analysis_status = AnalysisStatus.SUCCESS
                 trial.analysis_finished_at = utcnow()
                 trial.analysis_error = None
+                trial.analysis_modal_function_call_id = None
                 console.print(f"[green]Analysis {trial_id} SUCCESS[/green]")
             else:
                 trial.analysis_status = AnalysisStatus.FAILED
@@ -171,6 +177,7 @@ async def run_analysis_job(trial_id: str, queue_key: str) -> None:
                     analysis_error or "Analysis execution failed with exception"
                 )
                 trial.analysis_finished_at = utcnow()
+                trial.analysis_modal_function_call_id = None
                 console.print(f"[red]Analysis {trial_id} FAILED[/red]")
 
             # Check if all analyses done → start verdict stage

@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
+import io
 import json
 import posixpath
+import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
 
 import aioboto3
+from botocore.exceptions import ClientError
 from fastapi import HTTPException
 from oddish.config import settings
+
+WORKER_TASK_MOUNT_PATH = Path("/mnt/oddish-tasks")
+WORKER_TASK_KEY_PREFIX = "tasks/"
 
 
 def normalize_s3_relative_path(value: str | None) -> str:
@@ -38,6 +45,67 @@ def extract_s3_key_from_path(path: str | None) -> str | None:
     return None
 
 
+def _validate_task_archive_members(
+    members: list[tarfile.TarInfo], destination: Path
+) -> None:
+    for member in members:
+        if member.islnk() or member.issym():
+            raise ValueError("links not allowed")
+        member_path = Path(member.name)
+        if member_path.is_absolute():
+            raise ValueError("absolute paths not allowed")
+        resolved = (destination / member.name).resolve()
+        if destination not in resolved.parents and resolved != destination:
+            raise ValueError("path traversal")
+
+
+def extract_task_tarfile(tar: tarfile.TarFile, destination: Path) -> None:
+    """Safely extract a task tarball into a destination directory."""
+    members = tar.getmembers()
+    _validate_task_archive_members(members, destination)
+    for member in members:
+        tar.extract(member, path=destination, filter="data")
+
+
+def _task_archive_members_from_bytes(archive_bytes: bytes) -> list[dict[str, object]]:
+    files: dict[str, dict[str, object]] = {}
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            normalized_path = normalize_s3_relative_path(member.name)
+            if not normalized_path:
+                continue
+            files[normalized_path] = {
+                "path": normalized_path,
+                "size": member.size,
+                "last_modified": datetime.fromtimestamp(
+                    member.mtime, tz=timezone.utc
+                ),
+            }
+    return [files[path] for path in sorted(files)]
+
+
+def _read_task_archive_text(archive_bytes: bytes, file_path: str) -> str:
+    normalized_path = normalize_s3_relative_path(file_path)
+    if not normalized_path:
+        raise HTTPException(status_code=400, detail="Invalid file path")
+
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            member_path = normalize_s3_relative_path(member.name)
+            if member_path != normalized_path:
+                continue
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                break
+            return extracted.read().decode("utf-8")
+
+    raise HTTPException(status_code=404, detail=f"Task file not found: {normalized_path}")
+
+
 class StorageClient:
     """
     Async S3-compatible storage client.
@@ -55,6 +123,7 @@ class StorageClient:
         return self._client  # type: ignore[return-value]
 
     _MAX_CONCURRENT_UPLOADS = 8
+    _TASK_ARCHIVE_OBJECT_NAME = ".oddish-task.tar.gz"
 
     async def _ensure_client(self):
         """Lazy initialization of aioboto3 client."""
@@ -116,6 +185,27 @@ class StorageClient:
 
         return s3_prefix
 
+    @classmethod
+    def _task_archive_key(cls, task_id: str) -> str:
+        return f"tasks/{task_id}/{cls._TASK_ARCHIVE_OBJECT_NAME}"
+
+    @classmethod
+    def _task_archive_key_from_prefix(cls, s3_prefix: str) -> str:
+        normalized_prefix = normalize_s3_prefix(s3_prefix)
+        if not normalized_prefix:
+            raise ValueError(f"Invalid task S3 prefix: {s3_prefix}")
+        return f"{normalized_prefix}{cls._TASK_ARCHIVE_OBJECT_NAME}"
+
+    async def upload_task_archive(self, task_id: str, archive_path: Path) -> str:
+        """Upload a task tarball as a single S3 object."""
+        await self._ensure_client()
+        if not archive_path.exists() or not archive_path.is_file():
+            raise ValueError(f"Task archive does not exist: {archive_path}")
+
+        archive_key = self._task_archive_key(task_id)
+        await self.upload_file(archive_path, archive_key)
+        return f"tasks/{task_id}/"
+
     async def download_task_directory(self, s3_prefix: str, local_path: Path) -> None:
         """
         Download a task directory from S3.
@@ -126,6 +216,11 @@ class StorageClient:
         """
         await self._ensure_client()
         local_path.mkdir(parents=True, exist_ok=True)
+
+        archive_key = self._task_archive_key_from_prefix(s3_prefix)
+        if await self.object_exists(archive_key):
+            await self._download_and_extract_task_archive(archive_key, local_path)
+            return
 
         # List all objects with this prefix
         paginator = self._s3.get_paginator("list_objects_v2")
@@ -249,6 +344,71 @@ class StorageClient:
     ) -> dict:
         """List files in a task's S3 directory."""
         root_prefix = f"tasks/{task_id}/"
+        archive_key = self._task_archive_key(task_id)
+        if await self.object_exists(archive_key):
+            archive_bytes = await self.download_bytes(archive_key)
+            archive_files = _task_archive_members_from_bytes(archive_bytes)
+            relative_prefix = normalize_s3_relative_path(prefix)
+            if relative_prefix and not relative_prefix.endswith("/"):
+                relative_prefix = f"{relative_prefix}/"
+            full_prefix = f"{root_prefix}{relative_prefix}"
+
+            filtered_files = [
+                file_meta
+                for file_meta in archive_files
+                if not relative_prefix or str(file_meta["path"]).startswith(relative_prefix)
+            ]
+            if recursive:
+                return {
+                    "task_id": task_id,
+                    "files": filtered_files,
+                    "dirs": [],
+                    "prefix": full_prefix,
+                    "recursive": True,
+                    "presigned": False,
+                    "presign_expires_in": None,
+                }
+
+            offset = int(cursor or "0")
+            files: list[dict[str, object]] = []
+            dir_paths: set[str] = set()
+            for file_meta in filtered_files:
+                archive_path = str(file_meta["path"])
+                remainder = (
+                    archive_path[len(relative_prefix) :]
+                    if relative_prefix
+                    else archive_path
+                )
+                first_component, _, rest = remainder.partition("/")
+                if rest:
+                    dir_paths.add(
+                        f"{relative_prefix}{first_component}".rstrip("/")
+                        if relative_prefix
+                        else first_component
+                    )
+                    continue
+                files.append(file_meta)
+
+            entries: list[tuple[str, dict[str, object]]] = [
+                ("dir", {"path": path}) for path in sorted(dir_paths)
+            ]
+            entries.extend(("file", file_meta) for file_meta in files)
+            entries.sort(key=lambda item: str(item[1]["path"]))
+
+            page = entries[offset : offset + limit]
+            next_offset = offset + limit
+            return {
+                "task_id": task_id,
+                "files": [entry for kind, entry in page if kind == "file"],
+                "dirs": [entry for kind, entry in page if kind == "dir"],
+                "prefix": full_prefix,
+                "recursive": False,
+                "cursor": str(next_offset) if next_offset < len(entries) else None,
+                "truncated": next_offset < len(entries),
+                "presigned": False,
+                "presign_expires_in": None,
+            }
+
         relative_prefix = normalize_s3_relative_path(prefix)
         if relative_prefix and not relative_prefix.endswith("/"):
             relative_prefix = f"{relative_prefix}/"
@@ -347,6 +507,15 @@ class StorageClient:
         normalized_path = normalize_s3_relative_path(file_path)
         if not normalized_path:
             raise HTTPException(status_code=400, detail="Invalid file path")
+        archive_key = self._task_archive_key(task_id)
+        if await self.object_exists(archive_key):
+            archive_bytes = await self.download_bytes(archive_key)
+            content = _read_task_archive_text(archive_bytes, normalized_path)
+            return {
+                "path": normalized_path,
+                "content": content,
+                "key": f"{archive_key}#{normalized_path}",
+            }
         s3_key = f"tasks/{task_id}/{normalized_path}"
 
         if presign:
@@ -432,6 +601,18 @@ class StorageClient:
             result: dict = json.loads(content.decode("utf-8"))
             return result
 
+    async def object_exists(self, s3_key: str) -> bool:
+        """Return whether an exact object key exists."""
+        await self._ensure_client()
+        try:
+            await self._s3.head_object(Bucket=settings.s3_bucket, Key=s3_key)
+            return True
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code")
+            if error_code in {"404", "NoSuchKey", "NotFound"}:
+                return False
+            raise
+
     async def list_keys(self, prefix: str) -> list[str]:
         """List all keys with a given prefix."""
         await self._ensure_client()
@@ -441,6 +622,51 @@ class StorageClient:
             for obj in page.get("Contents", []):
                 keys.append(obj["Key"])
         return keys
+
+    async def delete_prefix(self, prefix: str) -> int:
+        """Delete every object stored under an S3 prefix."""
+        await self._ensure_client()
+        keys = await self.list_keys(prefix)
+        if not keys:
+            return 0
+
+        deleted = 0
+        for start in range(0, len(keys), 1000):
+            batch = keys[start : start + 1000]
+            response = await self._s3.delete_objects(
+                Bucket=settings.s3_bucket,
+                Delete={
+                    "Objects": [{"Key": key} for key in batch],
+                    "Quiet": True,
+                },
+            )
+            errors = response.get("Errors", [])
+            if errors:
+                first_error = errors[0]
+                raise RuntimeError(
+                    "Failed to delete S3 objects under prefix "
+                    f"{prefix}: {first_error.get('Key')}: "
+                    f"{first_error.get('Message', 'unknown error')}"
+                )
+            deleted += len(batch)
+        return deleted
+
+    async def delete_prefixes(self, prefixes: list[str]) -> int:
+        """Delete objects for many prefixes, skipping duplicates."""
+        deleted = 0
+        for prefix in dict.fromkeys(prefixes):
+            deleted += await self.delete_prefix(prefix)
+        return deleted
+
+    async def prefix_exists(self, prefix: str) -> bool:
+        """Return whether at least one object exists for a prefix."""
+        await self._ensure_client()
+        response = await self._s3.list_objects_v2(
+            Bucket=settings.s3_bucket,
+            Prefix=prefix,
+            MaxKeys=1,
+        )
+        return bool(response.get("Contents"))
 
     async def list_objects_all(self, prefix: str) -> list[dict]:
         """List all objects with metadata (key, size, last_modified) for a given prefix."""
@@ -457,6 +683,13 @@ class StorageClient:
                     }
                 )
         return objects
+
+    async def _download_and_extract_task_archive(
+        self, archive_key: str, local_path: Path
+    ) -> None:
+        archive_bytes = await self.download_bytes(archive_key)
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
+            extract_task_tarfile(tar, local_path)
 
     async def list_objects(
         self,
@@ -556,9 +789,89 @@ def get_storage_client() -> StorageClient:
     return _storage_client
 
 
+def normalize_s3_prefix(prefix: str | None) -> str | None:
+    """Normalize an S3 prefix and keep it directory-shaped."""
+    if not prefix:
+        return None
+    normalized = normalize_s3_relative_path(prefix).rstrip("/")
+    if not normalized:
+        return None
+    return f"{normalized}/"
+
+
 def resolve_s3_key(task_s3_key: str | None, task_path: str | None) -> str | None:
     """Resolve an S3 key from a stored key or s3:// path."""
     return task_s3_key or extract_s3_key_from_path(task_path)
+
+
+def resolve_trial_s3_prefix(
+    trial_id: str,
+    *,
+    trial_s3_key: str | None,
+    trial_result_path: str | None = None,
+) -> str:
+    """Resolve a trial S3 prefix, falling back to the default trial layout."""
+    resolved = resolve_s3_key(trial_s3_key, trial_result_path)
+    return normalize_s3_prefix(resolved or StorageClient._trial_prefix(trial_id)) or (
+        StorageClient._trial_prefix(trial_id)
+    )
+
+
+def collect_s3_prefixes_for_deletion(
+    *,
+    tasks: list[tuple[str | None, str | None]],
+    trials: list[tuple[str, str | None]],
+) -> list[str]:
+    """Collect unique task and trial S3 prefixes that should be deleted."""
+    prefixes: list[str] = []
+
+    for task_s3_key, task_path in tasks:
+        resolved = normalize_s3_prefix(resolve_s3_key(task_s3_key, task_path))
+        if resolved:
+            prefixes.append(resolved)
+
+    for trial_id, trial_s3_key in trials:
+        prefixes.append(resolve_trial_s3_prefix(trial_id, trial_s3_key=trial_s3_key))
+
+    return list(dict.fromkeys(prefixes))
+
+
+async def delete_s3_prefixes(prefixes: list[str]) -> int:
+    """Delete S3 objects for the provided prefixes when S3 is enabled."""
+    normalized: list[str] = []
+    for prefix in prefixes:
+        resolved = normalize_s3_prefix(prefix)
+        if resolved:
+            normalized.append(resolved)
+    normalized = list(dict.fromkeys(normalized))
+    if not normalized or not settings.s3_enabled:
+        return 0
+    storage = get_storage_client()
+    return await storage.delete_prefixes(normalized)
+
+
+def resolve_mounted_task_directory(task_s3_key: str | None) -> Path | None:
+    """Return a mounted task path when worker bucket mounts are configured."""
+    if not task_s3_key:
+        return None
+
+    key_prefix = normalize_s3_relative_path(WORKER_TASK_KEY_PREFIX)
+    normalized_key = normalize_s3_relative_path(task_s3_key).rstrip("/")
+    if not key_prefix:
+        return None
+
+    normalized_prefix = f"{key_prefix.rstrip('/')}/"
+    if not normalized_key.startswith(normalized_prefix):
+        return None
+
+    relative_path = normalized_key[len(normalized_prefix) :]
+    if not relative_path:
+        return None
+
+    candidate = WORKER_TASK_MOUNT_PATH / relative_path
+    if candidate.exists() and (candidate / "task.toml").exists():
+        return candidate
+    return None
 
 
 async def resolve_task_directory(
@@ -574,6 +887,10 @@ async def resolve_task_directory(
     """
     resolved_s3_key = resolve_s3_key(task_s3_key, task_path)
     if resolved_s3_key:
+        mounted_task_path = resolve_mounted_task_directory(resolved_s3_key)
+        if mounted_task_path is not None:
+            return mounted_task_path, None, resolved_s3_key
+
         storage = get_storage_client()
         temp_dir = Path(tempfile.mkdtemp(prefix=f"task-{task_id}-"))
         try:
