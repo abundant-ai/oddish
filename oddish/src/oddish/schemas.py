@@ -134,6 +134,10 @@ class TaskSubmission(BaseModel):
         default_factory=HarborConfig,  # type: ignore[arg-type]
         description="Harbor execution config (environment, verifier, artifacts, etc.)",
     )
+    content_hash: str | None = Field(
+        None,
+        description="Deterministic hash of task directory contents (set by CLI during upload)",
+    )
 
     @model_validator(mode="after")
     def require_models(self):
@@ -213,6 +217,10 @@ class TaskSweepSubmission(BaseModel):
         default_factory=HarborConfig,  # type: ignore[arg-type]
         description="Harbor execution config (environment, verifier, artifacts, etc.)",
     )
+    content_hash: str | None = Field(
+        None,
+        description="Deterministic hash of task directory contents (set by CLI during upload)",
+    )
 
     @model_validator(mode="after")
     def require_models(self):
@@ -251,6 +259,11 @@ class UploadResponse(BaseModel):
     name: str
     task_path: str | None = None
     s3_key: str | None = None
+    version: int | None = None
+    version_id: str | None = None
+    existing_task: bool = False
+    content_unchanged: bool = False
+    content_hash: str | None = None
 
 
 class TrialQueueInfo(BaseModel):
@@ -276,11 +289,29 @@ class TrialQueueInfo(BaseModel):
     )
 
 
+class TaskVersionResponse(BaseModel):
+    """Response for a single task version."""
+
+    id: str
+    task_id: str
+    version: int
+    task_path: str
+    task_s3_key: str | None = None
+    content_hash: str | None = None
+    message: str | None = None
+    created_by_user_id: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class TrialResponse(BaseModel):
     id: str
     name: str
     task_id: str
     task_path: str
+    task_version: int | None = None
+    task_version_id: str | None = None
     agent: str
     provider: str
     queue_key: str
@@ -372,6 +403,8 @@ class TaskStatusResponse(BaseModel):
     experiment_id: str
     experiment_name: str
     experiment_is_public: bool = False
+    current_version: int | None = None
+    current_version_id: str | None = None
     total: int
     completed: int
     failed: int

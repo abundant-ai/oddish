@@ -1823,6 +1823,11 @@ export function ExperimentTrialsTable({
                                 </TooltipTrigger>
                                 <TooltipContent>View task files</TooltipContent>
                               </Tooltip>
+                              {task.current_version != null && (
+                                <span className="inline-flex shrink-0 items-center rounded border border-border bg-muted/50 px-1 py-px font-mono text-[10px] font-medium leading-none text-muted-foreground">
+                                  v{task.current_version}
+                                </span>
+                              )}
                               <VerdictIndicator task={task} />
                             </div>
                           </div>

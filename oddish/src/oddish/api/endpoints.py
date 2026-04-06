@@ -25,11 +25,12 @@ from oddish.db import (
     ExperimentModel,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
 )
-from oddish.schemas import TaskStatusResponse, TrialResponse
+from oddish.schemas import TaskStatusResponse, TaskVersionResponse, TrialResponse
 
 
 async def get_task_for_org_core(
@@ -72,6 +73,7 @@ async def list_tasks_core(
                 TrialModel.id,
                 TrialModel.name,
                 TrialModel.task_id,
+                TrialModel.task_version_id,
                 TrialModel.agent,
                 TrialModel.provider,
                 TrialModel.queue_key,
@@ -103,6 +105,7 @@ async def list_tasks_core(
                     TaskModel.user,
                     TaskModel.tags,
                     TaskModel.task_path,
+                    TaskModel.current_version_id,
                     TaskModel.experiment_id,
                     TaskModel.run_analysis,
                     TaskModel.verdict_status,
@@ -578,3 +581,51 @@ async def get_trial_result_core(
     """Get trial result with optional org scoping."""
     trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
     return await read_trial_result(trial)
+
+
+# =============================================================================
+# Task Version Helpers
+# =============================================================================
+
+
+async def list_task_versions_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    org_id: str | None = None,
+) -> list[TaskVersionResponse]:
+    """Return all versions of a task, newest first."""
+    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
+
+    result = await session.execute(
+        select(TaskVersionModel)
+        .where(TaskVersionModel.task_id == task.id)
+        .order_by(TaskVersionModel.version.desc())
+    )
+    versions = result.scalars().all()
+    return [TaskVersionResponse.model_validate(v) for v in versions]
+
+
+async def get_task_version_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    version: int,
+    org_id: str | None = None,
+) -> TaskVersionResponse:
+    """Return a specific version of a task."""
+    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
+
+    result = await session.execute(
+        select(TaskVersionModel).where(
+            TaskVersionModel.task_id == task.id,
+            TaskVersionModel.version == version,
+        )
+    )
+    version_row = result.scalar_one_or_none()
+    if not version_row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Version {version} not found for task {task_id}",
+        )
+    return TaskVersionResponse.model_validate(version_row)

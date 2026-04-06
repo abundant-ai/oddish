@@ -10,6 +10,7 @@ from oddish.db.models import (
     # ORM Models
     ExperimentModel,
     TaskModel,
+    TaskVersionModel,
     TrialModel,
     # Helpers
     generate_id,
@@ -50,6 +51,7 @@ __all__ = [
     "ExperimentModel",
     "QueueSlotModel",
     "TaskModel",
+    "TaskVersionModel",
     "TrialModel",
     # Helpers
     "generate_id",

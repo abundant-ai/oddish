@@ -15,8 +15,10 @@ from rich.console import Console
 
 from oddish.api.endpoints import (
     get_task_status_core,
+    get_task_version_core,
     get_trial_by_index_core,
     get_trial_for_org_core,
+    list_task_versions_core,
     list_tasks_core,
 )
 from oddish.api.trial_io import read_trial_logs, read_trial_result
@@ -39,6 +41,7 @@ from oddish.schemas import (
     TaskResponse,
     TaskStatusResponse,
     TaskSweepSubmission,
+    TaskVersionResponse,
     TrialResponse,
     UploadResponse,
 )
@@ -183,21 +186,32 @@ async def health():
 
 
 @api.post("/tasks/upload", response_model=UploadResponse)
-async def upload_task(file: UploadFile = File(...)) -> UploadResponse:
+async def upload_task(
+    file: UploadFile = File(...),
+    content_hash: str | None = None,
+    message: str | None = None,
+) -> UploadResponse:
     """
     Upload a task directory (as tarball).
 
     The client should send a .tar.gz file containing the task directory.
     Server will extract it and store it (S3 if enabled, local directory otherwise).
 
+    If a task with the same name already exists the server compares
+    ``content_hash`` against the latest version.  When unchanged the existing
+    version is reused; otherwise a new version is created automatically.
+
     Args:
         file: Tarball containing the task directory
+        content_hash: Deterministic hash of the task directory contents
+        message: Optional description of what changed in this version
 
     Returns:
-        {"task_id": "abc123", "s3_key": "tasks/abc123/"} (if S3 enabled)
-        {"task_id": "abc123", "task_path": "/path/to/task"} (if S3 disabled)
+        Upload response with task_id, version info, and storage location.
     """
-    return await handle_task_upload(file)
+    return await handle_task_upload(
+        file, content_hash=content_hash, message=message
+    )
 
 
 # =============================================================================
@@ -301,6 +315,20 @@ async def get_task_status(task_id: str):
             include_trials=True,
             include_empty_rewards=False,
         )
+
+
+@api.get("/tasks/{task_id}/versions", response_model=list[TaskVersionResponse])
+async def list_task_versions(task_id: str):
+    """List all versions of a task, newest first."""
+    async with get_session() as session:
+        return await list_task_versions_core(session, task_id=task_id)
+
+
+@api.get("/tasks/{task_id}/versions/{version}", response_model=TaskVersionResponse)
+async def get_task_version(task_id: str, version: int):
+    """Get a specific version of a task."""
+    async with get_session() as session:
+        return await get_task_version_core(session, task_id=task_id, version=version)
 
 
 @api.post("/tasks/cancel")

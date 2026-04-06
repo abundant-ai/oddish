@@ -31,7 +31,14 @@ import {
 } from "lucide-react";
 import { fetcher } from "@/lib/api";
 import { CodeBlock, getLanguageFromFilename } from "@/components/code-block";
-import type { Task, Trial } from "@/lib/types";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import type { Task, TaskVersion, Trial } from "@/lib/types";
 
 interface TaskFile {
   path: string;
@@ -346,6 +353,14 @@ export function TaskFilesPanel({
   } = useSWR<FilesListingResponse>(recursiveFilesKey, fetcher, {
     revalidateOnFocus: false,
   });
+  const versionsKey =
+    isOpen && taskId ? `${baseUrl}/tasks/${taskId}/versions` : null;
+  const { data: versions } = useSWR<TaskVersion[]>(versionsKey, fetcher, {
+    revalidateOnFocus: false,
+  });
+  const currentVersion = (verdictTask ?? task)?.current_version ?? null;
+  const hasMultipleVersions = (versions?.length ?? 0) > 1;
+
   const verdictSource = verdictTask ?? task;
 
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
@@ -1144,16 +1159,55 @@ export function TaskFilesPanel({
       <DrawerHeader className="shrink-0 border-b border-border px-4 py-3">
         <div className="mb-2 flex flex-wrap items-start justify-between gap-3 pr-20">
           <div className="min-w-0 flex-1">
-            <DrawerTitle className="font-mono text-base font-semibold">
+            <DrawerTitle className="flex items-center gap-2 font-mono text-base font-semibold">
               <button
                 type="button"
                 onClick={handleCopyTaskName}
-                className="block max-w-full truncate text-left transition hover:text-blue-400"
+                className="block min-w-0 max-w-full truncate text-left transition hover:text-blue-400"
                 title="Copy task name"
                 aria-label={`Copy task name ${taskName}`}
               >
                 {taskName}
               </button>
+              {currentVersion != null && (
+                hasMultipleVersions && versions ? (
+                  <Select
+                    value={String(currentVersion)}
+                    onValueChange={() => {}}
+                  >
+                    <SelectTrigger className="h-6 w-auto gap-1 border-border bg-muted/50 px-2 py-0 font-mono text-[11px] font-medium text-muted-foreground">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {versions.map((v) => (
+                        <SelectItem
+                          key={v.id}
+                          value={String(v.version)}
+                          className="font-mono text-xs"
+                        >
+                          <span className="flex items-center gap-2">
+                            <span>v{v.version}</span>
+                            {v.version === currentVersion && (
+                              <span className="text-[10px] text-muted-foreground">
+                                (latest)
+                              </span>
+                            )}
+                            {v.message && (
+                              <span className="max-w-[200px] truncate text-[10px] text-muted-foreground">
+                                — {v.message}
+                              </span>
+                            )}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <span className="inline-flex shrink-0 items-center rounded-md border border-border bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-foreground">
+                    v{currentVersion}
+                  </span>
+                )
+              )}
             </DrawerTitle>
             <div className="mt-1 min-h-3 text-[10px] text-emerald-600">
               {copiedTaskName ? "Copied to clipboard" : null}
