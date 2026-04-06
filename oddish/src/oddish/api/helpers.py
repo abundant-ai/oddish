@@ -172,6 +172,19 @@ async def fetch_trial_queue_info(
     )
 
 
+def _resolve_trial_version_fields(
+    trial: TrialModel,
+) -> tuple[int | None, str | None]:
+    """Extract version number and id from a trial's linked TaskVersionModel."""
+    version_id = trial.task_version_id
+    if version_id is None:
+        return None, None
+    # Parse version number from the id convention "{task_id}-v{N}"
+    parts = version_id.rsplit("-v", 1)
+    version_number = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else None
+    return version_number, version_id
+
+
 def build_trial_response(
     trial: TrialModel,
     task_path: str,
@@ -180,11 +193,14 @@ def build_trial_response(
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
+    task_version, task_version_id = _resolve_trial_version_fields(trial)
     return TrialResponse(
         id=trial.id,
         name=trial.name,
         task_id=trial.task_id,
         task_path=task_path,
+        task_version=task_version,
+        task_version_id=task_version_id,
         agent=trial.agent,
         provider=trial.provider,
         queue_key=settings.normalize_queue_key(trial.queue_key),
@@ -236,12 +252,15 @@ def build_compact_trial_response(
             analysis_summary if isinstance(analysis_summary, dict) else None
         )
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
+    task_version, task_version_id = _resolve_trial_version_fields(trial)
 
     return TrialResponse(
         id=trial.id,
         name=trial.name,
         task_id=trial.task_id,
         task_path=task_path,
+        task_version=task_version,
+        task_version_id=task_version_id,
         agent=trial.agent,
         provider=trial.provider,
         queue_key=settings.normalize_queue_key(trial.queue_key),
@@ -304,6 +323,18 @@ def _parse_github_meta(tags: dict | None) -> dict[str, str] | None:
     return {str(k): str(v) for k, v in parsed.items()}
 
 
+def _resolve_task_version_fields(
+    task: TaskModel,
+) -> tuple[int | None, str | None]:
+    """Extract current version number and id from a task."""
+    version_id = task.current_version_id
+    if version_id is None:
+        return None, None
+    parts = version_id.rsplit("-v", 1)
+    version_number = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else None
+    return version_number, version_id
+
+
 def _build_task_status_response(
     task: TaskModel,
     *,
@@ -320,6 +351,7 @@ def _build_task_status_response(
         reward_total=reward_total,
         include_empty_rewards=include_empty_rewards,
     )
+    current_version, current_version_id = _resolve_task_version_fields(task)
     return TaskStatusResponse(
         id=task.id,
         name=task.name,
@@ -334,6 +366,8 @@ def _build_task_status_response(
         experiment_id=task.experiment_id,
         experiment_name=task.experiment.name,
         experiment_is_public=task.experiment.is_public if task.experiment else False,
+        current_version=current_version,
+        current_version_id=current_version_id,
         total=total,
         completed=completed,
         failed=failed,

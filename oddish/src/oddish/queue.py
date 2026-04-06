@@ -15,6 +15,7 @@ from oddish.db import (
     Priority,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
@@ -308,6 +309,9 @@ async def create_task(
 
     Trials are created with status=QUEUED which makes them immediately
     visible to the fair-scheduling claim query in workers.
+
+    A ``TaskVersionModel`` (v1) is also created to snapshot the task
+    content for this first submission.
     """
     if task_id is None:
         task_id = generate_id()
@@ -339,6 +343,7 @@ async def create_task(
         experiment_name = generate_experiment_name()
         experiment = await _get_or_create_experiment(session, experiment_name, org_id)
 
+    # Insert the task first (without version pointer to avoid circular FK).
     task = TaskModel(
         id=task_id,
         name=task_name,
@@ -352,6 +357,42 @@ async def create_task(
         run_analysis=submission.run_analysis,
     )
     session.add(task)
+    await session.flush()
+
+    # Determine the version: if one was pre-created during upload, use the
+    # latest; otherwise create v1 now that the task row exists.
+    existing_max = await session.scalar(
+        select(func.max(TaskVersionModel.version)).where(
+            TaskVersionModel.task_id == task_id
+        )
+    )
+
+    if existing_max is not None:
+        latest_version_row = (
+            await session.execute(
+                select(TaskVersionModel).where(
+                    TaskVersionModel.task_id == task_id,
+                    TaskVersionModel.version == existing_max,
+                )
+            )
+        ).scalar_one()
+        version_id = latest_version_row.id
+    else:
+        version_number = 1
+        version_id = f"{task_id}-v{version_number}"
+        version_row = TaskVersionModel(
+            id=version_id,
+            task_id=task_id,
+            version=version_number,
+            task_path=submission.task_path,
+            task_s3_key=task_s3_key,
+            content_hash=submission.content_hash,
+        )
+        session.add(version_row)
+        await session.flush()
+
+    # Now safe to set the back-pointer and create trials.
+    task.current_version_id = version_id
 
     for i, spec in enumerate(submission.trials):
         model = settings.normalize_trial_model(spec.agent, spec.model)
@@ -366,6 +407,7 @@ async def create_task(
             id=trial_id,
             name=trial_name,
             task_id=task_id,
+            task_version_id=version_id,
             org_id=org_id,
             agent=spec.agent,
             provider=provider,
@@ -389,7 +431,10 @@ async def append_trials_to_task(
     task: TaskModel,
     submission: TaskSubmission,
 ) -> list[TrialModel]:
-    """Append new queued trials to an existing task."""
+    """Append new queued trials to an existing task.
+
+    New trials are pinned to the task's ``current_version_id``.
+    """
     trial_rows = await session.execute(
         select(TrialModel)
         .where(TrialModel.task_id == task.id)
@@ -397,6 +442,8 @@ async def append_trials_to_task(
     )
     existing_trials = list(trial_rows.scalars().all())
     next_index = _get_next_trial_index(task.id, existing_trials)
+
+    current_version_id = task.current_version_id
 
     new_trials: list[TrialModel] = []
     for spec in submission.trials:
@@ -412,6 +459,7 @@ async def append_trials_to_task(
             id=trial_id,
             name=trial_name,
             task_id=task.id,
+            task_version_id=current_version_id,
             org_id=task.org_id,
             agent=spec.agent,
             provider=provider,

@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    text,
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB
@@ -134,6 +135,12 @@ class TaskModel(Base):
     __table_args__ = (
         Index("idx_tasks_org_created_at", "org_id", "created_at"),
         Index("idx_tasks_experiment_id", "experiment_id"),
+        Index(
+            "idx_tasks_unique_org_name",
+            text("COALESCE(org_id, '')"),
+            "name",
+            unique=True,
+        ),
     )
 
     # Override id to add auto-generation
@@ -160,11 +167,18 @@ class TaskModel(Base):
     )  # Original local path or task name
     task_s3_key: Mapped[str | None] = mapped_column(
         Text, nullable=True
-    )  # S3 prefix for task files
+    )  # S3 prefix for task files (mirrors latest version)
     experiment_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("experiments.id", ondelete="RESTRICT"), nullable=False
     )
     tags: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    # Versioning: points to the latest TaskVersionModel row
+    current_version_id: Mapped[str | None] = mapped_column(
+        String(128),
+        ForeignKey("task_versions.id", ondelete="SET NULL", use_alter=True),
+        nullable=True,
+    )
 
     # Analysis settings
     run_analysis: Mapped[bool] = mapped_column(default=False, nullable=False)
@@ -200,6 +214,55 @@ class TaskModel(Base):
     trials: Mapped[list["TrialModel"]] = relationship(  # type: ignore[assignment]
         "TrialModel", back_populates="task", lazy="selectin"
     )
+    versions: Mapped[list["TaskVersionModel"]] = relationship(  # type: ignore[assignment]
+        "TaskVersionModel",
+        back_populates="task",
+        lazy="selectin",
+        foreign_keys="TaskVersionModel.task_id",
+    )
+    current_version: Mapped["TaskVersionModel | None"] = relationship(  # type: ignore[assignment]
+        "TaskVersionModel",
+        foreign_keys=[current_version_id],
+        lazy="selectin",
+        uselist=False,
+    )
+
+
+class TaskVersionModel(Base):
+    """Immutable snapshot of a task's content at a point in time.
+
+    Each re-upload of a task bundle creates a new row.  Trials reference the
+    specific version they ran against via ``task_version_id``.
+    """
+
+    __tablename__ = "task_versions"
+    __table_args__ = (
+        Index(
+            "idx_task_versions_task_id_version",
+            "task_id",
+            "version",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    task_path: Mapped[str] = mapped_column(Text, nullable=False)
+    task_s3_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Relationships
+    task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]
+        "TaskModel",
+        back_populates="versions",
+        foreign_keys=[task_id],
+        lazy="selectin",
+    )
 
 
 class TrialModel(Base):
@@ -212,6 +275,9 @@ class TrialModel(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     task_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    task_version_id: Mapped[str | None] = mapped_column(
+        String(128), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
     )
 
     # -------------------------------------------------------------------------
@@ -324,6 +390,7 @@ class TrialModel(Base):
         # Composite index for efficient trial claiming queries
         Index("idx_trials_claimable", "status", "queue_key", "next_retry_at"),
         Index("idx_trials_task_id", "task_id"),
+        Index("idx_trials_task_version_id", "task_version_id"),
         Index("idx_trials_status", "status"),
         Index("idx_trials_status_heartbeat_at", "status", "heartbeat_at"),
         # Composite index for efficient queue stats aggregation (no JOIN needed)

@@ -206,6 +206,22 @@ class StorageClient:
         await self.upload_file(archive_path, archive_key)
         return f"tasks/{task_id}/"
 
+    async def upload_task_archive_versioned(
+        self, task_id: str, version: int, archive_path: Path
+    ) -> str:
+        """Upload a task tarball under a versioned S3 prefix.
+
+        Returns the S3 prefix for this version (e.g. ``tasks/{task_id}/v{version}/``).
+        """
+        await self._ensure_client()
+        if not archive_path.exists() or not archive_path.is_file():
+            raise ValueError(f"Task archive does not exist: {archive_path}")
+
+        prefix = f"tasks/{task_id}/v{version}/"
+        archive_key = f"{prefix}{self._TASK_ARCHIVE_OBJECT_NAME}"
+        await self.upload_file(archive_path, archive_key)
+        return prefix
+
     async def download_task_directory(self, s3_prefix: str, local_path: Path) -> None:
         """
         Download a task directory from S3.

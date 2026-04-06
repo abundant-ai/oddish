@@ -69,6 +69,8 @@ export interface Trial {
   analysis_status?: JobStatus | null;
   analysis?: TrialAnalysis | null;
   queue_info?: TrialQueueInfo | null;
+  task_version?: number | null;
+  task_version_id?: string | null;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -132,10 +134,24 @@ export interface Task {
   verdict_status?: JobStatus | null;
   verdict?: TaskVerdict | null;
   verdict_error?: string | null;
+  current_version?: number | null;
+  current_version_id?: string | null;
   trials?: Trial[] | null;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
+}
+
+// Task version snapshot
+export interface TaskVersion {
+  id: string;
+  task_id: string;
+  version: number;
+  task_path: string;
+  content_hash?: string | null;
+  message?: string | null;
+  created_by_user_id?: string | null;
+  created_at: string;
 }
 
 // Queue statistics keyed by queue key

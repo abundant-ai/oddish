@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import tarfile
@@ -158,6 +159,21 @@ def get_task_paths_from_registry(
 # =============================================================================
 
 
+def compute_task_content_hash(task_path: Path) -> str:
+    """Deterministic SHA-256 of a task directory's contents.
+
+    Walks files in sorted order and hashes (relative_path, file_bytes) for each,
+    so the result is independent of filesystem timestamps or tarball packaging.
+    """
+    hasher = hashlib.sha256()
+    for file_path in sorted(task_path.rglob("*")):
+        if file_path.is_file():
+            rel = file_path.relative_to(task_path)
+            hasher.update(str(rel).encode("utf-8"))
+            hasher.update(file_path.read_bytes())
+    return hasher.hexdigest()
+
+
 def archive_task_dir(task_path: Path) -> Path:
     """Create a tarball of a task directory."""
     # Create tarball in temp directory
@@ -176,8 +192,13 @@ def archive_task_dir(task_path: Path) -> Path:
 def upload_task(
     api_url: str,
     task_path: Path,
-) -> str:
-    """Upload a task directory to the API. Returns task_id."""
+) -> dict:
+    """Upload a task directory to the API.
+
+    Returns the full upload response dict which includes ``task_id``,
+    ``existing_task``, ``content_unchanged``, ``version``, etc.
+    """
+    content_hash = compute_task_content_hash(task_path)
     tarball_path = archive_task_dir(task_path)
 
     try:
@@ -185,6 +206,7 @@ def upload_task(
             with open(tarball_path, "rb") as f:
                 response = client.post(
                     f"{api_url}/tasks/upload",
+                    params={"content_hash": content_hash},
                     files={
                         "file": (
                             f"{task_path.name}.tar.gz",
@@ -198,10 +220,8 @@ def upload_task(
             error_console.print(f"[red]Failed to upload task:[/red] {response.text}")
             raise typer.Exit(1)
 
-        result: str = response.json()["task_id"]
-        return result
+        return cast(dict, response.json())
     finally:
-        # Cleanup tarball
         shutil.rmtree(Path(tarball_path).parent, ignore_errors=True)
 
 
@@ -240,6 +260,7 @@ def submit_sweep(
     agent_kwargs: list[str] | None = None,
     artifact_paths: list[str] | None = None,
     append_to_task: bool = False,
+    content_hash: str | None = None,
 ) -> dict:
     """Submit a task sweep to the API."""
     env_value = environment.value if environment else None
@@ -300,6 +321,8 @@ def submit_sweep(
         payload["harbor"] = harbor
     if append_to_task:
         payload["append_to_task"] = True
+    if content_hash:
+        payload["content_hash"] = content_hash
 
     with httpx.Client(
         timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()

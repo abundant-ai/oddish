@@ -84,4 +84,5 @@ def build_task_submission_from_sweep(
         run_analysis=submission.run_analysis,
         github_username=submission.github_username,
         harbor=submission.harbor,
+        content_hash=submission.content_hash,
     )

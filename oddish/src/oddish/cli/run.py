@@ -511,7 +511,12 @@ def run(
     total_trials_submitted = 0
     append_mode = bool(existing_task_ids)
 
-    def submit_task(task_id: str, *, append_to_task: bool) -> dict:
+    def submit_task(
+        task_id: str,
+        *,
+        append_to_task: bool,
+        task_content_hash: str | None = None,
+    ) -> dict:
         tags: dict[str, str] = {}
         if github_meta:
             tags["github_meta"] = github_meta
@@ -539,11 +544,31 @@ def run(
             agent_kwargs=agent_kwargs,
             artifact_paths=artifact_paths,
             append_to_task=append_to_task,
+            content_hash=task_content_hash,
         )
 
     def upload_and_submit_task(task_path: Path) -> dict:
-        task_id = upload_task(api_url, task_path)
-        return submit_task(task_id, append_to_task=False)
+        result = upload_task(api_url, task_path)
+        task_id = result["task_id"]
+        is_existing = result.get("existing_task", False)
+        upload_hash = result.get("content_hash")
+
+        if is_existing and not quiet:
+            ver = result.get("version", "?")
+            if result.get("content_unchanged"):
+                console.print(
+                    f"[dim]Task '{task_path.name}' unchanged, reusing version {ver}[/dim]"
+                )
+            else:
+                console.print(
+                    f"[dim]Task '{task_path.name}' updated, created version {ver}[/dim]"
+                )
+
+        return submit_task(
+            task_id,
+            append_to_task=is_existing,
+            task_content_hash=upload_hash,
+        )
 
     def append_to_existing_task(task_id: str) -> dict:
         return submit_task(task_id, append_to_task=True)

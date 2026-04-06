@@ -18,6 +18,8 @@ from cloud_policy import (
 from oddish.api.endpoints import (
     get_task_for_org_core,
     get_task_status_core,
+    get_task_version_core,
+    list_task_versions_core,
     rerun_task_analysis_core,
     rerun_task_verdict_core,
 )
@@ -58,6 +60,7 @@ from oddish.schemas import (
     TaskResponse,
     TaskStatusResponse,
     TaskSweepSubmission,
+    TaskVersionResponse,
     UploadResponse,
 )
 
@@ -175,11 +178,23 @@ async def _maybe_publish_experiment(
 async def upload_task(
     auth: Annotated[AuthContext, Depends(require_auth)],
     file: UploadFile = File(...),
+    content_hash: str | None = None,
+    message: str | None = None,
 ) -> UploadResponse:
-    """Upload a task directory (as tarball) to storage."""
+    """Upload a task directory (as tarball) to storage.
+
+    Automatically detects existing tasks by name within the org and creates
+    a new version when content has changed.
+    """
     auth.require_scope(APIKeyScope.TASKS)
 
-    return await handle_task_upload(file)
+    return await handle_task_upload(
+        file,
+        org_id=auth.org_id,
+        content_hash=content_hash,
+        message=message,
+        created_by_user_id=auth.user_id,
+    )
 
 
 @router.post("/tasks/sweep", response_model=TaskResponse)
@@ -670,6 +685,42 @@ async def get_task_status(
             include_trials=include_trials,
             include_empty_rewards=True,
             org_id=auth.org_id,
+        )
+
+
+# =============================================================================
+# Task Versions
+# =============================================================================
+
+
+@router.get("/tasks/{task_id}/versions", response_model=list[TaskVersionResponse])
+async def list_task_versions(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> list[TaskVersionResponse]:
+    """List all versions of a task, newest first."""
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await list_task_versions_core(
+            session, task_id=task_id, org_id=auth.org_id
+        )
+
+
+@router.get(
+    "/tasks/{task_id}/versions/{version}", response_model=TaskVersionResponse
+)
+async def get_task_version(
+    task_id: str,
+    version: int,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> TaskVersionResponse:
+    """Get a specific version of a task."""
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await get_task_version_core(
+            session, task_id=task_id, version=version, org_id=auth.org_id
         )
 
 
