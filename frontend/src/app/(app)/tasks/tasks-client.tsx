@@ -9,20 +9,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { fetcher } from "@/lib/api";
+import { STATUS_CONFIG, getMatrixStatus } from "@/lib/status-config";
 import type { TaskBrowseItem, TaskBrowseResponse } from "@/lib/types";
 import { formatRelativeTime, formatShortDateTime } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
@@ -43,54 +36,34 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
   return debouncedValue;
 }
 
-function TaskTableSkeleton() {
+function TaskCardsSkeleton() {
   return (
-    <div className="overflow-hidden rounded-lg border border-border/60">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Task</TableHead>
-            <TableHead>Version</TableHead>
-            <TableHead>Trials</TableHead>
-            <TableHead>Pass rate</TableHead>
-            <TableHead>Experiments</TableHead>
-            <TableHead className="text-right">Last run</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody className="[&_td]:py-4">
-          {Array.from({ length: 6 }).map((_, index) => (
-            <TableRow key={index}>
-              <TableCell>
-                <Skeleton className="h-4 w-40" />
-              </TableCell>
-              <TableCell>
-                <Skeleton className="h-5 w-24" />
-              </TableCell>
-              <TableCell>
-                <div className="space-y-2">
-                  <Skeleton className="h-4 w-20" />
-                  <Skeleton className="h-2 w-28" />
-                </div>
-              </TableCell>
-              <TableCell>
-                <Skeleton className="h-4 w-20" />
-              </TableCell>
-              <TableCell>
-                <Skeleton className="h-4 w-36" />
-              </TableCell>
-              <TableCell className="text-right">
-                <Skeleton className="ml-auto h-4 w-20" />
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      {Array.from({ length: 6 }).map((_, index) => (
+        <div
+          key={index}
+          className="rounded-lg border border-[#6f88b4]/20 bg-card/95 p-4 shadow-sm"
+        >
+          <div className="space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-2">
+                <Skeleton className="h-5 w-36" />
+                <Skeleton className="h-5 w-12" />
+              </div>
+              <Skeleton className="h-4 w-20" />
+            </div>
+            <Skeleton className="h-16 w-full" />
+            <div className="grid grid-cols-3 gap-3">
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+            <Skeleton className="h-4 w-40" />
+          </div>
+        </div>
+      ))}
     </div>
   );
-}
-
-function formatVersionCount(versionCount: number) {
-  return `${versionCount} version${versionCount === 1 ? "" : "s"}`;
 }
 
 function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
@@ -127,38 +100,6 @@ function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
   );
 }
 
-function TrialsCell({ task }: { task: TaskBrowseItem }) {
-  if (task.total_trials === 0) {
-    return <span className="text-muted-foreground">—</span>;
-  }
-
-  const completionRatio =
-    task.total_trials > 0 ? task.completed_trials / task.total_trials : 0;
-
-  return (
-    <div className="min-w-[132px] space-y-1.5">
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-medium">
-          {task.completed_trials}/{task.total_trials}
-        </span>
-        {task.failed_trials > 0 ? (
-          <span className="text-[11px] text-muted-foreground">
-            {task.failed_trials} failed
-          </span>
-        ) : null}
-      </div>
-      <div className="h-2 overflow-hidden rounded-full bg-muted">
-        <div
-          className="h-full rounded-full bg-[#5c8e43] dark:bg-[#85b85c]"
-          style={{
-            width: `${Math.max(completionRatio * 100, completionRatio > 0 ? 4 : 0)}%`,
-          }}
-        />
-      </div>
-    </div>
-  );
-}
-
 function PassRateCell({ task }: { task: TaskBrowseItem }) {
   if (task.reward_total === 0) {
     return <span className="text-muted-foreground">—</span>;
@@ -179,6 +120,174 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
         {task.reward_success}/{task.reward_total}
       </div>
     </div>
+  );
+}
+
+function TrialGraphics({ task }: { task: TaskBrowseItem }) {
+  if (task.latest_trials.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-center text-xs text-muted-foreground">
+        No latest-version trials yet.
+      </div>
+    );
+  }
+
+  const statusCounts = task.latest_trials.reduce(
+    (counts, trial) => {
+      const status = getMatrixStatus(
+        trial.status,
+        trial.reward,
+        trial.error_message
+      );
+      counts[status] += 1;
+      return counts;
+    },
+    {
+      pass: 0,
+      fail: 0,
+      "harness-error": 0,
+      pending: 0,
+      queued: 0,
+      running: 0,
+    } as Record<ReturnType<typeof getMatrixStatus>, number>
+  );
+
+  const summaryItems = [
+    { key: "pass", label: "Pass", count: statusCounts.pass },
+    { key: "fail", label: "Fail", count: statusCounts.fail },
+    {
+      key: "harness-error",
+      label: "Harness",
+      count: statusCounts["harness-error"],
+    },
+    {
+      key: "pending",
+      label: "Pending",
+      count: statusCounts.pending + statusCounts.queued + statusCounts.running,
+    },
+  ] as const;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-1.5">
+        {task.latest_trials.map((trial) => {
+          const status = getMatrixStatus(
+            trial.status,
+            trial.reward,
+            trial.error_message
+          );
+          const config = STATUS_CONFIG[status];
+
+          return (
+            <Tooltip key={trial.id}>
+              <TooltipTrigger asChild>
+                <div
+                  className={`h-5 w-5 rounded-[4px] border ${config.matrixClass}`}
+                  aria-label={`${trial.name} ${config.shortLabel}`}
+                />
+              </TooltipTrigger>
+              <TooltipContent>
+                <div className="space-y-0.5">
+                  <div className="font-medium">{trial.name}</div>
+                  <div className="text-muted-foreground">
+                    {config.shortLabel}
+                  </div>
+                </div>
+              </TooltipContent>
+            </Tooltip>
+          );
+        })}
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {summaryItems.map((item) => {
+          const config = STATUS_CONFIG[item.key];
+          return (
+            <div
+              key={item.key}
+              className="rounded-md border border-border/60 bg-muted/30 px-2.5 py-2"
+            >
+              <div className="flex items-center gap-2">
+                <span
+                  className={`inline-flex h-2.5 w-2.5 rounded-full ${config.bracketClass}`}
+                />
+                <span className="text-[11px] text-muted-foreground">
+                  {item.label}
+                </span>
+              </div>
+              <div className="mt-1 font-mono text-sm font-semibold">
+                {item.count}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function TaskCard({ task }: { task: TaskBrowseItem }) {
+  return (
+    <Card className="border-[#6f88b4]/20 bg-card/95 shadow-sm">
+      <CardHeader className="space-y-3 pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 space-y-2">
+            <div className="font-mono text-sm font-semibold text-foreground">
+              {task.name}
+            </div>
+            <Badge variant="outline" className="w-fit font-mono text-[11px]">
+              v{task.current_version ?? "—"}
+            </Badge>
+          </div>
+          <div className="shrink-0 text-right">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Last run
+            </div>
+            <div className="mt-1 text-xs">
+              {task.last_run_at ? formatRelativeTime(task.last_run_at) : "—"}
+            </div>
+            {task.last_run_at ? (
+              <div className="text-[11px] text-muted-foreground">
+                {formatShortDateTime(task.last_run_at)}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            Latest trials
+          </div>
+          <TrialGraphics task={task} />
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2.5">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Trials
+            </div>
+            <div className="mt-1 font-mono text-sm font-semibold">
+              {task.completed_trials}/{task.total_trials}
+            </div>
+          </div>
+          <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2.5">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Pass rate
+            </div>
+            <div className="mt-1 text-sm font-semibold">
+              <PassRateCell task={task} />
+            </div>
+          </div>
+          <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2.5">
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Experiments
+            </div>
+            <div className="mt-1">
+              <ExperimentsCell task={task} />
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -228,12 +337,7 @@ export function TasksPageClient({
   return (
     <TooltipProvider>
       <div className="space-y-6">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-bold">Tasks</h1>
-          <p className="text-sm text-muted-foreground">
-            Browse the latest version of every task across experiments.
-          </p>
-        </div>
+        <h1 className="text-2xl font-bold">Tasks</h1>
 
         <Card className="border-[#6f88b4]/20 shadow-sm">
           <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
@@ -268,7 +372,7 @@ export function TasksPageClient({
                 </AlertDescription>
               </Alert>
             ) : isLoading && items.length === 0 ? (
-              <TaskTableSkeleton />
+              <TaskCardsSkeleton />
             ) : items.length === 0 ? (
               <div className="rounded-lg border border-dashed border-[#6f88b4]/30 bg-card/60 px-6 py-10 text-center text-sm text-muted-foreground">
                 {debouncedQuery
@@ -276,64 +380,10 @@ export function TasksPageClient({
                   : "No tasks have been created yet."}
               </div>
             ) : (
-              <div className="overflow-hidden rounded-lg border border-border/60">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Task</TableHead>
-                      <TableHead>Version</TableHead>
-                      <TableHead>Trials</TableHead>
-                      <TableHead>Pass rate</TableHead>
-                      <TableHead>Experiments</TableHead>
-                      <TableHead className="text-right">Last run</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody className="[&_td]:align-top [&_td]:text-xs">
-                    {items.map((task) => (
-                      <TableRow key={task.id}>
-                        <TableCell className="w-[28%]">
-                          <span className="cursor-pointer font-mono text-sm font-semibold text-foreground transition-colors hover:text-[#a8b8d2]">
-                            {task.name}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex flex-col gap-1">
-                            <Badge
-                              variant="outline"
-                              className="w-fit font-mono text-[11px]"
-                            >
-                              v{task.current_version ?? "—"}
-                            </Badge>
-                            <span className="text-[11px] text-muted-foreground">
-                              ({formatVersionCount(task.version_count)})
-                            </span>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <TrialsCell task={task} />
-                        </TableCell>
-                        <TableCell>
-                          <PassRateCell task={task} />
-                        </TableCell>
-                        <TableCell>
-                          <ExperimentsCell task={task} />
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-right">
-                          {task.last_run_at ? (
-                            <div className="space-y-1">
-                              <div>{formatRelativeTime(task.last_run_at)}</div>
-                              <div className="text-[11px] text-muted-foreground">
-                                {formatShortDateTime(task.last_run_at)}
-                              </div>
-                            </div>
-                          ) : (
-                            <span className="text-muted-foreground">—</span>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {items.map((task) => (
+                  <TaskCard key={task.id} task={task} />
+                ))}
               </div>
             )}
 
