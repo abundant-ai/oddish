@@ -394,6 +394,42 @@ class ExperimentUpdateResponse(BaseModel):
     name: str
 
 
+class TaskBrowseExperiment(BaseModel):
+    id: str
+    name: str
+
+
+class TaskBrowseTrial(BaseModel):
+    id: str
+    name: str
+    status: TrialStatus
+    reward: int | None = None
+    error_message: str | None = None
+
+
+class TaskBrowseItem(BaseModel):
+    id: str
+    name: str
+    current_version: int | None = None
+    current_version_id: str | None = None
+    version_count: int
+    total_trials: int
+    completed_trials: int
+    failed_trials: int
+    reward_success: int
+    reward_total: int
+    last_run_at: datetime | None = None
+    latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
+    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+
+
+class TaskBrowseResponse(BaseModel):
+    items: list[TaskBrowseItem]
+    limit: int
+    offset: int
+    has_more: bool
+
+
 class TaskStatusResponse(BaseModel):
     id: str
     name: str
