@@ -196,6 +196,31 @@ class StorageClient:
             raise ValueError(f"Invalid task S3 prefix: {s3_prefix}")
         return f"{normalized_prefix}{cls._TASK_ARCHIVE_OBJECT_NAME}"
 
+    async def _resolve_task_prefix(
+        self, task_id: str, version: int | None
+    ) -> tuple[str, str]:
+        """Return ``(root_prefix, archive_key)`` for a task, with fallback.
+
+        When *version* is given the versioned path is tried first.  If the
+        archive doesn't exist there (backfilled v1 tasks), falls back to the
+        unversioned ``tasks/{task_id}/`` path.
+        """
+        if version is not None:
+            vroot = f"tasks/{task_id}/v{version}/"
+            varchive = f"{vroot}{self._TASK_ARCHIVE_OBJECT_NAME}"
+            if await self.object_exists(varchive):
+                return vroot, varchive
+            # Check if unversioned prefix has the archive instead (backfill)
+            fallback_root = f"tasks/{task_id}/"
+            fallback_archive = self._task_archive_key(task_id)
+            if await self.object_exists(fallback_archive):
+                return fallback_root, fallback_archive
+            # Neither exists; return the versioned one so callers get a
+            # consistent "not found" behaviour for the S3-objects-based path.
+            return vroot, varchive
+
+        return f"tasks/{task_id}/", self._task_archive_key(task_id)
+
     async def upload_task_archive(self, task_id: str, archive_path: Path) -> str:
         """Upload a task tarball as a single S3 object."""
         await self._ensure_client()
@@ -357,10 +382,16 @@ class StorageClient:
         cursor: str | None,
         presign: bool,
         presign_expiration: int = 900,
+        version: int | None = None,
     ) -> dict:
-        """List files in a task's S3 directory."""
-        root_prefix = f"tasks/{task_id}/"
-        archive_key = self._task_archive_key(task_id)
+        """List files in a task's S3 directory.
+
+        When *version* is given the versioned prefix ``tasks/{task_id}/v{version}/``
+        is tried first.  If it doesn't exist (e.g. backfilled v1 tasks whose
+        files live at the unversioned ``tasks/{task_id}/`` prefix) the method
+        falls back automatically.
+        """
+        root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
         if await self.object_exists(archive_key):
             archive_bytes = await self.download_bytes(archive_key)
             archive_files = _task_archive_members_from_bytes(archive_bytes)
@@ -518,12 +549,13 @@ class StorageClient:
         file_path: str,
         presign: bool,
         presign_expiration: int = 900,
+        version: int | None = None,
     ) -> dict:
         """Get content of a specific task file from S3."""
         normalized_path = normalize_s3_relative_path(file_path)
         if not normalized_path:
             raise HTTPException(status_code=400, detail="Invalid file path")
-        archive_key = self._task_archive_key(task_id)
+        root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
         if await self.object_exists(archive_key):
             archive_bytes = await self.download_bytes(archive_key)
             content = _read_task_archive_text(archive_bytes, normalized_path)
@@ -532,7 +564,7 @@ class StorageClient:
                 "content": content,
                 "key": f"{archive_key}#{normalized_path}",
             }
-        s3_key = f"tasks/{task_id}/{normalized_path}"
+        s3_key = f"{root_prefix}{normalized_path}"
 
         if presign:
             url = await self.get_presigned_url(s3_key, expiration=presign_expiration)

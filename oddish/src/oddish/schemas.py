@@ -312,6 +312,7 @@ class TrialResponse(BaseModel):
     task_path: str
     task_version: int | None = None
     task_version_id: str | None = None
+    experiment_id: str | None = None
     agent: str
     provider: str
     queue_key: str
@@ -376,6 +377,8 @@ class TaskResponse(BaseModel):
     priority: Priority
     trials_count: int
     providers: dict[str, int]  # provider -> count of trials
+    experiment_id: str | None = None
+    experiment_name: str | None = None
     created_at: datetime
 
 

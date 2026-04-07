@@ -48,6 +48,7 @@ from oddish.schemas import (
 from oddish.task_timeouts import TaskTimeoutValidationError
 
 from oddish.queue import (
+    append_trials_to_task,
     cancel_tasks_runs,
     create_task,
 )
@@ -254,6 +255,44 @@ async def create_task_sweep(submission: TaskSweepSubmission):
     )
 
     async with get_session() as session:
+        # Auto-detect append mode when the task already exists in the DB
+        # (backward-compat with CLIs that don't send append_to_task).
+        existing = await session.get(TaskModel, submission.task_id)
+        if existing is not None:
+            from oddish.queue import (
+                get_experiment_by_id_or_name,
+                get_or_create_experiment,
+            )
+            new_experiment_id: str | None = None
+            if submission.experiment_id:
+                exp = await get_experiment_by_id_or_name(
+                    session, submission.experiment_id
+                )
+                if not exp:
+                    exp = await get_or_create_experiment(
+                        session, submission.experiment_id
+                    )
+                new_experiment_id = exp.id
+            new_trials = await append_trials_to_task(
+                session,
+                task=existing,
+                submission=expanded,
+                experiment_id=new_experiment_id,
+            )
+            await session.commit()
+            provider_counts: Counter[str] = Counter(
+                t.provider for t in new_trials
+            )
+            return TaskResponse(
+                id=existing.id,
+                name=existing.name,
+                status=existing.status,
+                priority=existing.priority,
+                trials_count=len(new_trials),
+                providers=dict(provider_counts),
+                created_at=existing.created_at,
+            )
+
         try:
             task = await create_task(session, expanded, task_id=submission.task_id)
         except TaskTimeoutValidationError as exc:
@@ -267,7 +306,7 @@ async def create_task_sweep(submission: TaskSweepSubmission):
             await session.commit()
 
         # Count trials per provider
-        provider_counts: Counter[str] = Counter()
+        provider_counts = Counter()
         for trial in task.trials:
             provider_counts[trial.provider] += 1
 

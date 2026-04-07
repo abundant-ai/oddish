@@ -240,13 +240,15 @@ async def list_public_task_files(
     presign: bool = Query(
         True, description="Include presigned URLs for direct S3 access"
     ),
+    version: int | None = Query(None, description="Task version number"),
 ) -> dict:
     """List all files in a public task's S3 directory."""
-    # Verify task belongs to a public experiment
     async with get_session() as session:
         task = await get_public_task(session, task_id)
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        if version is None and task.current_version:
+            version = task.current_version.version
 
     return await list_task_files_s3(
         task_id=task_id,
@@ -255,6 +257,7 @@ async def list_public_task_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
+        version=version,
     )
 
 
@@ -263,16 +266,19 @@ async def get_public_task_file_content(
     task_id: str,
     file_path: str,
     presign: bool = Query(False),
+    version: int | None = Query(None, description="Task version number"),
 ) -> dict:
     """Get content of a specific public task file from S3."""
-    # Verify task belongs to a public experiment
     async with get_session() as session:
         task = await get_public_task(session, task_id)
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        if version is None and task.current_version:
+            version = task.current_version.version
 
     return await get_task_file_content_s3(
         task_id=task_id,
         file_path=file_path,
         presign=presign,
+        version=version,
     )

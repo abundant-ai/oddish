@@ -395,6 +395,11 @@ export function TrialDetailPanel({
         </DrawerTitle>
         <DrawerDescription className="flex items-center gap-1.5 font-mono text-muted-foreground">
           <span className="truncate">{trial.id}</span>
+          {trial.task_version != null && (
+            <span className="inline-flex shrink-0 items-center rounded border border-border bg-muted/50 px-1 py-px text-[10px] font-medium leading-none">
+              v{trial.task_version}
+            </span>
+          )}
         </DrawerDescription>
         <div className="flex flex-wrap items-stretch justify-between gap-2 pt-2 text-xs text-muted-foreground">
           <div className="flex items-center gap-1">

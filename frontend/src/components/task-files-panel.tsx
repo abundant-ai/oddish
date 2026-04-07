@@ -307,6 +307,7 @@ export function TaskFilesPanel({
   initialFilePath,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
+  const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -360,6 +361,8 @@ export function TaskFilesPanel({
   });
   const currentVersion = (verdictTask ?? task)?.current_version ?? null;
   const hasMultipleVersions = (versions?.length ?? 0) > 1;
+  const effectiveVersion = selectedVersion ?? currentVersion;
+  const versionSuffix = effectiveVersion != null ? `&version=${effectiveVersion}` : "";
 
   const verdictSource = verdictTask ?? task;
 
@@ -617,7 +620,7 @@ export function TaskFilesPanel({
       setExpandedDirs(new Set());
 
       try {
-        const res = await fetch(`${resolvedFilesUrl}?recursive=0`);
+        const res = await fetch(`${resolvedFilesUrl}?recursive=0${versionSuffix}`);
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(
@@ -654,7 +657,7 @@ export function TaskFilesPanel({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, taskId, filesUrl, resolvedFilesUrl]);
+  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, versionSuffix]);
 
   const loadDirectory = useCallback(
     async (path: string) => {
@@ -663,7 +666,7 @@ export function TaskFilesPanel({
       try {
         const prefix = encodeURIComponent(path);
         const res = await fetch(
-          `${resolvedFilesUrl}?recursive=0&prefix=${prefix}`,
+          `${resolvedFilesUrl}?recursive=0&prefix=${prefix}${versionSuffix}`,
         );
         if (!res.ok) {
           throw new Error("Failed to fetch directory");
@@ -691,7 +694,7 @@ export function TaskFilesPanel({
         });
       }
     },
-    [taskId, filesUrl, resolvedFilesUrl],
+    [taskId, filesUrl, resolvedFilesUrl, versionSuffix],
   );
 
   // Fetch file content when a file is selected
@@ -761,7 +764,8 @@ export function TaskFilesPanel({
         // Fallback: fetch via backend proxy (slower, but works if presigned URL expired)
         if (content === null) {
           const encodedPath = encodeURIComponent(filePath);
-          const res = await fetch(`${resolvedFilesUrl}/${encodedPath}`);
+          const versionParam = selectedVersion != null ? `?version=${selectedVersion}` : "";
+          const res = await fetch(`${resolvedFilesUrl}/${encodedPath}${versionParam}`);
           if (!res.ok) {
             throw new Error("Failed to fetch file content");
           }
@@ -796,7 +800,7 @@ export function TaskFilesPanel({
     return () => {
       cancelled = true;
     };
-  }, [selectedFile, taskId, filesUrl, resolvedFilesUrl]);
+  }, [selectedFile, taskId, filesUrl, resolvedFilesUrl, selectedVersion]);
 
   // Load full file content (when user clicks "Load full file")
   const loadFullFile = useCallback(async () => {
@@ -830,7 +834,7 @@ export function TaskFilesPanel({
     }
   }, [selectedFile]);
 
-  // Reset state when panel closes
+  // Reset state when panel closes or task changes
   useEffect(() => {
     if (!isOpen) {
       setFileTree([]);
@@ -845,8 +849,9 @@ export function TaskFilesPanel({
       setIsRunningAnalysis(false);
       setVerdictActionError(null);
       setIsRunningVerdict(false);
+      setSelectedVersion(null);
     }
-  }, [isOpen]);
+  }, [isOpen, taskId]);
 
   // Navigate to a specific file when initialFilePath changes (suffix match)
   useEffect(() => {
@@ -1131,6 +1136,11 @@ export function TaskFilesPanel({
         <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
           <div className="max-h-[30vh] w-full overflow-auto border-b border-border bg-muted/30 md:max-h-none md:w-56 md:border-b-0 md:border-r lg:w-64">
             <div className="p-2">
+              {selectedVersion != null && selectedVersion !== currentVersion && (
+                <div className="mb-1 rounded-md bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-500">
+                  Viewing v{selectedVersion} — not the latest
+                </div>
+              )}
               <div className="px-2 py-2 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground sm:text-xs">
                 Files
               </div>
@@ -1172,8 +1182,8 @@ export function TaskFilesPanel({
               {currentVersion != null && (
                 hasMultipleVersions && versions ? (
                   <Select
-                    value={String(currentVersion)}
-                    onValueChange={() => {}}
+                    value={String(selectedVersion ?? currentVersion)}
+                    onValueChange={(v) => setSelectedVersion(Number(v))}
                   >
                     <SelectTrigger className="h-6 w-auto gap-1 border-border bg-muted/50 px-2 py-0 font-mono text-[11px] font-medium text-muted-foreground">
                       <SelectValue />
