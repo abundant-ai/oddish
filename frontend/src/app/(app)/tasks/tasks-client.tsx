@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -17,7 +18,11 @@ import {
 import { fetcher } from "@/lib/api";
 import { STATUS_CONFIG, getMatrixStatus } from "@/lib/status-config";
 import type { TaskBrowseItem, TaskBrowseResponse } from "@/lib/types";
-import { formatRelativeTime, formatShortDateTime } from "@/lib/utils";
+import {
+  encodeExperimentRouteParam,
+  formatRelativeTime,
+  formatShortDateTime,
+} from "@/lib/utils";
 import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 
 const PAGE_SIZE = 25;
@@ -71,68 +76,25 @@ function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
     return <span className="text-muted-foreground">—</span>;
   }
 
-  const names = task.experiments.map((experiment) => experiment.name);
-  const visibleNames = names.slice(0, 3);
-  const remaining = names.length - visibleNames.length;
-
   return (
-    <div className="max-w-[280px] text-xs text-muted-foreground">
-      <span>{visibleNames.join(", ")}</span>
-      {remaining > 0 ? (
-        <>
-          <span>, </span>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                className="font-medium text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
-              >
-                +{remaining} more
-              </button>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-sm">
-              {names.join(", ")}
-            </TooltipContent>
-          </Tooltip>
-        </>
-      ) : null}
+    <div className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
+      {task.experiments.map((experiment, index) => (
+        <span key={experiment.id}>
+          <Link
+            href={`/experiments/${encodeExperimentRouteParam(experiment.id)}`}
+            className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
+          >
+            {experiment.name}
+          </Link>
+          {index < task.experiments.length - 1 ? "," : null}
+        </span>
+      ))}
     </div>
   );
 }
 
-function PassRateCell({ task }: { task: TaskBrowseItem }) {
-  if (task.reward_total === 0) {
-    return <span className="text-muted-foreground">—</span>;
-  }
-
-  const passRate = Math.round((task.reward_success / task.reward_total) * 100);
-  const toneClass =
-    passRate >= 80
-      ? "text-[#5c8e43] dark:text-[#85b85c]"
-      : passRate >= 50
-        ? "text-yellow-400"
-        : "text-rose-400";
-
-  return (
-    <div className="space-y-1">
-      <div className={`font-medium ${toneClass}`}>{passRate}%</div>
-      <div className="text-[11px] text-muted-foreground">
-        {task.reward_success}/{task.reward_total}
-      </div>
-    </div>
-  );
-}
-
-function TrialGraphics({ task }: { task: TaskBrowseItem }) {
-  if (task.latest_trials.length === 0) {
-    return (
-      <div className="rounded-md border border-dashed border-border/70 px-3 py-4 text-center text-xs text-muted-foreground">
-        No latest-version trials yet.
-      </div>
-    );
-  }
-
-  const statusCounts = task.latest_trials.reduce(
+function getLatestTrialStatusCounts(task: TaskBrowseItem) {
+  return task.latest_trials.reduce(
     (counts, trial) => {
       const status = getMatrixStatus(
         trial.status,
@@ -151,7 +113,22 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
       running: 0,
     } as Record<ReturnType<typeof getMatrixStatus>, number>
   );
+}
 
+function PassRateCell({ task }: { task: TaskBrowseItem }) {
+  const hasPassRate = task.reward_total > 0;
+  const passRate = hasPassRate
+    ? Math.round((task.reward_success / task.reward_total) * 100)
+    : null;
+  const toneClass =
+    passRate == null
+      ? "text-muted-foreground"
+      : passRate >= 80
+        ? "text-[#5c8e43] dark:text-[#85b85c]"
+        : passRate >= 50
+          ? "text-yellow-400"
+          : "text-rose-400";
+  const statusCounts = getLatestTrialStatusCounts(task);
   const summaryItems = [
     { key: "pass", label: "Pass", count: statusCounts.pass },
     { key: "fail", label: "Fail", count: statusCounts.fail },
@@ -168,59 +145,77 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
   ] as const;
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-1.5">
-        {task.latest_trials.map((trial) => {
-          const status = getMatrixStatus(
-            trial.status,
-            trial.reward,
-            trial.error_message
-          );
-          const config = STATUS_CONFIG[status];
-
-          return (
-            <Tooltip key={trial.id}>
-              <TooltipTrigger asChild>
-                <div
-                  className={`h-5 w-5 rounded-[4px] border ${config.matrixClass}`}
-                  aria-label={`${trial.name} ${config.shortLabel}`}
-                />
-              </TooltipTrigger>
-              <TooltipContent>
-                <div className="space-y-0.5">
-                  <div className="font-medium">{trial.name}</div>
-                  <div className="text-muted-foreground">
-                    {config.shortLabel}
-                  </div>
-                </div>
-              </TooltipContent>
-            </Tooltip>
-          );
-        })}
+    <div className="space-y-1.5">
+      <div className="flex items-baseline justify-between gap-3">
+        <div className={`text-base font-medium leading-none ${toneClass}`}>
+          {passRate == null ? "—" : `${passRate}%`}
+        </div>
+        <div className="text-[11px] leading-none text-muted-foreground">
+          {hasPassRate
+            ? `${task.reward_success}/${task.reward_total}`
+            : "No completed trials"}
+        </div>
       </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {summaryItems.map((item) => {
-          const config = STATUS_CONFIG[item.key];
-          return (
-            <div
-              key={item.key}
-              className="rounded-md border border-border/60 bg-muted/30 px-2.5 py-2"
-            >
-              <div className="flex items-center gap-2">
+      {task.latest_trials.length > 0 ? (
+        <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px] leading-none text-muted-foreground">
+          {summaryItems.map((item) => {
+            const config = STATUS_CONFIG[item.key];
+            return (
+              <div key={item.key} className="flex items-center gap-1 whitespace-nowrap">
                 <span
-                  className={`inline-flex h-2.5 w-2.5 rounded-full ${config.bracketClass}`}
+                  className={`inline-flex h-2 w-2 rounded-full ${config.bracketClass}`}
                 />
-                <span className="text-[11px] text-muted-foreground">
-                  {item.label}
-                </span>
+                <span>{item.label}</span>
+                <span className="font-mono text-foreground">{item.count}</span>
               </div>
-              <div className="mt-1 font-mono text-sm font-semibold">
-                {item.count}
-              </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
+      ) : (
+        <div className="text-[10px] leading-none text-muted-foreground">
+          No latest-version trials
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TrialGraphics({ task }: { task: TaskBrowseItem }) {
+  if (task.latest_trials.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-border/70 px-3 py-3 text-center text-xs text-muted-foreground">
+        No latest-version trials yet.
       </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap gap-1">
+      {task.latest_trials.map((trial) => {
+        const status = getMatrixStatus(
+          trial.status,
+          trial.reward,
+          trial.error_message
+        );
+        const config = STATUS_CONFIG[status];
+
+        return (
+          <Tooltip key={trial.id}>
+            <TooltipTrigger asChild>
+              <div
+                className={`h-[18px] w-[18px] rounded-[4px] border ${config.matrixClass}`}
+                aria-label={`${trial.name} ${config.shortLabel}`}
+              />
+            </TooltipTrigger>
+            <TooltipContent>
+              <div className="space-y-0.5">
+                <div className="font-medium">{trial.name}</div>
+                <div className="text-muted-foreground">{config.shortLabel}</div>
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        );
+      })}
     </div>
   );
 }
@@ -228,15 +223,17 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
 function TaskCard({ task }: { task: TaskBrowseItem }) {
   return (
     <Card className="border-[#6f88b4]/20 bg-card/95 shadow-sm">
-      <CardHeader className="space-y-3 pb-3">
+      <CardHeader className="space-y-2 px-5 pt-5 pb-2">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 space-y-2">
-            <div className="font-mono text-sm font-semibold text-foreground">
-              {task.name}
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="font-mono text-sm font-semibold text-foreground">
+                {task.name}
+              </div>
+              <Badge variant="outline" className="w-fit font-mono text-[11px]">
+                v{task.current_version ?? "—"}
+              </Badge>
             </div>
-            <Badge variant="outline" className="w-fit font-mono text-[11px]">
-              v{task.current_version ?? "—"}
-            </Badge>
           </div>
           <div className="shrink-0 text-right">
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -253,23 +250,15 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
           </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="space-y-2">
+      <CardContent className="space-y-3 px-5 pb-5">
+        <div className="space-y-1.5">
           <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
             Latest trials
           </div>
           <TrialGraphics task={task} />
         </div>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2.5">
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-              Trials
-            </div>
-            <div className="mt-1 font-mono text-sm font-semibold">
-              {task.completed_trials}/{task.total_trials}
-            </div>
-          </div>
-          <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2.5">
+        <div className="grid gap-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)]">
+          <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
               Pass rate
             </div>
@@ -277,11 +266,11 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
               <PassRateCell task={task} />
             </div>
           </div>
-          <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2.5">
+          <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
               Experiments
             </div>
-            <div className="mt-1">
+            <div className="mt-0.5">
               <ExperimentsCell task={task} />
             </div>
           </div>
@@ -337,12 +326,10 @@ export function TasksPageClient({
   return (
     <TooltipProvider>
       <div className="space-y-6">
-        <h1 className="text-2xl font-bold">Tasks</h1>
-
         <Card className="border-[#6f88b4]/20 shadow-sm">
           <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="space-y-1">
-              <CardTitle className="text-base">Task Browser</CardTitle>
+              <CardTitle className="text-base">Recent Tasks</CardTitle>
               <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
                 <span>
                   Showing {items.length}
