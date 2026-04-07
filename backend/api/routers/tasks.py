@@ -216,9 +216,7 @@ async def create_task_sweep(
         if not submission.append_to_task:
             existing = await session.get(TaskModel, submission.task_id)
             if existing is not None and existing.org_id == auth.org_id:
-                submission = submission.model_copy(
-                    update={"append_to_task": True}
-                )
+                submission = submission.model_copy(update={"append_to_task": True})
 
         if submission.append_to_task:
             task = await get_task_for_org_core(
@@ -247,6 +245,7 @@ async def create_task_sweep(
                 get_experiment_by_id_or_name,
                 get_or_create_experiment,
             )
+
             new_experiment_id: str | None = None
             if submission.experiment_id:
                 experiment = await get_experiment_by_id_or_name(
@@ -310,11 +309,7 @@ async def create_task_sweep(
 
             provider_counts: Counter[str] = Counter(t.provider for t in new_trials)
             resp_experiment_id = new_experiment_id or task.experiment_id
-            resp_experiment = (
-                experiment
-                if new_experiment_id
-                else task.experiment
-            )
+            resp_experiment = experiment if new_experiment_id else task.experiment
             return TaskResponse(
                 id=task.id,
                 name=task.name,
@@ -357,14 +352,14 @@ async def create_task_sweep(
             task.task_s3_key = task_s3_key
         await session.commit()
 
-        provider_counts: Counter[str] = Counter(t.provider for t in task.trials)
+        created_provider_counts: Counter[str] = Counter(t.provider for t in task.trials)
         return TaskResponse(
             id=task.id,
             name=task.name,
             status=task.status,
             priority=task.priority,
             trials_count=len(task.trials),
-            providers=dict(provider_counts),
+            providers=dict(created_provider_counts),
             experiment_id=task.experiment_id,
             experiment_name=getattr(task.experiment, "name", None),
             created_at=task.created_at,
@@ -596,9 +591,7 @@ async def delete_experiment(
                 ~TrialModel.task_id.in_(task_ids) if task_ids else True,
             )
         )
-        trial_rows.extend(
-            (row[0], row[1]) for row in trial_only_rows_result.all()
-        )
+        trial_rows.extend((row[0], row[1]) for row in trial_only_rows_result.all())
 
         s3_prefixes = collect_s3_prefixes_for_deletion(
             tasks=task_rows,
@@ -796,9 +789,7 @@ async def list_task_versions(
         )
 
 
-@router.get(
-    "/tasks/{task_id}/versions/{version}", response_model=TaskVersionResponse
-)
+@router.get("/tasks/{task_id}/versions/{version}", response_model=TaskVersionResponse)
 async def get_task_version(
     task_id: str,
     version: int,

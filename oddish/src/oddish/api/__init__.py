@@ -210,9 +210,7 @@ async def upload_task(
     Returns:
         Upload response with task_id, version info, and storage location.
     """
-    return await handle_task_upload(
-        file, content_hash=content_hash, message=message
-    )
+    return await handle_task_upload(file, content_hash=content_hash, message=message)
 
 
 # =============================================================================
@@ -263,6 +261,7 @@ async def create_task_sweep(submission: TaskSweepSubmission):
                 get_experiment_by_id_or_name,
                 get_or_create_experiment,
             )
+
             new_experiment_id: str | None = None
             if submission.experiment_id:
                 exp = await get_experiment_by_id_or_name(
@@ -280,9 +279,7 @@ async def create_task_sweep(submission: TaskSweepSubmission):
                 experiment_id=new_experiment_id,
             )
             await session.commit()
-            provider_counts: Counter[str] = Counter(
-                t.provider for t in new_trials
-            )
+            provider_counts: Counter[str] = Counter(t.provider for t in new_trials)
             return TaskResponse(
                 id=existing.id,
                 name=existing.name,

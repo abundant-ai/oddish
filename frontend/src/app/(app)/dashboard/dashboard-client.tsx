@@ -1019,7 +1019,10 @@ function RecentTasksCard({
           </Alert>
         ) : isLoading && experiments.length === 0 ? (
           <p className="text-muted-foreground">Loading...</p>
-        ) : !isLoading && experiments.length === 0 && !hasMoreExperiments && !hasFilters ? (
+        ) : !isLoading &&
+          experiments.length === 0 &&
+          !hasMoreExperiments &&
+          !hasFilters ? (
           <EmptyExperimentsState />
         ) : experiments.length === 0 ? (
           <div className="py-8 text-center text-muted-foreground">
@@ -1342,4 +1345,3 @@ export function DashboardClient({
     </div>
   );
 }
-

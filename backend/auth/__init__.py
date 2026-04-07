@@ -174,8 +174,8 @@ async def get_auth_context(
         # Cache miss - lookup user/org and cache
         for attempt in range(2):
             try:
-                cached_auth: CachedAuthData | None = None
-                auth_context: AuthContext | None = None
+                clerk_cached_auth: CachedAuthData | None = None
+                clerk_auth_context: AuthContext | None = None
                 async with get_session() as session:
                     result = await get_or_create_user_from_clerk(
                         session, clerk_user_id, clerk_org_id, email, org_role
@@ -191,14 +191,14 @@ async def get_auth_context(
                         )
 
                     user, org = result
-                    cached_auth = CachedAuthData(
+                    clerk_cached_auth = CachedAuthData(
                         method=AuthMethod.CLERK_JWT,
                         org_id=org.id,
                         user_id=user.id,
                         user_role=user.role,
                         scope=APIKeyScope.FULL,
                     )
-                    auth_context = AuthContext(
+                    clerk_auth_context = AuthContext(
                         method=AuthMethod.CLERK_JWT,
                         org_id=org.id,
                         org=org,
@@ -208,9 +208,9 @@ async def get_auth_context(
                         scope=APIKeyScope.FULL,
                     )
 
-                if cached_auth is not None and auth_context is not None:
-                    set_cached_auth(cache_key, cached_auth)
-                    return auth_context
+                if clerk_cached_auth is not None and clerk_auth_context is not None:
+                    set_cached_auth(cache_key, clerk_cached_auth)
+                    return clerk_auth_context
             except Exception as exc:
                 if isinstance(exc, HTTPException):
                     raise

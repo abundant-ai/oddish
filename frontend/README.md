@@ -2,14 +2,15 @@
 
 ## Overview
 
-This is the Next.js App Router frontend for Oddish. It provides the authenticated dashboard and experiment views, public share and dataset pages, Clerk-based auth, and server-side API routes that proxy requests to either the local FastAPI backend or the Modal deployment.
+This is the Next.js App Router frontend for Oddish. It provides the authenticated dashboard, task browser, experiment views, public share and dataset pages, Clerk-based auth, and server-side API routes that proxy requests to either the local FastAPI backend or the Modal deployment.
 
 Current app surface:
 
 - `/` public landing page for signed-out users; signed-in users are redirected to `/dashboard`
 - `/dashboard` main dashboard and experiment entrypoint
+- `/tasks` authenticated task browser with search, pagination, per-task version summaries, and links back to experiments
 - `/experiments` base page directing users to select an experiment
-- `/experiments/[experiment]` experiment detail, task and trial inspection, logs, results, files, share controls, and **cancel** for in-flight work (task drawer **Cancel (N)** or experiment table bulk **Cancel** when tasks are selected; both use `POST /tasks/cancel` with one or more task ids)
+- `/experiments/[experiment]` experiment detail, task and trial inspection, logs, results, files, version history, share controls, per-task retry actions, and **cancel** for in-flight work (task drawer **Cancel (N)** or experiment table bulk **Cancel** when tasks are selected; both use `POST /tasks/cancel` with one or more task ids)
 - `/settings` organization management and API key management
 - `/admin` worker queues, queue slots, queue health, and orphaned state monitoring
 - `/share/[token]` read-only public experiment view
@@ -105,7 +106,9 @@ The backend target is resolved by `src/lib/backend-config.ts`:
 - `NEXT_PUBLIC_BACKEND_TYPE=local|modal`
 - `FASTAPI_URL` for local development
 - `NEXT_PUBLIC_MODAL_BASE_URL` plus `NEXT_PUBLIC_MODAL_ENV` for constructed Modal URLs
-- `NEXT_PUBLIC_MODAL_API_URL` or `NEXT_PUBLIC_MODAL_<ENDPOINT>_URL` for explicit overrides
+- `NEXT_PUBLIC_MODAL_API_URL` for an explicit full Modal API override
+
+Global client-side fetching defaults live in `src/app/providers.tsx`, which installs an `SWRConfig` with deduping and conservative revalidation settings for the entire app.
 
 ## Auth And Routing
 
@@ -114,6 +117,8 @@ The app uses [Clerk](https://clerk.com) for authentication and organization cont
 Public routes:
 
 - `/`
+- `/sign-in/*`
+- `/sign-up/*`
 - `/share/*`
 - `/datasets/*`
 - `/api/public/*`
@@ -135,12 +140,12 @@ If you want backend JWTs to include org context, configure a Clerk JWT template 
 The frontend proxies backend requests through `src/app/api/*`. Main groups:
 
 - `/api/dashboard` for dashboard data
-- `/api/tasks/*` for task listing, task detail, trials, files, and `POST /api/tasks/cancel` (proxies to backend `POST /tasks/cancel`)
-- `/api/trials/*` for trial logs, structured logs, result payloads, retries, trajectories, and files
-- `/api/experiments/*` for experiment detail, task listing, publish, unpublish, and share
+- `/api/tasks/*` for task browse/search, task detail, versions, trials, files, `POST /api/tasks/cancel`, and per-task analysis or verdict retry actions
+- `/api/trials/*` for trial logs, structured logs, result payloads, retries, analysis retries, trajectories, and files
+- `/api/experiments/*` for experiment detail, task listing, publish, unpublish, and share token creation
 - `/api/settings/api-keys*` for API key management
 - `/api/admin/*` for queue slots, queue status, and orphaned state detection
-- `/api/public/*` for public experiment, dataset, and artifact access
+- `/api/public/*` for public experiment, dataset, task-file, and trial artifact access
 
 ## Project Structure
 
@@ -151,6 +156,7 @@ frontend/
 │   │   ├── page.tsx              # Public landing page / signed-in redirect
 │   │   ├── (app)/                # Authenticated app shell
 │   │   │   ├── dashboard/
+│   │   │   ├── tasks/
 │   │   │   ├── experiments/
 │   │   │   ├── settings/
 │   │   │   └── admin/
@@ -199,6 +205,15 @@ pnpm dev:modal
 ```
 
 If you need to point at a specific Modal API URL, set `NEXT_PUBLIC_MODAL_API_URL` in `.env.local`.
+
+## Deployment
+
+`next.config.ts` enables `output: "standalone"`, and the checked-in `Dockerfile` builds a production container around the generated standalone server:
+
+```bash
+docker build -t oddish-frontend .
+docker run --rm -p 3000:3000 --env-file .env.local oddish-frontend
+```
 
 ### Use Clerk production keys locally
 

@@ -52,20 +52,14 @@ async def list_public_experiments(
     async with get_session() as session:
         # Count distinct tasks linked either via task.experiment_id or
         # trial.experiment_id so trial-only experiments show a non-zero count.
-        direct_tasks = (
-            select(
-                TaskModel.experiment_id.label("experiment_id"),
-                TaskModel.id.label("task_id"),
-            )
-            .where(TaskModel.experiment_id.isnot(None))
-        )
-        trial_tasks = (
-            select(
-                TrialModel.experiment_id.label("experiment_id"),
-                TrialModel.task_id.label("task_id"),
-            )
-            .where(TrialModel.experiment_id.isnot(None))
-        )
+        direct_tasks = select(
+            TaskModel.experiment_id.label("experiment_id"),
+            TaskModel.id.label("task_id"),
+        ).where(TaskModel.experiment_id.isnot(None))
+        trial_tasks = select(
+            TrialModel.experiment_id.label("experiment_id"),
+            TrialModel.task_id.label("task_id"),
+        ).where(TrialModel.experiment_id.isnot(None))
         all_exp_tasks = direct_tasks.union(trial_tasks).subquery()
         task_counts = (
             select(
@@ -184,7 +178,8 @@ async def list_public_experiment_tasks(
 
             for task in tasks:
                 filtered = [
-                    t for t in task.trials
+                    t
+                    for t in task.trials
                     if t.experiment_id == exp_id or t.experiment_id is None
                 ]
                 set_committed_value(task, "trials", filtered)

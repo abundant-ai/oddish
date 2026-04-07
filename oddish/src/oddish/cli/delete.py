@@ -19,9 +19,7 @@ console = Console()
 def delete(
     task_id: Annotated[
         Optional[str],
-        typer.Argument(
-            help="Task ID to delete (or use --experiment)"
-        ),
+        typer.Argument(help="Task ID to delete (or use --experiment)"),
     ] = None,
     experiment_id: Annotated[
         Optional[str],
@@ -55,9 +53,7 @@ def delete(
         raise typer.Exit(1)
 
     if not task_id and not experiment_id:
-        console.print(
-            "[yellow]Provide a task ID or --experiment to delete.[/yellow]"
-        )
+        console.print("[yellow]Provide a task ID or --experiment to delete.[/yellow]")
         raise typer.Exit(1)
 
     if is_modal_api_url(api_url):
@@ -67,9 +63,7 @@ def delete(
         raise typer.Exit(1)
 
     if task_id:
-        confirm = typer.confirm(
-            f"Delete task {task_id} and its trials?", default=False
-        )
+        confirm = typer.confirm(f"Delete task {task_id} and its trials?", default=False)
         if not confirm:
             raise typer.Abort()
     elif experiment_id:

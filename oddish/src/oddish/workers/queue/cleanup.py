@@ -1,6 +1,8 @@
-from sqlalchemy import select, text
+from typing import cast
 
-from oddish.config import settings
+from sqlalchemy import text
+from sqlalchemy.engine import CursorResult
+
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -245,54 +247,54 @@ async def cleanup_orphaned_queue_state(
         # ---------------------------------------------------------------
         # 7. Clear stale runtime refs on terminal trials
         # ---------------------------------------------------------------
-        terminal_trial_runtime_refs_cleared = int(
-            (
-                await session.execute(
-                    text(
-                        """
-                        UPDATE trials
-                        SET current_worker_id = NULL,
-                            current_queue_slot = NULL,
-                            modal_function_call_id = NULL
-                        WHERE status::text IN ('SUCCESS', 'FAILED')
-                          AND (
-                              current_worker_id IS NOT NULL
-                              OR current_queue_slot IS NOT NULL
-                              OR modal_function_call_id IS NOT NULL
-                          )
-                        """
-                    )
+        terminal_trial_cleanup_result = cast(
+            CursorResult,
+            await session.execute(
+                text(
+                    """
+                    UPDATE trials
+                    SET current_worker_id = NULL,
+                        current_queue_slot = NULL,
+                        modal_function_call_id = NULL
+                    WHERE status::text IN ('SUCCESS', 'FAILED')
+                      AND (
+                          current_worker_id IS NOT NULL
+                          OR current_queue_slot IS NOT NULL
+                          OR modal_function_call_id IS NOT NULL
+                      )
+                    """
                 )
-            ).rowcount
-            or 0
+            ),
+        )
+        terminal_trial_runtime_refs_cleared = int(
+            terminal_trial_cleanup_result.rowcount or 0
         )
 
         # ---------------------------------------------------------------
         # 8. Clear orphaned queue slot leases (no running trial on that key)
         # ---------------------------------------------------------------
-        orphaned_active_slots_cleared = int(
-            (
-                await session.execute(
-                    text(
-                        """
-                        UPDATE queue_slots qs
-                        SET locked_by = NULL,
-                            locked_until = NULL
-                        WHERE qs.locked_by IS NOT NULL
-                          AND qs.locked_until IS NOT NULL
-                          AND qs.locked_until > NOW()
-                          AND NOT EXISTS (
-                              SELECT 1
-                              FROM trials t
-                              WHERE t.status::text = 'RUNNING'
-                                AND t.queue_key = qs.queue_key
-                          )
-                        """
-                    )
+        orphaned_slot_cleanup_result = cast(
+            CursorResult,
+            await session.execute(
+                text(
+                    """
+                    UPDATE queue_slots qs
+                    SET locked_by = NULL,
+                        locked_until = NULL
+                    WHERE qs.locked_by IS NOT NULL
+                      AND qs.locked_until IS NOT NULL
+                      AND qs.locked_until > NOW()
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM trials t
+                          WHERE t.status::text = 'RUNNING'
+                            AND t.queue_key = qs.queue_key
+                      )
+                    """
                 )
-            ).rowcount
-            or 0
+            ),
         )
+        orphaned_active_slots_cleared = int(orphaned_slot_cleanup_result.rowcount or 0)
 
     return {
         "running_stale_heartbeat": running_stale_heartbeat_failed,

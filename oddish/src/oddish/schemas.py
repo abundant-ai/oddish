@@ -84,7 +84,10 @@ class TrialSpec(BaseModel):
 
     @model_validator(mode="after")
     def reject_timeout_override(self) -> "TrialSpec":
-        if "timeout_minutes" in self.model_fields_set and self.timeout_minutes is not None:
+        if (
+            "timeout_minutes" in self.model_fields_set
+            and self.timeout_minutes is not None
+        ):
             raise ValueError(
                 "timeout_minutes is no longer supported. "
                 "Set explicit [agent].timeout_sec, [verifier].timeout_sec, "
@@ -232,7 +235,10 @@ class TaskSweepSubmission(BaseModel):
 
     @model_validator(mode="after")
     def reject_timeout_override(self) -> "TaskSweepSubmission":
-        if "timeout_minutes" in self.model_fields_set and self.timeout_minutes is not None:
+        if (
+            "timeout_minutes" in self.model_fields_set
+            and self.timeout_minutes is not None
+        ):
             raise ValueError(
                 "timeout_minutes is no longer supported. "
                 "Set explicit [agent].timeout_sec, [verifier].timeout_sec, "

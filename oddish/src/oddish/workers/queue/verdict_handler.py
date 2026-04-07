@@ -34,9 +34,7 @@ async def run_verdict_job(
         compute_task_verdict,
     )
 
-    console.print(
-        f"[cyan]Processing verdict[/cyan] {task_id} (queue_key={queue_key})"
-    )
+    console.print(f"[cyan]Processing verdict[/cyan] {task_id} (queue_key={queue_key})")
 
     # Mark as running and load classifications
     classifications = []

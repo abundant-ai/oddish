@@ -16,7 +16,6 @@ from harbor.viewer.scanner import JobScanner
 from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
-    Priority,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
@@ -572,9 +571,7 @@ async def run_trial_job(
     3. Mark trial as success/failed/retrying
     4. Transition task once all trials complete
     """
-    console.print(
-        f"[cyan]Processing trial[/cyan] {trial_id} (queue_key={queue_key})"
-    )
+    console.print(f"[cyan]Processing trial[/cyan] {trial_id} (queue_key={queue_key})")
 
     # Check idempotency
     async with _trial_session(trial_id) as (session, trial):

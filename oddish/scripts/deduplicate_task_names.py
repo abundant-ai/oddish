@@ -66,6 +66,7 @@ async def main(apply: bool) -> None:
 
     # Show summary by original name
     from collections import Counter
+
     name_counts = Counter(old for _, old, _ in renames)
     print(f"Affected original names: {len(name_counts)}")
     print(f"Top 10 by duplicate count:")
@@ -90,14 +91,16 @@ async def main(apply: bool) -> None:
         print(f"Renamed {len(renames)} tasks.")
 
         # Verify no duplicates remain
-        remaining = await conn.fetchval("""
+        remaining = await conn.fetchval(
+            """
             SELECT COUNT(*) FROM (
                 SELECT COALESCE(org_id, '__null__'), name
                 FROM tasks
                 GROUP BY COALESCE(org_id, '__null__'), name
                 HAVING COUNT(*) > 1
             ) sub
-        """)
+        """
+        )
         print(f"Remaining duplicate groups: {remaining}")
     else:
         print(f"Would rename {len(renames)} tasks.")

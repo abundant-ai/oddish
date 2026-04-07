@@ -79,9 +79,7 @@ def _task_archive_members_from_bytes(archive_bytes: bytes) -> list[dict[str, obj
             files[normalized_path] = {
                 "path": normalized_path,
                 "size": member.size,
-                "last_modified": datetime.fromtimestamp(
-                    member.mtime, tz=timezone.utc
-                ),
+                "last_modified": datetime.fromtimestamp(member.mtime, tz=timezone.utc),
             }
     return [files[path] for path in sorted(files)]
 
@@ -103,7 +101,9 @@ def _read_task_archive_text(archive_bytes: bytes, file_path: str) -> str:
                 break
             return extracted.read().decode("utf-8")
 
-    raise HTTPException(status_code=404, detail=f"Task file not found: {normalized_path}")
+    raise HTTPException(
+        status_code=404, detail=f"Task file not found: {normalized_path}"
+    )
 
 
 class StorageClient:
@@ -403,7 +403,8 @@ class StorageClient:
             filtered_files = [
                 file_meta
                 for file_meta in archive_files
-                if not relative_prefix or str(file_meta["path"]).startswith(relative_prefix)
+                if not relative_prefix
+                or str(file_meta["path"]).startswith(relative_prefix)
             ]
             if recursive:
                 return {
@@ -480,10 +481,11 @@ class StorageClient:
                     )
 
             if presign and files:
-                s3_keys = [f["key"] for f in files]
+                s3_keys = [str(f["key"]) for f in files]
                 urls = await self.get_presigned_urls_batch(s3_keys, presign_expiration)
                 for f in files:
-                    f["url"] = urls.get(f["key"])
+                    key = str(f["key"])
+                    f["url"] = urls.get(key)
 
             return {
                 "task_id": task_id,
@@ -518,10 +520,11 @@ class StorageClient:
                 )
 
         if presign and files:
-            s3_keys = [f["key"] for f in files]
+            s3_keys = [str(f["key"]) for f in files]
             urls = await self.get_presigned_urls_batch(s3_keys, presign_expiration)
             for f in files:
-                f["url"] = urls.get(f["key"])
+                key = str(f["key"])
+                f["url"] = urls.get(key)
 
         dirs = []
         for common_prefix in listing["common_prefixes"]:

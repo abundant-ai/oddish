@@ -33,7 +33,7 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
   useEffect(() => {
     const timeoutId = window.setTimeout(
       () => setDebouncedValue(value),
-      delayMs
+      delayMs,
     );
     return () => window.clearTimeout(timeoutId);
   }, [delayMs, value]);
@@ -99,7 +99,7 @@ function getLatestTrialStatusCounts(task: TaskBrowseItem) {
       const status = getMatrixStatus(
         trial.status,
         trial.reward,
-        trial.error_message
+        trial.error_message,
       );
       counts[status] += 1;
       return counts;
@@ -111,7 +111,7 @@ function getLatestTrialStatusCounts(task: TaskBrowseItem) {
       pending: 0,
       queued: 0,
       running: 0,
-    } as Record<ReturnType<typeof getMatrixStatus>, number>
+    } as Record<ReturnType<typeof getMatrixStatus>, number>,
   );
 }
 
@@ -161,7 +161,10 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
           {summaryItems.map((item) => {
             const config = STATUS_CONFIG[item.key];
             return (
-              <div key={item.key} className="flex items-center gap-1 whitespace-nowrap">
+              <div
+                key={item.key}
+                className="flex items-center gap-1 whitespace-nowrap"
+              >
                 <span
                   className={`inline-flex h-2 w-2 rounded-full ${config.bracketClass}`}
                 />
@@ -195,7 +198,7 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
         const status = getMatrixStatus(
           trial.status,
           trial.reward,
-          trial.error_message
+          trial.error_message,
         );
         const config = STATUS_CONFIG[status];
 
@@ -315,7 +318,7 @@ export function TasksPageClient({
         offset === 0 && debouncedQuery.length === 0
           ? (initialData ?? undefined)
           : undefined,
-    }
+    },
   );
 
   const items = data?.items ?? [];
@@ -389,7 +392,7 @@ export function TasksPageClient({
                   className="h-8 px-3 text-[11px]"
                   onClick={() =>
                     setOffset((currentOffset) =>
-                      Math.max(currentOffset - PAGE_SIZE, 0)
+                      Math.max(currentOffset - PAGE_SIZE, 0),
                     )
                   }
                   disabled={offset === 0 || isValidating}

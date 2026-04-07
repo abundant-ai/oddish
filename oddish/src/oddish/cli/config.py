@@ -84,4 +84,3 @@ def get_auth_headers(api_url: str | None = None) -> dict[str, str]:
     if not api_key:
         return {}
     return {"Authorization": f"Bearer {api_key}"}
-

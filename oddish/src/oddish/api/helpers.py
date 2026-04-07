@@ -127,7 +127,9 @@ async def fetch_trial_queue_info(
     session: AsyncSession, *, trials: Sequence[TrialModel]
 ) -> dict[str, TrialQueueInfo]:
     """Return live queue snapshots for queued/retrying trials."""
-    queued_trials = [trial for trial in trials if trial.status in _QUEUE_PENDING_STATUSES]
+    queued_trials = [
+        trial for trial in trials if trial.status in _QUEUE_PENDING_STATUSES
+    ]
     if not queued_trials:
         return {}
 
