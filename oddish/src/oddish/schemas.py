@@ -399,6 +399,14 @@ class TaskBrowseExperiment(BaseModel):
     name: str
 
 
+class TaskBrowseTrial(BaseModel):
+    id: str
+    name: str
+    status: TrialStatus
+    reward: int | None = None
+    error_message: str | None = None
+
+
 class TaskBrowseItem(BaseModel):
     id: str
     name: str
@@ -411,6 +419,7 @@ class TaskBrowseItem(BaseModel):
     reward_success: int
     reward_total: int
     last_run_at: datetime | None = None
+    latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
 
 

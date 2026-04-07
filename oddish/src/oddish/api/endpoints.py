@@ -35,6 +35,7 @@ from oddish.schemas import (
     TaskBrowseExperiment,
     TaskBrowseItem,
     TaskBrowseResponse,
+    TaskBrowseTrial,
     TaskStatusResponse,
     TaskVersionResponse,
     TrialResponse,
@@ -319,6 +320,7 @@ async def browse_tasks_core(
     visible_rows = raw_rows[:limit]
 
     experiments_by_task: dict[str, list[TaskBrowseExperiment]] = {}
+    latest_trials_by_task: dict[str, list[TaskBrowseTrial]] = {}
     task_version_pairs = [
         (str(row["task_id"]), str(row["current_version_id"]))
         for row in visible_rows
@@ -362,6 +364,38 @@ async def browse_tasks_core(
                 )
             )
 
+        latest_trial_rows = await session.execute(
+            select(
+                TrialModel.task_id.label("task_id"),
+                TrialModel.id.label("trial_id"),
+                TrialModel.name.label("trial_name"),
+                TrialModel.status.label("trial_status"),
+                TrialModel.reward.label("reward"),
+                TrialModel.error_message.label("error_message"),
+            )
+            .where(
+                TrialModel.org_id == org_id,
+                tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
+                    task_version_pairs
+                ),
+            )
+            .order_by(
+                TrialModel.task_id.asc(),
+                TrialModel.created_at.asc(),
+                TrialModel.id.asc(),
+            )
+        )
+        for trial_row in latest_trial_rows.mappings():
+            latest_trials_by_task.setdefault(str(trial_row["task_id"]), []).append(
+                TaskBrowseTrial(
+                    id=str(trial_row["trial_id"]),
+                    name=str(trial_row["trial_name"]),
+                    status=trial_row["trial_status"],
+                    reward=trial_row["reward"],
+                    error_message=trial_row["error_message"],
+                )
+            )
+
     return TaskBrowseResponse(
         items=[
             TaskBrowseItem(
@@ -384,6 +418,7 @@ async def browse_tasks_core(
                 reward_success=int(row["reward_success"] or 0),
                 reward_total=int(row["reward_total"] or 0),
                 last_run_at=row["last_run_at"],
+                latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),
             )
             for row in visible_rows

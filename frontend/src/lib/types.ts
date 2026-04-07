@@ -147,6 +147,14 @@ export interface TaskBrowseExperiment {
   name: string;
 }
 
+export interface TaskBrowseTrial {
+  id: string;
+  name: string;
+  status: TrialStatus;
+  reward: number | null;
+  error_message?: string | null;
+}
+
 export interface TaskBrowseItem {
   id: string;
   name: string;
@@ -159,6 +167,7 @@ export interface TaskBrowseItem {
   reward_success: number;
   reward_total: number;
   last_run_at?: string | null;
+  latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
 }
 
