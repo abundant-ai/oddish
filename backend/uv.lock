@@ -1728,7 +1728,7 @@ wheels = [
 
 [[package]]
 name = "oddish"
-version = "0.1.5"
+version = "0.1.7"
 source = { editable = "../oddish" }
 dependencies = [
     { name = "aioboto3" },

@@ -15,6 +15,9 @@ from rich.console import Console
 
 from oddish.api.endpoints import (
     browse_tasks_core,
+    create_task_sweep_core,
+    delete_experiment_core,
+    delete_task_core,
     get_task_status_core,
     get_task_version_core,
     get_trial_by_index_core,
@@ -292,93 +295,34 @@ async def create_task_sweep(submission: TaskSweepSubmission):
     The task files are already stored (S3 if enabled, local directory otherwise).
     """
 
-    # Determine task path based on storage mode
-    task_path, task_s3_key = await resolve_task_storage(
-        submission.task_id,
-        s3_missing_detail=(
-            f"Task {submission.task_id} not found in S3. "
-            "Upload it first with POST /tasks/upload"
-        ),
-        local_missing_detail=(
-            f"Task {submission.task_id} not found in local storage. "
-            "Upload it first with POST /tasks/upload"
-        ),
-    )
-
-    from oddish.api.sweeps import (
-        build_trial_specs_from_sweep,
-        build_task_submission_from_sweep,
-    )
-
-    trials = build_trial_specs_from_sweep(submission)
-    expanded = build_task_submission_from_sweep(
-        submission,
-        task_path=task_path,
-        trials=trials,
-    )
+    from oddish.api.sweeps import validate_sweep_submission
+    validate_sweep_submission(submission)
 
     async with get_session() as session:
-        # Auto-detect append mode when the task already exists in the DB
-        # (backward-compat with CLIs that don't send append_to_task).
-        existing = await session.get(TaskModel, submission.task_id)
-        if existing is not None:
-            from oddish.queue import (
-                get_experiment_by_id_or_name,
-                get_or_create_experiment,
-            )
+        task, new_trials, is_append, experiment = await create_task_sweep_core(
+            session,
+            submission=submission,
+            org_id=None,
+        )
 
-            new_experiment_id: str | None = None
-            if submission.experiment_id:
-                exp = await get_experiment_by_id_or_name(
-                    session, submission.experiment_id
-                )
-                if not exp:
-                    exp = await get_or_create_experiment(
-                        session, submission.experiment_id
-                    )
-                new_experiment_id = exp.id
-            new_trials = await append_trials_to_task(
-                session,
-                task=existing,
-                submission=expanded,
-                experiment_id=new_experiment_id,
-            )
+        if not is_append and hasattr(task, "task_s3_key") and task.task_s3_key:
             await session.commit()
-            provider_counts: Counter[str] = Counter(t.provider for t in new_trials)
-            return TaskResponse(
-                id=existing.id,
-                name=existing.name,
-                status=existing.status,
-                priority=existing.priority,
-                trials_count=len(new_trials),
-                providers=dict(provider_counts),
-                created_at=existing.created_at,
-            )
-
-        try:
-            task = await create_task(session, expanded, task_id=submission.task_id)
-        except TaskTimeoutValidationError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-        # Store the S3 key if using S3
-        if task_s3_key:
-            task.task_s3_key = task_s3_key
-            await session.commit()
-
-        # Count trials per provider
-        provider_counts = Counter()
-        for trial in task.trials:
-            provider_counts[trial.provider] += 1
-
+            
+        provider_counts: Counter[str] = Counter(
+            t.provider for t in (new_trials if is_append else task.trials)
+        )
+        resp_experiment_id = experiment.id if experiment else task.experiment_id
+        resp_experiment_name = getattr(experiment, "name", None) if experiment else getattr(task.experiment, "name", None)
+        
         return TaskResponse(
             id=task.id,
             name=task.name,
             status=task.status,
             priority=task.priority,
-            trials_count=len(task.trials),
+            trials_count=len(new_trials) if is_append else len(task.trials),
             providers=dict(provider_counts),
+            experiment_id=resp_experiment_id,
+            experiment_name=resp_experiment_name,
             created_at=task.created_at,
         )
 
@@ -470,94 +414,28 @@ async def cancel_tasks(payload: TaskBatchCancelRequest):
 async def delete_task(task_id: str):
     """Delete a task and its trials."""
     async with get_session() as session:
-        task = await session.get(TaskModel, task_id)
-        if not task:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-
-        task_rows = [(task.task_s3_key, task.task_path)]
-        trial_rows_result = await session.execute(
-            select(TrialModel.id, TrialModel.trial_s3_key).where(
-                TrialModel.task_id == task.id
-            )
-        )
-        trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
-        s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=task_rows,
-            trials=trial_rows,
-        )
-
-        await session.delete(task)
+        result = await delete_task_core(session, task_id=task_id)
         await session.commit()
 
-    if s3_prefixes:
+    if result.get("s3_prefixes"):
         try:
-            await delete_s3_prefixes(s3_prefixes)
+            await delete_s3_prefixes(result["s3_prefixes"])
         except Exception:
             logger.exception("Failed to delete S3 artifacts for task %s", task_id)
 
-    return {"status": "success", "deleted": {"task_id": task_id}}
+    return {"status": "success", "deleted": result["deleted"]}
 
 
 @api.delete("/experiments/{experiment_id}")
 async def delete_experiment(experiment_id: str):
     """Delete an experiment and all associated tasks/trials."""
     async with get_session() as session:
-        experiment = await session.get(ExperimentModel, experiment_id)
-        if not experiment:
-            raise HTTPException(
-                status_code=404, detail=f"Experiment {experiment_id} not found"
-            )
-
-        result = await session.execute(
-            select(TaskModel.id).where(TaskModel.experiment_id == experiment_id)
-        )
-        task_ids = [row[0] for row in result.all()]
-        task_rows_result = await session.execute(
-            select(TaskModel.task_s3_key, TaskModel.task_path).where(
-                TaskModel.experiment_id == experiment_id
-            )
-        )
-        task_rows = [(row[0], row[1]) for row in task_rows_result.all()]
-        trial_rows: list[tuple[str, str | None]] = []
-
-        if task_ids:
-            trial_rows_result = await session.execute(
-                select(TrialModel.id, TrialModel.trial_s3_key).where(
-                    TrialModel.task_id.in_(task_ids)
-                )
-            )
-            trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
-            await session.execute(
-                delete(TrialModel).where(TrialModel.task_id.in_(task_ids))
-            )
-            await session.execute(delete(TaskModel).where(TaskModel.id.in_(task_ids)))
-
-        # Also delete trials linked only via trial.experiment_id
-        trial_only_result = await session.execute(
-            select(TrialModel.id, TrialModel.trial_s3_key).where(
-                TrialModel.experiment_id == experiment_id,
-            )
-        )
-        extra_trial_rows = [(r[0], r[1]) for r in trial_only_result.all()]
-        trial_rows.extend(extra_trial_rows)
-        if extra_trial_rows:
-            await session.execute(
-                delete(TrialModel).where(
-                    TrialModel.experiment_id == experiment_id,
-                )
-            )
-
-        s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=task_rows,
-            trials=trial_rows,
-        )
-
-        await session.delete(experiment)
+        result = await delete_experiment_core(session, experiment_id=experiment_id)
         await session.commit()
 
-    if s3_prefixes:
+    if result.get("s3_prefixes"):
         try:
-            await delete_s3_prefixes(s3_prefixes)
+            await delete_s3_prefixes(result["s3_prefixes"])
         except Exception:
             logger.exception(
                 "Failed to delete S3 artifacts for experiment %s", experiment_id
@@ -565,7 +443,7 @@ async def delete_experiment(experiment_id: str):
 
     return {
         "status": "success",
-        "deleted": {"experiment_id": experiment_id, "tasks": len(task_ids)},
+        "deleted": result["deleted"],
     }
 
 
@@ -726,6 +604,13 @@ async def list_trial_files(trial_id: str) -> dict:
     trial = await _get_detached_trial(trial_id)
     return await list_trial_files_s3(trial)
 
+
+@api.get("/trials/{trial_id}/debug-files")
+async def debug_trial_files_endpoint(trial_id: str):
+    """Debug endpoint: list all files in S3 for a trial."""
+    trial = await _get_detached_trial(trial_id)
+    from oddish.api.trial_io import debug_trial_files
+    return await debug_trial_files(trial)
 
 @api.get("/trials/{trial_id}/files/{file_path:path}")
 async def get_trial_file(trial_id: str, file_path: str) -> Response:
