@@ -376,6 +376,11 @@ export function TrialDetailPanel({
       <DrawerHeader className="border-b border-border px-4 py-3 sm:px-6 sm:py-4">
         <DrawerTitle className="flex min-w-0 items-center gap-2 pr-8 font-mono text-sm sm:text-base">
           <span className="min-w-0 truncate">{trial.name}</span>
+          {trial.task_version != null && (
+            <span className="inline-flex shrink-0 items-center rounded-md border border-border bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-foreground">
+              v{trial.task_version}
+            </span>
+          )}
           <span className="text-muted-foreground/50">·</span>
           <span className="flex min-w-0 flex-col items-center text-center leading-tight text-muted-foreground">
             <span className="truncate text-[10px] font-bold sm:text-xs">
@@ -393,13 +398,8 @@ export function TrialDetailPanel({
             </span>
           </span>
         </DrawerTitle>
-        <DrawerDescription className="flex items-center gap-1.5 font-mono text-muted-foreground">
+        <DrawerDescription className="font-mono text-muted-foreground">
           <span className="truncate">{trial.id}</span>
-          {trial.task_version != null && (
-            <span className="inline-flex shrink-0 items-center rounded border border-border bg-muted/50 px-1 py-px text-[10px] font-medium leading-none">
-              v{trial.task_version}
-            </span>
-          )}
         </DrawerDescription>
         <div className="flex flex-wrap items-stretch justify-between gap-2 pt-2 text-xs text-muted-foreground">
           <div className="flex items-center gap-1">
