@@ -82,9 +82,7 @@ def validate_tasks(task_paths: list[Path]) -> list[Path]:
             error_console.print(f"  [red]✗[/red] {task_path.name}: {msg}")
 
     if not valid:
-        error_console.print(
-            "\n[red]All tasks failed validation. Nothing to run.[/red]"
-        )
+        error_console.print("\n[red]All tasks failed validation. Nothing to run.[/red]")
         raise typer.Exit(1)
 
     if errors:
@@ -814,8 +812,7 @@ def watch_task(
                 all_trials = result.get("trials", [])
                 if experiment_id:
                     all_trials = [
-                        t for t in all_trials
-                        if t.get("experiment_id") == experiment_id
+                        t for t in all_trials if t.get("experiment_id") == experiment_id
                     ]
 
                 task_status = result.get("status", "unknown")
@@ -852,12 +849,8 @@ def watch_task(
 
                 # Add summary row
                 total = len(all_trials)
-                completed = sum(
-                    1 for t in all_trials if t.get("status") == "success"
-                )
-                failed = sum(
-                    1 for t in all_trials if t.get("status") == "failed"
-                )
+                completed = sum(1 for t in all_trials if t.get("status") == "success")
+                failed = sum(1 for t in all_trials if t.get("status") == "failed")
 
                 reward_pass = sum(1 for t in all_trials if t.get("reward") == 1)
                 reward_fail = sum(1 for t in all_trials if t.get("reward") == 0)

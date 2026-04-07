@@ -6,9 +6,7 @@ from oddish.environment_policy import (
     enforce_trial_environment as enforce_trial_environment_with_policy,
 )
 
-ALLOWED_CLOUD_ENVIRONMENTS = frozenset(
-    {EnvironmentType.MODAL, EnvironmentType.DAYTONA}
-)
+ALLOWED_CLOUD_ENVIRONMENTS = frozenset({EnvironmentType.MODAL, EnvironmentType.DAYTONA})
 
 
 def get_default_cloud_environment() -> EnvironmentType:

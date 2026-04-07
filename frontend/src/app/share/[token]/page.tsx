@@ -43,9 +43,7 @@ export default function PublicExperimentPage() {
             t.task_version == null || t.task_version === task.current_version,
         );
         if (filtered.length === trials.length) return task;
-        const completed = filtered.filter(
-          (t) => t.status === "success",
-        ).length;
+        const completed = filtered.filter((t) => t.status === "success").length;
         const failed = filtered.filter((t) => t.status === "failed").length;
         const rewardSuccess = filtered.filter((t) => t.reward === 1).length;
         const rewardTotal = filtered.filter((t) => t.reward != null).length;

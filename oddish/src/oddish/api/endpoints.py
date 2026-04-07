@@ -20,7 +20,6 @@ from oddish.api.trial_io import (
     read_trial_result,
     read_trial_trajectory,
 )
-from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -166,8 +165,7 @@ async def list_tasks_core(
             filtered = [
                 t
                 for t in task.trials
-                if t.experiment_id == experiment_id
-                or t.experiment_id is None
+                if t.experiment_id == experiment_id or t.experiment_id is None
             ]
             set_committed_value(task, "trials", filtered)
 
@@ -295,7 +293,9 @@ async def browse_tasks_core(
             trial_aggregates.c.last_run_at.label("last_run_at"),
         )
         .select_from(ranked_tasks_subquery)
-        .outerjoin(version_counts, version_counts.c.task_id == ranked_tasks_subquery.c.task_id)
+        .outerjoin(
+            version_counts, version_counts.c.task_id == ranked_tasks_subquery.c.task_id
+        )
         .outerjoin(
             trial_aggregates,
             and_(
@@ -450,7 +450,9 @@ async def get_task_status_core(
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
     if include_trials:
-        queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=task.trials)
+        queue_info_by_trial_id = await fetch_trial_queue_info(
+            session, trials=task.trials
+        )
         return build_task_status_response(
             task,
             include_empty_rewards=include_empty_rewards,

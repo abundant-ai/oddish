@@ -21,13 +21,14 @@ oddish run -d swebench@1.0 -a codex -m openai/gpt-5.2 --n-trials 3
 
 # Watch progress
 oddish status
+oddish status <task_id> --watch
 
 # Pull logs and artifacts locally
 oddish pull <task_id> --watch
 ```
 
-The CLI targets Oddish Cloud by default. Set `ODDISH_API_KEY` to authenticate.
-For self-deployed instances, also set `ODDISH_API_URL`.
+The CLI targets Oddish Cloud by default. All API-backed commands require
+`ODDISH_API_KEY`. For self-deployed instances, also set `ODDISH_API_URL`.
 
 ## Installation
 
@@ -60,11 +61,11 @@ oddish --help
 
 Available commands:
 
-- `oddish run` submits a task, dataset, or sweep config
+- `oddish run` uploads a local task or dataset, downloads a registry dataset, or expands a sweep config into trials
 - `oddish status` shows system, task, or experiment status
 - `oddish cancel` stops all in-flight runs for a task
-- `oddish pull` downloads logs and artifact files locally
-- `oddish delete` deletes task data or resets local infrastructure
+- `oddish pull` downloads logs, results, trajectories, and artifact files for a trial, task, or experiment
+- `oddish delete` deletes a task or experiment from a self-hosted deployment
 
 ### `oddish run`
 
@@ -74,6 +75,7 @@ Use `oddish run` for:
 - a local dataset directory containing multiple tasks
 - a Harbor registry dataset via `--dataset`
 - a YAML or JSON sweep config via `--config`
+- appending trials to an existing task via `--task`
 
 Examples:
 
@@ -95,27 +97,33 @@ oddish run --task task_123 -a gemini-cli -m google/gemini-3.1-pro-preview --n-tr
 
 # Submit in the background
 oddish run ./my-task -a claude-code --background
+
+# Script-friendly JSON output (implies --background)
+oddish run ./my-task -a claude-code --json
 ```
 
 Common flags:
 
+- `PATH` or `-p, --path` selects a local task or dataset directory
 - `-a, --agent` selects the agent
 - `-m, --model` selects the model
 - `--n-trials` runs multiple trials per task
 - `-d, --dataset` pulls tasks from the Harbor registry
 - `--task` appends trials to an existing task ID without re-uploading task files
 - `-c, --config` loads a YAML or JSON sweep config
-- `-t, --task-name` and `-x, --exclude-task-name` filter tasks by glob
-- `-l, --n-tasks` limits how many tasks run
+- `-t, --task-name`, `-x, --exclude-task-name`, and `-l, --n-tasks` filter datasets
 - `-e, --env` selects the execution environment
-- `--experiment` groups runs into an explicit experiment
-- `-w, --watch / --no-watch` watches task progress until completion
+- `-P, --priority`, `-E, --experiment`, `-u, --user`, `-G, --github-user`, and `--github-meta` attach scheduling and attribution metadata
+- `-w, --watch / --no-watch` watches single-task submissions until completion
 - `--background` submits and returns immediately
-- `-q, --quiet` suppresses output
-- `--run-analysis` runs post-trial analysis and verdict generation
-- `--publish` publishes experiment for public read-only access
-- `--priority` sets priority (low or high)
-- `--disable-verification` skips running task tests
+- `--json` emits machine-readable output and implies `--background`
+- `-q, --quiet` suppresses nonessential output
+- `--run-analysis` runs post-trial analysis and task verdict generation
+- `--publish` publishes the experiment for public read-only access
+- `--disable-verification` skips task verification
+- `--override-cpus`, `--override-memory-mb`, `--override-gpus`, `--override-storage-mb`, and `--force-build` override environment settings
+- `--agent-env`, `--agent-kwarg`, and `--artifact` pass Harbor agent/env configuration through to every submitted config
+- `--api` overrides the API URL for a single invocation
 
 Supported `--env` values:
 
@@ -150,10 +158,16 @@ n_tasks: 10
 priority: low
 ```
 
-Per-agent overrides such as environment variables, kwargs, and timeouts are
-passed through Harbor agent config fields.
+You can also set `path`, `exclude_task_names`, and `experiment_id` in the
+config file. Per-agent overrides use `env` and `kwargs`. Timeouts and
+per-provider concurrency are no longer configured in sweep files; declare task
+timeouts in `task.toml` and API concurrency at server startup.
 
 ### `oddish status`
+
+Without arguments, `oddish status` shows recent experiments and API health. Use
+a task ID or `--experiment` to inspect a specific run, and `--watch` to resume
+live monitoring later.
 
 Examples:
 
@@ -171,8 +185,8 @@ oddish status --experiment <experiment_id> --watch
 ### `oddish cancel`
 
 Cancel all in-flight runs for a task without deleting any data. Queued jobs are
-removed, running trials are marked as failed, and Modal worker containers are
-terminated. Completed trials and their results are preserved.
+removed, running trials are cancelled, and active Modal workers are terminated
+when applicable. Completed trials and their results are preserved.
 
 ```bash
 oddish cancel <task_id>
@@ -180,6 +194,9 @@ oddish cancel <task_id> --force   # skip confirmation
 ```
 
 ### `oddish pull`
+
+`oddish pull` accepts a trial ID, task ID, or experiment ID and auto-detects
+the target type by default.
 
 Examples:
 
@@ -194,7 +211,10 @@ oddish pull <task_id> --watch --interval 5
 oddish pull <experiment_id> --include-task-files
 ```
 
-By default, pull output is written to `./.oddish/<target>`. You can also configure what to download using `--no-logs`, `--no-files`, and `--structured` (for structured logs), or change the output directory with `--out`.
+By default, pull output is written to `./.oddish/<target>` and includes a
+`manifest.json` describing the fetch. Use `--no-logs`, `--no-files`,
+`--structured`, `--include-task-files`, and `--out` to control what gets
+downloaded and where it lands.
 
 ### `oddish delete`
 
@@ -214,8 +234,7 @@ oddish delete --experiment <experiment_id>
 # 1. Submit a run
 oddish run -d swebench@1.0 -a claude-code -m anthropic/claude-sonnet-4-5
 
-# 2. Inspect or watch it
-oddish status
+# 2. Inspect or watch it later
 oddish status <task_id> --watch
 
 # 3. Pull outputs when you want them locally

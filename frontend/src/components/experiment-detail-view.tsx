@@ -60,7 +60,9 @@ function getModelScopedAgentsFromSummaries(
   summaries: ExperimentAgentSummary[],
 ): Set<string> {
   return new Set(
-    summaries.filter((summary) => summary.isModelScoped).map((summary) => summary.agent),
+    summaries
+      .filter((summary) => summary.isModelScoped)
+      .map((summary) => summary.agent),
   );
 }
 
@@ -218,10 +220,14 @@ function ExperimentSummaryBar({
           <span className="text-emerald-400">{summary.passCount}✓</span>
           <span className="text-red-400">{summary.failCount}✗</span>
           {summary.harnessErrorCount > 0 && (
-            <span className="text-yellow-400">{summary.harnessErrorCount}⊘</span>
+            <span className="text-yellow-400">
+              {summary.harnessErrorCount}⊘
+            </span>
           )}
           {summary.pendingCount > 0 && (
-            <span className="text-muted-foreground">{summary.pendingCount}◌</span>
+            <span className="text-muted-foreground">
+              {summary.pendingCount}◌
+            </span>
           )}
         </div>
       </div>
@@ -528,7 +534,8 @@ export function ExperimentDetailView({
                     });
                   }}
                   onTaskSelect={(task, context) => {
-                    const { trialGroups, orderedTrials } = buildTrialGroups(task);
+                    const { trialGroups, orderedTrials } =
+                      buildTrialGroups(task);
                     setDrawerState({
                       isOpen: true,
                       mode: "task",

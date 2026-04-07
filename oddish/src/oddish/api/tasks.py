@@ -211,7 +211,11 @@ async def _handle_existing_task_upload(
         latest = await _latest_version(session, task_id)
 
         # Content unchanged -- reuse existing version
-        if latest is not None and latest.content_hash and latest.content_hash == content_hash:
+        if (
+            latest is not None
+            and latest.content_hash
+            and latest.content_hash == content_hash
+        ):
             return UploadResponse(
                 task_id=task_id,
                 name=task_name,

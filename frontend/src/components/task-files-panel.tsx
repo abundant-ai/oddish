@@ -347,7 +347,8 @@ export function TaskFilesPanel({
     revalidateOnFocus: false,
   });
   const currentVersion = (verdictTask ?? task)?.current_version ?? null;
-  const versionSuffix = currentVersion != null ? `&version=${currentVersion}` : "";
+  const versionSuffix =
+    currentVersion != null ? `&version=${currentVersion}` : "";
 
   const verdictSource = verdictTask ?? task;
 
@@ -605,7 +606,9 @@ export function TaskFilesPanel({
       setExpandedDirs(new Set());
 
       try {
-        const res = await fetch(`${resolvedFilesUrl}?recursive=0${versionSuffix}`);
+        const res = await fetch(
+          `${resolvedFilesUrl}?recursive=0${versionSuffix}`,
+        );
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(
@@ -749,8 +752,11 @@ export function TaskFilesPanel({
         // Fallback: fetch via backend proxy (slower, but works if presigned URL expired)
         if (content === null) {
           const encodedPath = encodeURIComponent(filePath);
-          const versionParam = currentVersion != null ? `?version=${currentVersion}` : "";
-          const res = await fetch(`${resolvedFilesUrl}/${encodedPath}${versionParam}`);
+          const versionParam =
+            currentVersion != null ? `?version=${currentVersion}` : "";
+          const res = await fetch(
+            `${resolvedFilesUrl}/${encodedPath}${versionParam}`,
+          );
           if (!res.ok) {
             throw new Error("Failed to fetch file content");
           }
@@ -1065,8 +1071,7 @@ export function TaskFilesPanel({
     return {
       rewardSuccess: total > 0 ? success : null,
       rewardTotal: total > 0 ? total : null,
-      averageRewardPct:
-        total > 0 ? Math.round((success / total) * 100) : null,
+      averageRewardPct: total > 0 ? Math.round((success / total) * 100) : null,
     };
   }, [task?.trials, currentVersion]);
 
@@ -1440,10 +1445,10 @@ export function TaskFilesPanel({
                       )}
                       {verdictSource?.verdict?.primary_issue &&
                         verdictSource?.verdict?.is_good === false && (
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {verdictSource.verdict.primary_issue}
-                        </p>
-                      )}
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {verdictSource.verdict.primary_issue}
+                          </p>
+                        )}
                       {verdictSource?.verdict?.recommendations &&
                         verdictSource.verdict.recommendations.length > 0 && (
                           <div className="mt-2 space-y-1">

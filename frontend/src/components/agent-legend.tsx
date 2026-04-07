@@ -37,9 +37,7 @@ export function AgentLegend({ items, hiddenKeys, onToggle }: AgentLegendProps) {
               }}
             />
             <span
-              className={
-                isHidden ? "text-muted-foreground line-through" : ""
-              }
+              className={isHidden ? "text-muted-foreground line-through" : ""}
             >
               {item.label}
             </span>

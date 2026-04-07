@@ -151,4 +151,3 @@ Tune model concurrency with env vars:
 ODDISH_DEFAULT_MODEL_CONCURRENCY=64
 ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-sonnet-4-5": 32}'
 ```
-

@@ -6,7 +6,7 @@ import {
   getClerkToken,
 } from "@/lib/backend-config";
 
-export async function GET(request: NextRequest) {
+export async function GET(_request: NextRequest) {
   try {
     const authObj = await auth();
 

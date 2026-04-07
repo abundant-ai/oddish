@@ -11,9 +11,7 @@ from oddish.config import settings
 from oddish.db import get_session
 
 
-_KEY_TABLES: tuple[tuple[str, str], ...] = (
-    ("trials", "queue_key"),
-)
+_KEY_TABLES: tuple[tuple[str, str], ...] = (("trials", "queue_key"),)
 
 _MODEL_ABSENT_ALIASES: tuple[str, ...] = ("", "-", "none", "null", "nil", "n/a", "na")
 

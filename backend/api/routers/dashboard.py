@@ -322,16 +322,18 @@ async def get_dashboard(
         # =====================================================================
         # 4. Experiment table data (server-side pagination + search)
         # =====================================================================
-        experiments_response = []
+        experiments_response: list[dict[str, Any]] = []
         experiments_has_more = False
         if include_experiments:
-            experiments_response, experiments_has_more = await load_dashboard_experiments(
-                session,
-                org_id=auth.org_id,
-                experiments_limit=experiments_limit,
-                experiments_offset=experiments_offset,
-                experiments_query=experiments_query,
-                experiments_status=experiments_status,
+            experiments_response, experiments_has_more = (
+                await load_dashboard_experiments(
+                    session,
+                    org_id=auth.org_id,
+                    experiments_limit=experiments_limit,
+                    experiments_offset=experiments_offset,
+                    experiments_query=experiments_query,
+                    experiments_status=experiments_status,
+                )
             )
 
     response = {

@@ -32,9 +32,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "ALTER TABLE tasks DROP COLUMN IF EXISTS verdict_modal_function_call_id"
-    )
+    op.execute("ALTER TABLE tasks DROP COLUMN IF EXISTS verdict_modal_function_call_id")
     op.execute(
         "ALTER TABLE trials DROP COLUMN IF EXISTS analysis_modal_function_call_id"
     )

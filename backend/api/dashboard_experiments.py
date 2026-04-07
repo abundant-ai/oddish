@@ -198,9 +198,9 @@ async def load_dashboard_experiments(
         select(
             ExperimentModel.id.label("experiment_id"),
             ExperimentModel.name.label("experiment_name"),
-            case(
-                (ExperimentModel.is_public.is_(True), 1), else_=0
-            ).label("experiment_is_public"),
+            case((ExperimentModel.is_public.is_(True), 1), else_=0).label(
+                "experiment_is_public"
+            ),
             func.greatest(
                 func.coalesce(task_agg.c.task_count, 0),
                 func.coalesce(trial_agg.c.trial_task_count, 0),
@@ -295,15 +295,19 @@ async def load_dashboard_experiments(
         query = query.where(~active_trial_exists)
 
     paged_rows = (
-        await session.execute(
-            query.order_by(
-                nulls_last(experiment_rows.c.last_created_at.desc()),
-                experiment_rows.c.experiment_id.asc(),
+        (
+            await session.execute(
+                query.order_by(
+                    nulls_last(experiment_rows.c.last_created_at.desc()),
+                    experiment_rows.c.experiment_id.asc(),
+                )
+                .limit(experiments_limit + 1)
+                .offset(experiments_offset)
             )
-            .limit(experiments_limit + 1)
-            .offset(experiments_offset)
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     experiments_has_more = len(paged_rows) > experiments_limit
     page_rows = paged_rows[:experiments_limit]
@@ -341,7 +345,9 @@ async def load_dashboard_experiments(
                 "total_trials": total_trials,
                 "completed_trials": completed_trials,
                 "failed_trials": failed_trials,
-                "active_trials": max(0, total_trials - completed_trials - failed_trials),
+                "active_trials": max(
+                    0, total_trials - completed_trials - failed_trials
+                ),
                 "reward_success": int(trial_counts["reward_success"]),
                 "reward_total": int(trial_counts["reward_total"]),
                 "analysis_tasks": int(row["analysis_tasks"] or 0),

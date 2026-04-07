@@ -97,11 +97,7 @@ export function ExperimentClientPage({
     : false;
 
   useEffect(() => {
-    if (
-      allTrialPagesLoaded &&
-      !isValidatingTrials &&
-      hasMoreTrials
-    ) {
+    if (allTrialPagesLoaded && !isValidatingTrials && hasMoreTrials) {
       const timeout = setTimeout(() => {
         setTrialsSize((s) => s + 1);
       }, 50);
@@ -145,7 +141,8 @@ export function ExperimentClientPage({
           return task;
         }
         const filtered = trials.filter(
-          (t) => t.task_version == null || t.task_version === task.current_version,
+          (t) =>
+            t.task_version == null || t.task_version === task.current_version,
         );
         if (filtered.length === trials.length) return task;
         const completed = filtered.filter((t) => t.status === "success").length;

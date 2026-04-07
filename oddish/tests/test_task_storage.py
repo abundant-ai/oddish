@@ -100,7 +100,9 @@ async def test_resolve_task_storage_raises_404_when_prefix_missing(monkeypatch):
     monkeypatch.setattr(settings, "s3_enabled", True)
     monkeypatch.setattr(tasks_api, "get_storage_client", lambda: storage)
 
-    with pytest.raises(HTTPException, match="Task task-404 not found in S3") as exc_info:
+    with pytest.raises(
+        HTTPException, match="Task task-404 not found in S3"
+    ) as exc_info:
         await tasks_api.resolve_task_storage("task-404")
 
     assert exc_info.value.status_code == 404

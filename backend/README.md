@@ -26,7 +26,7 @@ Modal API (FastAPI in `endpoints.py` and `api/routers/*`)
 Postgres (oddish + cloud tables)
   │
   ▼
-Worker dispatcher (`worker/functions.py`, every 30s)
+Worker dispatcher (`worker/functions.py`, every 120s)
   │  - Spawns single-job workers by queue key
   ▼
 Single-job workers (process one job, then exit)
@@ -38,8 +38,8 @@ Modal sandboxes (Harbor execution, logs/artifacts to S3 or volume)
 ### Worker architecture
 
 Dispatcher + single-job pattern:
-1. `poll_queue()` runs every 30s, checks queue depth per key, launches up to `MAX_WORKERS_PER_POLL`.
-2. `process_single_job(queue_key)` acquires queue-slot lease, processes one `trial`/`analysis`/`verdict`, emits updates, exits.
+1. `poll_queue()` runs on a 120s Modal schedule, clears stale queue state, and launches up to `MAX_WORKERS_PER_POLL` single-job workers based on queue depth and concurrency limits.
+2. `process_single_job(queue_key)` acquires a queue-slot lease, processes one `trial`/`analysis`/`verdict`, emits updates, and exits.
 
 This keeps concurrency deterministic and avoids long-lived worker drift.
 
@@ -94,9 +94,10 @@ The API layer enforces this scope in all list/read/write queries.
 | `cloud_policy.py` | Hosted-only environment policy (allowed sandboxes, default cloud env) |
 | `api/app.py` | FastAPI app factory + startup/lifespan wiring |
 | `api/schemas.py` | Pydantic models for org/auth/share responses |
-| `api/routers/tasks.py` | Task CRUD, uploads, sweep creation, sharing, and file access |
-| `api/routers/trials.py` | Trial listing, retry, logs, result, trajectory, and debug file inspection |
+| `api/routers/tasks.py` | Task upload, browse, versions, sweep creation, sharing, retries, and file access |
+| `api/routers/trials.py` | Trial listing, retry/reanalysis, logs, result, trajectory, and debug file inspection |
 | `api/routers/dashboard.py` | Cached aggregate dashboard endpoint (queues, usage, tasks, experiments) |
+| `api/dashboard_experiments.py` | Dashboard query helpers for experiment summaries and counts |
 | `api/routers/orgs.py` | Current org lookup and Clerk-backed user management |
 | `api/routers/api_keys.py` | Org API key listing, creation, and revocation |
 | `api/routers/public.py` | Public token-based read routes (no auth) |
@@ -145,9 +146,23 @@ Modal runtime knobs are read directly by `modal_app.py`, including:
 
 - `ODDISH_ENABLE_MODAL_WORKERS`
 - `ODDISH_MODAL_API_MIN_CONTAINERS`
+- `ODDISH_MODAL_API_BUFFER_CONTAINERS`
 - `ODDISH_MODAL_API_MAX_CONTAINERS`
+- `ODDISH_MODAL_API_CONCURRENCY_TARGET`
+- `ODDISH_MODAL_API_CONCURRENCY_MAX`
+- `ODDISH_MODAL_WORKER_TIMEOUT_SECONDS`
+- `ODDISH_MODAL_WORKER_SHUTDOWN_TIMEOUT_SECONDS`
+- `ODDISH_MODAL_WORKER_MIN_CONTAINERS`
+- `ODDISH_MODAL_WORKER_BUFFER_CONTAINERS`
+- `ODDISH_MODAL_WORKER_SCALEDOWN_WINDOW_SECONDS`
+- `ODDISH_MODAL_WORKER_MAX_CONTAINERS`
+- `ODDISH_MODAL_MAX_WORKERS_PER_POLL`
+- `ODDISH_MODEL_CONCURRENCY_DEFAULT`
 - `MODAL_APP_NAME`
 - `MODAL_VOLUME_NAME`
+- `MODAL_SECRET_ENVIRONMENT`
+
+Local `backend/.env` values are layered on top of the shared Modal secret for local deploys.
 
 ### oddish runtime patching
 
@@ -169,12 +184,18 @@ All routes require auth unless marked public.
 | POST | `/tasks/upload` | Upload task archive |
 | POST | `/tasks/sweep` | Expand one task into multiple trials |
 | GET | `/tasks` | List tasks (org-scoped, paginated/filtered) |
+| GET | `/tasks/browse` | Browse latest task versions with pagination and search |
 | GET | `/tasks/{task_id}` | Task details |
 | POST | `/tasks/cancel` | Cancel in-flight trials and queue jobs for one or more tasks (org-scoped); Modal workers terminated when applicable |
 | DELETE | `/tasks/{task_id}` | Delete task and queued jobs |
+| POST | `/tasks/{task_id}/analysis/retry` | Re-queue analysis jobs for completed trials in a task |
+| POST | `/tasks/{task_id}/verdict/retry` | Re-queue verdict generation for a task |
 | GET | `/tasks/{task_id}/trials` | Trials for task |
 | GET | `/tasks/{task_id}/trials/{index}` | Trial by index |
+| GET | `/tasks/{task_id}/versions` | List stored task versions |
+| GET | `/tasks/{task_id}/versions/{version}` | Get one stored task version |
 | POST | `/trials/{trial_id}/retry` | Re-queue trial |
+| POST | `/trials/{trial_id}/analysis/retry` | Re-queue analysis for a completed trial |
 | GET | `/trials/{trial_id}/logs` | Trial logs |
 | GET | `/trials/{trial_id}/logs/structured` | Structured trial logs |
 | GET | `/trials/{trial_id}/files` | List trial files |
@@ -212,9 +233,9 @@ All routes require auth unless marked public.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/public/experiments/{public_token}` | Public experiment metadata |
-| GET | `/public/experiments` | List all public experiments |
-| GET | `/public/experiments/{public_token}/tasks` | Public tasks for experiment |
-| GET | `/public/tasks/{task_id}` | Public task status |
+| GET | `/public/experiments` | List public experiments for dataset browsing |
+| GET | `/public/experiments/{public_token}/tasks` | Public tasks and trials for a shared experiment |
+| GET | `/public/tasks/{task_id}` | Public task status (with optional counts-only mode) |
 | GET | `/public/tasks/{task_id}/trials` | Public trial list |
 | GET | `/public/trials/{trial_id}/logs` | Public trial logs |
 | GET | `/public/trials/{trial_id}/logs/structured` | Public structured logs |
@@ -222,8 +243,8 @@ All routes require auth unless marked public.
 | GET | `/public/trials/{trial_id}/files` | Public trial file listing |
 | GET | `/public/trials/{trial_id}/files/{path}` | Public trial file |
 | GET | `/public/trials/{trial_id}/result` | Public result |
-| GET | `/public/tasks/{task_id}/files` | Public task files |
-| GET | `/public/tasks/{task_id}/files/{path}` | Public file download |
+| GET | `/public/tasks/{task_id}/files` | Public task file listing (supports version/presign params) |
+| GET | `/public/tasks/{task_id}/files/{path}` | Public task file content or presign metadata |
 
 ### Admin and integrations
 

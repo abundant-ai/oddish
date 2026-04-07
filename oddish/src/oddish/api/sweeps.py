@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Collection
+
 from fastapi import HTTPException
 from harbor.models.environment_type import EnvironmentType
 
@@ -15,7 +17,7 @@ def _validate_allowed_environment(
     env: EnvironmentType,
     *,
     source: str,
-    allowed_environments: set[EnvironmentType],
+    allowed_environments: Collection[EnvironmentType],
 ) -> None:
     if env not in allowed_environments:
         allowed = ", ".join(
@@ -34,7 +36,7 @@ def build_trial_specs_from_sweep(
     submission: TaskSweepSubmission,
     *,
     default_environment: EnvironmentType | None = None,
-    allowed_environments: set[EnvironmentType] | None = None,
+    allowed_environments: Collection[EnvironmentType] | None = None,
 ) -> list[TrialSpec]:
     trials: list[TrialSpec] = []
     effective_default_environment = submission.environment or default_environment

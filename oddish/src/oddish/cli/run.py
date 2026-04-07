@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import getpass
 import json
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated, Optional
@@ -500,7 +501,11 @@ def run(
 
     if environment is None and not existing_task_ids:
         environment = EnvironmentType.MODAL if is_modal_api else EnvironmentType.DOCKER
-    elif environment is not None and is_modal_api and environment != EnvironmentType.MODAL:
+    elif (
+        environment is not None
+        and is_modal_api
+        and environment != EnvironmentType.MODAL
+    ):
         console.print(
             "[yellow]Oddish Cloud runs on Modal (no Docker-in-Docker); forcing --env modal[/yellow]"
         )
@@ -573,7 +578,7 @@ def run(
     def append_to_existing_task(task_id: str) -> dict:
         return submit_task(task_id, append_to_task=True)
 
-    task_targets: list[Path | str]
+    task_targets: Sequence[Path | str]
     progress_verb: str
     if existing_task_ids:
         task_targets = existing_task_ids
