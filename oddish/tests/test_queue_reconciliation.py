@@ -296,6 +296,8 @@ async def test_append_trials_to_task_resets_completed_task_state():
         verdict_error=None,
         verdict_started_at="started",
         verdict_finished_at="finished",
+        current_version_id="task-1-v1",
+        experiment_id="exp-1",
     )
     existing_trials = [
         SimpleNamespace(
