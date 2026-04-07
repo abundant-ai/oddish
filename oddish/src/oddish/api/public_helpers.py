@@ -151,6 +151,7 @@ async def list_task_files_s3(
     limit: int,
     cursor: str | None,
     presign: bool,
+    version: int | None = None,
 ) -> dict:
     """List files in a task's S3 directory."""
     if not settings.s3_enabled:
@@ -166,6 +167,7 @@ async def list_task_files_s3(
             limit=limit,
             cursor=cursor,
             presign=presign,
+            version=version,
         )
     except HTTPException:
         raise
@@ -177,6 +179,7 @@ async def get_task_file_content_s3(
     task_id: str,
     file_path: str,
     presign: bool,
+    version: int | None = None,
 ) -> dict:
     """Get content of a specific task file from S3."""
     if not settings.s3_enabled:
@@ -189,6 +192,7 @@ async def get_task_file_content_s3(
             task_id=task_id,
             file_path=file_path,
             presign=presign,
+            version=version,
         )
     except HTTPException:
         raise

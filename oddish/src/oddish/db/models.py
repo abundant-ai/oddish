@@ -279,6 +279,12 @@ class TrialModel(Base):
     task_version_id: Mapped[str | None] = mapped_column(
         String(128), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
     )
+    experiment_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("experiments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # -------------------------------------------------------------------------
     # Cloud-ready column (denormalized for efficient org-scoped queries)

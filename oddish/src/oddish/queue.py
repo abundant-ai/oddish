@@ -12,7 +12,6 @@ from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
-    Priority,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
@@ -188,7 +187,7 @@ async def cancel_task_runs(
 # =============================================================================
 
 
-async def _get_or_create_experiment(
+async def get_or_create_experiment(
     session: AsyncSession, name: str, org_id: str | None = None
 ) -> ExperimentModel:
     """Fetch an experiment by name (and org_id if provided) or create it if missing."""
@@ -224,7 +223,7 @@ async def _get_experiment_by_id(
     return result.scalar_one_or_none()
 
 
-async def _get_experiment_by_id_or_name(
+async def get_experiment_by_id_or_name(
     session: AsyncSession, experiment_id_or_name: str, org_id: str | None = None
 ) -> ExperimentModel | None:
     """Fetch an experiment by ID or name with optional org scoping."""
@@ -332,16 +331,16 @@ async def create_task(
             validate_task_timeout_config(local_path)
 
     if submission.experiment_id:
-        experiment = await _get_experiment_by_id_or_name(
+        experiment = await get_experiment_by_id_or_name(
             session, submission.experiment_id, org_id
         )
         if not experiment:
-            experiment = await _get_or_create_experiment(
+            experiment = await get_or_create_experiment(
                 session, submission.experiment_id, org_id
             )
     else:
         experiment_name = generate_experiment_name()
-        experiment = await _get_or_create_experiment(session, experiment_name, org_id)
+        experiment = await get_or_create_experiment(session, experiment_name, org_id)
 
     # Insert the task first (without version pointer to avoid circular FK).
     task = TaskModel(
@@ -408,6 +407,7 @@ async def create_task(
             name=trial_name,
             task_id=task_id,
             task_version_id=version_id,
+            experiment_id=experiment.id,
             org_id=org_id,
             agent=spec.agent,
             provider=provider,
@@ -430,10 +430,13 @@ async def append_trials_to_task(
     *,
     task: TaskModel,
     submission: TaskSubmission,
+    experiment_id: str | None = None,
 ) -> list[TrialModel]:
     """Append new queued trials to an existing task.
 
     New trials are pinned to the task's ``current_version_id``.
+    If *experiment_id* is given, new trials are associated with that experiment
+    rather than the task's current experiment.
     """
     trial_rows = await session.execute(
         select(TrialModel)
@@ -444,6 +447,7 @@ async def append_trials_to_task(
     next_index = _get_next_trial_index(task.id, existing_trials)
 
     current_version_id = task.current_version_id
+    trial_experiment_id = experiment_id or task.experiment_id
 
     new_trials: list[TrialModel] = []
     for spec in submission.trials:
@@ -460,6 +464,7 @@ async def append_trials_to_task(
             name=trial_name,
             task_id=task.id,
             task_version_id=current_version_id,
+            experiment_id=trial_experiment_id,
             org_id=task.org_id,
             agent=spec.agent,
             provider=provider,

@@ -26,12 +26,17 @@ async def _load_trial_aggregates_for_experiments(
     org_id: str,
     experiment_ids: list[str],
 ) -> dict[str, dict[str, int]]:
+    """Aggregate trial counts per experiment.
+
+    Uses ``trial.experiment_id`` so that trials attached to a different
+    experiment than their task's ``experiment_id`` are counted correctly.
+    """
     if not experiment_ids:
         return {}
 
     result = await session.execute(
         select(
-            TaskModel.experiment_id.label("experiment_id"),
+            TrialModel.experiment_id.label("experiment_id"),
             func.count(TrialModel.id).label("total_trials"),
             func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
                 "completed_trials"
@@ -42,12 +47,11 @@ async def _load_trial_aggregates_for_experiments(
             func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
             func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
         )
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
         .where(
-            TaskModel.org_id == org_id,
-            TaskModel.experiment_id.in_(experiment_ids),
+            TrialModel.org_id == org_id,
+            TrialModel.experiment_id.in_(experiment_ids),
         )
-        .group_by(TaskModel.experiment_id)
+        .group_by(TrialModel.experiment_id)
     )
 
     return {
@@ -71,14 +75,19 @@ async def load_dashboard_experiments(
     experiments_query: str | None,
     experiments_status: str,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Page experiment rows first, then aggregate trials for the visible page."""
+    """Page experiment rows first, then aggregate trials for the visible page.
+
+    Starts from ``ExperimentModel`` and LEFT JOINs to task / trial aggregations
+    so that experiments discovered only via ``trial.experiment_id`` (no task
+    pointing to them) still appear on the dashboard.
+    """
+
+    # -----------------------------------------------------------------
+    # Task-level aggregation (via task.experiment_id)
+    # -----------------------------------------------------------------
     task_agg = (
         select(
             TaskModel.experiment_id.label("experiment_id"),
-            func.max(ExperimentModel.name).label("experiment_name"),
-            func.max(
-                case((ExperimentModel.is_public.is_(True), 1), else_=0)
-            ).label("experiment_is_public"),
             func.count(TaskModel.id).label("task_count"),
             func.count(case((TaskModel.run_analysis.is_(True), 1))).label(
                 "analysis_tasks"
@@ -134,17 +143,36 @@ async def load_dashboard_experiments(
                     )
                 )
             ).label("verdict_pending"),
-            func.max(TaskModel.created_at).label("last_created_at"),
+            func.max(TaskModel.created_at).label("last_task_created_at"),
         )
-        .join(ExperimentModel, ExperimentModel.id == TaskModel.experiment_id)
         .where(
             TaskModel.org_id == org_id,
-            ExperimentModel.org_id == org_id,
+            TaskModel.experiment_id.isnot(None),
         )
         .group_by(TaskModel.experiment_id)
         .subquery()
     )
 
+    # -----------------------------------------------------------------
+    # Trial-level timing (via trial.experiment_id) — used for sorting
+    # experiments that only have trial-level associations
+    # -----------------------------------------------------------------
+    trial_timing = (
+        select(
+            TrialModel.experiment_id.label("experiment_id"),
+            func.max(TrialModel.created_at).label("last_trial_created_at"),
+        )
+        .where(
+            TrialModel.org_id == org_id,
+            TrialModel.experiment_id.isnot(None),
+        )
+        .group_by(TrialModel.experiment_id)
+        .subquery()
+    )
+
+    # -----------------------------------------------------------------
+    # Latest task author info (via task.experiment_id)
+    # -----------------------------------------------------------------
     latest_task = (
         select(
             TaskModel.experiment_id.label("experiment_id"),
@@ -152,7 +180,7 @@ async def load_dashboard_experiments(
             TaskModel.tags["github_username"].astext.label("last_github_username"),
             TaskModel.tags["github_meta"].astext.label("last_github_meta"),
         )
-        .where(TaskModel.org_id == org_id)
+        .where(TaskModel.org_id == org_id, TaskModel.experiment_id.isnot(None))
         .order_by(
             TaskModel.experiment_id.asc(),
             TaskModel.created_at.desc(),
@@ -162,34 +190,55 @@ async def load_dashboard_experiments(
         .subquery()
     )
 
+    # -----------------------------------------------------------------
+    # Build experiment rows starting from ExperimentModel
+    # -----------------------------------------------------------------
     experiment_rows = (
         select(
-            task_agg.c.experiment_id,
-            task_agg.c.experiment_name,
-            task_agg.c.experiment_is_public,
-            task_agg.c.task_count,
-            task_agg.c.analysis_tasks,
-            task_agg.c.verdict_good,
-            task_agg.c.verdict_needs_review,
-            task_agg.c.verdict_failed,
-            task_agg.c.verdict_pending,
-            task_agg.c.last_created_at,
+            ExperimentModel.id.label("experiment_id"),
+            ExperimentModel.name.label("experiment_name"),
+            case(
+                (ExperimentModel.is_public.is_(True), 1), else_=0
+            ).label("experiment_is_public"),
+            func.coalesce(task_agg.c.task_count, 0).label("task_count"),
+            func.coalesce(task_agg.c.analysis_tasks, 0).label("analysis_tasks"),
+            func.coalesce(task_agg.c.verdict_good, 0).label("verdict_good"),
+            func.coalesce(task_agg.c.verdict_needs_review, 0).label(
+                "verdict_needs_review"
+            ),
+            func.coalesce(task_agg.c.verdict_failed, 0).label("verdict_failed"),
+            func.coalesce(task_agg.c.verdict_pending, 0).label("verdict_pending"),
+            func.greatest(
+                task_agg.c.last_task_created_at,
+                trial_timing.c.last_trial_created_at,
+            ).label("last_created_at"),
             latest_task.c.last_user,
             latest_task.c.last_github_username,
             latest_task.c.last_github_meta,
         )
-        .select_from(task_agg)
-        .outerjoin(latest_task, latest_task.c.experiment_id == task_agg.c.experiment_id)
+        .select_from(ExperimentModel)
+        .outerjoin(task_agg, task_agg.c.experiment_id == ExperimentModel.id)
+        .outerjoin(trial_timing, trial_timing.c.experiment_id == ExperimentModel.id)
+        .outerjoin(latest_task, latest_task.c.experiment_id == ExperimentModel.id)
+        .where(
+            ExperimentModel.org_id == org_id,
+            or_(
+                task_agg.c.experiment_id.isnot(None),
+                trial_timing.c.experiment_id.isnot(None),
+            ),
+        )
         .subquery()
     )
 
+    # -----------------------------------------------------------------
+    # Status filter helpers (use trial.experiment_id for correctness)
+    # -----------------------------------------------------------------
     active_trial_exists = exists(
         select(1)
         .select_from(TrialModel)
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
         .where(
-            TaskModel.org_id == org_id,
-            TaskModel.experiment_id == experiment_rows.c.experiment_id,
+            TrialModel.org_id == org_id,
+            TrialModel.experiment_id == experiment_rows.c.experiment_id,
             TrialModel.status.in_(
                 [
                     TrialStatus.PENDING,
@@ -203,10 +252,9 @@ async def load_dashboard_experiments(
     failed_trial_exists = exists(
         select(1)
         .select_from(TrialModel)
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
         .where(
-            TaskModel.org_id == org_id,
-            TaskModel.experiment_id == experiment_rows.c.experiment_id,
+            TrialModel.org_id == org_id,
+            TrialModel.experiment_id == experiment_rows.c.experiment_id,
             TrialModel.status == TrialStatus.FAILED,
         )
     )

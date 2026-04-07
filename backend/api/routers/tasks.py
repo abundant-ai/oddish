@@ -209,15 +209,16 @@ async def create_task_sweep(
     _apply_github_attribution(submission)
 
     async with get_session() as session:
-        if submission.append_to_task:
-            if submission.experiment_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Cannot set experiment_id when appending to an existing task"
-                    ),
+        # Auto-detect append mode when the task already exists in the DB
+        # (backward-compat with CLIs that don't send append_to_task=True).
+        if not submission.append_to_task:
+            existing = await session.get(TaskModel, submission.task_id)
+            if existing is not None and existing.org_id == auth.org_id:
+                submission = submission.model_copy(
+                    update={"append_to_task": True}
                 )
 
+        if submission.append_to_task:
             task = await get_task_for_org_core(
                 session, task_id=submission.task_id, org_id=auth.org_id
             )
@@ -237,6 +238,23 @@ async def create_task_sweep(
                         "that was created without it"
                     ),
                 )
+
+            # Resolve experiment for the new trials (create if needed).
+            # The task itself is NOT moved -- experiment lives on trials.
+            from oddish.queue import (
+                get_experiment_by_id_or_name,
+                get_or_create_experiment,
+            )
+            new_experiment_id: str | None = None
+            if submission.experiment_id:
+                experiment = await get_experiment_by_id_or_name(
+                    session, submission.experiment_id, auth.org_id
+                )
+                if not experiment:
+                    experiment = await get_or_create_experiment(
+                        session, submission.experiment_id, auth.org_id
+                    )
+                new_experiment_id = experiment.id
 
             existing_env_result = await session.execute(
                 select(TrialModel.environment)
@@ -263,7 +281,7 @@ async def create_task_sweep(
                 update={
                     "name": task.name,
                     "priority": task.priority,
-                    "experiment_id": task.experiment_id,
+                    "experiment_id": new_experiment_id or task.experiment_id,
                     "tags": task.tags or {},
                     "run_analysis": task.run_analysis,
                     "user": task.user,
@@ -273,12 +291,28 @@ async def create_task_sweep(
                 append_submission, task_path=task.task_path, trials=trials
             )
             new_trials = await append_trials_to_task(
-                session, task=task, submission=expanded
+                session,
+                task=task,
+                submission=expanded,
+                experiment_id=new_experiment_id,
             )
-            await _maybe_publish_experiment(session, task, submission, auth)
+            if new_experiment_id:
+                should_publish = submission.publish_experiment
+                if should_publish is None:
+                    should_publish = bool(
+                        submission.github_username and auth.api_key_id
+                    )
+                if should_publish:
+                    await ensure_experiment_public(session, experiment)
             await session.commit()
 
             provider_counts: Counter[str] = Counter(t.provider for t in new_trials)
+            resp_experiment_id = new_experiment_id or task.experiment_id
+            resp_experiment = (
+                experiment
+                if new_experiment_id
+                else task.experiment
+            )
             return TaskResponse(
                 id=task.id,
                 name=task.name,
@@ -286,6 +320,8 @@ async def create_task_sweep(
                 priority=task.priority,
                 trials_count=len(new_trials),
                 providers=dict(provider_counts),
+                experiment_id=resp_experiment_id,
+                experiment_name=getattr(resp_experiment, "name", None),
                 created_at=task.created_at,
             )
 
@@ -327,6 +363,8 @@ async def create_task_sweep(
             priority=task.priority,
             trials_count=len(task.trials),
             providers=dict(provider_counts),
+            experiment_id=task.experiment_id,
+            experiment_name=getattr(task.experiment, "name", None),
             created_at=task.created_at,
         )
 
@@ -740,6 +778,7 @@ async def list_task_files(
     presign: bool = Query(
         True, description="Include presigned URLs for direct S3 access"
     ),
+    version: int | None = Query(None, description="Task version number"),
 ) -> dict:
     """List all files in a task's S3 directory.
 
@@ -748,9 +787,10 @@ async def list_task_files(
     """
     auth.require_scope(APIKeyScope.READ)
 
-    # Verify task belongs to user's org
     async with get_session() as session:
-        await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
+        task = await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
+        if version is None and task.current_version:
+            version = task.current_version.version
 
     return await list_task_files_s3(
         task_id=task_id,
@@ -759,6 +799,7 @@ async def list_task_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
+        version=version,
     )
 
 
@@ -768,16 +809,19 @@ async def get_task_file_content(
     file_path: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
     presign: bool = Query(False),
+    version: int | None = Query(None, description="Task version number"),
 ) -> dict:
     """Get content of a specific task file from S3."""
     auth.require_scope(APIKeyScope.READ)
 
-    # Verify task belongs to user's org
     async with get_session() as session:
-        await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
+        task = await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
+        if version is None and task.current_version:
+            version = task.current_version.version
 
     return await get_task_file_content_s3(
         task_id=task_id,
         file_path=file_path,
         presign=presign,
+        version=version,
     )

@@ -19,6 +19,7 @@ from oddish.db import (
     Priority,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialStatus,
     utcnow,
 )
@@ -202,9 +203,21 @@ async def _prepare_trial_run(
             task.status = TaskStatus.RUNNING
             task.started_at = utcnow()
 
-        task_path = task.task_path if task else None
-        task_s3_key = task.task_s3_key if task else None
         task_id = task.id if task else trial.task_id
+
+        # Prefer the version-specific path so the worker runs the exact
+        # content the trial was created against.
+        task_path: str | None = None
+        task_s3_key: str | None = None
+        if trial.task_version_id:
+            tv = await session.get(TaskVersionModel, trial.task_version_id)
+            if tv:
+                task_path = tv.task_path
+                task_s3_key = tv.task_s3_key
+        if task_path is None and task:
+            task_path = task.task_path
+        if task_s3_key is None and task:
+            task_s3_key = task.task_s3_key
         trial_agent = trial.agent
         trial_model = settings.normalize_trial_model(trial_agent, trial.model)
         if trial.model != trial_model:

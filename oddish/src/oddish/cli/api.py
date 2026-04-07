@@ -786,8 +786,16 @@ def print_final_results(result: dict) -> None:
     console.print()
 
 
-def watch_task(api_url: str, task_id: str) -> dict | None:
-    """Watch a task until completion. Returns the final result."""
+def watch_task(
+    api_url: str,
+    task_id: str,
+    experiment_id: str | None = None,
+) -> dict | None:
+    """Watch a task until completion. Returns the final result.
+
+    When *experiment_id* is given, only trials belonging to that experiment
+    are displayed (others are hidden from the table and summary counts).
+    """
     final_result = None
     headers = get_auth_headers()
     with Live(console=console, refresh_per_second=2) as live:
@@ -803,6 +811,13 @@ def watch_task(api_url: str, task_id: str) -> dict | None:
                 result = cast(dict, response.json())
                 final_result = result
 
+                all_trials = result.get("trials", [])
+                if experiment_id:
+                    all_trials = [
+                        t for t in all_trials
+                        if t.get("experiment_id") == experiment_id
+                    ]
+
                 task_status = result.get("status", "unknown")
                 task_status_display = format_task_status(task_status)
 
@@ -814,7 +829,7 @@ def watch_task(api_url: str, task_id: str) -> dict | None:
                 table.add_column("Status")
                 table.add_column("Reward", justify="center")
 
-                for trial in result.get("trials", []):
+                for trial in all_trials:
                     status = trial["status"]
                     harbor_stage = trial.get("harbor_stage")
                     status_display = format_trial_status(status, harbor_stage)
@@ -836,14 +851,16 @@ def watch_task(api_url: str, task_id: str) -> dict | None:
                     )
 
                 # Add summary row
-                total = result.get("total", 0)
-                completed = result.get("completed", 0)
-                failed = result.get("failed", 0)
+                total = len(all_trials)
+                completed = sum(
+                    1 for t in all_trials if t.get("status") == "success"
+                )
+                failed = sum(
+                    1 for t in all_trials if t.get("status") == "failed"
+                )
 
-                # Count rewards
-                trials = result.get("trials", [])
-                reward_pass = sum(1 for t in trials if t.get("reward") == 1)
-                reward_fail = sum(1 for t in trials if t.get("reward") == 0)
+                reward_pass = sum(1 for t in all_trials if t.get("reward") == 1)
+                reward_fail = sum(1 for t in all_trials if t.get("reward") == 0)
 
                 table.add_section()
                 summary_parts = [f"[bold]{completed}/{total}[/bold] done"]
@@ -872,7 +889,13 @@ def watch_task(api_url: str, task_id: str) -> dict | None:
                 live.update(table)
 
                 # Check if done
-                if task_status in ("completed", "failed"):
+                if experiment_id:
+                    terminal = {"success", "failed", "cancelled"}
+                    if all_trials and all(
+                        t.get("status") in terminal for t in all_trials
+                    ):
+                        break
+                elif task_status in ("completed", "failed"):
                     break
 
                 time.sleep(2)

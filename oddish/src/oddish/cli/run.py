@@ -630,10 +630,17 @@ def run(
     experiment_id_resolved: str | None = None
     experiment_name = ""
 
+    # Prefer experiment info returned directly by the sweep response (avoids
+    # stale task-level experiment_id when appending trials to a new experiment).
+    if all_results:
+        first = all_results[0]
+        experiment_id_resolved = first.get("experiment_id") or None
+        experiment_name = first.get("experiment_name") or ""
+
     # JSON output mode (for CI/scripts)
     if json_output:
         dashboard_url = get_dashboard_url(api_url)
-        if all_results:
+        if all_results and not experiment_id_resolved:
             task_summary = get_task_summary(api_url, all_results[0]["id"])
             if task_summary:
                 experiment_id_resolved = task_summary.get("experiment_id")
@@ -672,7 +679,7 @@ def run(
     # Print summary (human-readable)
     console.print()
     dashboard_url = get_dashboard_url(api_url)
-    if all_results:
+    if all_results and not experiment_id_resolved:
         task_summary = get_task_summary(api_url, all_results[0]["id"])
         if task_summary:
             experiment_id_resolved = task_summary.get("experiment_id")
@@ -735,7 +742,11 @@ def run(
             console.print("[dim]Watching task progress (Ctrl+C to stop)...[/dim]")
             console.print()
         try:
-            final_result = watch_task(api_url, all_results[0]["id"])
+            final_result = watch_task(
+                api_url,
+                all_results[0]["id"],
+                experiment_id=experiment_id_resolved,
+            )
             # Print final results table
             if final_result:
                 print_final_results(final_result)

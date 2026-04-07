@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only, selectinload
 
@@ -74,6 +74,7 @@ async def list_tasks_core(
                 TrialModel.name,
                 TrialModel.task_id,
                 TrialModel.task_version_id,
+                TrialModel.experiment_id,
                 TrialModel.agent,
                 TrialModel.provider,
                 TrialModel.queue_key,
@@ -130,11 +131,36 @@ async def list_tasks_core(
     if user:
         query = query.where(TaskModel.user == user)
     if experiment_id:
-        query = query.where(TaskModel.experiment_id == experiment_id)
+        has_trials_in_experiment = (
+            select(TrialModel.task_id)
+            .where(TrialModel.experiment_id == experiment_id)
+            .distinct()
+            .correlate(None)
+            .scalar_subquery()
+        )
+        query = query.where(
+            or_(
+                TaskModel.experiment_id == experiment_id,
+                TaskModel.id.in_(has_trials_in_experiment),
+            )
+        )
 
     query = query.limit(limit).offset(offset)
     result = await session.execute(query)
     tasks = result.scalars().all()
+
+    # When scoped to an experiment, only include trials that belong to it.
+    if experiment_id and include_trials:
+        from sqlalchemy.orm.attributes import set_committed_value
+
+        for task in tasks:
+            filtered = [
+                t
+                for t in task.trials
+                if t.experiment_id == experiment_id
+                or t.experiment_id is None
+            ]
+            set_committed_value(task, "trials", filtered)
 
     if include_trials:
         queue_info_by_trial_id = await fetch_trial_queue_info(
