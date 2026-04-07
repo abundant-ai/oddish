@@ -118,18 +118,7 @@ class ExperimentUpdateResponse(BaseModel):
     name: str
 
 
-class PublicExperimentResponse(BaseModel):
-    """Public experiment metadata."""
-
-    name: str
-    public_token: str
-
-
-class PublicExperimentListItem(BaseModel):
-    """Public dataset list item."""
-
-    id: str
-    name: str
-    public_token: str
-    task_count: int
-    created_at: str
+from oddish.schemas import (  # noqa: F401
+    PublicExperimentListItem,
+    PublicExperimentResponse,
+)
