@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text, select, delete
 from typing import cast
@@ -14,14 +14,41 @@ import uvicorn
 from rich.console import Console
 
 from oddish.api.endpoints import (
+    browse_tasks_core,
     get_task_status_core,
     get_task_version_core,
     get_trial_by_index_core,
     get_trial_for_org_core,
     list_task_versions_core,
     list_tasks_core,
+    rerun_task_analysis_core,
+    rerun_task_verdict_core,
+    rerun_trial_analysis_core,
+    retry_trial_core,
 )
-from oddish.api.trial_io import read_trial_logs, read_trial_result
+from oddish.api.public_helpers import (
+    get_task_file_content_s3,
+    get_trial_file_content_s3,
+    list_task_files_s3,
+    list_trial_files_s3,
+)
+from oddish.api.trial_io import (
+    read_trial_agent_file,
+    read_trial_logs,
+    read_trial_logs_structured,
+    read_trial_result,
+    read_trial_trajectory,
+)
+from oddish.api.admin import (
+    QueueSlotsResponse,
+    QueueStatusResponse,
+    OrphanedStateResponse,
+    get_queue_slots_core,
+    get_queue_status_core,
+    get_orphaned_state_core,
+)
+from oddish.api.dashboard import get_dashboard_core
+from oddish.api.public import router as public_router
 from oddish.api.tasks import handle_task_upload, resolve_task_storage
 from oddish.config import settings
 from oddish.db import (
@@ -36,6 +63,7 @@ from oddish.db import (
 from oddish.db.storage import collect_s3_prefixes_for_deletion, delete_s3_prefixes
 from oddish.schemas import (
     TaskBatchCancelRequest,
+    TaskBrowseResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
     TaskResponse,
@@ -158,6 +186,8 @@ api.add_middleware(
     allow_headers=["*"],
 )
 
+api.include_router(public_router)
+
 
 # =============================================================================
 # Health & Status
@@ -179,6 +209,41 @@ async def health():
         "database": "connected" if db_ok else "disconnected",
         "timestamp": utcnow().isoformat(),
     }
+
+
+# =============================================================================
+# Dashboard
+# =============================================================================
+
+
+@api.get("/dashboard")
+async def get_dashboard(
+    tasks_limit: int = Query(200, ge=1, le=500),
+    tasks_offset: int = Query(0, ge=0),
+    experiments_limit: int = Query(25, ge=1, le=100),
+    experiments_offset: int = Query(0, ge=0),
+    experiments_query: str | None = Query(None),
+    experiments_status: str = Query("all"),
+    usage_minutes: int | None = Query(None, ge=1, le=86400),
+    include_tasks: bool = Query(True),
+    include_usage: bool = Query(True),
+    include_experiments: bool = Query(True),
+) -> dict:
+    """Combined dashboard: queues, pipeline stats, model usage, tasks, and experiments."""
+    async with get_session() as session:
+        return await get_dashboard_core(
+            session,
+            tasks_limit=tasks_limit,
+            tasks_offset=tasks_offset,
+            experiments_limit=experiments_limit,
+            experiments_offset=experiments_offset,
+            experiments_query=experiments_query,
+            experiments_status=experiments_status,
+            usage_minutes=usage_minutes,
+            include_tasks=include_tasks,
+            include_usage=include_usage,
+            include_experiments=include_experiments,
+        )
 
 
 # =============================================================================
@@ -339,6 +404,17 @@ async def list_tasks(
             offset=offset,
             include_empty_rewards=False,
         )
+
+
+@api.get("/tasks/browse", response_model=TaskBrowseResponse)
+async def browse_tasks(
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    query: str | None = None,
+) -> TaskBrowseResponse:
+    """Browse latest task versions with aggregated trial stats."""
+    async with get_session() as session:
+        return await browse_tasks_core(session, limit=limit, offset=offset, query=query)
 
 
 @api.get("/tasks/{task_id}", response_model=TaskStatusResponse)
@@ -522,22 +598,176 @@ async def get_trial(task_id: str, index: int):
 
 
 # =============================================================================
-# S3 Storage Endpoints
+# Analysis & Verdict Retry
+# =============================================================================
+
+
+@api.post("/tasks/{task_id}/analysis/retry")
+async def retry_task_analysis(task_id: str) -> dict:
+    """Queue analysis jobs for every completed trial in a task."""
+    async with get_session() as session:
+        return await rerun_task_analysis_core(session, task_id=task_id)
+
+
+@api.post("/tasks/{task_id}/verdict/retry")
+async def retry_task_verdict(task_id: str) -> dict:
+    """Queue a fresh verdict job for a task whose analyses are complete."""
+    async with get_session() as session:
+        return await rerun_task_verdict_core(session, task_id=task_id)
+
+
+@api.post("/trials/{trial_id}/retry")
+async def retry_trial(trial_id: str) -> dict:
+    """Re-queue a failed or completed trial for another attempt."""
+    async with get_session() as session:
+        return await retry_trial_core(session, trial_id=trial_id)
+
+
+@api.post("/trials/{trial_id}/analysis/retry")
+async def retry_trial_analysis(trial_id: str) -> dict:
+    """Queue analysis for a completed trial and invalidate its task verdict."""
+    async with get_session() as session:
+        return await rerun_trial_analysis_core(session, trial_id=trial_id)
+
+
+# =============================================================================
+# Trial Artifact Endpoints
 # =============================================================================
 
 
 @api.get("/trials/{trial_id}/logs")
 async def get_trial_logs(trial_id: str):
-    """Get logs for a specific trial (from S3 if enabled, otherwise from local storage)."""
+    """Get logs for a specific trial."""
     trial = await _get_detached_trial(trial_id)
     return await read_trial_logs(trial)
 
 
+@api.get("/trials/{trial_id}/logs/structured")
+async def get_trial_logs_structured(trial_id: str):
+    """Get logs for a trial, structured by category (agent, verifier, exception)."""
+    trial = await _get_detached_trial(trial_id)
+    return await read_trial_logs_structured(trial)
+
+
+@api.get("/trials/{trial_id}/trajectory")
+async def get_trial_trajectory(trial_id: str):
+    """Get ATIF trajectory.json for a trial (step-by-step agent actions)."""
+    trial = await _get_detached_trial(trial_id)
+    return await read_trial_trajectory(trial)
+
+
 @api.get("/trials/{trial_id}/result")
 async def get_trial_result(trial_id: str):
-    """Get the full Harbor result.json for a trial (from S3 if enabled, otherwise from local storage)."""
+    """Get the full Harbor result.json for a trial."""
     trial = await _get_detached_trial(trial_id)
     return await read_trial_result(trial)
+
+
+# =============================================================================
+# File Access (S3 Storage)
+# =============================================================================
+
+
+@api.get("/tasks/{task_id}/files")
+async def list_task_files(
+    task_id: str,
+    prefix: str | None = Query(None),
+    recursive: bool = Query(True),
+    limit: int = Query(1000, ge=1, le=1000),
+    cursor: str | None = Query(None),
+    presign: bool = Query(True),
+    version: int | None = Query(None, description="Task version number"),
+) -> dict:
+    """List all files in a task's S3 directory with optional presigned URLs."""
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        if version is None and task.current_version:
+            version = task.current_version.version
+
+    return await list_task_files_s3(
+        task_id=task_id,
+        prefix=prefix,
+        recursive=recursive,
+        limit=limit,
+        cursor=cursor,
+        presign=presign,
+        version=version,
+    )
+
+
+@api.get("/tasks/{task_id}/files/{file_path:path}")
+async def get_task_file_content(
+    task_id: str,
+    file_path: str,
+    presign: bool = Query(False),
+    version: int | None = Query(None, description="Task version number"),
+) -> dict:
+    """Get content of a specific task file from S3."""
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        if version is None and task.current_version:
+            version = task.current_version.version
+
+    return await get_task_file_content_s3(
+        task_id=task_id,
+        file_path=file_path,
+        presign=presign,
+        version=version,
+    )
+
+
+@api.get("/trials/{trial_id}/files")
+async def list_trial_files(trial_id: str) -> dict:
+    """List all files in S3 for a trial, with presigned URLs for direct access."""
+    trial = await _get_detached_trial(trial_id)
+    return await list_trial_files_s3(trial)
+
+
+@api.get("/trials/{trial_id}/files/{file_path:path}")
+async def get_trial_file(trial_id: str, file_path: str) -> Response:
+    """Get a file from a trial's S3 directory by relative path."""
+    trial = await _get_detached_trial(trial_id)
+    try:
+        content, media_type = await get_trial_file_content_s3(trial, file_path)
+        return Response(content=content, media_type=media_type)
+    except HTTPException:
+        pass
+    content, media_type = await read_trial_agent_file(trial, file_path)
+    return Response(content=content, media_type=media_type)
+
+
+# =============================================================================
+# Admin Diagnostics
+# =============================================================================
+
+
+@api.get("/admin/slots", response_model=QueueSlotsResponse)
+async def admin_queue_slots() -> QueueSlotsResponse:
+    """Get current state of queue-key slot leases."""
+    async with get_session() as session:
+        return await get_queue_slots_core(session)
+
+
+@api.get("/admin/queue-status", response_model=QueueStatusResponse)
+async def admin_queue_status() -> QueueStatusResponse:
+    """Get queue status from the trials/tasks tables."""
+    async with get_session() as session:
+        return await get_queue_status_core(session)
+
+
+@api.get("/admin/orphaned-state", response_model=OrphanedStateResponse)
+async def admin_orphaned_state(
+    stale_after_minutes: int = Query(10, ge=1, le=240),
+) -> OrphanedStateResponse:
+    """Summarize stale queue/pipeline state."""
+    async with get_session() as session:
+        return await get_orphaned_state_core(
+            session, stale_after_minutes=stale_after_minutes
+        )
 
 
 def run_server(

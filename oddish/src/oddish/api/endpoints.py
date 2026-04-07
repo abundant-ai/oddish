@@ -206,7 +206,7 @@ async def list_tasks_core(
 async def browse_tasks_core(
     session: AsyncSession,
     *,
-    org_id: str,
+    org_id: str | None = None,
     limit: int = 25,
     offset: int = 0,
     query: str | None = None,
@@ -236,8 +236,9 @@ async def browse_tasks_core(
         )
         .select_from(TaskModel)
         .outerjoin(current_version, current_version.id == TaskModel.current_version_id)
-        .where(TaskModel.org_id == org_id)
     )
+    if org_id is not None:
+        ranked_tasks = ranked_tasks.where(TaskModel.org_id == org_id)
     if normalized_query:
         ranked_tasks = ranked_tasks.where(TaskModel.name.ilike(f"%{normalized_query}%"))
     ranked_tasks_subquery = ranked_tasks.subquery()
@@ -256,25 +257,25 @@ async def browse_tasks_core(
         func.coalesce(TrialModel.started_at, TrialModel.created_at),
         TrialModel.created_at,
     )
-    trial_aggregates = (
-        select(
-            TrialModel.task_id.label("task_id"),
-            TrialModel.task_version_id.label("task_version_id"),
-            func.count(TrialModel.id).label("total_trials"),
-            func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
-                "completed_trials"
-            ),
-            func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
-                "failed_trials"
-            ),
-            func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
-            func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
-            func.max(trial_activity_at).label("last_run_at"),
-        )
-        .where(TrialModel.org_id == org_id)
-        .group_by(TrialModel.task_id, TrialModel.task_version_id)
-        .subquery()
+    trial_agg_query = select(
+        TrialModel.task_id.label("task_id"),
+        TrialModel.task_version_id.label("task_version_id"),
+        func.count(TrialModel.id).label("total_trials"),
+        func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
+            "completed_trials"
+        ),
+        func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
+            "failed_trials"
+        ),
+        func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
+        func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
+        func.max(trial_activity_at).label("last_run_at"),
     )
+    if org_id is not None:
+        trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
+    trial_aggregates = trial_agg_query.group_by(
+        TrialModel.task_id, TrialModel.task_version_id
+    ).subquery()
 
     paged_rows = (
         select(
@@ -328,22 +329,18 @@ async def browse_tasks_core(
     ]
 
     if task_version_pairs:
-        experiment_rows = await session.execute(
+        exp_join_condition = [ExperimentModel.id == TrialModel.experiment_id]
+        if org_id is not None:
+            exp_join_condition.append(ExperimentModel.org_id == org_id)
+        exp_query = (
             select(
                 TrialModel.task_id.label("task_id"),
                 ExperimentModel.id.label("experiment_id"),
                 ExperimentModel.name.label("experiment_name"),
             )
             .select_from(TrialModel)
-            .join(
-                ExperimentModel,
-                and_(
-                    ExperimentModel.id == TrialModel.experiment_id,
-                    ExperimentModel.org_id == org_id,
-                ),
-            )
+            .join(ExperimentModel, and_(*exp_join_condition))
             .where(
-                TrialModel.org_id == org_id,
                 TrialModel.experiment_id.isnot(None),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
@@ -356,6 +353,9 @@ async def browse_tasks_core(
                 ExperimentModel.id.asc(),
             )
         )
+        if org_id is not None:
+            exp_query = exp_query.where(TrialModel.org_id == org_id)
+        experiment_rows = await session.execute(exp_query)
         for experiment_row in experiment_rows.mappings():
             experiments_by_task.setdefault(str(experiment_row["task_id"]), []).append(
                 TaskBrowseExperiment(
@@ -364,7 +364,7 @@ async def browse_tasks_core(
                 )
             )
 
-        latest_trial_rows = await session.execute(
+        trial_query = (
             select(
                 TrialModel.task_id.label("task_id"),
                 TrialModel.id.label("trial_id"),
@@ -374,7 +374,6 @@ async def browse_tasks_core(
                 TrialModel.error_message.label("error_message"),
             )
             .where(
-                TrialModel.org_id == org_id,
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
@@ -385,6 +384,9 @@ async def browse_tasks_core(
                 TrialModel.id.asc(),
             )
         )
+        if org_id is not None:
+            trial_query = trial_query.where(TrialModel.org_id == org_id)
+        latest_trial_rows = await session.execute(trial_query)
         for trial_row in latest_trial_rows.mappings():
             latest_trials_by_task.setdefault(str(trial_row["task_id"]), []).append(
                 TaskBrowseTrial(
