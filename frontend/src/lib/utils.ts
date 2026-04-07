@@ -16,6 +16,38 @@ export function formatShortDateTime(iso: string) {
   });
 }
 
+export function formatRelativeTime(iso: string) {
+  const target = new Date(iso);
+  const deltaMs = target.getTime() - Date.now();
+
+  if (Number.isNaN(target.getTime())) {
+    return "—";
+  }
+
+  const absMs = Math.abs(deltaMs);
+  if (absMs < 60_000) {
+    return "just now";
+  }
+
+  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+    ["year", 365 * 24 * 60 * 60 * 1000],
+    ["month", 30 * 24 * 60 * 60 * 1000],
+    ["week", 7 * 24 * 60 * 60 * 1000],
+    ["day", 24 * 60 * 60 * 1000],
+    ["hour", 60 * 60 * 1000],
+    ["minute", 60 * 1000],
+  ];
+
+  for (const [unit, unitMs] of units) {
+    if (absMs >= unitMs) {
+      return formatter.format(Math.round(deltaMs / unitMs), unit);
+    }
+  }
+
+  return "just now";
+}
+
 export function encodeExperimentRouteParam(experimentId: string) {
   return encodeURIComponent(encodeURIComponent(experimentId));
 }

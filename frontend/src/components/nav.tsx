@@ -20,7 +20,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { ChevronDown, User, LogOut, Shield, BookOpen } from "lucide-react";
+import {
+  BookOpen,
+  ChevronDown,
+  FileText,
+  LogOut,
+  Shield,
+  User,
+} from "lucide-react";
 
 export function Nav() {
   const pathname = usePathname();
@@ -52,6 +59,21 @@ export function Nav() {
                   className="drop-shadow-sm"
                 />
                 <span>Dashboard</span>
+              </Link>
+            </Button>
+            <Button
+              variant={pathname === "/tasks" ? "secondary" : "ghost"}
+              size="sm"
+              asChild
+              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+            >
+              <Link
+                href="/tasks"
+                className="flex items-center gap-2"
+                data-active={pathname === "/tasks"}
+              >
+                <FileText className="h-4 w-4" />
+                <span>Tasks</span>
               </Link>
             </Button>
           </div>

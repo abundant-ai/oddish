@@ -142,6 +142,33 @@ export interface Task {
   finished_at?: string | null;
 }
 
+export interface TaskBrowseExperiment {
+  id: string;
+  name: string;
+}
+
+export interface TaskBrowseItem {
+  id: string;
+  name: string;
+  current_version?: number | null;
+  current_version_id?: string | null;
+  version_count: number;
+  total_trials: number;
+  completed_trials: number;
+  failed_trials: number;
+  reward_success: number;
+  reward_total: number;
+  last_run_at?: string | null;
+  experiments: TaskBrowseExperiment[];
+}
+
+export interface TaskBrowseResponse {
+  items: TaskBrowseItem[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
 // Task version snapshot
 export interface TaskVersion {
   id: string;

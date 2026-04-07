@@ -16,9 +16,11 @@ from cloud_policy import (
     get_default_cloud_environment,
 )
 from oddish.api.endpoints import (
+    browse_tasks_core,
     get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
+    list_tasks_core,
     list_task_versions_core,
     rerun_task_analysis_core,
     rerun_task_verdict_core,
@@ -41,7 +43,6 @@ from oddish.api.sweeps import (
     build_trial_specs_from_sweep,
     validate_sweep_submission,
 )
-from oddish.api.endpoints import list_tasks_core
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -56,6 +57,7 @@ from oddish.queue import (
     create_task,
 )
 from oddish.schemas import (
+    TaskBrowseResponse,
     TaskBatchCancelRequest,
     TaskResponse,
     TaskStatusResponse,
@@ -402,6 +404,26 @@ async def list_tasks(
             include_empty_rewards=True,
         )
         return tasks
+
+
+@router.get("/tasks/browse", response_model=TaskBrowseResponse)
+async def browse_tasks(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    query: str | None = None,
+) -> TaskBrowseResponse:
+    """Browse latest task versions for the authenticated organization."""
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await browse_tasks_core(
+            session,
+            org_id=auth.org_id,
+            limit=limit,
+            offset=offset,
+            query=query,
+        )
 
 
 @router.get(
