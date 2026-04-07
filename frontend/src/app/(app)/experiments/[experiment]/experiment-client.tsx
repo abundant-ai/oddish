@@ -26,10 +26,12 @@ const ACTIVE_TASK_STATUSES = new Set([
 
 type ExperimentClientPageProps = {
   experimentId: string;
+  initialTasks?: Task[] | null;
 };
 
 export function ExperimentClientPage({
   experimentId,
+  initialTasks,
 }: ExperimentClientPageProps) {
   const { orgRole } = useAuth();
   const { mutate: mutateKey } = useSWRConfig();
@@ -59,6 +61,7 @@ export function ExperimentClientPage({
   } = useSWR<Task[]>(allTasksUrl, fetcher, {
     refreshInterval: 0,
     revalidateOnFocus: false,
+    fallbackData: initialTasks ?? undefined,
   });
 
   // Phase 2: Progressively fetch compact trial data in batches.

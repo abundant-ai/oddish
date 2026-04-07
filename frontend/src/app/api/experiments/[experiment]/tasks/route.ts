@@ -64,7 +64,12 @@ export async function GET(
     }
 
     const data = await res.json();
-    return NextResponse.json(data);
+    const response = NextResponse.json(data);
+    response.headers.set(
+      "Cache-Control",
+      "private, max-age=3, stale-while-revalidate=10",
+    );
+    return response;
   } catch (error) {
     console.error("API route error:", error);
     return NextResponse.json(

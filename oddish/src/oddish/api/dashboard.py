@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,7 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
     VerdictStatus,
+    get_session,
 )
 from oddish.queue import get_pipeline_stats, get_queue_stats_with_concurrency
 
@@ -570,7 +572,12 @@ async def get_dashboard_core(
     include_usage: bool = True,
     include_experiments: bool = True,
 ) -> dict:
-    """Combined dashboard data: queues, pipeline, usage, tasks, experiments."""
+    """Combined dashboard data: queues, pipeline, usage, tasks, experiments.
+
+    When experiments are requested alongside other data, the experiment query
+    runs on a separate DB session in parallel (max 2 connections) to cut
+    overall latency significantly.
+    """
 
     cache_key = (
         f"dashboard:{org_id}:{tasks_limit}:{tasks_offset}:"
@@ -585,60 +592,82 @@ async def get_dashboard_core(
     is_usage_only_request = (
         include_usage and not include_tasks and not include_experiments
     )
-    if is_usage_only_request:
-        queue_stats: dict = {}
-        pipeline_stats: dict[str, dict[str, int]] = {
-            "trials": {},
-            "analyses": {},
-            "verdicts": {},
-        }
-    else:
-        queue_stats = await get_queue_stats_with_concurrency(session, org_id)
-        pipeline_stats = await get_pipeline_stats(session, org_id)
 
-    model_usage: list[dict[str, Any]] = []
-    if include_usage:
-        model_usage = await get_model_usage_core(
-            session, org_id=org_id, usage_minutes=usage_minutes
-        )
+    async def _fetch_primary() -> (
+        tuple[dict, dict[str, dict[str, int]], list[dict[str, Any]], list[dict], bool]
+    ):
+        """Queue stats, pipeline stats, usage, and tasks on the caller's session."""
+        if is_usage_only_request:
+            qs: dict = {}
+            ps: dict[str, dict[str, int]] = {
+                "trials": {},
+                "analyses": {},
+                "verdicts": {},
+            }
+        else:
+            qs = await get_queue_stats_with_concurrency(session, org_id)
+            ps = await get_pipeline_stats(session, org_id)
 
-    tasks_response: list[dict] = []
-    has_more = False
-    if include_tasks:
-        tasks_query = (
-            select(TaskModel)
-            .options(selectinload(TaskModel.experiment))
-            .order_by(TaskModel.created_at.desc())
-            .limit(tasks_limit + 1)
-            .offset(tasks_offset)
-        )
-        if org_id is not None:
-            tasks_query = tasks_query.where(TaskModel.org_id == org_id)
+        mu: list[dict[str, Any]] = []
+        if include_usage:
+            mu = await get_model_usage_core(
+                session, org_id=org_id, usage_minutes=usage_minutes
+            )
 
-        tasks_result = await session.execute(tasks_query)
-        paged_tasks = tasks_result.scalars().all()
-        has_more = len(paged_tasks) > tasks_limit
-        tasks = paged_tasks[:tasks_limit]
+        tr: list[dict] = []
+        hm = False
+        if include_tasks:
+            tasks_q = (
+                select(TaskModel)
+                .options(selectinload(TaskModel.experiment))
+                .order_by(TaskModel.created_at.desc())
+                .limit(tasks_limit + 1)
+                .offset(tasks_offset)
+            )
+            if org_id is not None:
+                tasks_q = tasks_q.where(TaskModel.org_id == org_id)
 
-        if tasks:
-            tasks_response = [
-                ts.model_dump()
-                for ts in await build_task_status_responses_from_counts(
-                    session, tasks=tasks
-                )
-            ]
+            tasks_result = await session.execute(tasks_q)
+            paged_tasks = tasks_result.scalars().all()
+            hm = len(paged_tasks) > tasks_limit
+            fetched_tasks = paged_tasks[:tasks_limit]
 
-    experiments_response: list[dict[str, Any]] = []
-    experiments_has_more = False
+            if fetched_tasks:
+                tr = [
+                    ts.model_dump()
+                    for ts in await build_task_status_responses_from_counts(
+                        session, tasks=fetched_tasks
+                    )
+                ]
+
+        return qs, ps, mu, tr, hm
+
+    async def _fetch_experiments_parallel() -> tuple[list[dict[str, Any]], bool]:
+        """Experiments on a separate session so they run concurrently."""
+        async with get_session() as exp_session:
+            return await load_dashboard_experiments(
+                exp_session,
+                org_id=org_id,
+                experiments_limit=experiments_limit,
+                experiments_offset=experiments_offset,
+                experiments_query=experiments_query,
+                experiments_status=experiments_status,
+            )
+
     if include_experiments:
-        experiments_response, experiments_has_more = await load_dashboard_experiments(
-            session,
-            org_id=org_id,
-            experiments_limit=experiments_limit,
-            experiments_offset=experiments_offset,
-            experiments_query=experiments_query,
-            experiments_status=experiments_status,
+        # Run experiments on a separate session in parallel with primary queries.
+        (queue_stats, pipeline_stats, model_usage, tasks_response, has_more), (
+            experiments_response,
+            experiments_has_more,
+        ) = await asyncio.gather(
+            _fetch_primary(), _fetch_experiments_parallel()
         )
+    else:
+        queue_stats, pipeline_stats, model_usage, tasks_response, has_more = (
+            await _fetch_primary()
+        )
+        experiments_response = []
+        experiments_has_more = False
 
     response = {
         "queues": queue_stats,
