@@ -17,6 +17,9 @@ from cloud_policy import (
 )
 from oddish.api.endpoints import (
     browse_tasks_core,
+    create_task_sweep_core,
+    delete_experiment_core,
+    delete_task_core,
     get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
@@ -207,161 +210,48 @@ async def create_task_sweep(
     """Submit a task sweep - expands a task_id into many trials."""
     auth.require_scope(APIKeyScope.TASKS)
 
+    from oddish.api.sweeps import validate_sweep_submission
     validate_sweep_submission(submission)
     _apply_github_attribution(submission)
 
     async with get_session() as session:
-        # Auto-detect append mode when the task already exists in the DB
-        # (backward-compat with CLIs that don't send append_to_task=True).
-        if not submission.append_to_task:
-            existing = await session.get(TaskModel, submission.task_id)
-            if existing is not None and existing.org_id == auth.org_id:
-                submission = submission.model_copy(update={"append_to_task": True})
-
-        if submission.append_to_task:
-            task = await get_task_for_org_core(
-                session, task_id=submission.task_id, org_id=auth.org_id
-            )
-            if task.status in (TaskStatus.ANALYZING, TaskStatus.VERDICT_PENDING):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Cannot append trials while task analysis or verdict "
-                        "is in progress"
-                    ),
-                )
-            if submission.run_analysis and not task.run_analysis:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Cannot enable run_analysis when appending to a task "
-                        "that was created without it"
-                    ),
-                )
-
-            # Resolve experiment for the new trials (create if needed).
-            # The task itself is NOT moved -- experiment lives on trials.
-            from oddish.queue import (
-                get_experiment_by_id_or_name,
-                get_or_create_experiment,
-            )
-
-            new_experiment_id: str | None = None
-            if submission.experiment_id:
-                experiment = await get_experiment_by_id_or_name(
-                    session, submission.experiment_id, auth.org_id
-                )
-                if not experiment:
-                    experiment = await get_or_create_experiment(
-                        session, submission.experiment_id, auth.org_id
-                    )
-                new_experiment_id = experiment.id
-
-            existing_env_result = await session.execute(
-                select(TrialModel.environment)
-                .where(
-                    TrialModel.task_id == task.id,
-                    TrialModel.environment.is_not(None),
-                )
-                .order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
-                .limit(1)
-            )
-            existing_environment = existing_env_result.scalar_one_or_none()
-            default_environment = (
-                EnvironmentType(existing_environment)
-                if existing_environment
-                else get_default_cloud_environment()
-            )
-
-            trials = build_trial_specs_from_sweep(
-                submission,
-                default_environment=default_environment,
-                allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
-            )
-            append_submission = submission.model_copy(
-                update={
-                    "name": task.name,
-                    "priority": task.priority,
-                    "experiment_id": new_experiment_id or task.experiment_id,
-                    "tags": task.tags or {},
-                    "run_analysis": task.run_analysis,
-                    "user": task.user,
-                }
-            )
-            expanded = build_task_submission_from_sweep(
-                append_submission, task_path=task.task_path, trials=trials
-            )
-            new_trials = await append_trials_to_task(
-                session,
-                task=task,
-                submission=expanded,
-                experiment_id=new_experiment_id,
-            )
-            if new_experiment_id:
-                should_publish = submission.publish_experiment
-                if should_publish is None:
-                    should_publish = bool(
-                        submission.github_username and auth.api_key_id
-                    )
-                if should_publish:
-                    await ensure_experiment_public(session, experiment)
-            await session.commit()
-
-            provider_counts: Counter[str] = Counter(t.provider for t in new_trials)
-            resp_experiment_id = new_experiment_id or task.experiment_id
-            resp_experiment = experiment if new_experiment_id else task.experiment
-            return TaskResponse(
-                id=task.id,
-                name=task.name,
-                status=task.status,
-                priority=task.priority,
-                trials_count=len(new_trials),
-                providers=dict(provider_counts),
-                experiment_id=resp_experiment_id,
-                experiment_name=getattr(resp_experiment, "name", None),
-                created_at=task.created_at,
-            )
-
-        task_path, task_s3_key = await resolve_task_storage(submission.task_id)
-        trials = build_trial_specs_from_sweep(
-            submission,
+        task, new_trials, is_append, experiment = await create_task_sweep_core(
+            session,
+            submission=submission,
+            org_id=auth.org_id,
             default_environment=get_default_cloud_environment(),
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
         )
-        expanded = build_task_submission_from_sweep(
-            submission, task_path=task_path, trials=trials
-        )
 
-        # Pass org_id to create_task - it propagates to experiment and trials
-        try:
-            task = await create_task(
-                session, expanded, task_id=submission.task_id, org_id=auth.org_id
+        if not is_append:
+            created_by_user_id = await _resolve_created_by_user_id(
+                session, submission, auth
             )
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            if created_by_user_id:
+                task.created_by_user_id = created_by_user_id
 
-        created_by_user_id = await _resolve_created_by_user_id(
-            session, submission, auth
-        )
-        if created_by_user_id:
-            task.created_by_user_id = created_by_user_id
+            await _maybe_publish_experiment(session, task, submission, auth)
+            
+        elif experiment and submission.publish_experiment:
+            await ensure_experiment_public(session, experiment)
 
-        await _maybe_publish_experiment(session, task, submission, auth)
-
-        if task_s3_key:
-            task.task_s3_key = task_s3_key
         await session.commit()
 
-        created_provider_counts: Counter[str] = Counter(t.provider for t in task.trials)
+        provider_counts: Counter[str] = Counter(
+            t.provider for t in (new_trials if is_append else task.trials)
+        )
+        resp_experiment_id = experiment.id if experiment else task.experiment_id
+        resp_experiment_name = getattr(experiment, "name", None) if experiment else getattr(task.experiment, "name", None)
+        
         return TaskResponse(
             id=task.id,
             name=task.name,
             status=task.status,
             priority=task.priority,
-            trials_count=len(task.trials),
-            providers=dict(created_provider_counts),
-            experiment_id=task.experiment_id,
-            experiment_name=getattr(task.experiment, "name", None),
+            trials_count=len(new_trials) if is_append else len(task.trials),
+            providers=dict(provider_counts),
+            experiment_id=resp_experiment_id,
+            experiment_name=resp_experiment_name,
             created_at=task.created_at,
         )
 
@@ -550,113 +440,21 @@ async def delete_experiment(
     """Delete an experiment and all associated tasks/trials."""
 
     async with get_session() as session:
-        result = await session.execute(
-            select(ExperimentModel).where(
-                ExperimentModel.id == experiment_id,
-                ExperimentModel.org_id == auth.org_id,
-            )
-        )
-        experiment = result.scalar_one_or_none()
-        if not experiment:
-            raise HTTPException(status_code=404, detail="Experiment not found")
-
-        # Tasks directly owned by this experiment
-        task_ids_result = await session.execute(
-            select(TaskModel.id)
-            .where(TaskModel.experiment_id == experiment.id)
-            .where(TaskModel.org_id == auth.org_id)
-        )
-        task_ids = [row[0] for row in task_ids_result.all()]
-        task_rows_result = await session.execute(
-            select(TaskModel.task_s3_key, TaskModel.task_path)
-            .where(TaskModel.experiment_id == experiment.id)
-            .where(TaskModel.org_id == auth.org_id)
-        )
-        task_rows = [(row[0], row[1]) for row in task_rows_result.all()]
-
-        # Trials: owned-task trials + trial-only associations
-        trial_rows: list[tuple[str, str | None]] = []
-        if task_ids:
-            trial_rows_result = await session.execute(
-                select(TrialModel.id, TrialModel.trial_s3_key).where(
-                    TrialModel.task_id.in_(task_ids)
-                )
-            )
-            trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
-
-        trial_only_rows_result = await session.execute(
-            select(TrialModel.id, TrialModel.trial_s3_key).where(
-                TrialModel.experiment_id == experiment.id,
-                TrialModel.org_id == auth.org_id,
-                ~TrialModel.task_id.in_(task_ids) if task_ids else True,
-            )
-        )
-        trial_rows.extend((row[0], row[1]) for row in trial_only_rows_result.all())
-
-        s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=task_rows,
-            trials=trial_rows,
-        )
-
-        # Delete trials from owned tasks
-        deleted_trials = 0
-        if task_ids:
-            trials_result = await session.execute(
-                delete(TrialModel).where(TrialModel.task_id.in_(task_ids))
-            )
-            if not isinstance(trials_result, CursorResult):
-                raise TypeError("Expected CursorResult for trial delete")
-            deleted_trials += int(trials_result.rowcount or 0)
-
-        # Delete trial-only associations (trials linked via trial.experiment_id
-        # but whose task belongs to a different experiment)
-        trial_only_result = await session.execute(
-            delete(TrialModel).where(
-                TrialModel.experiment_id == experiment.id,
-                TrialModel.org_id == auth.org_id,
-            )
-        )
-        if not isinstance(trial_only_result, CursorResult):
-            raise TypeError("Expected CursorResult for trial-only delete")
-        deleted_trials += int(trial_only_result.rowcount or 0)
-
-        tasks_result = await session.execute(
-            delete(TaskModel)
-            .where(TaskModel.experiment_id == experiment.id)
-            .where(TaskModel.org_id == auth.org_id)
-        )
-        if not isinstance(tasks_result, CursorResult):
-            raise TypeError("Expected CursorResult for task delete")
-
-        experiments_result = await session.execute(
-            delete(ExperimentModel)
-            .where(ExperimentModel.id == experiment.id)
-            .where(ExperimentModel.org_id == auth.org_id)
-        )
-        if not isinstance(experiments_result, CursorResult):
-            raise TypeError("Expected CursorResult for experiment delete")
-
+        result = await delete_experiment_core(session, experiment_id=experiment_id, org_id=auth.org_id)
         await session.commit()
 
-    if s3_prefixes:
+    if result.get("s3_prefixes"):
         try:
-            await delete_s3_prefixes(s3_prefixes)
+            await delete_s3_prefixes(result["s3_prefixes"])
         except Exception:
             logger.exception(
                 "Failed to delete S3 artifacts for experiment %s", experiment_id
             )
 
-    deleted_tasks = int(tasks_result.rowcount or 0)
-    deleted_experiments = int(experiments_result.rowcount or 0)
-
     return {
         "status": "success",
         "message": "Experiment deleted",
-        "deleted": {
-            "trials": deleted_trials,
-            "tasks": deleted_tasks,
-            "experiments": deleted_experiments,
-        },
+        "deleted": result["deleted"],
     }
 
 
@@ -699,28 +497,16 @@ async def delete_task(
     """Delete a task and its trials."""
 
     async with get_session() as session:
-        task = await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
-        trial_rows_result = await session.execute(
-            select(TrialModel.id, TrialModel.trial_s3_key).where(
-                TrialModel.task_id == task.id
-            )
-        )
-        trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
-        s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=[(task.task_s3_key, task.task_path)],
-            trials=trial_rows,
-        )
-
-        await session.delete(task)
+        result = await delete_task_core(session, task_id=task_id, org_id=auth.org_id)
         await session.commit()
 
-    if s3_prefixes:
+    if result.get("s3_prefixes"):
         try:
-            await delete_s3_prefixes(s3_prefixes)
+            await delete_s3_prefixes(result["s3_prefixes"])
         except Exception:
             logger.exception("Failed to delete S3 artifacts for task %s", task_id)
 
-    return {"status": "success", "deleted": {"task_id": task_id}}
+    return {"status": "success", "deleted": result["deleted"]}
 
 
 @router.post("/tasks/{task_id}/analysis/retry")

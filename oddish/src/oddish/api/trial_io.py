@@ -632,3 +632,36 @@ async def read_trial_result(trial: TrialModel) -> dict:
         raise HTTPException(
             status_code=500, detail=f"Failed to parse local result.json: {e}"
         )
+
+
+async def debug_trial_files(trial: TrialModel) -> dict:
+    """Debug endpoint logic: list all files in S3 for a trial."""
+    result = {
+        "trial_id": trial.id,
+        "trial_s3_key": trial.trial_s3_key,
+        "computed_prefix": StorageClient._trial_prefix(trial.id),
+        "harbor_result_path": trial.harbor_result_path,
+        "s3_enabled": settings.s3_enabled,
+        "files": [],
+        "trajectory_files": [],
+        "error": None,
+    }
+
+    if not settings.s3_enabled:
+        result["error"] = "S3 not enabled"
+        return result
+
+    s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
+    result["using_prefix"] = s3_prefix
+
+    storage = get_storage_client()
+    try:
+        # List all files under this prefix
+        files = await storage.list_keys(s3_prefix)
+        result["files"] = files
+        # Find any trajectory files
+        result["trajectory_files"] = [f for f in files if "trajectory.json" in f]
+    except Exception as e:
+        result["error"] = f"Failed to list files: {str(e)}"
+
+    return result

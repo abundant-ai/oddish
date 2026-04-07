@@ -52,7 +52,7 @@ async def refresh_task_pr_comment(
             raise HTTPException(status_code=403, detail="Access denied")
 
         # Check for GitHub metadata
-        from integrations.github.client import GitHubMeta
+        from oddish.integrations.github.client import GitHubMeta
 
         github_meta = GitHubMeta.from_tags(task.tags)
         if not github_meta:
@@ -62,7 +62,7 @@ async def refresh_task_pr_comment(
             )
 
         # Trigger update
-        from integrations.github.notifier import _update_pr_comment_for_task
+        from oddish.integrations.github.notifier import _update_pr_comment_for_task
 
         success = await _update_pr_comment_for_task(task)
 
@@ -122,7 +122,7 @@ async def refresh_experiment_pr_comment(
             )
 
         # Check for GitHub metadata
-        from integrations.github.client import GitHubMeta
+        from oddish.integrations.github.client import GitHubMeta
 
         github_meta = GitHubMeta.from_tags(task.tags)
         if not github_meta:
@@ -132,7 +132,7 @@ async def refresh_experiment_pr_comment(
             )
 
         # Trigger update (will aggregate all tasks)
-        from integrations.github.notifier import _update_pr_comment_for_task
+        from oddish.integrations.github.notifier import _update_pr_comment_for_task
 
         success = await _update_pr_comment_for_task(task)
 

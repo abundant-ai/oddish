@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, func, nulls_last, or_, select, tuple_
+from sqlalchemy import and_, case, delete, func, nulls_last, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm import load_only, selectinload
@@ -14,6 +14,8 @@ from oddish.api.helpers import (
     fetch_trial_queue_info,
     fetch_trial_analysis_summaries,
 )
+from collections.abc import Collection
+from harbor.models.environment_type import EnvironmentType
 from oddish.api.trial_io import (
     read_trial_logs,
     read_trial_logs_structured,
@@ -36,6 +38,7 @@ from oddish.schemas import (
     TaskBrowseResponse,
     TaskBrowseTrial,
     TaskStatusResponse,
+    TaskSweepSubmission,
     TaskVersionResponse,
     TrialResponse,
 )
@@ -892,3 +895,266 @@ async def get_task_version_core(
             detail=f"Version {version} not found for task {task_id}",
         )
     return TaskVersionResponse.model_validate(version_row)
+
+
+async def delete_task_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    org_id: str | None = None,
+) -> dict:
+    """Delete a task and its trials with optional org scoping."""
+    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
+    
+    trial_rows_result = await session.execute(
+        select(TrialModel.id, TrialModel.trial_s3_key).where(
+            TrialModel.task_id == task.id
+        )
+    )
+    trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
+    
+    from oddish.db.storage import collect_s3_prefixes_for_deletion
+    s3_prefixes = collect_s3_prefixes_for_deletion(
+        tasks=[(task.task_s3_key, task.task_path)],
+        trials=trial_rows,
+    )
+
+    await session.delete(task)
+    
+    return {
+        "s3_prefixes": s3_prefixes,
+        "deleted": {"task_id": task_id}
+    }
+
+
+async def delete_experiment_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    org_id: str | None = None,
+) -> dict:
+    """Delete an experiment and all associated tasks/trials with optional org scoping."""
+    query = select(ExperimentModel).where(ExperimentModel.id == experiment_id)
+    if org_id is not None:
+        query = query.where(ExperimentModel.org_id == org_id)
+    
+    result = await session.execute(query)
+    experiment = result.scalar_one_or_none()
+    if not experiment:
+        raise HTTPException(
+            status_code=404, detail=f"Experiment {experiment_id} not found"
+        )
+
+    task_ids_query = select(TaskModel.id).where(TaskModel.experiment_id == experiment_id)
+    if org_id is not None:
+        task_ids_query = task_ids_query.where(TaskModel.org_id == org_id)
+    
+    task_ids_result = await session.execute(task_ids_query)
+    task_ids = [row[0] for row in task_ids_result.all()]
+
+    task_rows_query = select(TaskModel.task_s3_key, TaskModel.task_path).where(
+        TaskModel.experiment_id == experiment_id
+    )
+    if org_id is not None:
+        task_rows_query = task_rows_query.where(TaskModel.org_id == org_id)
+    
+    task_rows_result = await session.execute(task_rows_query)
+    task_rows = [(row[0], row[1]) for row in task_rows_result.all()]
+
+    trial_rows: list[tuple[str, str | None]] = []
+    if task_ids:
+        trial_rows_result = await session.execute(
+            select(TrialModel.id, TrialModel.trial_s3_key).where(
+                TrialModel.task_id.in_(task_ids)
+            )
+        )
+        trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
+
+    trial_only_query = select(TrialModel.id, TrialModel.trial_s3_key).where(
+        TrialModel.experiment_id == experiment_id
+    )
+    if org_id is not None:
+        trial_only_query = trial_only_query.where(TrialModel.org_id == org_id)
+    if task_ids:
+        trial_only_query = trial_only_query.where(~TrialModel.task_id.in_(task_ids))
+
+    trial_only_result = await session.execute(trial_only_query)
+    extra_trial_rows = [(r[0], r[1]) for r in trial_only_result.all()]
+    trial_rows.extend(extra_trial_rows)
+
+    from oddish.db.storage import collect_s3_prefixes_for_deletion
+    s3_prefixes = collect_s3_prefixes_for_deletion(
+        tasks=task_rows,
+        trials=trial_rows,
+    )
+
+    deleted_trials = 0
+    if task_ids:
+        trials_result = await session.execute(
+            delete(TrialModel).where(TrialModel.task_id.in_(task_ids))
+        )
+        deleted_trials += int(trials_result.rowcount or 0)
+
+    trial_only_del_query = delete(TrialModel).where(TrialModel.experiment_id == experiment_id)
+    if org_id is not None:
+        trial_only_del_query = trial_only_del_query.where(TrialModel.org_id == org_id)
+    trial_only_del_result = await session.execute(trial_only_del_query)
+    deleted_trials += int(trial_only_del_result.rowcount or 0)
+
+    tasks_del_query = delete(TaskModel).where(TaskModel.experiment_id == experiment_id)
+    if org_id is not None:
+        tasks_del_query = tasks_del_query.where(TaskModel.org_id == org_id)
+    tasks_result = await session.execute(tasks_del_query)
+    deleted_tasks = int(tasks_result.rowcount or 0)
+
+    experiments_del_query = delete(ExperimentModel).where(ExperimentModel.id == experiment_id)
+    if org_id is not None:
+        experiments_del_query = experiments_del_query.where(ExperimentModel.org_id == org_id)
+    experiments_result = await session.execute(experiments_del_query)
+    deleted_experiments = int(experiments_result.rowcount or 0)
+
+    return {
+        "s3_prefixes": s3_prefixes,
+        "deleted": {
+            "trials": deleted_trials,
+            "tasks": deleted_tasks,
+            "experiments": deleted_experiments,
+        }
+    }
+
+
+async def create_task_sweep_core(
+    session: AsyncSession,
+    *,
+    submission: TaskSweepSubmission,
+    org_id: str | None = None,
+    default_environment: EnvironmentType | None = None,
+    allowed_environments: Collection[EnvironmentType] | None = None,
+) -> tuple[TaskModel, list[TrialModel], bool, ExperimentModel | None]:
+    """
+    Expands a sweep submission into trials and either appends to an existing task
+    or creates a new one.
+
+    Returns a tuple of (task, new_trials, is_append, experiment).
+    """
+    from oddish.api.sweeps import (
+        build_trial_specs_from_sweep,
+        build_task_submission_from_sweep,
+    )
+    from oddish.queue import (
+        append_trials_to_task,
+        create_task,
+        get_experiment_by_id_or_name,
+        get_or_create_experiment,
+    )
+    from oddish.api.tasks import resolve_task_storage
+    from oddish.task_timeouts import TaskTimeoutValidationError
+
+    # Auto-detect append mode if the task already exists in the DB for this org.
+    if not submission.append_to_task:
+        existing = await session.get(TaskModel, submission.task_id)
+        if existing is not None and (org_id is None or existing.org_id == org_id):
+            submission = submission.model_copy(update={"append_to_task": True})
+
+    if submission.append_to_task:
+        task = await get_task_for_org_core(session, task_id=submission.task_id, org_id=org_id)
+        if task.status in (TaskStatus.ANALYZING, TaskStatus.VERDICT_PENDING):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot append trials while task analysis or verdict is in progress",
+            )
+        if submission.run_analysis and not task.run_analysis:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot enable run_analysis when appending to a task that was created without it",
+            )
+
+        new_experiment_id: str | None = None
+        experiment: ExperimentModel | None = None
+        if submission.experiment_id:
+            experiment = await get_experiment_by_id_or_name(session, submission.experiment_id, org_id)
+            if not experiment:
+                experiment = await get_or_create_experiment(session, submission.experiment_id, org_id)
+            new_experiment_id = experiment.id
+
+        # Determine default environment from existing trial, if present.
+        existing_env_result = await session.execute(
+            select(TrialModel.environment)
+            .where(
+                TrialModel.task_id == task.id,
+                TrialModel.environment.is_not(None),
+            )
+            .order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
+            .limit(1)
+        )
+        existing_environment = existing_env_result.scalar_one_or_none()
+        effective_default_env = (
+            EnvironmentType(existing_environment) if existing_environment else default_environment
+        )
+
+        trials = build_trial_specs_from_sweep(
+            submission,
+            default_environment=effective_default_env,
+            allowed_environments=allowed_environments,
+        )
+        
+        append_submission = submission.model_copy(
+            update={
+                "name": task.name,
+                "priority": task.priority,
+                "experiment_id": new_experiment_id or task.experiment_id,
+                "tags": task.tags or {},
+                "run_analysis": task.run_analysis,
+                "user": task.user,
+            }
+        )
+        expanded = build_task_submission_from_sweep(
+            append_submission, task_path=task.task_path, trials=trials
+        )
+        new_trials = await append_trials_to_task(
+            session,
+            task=task,
+            submission=expanded,
+            experiment_id=new_experiment_id,
+        )
+        
+        return task, new_trials, True, experiment
+
+    # Create mode
+    task_path, task_s3_key = await resolve_task_storage(
+        submission.task_id,
+        s3_missing_detail=(
+            f"Task {submission.task_id} not found in S3. "
+            "Upload it first with POST /tasks/upload"
+        ),
+        local_missing_detail=(
+            f"Task {submission.task_id} not found in local storage. "
+            "Upload it first with POST /tasks/upload"
+        ),
+    )
+    trials = build_trial_specs_from_sweep(
+        submission,
+        default_environment=default_environment,
+        allowed_environments=allowed_environments,
+    )
+    expanded = build_task_submission_from_sweep(
+        submission, task_path=task_path, trials=trials
+    )
+    
+    try:
+        task = await create_task(session, expanded, task_id=submission.task_id, org_id=org_id)
+    except TaskTimeoutValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if task_s3_key:
+        task.task_s3_key = task_s3_key
+        
+    experiment = getattr(task, "experiment", None)
+    if experiment is None and getattr(task, "experiment_id", None):
+        # Pre-fetch the experiment since create_task might not have loaded it eagerly
+        from oddish.queue import get_experiment_by_id_or_name
+        experiment = await get_experiment_by_id_or_name(session, task.experiment_id, org_id)
+
+    return task, list(task.trials), False, experiment
