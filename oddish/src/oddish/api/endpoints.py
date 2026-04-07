@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, case, func, nulls_last, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 from sqlalchemy.orm import load_only, selectinload
 
 from oddish.api.helpers import (
@@ -30,7 +31,14 @@ from oddish.db import (
     TrialStatus,
     VerdictStatus,
 )
-from oddish.schemas import TaskStatusResponse, TaskVersionResponse, TrialResponse
+from oddish.schemas import (
+    TaskBrowseExperiment,
+    TaskBrowseItem,
+    TaskBrowseResponse,
+    TaskStatusResponse,
+    TaskVersionResponse,
+    TrialResponse,
+)
 
 
 async def get_task_for_org_core(
@@ -193,6 +201,196 @@ async def list_tasks_core(
         session,
         tasks=tasks,
         include_empty_rewards=include_empty_rewards,
+    )
+
+
+async def browse_tasks_core(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    limit: int = 25,
+    offset: int = 0,
+    query: str | None = None,
+) -> TaskBrowseResponse:
+    """List latest-version task summaries for the task browser."""
+
+    current_version = aliased(TaskVersionModel)
+    normalized_query = query.strip() if query else None
+
+    ranked_tasks = (
+        select(
+            TaskModel.id.label("task_id"),
+            TaskModel.name.label("name"),
+            TaskModel.current_version_id.label("current_version_id"),
+            current_version.version.label("current_version"),
+            TaskModel.created_at.label("created_at"),
+            func.row_number()
+            .over(
+                partition_by=TaskModel.name,
+                order_by=(
+                    nulls_last(current_version.version.desc()),
+                    TaskModel.created_at.desc(),
+                    TaskModel.id.desc(),
+                ),
+            )
+            .label("name_rank"),
+        )
+        .select_from(TaskModel)
+        .outerjoin(current_version, current_version.id == TaskModel.current_version_id)
+        .where(TaskModel.org_id == org_id)
+    )
+    if normalized_query:
+        ranked_tasks = ranked_tasks.where(TaskModel.name.ilike(f"%{normalized_query}%"))
+    ranked_tasks_subquery = ranked_tasks.subquery()
+
+    version_counts = (
+        select(
+            TaskVersionModel.task_id.label("task_id"),
+            func.count(TaskVersionModel.id).label("version_count"),
+        )
+        .group_by(TaskVersionModel.task_id)
+        .subquery()
+    )
+
+    trial_activity_at = func.greatest(
+        func.coalesce(TrialModel.finished_at, TrialModel.created_at),
+        func.coalesce(TrialModel.started_at, TrialModel.created_at),
+        TrialModel.created_at,
+    )
+    trial_aggregates = (
+        select(
+            TrialModel.task_id.label("task_id"),
+            TrialModel.task_version_id.label("task_version_id"),
+            func.count(TrialModel.id).label("total_trials"),
+            func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
+                "completed_trials"
+            ),
+            func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
+                "failed_trials"
+            ),
+            func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
+            func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
+            func.max(trial_activity_at).label("last_run_at"),
+        )
+        .where(TrialModel.org_id == org_id)
+        .group_by(TrialModel.task_id, TrialModel.task_version_id)
+        .subquery()
+    )
+
+    paged_rows = (
+        select(
+            ranked_tasks_subquery.c.task_id,
+            ranked_tasks_subquery.c.name,
+            ranked_tasks_subquery.c.current_version,
+            ranked_tasks_subquery.c.current_version_id,
+            func.coalesce(version_counts.c.version_count, 0).label("version_count"),
+            func.coalesce(trial_aggregates.c.total_trials, 0).label("total_trials"),
+            func.coalesce(trial_aggregates.c.completed_trials, 0).label(
+                "completed_trials"
+            ),
+            func.coalesce(trial_aggregates.c.failed_trials, 0).label("failed_trials"),
+            func.coalesce(trial_aggregates.c.reward_success, 0).label("reward_success"),
+            func.coalesce(trial_aggregates.c.reward_total, 0).label("reward_total"),
+            trial_aggregates.c.last_run_at.label("last_run_at"),
+        )
+        .select_from(ranked_tasks_subquery)
+        .outerjoin(version_counts, version_counts.c.task_id == ranked_tasks_subquery.c.task_id)
+        .outerjoin(
+            trial_aggregates,
+            and_(
+                trial_aggregates.c.task_id == ranked_tasks_subquery.c.task_id,
+                trial_aggregates.c.task_version_id
+                == ranked_tasks_subquery.c.current_version_id,
+            ),
+        )
+        .where(ranked_tasks_subquery.c.name_rank == 1)
+        .order_by(
+            nulls_last(trial_aggregates.c.last_run_at.desc()),
+            nulls_last(ranked_tasks_subquery.c.current_version.desc()),
+            ranked_tasks_subquery.c.name.asc(),
+        )
+        .limit(limit + 1)
+        .offset(offset)
+    )
+
+    result = await session.execute(paged_rows)
+    raw_rows = result.mappings().all()
+    has_more = len(raw_rows) > limit
+    visible_rows = raw_rows[:limit]
+
+    experiments_by_task: dict[str, list[TaskBrowseExperiment]] = {}
+    task_version_pairs = [
+        (str(row["task_id"]), str(row["current_version_id"]))
+        for row in visible_rows
+        if row["current_version_id"] is not None
+    ]
+
+    if task_version_pairs:
+        experiment_rows = await session.execute(
+            select(
+                TrialModel.task_id.label("task_id"),
+                ExperimentModel.id.label("experiment_id"),
+                ExperimentModel.name.label("experiment_name"),
+            )
+            .select_from(TrialModel)
+            .join(
+                ExperimentModel,
+                and_(
+                    ExperimentModel.id == TrialModel.experiment_id,
+                    ExperimentModel.org_id == org_id,
+                ),
+            )
+            .where(
+                TrialModel.org_id == org_id,
+                TrialModel.experiment_id.isnot(None),
+                tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
+                    task_version_pairs
+                ),
+            )
+            .distinct()
+            .order_by(
+                TrialModel.task_id.asc(),
+                ExperimentModel.name.asc(),
+                ExperimentModel.id.asc(),
+            )
+        )
+        for experiment_row in experiment_rows.mappings():
+            experiments_by_task.setdefault(str(experiment_row["task_id"]), []).append(
+                TaskBrowseExperiment(
+                    id=str(experiment_row["experiment_id"]),
+                    name=str(experiment_row["experiment_name"]),
+                )
+            )
+
+    return TaskBrowseResponse(
+        items=[
+            TaskBrowseItem(
+                id=str(row["task_id"]),
+                name=str(row["name"]),
+                current_version=(
+                    int(row["current_version"])
+                    if row["current_version"] is not None
+                    else None
+                ),
+                current_version_id=(
+                    str(row["current_version_id"])
+                    if row["current_version_id"] is not None
+                    else None
+                ),
+                version_count=int(row["version_count"] or 0),
+                total_trials=int(row["total_trials"] or 0),
+                completed_trials=int(row["completed_trials"] or 0),
+                failed_trials=int(row["failed_trials"] or 0),
+                reward_success=int(row["reward_success"] or 0),
+                reward_total=int(row["reward_total"] or 0),
+                last_run_at=row["last_run_at"],
+                experiments=experiments_by_task.get(str(row["task_id"]), []),
+            )
+            for row in visible_rows
+        ],
+        limit=limit,
+        offset=offset,
+        has_more=has_more,
     )
 
 
