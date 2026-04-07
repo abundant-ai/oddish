@@ -1054,6 +1054,22 @@ export function TaskFilesPanel({
     };
   }, []);
 
+  const { rewardSuccess, rewardTotal, averageRewardPct } = useMemo(() => {
+    const trials = task?.trials ?? [];
+    const versionTrials =
+      currentVersion != null
+        ? trials.filter((t) => t.task_version === currentVersion)
+        : trials;
+    const success = versionTrials.filter((t) => t.reward === 1).length;
+    const total = versionTrials.filter((t) => t.reward != null).length;
+    return {
+      rewardSuccess: total > 0 ? success : null,
+      rewardTotal: total > 0 ? total : null,
+      averageRewardPct:
+        total > 0 ? Math.round((success / total) * 100) : null,
+    };
+  }, [task?.trials, currentVersion]);
+
   if (!taskId && !filesUrl) {
     return null;
   }
@@ -1075,21 +1091,6 @@ export function TaskFilesPanel({
     Boolean(verdictSource?.verdict_status || verdictSource?.verdict);
   const verdictReasoning = verdictSource?.verdict?.reasoning?.trim() || null;
 
-  const { rewardSuccess, rewardTotal, averageRewardPct } = useMemo(() => {
-    const trials = task?.trials ?? [];
-    const versionTrials =
-      currentVersion != null
-        ? trials.filter((t) => t.task_version === currentVersion)
-        : trials;
-    const success = versionTrials.filter((t) => t.reward === 1).length;
-    const total = versionTrials.filter((t) => t.reward != null).length;
-    return {
-      rewardSuccess: total > 0 ? success : null,
-      rewardTotal: total > 0 ? total : null,
-      averageRewardPct:
-        total > 0 ? Math.round((success / total) * 100) : null,
-    };
-  }, [task?.trials, currentVersion]);
   const isListingLoading = filesUrl ? recursiveFilesLoading : loading;
   const listingError =
     filesUrl && recursiveFilesError ? recursiveFilesError.message : error;
