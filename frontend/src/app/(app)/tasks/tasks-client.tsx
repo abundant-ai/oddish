@@ -35,7 +35,7 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
   useEffect(() => {
     const timeoutId = window.setTimeout(
       () => setDebouncedValue(value),
-      delayMs,
+      delayMs
     );
     return () => window.clearTimeout(timeoutId);
   }, [delayMs, value]);
@@ -217,7 +217,7 @@ export function TasksPageClient({
         offset === 0 && debouncedQuery.length === 0
           ? (initialData ?? undefined)
           : undefined,
-    },
+    }
   );
 
   const items = data?.items ?? [];
@@ -339,7 +339,10 @@ export function TasksPageClient({
 
             <div className="flex items-center justify-between gap-2">
               <div className="text-xs text-muted-foreground">
-                {items.length > 0 ? `${offset + 1}-${offset + items.length}` : "0"} shown
+                {items.length > 0
+                  ? `${offset + 1}-${offset + items.length}`
+                  : "0"}{" "}
+                shown
               </div>
               <div className="flex items-center gap-2">
                 <Button
@@ -349,7 +352,7 @@ export function TasksPageClient({
                   className="h-8 px-3 text-[11px]"
                   onClick={() =>
                     setOffset((currentOffset) =>
-                      Math.max(currentOffset - PAGE_SIZE, 0),
+                      Math.max(currentOffset - PAGE_SIZE, 0)
                     )
                   }
                   disabled={offset === 0 || isValidating}

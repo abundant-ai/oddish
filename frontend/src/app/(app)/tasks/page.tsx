@@ -29,7 +29,7 @@ async function getInitialTaskBrowseData(): Promise<TaskBrowseResponse | null> {
     });
     if (!response.ok) {
       console.error(
-        `[tasks/page] Failed initial task browser fetch: ${response.status}`,
+        `[tasks/page] Failed initial task browser fetch: ${response.status}`
       );
       return null;
     }
