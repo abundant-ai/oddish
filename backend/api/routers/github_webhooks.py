@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth import AuthContext, require_auth, APIKeyScope
-from oddish.db import TaskModel, get_session
+from oddish.db import TaskModel, TrialModel, get_session
 
 logger = logging.getLogger(__name__)
 
@@ -92,14 +92,25 @@ async def refresh_experiment_pr_comment(
     """
     auth.require_scope(APIKeyScope.TASKS)
 
-    from sqlalchemy import select
+    from sqlalchemy import or_, select
 
     async with get_session() as session:
-        # Get first task to check for GitHub metadata
+        has_trials_in_experiment = (
+            select(TrialModel.task_id)
+            .where(TrialModel.experiment_id == experiment_id)
+            .distinct()
+            .correlate(None)
+            .scalar_subquery()
+        )
         result = await session.execute(
             select(TaskModel)
-            .where(TaskModel.experiment_id == experiment_id)
-            .where(TaskModel.org_id == auth.org_id)
+            .where(
+                or_(
+                    TaskModel.experiment_id == experiment_id,
+                    TaskModel.id.in_(has_trials_in_experiment),
+                ),
+                TaskModel.org_id == auth.org_id,
+            )
             .limit(1)
         )
         task = result.scalar_one_or_none()

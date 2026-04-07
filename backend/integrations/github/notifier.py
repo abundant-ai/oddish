@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
@@ -90,10 +90,22 @@ async def _build_task_summary(session: AsyncSession, task: TaskModel) -> TaskSum
 async def _get_experiment_tasks(
     session: AsyncSession, experiment_id: str
 ) -> list[TaskModel]:
-    """Get all tasks for an experiment."""
+    """Get all tasks for an experiment (via task or trial link)."""
+    has_trials_in_experiment = (
+        select(TrialModel.task_id)
+        .where(TrialModel.experiment_id == experiment_id)
+        .distinct()
+        .correlate(None)
+        .scalar_subquery()
+    )
     result = await session.execute(
         select(TaskModel)
-        .where(TaskModel.experiment_id == experiment_id)
+        .where(
+            or_(
+                TaskModel.experiment_id == experiment_id,
+                TaskModel.id.in_(has_trials_in_experiment),
+            )
+        )
         .order_by(TaskModel.created_at)
     )
     return list(result.scalars().all())

@@ -154,13 +154,14 @@ async def load_dashboard_experiments(
     )
 
     # -----------------------------------------------------------------
-    # Trial-level timing (via trial.experiment_id) — used for sorting
-    # experiments that only have trial-level associations
+    # Trial-level aggregation (via trial.experiment_id) — provides
+    # timing for sorting and task_count for trial-only experiments
     # -----------------------------------------------------------------
-    trial_timing = (
+    trial_agg = (
         select(
             TrialModel.experiment_id.label("experiment_id"),
             func.max(TrialModel.created_at).label("last_trial_created_at"),
+            func.count(func.distinct(TrialModel.task_id)).label("trial_task_count"),
         )
         .where(
             TrialModel.org_id == org_id,
@@ -200,7 +201,10 @@ async def load_dashboard_experiments(
             case(
                 (ExperimentModel.is_public.is_(True), 1), else_=0
             ).label("experiment_is_public"),
-            func.coalesce(task_agg.c.task_count, 0).label("task_count"),
+            func.greatest(
+                func.coalesce(task_agg.c.task_count, 0),
+                func.coalesce(trial_agg.c.trial_task_count, 0),
+            ).label("task_count"),
             func.coalesce(task_agg.c.analysis_tasks, 0).label("analysis_tasks"),
             func.coalesce(task_agg.c.verdict_good, 0).label("verdict_good"),
             func.coalesce(task_agg.c.verdict_needs_review, 0).label(
@@ -210,7 +214,7 @@ async def load_dashboard_experiments(
             func.coalesce(task_agg.c.verdict_pending, 0).label("verdict_pending"),
             func.greatest(
                 task_agg.c.last_task_created_at,
-                trial_timing.c.last_trial_created_at,
+                trial_agg.c.last_trial_created_at,
             ).label("last_created_at"),
             latest_task.c.last_user,
             latest_task.c.last_github_username,
@@ -218,13 +222,13 @@ async def load_dashboard_experiments(
         )
         .select_from(ExperimentModel)
         .outerjoin(task_agg, task_agg.c.experiment_id == ExperimentModel.id)
-        .outerjoin(trial_timing, trial_timing.c.experiment_id == ExperimentModel.id)
+        .outerjoin(trial_agg, trial_agg.c.experiment_id == ExperimentModel.id)
         .outerjoin(latest_task, latest_task.c.experiment_id == ExperimentModel.id)
         .where(
             ExperimentModel.org_id == org_id,
             or_(
                 task_agg.c.experiment_id.isnot(None),
-                trial_timing.c.experiment_id.isnot(None),
+                trial_agg.c.experiment_id.isnot(None),
             ),
         )
         .subquery()

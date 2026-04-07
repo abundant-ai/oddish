@@ -89,22 +89,35 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
   let pendingCount = 0;
 
   for (const task of tasksForExperiment) {
-    rewardSuccess += task.reward_success ?? 0;
-    rewardTotal += task.reward_total ?? 0;
-    totalTrials += task.total;
-    completedTrials += task.completed;
-    failedTrials += task.failed;
-
-    for (const trial of task.trials ?? []) {
-      if (trial.status === "success" && trial.reward === 1) {
-        passCount++;
-      } else if (trial.status === "success" && trial.reward === 0) {
-        failCount++;
-      } else if (trial.status === "failed") {
-        harnessErrorCount++;
-      } else {
-        pendingCount++;
+    const trials = task.trials ?? [];
+    if (trials.length > 0) {
+      // Compute from the (already version-filtered) trials array
+      for (const trial of trials) {
+        if (trial.status === "success" && trial.reward === 1) {
+          passCount++;
+          rewardSuccess++;
+          rewardTotal++;
+        } else if (trial.status === "success" && trial.reward === 0) {
+          failCount++;
+          rewardTotal++;
+        } else if (trial.status === "success" && trial.reward == null) {
+          // Completed but reward not yet set
+        } else if (trial.status === "failed") {
+          harnessErrorCount++;
+        } else {
+          pendingCount++;
+        }
       }
+      totalTrials += trials.length;
+      completedTrials += trials.filter((t) => t.status === "success").length;
+      failedTrials += trials.filter((t) => t.status === "failed").length;
+    } else {
+      // Trials not loaded yet — fall back to server-provided aggregates
+      rewardSuccess += task.reward_success ?? 0;
+      rewardTotal += task.reward_total ?? 0;
+      totalTrials += task.total;
+      completedTrials += task.completed;
+      failedTrials += task.failed;
     }
   }
 
