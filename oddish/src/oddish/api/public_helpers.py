@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -69,25 +69,56 @@ async def get_public_experiment(
 
 
 async def get_public_task(session: AsyncSession, task_id: str) -> TaskModel | None:
-    """Get a task that belongs to a public experiment."""
+    """Get a task that belongs to a public experiment (via task or trial link)."""
+    via_task_experiment = exists(
+        select(1)
+        .select_from(ExperimentModel)
+        .where(
+            ExperimentModel.id == TaskModel.experiment_id,
+            ExperimentModel.is_public == True,  # noqa: E712
+        )
+    )
+    via_trial_experiment = exists(
+        select(1)
+        .select_from(TrialModel)
+        .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
+        .where(
+            TrialModel.task_id == TaskModel.id,
+            ExperimentModel.is_public == True,  # noqa: E712
+        )
+    )
     result = await session.execute(
         select(TaskModel)
         .options(selectinload(TaskModel.trials), selectinload(TaskModel.experiment))
-        .join(ExperimentModel)
         .where(TaskModel.id == task_id)
-        .where(ExperimentModel.is_public == True)  # noqa: E712
+        .where(or_(via_task_experiment, via_trial_experiment))
     )
     return result.scalar_one_or_none()
 
 
 async def get_public_trial(session: AsyncSession, trial_id: str) -> TrialModel | None:
-    """Get a trial that belongs to a public experiment."""
+    """Get a trial that belongs to a public experiment (via task or trial link)."""
+    via_task = exists(
+        select(1)
+        .select_from(TaskModel)
+        .join(ExperimentModel, ExperimentModel.id == TaskModel.experiment_id)
+        .where(
+            TaskModel.id == TrialModel.task_id,
+            ExperimentModel.is_public == True,  # noqa: E712
+        )
+    )
+    via_trial = exists(
+        select(1)
+        .select_from(ExperimentModel)
+        .where(
+            ExperimentModel.id == TrialModel.experiment_id,
+            ExperimentModel.is_public == True,  # noqa: E712
+        )
+    )
     result = await session.execute(
         select(TrialModel)
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .join(ExperimentModel, ExperimentModel.id == TaskModel.experiment_id)
         .where(TrialModel.id == trial_id)
-        .where(ExperimentModel.is_public == True)  # noqa: E712
+        .where(or_(via_task, via_trial))
     )
     return result.scalar_one_or_none()
 

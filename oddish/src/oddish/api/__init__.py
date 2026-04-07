@@ -459,6 +459,21 @@ async def delete_experiment(experiment_id: str):
             )
             await session.execute(delete(TaskModel).where(TaskModel.id.in_(task_ids)))
 
+        # Also delete trials linked only via trial.experiment_id
+        trial_only_result = await session.execute(
+            select(TrialModel.id, TrialModel.trial_s3_key).where(
+                TrialModel.experiment_id == experiment_id,
+            )
+        )
+        extra_trial_rows = [(r[0], r[1]) for r in trial_only_result.all()]
+        trial_rows.extend(extra_trial_rows)
+        if extra_trial_rows:
+            await session.execute(
+                delete(TrialModel).where(
+                    TrialModel.experiment_id == experiment_id,
+                )
+            )
+
         s3_prefixes = collect_s3_prefixes_for_deletion(
             tasks=task_rows,
             trials=trial_rows,

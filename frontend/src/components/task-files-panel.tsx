@@ -31,14 +31,7 @@ import {
 } from "lucide-react";
 import { fetcher } from "@/lib/api";
 import { CodeBlock, getLanguageFromFilename } from "@/components/code-block";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import type { Task, TaskVersion, Trial } from "@/lib/types";
+import type { Task, Trial } from "@/lib/types";
 
 interface TaskFile {
   path: string;
@@ -307,7 +300,6 @@ export function TaskFilesPanel({
   initialFilePath,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
-  const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -354,15 +346,8 @@ export function TaskFilesPanel({
   } = useSWR<FilesListingResponse>(recursiveFilesKey, fetcher, {
     revalidateOnFocus: false,
   });
-  const versionsKey =
-    isOpen && taskId ? `${baseUrl}/tasks/${taskId}/versions` : null;
-  const { data: versions } = useSWR<TaskVersion[]>(versionsKey, fetcher, {
-    revalidateOnFocus: false,
-  });
   const currentVersion = (verdictTask ?? task)?.current_version ?? null;
-  const hasMultipleVersions = (versions?.length ?? 0) > 1;
-  const effectiveVersion = selectedVersion ?? currentVersion;
-  const versionSuffix = effectiveVersion != null ? `&version=${effectiveVersion}` : "";
+  const versionSuffix = currentVersion != null ? `&version=${currentVersion}` : "";
 
   const verdictSource = verdictTask ?? task;
 
@@ -764,7 +749,7 @@ export function TaskFilesPanel({
         // Fallback: fetch via backend proxy (slower, but works if presigned URL expired)
         if (content === null) {
           const encodedPath = encodeURIComponent(filePath);
-          const versionParam = selectedVersion != null ? `?version=${selectedVersion}` : "";
+          const versionParam = currentVersion != null ? `?version=${currentVersion}` : "";
           const res = await fetch(`${resolvedFilesUrl}/${encodedPath}${versionParam}`);
           if (!res.ok) {
             throw new Error("Failed to fetch file content");
@@ -800,7 +785,7 @@ export function TaskFilesPanel({
     return () => {
       cancelled = true;
     };
-  }, [selectedFile, taskId, filesUrl, resolvedFilesUrl, selectedVersion]);
+  }, [selectedFile, taskId, filesUrl, resolvedFilesUrl, currentVersion]);
 
   // Load full file content (when user clicks "Load full file")
   const loadFullFile = useCallback(async () => {
@@ -849,7 +834,6 @@ export function TaskFilesPanel({
       setIsRunningAnalysis(false);
       setVerdictActionError(null);
       setIsRunningVerdict(false);
-      setSelectedVersion(null);
     }
   }, [isOpen, taskId]);
 
@@ -1089,15 +1073,23 @@ export function TaskFilesPanel({
   const showVerdictCard =
     Boolean(verdictSource) &&
     Boolean(verdictSource?.verdict_status || verdictSource?.verdict);
-  const taskSummary = verdictSource ?? task;
   const verdictReasoning = verdictSource?.verdict?.reasoning?.trim() || null;
-  const rewardSuccess =
-    taskSummary?.reward_success ?? task?.reward_success ?? null;
-  const rewardTotal = taskSummary?.reward_total ?? task?.reward_total ?? null;
-  const averageRewardPct =
-    rewardTotal && rewardTotal > 0 && rewardSuccess != null
-      ? Math.round((rewardSuccess / rewardTotal) * 100)
-      : null;
+
+  const { rewardSuccess, rewardTotal, averageRewardPct } = useMemo(() => {
+    const trials = task?.trials ?? [];
+    const versionTrials =
+      currentVersion != null
+        ? trials.filter((t) => t.task_version === currentVersion)
+        : trials;
+    const success = versionTrials.filter((t) => t.reward === 1).length;
+    const total = versionTrials.filter((t) => t.reward != null).length;
+    return {
+      rewardSuccess: total > 0 ? success : null,
+      rewardTotal: total > 0 ? total : null,
+      averageRewardPct:
+        total > 0 ? Math.round((success / total) * 100) : null,
+    };
+  }, [task?.trials, currentVersion]);
   const isListingLoading = filesUrl ? recursiveFilesLoading : loading;
   const listingError =
     filesUrl && recursiveFilesError ? recursiveFilesError.message : error;
@@ -1136,11 +1128,6 @@ export function TaskFilesPanel({
         <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
           <div className="max-h-[30vh] w-full overflow-auto border-b border-border bg-muted/30 md:max-h-none md:w-56 md:border-b-0 md:border-r lg:w-64">
             <div className="p-2">
-              {selectedVersion != null && selectedVersion !== currentVersion && (
-                <div className="mb-1 rounded-md bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-500">
-                  Viewing v{selectedVersion} — not the latest
-                </div>
-              )}
               <div className="px-2 py-2 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground sm:text-xs">
                 Files
               </div>
@@ -1180,43 +1167,9 @@ export function TaskFilesPanel({
                 {taskName}
               </button>
               {currentVersion != null && (
-                hasMultipleVersions && versions ? (
-                  <Select
-                    value={String(selectedVersion ?? currentVersion)}
-                    onValueChange={(v) => setSelectedVersion(Number(v))}
-                  >
-                    <SelectTrigger className="h-6 w-auto gap-1 border-border bg-muted/50 px-2 py-0 font-mono text-[11px] font-medium text-muted-foreground">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {versions.map((v) => (
-                        <SelectItem
-                          key={v.id}
-                          value={String(v.version)}
-                          className="font-mono text-xs"
-                        >
-                          <span className="flex items-center gap-2">
-                            <span>v{v.version}</span>
-                            {v.version === currentVersion && (
-                              <span className="text-[10px] text-muted-foreground">
-                                (latest)
-                              </span>
-                            )}
-                            {v.message && (
-                              <span className="max-w-[200px] truncate text-[10px] text-muted-foreground">
-                                — {v.message}
-                              </span>
-                            )}
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <span className="inline-flex shrink-0 items-center rounded-md border border-border bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-foreground">
-                    v{currentVersion}
-                  </span>
-                )
+                <span className="inline-flex shrink-0 items-center rounded-md border border-border bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-foreground">
+                  v{currentVersion}
+                </span>
               )}
             </DrawerTitle>
             <div className="mt-1 min-h-3 text-[10px] text-emerald-600">

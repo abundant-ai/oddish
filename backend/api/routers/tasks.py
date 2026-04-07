@@ -543,6 +543,7 @@ async def delete_experiment(
         if not experiment:
             raise HTTPException(status_code=404, detail="Experiment not found")
 
+        # Tasks directly owned by this experiment
         task_ids_result = await session.execute(
             select(TaskModel.id)
             .where(TaskModel.experiment_id == experiment.id)
@@ -555,6 +556,8 @@ async def delete_experiment(
             .where(TaskModel.org_id == auth.org_id)
         )
         task_rows = [(row[0], row[1]) for row in task_rows_result.all()]
+
+        # Trials: owned-task trials + trial-only associations
         trial_rows: list[tuple[str, str | None]] = []
         if task_ids:
             trial_rows_result = await session.execute(
@@ -564,16 +567,43 @@ async def delete_experiment(
             )
             trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
 
+        trial_only_rows_result = await session.execute(
+            select(TrialModel.id, TrialModel.trial_s3_key).where(
+                TrialModel.experiment_id == experiment.id,
+                TrialModel.org_id == auth.org_id,
+                ~TrialModel.task_id.in_(task_ids) if task_ids else True,
+            )
+        )
+        trial_rows.extend(
+            (row[0], row[1]) for row in trial_only_rows_result.all()
+        )
+
         s3_prefixes = collect_s3_prefixes_for_deletion(
             tasks=task_rows,
             trials=trial_rows,
         )
 
-        trials_result = await session.execute(
-            delete(TrialModel).where(TrialModel.task_id.in_(task_ids))
+        # Delete trials from owned tasks
+        deleted_trials = 0
+        if task_ids:
+            trials_result = await session.execute(
+                delete(TrialModel).where(TrialModel.task_id.in_(task_ids))
+            )
+            if not isinstance(trials_result, CursorResult):
+                raise TypeError("Expected CursorResult for trial delete")
+            deleted_trials += int(trials_result.rowcount or 0)
+
+        # Delete trial-only associations (trials linked via trial.experiment_id
+        # but whose task belongs to a different experiment)
+        trial_only_result = await session.execute(
+            delete(TrialModel).where(
+                TrialModel.experiment_id == experiment.id,
+                TrialModel.org_id == auth.org_id,
+            )
         )
-        if not isinstance(trials_result, CursorResult):
-            raise TypeError("Expected CursorResult for trial delete")
+        if not isinstance(trial_only_result, CursorResult):
+            raise TypeError("Expected CursorResult for trial-only delete")
+        deleted_trials += int(trial_only_result.rowcount or 0)
 
         tasks_result = await session.execute(
             delete(TaskModel)
@@ -601,7 +631,6 @@ async def delete_experiment(
                 "Failed to delete S3 artifacts for experiment %s", experiment_id
             )
 
-    deleted_trials = int(trials_result.rowcount or 0)
     deleted_tasks = int(tasks_result.rowcount or 0)
     deleted_experiments = int(experiments_result.rowcount or 0)
 
