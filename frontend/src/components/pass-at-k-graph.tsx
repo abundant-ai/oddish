@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useMemo } from "react";
+import { memo, useMemo, useCallback } from "react";
 import {
   LineChart,
   Line,
@@ -10,6 +10,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import type { TooltipProps } from "recharts";
 import type { Task, Trial } from "@/lib/types";
 import { calculatePassAtKCurve, type AgentPassAtKStats } from "@/lib/pass-at-k";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
@@ -120,6 +121,83 @@ export const PassAtKGraph = memo(function PassAtKGraph({
     return { data: curveData, maxK: maxN, hasMultipleAttempts: true };
   }, [tasks, agentSummaries]);
 
+  // Build agent color map for tooltip
+  const agentColorMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (let i = 0; i < agentSummaries.length; i++) {
+      map[agentSummaries[i].key] = AGENT_COLORS[i % AGENT_COLORS.length];
+    }
+    return map;
+  }, [agentSummaries]);
+
+  // Build agent label map for tooltip
+  const agentLabelMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const summary of agentSummaries) {
+      map[summary.key] = summary.label;
+    }
+    return map;
+  }, [agentSummaries]);
+
+  // Custom tooltip that sorts entries by value (descending) to match visual line order
+  const renderTooltip = useCallback(
+    (props: TooltipProps<number, string>) => {
+      const { active, payload, label } = props;
+      if (!active || !payload || payload.length === 0) return null;
+
+      const sorted = [...payload]
+        .filter((entry) => entry.value !== undefined)
+        .sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
+
+      return (
+        <div
+          style={{
+            backgroundColor: "hsl(var(--card))",
+            border: "1px solid hsl(var(--border))",
+            borderRadius: "6px",
+            padding: "8px 12px",
+            fontSize: "12px",
+            fontFamily: "monospace",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+            maxHeight: "300px",
+            overflowY: "auto",
+          }}
+        >
+          <div style={{ marginBottom: "4px", fontWeight: 600 }}>k = {label}</div>
+          {sorted.map((entry) => (
+            <div
+              key={entry.dataKey}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "1px 0",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <span
+                style={{
+                  width: "8px",
+                  height: "8px",
+                  borderRadius: "2px",
+                  backgroundColor: agentColorMap[entry.dataKey as string] ?? entry.color,
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ color: "hsl(var(--muted-foreground))" }}>
+                {agentLabelMap[entry.dataKey as string] ?? entry.dataKey}
+              </span>
+              <span style={{ marginLeft: "auto", paddingLeft: "12px", fontWeight: 500 }}>
+                {`${((entry.value ?? 0) * 100).toFixed(1)}%`}
+              </span>
+            </div>
+          ))}
+        </div>
+      );
+    },
+    [agentColorMap, agentLabelMap],
+  );
+
   // Don't render if no multi-attempt data
   if (!hasMultipleAttempts || data.length === 0) {
     return null;
@@ -160,21 +238,8 @@ export const PassAtKGraph = memo(function PassAtKGraph({
                 className="font-mono"
               />
               <Tooltip
-                formatter={(
-                  value: number | undefined,
-                  name: string | undefined,
-                ) => [
-                  value !== undefined ? `${(value * 100).toFixed(1)}%` : "N/A",
-                  name ?? "",
-                ]}
-                labelFormatter={(k) => `k = ${k}`}
-                contentStyle={{
-                  backgroundColor: "hsl(var(--card))",
-                  border: "1px solid hsl(var(--border))",
-                  borderRadius: "6px",
-                  fontSize: "12px",
-                  fontFamily: "monospace",
-                }}
+                content={renderTooltip}
+                wrapperStyle={{ zIndex: 10 }}
               />
               {visibleAgentSummaries.map((summary) => {
                 const originalIdx = agentSummaries.findIndex(
