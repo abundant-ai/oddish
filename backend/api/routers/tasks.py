@@ -78,7 +78,10 @@ async def _cancel_modal_function_calls(modal_fc_ids: list[str]) -> int:
     if not modal_fc_ids:
         return 0
 
-    import modal
+    try:
+        import modal
+    except ImportError:
+        return 0
 
     unique_fc_ids = list(dict.fromkeys(modal_fc_ids))
     cancelled = 0

@@ -51,10 +51,9 @@ async def lifespan(_api: FastAPI):
 
 
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
+    """Create and configure the FastAPI application with all routers."""
     api = FastAPI(
         title="Oddish Cloud",
-        description="Multi-tenant evaluation platform for Harbor tasks on Modal.",
         version="0.3.0",
         lifespan=lifespan,
     )
@@ -67,5 +66,27 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    from api.routers import (
+        admin,
+        api_keys,
+        clerk_webhooks,
+        dashboard,
+        github_webhooks,
+        orgs,
+        public,
+        tasks,
+        trials,
+    )
+
+    api.include_router(dashboard.router)
+    api.include_router(orgs.router)
+    api.include_router(api_keys.router)
+    api.include_router(clerk_webhooks.router)
+    api.include_router(github_webhooks.router)
+    api.include_router(tasks.router)
+    api.include_router(trials.router)
+    api.include_router(public.router)
+    api.include_router(admin.router)
 
     return api
