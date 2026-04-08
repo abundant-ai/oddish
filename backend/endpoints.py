@@ -22,36 +22,8 @@ from modal_app import (
     runtime_secrets,
 )
 from api.app import create_app
-from api.routers import (
-    admin,
-    api_keys,
-    clerk_webhooks,
-    dashboard,
-    github_webhooks,
-    orgs,
-    public,
-    tasks,
-    trials,
-)
 
-# Create the FastAPI application
 api = create_app()
-
-# Register all routers
-api.include_router(dashboard.router)
-api.include_router(orgs.router)
-api.include_router(api_keys.router)
-api.include_router(clerk_webhooks.router)
-api.include_router(github_webhooks.router)
-api.include_router(tasks.router)
-api.include_router(trials.router)
-api.include_router(public.router)
-api.include_router(admin.router)
-
-
-# =============================================================================
-# Modal ASGI App
-# =============================================================================
 
 
 @app.function(
