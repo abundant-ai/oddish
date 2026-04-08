@@ -244,7 +244,7 @@ async def create_task_sweep(
             t.provider for t in (new_trials if is_append else task.trials)
         )
         resp_experiment_id = experiment.id if experiment else task.experiment_id
-        resp_experiment_name = getattr(experiment, "name", None) if experiment else getattr(task.experiment, "name", None)
+        resp_experiment_name = experiment.name if experiment else None
         
         return TaskResponse(
             id=task.id,
