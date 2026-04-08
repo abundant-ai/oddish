@@ -1076,6 +1076,8 @@ async def create_task_sweep_core(
             if not experiment:
                 experiment = await get_or_create_experiment(session, submission.experiment_id, org_id)
             new_experiment_id = experiment.id
+        else:
+            experiment = await get_experiment_by_id_or_name(session, task.experiment_id, org_id)
 
         # Determine default environment from existing trial, if present.
         existing_env_result = await session.execute(
@@ -1151,10 +1153,10 @@ async def create_task_sweep_core(
     if task_s3_key:
         task.task_s3_key = task_s3_key
         
-    experiment = getattr(task, "experiment", None)
-    if experiment is None and getattr(task, "experiment_id", None):
-        # Pre-fetch the experiment since create_task might not have loaded it eagerly
-        from oddish.queue import get_experiment_by_id_or_name
-        experiment = await get_experiment_by_id_or_name(session, task.experiment_id, org_id)
+    from oddish.queue import get_experiment_by_id_or_name
+    experiment = (
+        await get_experiment_by_id_or_name(session, task.experiment_id, org_id)
+        if task.experiment_id else None
+    )
 
     return task, list(task.trials), False, experiment
