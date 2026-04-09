@@ -150,16 +150,14 @@ def _trajectory_candidate_keys(trial: TrialModel, s3_prefix: str) -> list[str]:
 
 async def read_trial_logs(trial: TrialModel) -> dict:
     """Read trial logs from S3 or local storage."""
-    # Prefer S3 if configured and we have a prefix
-    if settings.s3_enabled:
-        s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
-        storage = get_storage_client()
-        try:
-            logs = await storage.download_trial_logs(s3_prefix)
-            return {"trial_id": trial.id, "logs": logs, "s3_key": s3_prefix}
-        except Exception:
-            # Fall back to local volume if S3 read fails
-            pass
+    s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
+    storage = get_storage_client()
+    try:
+        logs = await storage.download_trial_logs(s3_prefix)
+        return {"trial_id": trial.id, "logs": logs, "s3_key": s3_prefix}
+    except Exception:
+        # Fall back to local volume if S3 read fails
+        pass
 
     job_dir_resolved = _resolve_local_job_dir(trial)
     if job_dir_resolved is None:
@@ -202,135 +200,133 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
         "exception": trial.error_message,
     }
 
-    # Try S3 first
-    if settings.s3_enabled:
-        s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
-        storage = get_storage_client()
-        try:
-            files = await storage.list_keys(s3_prefix)
+    s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
+    storage = get_storage_client()
+    try:
+        files = await storage.list_keys(s3_prefix)
 
-            # Phase 1: Categorize files and plan downloads
-            # Each entry: (key, category, extra_info)
-            # category: "oracle", "setup", "command", "verifier_stdout", "verifier_stderr", "other"
-            download_plan: list[tuple[str, str, str | None]] = []
-            matched_keys: set[str] = set()
+        # Phase 1: Categorize files and plan downloads
+        # Each entry: (key, category, extra_info)
+        # category: "oracle", "setup", "command", "verifier_stdout", "verifier_stderr", "other"
+        download_plan: list[tuple[str, str, str | None]] = []
+        matched_keys: set[str] = set()
 
-            # Track first matches for single-value fields
-            oracle_key: str | None = None
-            setup_key: str | None = None
-            verifier_stdout_key: str | None = None
-            verifier_stderr_key: str | None = None
-            exception_key: str | None = None
+        # Track first matches for single-value fields
+        oracle_key: str | None = None
+        setup_key: str | None = None
+        verifier_stdout_key: str | None = None
+        verifier_stderr_key: str | None = None
+        exception_key: str | None = None
 
-            for key in files:
-                # Agent logs
-                if key.endswith("/agent/oracle.txt") or key.endswith("/oracle.txt"):
-                    if oracle_key is None:
-                        oracle_key = key
-                        download_plan.append((key, "oracle", None))
-                        matched_keys.add(key)
-                elif key.endswith("/agent/setup/stdout.txt") or key.endswith(
-                    "/setup/stdout.txt"
-                ):
-                    if setup_key is None:
-                        setup_key = key
-                        download_plan.append((key, "setup", None))
-                        matched_keys.add(key)
-                elif "/agent/command-" in key and key.endswith("/stdout.txt"):
-                    match = re.search(r"(command-\d+)/stdout\.txt$", key)
-                    if match:
-                        cmd_name = match.group(1)
-                        download_plan.append((key, "command", cmd_name))
-                        matched_keys.add(key)
-                # Verifier logs
-                elif key.endswith("/verifier/test-stdout.txt") or key.endswith(
-                    "/test-stdout.txt"
-                ):
-                    if verifier_stdout_key is None:
-                        verifier_stdout_key = key
-                        download_plan.append((key, "verifier_stdout", None))
-                        matched_keys.add(key)
-                elif key.endswith("/verifier/test-stderr.txt") or key.endswith(
-                    "/test-stderr.txt"
-                ):
-                    if verifier_stderr_key is None:
-                        verifier_stderr_key = key
-                        download_plan.append((key, "verifier_stderr", None))
-                        matched_keys.add(key)
-                elif key.endswith("/exception.txt"):
-                    if exception_key is None:
-                        exception_key = key
-                        download_plan.append((key, "exception", None))
-                        matched_keys.add(key)
+        for key in files:
+            # Agent logs
+            if key.endswith("/agent/oracle.txt") or key.endswith("/oracle.txt"):
+                if oracle_key is None:
+                    oracle_key = key
+                    download_plan.append((key, "oracle", None))
+                    matched_keys.add(key)
+            elif key.endswith("/agent/setup/stdout.txt") or key.endswith(
+                "/setup/stdout.txt"
+            ):
+                if setup_key is None:
+                    setup_key = key
+                    download_plan.append((key, "setup", None))
+                    matched_keys.add(key)
+            elif "/agent/command-" in key and key.endswith("/stdout.txt"):
+                match = re.search(r"(command-\d+)/stdout\.txt$", key)
+                if match:
+                    cmd_name = match.group(1)
+                    download_plan.append((key, "command", cmd_name))
+                    matched_keys.add(key)
+            # Verifier logs
+            elif key.endswith("/verifier/test-stdout.txt") or key.endswith(
+                "/test-stdout.txt"
+            ):
+                if verifier_stdout_key is None:
+                    verifier_stdout_key = key
+                    download_plan.append((key, "verifier_stdout", None))
+                    matched_keys.add(key)
+            elif key.endswith("/verifier/test-stderr.txt") or key.endswith(
+                "/test-stderr.txt"
+            ):
+                if verifier_stderr_key is None:
+                    verifier_stderr_key = key
+                    download_plan.append((key, "verifier_stderr", None))
+                    matched_keys.add(key)
+            elif key.endswith("/exception.txt"):
+                if exception_key is None:
+                    exception_key = key
+                    download_plan.append((key, "exception", None))
+                    matched_keys.add(key)
 
-            # Add other log files that weren't matched
-            for key in files:
-                if key in matched_keys:
+        # Add other log files that weren't matched
+        for key in files:
+            if key in matched_keys:
+                continue
+            s3_path = Path(key)
+            is_log_file = s3_path.suffix in (".log", ".txt")
+            is_log_dir = any(
+                part in s3_path.parts for part in ("logs", "agent", "verifier")
+            )
+            if (is_log_file or is_log_dir) and s3_path.suffix not in (
+                ".json",
+                ".patch",
+            ):
+                rel_path = key.replace(s3_prefix, "").strip("/")
+                download_plan.append((key, "other", rel_path))
+
+        # Phase 2: Download all files in parallel
+        if download_plan:
+
+            async def safe_download(key: str) -> str | None:
+                try:
+                    return await storage.download_text(key)
+                except Exception:
+                    return None
+
+            download_tasks = [safe_download(key) for key, _, _ in download_plan]
+            contents = await asyncio.gather(*download_tasks)
+
+            # Phase 3: Assign results to appropriate fields
+            commands_list: list[tuple[str, str]] = []  # (cmd_name, content)
+            other_list: list[tuple[str, str]] = []  # (rel_path, content)
+
+            for (key, category, extra_info), content in zip(
+                download_plan, contents, strict=False
+            ):
+                if content is None:
                     continue
-                s3_path = Path(key)
-                is_log_file = s3_path.suffix in (".log", ".txt")
-                is_log_dir = any(
-                    part in s3_path.parts for part in ("logs", "agent", "verifier")
-                )
-                if (is_log_file or is_log_dir) and s3_path.suffix not in (
-                    ".json",
-                    ".patch",
-                ):
-                    rel_path = key.replace(s3_prefix, "").strip("/")
-                    download_plan.append((key, "other", rel_path))
 
-            # Phase 2: Download all files in parallel
-            if download_plan:
+                if category == "oracle":
+                    result["agent"]["oracle"] = content
+                elif category == "setup":
+                    result["agent"]["setup"] = content
+                elif category == "command" and extra_info:
+                    commands_list.append((extra_info, content))
+                elif category == "verifier_stdout":
+                    result["verifier"]["stdout"] = content
+                elif category == "verifier_stderr":
+                    result["verifier"]["stderr"] = content
+                elif category == "exception":
+                    result["exception"] = content
+                elif category == "other" and extra_info:
+                    other_list.append((extra_info, content))
 
-                async def safe_download(key: str) -> str | None:
-                    try:
-                        return await storage.download_text(key)
-                    except Exception:
-                        return None
+            # Sort commands by name (command-0, command-1, etc.)
+            commands_list.sort(key=lambda x: x[0])
+            result["agent"]["commands"] = [
+                {"name": name, "content": content}
+                for name, content in commands_list
+            ]
 
-                download_tasks = [safe_download(key) for key, _, _ in download_plan]
-                contents = await asyncio.gather(*download_tasks)
+            # Add other logs
+            result["other"] = [
+                {"name": name, "content": content} for name, content in other_list
+            ]
 
-                # Phase 3: Assign results to appropriate fields
-                commands_list: list[tuple[str, str]] = []  # (cmd_name, content)
-                other_list: list[tuple[str, str]] = []  # (rel_path, content)
-
-                for (key, category, extra_info), content in zip(
-                    download_plan, contents, strict=False
-                ):
-                    if content is None:
-                        continue
-
-                    if category == "oracle":
-                        result["agent"]["oracle"] = content
-                    elif category == "setup":
-                        result["agent"]["setup"] = content
-                    elif category == "command" and extra_info:
-                        commands_list.append((extra_info, content))
-                    elif category == "verifier_stdout":
-                        result["verifier"]["stdout"] = content
-                    elif category == "verifier_stderr":
-                        result["verifier"]["stderr"] = content
-                    elif category == "exception":
-                        result["exception"] = content
-                    elif category == "other" and extra_info:
-                        other_list.append((extra_info, content))
-
-                # Sort commands by name (command-0, command-1, etc.)
-                commands_list.sort(key=lambda x: x[0])
-                result["agent"]["commands"] = [
-                    {"name": name, "content": content}
-                    for name, content in commands_list
-                ]
-
-                # Add other logs
-                result["other"] = [
-                    {"name": name, "content": content} for name, content in other_list
-                ]
-
-            return result
-        except Exception:
-            pass  # Fall through to local
+        return result
+    except Exception:
+        pass  # Fall through to local
 
     # Local path fallback
     if not trial.harbor_result_path:
@@ -448,33 +444,31 @@ async def read_trial_logs_structured(trial: TrialModel) -> dict:
 
 async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
     """Read ATIF trajectory.json for a trial."""
-    # Try S3 first
-    if settings.s3_enabled:
-        s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
-        storage = get_storage_client()
+    s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
+    storage = get_storage_client()
 
-        # Prefer direct key lookups to avoid expensive prefix listings.
-        for trajectory_key in _trajectory_candidate_keys(trial, s3_prefix):
-            try:
-                content = await storage.download_text(trajectory_key)
-                if content:
-                    parsed: dict = _json.loads(content)
-                    return parsed
-            except Exception:
-                continue
-
+    # Prefer direct key lookups to avoid expensive prefix listings.
+    for trajectory_key in _trajectory_candidate_keys(trial, s3_prefix):
         try:
-            files = await storage.list_keys(s3_prefix)
-            for f in files:
-                if f.endswith("/agent/trajectory.json"):
-                    content = await storage.download_text(f)
-                    if content:
-                        parsed = _json.loads(content)
-                        return parsed
-        except Exception as e:
-            logging.getLogger(__name__).debug(
-                f"No trajectory in S3 for {trial.id} at {s3_prefix}: {e}"
-            )
+            content = await storage.download_text(trajectory_key)
+            if content:
+                parsed: dict = _json.loads(content)
+                return parsed
+        except Exception:
+            continue
+
+    try:
+        files = await storage.list_keys(s3_prefix)
+        for f in files:
+            if f.endswith("/agent/trajectory.json"):
+                content = await storage.download_text(f)
+                if content:
+                    parsed = _json.loads(content)
+                    return parsed
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            f"No trajectory in S3 for {trial.id} at {s3_prefix}: {e}"
+        )
 
     # Local path fallback
     if not trial.harbor_result_path:
@@ -545,27 +539,26 @@ async def read_trial_agent_file(
     if media_type is None:
         media_type = "application/octet-stream"
 
-    if settings.s3_enabled:
-        s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
-        storage = get_storage_client()
+    s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
+    storage = get_storage_client()
 
-        direct_key = f"{s3_prefix}agent/{normalized_path}"
-        try:
-            content = await storage.download_bytes(direct_key)
-            return content, media_type
-        except Exception:
-            pass
+    direct_key = f"{s3_prefix}agent/{normalized_path}"
+    try:
+        content = await storage.download_bytes(direct_key)
+        return content, media_type
+    except Exception:
+        pass
 
-        try:
-            suffix = f"/agent/{normalized_path}"
-            for key in await storage.list_keys(s3_prefix):
-                if key.endswith(suffix):
-                    content = await storage.download_bytes(key)
-                    return content, media_type
-        except Exception as e:
-            logging.getLogger(__name__).debug(
-                f"No agent file in S3 for {trial.id} at {s3_prefix}: {e}"
-            )
+    try:
+        suffix = f"/agent/{normalized_path}"
+        for key in await storage.list_keys(s3_prefix):
+            if key.endswith(suffix):
+                content = await storage.download_bytes(key)
+                return content, media_type
+    except Exception as e:
+        logging.getLogger(__name__).debug(
+            f"No agent file in S3 for {trial.id} at {s3_prefix}: {e}"
+        )
 
     if not trial.harbor_result_path:
         raise HTTPException(status_code=404, detail="Trial has no local result path")
@@ -596,17 +589,15 @@ async def read_trial_agent_file(
 
 async def read_trial_result(trial: TrialModel) -> dict:
     """Read result.json for a trial."""
-    # Prefer S3 if configured and we have a prefix
-    if settings.s3_enabled:
-        s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
-        storage = get_storage_client()
-        try:
-            result_json = await storage.get_trial_result_json(s3_prefix)
-            if result_json:
-                return result_json
-        except Exception:
-            # Fall back to local volume if S3 read fails
-            pass
+    s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
+    storage = get_storage_client()
+    try:
+        result_json = await storage.get_trial_result_json(s3_prefix)
+        if result_json:
+            return result_json
+    except Exception:
+        # Fall back to local volume if S3 read fails
+        pass
 
     # Local path: read result.json from harbor_result_path
     if not trial.harbor_result_path:
@@ -641,15 +632,10 @@ async def debug_trial_files(trial: TrialModel) -> dict:
         "trial_s3_key": trial.trial_s3_key,
         "computed_prefix": StorageClient._trial_prefix(trial.id),
         "harbor_result_path": trial.harbor_result_path,
-        "s3_enabled": settings.s3_enabled,
         "files": [],
         "trajectory_files": [],
         "error": None,
     }
-
-    if not settings.s3_enabled:
-        result["error"] = "S3 not enabled"
-        return result
 
     s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
     result["using_prefix"] = s3_prefix

@@ -40,7 +40,6 @@ async def lifespan(_api: FastAPI):
     ASGI app from hard-failing when the Supabase pooler is briefly unavailable.
     """
     Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
-    Path(settings.local_storage_dir).mkdir(parents=True, exist_ok=True)
 
     yield
 

@@ -319,16 +319,12 @@ async def create_task(
 
     task_path = submission.task_path
     task_s3_key = extract_s3_key_from_path(task_path)
-    if not task_s3_key and settings.s3_enabled:
+    if not task_s3_key:
         local_path = Path(task_path)
         if local_path.exists() and local_path.is_dir():
             validate_task_timeout_config(local_path)
             storage = get_storage_client()
             task_s3_key = await storage.upload_task_directory(task_id, local_path)
-    elif not task_s3_key:
-        local_path = Path(task_path)
-        if local_path.exists() and local_path.is_dir():
-            validate_task_timeout_config(local_path)
 
     if submission.experiment_id:
         experiment = await get_experiment_by_id_or_name(

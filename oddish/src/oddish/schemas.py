@@ -172,8 +172,8 @@ class TaskSweepSubmission(BaseModel):
     task_id: str = Field(
         ...,
         description=(
-            "Task ID from /tasks/upload, or an existing task ID when "
-            "append_to_task is true"
+            "Task ID from /tasks/upload/init and /tasks/upload/complete, or an "
+            "existing task ID when append_to_task is true"
         ),
     )
     append_to_task: bool = Field(
@@ -258,6 +258,32 @@ class ExperimentUpdateRequest(BaseModel):
 # =============================================================================
 
 
+class TaskUploadInitRequest(BaseModel):
+    """Request to prepare a task upload."""
+
+    name: str = Field(..., description="Task name derived from the local directory")
+    content_hash: str = Field(
+        ..., description="Deterministic hash of the task directory contents"
+    )
+    message: str | None = Field(
+        None, description="Optional description of what changed in this version"
+    )
+
+
+class TaskUploadCompleteRequest(BaseModel):
+    """Request to finalize a direct-to-storage task upload."""
+
+    task_id: str
+    name: str
+    version: int = Field(..., ge=1)
+    content_hash: str = Field(
+        ..., description="Deterministic hash of the uploaded task directory contents"
+    )
+    message: str | None = Field(
+        None, description="Optional description of what changed in this version"
+    )
+
+
 class UploadResponse(BaseModel):
     """Task upload response."""
 
@@ -270,6 +296,15 @@ class UploadResponse(BaseModel):
     existing_task: bool = False
     content_unchanged: bool = False
     content_hash: str | None = None
+
+
+class TaskUploadInitResponse(UploadResponse):
+    """Task upload preparation response."""
+
+    upload_url: str | None = None
+    upload_method: str | None = None
+    upload_headers: dict[str, str] = Field(default_factory=dict)
+    requires_completion: bool = False
 
 
 class TrialQueueInfo(BaseModel):

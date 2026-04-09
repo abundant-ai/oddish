@@ -83,7 +83,6 @@ class _FakeDeleteStorage:
 @pytest.mark.asyncio
 async def test_resolve_task_storage_uses_prefix_probe_for_s3(monkeypatch):
     storage = _FakeStorage(exists=True)
-    monkeypatch.setattr(settings, "s3_enabled", True)
     monkeypatch.setattr(tasks_api, "get_storage_client", lambda: storage)
 
     task_path, task_s3_key = await tasks_api.resolve_task_storage("task-123")
@@ -97,7 +96,6 @@ async def test_resolve_task_storage_uses_prefix_probe_for_s3(monkeypatch):
 @pytest.mark.asyncio
 async def test_resolve_task_storage_raises_404_when_prefix_missing(monkeypatch):
     storage = _FakeStorage(exists=False)
-    monkeypatch.setattr(settings, "s3_enabled", True)
     monkeypatch.setattr(tasks_api, "get_storage_client", lambda: storage)
 
     with pytest.raises(
@@ -229,6 +227,43 @@ async def test_list_task_files_reads_archive_members(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_task_files_presign_returns_archive_url(monkeypatch):
+    archive_bytes = _make_task_archive({"task.toml": "name = 'demo'\n"})
+    storage = storage_mod.StorageClient()
+    storage._client = object()
+
+    async def fake_object_exists(s3_key: str) -> bool:
+        assert s3_key == "tasks/task-123/.oddish-task.tar.gz"
+        return True
+
+    async def fake_download_bytes(s3_key: str) -> bytes:
+        assert s3_key == "tasks/task-123/.oddish-task.tar.gz"
+        return archive_bytes
+
+    async def fake_get_presigned_url(s3_key: str, expiration: int = 900) -> str:
+        assert s3_key == "tasks/task-123/.oddish-task.tar.gz"
+        assert expiration == 900
+        return "https://example.com/task-archive"
+
+    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
+    monkeypatch.setattr(storage, "get_presigned_url", fake_get_presigned_url)
+
+    listing = await storage.list_task_files(
+        task_id="task-123",
+        prefix=None,
+        recursive=True,
+        limit=1000,
+        cursor=None,
+        presign=True,
+    )
+
+    assert listing["archive_url"] == "https://example.com/task-archive"
+    assert listing["archive_key"] == "tasks/task-123/.oddish-task.tar.gz"
+    assert listing["presigned"] is True
+
+
+@pytest.mark.asyncio
 async def test_get_task_file_content_reads_archive_member(monkeypatch):
     archive_bytes = _make_task_archive({"task.toml": "name = 'demo'\n"})
     storage = storage_mod.StorageClient()
@@ -311,7 +346,6 @@ def test_collect_s3_prefixes_for_deletion_normalizes_and_dedupes():
 @pytest.mark.asyncio
 async def test_delete_s3_prefixes_skips_duplicates_and_empty_values(monkeypatch):
     storage = _FakeDeleteStorage(deleted=3)
-    monkeypatch.setattr(settings, "s3_enabled", True)
     monkeypatch.setattr(storage_mod, "get_storage_client", lambda: storage)
 
     deleted = await storage_mod.delete_s3_prefixes(
