@@ -77,6 +77,7 @@ from oddish.schemas import (
     TaskSweepSubmission,
     TaskVersionResponse,
     TrialResponse,
+    UploadResponse,
 )
 from oddish.task_timeouts import TaskTimeoutValidationError
 
