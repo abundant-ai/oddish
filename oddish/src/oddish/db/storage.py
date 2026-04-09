@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 import aioboto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 from fastapi import HTTPException
 from oddish.config import settings
@@ -137,6 +138,7 @@ class StorageClient:
             aws_access_key_id=settings.s3_access_key,
             aws_secret_access_key=settings.s3_secret_key,
             region_name=settings.s3_region,
+            config=Config(signature_version="s3v4"),
         ).__aenter__()
 
     async def close(self):
@@ -406,6 +408,11 @@ class StorageClient:
                 if not relative_prefix
                 or str(file_meta["path"]).startswith(relative_prefix)
             ]
+            archive_url = (
+                await self.get_presigned_url(archive_key, expiration=presign_expiration)
+                if presign
+                else None
+            )
             if recursive:
                 return {
                     "task_id": task_id,
@@ -413,8 +420,10 @@ class StorageClient:
                     "dirs": [],
                     "prefix": full_prefix,
                     "recursive": True,
-                    "presigned": False,
-                    "presign_expires_in": None,
+                    "presigned": bool(archive_url),
+                    "presign_expires_in": presign_expiration if archive_url else None,
+                    "archive_key": archive_key,
+                    "archive_url": archive_url,
                 }
 
             offset = int(cursor or "0")
@@ -453,8 +462,10 @@ class StorageClient:
                 "recursive": False,
                 "cursor": str(next_offset) if next_offset < len(entries) else None,
                 "truncated": next_offset < len(entries),
-                "presigned": False,
-                "presign_expires_in": None,
+                "presigned": bool(archive_url),
+                "presign_expires_in": presign_expiration if archive_url else None,
+                "archive_key": archive_key,
+                "archive_url": archive_url,
             }
 
         relative_prefix = normalize_s3_relative_path(prefix)
@@ -800,6 +811,26 @@ class StorageClient:
         )
         return url
 
+    async def get_presigned_upload_url(
+        self,
+        s3_key: str,
+        *,
+        expiration: int = 3600,
+        content_type: str | None = None,
+    ) -> str:
+        """Generate a presigned URL for uploading an S3 object with PUT."""
+        await self._ensure_client()
+        params: dict[str, str] = {"Bucket": settings.s3_bucket, "Key": s3_key}
+        if content_type:
+            params["ContentType"] = content_type
+        url: str = await self._s3.generate_presigned_url(
+            "put_object",
+            Params=params,
+            ExpiresIn=expiration,
+            HttpMethod="PUT",
+        )
+        return url
+
     async def get_presigned_urls_batch(
         self, s3_keys: list[str], expiration: int = 3600
     ) -> dict[str, str]:
@@ -888,14 +919,14 @@ def collect_s3_prefixes_for_deletion(
 
 
 async def delete_s3_prefixes(prefixes: list[str]) -> int:
-    """Delete S3 objects for the provided prefixes when S3 is enabled."""
+    """Delete S3 objects for the provided prefixes."""
     normalized: list[str] = []
     for prefix in prefixes:
         resolved = normalize_s3_prefix(prefix)
         if resolved:
             normalized.append(resolved)
     normalized = list(dict.fromkeys(normalized))
-    if not normalized or not settings.s3_enabled:
+    if not normalized:
         return 0
     storage = get_storage_client()
     return await storage.delete_prefixes(normalized)

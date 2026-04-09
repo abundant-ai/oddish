@@ -25,6 +25,10 @@ from harbor.models.job.config import LocalDatasetConfig, RegistryDatasetConfig
 from harbor.dataset.client import DatasetClient
 
 from oddish.cli.config import get_auth_headers, error_console
+from oddish.task_timeouts import (
+    TaskTimeoutValidationError,
+    validate_task_timeout_config,
+)
 
 console = Console()
 TASK_SWEEP_TIMEOUT_SECONDS = 600.0
@@ -187,6 +191,22 @@ def archive_task_dir(task_path: Path) -> Path:
     return tarball_path
 
 
+def _upload_to_presigned_url(url: str, tarball_path: Path, headers: dict[str, str]) -> None:
+    upload_headers = dict(headers)
+    upload_headers.setdefault("Content-Length", str(tarball_path.stat().st_size))
+    with httpx.Client(timeout=600.0, follow_redirects=True) as upload_client:
+        response = upload_client.put(
+            url,
+            headers=upload_headers,
+            content=tarball_path.read_bytes(),
+        )
+    if response.status_code not in {200, 201, 204}:
+        error_console.print(
+            f"[red]Failed to upload task directly to storage:[/red] {response.text}"
+        )
+        raise typer.Exit(1)
+
+
 def upload_task(
     api_url: str,
     task_path: Path,
@@ -196,23 +216,58 @@ def upload_task(
     Returns the full upload response dict which includes ``task_id``,
     ``existing_task``, ``content_unchanged``, ``version``, etc.
     """
+    try:
+        validate_task_timeout_config(task_path)
+    except TaskTimeoutValidationError as exc:
+        error_console.print(f"[red]Invalid task timeout config:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
     content_hash = compute_task_content_hash(task_path)
     tarball_path = archive_task_dir(task_path)
 
     try:
         with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
-            with open(tarball_path, "rb") as f:
-                response = client.post(
-                    f"{api_url}/tasks/upload",
-                    params={"content_hash": content_hash},
-                    files={
-                        "file": (
-                            f"{task_path.name}.tar.gz",
-                            f,
-                            "application/gzip",
-                        )
-                    },
+            init_response = client.post(
+                f"{api_url}/tasks/upload/init",
+                json={
+                    "name": task_path.name,
+                    "content_hash": content_hash,
+                },
+            )
+
+            if init_response.status_code != 200:
+                error_console.print(
+                    f"[red]Failed to initialize direct task upload:[/red] "
+                    f"{init_response.text}"
                 )
+                raise typer.Exit(1)
+
+            init_payload = cast(dict, init_response.json())
+            if init_payload.get("content_unchanged"):
+                return init_payload
+
+            upload_url = init_payload.get("upload_url")
+            if not isinstance(upload_url, str) or not upload_url:
+                error_console.print(
+                    "[red]Task upload initialization did not return a presigned upload URL.[/red]\n"
+                    "Direct task uploads require S3-compatible storage."
+                )
+                raise typer.Exit(1)
+
+            _upload_to_presigned_url(
+                upload_url,
+                tarball_path,
+                cast(dict[str, str], init_payload.get("upload_headers") or {}),
+            )
+            response = client.post(
+                f"{api_url}/tasks/upload/complete",
+                json={
+                    "task_id": init_payload["task_id"],
+                    "name": init_payload["name"],
+                    "version": init_payload["version"],
+                    "content_hash": content_hash,
+                },
+            )
 
         if response.status_code != 200:
             error_console.print(f"[red]Failed to upload task:[/red] {response.text}")

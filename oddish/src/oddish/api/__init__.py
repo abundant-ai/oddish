@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Response, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text, select, delete
 from typing import cast
@@ -52,7 +52,7 @@ from oddish.api.admin import (
 )
 from oddish.api.dashboard import get_dashboard_core
 from oddish.api.public import router as public_router
-from oddish.api.tasks import handle_task_upload, resolve_task_storage
+from oddish.api.tasks import complete_task_upload, initialize_task_upload, resolve_task_storage
 from oddish.config import settings
 from oddish.db import (
     ExperimentModel,
@@ -69,6 +69,9 @@ from oddish.schemas import (
     TaskBrowseResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
+    TaskUploadCompleteRequest,
+    TaskUploadInitRequest,
+    TaskUploadInitResponse,
     TaskResponse,
     TaskStatusResponse,
     TaskSweepSubmission,
@@ -131,7 +134,6 @@ async def lifespan(app: FastAPI):
     """Initialize database on startup and optionally start workers."""
     # Ensure required storage directories exist
     Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
-    Path(settings.local_storage_dir).mkdir(parents=True, exist_ok=True)
 
     await init_db()
 
@@ -254,31 +256,26 @@ async def get_dashboard(
 # =============================================================================
 
 
-@api.post("/tasks/upload", response_model=UploadResponse)
-async def upload_task(
-    file: UploadFile = File(...),
-    content_hash: str | None = None,
-    message: str | None = None,
-) -> UploadResponse:
-    """
-    Upload a task directory (as tarball).
+@api.post("/tasks/upload/init", response_model=TaskUploadInitResponse)
+async def init_task_upload(payload: TaskUploadInitRequest) -> TaskUploadInitResponse:
+    """Prepare a task upload and return a presigned PUT URL when S3 is enabled."""
+    return await initialize_task_upload(
+        payload.name,
+        content_hash=payload.content_hash,
+        message=payload.message,
+    )
 
-    The client should send a .tar.gz file containing the task directory.
-    Server will extract it and store it (S3 if enabled, local directory otherwise).
 
-    If a task with the same name already exists the server compares
-    ``content_hash`` against the latest version.  When unchanged the existing
-    version is reused; otherwise a new version is created automatically.
-
-    Args:
-        file: Tarball containing the task directory
-        content_hash: Deterministic hash of the task directory contents
-        message: Optional description of what changed in this version
-
-    Returns:
-        Upload response with task_id, version info, and storage location.
-    """
-    return await handle_task_upload(file, content_hash=content_hash, message=message)
+@api.post("/tasks/upload/complete", response_model=UploadResponse)
+async def finalize_task_upload(payload: TaskUploadCompleteRequest) -> UploadResponse:
+    """Finalize a direct task upload after the client PUTs the archive to S3."""
+    return await complete_task_upload(
+        task_id=payload.task_id,
+        task_name=payload.name,
+        version=payload.version,
+        content_hash=payload.content_hash,
+        message=payload.message,
+    )
 
 
 # =============================================================================
@@ -291,7 +288,8 @@ async def create_task_sweep(submission: TaskSweepSubmission):
     """
     Submit the common pattern: one task_id expanded into many trials.
 
-    The task_id should be from a previous /tasks/upload call.
+    The task_id should be from a previous /tasks/upload/init +
+    /tasks/upload/complete flow.
     The task files are already stored (S3 if enabled, local directory otherwise).
     """
 

@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.db import TaskModel, TaskVersionModel, get_session
-from oddish.db.storage import extract_task_tarfile, get_storage_client
-from oddish.schemas import UploadResponse
+from oddish.db.storage import StorageClient, extract_task_tarfile, get_storage_client
+from oddish.schemas import TaskUploadInitResponse, UploadResponse
 from oddish.task_timeouts import (
     TaskTimeoutValidationError,
     validate_task_timeout_config,
@@ -86,107 +86,170 @@ async def _latest_version(
     )
 
 
-async def handle_task_upload(
-    file: UploadFile,
+def _normalize_task_name(name: str) -> str:
+    """Normalize a filename or path-like task name into the stored task name."""
+    normalized = Path(name).name or name
+    stem = Path(normalized).stem
+    if stem.endswith(".tar"):
+        stem = Path(stem).stem
+    return stem or normalized
+
+
+def _task_s3_prefix_for_version(task_id: str, version: int) -> str:
+    return f"tasks/{task_id}/v{version}/"
+
+
+def _task_archive_key_for_version(task_id: str, version: int) -> str:
+    return (
+        f"{_task_s3_prefix_for_version(task_id, version)}"
+        f"{StorageClient._TASK_ARCHIVE_OBJECT_NAME}"
+    )
+
+
+async def initialize_task_upload(
+    task_name: str,
     *,
     org_id: str | None = None,
-    content_hash: str | None = None,
+    content_hash: str,
     message: str | None = None,
-    created_by_user_id: str | None = None,
-) -> UploadResponse:
-    """Upload a task tarball to S3 or local storage.
+) -> TaskUploadInitResponse:
+    """Prepare a task upload and return direct-upload details when supported."""
+    normalized_name = _normalize_task_name(task_name)
 
-    The handler automatically resolves whether a task with the same name (scoped
-    to *org_id*) already exists:
+    async with get_session() as session:
+        existing_task = await _find_task_by_name(session, normalized_name, org_id)
+        latest = (
+            await _latest_version(session, existing_task.id) if existing_task is not None else None
+        )
 
-    * **Existing task, same content** -- returns the current version without
-      creating a new one (``content_unchanged=True``).
-    * **Existing task, different content** -- creates a new version.
-    * **New task** -- stores v1 for later ``create_task`` in the sweep endpoint.
-    """
-    original_filename = file.filename or "task.tar.gz"
-    name_stem = Path(original_filename).stem
-    if name_stem.endswith(".tar"):
-        name_stem = Path(name_stem).stem
-
-    task_name = name_stem
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir_path = Path(tmpdir)
-        task_dir = tmpdir_path / "task"
-        task_dir.mkdir()
-
-        tarball_path = tmpdir_path / "task.tar.gz"
-        max_bytes = max(settings.max_task_upload_mb, 0) * 1024 * 1024
-        await _write_upload_to_file(file, tarball_path, max_bytes=max_bytes)
-
-        try:
-            with tarfile.open(tarball_path, "r:gz") as tar:
-                extract_task_tarfile(tar, task_dir)
-        except HTTPException:
-            raise
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid tarball: {str(e)}")
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid tarball: {str(e)}")
-
-        try:
-            validate_task_timeout_config(task_dir)
-        except TaskTimeoutValidationError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        # Prefer the deterministic hash sent by the CLI; fall back to hashing
-        # the raw tarball for backward-compat with older clients / direct API.
-        if not content_hash:
-            content_hash = _compute_file_hash(tarball_path)
-
-        # ----- Check if a task with this name already exists -----
-        async with get_session() as session:
-            existing_task = await _find_task_by_name(session, task_name, org_id)
+        if (
+            latest is not None
+            and latest.content_hash
+            and latest.content_hash == content_hash
+        ):
+            return TaskUploadInitResponse(
+                task_id=existing_task.id,
+                name=normalized_name,
+                s3_key=latest.task_s3_key,
+                version=latest.version,
+                version_id=latest.id,
+                existing_task=True,
+                content_unchanged=True,
+                content_hash=content_hash,
+            )
 
         if existing_task is not None:
-            return await _handle_existing_task_upload(
-                existing_task,
-                task_name=task_name,
-                tarball_path=tarball_path,
-                task_dir=task_dir,
+            task_id = existing_task.id
+            version = await _next_version_number(session, task_id)
+            existing = True
+        else:
+            task_id = f"{normalized_name}-{str(uuid.uuid4())[:8]}"
+            version = 1
+            existing = False
+
+    version_id = f"{task_id}-v{version}"
+    s3_key = _task_s3_prefix_for_version(task_id, version)
+
+    storage = get_storage_client()
+    archive_key = _task_archive_key_for_version(task_id, version)
+    try:
+        upload_url = await storage.get_presigned_upload_url(
+            archive_key,
+            expiration=3600,
+            content_type="application/gzip",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to prepare S3 upload: {str(exc)}"
+        ) from exc
+
+    return TaskUploadInitResponse(
+        task_id=task_id,
+        name=normalized_name,
+        s3_key=s3_key,
+        version=version,
+        version_id=version_id,
+        existing_task=existing,
+        content_hash=content_hash,
+        upload_url=upload_url,
+        upload_method="PUT",
+        upload_headers={"Content-Type": "application/gzip"},
+        requires_completion=True,
+    )
+
+
+async def complete_task_upload(
+    *,
+    task_id: str,
+    task_name: str,
+    version: int,
+    content_hash: str,
+    message: str | None = None,
+    org_id: str | None = None,
+    created_by_user_id: str | None = None,
+) -> UploadResponse:
+    """Finalize a direct-to-S3 upload after the client has uploaded bytes."""
+    normalized_name = _normalize_task_name(task_name)
+    s3_key = _task_s3_prefix_for_version(task_id, version)
+    archive_key = _task_archive_key_for_version(task_id, version)
+    version_id = f"{task_id}-v{version}"
+    task_path = f"s3://{s3_key}"
+
+    storage = get_storage_client()
+    try:
+        archive_exists = await storage.object_exists(archive_key)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to verify S3 upload: {str(exc)}"
+        ) from exc
+    if not archive_exists:
+        raise HTTPException(
+            status_code=400, detail="Uploaded task archive not found in S3"
+        )
+
+    async with get_session() as session:
+        existing_task = await session.get(TaskModel, task_id)
+        if existing_task is None:
+            return UploadResponse(
+                task_id=task_id,
+                name=normalized_name,
+                s3_key=s3_key,
+                version=version,
+                version_id=version_id,
+                content_hash=content_hash,
+            )
+
+        if org_id is not None and existing_task.org_id != org_id:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+        version_row = await session.get(TaskVersionModel, version_id)
+        if version_row is None:
+            version_row = TaskVersionModel(
+                id=version_id,
+                task_id=task_id,
+                version=version,
+                task_path=task_path,
+                task_s3_key=s3_key,
                 content_hash=content_hash,
                 message=message,
                 created_by_user_id=created_by_user_id,
             )
+            session.add(version_row)
 
-        # ----- Brand-new task (first version created later in create_task) -----
-        task_id = f"{name_stem}-{str(uuid.uuid4())[:8]}"
+        existing_task.task_path = task_path
+        existing_task.task_s3_key = s3_key
+        existing_task.current_version_id = version_id
+        await session.commit()
 
-        if settings.s3_enabled:
-            storage = get_storage_client()
-            try:
-                s3_key = await storage.upload_task_archive_versioned(
-                    task_id, 1, tarball_path
-                )
-                return UploadResponse(
-                    task_id=task_id,
-                    name=task_name,
-                    s3_key=s3_key,
-                    version=1,
-                    content_hash=content_hash,
-                )
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500, detail=f"Failed to upload to S3: {str(e)}"
-                )
-
-        local_storage = Path(settings.local_storage_dir)
-        local_storage.mkdir(parents=True, exist_ok=True)
-        task_storage_path = local_storage / task_id / "v1"
-        shutil.copytree(task_dir, task_storage_path)
-        return UploadResponse(
-            task_id=task_id,
-            name=task_name,
-            task_path=str(task_storage_path),
-            version=1,
-            content_hash=content_hash,
-        )
+    return UploadResponse(
+        task_id=task_id,
+        name=normalized_name,
+        s3_key=s3_key,
+        version=version,
+        version_id=version_id,
+        existing_task=True,
+        content_hash=content_hash,
+    )
 
 
 async def _handle_existing_task_upload(
@@ -194,7 +257,6 @@ async def _handle_existing_task_upload(
     *,
     task_name: str,
     tarball_path: Path,
-    task_dir: Path,
     content_hash: str,
     message: str | None,
     created_by_user_id: str | None,
@@ -219,7 +281,6 @@ async def _handle_existing_task_upload(
             return UploadResponse(
                 task_id=task_id,
                 name=task_name,
-                task_path=latest.task_path if not settings.s3_enabled else None,
                 s3_key=latest.task_s3_key,
                 version=latest.version,
                 version_id=latest.id,
@@ -231,25 +292,16 @@ async def _handle_existing_task_upload(
         # Content changed -- create new version
         version = await _next_version_number(session, task_id)
         version_id = f"{task_id}-v{version}"
-
-        if settings.s3_enabled:
-            storage = get_storage_client()
-            try:
-                s3_key = await storage.upload_task_archive_versioned(
-                    task_id, version, tarball_path
-                )
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500, detail=f"Failed to upload to S3: {str(e)}"
-                )
-            task_path = f"s3://{s3_key}"
-        else:
-            local_storage = Path(settings.local_storage_dir)
-            local_storage.mkdir(parents=True, exist_ok=True)
-            task_storage_path = local_storage / task_id / f"v{version}"
-            shutil.copytree(task_dir, task_storage_path)
-            task_path = str(task_storage_path)
-            s3_key = None
+        storage = get_storage_client()
+        try:
+            s3_key = await storage.upload_task_archive_versioned(
+                task_id, version, tarball_path
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500, detail=f"Failed to upload to S3: {str(e)}"
+            )
+        task_path = f"s3://{s3_key}"
 
         version_row = TaskVersionModel(
             id=version_id,
@@ -275,7 +327,6 @@ async def _handle_existing_task_upload(
     return UploadResponse(
         task_id=task_id,
         name=task_name,
-        task_path=task_path if not settings.s3_enabled else None,
         s3_key=s3_key,
         version=version,
         version_id=version_id,
@@ -291,53 +342,37 @@ async def resolve_task_storage(
     s3_missing_detail: str | None = None,
     local_missing_detail: str | None = None,
 ) -> tuple[str, str | None]:
-    """Resolve task path based on storage mode, verifying existence.
+    """Resolve task path from S3, verifying existence.
 
     When *version* is given the versioned prefix ``tasks/{task_id}/v{version}/``
     is checked first.  Falls back to the legacy un-versioned prefix for
     backwards compatibility with tasks uploaded before versioning.
     """
-    if settings.s3_enabled:
-        storage = get_storage_client()
+    storage = get_storage_client()
 
-        # Try versioned prefix first
-        if version is not None:
-            versioned_key = f"tasks/{task_id}/v{version}/"
-            try:
-                if await storage.prefix_exists(versioned_key):
-                    return f"s3://{versioned_key}", versioned_key
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500, detail=f"Failed to check S3: {str(e)}"
-                )
-
-        # Fall back to legacy un-versioned prefix
-        task_s3_key = f"tasks/{task_id}/"
-        try:
-            exists = await storage.prefix_exists(task_s3_key)
-            if not exists:
-                raise HTTPException(
-                    status_code=404,
-                    detail=s3_missing_detail or f"Task {task_id} not found in S3",
-                )
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to check S3: {str(e)}")
-
-        return f"s3://{task_s3_key}", task_s3_key
-
-    # Local storage — check versioned path first
+    # Try versioned prefix first
     if version is not None:
-        versioned_path = Path(settings.local_storage_dir) / task_id / f"v{version}"
-        if versioned_path.exists():
-            return str(versioned_path), None
+        versioned_key = f"tasks/{task_id}/v{version}/"
+        try:
+            if await storage.prefix_exists(versioned_key):
+                return f"s3://{versioned_key}", versioned_key
+        except Exception as e:
+            raise HTTPException(
+                status_code=500, detail=f"Failed to check S3: {str(e)}"
+            )
 
-    local_storage = Path(settings.local_storage_dir) / task_id
-    if not local_storage.exists():
-        raise HTTPException(
-            status_code=404,
-            detail=local_missing_detail or f"Task {task_id} not found",
-        )
+    # Fall back to legacy un-versioned prefix
+    task_s3_key = f"tasks/{task_id}/"
+    try:
+        exists = await storage.prefix_exists(task_s3_key)
+        if not exists:
+            raise HTTPException(
+                status_code=404,
+                detail=s3_missing_detail or local_missing_detail or f"Task {task_id} not found in S3",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to check S3: {str(e)}")
 
-    return str(local_storage), None
+    return f"s3://{task_s3_key}", task_s3_key

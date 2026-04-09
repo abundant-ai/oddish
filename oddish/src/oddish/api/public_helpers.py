@@ -185,9 +185,6 @@ async def list_task_files_s3(
     version: int | None = None,
 ) -> dict:
     """List files in a task's S3 directory."""
-    if not settings.s3_enabled:
-        raise HTTPException(status_code=501, detail="S3 storage not enabled")
-
     storage = get_storage_client()
 
     try:
@@ -213,9 +210,6 @@ async def get_task_file_content_s3(
     version: int | None = None,
 ) -> dict:
     """Get content of a specific task file from S3."""
-    if not settings.s3_enabled:
-        raise HTTPException(status_code=501, detail="S3 storage not enabled")
-
     storage = get_storage_client()
 
     try:
@@ -243,9 +237,6 @@ async def list_trial_files_s3(
     presign_expiration: int = 900,
 ) -> dict:
     """List all files in a trial's S3 directory with presigned URLs."""
-    if not settings.s3_enabled:
-        raise HTTPException(status_code=501, detail="S3 storage not enabled")
-
     storage = get_storage_client()
     s3_prefix = _get_trial_s3_prefix(trial)
 
@@ -295,9 +286,6 @@ async def get_trial_file_content_s3(
     """Download a file from a trial's S3 directory by relative path."""
     import mimetypes
     from pathlib import PurePosixPath
-
-    if not settings.s3_enabled:
-        raise HTTPException(status_code=501, detail="S3 storage not enabled")
 
     raw = file_path.replace("\\", "/").strip()
     if not raw or raw.startswith("/"):

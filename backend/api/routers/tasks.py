@@ -5,7 +5,7 @@ from collections import Counter
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query
 from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import delete, select
 from sqlalchemy.engine import CursorResult
@@ -40,7 +40,11 @@ from api.schemas import (
 )
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from models import APIKeyModel, UserModel
-from oddish.api.tasks import handle_task_upload, resolve_task_storage
+from oddish.api.tasks import (
+    complete_task_upload,
+    initialize_task_upload,
+    resolve_task_storage,
+)
 from oddish.api.sweeps import (
     build_task_submission_from_sweep,
     build_trial_specs_from_sweep,
@@ -62,6 +66,9 @@ from oddish.queue import (
 from oddish.schemas import (
     TaskBrowseResponse,
     TaskBatchCancelRequest,
+    TaskUploadCompleteRequest,
+    TaskUploadInitRequest,
+    TaskUploadInitResponse,
     TaskResponse,
     TaskStatusResponse,
     TaskSweepSubmission,
@@ -182,25 +189,35 @@ async def _maybe_publish_experiment(
 # =============================================================================
 
 
-@router.post("/tasks/upload", response_model=UploadResponse)
-async def upload_task(
+@router.post("/tasks/upload/init", response_model=TaskUploadInitResponse)
+async def init_task_upload(
+    payload: TaskUploadInitRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
-    file: UploadFile = File(...),
-    content_hash: str | None = None,
-    message: str | None = None,
-) -> UploadResponse:
-    """Upload a task directory (as tarball) to storage.
-
-    Automatically detects existing tasks by name within the org and creates
-    a new version when content has changed.
-    """
+) -> TaskUploadInitResponse:
+    """Prepare a task upload and return a presigned PUT URL when S3 is enabled."""
     auth.require_scope(APIKeyScope.TASKS)
-
-    return await handle_task_upload(
-        file,
+    return await initialize_task_upload(
+        payload.name,
         org_id=auth.org_id,
-        content_hash=content_hash,
-        message=message,
+        content_hash=payload.content_hash,
+        message=payload.message,
+    )
+
+
+@router.post("/tasks/upload/complete", response_model=UploadResponse)
+async def finalize_task_upload(
+    payload: TaskUploadCompleteRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> UploadResponse:
+    """Finalize a direct task upload after the client PUTs the archive to S3."""
+    auth.require_scope(APIKeyScope.TASKS)
+    return await complete_task_upload(
+        task_id=payload.task_id,
+        task_name=payload.name,
+        version=payload.version,
+        content_hash=payload.content_hash,
+        message=payload.message,
+        org_id=auth.org_id,
         created_by_user_id=auth.user_id,
     )
 
