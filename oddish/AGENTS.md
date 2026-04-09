@@ -169,6 +169,8 @@ uv run python -m oddish.api --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/cla
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
+| POST | `/tasks/upload/init` | Prepare a task upload and return a presigned PUT URL when S3 is enabled |
+| POST | `/tasks/upload/complete` | Finalize a direct-to-S3 task upload after the client PUT succeeds |
 | GET | `/health` | API and DB health check |
 | POST | `/tasks/upload` | Upload a task tarball |
 | POST | `/tasks/sweep` | Expand a sweep into a task plus trials |
