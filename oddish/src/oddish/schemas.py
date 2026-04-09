@@ -172,8 +172,8 @@ class TaskSweepSubmission(BaseModel):
     task_id: str = Field(
         ...,
         description=(
-            "Task ID from /tasks/upload, or an existing task ID when "
-            "append_to_task is true"
+            "Task ID from /tasks/upload/init and /tasks/upload/complete, or an "
+            "existing task ID when append_to_task is true"
         ),
     )
     append_to_task: bool = Field(

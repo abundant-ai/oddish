@@ -5,7 +5,7 @@ from collections import Counter
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query
 from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import delete, select
 from sqlalchemy.engine import CursorResult
@@ -42,7 +42,6 @@ from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from models import APIKeyModel, UserModel
 from oddish.api.tasks import (
     complete_task_upload,
-    handle_task_upload,
     initialize_task_upload,
     resolve_task_storage,
 )
@@ -188,29 +187,6 @@ async def _maybe_publish_experiment(
 # =============================================================================
 # Task Upload and Creation
 # =============================================================================
-
-
-@router.post("/tasks/upload", response_model=UploadResponse)
-async def upload_task(
-    auth: Annotated[AuthContext, Depends(require_auth)],
-    file: UploadFile = File(...),
-    content_hash: str | None = None,
-    message: str | None = None,
-) -> UploadResponse:
-    """Upload a task directory (as tarball) to storage.
-
-    Automatically detects existing tasks by name within the org and creates
-    a new version when content has changed.
-    """
-    auth.require_scope(APIKeyScope.TASKS)
-
-    return await handle_task_upload(
-        file,
-        org_id=auth.org_id,
-        content_hash=content_hash,
-        message=message,
-        created_by_user_id=auth.user_id,
-    )
 
 
 @router.post("/tasks/upload/init", response_model=TaskUploadInitResponse)

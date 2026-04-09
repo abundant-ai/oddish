@@ -1127,11 +1127,11 @@ async def create_task_sweep_core(
         submission.task_id,
         s3_missing_detail=(
             f"Task {submission.task_id} not found in S3. "
-            "Upload it first with POST /tasks/upload"
+            "Upload it first with POST /tasks/upload/init and POST /tasks/upload/complete"
         ),
         local_missing_detail=(
             f"Task {submission.task_id} not found in local storage. "
-            "Upload it first with POST /tasks/upload"
+            "Direct task uploads require S3-backed storage"
         ),
     )
     trials = build_trial_specs_from_sweep(

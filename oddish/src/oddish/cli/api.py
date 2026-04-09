@@ -235,53 +235,39 @@ def upload_task(
                 },
             )
 
-            if init_response.status_code == 200:
-                init_payload = cast(dict, init_response.json())
-                if init_payload.get("content_unchanged"):
-                    return init_payload
+            if init_response.status_code != 200:
+                error_console.print(
+                    f"[red]Failed to initialize direct task upload:[/red] "
+                    f"{init_response.text}"
+                )
+                raise typer.Exit(1)
 
-                upload_url = init_payload.get("upload_url")
-                if isinstance(upload_url, str) and upload_url:
-                    _upload_to_presigned_url(
-                        upload_url,
-                        tarball_path,
-                        cast(dict[str, str], init_payload.get("upload_headers") or {}),
-                    )
-                    response = client.post(
-                        f"{api_url}/tasks/upload/complete",
-                        json={
-                            "task_id": init_payload["task_id"],
-                            "name": init_payload["name"],
-                            "version": init_payload["version"],
-                            "content_hash": content_hash,
-                        },
-                    )
-                else:
-                    with open(tarball_path, "rb") as f:
-                        response = client.post(
-                            f"{api_url}/tasks/upload",
-                            params={"content_hash": content_hash},
-                            files={
-                                "file": (
-                                    f"{task_path.name}.tar.gz",
-                                    f,
-                                    "application/gzip",
-                                )
-                            },
-                        )
-            else:
-                with open(tarball_path, "rb") as f:
-                    response = client.post(
-                        f"{api_url}/tasks/upload",
-                        params={"content_hash": content_hash},
-                        files={
-                            "file": (
-                                f"{task_path.name}.tar.gz",
-                                f,
-                                "application/gzip",
-                            )
-                        },
-                    )
+            init_payload = cast(dict, init_response.json())
+            if init_payload.get("content_unchanged"):
+                return init_payload
+
+            upload_url = init_payload.get("upload_url")
+            if not isinstance(upload_url, str) or not upload_url:
+                error_console.print(
+                    "[red]Task upload initialization did not return a presigned upload URL.[/red]\n"
+                    "Direct task uploads require S3-compatible storage."
+                )
+                raise typer.Exit(1)
+
+            _upload_to_presigned_url(
+                upload_url,
+                tarball_path,
+                cast(dict[str, str], init_payload.get("upload_headers") or {}),
+            )
+            response = client.post(
+                f"{api_url}/tasks/upload/complete",
+                json={
+                    "task_id": init_payload["task_id"],
+                    "name": init_payload["name"],
+                    "version": init_payload["version"],
+                    "content_hash": content_hash,
+                },
+            )
 
         if response.status_code != 200:
             error_console.print(f"[red]Failed to upload task:[/red] {response.text}")
