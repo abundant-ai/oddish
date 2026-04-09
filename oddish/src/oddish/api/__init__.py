@@ -52,7 +52,12 @@ from oddish.api.admin import (
 )
 from oddish.api.dashboard import get_dashboard_core
 from oddish.api.public import router as public_router
-from oddish.api.tasks import handle_task_upload, resolve_task_storage
+from oddish.api.tasks import (
+    complete_task_upload,
+    handle_task_upload,
+    initialize_task_upload,
+    resolve_task_storage,
+)
 from oddish.config import settings
 from oddish.db import (
     ExperimentModel,
@@ -69,6 +74,9 @@ from oddish.schemas import (
     TaskBrowseResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
+    TaskUploadCompleteRequest,
+    TaskUploadInitRequest,
+    TaskUploadInitResponse,
     TaskResponse,
     TaskStatusResponse,
     TaskSweepSubmission,
@@ -279,6 +287,28 @@ async def upload_task(
         Upload response with task_id, version info, and storage location.
     """
     return await handle_task_upload(file, content_hash=content_hash, message=message)
+
+
+@api.post("/tasks/upload/init", response_model=TaskUploadInitResponse)
+async def init_task_upload(payload: TaskUploadInitRequest) -> TaskUploadInitResponse:
+    """Prepare a task upload and return a presigned PUT URL when S3 is enabled."""
+    return await initialize_task_upload(
+        payload.name,
+        content_hash=payload.content_hash,
+        message=payload.message,
+    )
+
+
+@api.post("/tasks/upload/complete", response_model=UploadResponse)
+async def finalize_task_upload(payload: TaskUploadCompleteRequest) -> UploadResponse:
+    """Finalize a direct task upload after the client PUTs the archive to S3."""
+    return await complete_task_upload(
+        task_id=payload.task_id,
+        task_name=payload.name,
+        version=payload.version,
+        content_hash=payload.content_hash,
+        message=payload.message,
+    )
 
 
 # =============================================================================

@@ -229,6 +229,43 @@ async def test_list_task_files_reads_archive_members(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_task_files_presign_returns_archive_url(monkeypatch):
+    archive_bytes = _make_task_archive({"task.toml": "name = 'demo'\n"})
+    storage = storage_mod.StorageClient()
+    storage._client = object()
+
+    async def fake_object_exists(s3_key: str) -> bool:
+        assert s3_key == "tasks/task-123/.oddish-task.tar.gz"
+        return True
+
+    async def fake_download_bytes(s3_key: str) -> bytes:
+        assert s3_key == "tasks/task-123/.oddish-task.tar.gz"
+        return archive_bytes
+
+    async def fake_get_presigned_url(s3_key: str, expiration: int = 900) -> str:
+        assert s3_key == "tasks/task-123/.oddish-task.tar.gz"
+        assert expiration == 900
+        return "https://example.com/task-archive"
+
+    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
+    monkeypatch.setattr(storage, "get_presigned_url", fake_get_presigned_url)
+
+    listing = await storage.list_task_files(
+        task_id="task-123",
+        prefix=None,
+        recursive=True,
+        limit=1000,
+        cursor=None,
+        presign=True,
+    )
+
+    assert listing["archive_url"] == "https://example.com/task-archive"
+    assert listing["archive_key"] == "tasks/task-123/.oddish-task.tar.gz"
+    assert listing["presigned"] is True
+
+
+@pytest.mark.asyncio
 async def test_get_task_file_content_reads_archive_member(monkeypatch):
     archive_bytes = _make_task_archive({"task.toml": "name = 'demo'\n"})
     storage = storage_mod.StorageClient()

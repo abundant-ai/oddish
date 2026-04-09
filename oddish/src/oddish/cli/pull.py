@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
+import tarfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -104,7 +106,7 @@ def _list_trial_files(client: httpx.Client, trial_id: str) -> dict | None:
 
 
 def _list_task_files(client: httpx.Client, task_id: str) -> dict | None:
-    params = {"recursive": True, "presign": False}
+    params = {"recursive": True, "presign": True}
     data = _get_json(
         client,
         f"/tasks/{task_id}/files",
@@ -114,6 +116,16 @@ def _list_task_files(client: httpx.Client, task_id: str) -> dict | None:
     if isinstance(data, dict):
         return data
     return None
+
+
+def _download_presigned_bytes(url: str) -> tuple[bytes | None, str | None]:
+    try:
+        response = httpx.get(url, timeout=60.0, follow_redirects=True)
+    except Exception as exc:
+        return None, str(exc)
+    if response.status_code != 200:
+        return None, f"{response.status_code}: {response.text}"
+    return response.content, None
 
 
 def _list_tasks_for_experiment(client: httpx.Client, experiment_id: str) -> list[dict]:
@@ -153,7 +165,10 @@ def _download_trial_file(
     client: httpx.Client,
     trial_id: str,
     remote_path: str,
+    download_url: str | None = None,
 ) -> tuple[bytes | None, str | None]:
+    if download_url:
+        return _download_presigned_bytes(download_url)
     encoded_path = quote(remote_path, safe="/")
     response = client.get(f"/trials/{trial_id}/files/{encoded_path}")
     if response.status_code != 200:
@@ -167,7 +182,16 @@ def _download_task_file(
     client: httpx.Client,
     task_id: str,
     remote_path: str,
+    download_url: str | None = None,
 ) -> tuple[str | None, str | None]:
+    if download_url:
+        content, err = _download_presigned_bytes(download_url)
+        if content is None:
+            return None, err
+        try:
+            return content.decode("utf-8"), None
+        except UnicodeDecodeError as exc:
+            return None, str(exc)
     encoded_path = quote(remote_path, safe="/")
     params = {"presign": False}
     response = client.get(
@@ -189,12 +213,13 @@ def _download_and_save_trial_file(
     client: httpx.Client,
     trial_id: str,
     remote_path: str,
+    download_url: str | None,
     local_file: Path,
     error_dir: Path,
     rel: Path,
 ) -> str:
     """Download a single trial file and save it. Returns 'saved', 'error'."""
-    content, err = _download_trial_file(client, trial_id, remote_path)
+    content, err = _download_trial_file(client, trial_id, remote_path, download_url)
     if content is None:
         if err:
             _write_text(error_dir / f"{rel.as_posix()}.error.txt", err)
@@ -207,18 +232,50 @@ def _download_and_save_task_file(
     client: httpx.Client,
     task_id: str,
     remote_path: str,
+    download_url: str | None,
     local_file: Path,
     error_dir: Path,
     rel: Path,
 ) -> str:
     """Download a single task file and save it. Returns 'saved', 'error'."""
-    content, err = _download_task_file(client, task_id, remote_path)
+    content, err = _download_task_file(client, task_id, remote_path, download_url)
     if content is None:
         if err:
             _write_text(error_dir / f"{rel.as_posix()}.error.txt", err)
         return "error"
     _write_text(local_file, content)
     return "saved"
+
+
+def _extract_task_archive(
+    archive_bytes: bytes,
+    task_root: Path,
+    summary: dict[str, int],
+) -> dict[str, int]:
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            try:
+                rel = _safe_rel_path(member.name)
+            except ValueError:
+                summary["task_file_errors"] += 1
+                continue
+            local_file = task_root / rel
+            if (
+                local_file.exists()
+                and local_file.is_file()
+                and local_file.stat().st_size == member.size
+            ):
+                summary["task_files_skipped"] += 1
+                continue
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                summary["task_file_errors"] += 1
+                continue
+            _write_bytes(local_file, extracted.read())
+            summary["task_files_saved"] += 1
+    return summary
 
 
 def _pull_trial(
@@ -288,7 +345,7 @@ def _pull_trial(
             status_update(f"Pulling trial {trial_id}: listing files")
         listing = _list_trial_files(client, trial_id)
         if listing:
-            to_download: list[tuple[str, Path, Path]] = []
+            to_download: list[tuple[str, str | None, Path, Path]] = []
             for file_meta in listing.get("files", []):
                 remote_path = file_meta.get("path")
                 if not remote_path:
@@ -310,7 +367,15 @@ def _pull_trial(
                 ):
                     summary["files_skipped"] = int(summary["files_skipped"]) + 1
                     continue
-                to_download.append((remote_path, local_file, rel))
+                download_url = file_meta.get("url")
+                to_download.append(
+                    (
+                        remote_path,
+                        download_url if isinstance(download_url, str) else None,
+                        local_file,
+                        rel,
+                    )
+                )
 
             error_dir = trial_root / "_pull_errors"
             total_downloads = len(to_download)
@@ -325,11 +390,12 @@ def _pull_trial(
                         client,
                         trial_id,
                         remote_path,
+                        download_url,
                         local_file,
                         error_dir,
                         rel,
                     ): rel
-                    for remote_path, local_file, rel in to_download
+                    for remote_path, download_url, local_file, rel in to_download
                 }
                 completed = 0
                 for future in as_completed(futures):
@@ -362,7 +428,21 @@ def _pull_task_files(
     if not listing:
         return summary
 
-    to_download: list[tuple[str, Path, Path]] = []
+    archive_url = listing.get("archive_url")
+    if isinstance(archive_url, str) and archive_url:
+        if status_update:
+            status_update(f"Pulling task {task_id}: downloading task archive")
+        archive_bytes, err = _download_presigned_bytes(archive_url)
+        if archive_bytes is None:
+            summary["task_file_errors"] += 1
+            if err:
+                _write_text(task_root / "errors" / "task-archive.error.txt", err)
+            return summary
+        if status_update:
+            status_update(f"Pulling task {task_id}: extracting task archive")
+        return _extract_task_archive(archive_bytes, task_root, summary)
+
+    to_download: list[tuple[str, str | None, Path, Path]] = []
     for file_meta in listing.get("files", []):
         remote_path = file_meta.get("path")
         if not remote_path:
@@ -383,7 +463,15 @@ def _pull_task_files(
         ):
             summary["task_files_skipped"] += 1
             continue
-        to_download.append((remote_path, local_file, rel))
+        download_url = file_meta.get("url")
+        to_download.append(
+            (
+                remote_path,
+                download_url if isinstance(download_url, str) else None,
+                local_file,
+                rel,
+            )
+        )
 
     error_dir = task_root / "errors"
     total_downloads = len(to_download)
@@ -398,11 +486,12 @@ def _pull_task_files(
                 client,
                 task_id,
                 remote_path,
+                download_url,
                 local_file,
                 error_dir,
                 rel,
             ): rel
-            for remote_path, local_file, rel in to_download
+            for remote_path, download_url, local_file, rel in to_download
         }
         completed = 0
         for future in as_completed(futures):
