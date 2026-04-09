@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 import aioboto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 from fastapi import HTTPException
 from oddish.config import settings
@@ -137,6 +138,7 @@ class StorageClient:
             aws_access_key_id=settings.s3_access_key,
             aws_secret_access_key=settings.s3_secret_key,
             region_name=settings.s3_region,
+            config=Config(signature_version="s3v4"),
         ).__aenter__()
 
     async def close(self):
