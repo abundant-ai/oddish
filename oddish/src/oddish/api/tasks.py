@@ -114,6 +114,15 @@ async def initialize_task_upload(
     message: str | None = None,
 ) -> TaskUploadInitResponse:
     """Prepare a task upload and return direct-upload details when supported."""
+    if not settings.s3_enabled:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Direct task uploads require S3-compatible storage. "
+                "Local filesystem storage is not supported by /tasks/upload/init."
+            ),
+        )
+
     normalized_name = _normalize_task_name(task_name)
 
     async with get_session() as session:
@@ -150,16 +159,6 @@ async def initialize_task_upload(
 
     version_id = f"{task_id}-v{version}"
     s3_key = _task_s3_prefix_for_version(task_id, version) if settings.s3_enabled else None
-
-    if not settings.s3_enabled:
-        return TaskUploadInitResponse(
-            task_id=task_id,
-            name=normalized_name,
-            version=version,
-            version_id=version_id,
-            existing_task=existing,
-            content_hash=content_hash,
-        )
 
     storage = get_storage_client()
     archive_key = _task_archive_key_for_version(task_id, version)
