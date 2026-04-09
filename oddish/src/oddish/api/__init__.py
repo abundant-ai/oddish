@@ -133,7 +133,6 @@ async def lifespan(app: FastAPI):
     """Initialize database on startup and optionally start workers."""
     # Ensure required storage directories exist
     Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
-    Path(settings.local_storage_dir).mkdir(parents=True, exist_ok=True)
 
     await init_db()
 

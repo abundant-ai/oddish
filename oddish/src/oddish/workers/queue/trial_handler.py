@@ -618,9 +618,8 @@ async def run_trial_job(
     else:
         console.print(f"[dim]Using local task path: {task_path_to_run}[/dim]")
 
-    # Ensure storage directories exist before Harbor uses them
+    # Ensure Harbor scratch directories exist before execution starts.
     os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
-    os.makedirs(settings.local_storage_dir, exist_ok=True)
 
     execution = await _execute_trial(
         trial_id=trial_id,
@@ -633,12 +632,8 @@ async def run_trial_job(
 
     # Upload trial results to S3.
     #
-    # NOTE: In some deployments (e.g., Modal) tasks may be stored in S3 even if
-    # ODDISH_S3_ENABLED isn't set inside the worker environment. If the task came
-    # from S3 (task_s3_key is present), we still want to upload artifacts so the
-    # UI can fetch logs/result.json.
     trial_s3_key = None
-    should_upload_to_s3 = settings.s3_enabled or bool(resolved_task_s3_key)
+    should_upload_to_s3 = bool(resolved_task_s3_key)
     if should_upload_to_s3 and execution.outcome and execution.outcome.job_dir:
         try:
             storage = get_storage_client()

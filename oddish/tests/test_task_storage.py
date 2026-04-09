@@ -83,7 +83,6 @@ class _FakeDeleteStorage:
 @pytest.mark.asyncio
 async def test_resolve_task_storage_uses_prefix_probe_for_s3(monkeypatch):
     storage = _FakeStorage(exists=True)
-    monkeypatch.setattr(settings, "s3_enabled", True)
     monkeypatch.setattr(tasks_api, "get_storage_client", lambda: storage)
 
     task_path, task_s3_key = await tasks_api.resolve_task_storage("task-123")
@@ -97,7 +96,6 @@ async def test_resolve_task_storage_uses_prefix_probe_for_s3(monkeypatch):
 @pytest.mark.asyncio
 async def test_resolve_task_storage_raises_404_when_prefix_missing(monkeypatch):
     storage = _FakeStorage(exists=False)
-    monkeypatch.setattr(settings, "s3_enabled", True)
     monkeypatch.setattr(tasks_api, "get_storage_client", lambda: storage)
 
     with pytest.raises(
@@ -348,7 +346,6 @@ def test_collect_s3_prefixes_for_deletion_normalizes_and_dedupes():
 @pytest.mark.asyncio
 async def test_delete_s3_prefixes_skips_duplicates_and_empty_values(monkeypatch):
     storage = _FakeDeleteStorage(deleted=3)
-    monkeypatch.setattr(settings, "s3_enabled", True)
     monkeypatch.setattr(storage_mod, "get_storage_client", lambda: storage)
 
     deleted = await storage_mod.delete_s3_prefixes(

@@ -14,7 +14,7 @@ The recommended path is:
 - Postgres connection string
 - Clerk app (for dashboard auth and API key management)
 - Python 3.12+ and `uv`
-- Optional: S3/R2 bucket for artifact storage
+- S3/R2 bucket for task and artifact storage
 
 Install and authenticate Modal CLI:
 
@@ -49,10 +49,9 @@ ANTHROPIC_API_KEY=sk-...
 GEMINI_API_KEY=...
 ```
 
-Optional (recommended in production):
+Required:
 
 ```bash
-ODDISH_S3_ENABLED=true
 ODDISH_S3_BUCKET=...
 ODDISH_S3_ACCESS_KEY=...
 ODDISH_S3_SECRET_KEY=...
