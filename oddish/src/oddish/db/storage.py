@@ -917,14 +917,14 @@ def collect_s3_prefixes_for_deletion(
 
 
 async def delete_s3_prefixes(prefixes: list[str]) -> int:
-    """Delete S3 objects for the provided prefixes when S3 is enabled."""
+    """Delete S3 objects for the provided prefixes."""
     normalized: list[str] = []
     for prefix in prefixes:
         resolved = normalize_s3_prefix(prefix)
         if resolved:
             normalized.append(resolved)
     normalized = list(dict.fromkeys(normalized))
-    if not normalized or not settings.s3_enabled:
+    if not normalized:
         return 0
     storage = get_storage_client()
     return await storage.delete_prefixes(normalized)

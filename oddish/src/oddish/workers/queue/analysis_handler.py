@@ -32,9 +32,7 @@ async def run_analysis_job(
     console.print(
         f"[cyan]Processing analysis[/cyan] {trial_id} (queue_key={queue_key})"
     )
-    console.print(
-        f"[dim]S3 enabled: {settings.s3_enabled}, bucket: {settings.s3_bucket}[/dim]"
-    )
+    console.print(f"[dim]Task bucket: {settings.s3_bucket}[/dim]")
 
     # Mark as running
     async with _trial_session(trial_id) as (session, trial):

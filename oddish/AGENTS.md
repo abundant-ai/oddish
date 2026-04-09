@@ -26,7 +26,7 @@ The `oddish` package includes:
   `FOR UPDATE SKIP LOCKED` directly on the `trials` table)
 - shared queue coordination primitives such as queue-slot leasing, single-job
   processing, and stale-heartbeat cleanup
-- local task storage plus optional S3-compatible artifact storage
+- S3-compatible task and artifact storage
 
 ## Architecture
 
@@ -215,8 +215,7 @@ ODDISH_DEFAULT_DASHBOARD_URL=https://www.oddish.app
 ODDISH_DEFAULT_MODEL_CONCURRENCY=8
 ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 8}'
 
-# S3-compatible storage
-ODDISH_S3_ENABLED=true
+# S3-compatible storage (required)
 ODDISH_S3_BUCKET=data
 ODDISH_S3_REGION=us-east-1
 ODDISH_S3_ACCESS_KEY=...
@@ -236,8 +235,8 @@ MODAL_TOKEN_SECRET=...
 
 Storage defaults:
 
-- uploaded task bundles: `/tmp/oddish-tasks` locally, or a single
-  `tasks/<task_id>/.oddish-task.tar.gz` archive in S3 when remote storage is enabled
+- uploaded task bundles: a single `tasks/<task_id>/.oddish-task.tar.gz` archive
+  in S3-compatible storage
 - Harbor job outputs: `/tmp/harbor-jobs`
 - Modal workers also check the fixed mount path `/mnt/oddish-tasks` for
   extracted `tasks/` objects before falling back to the normal S3 download path
