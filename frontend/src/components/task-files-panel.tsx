@@ -283,6 +283,61 @@ function isTextContent(contentType: string): boolean {
   );
 }
 
+function shouldSniffTextContent(contentType: string): boolean {
+  const normalized = contentType.toLowerCase();
+  return (
+    normalized === "" ||
+    normalized === "application/octet-stream" ||
+    normalized.startsWith("application/octet-stream;")
+  );
+}
+
+function looksLikeTextBytes(bytes: Uint8Array): boolean {
+  const sample = bytes.subarray(0, Math.min(bytes.length, 8 * 1024));
+  if (sample.length === 0) {
+    return true;
+  }
+
+  let suspiciousBytes = 0;
+
+  for (const byte of sample) {
+    if (byte === 0) {
+      return false;
+    }
+
+    const isAllowedControl =
+      byte === 9 || byte === 10 || byte === 12 || byte === 13;
+    if (byte < 32 && !isAllowedControl) {
+      suspiciousBytes += 1;
+    }
+  }
+
+  return suspiciousBytes / sample.length < 0.1;
+}
+
+async function readResponseTextContent(response: Response): Promise<string | null> {
+  const contentType = response.headers.get("content-type") || "";
+
+  if (isTextContent(contentType)) {
+    return response.text();
+  }
+
+  if (!shouldSniffTextContent(contentType)) {
+    return null;
+  }
+
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!looksLikeTextBytes(bytes)) {
+    return null;
+  }
+
+  return new TextDecoder().decode(bytes);
+}
+
+function getBinaryFileMessage(contentType: string): string {
+  return `Binary file (content-type: ${contentType || "unknown"})`;
+}
+
 export function TaskFilesPanel({
   isOpen,
   onClose,
@@ -734,14 +789,15 @@ export function TaskFilesPanel({
             // 200 = Full content (Range not supported or file smaller than range)
             if (s3Res.ok || s3Res.status === 206) {
               const contentType = s3Res.headers.get("content-type") || "";
-              if (isTextContent(contentType)) {
-                content = await s3Res.text();
+              const textContent = await readResponseTextContent(s3Res);
+              if (textContent !== null) {
+                content = textContent;
                 // Check if we got partial content
                 truncated =
                   s3Res.status === 206 ||
                   (!!shouldTruncate && content.length >= TRUNCATE_THRESHOLD);
               } else {
-                content = `Binary file (content-type: ${contentType || "unknown"})`;
+                content = getBinaryFileMessage(contentType);
               }
             }
           } catch {
@@ -795,20 +851,22 @@ export function TaskFilesPanel({
 
   // Load full file content (when user clicks "Load full file")
   const loadFullFile = useCallback(async () => {
-    if (!selectedFile || !selectedFile.url || !taskId) return;
+    if (!selectedFile || !selectedFile.url) return;
 
     setLoadingFullFile(true);
     try {
       const s3Res = await fetch(selectedFile.url);
       if (s3Res.ok) {
         const contentType = s3Res.headers.get("content-type") || "";
-        if (isTextContent(contentType)) {
-          const content = await s3Res.text();
+        const content = await readResponseTextContent(s3Res);
+        if (content !== null) {
           setFileContent(content);
           setIsTruncated(false);
           // Update cache
           selectedFile.content = content;
           selectedFile.isTruncated = false;
+        } else {
+          setFileContent(getBinaryFileMessage(contentType));
         }
       }
     } catch {
@@ -816,7 +874,7 @@ export function TaskFilesPanel({
     } finally {
       setLoadingFullFile(false);
     }
-  }, [selectedFile, taskId]);
+  }, [selectedFile]);
 
   // Scroll to top when selected file changes
   useEffect(() => {
