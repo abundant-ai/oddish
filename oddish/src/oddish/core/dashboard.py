@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,7 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
     VerdictStatus,
+    get_session,
 )
 from oddish.queue import get_queue_and_pipeline_stats_with_concurrency
 from oddish.timing import TimingRecorder, elapsed_ms, now
@@ -51,7 +53,7 @@ def _normalize_dashboard_model(model: str | None, provider: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 _dashboard_cache: dict[str, tuple[dict, float]] = {}
-_CACHE_TTL_SECONDS = 10
+_CACHE_TTL_SECONDS = 60
 _CACHE_MAX_SIZE = 100
 
 
@@ -623,26 +625,38 @@ async def get_dashboard_core(
 
         return qs, ps, mu, tr, hm
 
-    dashboard_started_at = now()
-    queue_stats, pipeline_stats, model_usage, tasks_response, has_more = await _fetch_primary()
-    if include_experiments:
+    async def _fetch_experiments_parallel() -> tuple[list[dict[str, Any]], bool]:
+        """Experiments on a separate session so they run concurrently with primary."""
         experiments_started_at = now()
-        experiments_response, experiments_has_more = await load_dashboard_experiments(
-            session,
-            org_id=org_id,
-            experiments_limit=experiments_limit,
-            experiments_offset=experiments_offset,
-            experiments_query=experiments_query,
-            experiments_status=experiments_status,
-            record_timing=record_timing,
-        )
+        async with get_session() as exp_session:
+            result = await load_dashboard_experiments(
+                exp_session,
+                org_id=org_id,
+                experiments_limit=experiments_limit,
+                experiments_offset=experiments_offset,
+                experiments_query=experiments_query,
+                experiments_status=experiments_status,
+                record_timing=record_timing,
+            )
         if record_timing is not None:
             record_timing(
                 "dashboard_experiments_total",
                 elapsed_ms(experiments_started_at),
                 "Dashboard experiments total",
             )
+        return result
+
+    dashboard_started_at = now()
+    if include_experiments:
+        # Run the heavy experiments aggregation in parallel with primary stats.
+        (queue_stats, pipeline_stats, model_usage, tasks_response, has_more), (
+            experiments_response,
+            experiments_has_more,
+        ) = await asyncio.gather(_fetch_primary(), _fetch_experiments_parallel())
     else:
+        queue_stats, pipeline_stats, model_usage, tasks_response, has_more = (
+            await _fetch_primary()
+        )
         experiments_response = []
         experiments_has_more = False
 

@@ -2,13 +2,24 @@ from __future__ import annotations
 
 from oddish.config import Settings
 
-# API containers handle many concurrent requests in a warm Modal container.
-# Keep a conservative pool cap so bursts do not fan out into too many database
-# connections across containers. Prepared statement caching is already disabled
-# in the engine config for pooler compatibility.
+# API containers are warm and long-lived (min_containers >= 1).  Reuse pooled
+# connections rather than opening a fresh one per request.  pool_pre_ping=True,
+# pool_recycle=300, and statement_cache_size=0 are already set in the engine
+# for Supavisor transaction-mode compatibility.
+#
+# Connection budget (worst case):
+#   Workers:  256 containers × 1 SQLAlchemy + 1 asyncpg = up to 512
+#   API:      16 containers  × pool_size(2) idle         = 32  (at rest)
+#             16 containers  × max_overflow(2) burst      = +32 (peak)
+#   Total API peak: 64 — well under the NullPool worst-case of 128
+#                   (API_CONCURRENCY_MAX=8 × 16 containers with NullPool)
+#
+# max_overflow=2 gives each container up to 4 simultaneous connections,
+# enough for the dashboard parallel gather (primary session + experiments
+# session) under 2 concurrent dashboard requests per container.
 Settings.db_use_null_pool = False
 Settings.db_pool_size = 2
-Settings.db_pool_max_overflow = 0
+Settings.db_pool_max_overflow = 2
 
 import modal
 
