@@ -87,6 +87,7 @@ oddish status
 - [Web dashboard](frontend/README.md)
 - [Cloud backend](backend/README.md)
 - [Self-hosting](SELF_HOSTING.md)
+- [Agents](AGENTS.md)
 
 ## License
 

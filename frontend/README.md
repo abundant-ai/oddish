@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is the Next.js App Router frontend for Oddish. It provides the authenticated dashboard, task browser, experiment views, public share and dataset pages, Clerk-based auth, and server-side API routes that proxy requests to either the local FastAPI backend or the Modal deployment.
+This is the Next.js App Router frontend for Oddish. It provides the authenticated dashboard, task browser, experiment views, public share and dataset pages, Clerk-based auth, and server-side API routes that proxy requests to the backend API.
 
 Current app surface:
 
@@ -37,15 +37,8 @@ Minimum setup:
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
 CLERK_SECRET_KEY=sk_test_...
 
-# Backend selection
-NEXT_PUBLIC_BACKEND_TYPE=modal
-
-# Local backend
-FASTAPI_URL=http://localhost:8000
-
-# Modal backend
-NEXT_PUBLIC_MODAL_BASE_URL=https://abundant-ai
-NEXT_PUBLIC_MODAL_ENV=prod
+# Backend API URL
+NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
 Useful optional variables:
@@ -55,16 +48,11 @@ Useful optional variables:
 CLERK_JWT_TEMPLATE=oddish
 
 # Optional Clerk route overrides
-NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in
-NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up
 NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=/dashboard
 NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=/dashboard
 
 # Optional absolute app URL, mainly useful for local HTTPS / production-like Clerk flows
 NEXT_PUBLIC_APP_URL=https://local.oddish.app
-
-# Optional full Modal API override
-NEXT_PUBLIC_MODAL_API_URL=https://your-workspace--api.modal.run
 ```
 
 ### 3. Start the dev server
@@ -79,8 +67,6 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ```bash
 pnpm dev           # Next.js dev server
-pnpm dev:local     # Force local backend
-pnpm dev:modal     # Force Modal backend
 pnpm build         # Production build
 pnpm start         # Run production server
 pnpm lint          # ESLint
@@ -98,15 +84,10 @@ Request flow:
 Browser UI
   -> Next.js pages and client components
   -> Next.js route handlers in src/app/api/*
-  -> local FastAPI or Modal API
+  -> backend API (FastAPI or Modal)
 ```
 
-The backend target is resolved by `src/lib/backend-config.ts`:
-
-- `NEXT_PUBLIC_BACKEND_TYPE=local|modal`
-- `FASTAPI_URL` for local development
-- `NEXT_PUBLIC_MODAL_BASE_URL` plus `NEXT_PUBLIC_MODAL_ENV` for constructed Modal URLs
-- `NEXT_PUBLIC_MODAL_API_URL` for an explicit full Modal API override
+The backend URL is configured via a single `NEXT_PUBLIC_API_URL` env variable in `src/lib/backend-config.ts`. Set it to `http://localhost:8000` for local development or to a deployed API URL for staging/production.
 
 Global client-side fetching defaults live in `src/app/providers.tsx`, which installs an `SWRConfig` with deduping and conservative revalidation settings for the entire app.
 
@@ -173,38 +154,13 @@ frontend/
 
 ## Development Workflows
 
-### Local backend
-
-From the repo root in one terminal (start Postgres first, then the API):
+Set `NEXT_PUBLIC_API_URL` in `.env.local` to point at the backend you want to use, then run:
 
 ```bash
-docker run -d --name oddish-db -e POSTGRES_USER=oddish -e POSTGRES_PASSWORD=oddish -e POSTGRES_DB=oddish -p 5432:5432 postgres:16-alpine
-cd oddish
-uv run python -m oddish.db setup
-uv run python -m oddish.api
+pnpm dev
 ```
 
-Then from `frontend/` in another terminal:
-
-```bash
-pnpm dev:local
-```
-
-### Modal backend
-
-From `backend/` in one terminal:
-
-```bash
-modal serve deploy.py
-```
-
-Then from `frontend/` in another terminal:
-
-```bash
-pnpm dev:modal
-```
-
-If you need to point at a specific Modal API URL, set `NEXT_PUBLIC_MODAL_API_URL` in `.env.local`.
+`NEXT_PUBLIC_API_URL` defaults to `http://localhost:8000` if not set. For backend setup and deployment instructions, see [`AGENTS.md`](../AGENTS.md) and [`backend/README.md`](../backend/README.md).
 
 ## Deployment
 
@@ -249,16 +205,18 @@ NEXT_PUBLIC_APP_URL=https://local.oddish.app
 - shadcn/ui and Radix primitives
 - SWR for client-side data fetching
 - Clerk for auth
+- Recharts for charts and graphs
+- Shiki for syntax highlighting
+- @tanstack/react-virtual for virtualized lists
 
 ## Troubleshooting
 
 ### "Failed to fetch" or disconnected backend
 
-Check that the selected backend is running and reachable:
+Check that the backend is running and reachable at the configured URL:
 
 ```bash
-curl http://localhost:8000/openapi.json
-curl https://abundant-ai--api.modal.run/openapi.json
+curl ${NEXT_PUBLIC_API_URL:-http://localhost:8000}/openapi.json
 ```
 
 ### Clerk auth issues
@@ -271,5 +229,5 @@ curl https://abundant-ai--api.modal.run/openapi.json
 
 The frontend is intended to call `src/app/api/*`, not the backend directly from browser code. If requests fail:
 
-- verify `FASTAPI_URL` or `NEXT_PUBLIC_MODAL_*` values
+- verify `NEXT_PUBLIC_API_URL` in `.env.local`
 - make sure the request is going through the Next.js route handlers

@@ -13,6 +13,7 @@ from oddish.api.helpers import (
     build_trial_response,
     fetch_trial_queue_info,
     fetch_trial_analysis_summaries,
+    get_task_status_trials,
 )
 from collections.abc import Collection
 from harbor.models.environment_type import EnvironmentType
@@ -160,17 +161,22 @@ async def list_tasks_core(
     result = await session.execute(query)
     tasks = result.scalars().all()
 
-    # When scoped to an experiment, only include trials that belong to it.
-    if experiment_id and include_trials:
+    # When trial payloads are loaded, constrain them to the subset the status UI
+    # should reflect: first the requested experiment, then the task's active
+    # version within that experiment.
+    if include_trials:
         from sqlalchemy.orm.attributes import set_committed_value
 
         for task in tasks:
-            filtered = [
-                t
-                for t in task.trials
-                if t.experiment_id == experiment_id or t.experiment_id is None
-            ]
-            set_committed_value(task, "trials", filtered)
+            filtered_trials = list(task.trials)
+            if experiment_id:
+                filtered_trials = [
+                    t
+                    for t in filtered_trials
+                    if t.experiment_id == experiment_id or t.experiment_id is None
+                ]
+                set_committed_value(task, "trials", filtered_trials)
+            set_committed_value(task, "trials", get_task_status_trials(task))
 
     if include_trials:
         queue_info_by_trial_id = await fetch_trial_queue_info(
@@ -455,6 +461,9 @@ async def get_task_status_core(
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
     if include_trials:
+        from sqlalchemy.orm.attributes import set_committed_value
+
+        set_committed_value(task, "trials", get_task_status_trials(task))
         queue_info_by_trial_id = await fetch_trial_queue_info(
             session, trials=task.trials
         )

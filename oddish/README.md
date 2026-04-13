@@ -49,7 +49,7 @@ export ODDISH_API_KEY="ok_..."
 ```
 
 Need to deploy your own stack? See [`../SELF_HOSTING.md`](../SELF_HOSTING.md).
-Need package internals, architecture, or development notes? See [`AGENTS.md`](AGENTS.md).
+Need package internals, architecture, or development notes? See [`AGENTS.md`](../AGENTS.md).
 
 ## Commands
 
@@ -122,7 +122,7 @@ Common flags:
 - `--publish` publishes the experiment for public read-only access
 - `--disable-verification` skips task verification
 - `--override-cpus`, `--override-memory-mb`, `--override-gpus`, `--override-storage-mb`, and `--force-build` override environment settings
-- `--agent-env`, `--agent-kwarg`, and `--artifact` pass Harbor agent/env configuration through to every submitted config
+- `--ae`/`--agent-env`, `--ak`/`--agent-kwarg`, and `--artifact` pass Harbor agent/env configuration through to every submitted config
 - `--api` overrides the API URL for a single invocation
 
 Supported `--env` values:
@@ -175,6 +175,9 @@ Examples:
 # System overview
 oddish status
 
+# Task snapshot
+oddish status <task_id>
+
 # Watch a task
 oddish status <task_id> --watch
 
@@ -213,8 +216,9 @@ oddish pull <experiment_id> --include-task-files
 
 By default, pull output is written to `./.oddish/<target>` and includes a
 `manifest.json` describing the fetch. Use `--no-logs`, `--no-files`,
-`--structured`, `--include-task-files`, and `--out` to control what gets
-downloaded and where it lands.
+`--structured`, `--include-task-files`, `--out`, and `--type` to control what
+gets downloaded and where it lands. `--type trial|task|experiment` forces the
+target type instead of auto-resolving it.
 
 ### `oddish delete`
 
@@ -243,5 +247,5 @@ oddish pull <task_id> --watch
 
 ## More Technical Docs
 
-- Package internals and implementation notes: [`AGENTS.md`](AGENTS.md)
+- Package internals and implementation notes: [`AGENTS.md`](../AGENTS.md)
 - Self-hosting and deployment: [`../SELF_HOSTING.md`](../SELF_HOSTING.md)

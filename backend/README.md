@@ -7,7 +7,7 @@ Serverless API and worker orchestration for Oddish Cloud, deployed on [Modal](ht
 The backend wraps the OSS `oddish` core with:
 - Multi-tenant API (`org_id`-scoped queries)
 - Dual auth (API keys + Clerk JWTs)
-- Modal-hosted API/workers/sandboxes
+- Modal-hosted API/workers/sandboxes, or Railway/Docker for standalone deployment
 - Queue-key concurrency controls
 - Public token-based sharing endpoints
 
@@ -90,27 +90,27 @@ The API layer enforces this scope in all list/read/write queries.
 |------|---------|
 | `deploy.py` | Modal app entrypoint (imports API + worker functions) |
 | `modal_app.py` | Modal image, volumes, and shared runtime setup |
-| `endpoints.py` | ASGI entrypoint and oddish settings patching for Modal |
+| `endpoints.py` | Modal ASGI app function with concurrency, volume, and secrets wiring |
+| `serve.py` | Railway/uvicorn entrypoint for non-Modal deployment |
+| `Dockerfile` | Container image for Railway or standalone deployment |
 | `cloud_policy.py` | Hosted-only environment policy (allowed sandboxes, default cloud env) |
 | `api/app.py` | FastAPI app factory + startup/lifespan wiring |
 | `api/schemas.py` | Pydantic models for org/auth/share responses |
 | `api/routers/tasks.py` | Task upload, browse, versions, sweep creation, sharing, retries, and file access |
 | `api/routers/trials.py` | Trial listing, retry/reanalysis, logs, result, trajectory, and debug file inspection |
 | `api/routers/dashboard.py` | Cached aggregate dashboard endpoint (queues, usage, tasks, experiments) |
-| `api/dashboard_experiments.py` | Dashboard query helpers for experiment summaries and counts |
 | `api/routers/orgs.py` | Current org lookup and Clerk-backed user management |
 | `api/routers/api_keys.py` | Org API key listing, creation, and revocation |
-| `api/routers/public.py` | Public token-based read routes (no auth) |
 | `api/routers/admin.py` | Queue-slot and queue-status inspection endpoints |
 | `api/routers/clerk_webhooks.py` | Clerk org/user synchronization |
 | `api/routers/github_webhooks.py` | GitHub status/refresh integrations |
 | `auth/verification.py` | API key + Clerk JWT verification and auth caches |
 | `auth/provisioning.py` | Clerk user/org provisioning helpers |
+| `auth/types.py` | `AuthContext` dataclass and `AuthMethod` enum |
 | `models.py` | Cloud auth models (orgs/users/api keys) |
 | `worker/functions.py` | Modal dispatcher and worker spawn orchestration |
 | `worker/runtime.py` | Modal runtime patching and storage setup |
-| `worker/github.py` | GitHub notification hooks around shared queue execution |
-| `integrations/github/` | PR comment formatting, metadata parsing, and notification client |
+| `worker/github.py` | Thin wrappers delegating GitHub notifications to `oddish.integrations.github` |
 | `alembic/` | Cloud migrations (auth + cloud table extensions) |
 
 ## Configuration
@@ -166,11 +166,10 @@ Local `backend/.env` values are layered on top of the shared Modal secret for lo
 
 ### oddish runtime patching
 
-`endpoints.py` and `worker/runtime.py` patch oddish settings for Modal execution:
+`endpoints.py`, `serve.py`, and `worker/runtime.py` patch oddish settings at startup:
 
-- disable auto-started local workers
-- point storage paths to mounted Modal volumes
-- force Harbor environment to Modal-compatible mode
+- `endpoints.py` / `serve.py`: set `db_use_null_pool` for per-request DB connections
+- `worker/runtime.py`: disable auto-started local workers, point storage paths to mounted Modal volumes, and force Harbor environment to Modal-compatible mode
 
 ## API Endpoints
 
