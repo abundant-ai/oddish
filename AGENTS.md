@@ -337,6 +337,11 @@ GITHUB_TOKEN=...
 ODDISH_DASHBOARD_URL=...
 ```
 
+Hosted API containers keep a conservative warm SQLAlchemy pool by default so
+Modal bursts do not overrun shared Postgres poolers. The engine still disables
+prepared statement caching so it remains compatible with transaction-mode
+poolers such as Supavisor / PgBouncer.
+
 Modal runtime knobs (read by `modal_app.py`):
 
 ```bash
@@ -405,6 +410,15 @@ Browser UI
 ```
 
 The backend URL is configured via `NEXT_PUBLIC_API_URL` in `src/lib/backend-config.ts`.
+
+Dashboard and experiment detail pages seed client-side SWR from their server
+render and suppress the immediate mount revalidation when the fallback payload
+already matches the default view. The route handlers for
+`src/app/api/dashboard/route.ts` and
+`src/app/api/experiments/[experiment]/tasks/route.ts` emit `Server-Timing`
+headers and forward upstream timing data for latency debugging. The backend
+dashboard aggregation now stays on a single DB session per request to avoid
+doubling connection pressure during bursts.
 
 ### Local Development
 

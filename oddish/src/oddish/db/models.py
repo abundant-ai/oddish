@@ -135,6 +135,7 @@ class TaskModel(Base):
     __table_args__ = (
         Index("idx_tasks_org_created_at", "org_id", "created_at"),
         Index("idx_tasks_experiment_id", "experiment_id"),
+        Index("idx_tasks_org_experiment_created_at", "org_id", "experiment_id", "created_at"),
         Index(
             "idx_tasks_unique_org_name",
             text("COALESCE(org_id, '')"),
@@ -402,6 +403,12 @@ class TrialModel(Base):
         # Composite index for efficient queue stats aggregation (no JOIN needed)
         Index("idx_trials_org_provider_status", "org_id", "provider", "status"),
         Index("idx_trials_org_queue_key_status", "org_id", "queue_key", "status"),
+        Index(
+            "idx_trials_org_experiment_created_at",
+            "org_id",
+            "experiment_id",
+            "created_at",
+        ),
         Index(
             "idx_trials_dashboard_usage",
             "org_id",

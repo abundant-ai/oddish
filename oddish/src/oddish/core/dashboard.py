@@ -1,12 +1,10 @@
 from __future__ import annotations
-
-import asyncio
 import json
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, case, exists, func, nulls_last, or_, select
+from sqlalchemy import and_, case, func, nulls_last, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -19,9 +17,9 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
     VerdictStatus,
-    get_session,
 )
-from oddish.queue import get_pipeline_stats, get_queue_stats_with_concurrency
+from oddish.queue import get_queue_and_pipeline_stats_with_concurrency
+from oddish.timing import TimingRecorder, elapsed_ms, now
 
 
 def _parse_github_meta(raw_github_meta: str | None) -> dict[str, Any] | None:
@@ -82,53 +80,6 @@ def _set_cached(cache_key: str, data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _load_trial_aggregates_for_experiments(
-    session: AsyncSession,
-    *,
-    org_id: str | None = None,
-    experiment_ids: list[str],
-) -> dict[str, dict[str, int]]:
-    """Aggregate trial counts per experiment.
-
-    Uses ``trial.experiment_id`` so that trials attached to a different
-    experiment than their task's ``experiment_id`` are counted correctly.
-    """
-    if not experiment_ids:
-        return {}
-
-    filters = [TrialModel.experiment_id.in_(experiment_ids)]
-    if org_id is not None:
-        filters.append(TrialModel.org_id == org_id)
-
-    result = await session.execute(
-        select(
-            TrialModel.experiment_id.label("experiment_id"),
-            func.count(TrialModel.id).label("total_trials"),
-            func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
-                "completed_trials"
-            ),
-            func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
-                "failed_trials"
-            ),
-            func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
-            func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
-        )
-        .where(*filters)
-        .group_by(TrialModel.experiment_id)
-    )
-
-    return {
-        str(row.experiment_id): {
-            "total_trials": int(row.total_trials or 0),
-            "completed_trials": int(row.completed_trials or 0),
-            "failed_trials": int(row.failed_trials or 0),
-            "reward_success": int(row.reward_success or 0),
-            "reward_total": int(row.reward_total or 0),
-        }
-        for row in result.all()
-    }
-
-
 async def load_dashboard_experiments(
     session: AsyncSession,
     *,
@@ -137,8 +88,9 @@ async def load_dashboard_experiments(
     experiments_offset: int,
     experiments_query: str | None,
     experiments_status: str,
+    record_timing: TimingRecorder | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Page experiment rows first, then aggregate trials for the visible page."""
+    """Load experiment summaries for the dashboard."""
 
     # Task-level aggregation (via task.experiment_id)
     task_agg_query = select(
@@ -207,6 +159,30 @@ async def load_dashboard_experiments(
         TrialModel.experiment_id.label("experiment_id"),
         func.max(TrialModel.created_at).label("last_trial_created_at"),
         func.count(func.distinct(TrialModel.task_id)).label("trial_task_count"),
+        func.count(TrialModel.id).label("total_trials"),
+        func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
+            "completed_trials"
+        ),
+        func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
+            "failed_trials"
+        ),
+        func.count(
+            case(
+                (
+                    TrialModel.status.in_(
+                        [
+                            TrialStatus.PENDING,
+                            TrialStatus.QUEUED,
+                            TrialStatus.RUNNING,
+                            TrialStatus.RETRYING,
+                        ]
+                    ),
+                    1,
+                )
+            )
+        ).label("active_trials"),
+        func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
+        func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
     ).where(TrialModel.experiment_id.isnot(None))
     if org_id is not None:
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
@@ -250,7 +226,17 @@ async def load_dashboard_experiments(
             ),
             func.coalesce(task_agg.c.verdict_failed, 0).label("verdict_failed"),
             func.coalesce(task_agg.c.verdict_pending, 0).label("verdict_pending"),
-            func.greatest(
+            func.coalesce(trial_agg.c.total_trials, 0).label("total_trials"),
+            func.coalesce(trial_agg.c.completed_trials, 0).label("completed_trials"),
+            func.coalesce(trial_agg.c.failed_trials, 0).label("failed_trials"),
+            func.coalesce(trial_agg.c.active_trials, 0).label("active_trials"),
+            func.coalesce(trial_agg.c.reward_success, 0).label("reward_success"),
+            func.coalesce(trial_agg.c.reward_total, 0).label("reward_total"),
+            func.coalesce(
+                func.greatest(
+                    task_agg.c.last_task_created_at,
+                    trial_agg.c.last_trial_created_at,
+                ),
                 task_agg.c.last_task_created_at,
                 trial_agg.c.last_trial_created_at,
             ).label("last_created_at"),
@@ -271,34 +257,6 @@ async def load_dashboard_experiments(
         exp_filter = and_(exp_filter, ExperimentModel.org_id == org_id)
     experiment_rows = exp_base.where(exp_filter).subquery()
 
-    # Status filter helpers (use trial.experiment_id for correctness)
-    active_trial_filters = [
-        TrialModel.experiment_id == experiment_rows.c.experiment_id,
-        TrialModel.status.in_(
-            [
-                TrialStatus.PENDING,
-                TrialStatus.QUEUED,
-                TrialStatus.RUNNING,
-                TrialStatus.RETRYING,
-            ]
-        ),
-    ]
-    if org_id is not None:
-        active_trial_filters.append(TrialModel.org_id == org_id)
-    active_trial_exists = exists(
-        select(1).select_from(TrialModel).where(*active_trial_filters)
-    )
-
-    failed_trial_filters = [
-        TrialModel.experiment_id == experiment_rows.c.experiment_id,
-        TrialModel.status == TrialStatus.FAILED,
-    ]
-    if org_id is not None:
-        failed_trial_filters.append(TrialModel.org_id == org_id)
-    failed_trial_exists = exists(
-        select(1).select_from(TrialModel).where(*failed_trial_filters)
-    )
-
     query = select(experiment_rows)
 
     normalized_query = (experiments_query or "").strip().lower()
@@ -318,18 +276,19 @@ async def load_dashboard_experiments(
         )
 
     if experiments_status == "active":
-        query = query.where(active_trial_exists)
+        query = query.where(experiment_rows.c.active_trials > 0)
     elif experiments_status == "needs-review":
         query = query.where(experiment_rows.c.verdict_needs_review > 0)
     elif experiments_status == "pending-verdict":
         query = query.where(experiment_rows.c.verdict_pending > 0)
     elif experiments_status == "failed":
         query = query.where(
-            or_(experiment_rows.c.verdict_failed > 0, failed_trial_exists)
+            or_(experiment_rows.c.verdict_failed > 0, experiment_rows.c.failed_trials > 0)
         )
     elif experiments_status == "completed":
-        query = query.where(~active_trial_exists)
+        query = query.where(experiment_rows.c.active_trials == 0)
 
+    query_started_at = now()
     paged_rows = (
         (
             await session.execute(
@@ -344,33 +303,26 @@ async def load_dashboard_experiments(
         .mappings()
         .all()
     )
+    if record_timing is not None:
+        record_timing(
+            "dashboard_experiments_query",
+            elapsed_ms(query_started_at),
+            "Dashboard experiments query",
+        )
 
     experiments_has_more = len(paged_rows) > experiments_limit
     page_rows = paged_rows[:experiments_limit]
-    trial_aggregates = await _load_trial_aggregates_for_experiments(
-        session,
-        org_id=org_id,
-        experiment_ids=[str(row["experiment_id"]) for row in page_rows],
-    )
 
     experiments_response: list[dict[str, Any]] = []
+    build_started_at = now()
     for row in page_rows:
         github_meta = _parse_github_meta(row["last_github_meta"])
         last_author_name = row["last_github_username"] or row["last_user"]
         last_author_source = "github" if row["last_github_username"] else "api"
-        trial_counts = trial_aggregates.get(
-            str(row["experiment_id"]),
-            {
-                "total_trials": 0,
-                "completed_trials": 0,
-                "failed_trials": 0,
-                "reward_success": 0,
-                "reward_total": 0,
-            },
-        )
-        total_trials = int(trial_counts["total_trials"])
-        completed_trials = int(trial_counts["completed_trials"])
-        failed_trials = int(trial_counts["failed_trials"])
+        total_trials = int(row["total_trials"] or 0)
+        completed_trials = int(row["completed_trials"] or 0)
+        failed_trials = int(row["failed_trials"] or 0)
+        active_trials = int(row["active_trials"] or 0)
 
         experiments_response.append(
             {
@@ -381,11 +333,9 @@ async def load_dashboard_experiments(
                 "total_trials": total_trials,
                 "completed_trials": completed_trials,
                 "failed_trials": failed_trials,
-                "active_trials": max(
-                    0, total_trials - completed_trials - failed_trials
-                ),
-                "reward_success": int(trial_counts["reward_success"]),
-                "reward_total": int(trial_counts["reward_total"]),
+                "active_trials": active_trials,
+                "reward_success": int(row["reward_success"] or 0),
+                "reward_total": int(row["reward_total"] or 0),
                 "analysis_tasks": int(row["analysis_tasks"] or 0),
                 "verdict_good": int(row["verdict_good"] or 0),
                 "verdict_needs_review": int(row["verdict_needs_review"] or 0),
@@ -419,6 +369,12 @@ async def load_dashboard_experiments(
             }
         )
 
+    if record_timing is not None:
+        record_timing(
+            "dashboard_experiments_build",
+            elapsed_ms(build_started_at),
+            "Dashboard experiments response build",
+        )
     return experiments_response, experiments_has_more
 
 
@@ -571,13 +527,9 @@ async def get_dashboard_core(
     include_tasks: bool = True,
     include_usage: bool = True,
     include_experiments: bool = True,
+    record_timing: TimingRecorder | None = None,
 ) -> dict:
-    """Combined dashboard data: queues, pipeline, usage, tasks, experiments.
-
-    When experiments are requested alongside other data, the experiment query
-    runs on a separate DB session in parallel (max 2 connections) to cut
-    overall latency significantly.
-    """
+    """Combined dashboard data: queues, pipeline, usage, tasks, experiments."""
 
     cache_key = (
         f"dashboard:{org_id}:{tasks_limit}:{tasks_offset}:"
@@ -587,6 +539,8 @@ async def get_dashboard_core(
     )
     cached = _get_cached(cache_key)
     if cached:
+        if record_timing is not None:
+            record_timing("dashboard_cache", 0.0, "Dashboard cache hit")
         return cached
 
     is_usage_only_request = (
@@ -605,14 +559,27 @@ async def get_dashboard_core(
                 "verdicts": {},
             }
         else:
-            qs = await get_queue_stats_with_concurrency(session, org_id)
-            ps = await get_pipeline_stats(session, org_id)
+            queue_started_at = now()
+            qs, ps = await get_queue_and_pipeline_stats_with_concurrency(session, org_id)
+            if record_timing is not None:
+                record_timing(
+                    "dashboard_queue_pipeline",
+                    elapsed_ms(queue_started_at),
+                    "Queue and pipeline stats",
+                )
 
         mu: list[dict[str, Any]] = []
         if include_usage:
+            usage_started_at = now()
             mu = await get_model_usage_core(
                 session, org_id=org_id, usage_minutes=usage_minutes
             )
+            if record_timing is not None:
+                record_timing(
+                    "dashboard_usage",
+                    elapsed_ms(usage_started_at),
+                    "Dashboard usage query",
+                )
 
         tr: list[dict] = []
         hm = False
@@ -627,45 +594,55 @@ async def get_dashboard_core(
             if org_id is not None:
                 tasks_q = tasks_q.where(TaskModel.org_id == org_id)
 
+            tasks_started_at = now()
             tasks_result = await session.execute(tasks_q)
+            if record_timing is not None:
+                record_timing(
+                    "dashboard_tasks_query",
+                    elapsed_ms(tasks_started_at),
+                    "Dashboard tasks query",
+                )
             paged_tasks = tasks_result.scalars().all()
             hm = len(paged_tasks) > tasks_limit
             fetched_tasks = paged_tasks[:tasks_limit]
 
             if fetched_tasks:
+                build_started_at = now()
                 tr = [
                     ts.model_dump()
                     for ts in await build_task_status_responses_from_counts(
                         session, tasks=fetched_tasks
                     )
                 ]
+                if record_timing is not None:
+                    record_timing(
+                        "dashboard_tasks_build",
+                        elapsed_ms(build_started_at),
+                        "Dashboard tasks response build",
+                    )
 
         return qs, ps, mu, tr, hm
 
-    async def _fetch_experiments_parallel() -> tuple[list[dict[str, Any]], bool]:
-        """Experiments on a separate session so they run concurrently."""
-        async with get_session() as exp_session:
-            return await load_dashboard_experiments(
-                exp_session,
-                org_id=org_id,
-                experiments_limit=experiments_limit,
-                experiments_offset=experiments_offset,
-                experiments_query=experiments_query,
-                experiments_status=experiments_status,
-            )
-
+    dashboard_started_at = now()
+    queue_stats, pipeline_stats, model_usage, tasks_response, has_more = await _fetch_primary()
     if include_experiments:
-        # Run experiments on a separate session in parallel with primary queries.
-        (queue_stats, pipeline_stats, model_usage, tasks_response, has_more), (
-            experiments_response,
-            experiments_has_more,
-        ) = await asyncio.gather(
-            _fetch_primary(), _fetch_experiments_parallel()
+        experiments_started_at = now()
+        experiments_response, experiments_has_more = await load_dashboard_experiments(
+            session,
+            org_id=org_id,
+            experiments_limit=experiments_limit,
+            experiments_offset=experiments_offset,
+            experiments_query=experiments_query,
+            experiments_status=experiments_status,
+            record_timing=record_timing,
         )
+        if record_timing is not None:
+            record_timing(
+                "dashboard_experiments_total",
+                elapsed_ms(experiments_started_at),
+                "Dashboard experiments total",
+            )
     else:
-        queue_stats, pipeline_stats, model_usage, tasks_response, has_more = (
-            await _fetch_primary()
-        )
         experiments_response = []
         experiments_has_more = False
 
@@ -685,4 +662,10 @@ async def get_dashboard_core(
     }
 
     _set_cached(cache_key, {**response, "cached": True})
+    if record_timing is not None:
+        record_timing(
+            "dashboard_total",
+            elapsed_ms(dashboard_started_at),
+            "Dashboard core total",
+        )
     return response

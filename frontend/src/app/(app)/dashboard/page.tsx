@@ -4,6 +4,7 @@ import {
   getBackendUrl,
   getClerkToken,
 } from "@/lib/backend-config";
+import { buildDashboardBackendParams, DEFAULT_DASHBOARD_REQUEST_PARAMS } from "@/lib/dashboard-request";
 import type { DashboardResponse } from "@/lib/types";
 import { DashboardClient } from "./dashboard-client";
 
@@ -19,13 +20,11 @@ async function getInitialDashboardData(): Promise<DashboardResponse | null> {
       return null;
     }
 
-    const url = getBackendUrl("dashboard", "", {
-      include_tasks: "false",
-      usage_minutes: "1440",
-      experiments_limit: "25",
-      experiments_offset: "0",
-      experiments_status: "all",
-    });
+    const url = getBackendUrl(
+      "dashboard",
+      "",
+      buildDashboardBackendParams(DEFAULT_DASHBOARD_REQUEST_PARAMS),
+    );
     const response = await fetch(url, {
       cache: "no-store",
       headers: getAuthHeaders(token),

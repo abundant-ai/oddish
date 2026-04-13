@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from oddish.config import Settings
 
-Settings.db_use_null_pool = True
+Settings.db_use_null_pool = False
+Settings.db_pool_size = 2
+Settings.db_pool_max_overflow = 0
 
 from api.app import create_app  # noqa: E402
 

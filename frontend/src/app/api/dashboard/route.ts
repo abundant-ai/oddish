@@ -5,16 +5,31 @@ import {
   getBackendUrl,
   getClerkToken,
 } from "@/lib/backend-config";
+import {
+  joinServerTimingHeaders,
+  ServerTimingCollector,
+} from "@/lib/server-timing";
 
 export async function GET(request: NextRequest) {
+  const timings = new ServerTimingCollector();
+  const requestStartedAt = performance.now();
+
   try {
-    const authObj = await auth();
+    const authObj = await timings.measureAsync(
+      "next_auth",
+      () => auth(),
+      "Clerk auth",
+    );
 
     if (!authObj || !authObj.userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const token = await getClerkToken(authObj.getToken);
+    const token = await timings.measureAsync(
+      "next_token",
+      () => getClerkToken(authObj.getToken),
+      "Clerk token",
+    );
 
     if (!token) {
       console.error("Failed to get Clerk token for user:", authObj.userId);
@@ -49,13 +64,22 @@ export async function GET(request: NextRequest) {
     if (includeExperiments) params.include_experiments = includeExperiments;
     const url = getBackendUrl("dashboard", "", params);
 
-    const res = await fetch(url, {
-      cache: "no-store",
-      headers: getAuthHeaders(token),
-    });
+    const res = await timings.measureAsync(
+      "next_upstream",
+      () =>
+        fetch(url, {
+          cache: "no-store",
+          headers: getAuthHeaders(token),
+        }),
+      "Backend fetch",
+    );
 
     if (!res.ok) {
-      const errorText = await res.text();
+      const errorText = await timings.measureAsync(
+        "next_error_body",
+        () => res.text(),
+        "Read error body",
+      );
       console.error(`[dashboard] Backend error: ${res.status} - ${errorText}`);
       return NextResponse.json(
         { error: "Failed to fetch dashboard", details: errorText },
@@ -63,12 +87,28 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const data = await res.json();
+    const data = await timings.measureAsync(
+      "next_json",
+      () => res.json(),
+      "Decode JSON",
+    );
+    timings.add(
+      "next_total",
+      performance.now() - requestStartedAt,
+      "Dashboard proxy total",
+    );
     const response = NextResponse.json(data);
     response.headers.set(
       "Cache-Control",
       "private, max-age=5, stale-while-revalidate=30",
     );
+    const serverTiming = joinServerTimingHeaders(
+      timings.toHeader(),
+      res.headers.get("server-timing"),
+    );
+    if (serverTiming) {
+      response.headers.set("Server-Timing", serverTiming);
+    }
     return response;
   } catch (error) {
     console.error("Dashboard API route error:", error);

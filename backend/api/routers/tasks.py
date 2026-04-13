@@ -5,7 +5,7 @@ from collections import Counter
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import delete, select
 from sqlalchemy.engine import CursorResult
@@ -58,6 +58,7 @@ from oddish.db import (
     get_session,
 )
 from oddish.db.storage import collect_s3_prefixes_for_deletion, delete_s3_prefixes
+from oddish.timing import add_server_timing_metric, elapsed_ms, now
 from oddish.queue import (
     append_trials_to_task,
     cancel_tasks_runs,
@@ -283,6 +284,7 @@ async def create_task_sweep(
 
 @router.get("/tasks", response_model=list[TaskStatusResponse])
 async def list_tasks(
+    request: Request,
     auth: Annotated[AuthContext, Depends(require_auth)],
     status: str | None = None,
     user: str | None = None,
@@ -296,6 +298,14 @@ async def list_tasks(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
+        connect_started_at = now()
+        await session.connection()
+        add_server_timing_metric(
+            request,
+            "db_connect",
+            elapsed_ms(connect_started_at),
+            "Tasks DB connect",
+        )
         tasks = await list_tasks_core(
             session,
             status=status,
@@ -307,12 +317,16 @@ async def list_tasks(
             offset=offset,
             org_id=auth.org_id,
             include_empty_rewards=True,
+            record_timing=lambda name, duration_ms, description=None: add_server_timing_metric(
+                request, name, duration_ms, description
+            ),
         )
         return tasks
 
 
 @router.get("/tasks/browse", response_model=TaskBrowseResponse)
 async def browse_tasks(
+    request: Request,
     auth: Annotated[AuthContext, Depends(require_auth)],
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -322,12 +336,23 @@ async def browse_tasks(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
+        connect_started_at = now()
+        await session.connection()
+        add_server_timing_metric(
+            request,
+            "db_connect",
+            elapsed_ms(connect_started_at),
+            "Browse DB connect",
+        )
         return await browse_tasks_core(
             session,
             org_id=auth.org_id,
             limit=limit,
             offset=offset,
             query=query,
+            record_timing=lambda name, duration_ms, description=None: add_server_timing_metric(
+                request, name, duration_ms, description
+            ),
         )
 
 

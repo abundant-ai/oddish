@@ -722,6 +722,58 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
     return stats
 
 
+async def get_queue_and_pipeline_stats_with_concurrency(
+    session: AsyncSession, org_id: str | None = None
+) -> tuple[dict[str, dict], dict[str, dict[str, int]]]:
+    """Collect queue and pipeline stats without duplicating status scans."""
+    stats = await get_queue_stats(session, org_id)
+    queue_stats: dict[str, dict] = {}
+    queue_keys = set(stats.keys()) | settings.get_known_queue_keys()
+    for queue_key in sorted(queue_keys):
+        provider_stats = stats.get(
+            queue_key,
+            {
+                "pending": 0,
+                "queued": 0,
+                "running": 0,
+                "success": 0,
+                "failed": 0,
+                "retrying": 0,
+            },
+        )
+        queue_stats[queue_key] = {
+            **provider_stats,
+            "recommended_concurrency": settings.get_model_concurrency(queue_key),
+        }
+
+    trial_pipeline: dict[str, int] = {}
+    analysis_pipeline: dict[str, int] = {}
+    verdict_pipeline: dict[str, int] = {}
+    analysis_queue_key = settings.get_analysis_queue_key()
+    verdict_queue_key = settings.get_verdict_queue_key()
+
+    for queue_key, provider_stats in stats.items():
+        for status_name, count in provider_stats.items():
+            if queue_key == analysis_queue_key:
+                analysis_pipeline[status_name] = analysis_pipeline.get(status_name, 0) + int(
+                    count
+                )
+            elif queue_key == verdict_queue_key:
+                verdict_pipeline[status_name] = verdict_pipeline.get(status_name, 0) + int(
+                    count
+                )
+            else:
+                trial_pipeline[status_name] = trial_pipeline.get(status_name, 0) + int(
+                    count
+                )
+
+    return queue_stats, {
+        "trials": trial_pipeline,
+        "analyses": analysis_pipeline,
+        "verdicts": verdict_pipeline,
+    }
+
+
 async def get_queue_stats_with_concurrency(
     session: AsyncSession, org_id: str | None = None
 ) -> dict[str, dict]:

@@ -4,11 +4,12 @@ import logging
 import asyncio
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.exc import DBAPIError, TimeoutError as SATimeoutError
 
 from models import APIKeyScope, UserRole, hash_api_key
 from oddish.db import get_session
+from oddish.timing import add_server_timing_metric, elapsed_ms, now
 
 from auth.provisioning import get_or_create_user_from_clerk
 from auth.types import AuthContext, AuthMethod
@@ -44,6 +45,7 @@ def _database_unavailable_http_error() -> HTTPException:
 
 
 async def get_auth_context(
+    request: Request,
     authorization: Annotated[str | None, Header()] = None,
     x_clerk_authorization: Annotated[str | None, Header()] = None,
     x_authorization: Annotated[str | None, Header()] = None,
@@ -59,46 +61,55 @@ async def get_auth_context(
 
     Raises HTTPException for invalid credentials.
     """
-    auth_header = authorization or x_clerk_authorization or x_authorization
+    auth_started_at = now()
+    try:
+        auth_header = authorization or x_clerk_authorization or x_authorization
 
-    # No auth header - anonymous
-    if auth_header is None:
-        return AuthContext(method=AuthMethod.ANONYMOUS)
+        # No auth header - anonymous
+        if auth_header is None:
+            return AuthContext(method=AuthMethod.ANONYMOUS)
 
-    # Parse Bearer token
-    if not auth_header.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authorization header format. Expected: Bearer <token>",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    token = auth_header[7:]  # Remove "Bearer " prefix
-
-    # API Key authentication (starts with "ok_")
-    if token.startswith("ok_"):
-        # Cache key based on key hash (stable across requests)
-        cache_key = f"apikey:{hash_api_key(token)}"
-
-        # Check cache first
-        cached = get_cached_auth(cache_key)
-        if cached:
-            return AuthContext(
-                method=cached.method,
-                org_id=cached.org_id,
-                api_key_id=cached.api_key_id,
-                scope=cached.scope,
-                # Note: org/api_key ORM objects not included in cached response
-                # Endpoints should use org_id/api_key_id for queries
+        # Parse Bearer token
+        if not auth_header.startswith("Bearer "):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid authorization header format. Expected: Bearer <token>",
+                headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # Cache miss - validate and cache
-        for attempt in range(2):
-            try:
-                cached_auth: CachedAuthData | None = None
-                auth_context: AuthContext | None = None
-                async with get_session() as session:
-                    result = await verify_api_key(session, token)
+        token = auth_header[7:]  # Remove "Bearer " prefix
+
+        # API Key authentication (starts with "ok_")
+        if token.startswith("ok_"):
+            # Cache key based on key hash (stable across requests)
+            cache_key = f"apikey:{hash_api_key(token)}"
+
+            # Check cache first
+            cached = get_cached_auth(cache_key)
+            if cached:
+                return AuthContext(
+                    method=cached.method,
+                    org_id=cached.org_id,
+                    api_key_id=cached.api_key_id,
+                    scope=cached.scope,
+                    # Note: org/api_key ORM objects not included in cached response
+                    # Endpoints should use org_id/api_key_id for queries
+                )
+
+            # Cache miss - validate and cache
+            for attempt in range(2):
+                try:
+                    cached_auth: CachedAuthData | None = None
+                    auth_context: AuthContext | None = None
+                    db_started_at = now()
+                    async with get_session() as session:
+                        result = await verify_api_key(session, token)
+                    add_server_timing_metric(
+                        request,
+                        "auth_db",
+                        elapsed_ms(db_started_at),
+                        "API key auth DB",
+                    )
 
                     if result is None:
                         # Only show "ok_***" like standard SaaS apps (Stripe, etc.)
@@ -124,61 +135,75 @@ async def get_auth_context(
                         scope=api_key.scope,
                     )
 
-                if cached_auth is not None and auth_context is not None:
-                    set_cached_auth(cache_key, cached_auth)
-                    return auth_context
-            except Exception as exc:
-                if isinstance(exc, HTTPException):
-                    raise
-                if not _is_retryable_disconnect(exc):
-                    raise
-                if attempt == 1:
-                    raise _database_unavailable_http_error() from exc
-                await _retry_after_disconnect(
-                    "Retrying API key auth after transient DB disconnect: %s",
-                    exc,
+                    if cached_auth is not None and auth_context is not None:
+                        set_cached_auth(cache_key, cached_auth)
+                        return auth_context
+                except Exception as exc:
+                    if isinstance(exc, HTTPException):
+                        raise
+                    if not _is_retryable_disconnect(exc):
+                        raise
+                    if attempt == 1:
+                        raise _database_unavailable_http_error() from exc
+                    await _retry_after_disconnect(
+                        "Retrying API key auth after transient DB disconnect: %s",
+                        exc,
+                    )
+
+        # Clerk JWT authentication (JWT format - contains dots)
+        if "." in token:
+            # Verify the JWT first (uses cached JWKS, fast)
+            jwt_started_at = now()
+            claims = await verify_clerk_jwt(token)
+            add_server_timing_metric(
+                request,
+                "auth_jwt",
+                elapsed_ms(jwt_started_at),
+                "Clerk JWT verify",
+            )
+
+            clerk_user_id = claims.get("sub")
+            clerk_org_id = claims.get("org_id")
+            email = claims.get("email")
+            org_role = claims.get("org_role")
+
+            if not clerk_user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid JWT: missing user ID",
+                    headers={"WWW-Authenticate": "Bearer"},
                 )
 
-    # Clerk JWT authentication (JWT format - contains dots)
-    if "." in token:
-        # Verify the JWT first (uses cached JWKS, fast)
-        claims = await verify_clerk_jwt(token)
+            # Cache key based on Clerk IDs (stable across token refreshes)
+            cache_key = f"clerk:{clerk_user_id}:{clerk_org_id or 'no-org'}"
 
-        clerk_user_id = claims.get("sub")
-        clerk_org_id = claims.get("org_id")
-        email = claims.get("email")
-        org_role = claims.get("org_role")
+            # Check cache first (after JWT validation to ensure token is valid)
+            cached = get_cached_auth(cache_key)
+            if cached:
+                return AuthContext(
+                    method=cached.method,
+                    org_id=cached.org_id,
+                    user_id=cached.user_id,
+                    user_role=cached.user_role,
+                    scope=cached.scope,
+                    # Note: org/user ORM objects not included in cached response
+                )
 
-        if not clerk_user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid JWT: missing user ID",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-        # Cache key based on Clerk IDs (stable across token refreshes)
-        cache_key = f"clerk:{clerk_user_id}:{clerk_org_id or 'no-org'}"
-
-        # Check cache first (after JWT validation to ensure token is valid)
-        cached = get_cached_auth(cache_key)
-        if cached:
-            return AuthContext(
-                method=cached.method,
-                org_id=cached.org_id,
-                user_id=cached.user_id,
-                user_role=cached.user_role,
-                scope=cached.scope,
-                # Note: org/user ORM objects not included in cached response
-            )
-
-        # Cache miss - lookup user/org and cache
-        for attempt in range(2):
-            try:
-                clerk_cached_auth: CachedAuthData | None = None
-                clerk_auth_context: AuthContext | None = None
-                async with get_session() as session:
-                    result = await get_or_create_user_from_clerk(
-                        session, clerk_user_id, clerk_org_id, email, org_role
+            # Cache miss - lookup user/org and cache
+            for attempt in range(2):
+                try:
+                    clerk_cached_auth: CachedAuthData | None = None
+                    clerk_auth_context: AuthContext | None = None
+                    db_started_at = now()
+                    async with get_session() as session:
+                        result = await get_or_create_user_from_clerk(
+                            session, clerk_user_id, clerk_org_id, email, org_role
+                        )
+                    add_server_timing_metric(
+                        request,
+                        "auth_db",
+                        elapsed_ms(db_started_at),
+                        "Clerk auth DB",
                     )
 
                     if result is None:
@@ -208,28 +233,35 @@ async def get_auth_context(
                         scope=APIKeyScope.FULL,
                     )
 
-                if clerk_cached_auth is not None and clerk_auth_context is not None:
-                    set_cached_auth(cache_key, clerk_cached_auth)
-                    return clerk_auth_context
-            except Exception as exc:
-                if isinstance(exc, HTTPException):
-                    raise
-                if not _is_retryable_disconnect(exc):
-                    raise
-                if attempt == 1:
-                    raise _database_unavailable_http_error() from exc
-                await _retry_after_disconnect(
-                    "Retrying Clerk auth after transient DB disconnect for %s: %s",
-                    clerk_user_id,
-                    exc,
-                )
+                    if clerk_cached_auth is not None and clerk_auth_context is not None:
+                        set_cached_auth(cache_key, clerk_cached_auth)
+                        return clerk_auth_context
+                except Exception as exc:
+                    if isinstance(exc, HTTPException):
+                        raise
+                    if not _is_retryable_disconnect(exc):
+                        raise
+                    if attempt == 1:
+                        raise _database_unavailable_http_error() from exc
+                    await _retry_after_disconnect(
+                        "Retrying Clerk auth after transient DB disconnect for %s: %s",
+                        clerk_user_id,
+                        exc,
+                    )
 
-    # Unknown token format
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Unsupported token format",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+        # Unknown token format
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unsupported token format",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    finally:
+        add_server_timing_metric(
+            request,
+            "auth_total",
+            elapsed_ms(auth_started_at),
+            "Auth dependency total",
+        )
 
 
 async def require_auth(

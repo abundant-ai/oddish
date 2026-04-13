@@ -2,17 +2,19 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from auth import APIKeyScope, AuthContext, require_auth
 from oddish.core.dashboard import get_dashboard_core
 from oddish.db import get_session
+from oddish.timing import add_server_timing_metric, elapsed_ms, now
 
 router = APIRouter(tags=["Dashboard"])
 
 
 @router.get("/dashboard")
 async def get_dashboard(
+    request: Request,
     auth: Annotated[AuthContext, Depends(require_auth)],
     tasks_limit: int = Query(200, ge=1, le=500),
     tasks_offset: int = Query(0, ge=0),
@@ -32,6 +34,14 @@ async def get_dashboard(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
+        connect_started_at = now()
+        await session.connection()
+        add_server_timing_metric(
+            request,
+            "db_connect",
+            elapsed_ms(connect_started_at),
+            "Dashboard DB connect",
+        )
         return await get_dashboard_core(
             session,
             org_id=auth.org_id,
@@ -45,4 +55,7 @@ async def get_dashboard(
             include_tasks=include_tasks,
             include_usage=include_usage,
             include_experiments=include_experiments,
+            record_timing=lambda name, duration_ms, description=None: add_server_timing_metric(
+                request, name, duration_ms, description
+            ),
         )

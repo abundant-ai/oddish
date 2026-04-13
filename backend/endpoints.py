@@ -3,10 +3,12 @@ from __future__ import annotations
 from oddish.config import Settings
 
 # API containers handle many concurrent requests in a warm Modal container.
-# Use fresh DB connections per request here so stale pooled connections do not
-# get reused across requests and tiny QueuePool settings do not become a
-# bottleneck for auth/dashboard traffic.
-Settings.db_use_null_pool = True
+# Keep a conservative pool cap so bursts do not fan out into too many database
+# connections across containers. Prepared statement caching is already disabled
+# in the engine config for pooler compatibility.
+Settings.db_use_null_pool = False
+Settings.db_pool_size = 2
+Settings.db_pool_max_overflow = 0
 
 import modal
 

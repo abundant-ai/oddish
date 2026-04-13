@@ -4,11 +4,18 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from oddish.config import settings
 from oddish.db import close_database_connections
+from oddish.timing import (
+    add_server_timing_metric,
+    elapsed_ms,
+    format_server_timing,
+    join_server_timing_headers,
+    now,
+)
 
 
 def _get_cors_origins() -> list[str]:
@@ -65,6 +72,23 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @api.middleware("http")
+    async def add_server_timing_header(request: Request, call_next):
+        request.state.server_timing_metrics = []
+        started_at = now()
+        response = await call_next(request)
+        add_server_timing_metric(
+            request,
+            "backend_total",
+            elapsed_ms(started_at),
+            "Backend request total",
+        )
+        header = format_server_timing(request.state.server_timing_metrics)
+        combined = join_server_timing_headers(response.headers.get("Server-Timing"), header)
+        if combined:
+            response.headers["Server-Timing"] = combined
+        return response
 
     from api.routers import (
         admin,

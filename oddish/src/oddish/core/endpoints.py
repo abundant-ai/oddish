@@ -43,6 +43,7 @@ from oddish.schemas import (
     TaskVersionResponse,
     TrialResponse,
 )
+from oddish.timing import TimingRecorder, elapsed_ms, now
 
 
 async def get_task_for_org_core(
@@ -74,6 +75,7 @@ async def list_tasks_core(
     offset: int = 0,
     org_id: str | None = None,
     include_empty_rewards: bool = True,
+    record_timing: TimingRecorder | None = None,
 ) -> list[TaskStatusResponse]:
     """List tasks with optional filters and aggregated trial stats."""
     query = select(TaskModel).order_by(TaskModel.created_at.desc())
@@ -158,7 +160,14 @@ async def list_tasks_core(
         )
 
     query = query.limit(limit).offset(offset)
+    query_started_at = now()
     result = await session.execute(query)
+    if record_timing is not None:
+        record_timing(
+            "tasks_query",
+            elapsed_ms(query_started_at),
+            "List tasks query",
+        )
     tasks = result.scalars().all()
 
     # When trial payloads are loaded, constrain them to the subset the status UI
@@ -179,15 +188,30 @@ async def list_tasks_core(
             set_committed_value(task, "trials", get_task_status_trials(task))
 
     if include_trials:
+        queue_info_started_at = now()
         queue_info_by_trial_id = await fetch_trial_queue_info(
             session,
             trials=[trial for task in tasks for trial in task.trials],
         )
+        if record_timing is not None:
+            record_timing(
+                "tasks_queue_info",
+                elapsed_ms(queue_info_started_at),
+                "Trial queue info",
+            )
         if compact_trials:
+            analysis_started_at = now()
             analysis_summaries = await fetch_trial_analysis_summaries(
                 session, task_ids=[task.id for task in tasks]
             )
-            return [
+            if record_timing is not None:
+                record_timing(
+                    "tasks_analysis",
+                    elapsed_ms(analysis_started_at),
+                    "Trial analysis summaries",
+                )
+            build_started_at = now()
+            response = [
                 build_task_status_response_compact(
                     task,
                     include_empty_rewards=include_empty_rewards,
@@ -196,7 +220,15 @@ async def list_tasks_core(
                 )
                 for task in tasks
             ]
-        return [
+            if record_timing is not None:
+                record_timing(
+                    "tasks_build",
+                    elapsed_ms(build_started_at),
+                    "Build compact task response",
+                )
+            return response
+        build_started_at = now()
+        response = [
             build_task_status_response(
                 task,
                 include_empty_rewards=include_empty_rewards,
@@ -204,12 +236,27 @@ async def list_tasks_core(
             )
             for task in tasks
         ]
+        if record_timing is not None:
+            record_timing(
+                "tasks_build",
+                elapsed_ms(build_started_at),
+                "Build task response",
+            )
+        return response
 
-    return await build_task_status_responses_from_counts(
+    build_started_at = now()
+    response = await build_task_status_responses_from_counts(
         session,
         tasks=tasks,
         include_empty_rewards=include_empty_rewards,
     )
+    if record_timing is not None:
+        record_timing(
+            "tasks_build",
+            elapsed_ms(build_started_at),
+            "Build task counts response",
+        )
+    return response
 
 
 async def browse_tasks_core(
@@ -219,6 +266,7 @@ async def browse_tasks_core(
     limit: int = 25,
     offset: int = 0,
     query: str | None = None,
+    record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
     """List latest-version task summaries for the task browser."""
 
@@ -324,7 +372,14 @@ async def browse_tasks_core(
         .offset(offset)
     )
 
+    page_started_at = now()
     result = await session.execute(paged_rows)
+    if record_timing is not None:
+        record_timing(
+            "browse_page",
+            elapsed_ms(page_started_at),
+            "Browse tasks page query",
+        )
     raw_rows = result.mappings().all()
     has_more = len(raw_rows) > limit
     visible_rows = raw_rows[:limit]
@@ -364,7 +419,14 @@ async def browse_tasks_core(
         )
         if org_id is not None:
             exp_query = exp_query.where(TrialModel.org_id == org_id)
+        experiments_started_at = now()
         experiment_rows = await session.execute(exp_query)
+        if record_timing is not None:
+            record_timing(
+                "browse_experiments",
+                elapsed_ms(experiments_started_at),
+                "Browse experiment query",
+            )
         for experiment_row in experiment_rows.mappings():
             experiments_by_task.setdefault(str(experiment_row["task_id"]), []).append(
                 TaskBrowseExperiment(
@@ -395,7 +457,14 @@ async def browse_tasks_core(
         )
         if org_id is not None:
             trial_query = trial_query.where(TrialModel.org_id == org_id)
+        trials_started_at = now()
         latest_trial_rows = await session.execute(trial_query)
+        if record_timing is not None:
+            record_timing(
+                "browse_trials",
+                elapsed_ms(trials_started_at),
+                "Browse trials query",
+            )
         for trial_row in latest_trial_rows.mappings():
             latest_trials_by_task.setdefault(str(trial_row["task_id"]), []).append(
                 TaskBrowseTrial(
@@ -407,7 +476,8 @@ async def browse_tasks_core(
                 )
             )
 
-    return TaskBrowseResponse(
+    build_started_at = now()
+    response = TaskBrowseResponse(
         items=[
             TaskBrowseItem(
                 id=str(row["task_id"]),
@@ -438,6 +508,13 @@ async def browse_tasks_core(
         offset=offset,
         has_more=has_more,
     )
+    if record_timing is not None:
+        record_timing(
+            "browse_build",
+            elapsed_ms(build_started_at),
+            "Build browse response",
+        )
+    return response
 
 
 async def get_task_status_core(
