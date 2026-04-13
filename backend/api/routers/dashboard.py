@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 
 from auth import APIKeyScope, AuthContext, require_auth
-from oddish.api.dashboard import get_dashboard_core
+from oddish.core.dashboard import get_dashboard_core
 from oddish.db import get_session
 
 router = APIRouter(tags=["Dashboard"])

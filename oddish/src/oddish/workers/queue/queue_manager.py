@@ -12,7 +12,7 @@ POLL_INTERVAL_SECONDS = 2.0
 
 def _get_concurrency_limits(queue_keys: tuple[str, ...]) -> dict[str, int]:
     try:
-        from oddish.api import get_queue_concurrency
+        from oddish.server import get_queue_concurrency
 
         return {qk: get_queue_concurrency(qk) for qk in queue_keys}
     except Exception:

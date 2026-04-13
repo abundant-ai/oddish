@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 
 from auth import AuthContext, require_admin
-from oddish.api.admin import (
+from oddish.core.admin import (
     QueueSlotsResponse,
     QueueStatusResponse,
     OrphanedStateResponse,

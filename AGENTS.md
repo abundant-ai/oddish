@@ -1,6 +1,6 @@
 # Oddish Repository Guide
 
-This file is the technical guide for the entire monorepo. End-user CLI docs live in `oddish/README.md`.
+This file is the technical guide for the entire monorepo. End-user CLI docs live in `DOCS.md`.
 
 The repo has three main packages:
 
@@ -22,10 +22,11 @@ Python `3.12+` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` 
 ## Repository Layout
 
 ```text
-oddish/                         # Core Python package (CLI, API, workers, DB)
+oddish/                         # Core Python package (CLI, server, workers, DB)
 ├── src/oddish/
-│   ├── api/                    # FastAPI app and request handlers
 │   ├── cli/                    # oddish run/status/cancel/pull/delete
+│   ├── core/                   # shared business logic (reused by backend/)
+│   ├── server/                 # standalone FastAPI app (python -m oddish.server)
 │   ├── db/                     # models, connection helpers, storage
 │   ├── workers/                # Harbor execution plus shared queue runtime
 │   ├── backfill_queue_keys.py
@@ -77,7 +78,7 @@ Browser / oddish CLI
 Next.js route handlers (frontend/src/app/api/*)
         |
         v
-FastAPI server — oddish core (python -m oddish.api)
+FastAPI server — oddish standalone (python -m oddish.server)
            or backend cloud layer (Modal / Railway)
         |
         v
@@ -122,12 +123,23 @@ High-level flow:
 
 ## `oddish/` — Core Package
 
+### Install Extras
+
+The base `pip install oddish` is CLI-only (light deps). Use extras for server and worker use cases:
+
+```bash
+pip install oddish            # CLI only — typer, httpx, pydantic, harbor
+pip install oddish[server]    # + FastAPI, SQLAlchemy, asyncpg, alembic, aioboto3
+pip install oddish[worker]    # + server + LLM provider SDKs
+pip install oddish[all]       # everything including dev tools
+```
+
 ### Entry Points
 
 - CLI: `oddish` → `oddish.cli:app`
-- API server: `python -m oddish.api`
-- Standalone worker: `python -m oddish.workers.queue.worker`
-- DB helper CLI: `python -m oddish.db`
+- API server: `python -m oddish.server` (requires `oddish[server]`)
+- Standalone worker: `python -m oddish.workers.queue.worker` (requires `oddish[worker]`)
+- DB helper CLI: `python -m oddish.db` (requires `oddish[server]`)
 - Queue key backfill: `python -m oddish.backfill_queue_keys`
 
 ### Local Development
@@ -139,9 +151,9 @@ then:
 ```bash
 cd oddish
 cp env.example .env
-uv sync
+uv sync --extra server
 uv run python -m oddish.db setup
-uv run python -m oddish.api
+uv run python -m oddish.server
 ```
 
 That gives you:
@@ -163,7 +175,7 @@ export ODDISH_API_KEY="ok_..."
 
 ### Standalone Workers
 
-`python -m oddish.api` auto-starts workers by default. If you want separate
+`python -m oddish.server` auto-starts workers by default. If you want separate
 worker processes for scaling or debugging:
 
 ```bash
@@ -182,8 +194,8 @@ uv run python -m oddish.db purge   # delete data, preserve migration state
 ### API Server Flags
 
 ```bash
-uv run python -m oddish.api --host 0.0.0.0 --port 9000
-uv run python -m oddish.api --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/claude-sonnet-4-5": 8}'
+uv run python -m oddish.server --host 0.0.0.0 --port 9000
+uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/claude-sonnet-4-5": 8}'
 ```
 
 ### HTTP Endpoints (core)
@@ -472,7 +484,7 @@ docker run --rm -p 3000:3000 --env-file frontend/.env.local oddish-frontend
 ```bash
 # Terminal 1 — start Postgres, then the core API
 docker run -d --name oddish-db -e POSTGRES_USER=oddish -e POSTGRES_PASSWORD=oddish -e POSTGRES_DB=oddish -p 5432:5432 postgres:16-alpine
-cd oddish && uv run python -m oddish.db setup && uv run python -m oddish.api
+cd oddish && uv run python -m oddish.db setup && uv run python -m oddish.server
 
 # Terminal 2
 cd frontend && pnpm dev:local
@@ -502,7 +514,7 @@ curl http://localhost:8000/health
 ### Tasks stay queued
 
 - Make sure the API is healthy.
-- `oddish.api` auto-starts workers; or run `python -m oddish.workers.queue.worker` separately.
+- `oddish.server` auto-starts workers; or run `python -m oddish.workers.queue.worker` separately.
 - Check queue concurrency settings if a model-specific queue is saturated.
 - Stale-heartbeat cleanup runs periodically and will fail trials whose workers crashed; stuck analyses and verdicts are automatically re-queued.
 

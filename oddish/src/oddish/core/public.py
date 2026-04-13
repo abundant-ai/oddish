@@ -6,15 +6,15 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 
-from oddish.api.helpers import build_task_status_response, fetch_trial_queue_info
-from oddish.api.trial_io import (
+from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
+from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
     read_trial_logs_structured,
     read_trial_result,
     read_trial_trajectory,
 )
-from oddish.api.public_helpers import (
+from oddish.core.public_helpers import (
     get_public_experiment,
     get_public_task,
     get_public_trial,

@@ -293,7 +293,7 @@ For full-stack local development, use one of these flows:
 docker run -d --name oddish-db -e POSTGRES_USER=oddish -e POSTGRES_PASSWORD=oddish -e POSTGRES_DB=oddish -p 5432:5432 postgres:16-alpine
 cd oddish
 uv run python -m oddish.db setup
-uv run python -m oddish.api
+uv run python -m oddish.server
 
 # Terminal 2
 cd frontend

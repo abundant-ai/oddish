@@ -13,7 +13,7 @@ from typing import cast
 import uvicorn
 from rich.console import Console
 
-from oddish.api.endpoints import (
+from oddish.core.endpoints import (
     browse_tasks_core,
     create_task_sweep_core,
     delete_experiment_core,
@@ -29,20 +29,20 @@ from oddish.api.endpoints import (
     rerun_trial_analysis_core,
     retry_trial_core,
 )
-from oddish.api.public_helpers import (
+from oddish.core.public_helpers import (
     get_task_file_content_s3,
     get_trial_file_content_s3,
     list_task_files_s3,
     list_trial_files_s3,
 )
-from oddish.api.trial_io import (
+from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
     read_trial_logs_structured,
     read_trial_result,
     read_trial_trajectory,
 )
-from oddish.api.admin import (
+from oddish.core.admin import (
     QueueSlotsResponse,
     QueueStatusResponse,
     OrphanedStateResponse,
@@ -50,9 +50,9 @@ from oddish.api.admin import (
     get_queue_status_core,
     get_orphaned_state_core,
 )
-from oddish.api.dashboard import get_dashboard_core
-from oddish.api.public import router as public_router
-from oddish.api.tasks import complete_task_upload, initialize_task_upload, resolve_task_storage
+from oddish.core.dashboard import get_dashboard_core
+from oddish.core.public import router as public_router
+from oddish.core.tasks import complete_task_upload, initialize_task_upload, resolve_task_storage
 from oddish.config import settings
 from oddish.db import (
     ExperimentModel,
@@ -293,7 +293,7 @@ async def create_task_sweep(submission: TaskSweepSubmission):
     The task files are already stored (S3 if enabled, local directory otherwise).
     """
 
-    from oddish.api.sweeps import validate_sweep_submission
+    from oddish.core.sweeps import validate_sweep_submission
     validate_sweep_submission(submission)
 
     async with get_session() as session:
@@ -607,7 +607,7 @@ async def list_trial_files(trial_id: str) -> dict:
 async def debug_trial_files_endpoint(trial_id: str):
     """Debug endpoint: list all files in S3 for a trial."""
     trial = await _get_detached_trial(trial_id)
-    from oddish.api.trial_io import debug_trial_files
+    from oddish.core.trial_io import debug_trial_files
     return await debug_trial_files(trial)
 
 @api.get("/trials/{trial_id}/files/{file_path:path}")
@@ -670,7 +670,7 @@ def run_server(
         update_queue_concurrency(concurrency)
 
     uvicorn.run(
-        "oddish.api:api",
+        "oddish.server:api",
         host=host or settings.api_host,
         port=port or settings.api_port,
         # IMPORTANT: auto-reload will restart the process on *any* file change and

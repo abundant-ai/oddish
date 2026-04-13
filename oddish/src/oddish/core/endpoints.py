@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm import load_only, selectinload
 
-from oddish.api.helpers import (
+from oddish.core.helpers import (
     build_task_status_response_compact,
     build_task_status_response,
     build_task_status_responses_from_counts,
@@ -17,7 +17,7 @@ from oddish.api.helpers import (
 )
 from collections.abc import Collection
 from harbor.models.environment_type import EnvironmentType
-from oddish.api.trial_io import (
+from oddish.core.trial_io import (
     read_trial_logs,
     read_trial_logs_structured,
     read_trial_result,
@@ -1046,7 +1046,7 @@ async def create_task_sweep_core(
 
     Returns a tuple of (task, new_trials, is_append, experiment).
     """
-    from oddish.api.sweeps import (
+    from oddish.core.sweeps import (
         build_trial_specs_from_sweep,
         build_task_submission_from_sweep,
     )
@@ -1056,7 +1056,7 @@ async def create_task_sweep_core(
         get_experiment_by_id_or_name,
         get_or_create_experiment,
     )
-    from oddish.api.tasks import resolve_task_storage
+    from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
 
     # Auto-detect append mode if the task already exists in the DB for this org.

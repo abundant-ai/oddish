@@ -15,7 +15,7 @@ from cloud_policy import (
     ALLOWED_CLOUD_ENVIRONMENTS,
     get_default_cloud_environment,
 )
-from oddish.api.endpoints import (
+from oddish.core.endpoints import (
     browse_tasks_core,
     create_task_sweep_core,
     delete_experiment_core,
@@ -28,7 +28,7 @@ from oddish.api.endpoints import (
     rerun_task_analysis_core,
     rerun_task_verdict_core,
 )
-from oddish.api.public_helpers import (
+from oddish.core.public_helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
     list_task_files_s3,
@@ -40,12 +40,12 @@ from api.schemas import (
 )
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from models import APIKeyModel, UserModel
-from oddish.api.tasks import (
+from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
     resolve_task_storage,
 )
-from oddish.api.sweeps import (
+from oddish.core.sweeps import (
     build_task_submission_from_sweep,
     build_trial_specs_from_sweep,
     validate_sweep_submission,
@@ -230,7 +230,7 @@ async def create_task_sweep(
     """Submit a task sweep - expands a task_id into many trials."""
     auth.require_scope(APIKeyScope.TASKS)
 
-    from oddish.api.sweeps import validate_sweep_submission
+    from oddish.core.sweeps import validate_sweep_submission
     validate_sweep_submission(submission)
     _apply_github_attribution(submission)
 

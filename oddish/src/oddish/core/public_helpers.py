@@ -7,7 +7,7 @@ from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from oddish.api.helpers import (
+from oddish.core.helpers import (
     build_task_status_responses_from_counts,
     build_trial_response,
     fetch_trial_queue_info,

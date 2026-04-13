@@ -3,21 +3,21 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from oddish.api.endpoints import (
+from oddish.core.endpoints import (
     get_trial_by_index_core,
     get_task_for_org_core,
     get_trial_for_org_core,
     rerun_trial_analysis_core,
     retry_trial_core,
 )
-from oddish.api.trial_io import (
+from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
     read_trial_logs_structured,
     read_trial_result,
     read_trial_trajectory,
 )
-from oddish.api.public_helpers import (
+from oddish.core.public_helpers import (
     get_trial_file_content_s3,
     list_task_trials_for_task,
     list_trial_files_s3,
@@ -142,7 +142,7 @@ async def debug_trial_files_endpoint(
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
 
-    from oddish.api.trial_io import debug_trial_files
+    from oddish.core.trial_io import debug_trial_files
     return await debug_trial_files(trial)
 
 

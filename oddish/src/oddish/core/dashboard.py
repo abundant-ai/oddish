@@ -10,7 +10,7 @@ from sqlalchemy import and_, case, exists, func, nulls_last, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from oddish.api.helpers import build_task_status_responses_from_counts
+from oddish.core.helpers import build_task_status_responses_from_counts
 from oddish.config import normalize_model_id
 from oddish.db import (
     ExperimentModel,
