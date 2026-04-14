@@ -597,10 +597,24 @@ async def get_task_file_content(
 
 
 @api.get("/trials/{trial_id}/files")
-async def list_trial_files(trial_id: str) -> dict:
+async def list_trial_files(
+    trial_id: str,
+    prefix: str | None = Query(None),
+    recursive: bool = Query(True),
+    limit: int = Query(1000, ge=1, le=1000),
+    cursor: str | None = Query(None),
+    presign: bool = Query(True),
+) -> dict:
     """List all files in S3 for a trial, with presigned URLs for direct access."""
     trial = await _get_detached_trial(trial_id)
-    return await list_trial_files_s3(trial)
+    return await list_trial_files_s3(
+        trial,
+        prefix=prefix,
+        recursive=recursive,
+        limit=limit,
+        cursor=cursor,
+        presign=presign,
+    )
 
 
 @api.get("/trials/{trial_id}/debug-files")

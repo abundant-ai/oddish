@@ -260,10 +260,24 @@ async def get_public_trial_trajectory(trial_id: str) -> dict | None:
 
 
 @router.get("/public/trials/{trial_id}/files")
-async def list_public_trial_files(trial_id: str) -> dict:
+async def list_public_trial_files(
+    trial_id: str,
+    prefix: str | None = Query(None),
+    recursive: bool = Query(True),
+    limit: int = Query(1000, ge=1, le=1000),
+    cursor: str | None = Query(None),
+    presign: bool = Query(True),
+) -> dict:
     """List all files in a public trial's S3 directory."""
     trial = await _get_detached_public_trial(trial_id)
-    return await list_trial_files_s3(trial)
+    return await list_trial_files_s3(
+        trial,
+        prefix=prefix,
+        recursive=recursive,
+        limit=limit,
+        cursor=cursor,
+        presign=presign,
+    )
 
 
 @router.get("/public/trials/{trial_id}/files/{file_path:path}")

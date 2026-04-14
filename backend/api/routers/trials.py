@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from oddish.core.endpoints import (
     get_trial_by_index_core,
     get_task_for_org_core,
@@ -126,11 +126,23 @@ async def get_trial_logs_structured(
 async def list_trial_files(
     trial_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    prefix: str | None = Query(None),
+    recursive: bool = Query(True),
+    limit: int = Query(1000, ge=1, le=1000),
+    cursor: str | None = Query(None),
+    presign: bool = Query(True),
 ) -> dict:
     """List all files in S3 for a trial, with presigned URLs for direct access."""
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
-    return await list_trial_files_s3(trial)
+    return await list_trial_files_s3(
+        trial,
+        prefix=prefix,
+        recursive=recursive,
+        limit=limit,
+        cursor=cursor,
+        presign=presign,
+    )
 
 
 @router.get("/trials/{trial_id}/debug-files")

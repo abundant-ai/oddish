@@ -79,7 +79,7 @@ interface TaskFilesPanelProps {
   contentOnly?: boolean;
   /**
    * Override the files URL base (e.g. `/api/trials/{id}/files`).
-   * When set, the component fetches the listing from `${filesUrl}?recursive=1`
+   * When set, the component fetches directory listings from `${filesUrl}`
    * and individual file content from `${filesUrl}/${path}`.
    * This allows reusing the file tree viewer for trial files.
    */
@@ -128,52 +128,6 @@ function buildNodesFromListing(
   const sortedDirs = dirNodes.sort((a, b) => a.name.localeCompare(b.name));
   const sortedFiles = fileNodes.sort((a, b) => a.name.localeCompare(b.name));
   return [...sortedDirs, ...sortedFiles];
-}
-
-function buildTreeFromPaths(files: TaskFile[]): TreeNode[] {
-  const root: TreeNode[] = [];
-  const dirMap = new Map<string, TreeNode>();
-
-  const sortedFiles = [...files].sort((a, b) => a.path.localeCompare(b.path));
-
-  for (const file of sortedFiles) {
-    const parts = file.path.split("/").filter(Boolean);
-    if (parts.length === 0) continue;
-
-    let currentLevel = root;
-    let currentPath = "";
-
-    for (let i = 0; i < parts.length - 1; i++) {
-      const dirName = parts[i];
-      currentPath = currentPath ? `${currentPath}/${dirName}` : dirName;
-
-      let dir = dirMap.get(currentPath);
-      if (!dir) {
-        dir = {
-          name: dirName,
-          path: currentPath,
-          type: "dir",
-          children: [],
-          isLoaded: true,
-        };
-        dirMap.set(currentPath, dir);
-        currentLevel.push(dir);
-      }
-      currentLevel = dir.children!;
-    }
-
-    const fileName = parts[parts.length - 1];
-    currentLevel.push({
-      name: fileName,
-      path: file.path,
-      type: "file",
-      content: file.content,
-      url: file.url,
-      size: file.size,
-    });
-  }
-
-  return root;
 }
 
 function updateTree(
@@ -241,6 +195,19 @@ function findFirstFile(nodes: TreeNode[]): TreeNode | null {
     }
   }
   return null;
+}
+
+function getAncestorPaths(path: string): string[] {
+  const parts = path.split("/").filter(Boolean);
+  const ancestors: string[] = [];
+  let currentPath = "";
+
+  for (let i = 0; i < parts.length - 1; i++) {
+    currentPath = currentPath ? `${currentPath}/${parts[i]}` : parts[i];
+    ancestors.push(currentPath);
+  }
+
+  return ancestors;
 }
 
 /**
@@ -392,20 +359,34 @@ export function TaskFilesPanel({
     },
     revalidateOnFocus: false,
   });
-  const recursiveFilesKey =
-    isOpen && filesUrl ? `${resolvedFilesUrl}?recursive=1` : null;
-  const {
-    data: recursiveFilesData,
-    error: recursiveFilesError,
-    isLoading: recursiveFilesLoading,
-  } = useSWR<FilesListingResponse>(recursiveFilesKey, fetcher, {
-    revalidateOnFocus: false,
-  });
   const currentVersion = (verdictTask ?? task)?.current_version ?? null;
-  const versionSuffix =
-    currentVersion != null ? `&version=${currentVersion}` : "";
 
   const verdictSource = verdictTask ?? task;
+  const buildListingUrl = useCallback(
+    ({
+      recursive = false,
+      prefix,
+      cursor,
+    }: {
+      recursive?: boolean;
+      prefix?: string;
+      cursor?: string;
+    } = {}) => {
+      const params = new URLSearchParams();
+      params.set("recursive", recursive ? "1" : "0");
+      if (prefix) {
+        params.set("prefix", prefix);
+      }
+      if (cursor) {
+        params.set("cursor", cursor);
+      }
+      if (!filesUrl && currentVersion != null) {
+        params.set("version", String(currentVersion));
+      }
+      return `${resolvedFilesUrl}?${params.toString()}`;
+    },
+    [resolvedFilesUrl, filesUrl, currentVersion],
+  );
 
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
   const resolvedIndex =
@@ -612,41 +593,9 @@ export function TaskFilesPanel({
     );
   };
 
+  // Fetch root file list when panel opens
   useEffect(() => {
-    if (!isOpen || !filesUrl) {
-      return;
-    }
-
-    setError(null);
-    setFileTree([]);
-    setSelectedFile(null);
-    setFileContent(null);
-    setExpandedDirs(new Set());
-  }, [isOpen, filesUrl]);
-
-  useEffect(() => {
-    if (!isOpen || !filesUrl) {
-      return;
-    }
-
-    if (!recursiveFilesData) {
-      return;
-    }
-
-    const files: TaskFile[] = recursiveFilesData.files || [];
-    const tree = buildTreeFromPaths(files);
-    setFileTree(tree);
-    setSelectedFile((prev) => {
-      if (prev) {
-        return findNodeByPath(tree, prev.path) ?? prev;
-      }
-      return findFirstFile(tree);
-    });
-  }, [isOpen, filesUrl, recursiveFilesData]);
-
-  // Fetch task file list when panel opens
-  useEffect(() => {
-    if (!isOpen || !taskId || filesUrl) {
+    if (!isOpen || (!taskId && !filesUrl)) {
       return;
     }
 
@@ -659,18 +608,17 @@ export function TaskFilesPanel({
       setSelectedFile(null);
       setFileContent(null);
       setExpandedDirs(new Set());
+      setLoadingDirs(new Set());
 
       try {
-        const res = await fetch(
-          `${resolvedFilesUrl}?recursive=0${versionSuffix}`,
-        );
+        const res = await fetch(buildListingUrl());
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(
             data.detail || `Failed to fetch files: ${res.statusText}`,
           );
         }
-        const data = await res.json();
+        const data: FilesListingResponse = await res.json();
 
         if (cancelled) return;
 
@@ -700,21 +648,18 @@ export function TaskFilesPanel({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, versionSuffix]);
+  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, buildListingUrl]);
 
   const loadDirectory = useCallback(
     async (path: string) => {
       if (!taskId && !filesUrl) return;
       setLoadingDirs((prev) => new Set(prev).add(path));
       try {
-        const prefix = encodeURIComponent(path);
-        const res = await fetch(
-          `${resolvedFilesUrl}?recursive=0&prefix=${prefix}${versionSuffix}`,
-        );
+        const res = await fetch(buildListingUrl({ prefix: path }));
         if (!res.ok) {
           throw new Error("Failed to fetch directory");
         }
-        const data = await res.json();
+        const data: FilesListingResponse = await res.json();
         const files: TaskFile[] = data.files || [];
         const dirs: TaskDirectory[] = data.dirs || [];
         const children = buildNodesFromListing(files, dirs);
@@ -737,7 +682,7 @@ export function TaskFilesPanel({
         });
       }
     },
-    [taskId, filesUrl, resolvedFilesUrl, versionSuffix],
+    [taskId, filesUrl, buildListingUrl],
   );
 
   // Fetch file content when a file is selected
@@ -808,16 +753,23 @@ export function TaskFilesPanel({
         // Fallback: fetch via backend proxy (slower, but works if presigned URL expired)
         if (content === null) {
           const encodedPath = encodeURIComponent(filePath);
-          const versionParam =
-            currentVersion != null ? `?version=${currentVersion}` : "";
+          const params = new URLSearchParams();
+          if (!filesUrl && currentVersion != null) {
+            params.set("version", String(currentVersion));
+          }
           const res = await fetch(
-            `${resolvedFilesUrl}/${encodedPath}${versionParam}`,
+            `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`,
           );
           if (!res.ok) {
             throw new Error("Failed to fetch file content");
           }
           if (filesUrl) {
-            content = await res.text();
+            const contentType = res.headers.get("content-type") || "";
+            const textContent = await readResponseTextContent(res);
+            content =
+              textContent !== null
+                ? textContent
+                : getBinaryFileMessage(contentType);
           } else {
             const data = await res.json();
             content = data.content || "";
@@ -851,30 +803,56 @@ export function TaskFilesPanel({
 
   // Load full file content (when user clicks "Load full file")
   const loadFullFile = useCallback(async () => {
-    if (!selectedFile || !selectedFile.url) return;
+    if (!selectedFile) return;
 
     setLoadingFullFile(true);
     try {
-      const s3Res = await fetch(selectedFile.url);
-      if (s3Res.ok) {
-        const contentType = s3Res.headers.get("content-type") || "";
-        const content = await readResponseTextContent(s3Res);
-        if (content !== null) {
-          setFileContent(content);
-          setIsTruncated(false);
-          // Update cache
-          selectedFile.content = content;
-          selectedFile.isTruncated = false;
-        } else {
-          setFileContent(getBinaryFileMessage(contentType));
+      if (selectedFile.url) {
+        const s3Res = await fetch(selectedFile.url);
+        if (s3Res.ok) {
+          const contentType = s3Res.headers.get("content-type") || "";
+          const content = await readResponseTextContent(s3Res);
+          if (content !== null) {
+            setFileContent(content);
+            setIsTruncated(false);
+            // Update cache
+            selectedFile.content = content;
+            selectedFile.isTruncated = false;
+          } else {
+            setFileContent(getBinaryFileMessage(contentType));
+          }
         }
+        return;
       }
+
+      const encodedPath = encodeURIComponent(selectedFile.path);
+      const params = new URLSearchParams();
+      if (!filesUrl && currentVersion != null) {
+        params.set("version", String(currentVersion));
+      }
+      const res = await fetch(
+        `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`,
+      );
+      if (!res.ok) {
+        return;
+      }
+      if (filesUrl) {
+        const contentType = res.headers.get("content-type") || "";
+        const content = await readResponseTextContent(res);
+        setFileContent(
+          content !== null ? content : getBinaryFileMessage(contentType),
+        );
+      } else {
+        const data = await res.json();
+        setFileContent(data.content || "");
+      }
+      setIsTruncated(false);
     } catch {
       // Keep truncated content on error
     } finally {
       setLoadingFullFile(false);
     }
-  }, [selectedFile]);
+  }, [selectedFile, filesUrl, resolvedFilesUrl, currentVersion]);
 
   // Scroll to top when selected file changes
   useEffect(() => {
@@ -891,6 +869,7 @@ export function TaskFilesPanel({
       setFileContent(null);
       setError(null);
       setExpandedDirs(new Set());
+      setLoadingDirs(new Set());
       setIsTruncated(false);
       setFullFileSize(null);
       setLoadingFullFile(false);
@@ -908,23 +887,35 @@ export function TaskFilesPanel({
     const node =
       findNodeByPath(fileTree, initialFilePath) ??
       findNodeBySuffix(fileTree, initialFilePath);
-    if (!node || node.type !== "file") return;
-
-    const parts = node.path.split("/").filter(Boolean);
-    if (parts.length > 1) {
+    const targetPath = node?.path ?? initialFilePath;
+    const ancestorPaths = getAncestorPaths(targetPath);
+    if (ancestorPaths.length > 0) {
       setExpandedDirs((prev) => {
         const next = new Set(prev);
-        let accumulated = "";
-        for (let i = 0; i < parts.length - 1; i++) {
-          accumulated = accumulated ? `${accumulated}/${parts[i]}` : parts[i];
-          next.add(accumulated);
+        for (const ancestorPath of ancestorPaths) {
+          next.add(ancestorPath);
         }
         return next;
       });
     }
 
+    if (!node || node.type !== "file") {
+      const nextDirToLoad = ancestorPaths.find((ancestorPath) => {
+        const ancestorNode = findNodeByPath(fileTree, ancestorPath);
+        return (
+          ancestorNode?.type === "dir" &&
+          !ancestorNode.isLoaded &&
+          !loadingDirs.has(ancestorPath)
+        );
+      });
+      if (nextDirToLoad) {
+        void loadDirectory(nextDirToLoad);
+      }
+      return;
+    }
+
     setSelectedFile(node);
-  }, [initialFilePath, fileTree]);
+  }, [initialFilePath, fileTree, loadingDirs, loadDirectory]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1154,9 +1145,8 @@ export function TaskFilesPanel({
     Boolean(verdictSource?.verdict_status || verdictSource?.verdict);
   const verdictReasoning = verdictSource?.verdict?.reasoning?.trim() || null;
 
-  const isListingLoading = filesUrl ? recursiveFilesLoading : loading;
-  const listingError =
-    filesUrl && recursiveFilesError ? recursiveFilesError.message : error;
+  const isListingLoading = loading;
+  const listingError = error;
 
   const fileTreeContent = (
     <>

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Copy, Check } from "lucide-react";
 
 let shikiPromise: Promise<typeof import("shiki")> | null = null;
+const HIGHLIGHT_MAX_CHARS = 20_000;
 
 function getShiki() {
   if (!shikiPromise) {
@@ -100,8 +101,17 @@ export function CodeBlock({
     }
     return code;
   }, [code, truncateAt]);
+  const shouldHighlight = useMemo(
+    () => language !== "text" && truncatedCode.length <= HIGHLIGHT_MAX_CHARS,
+    [language, truncatedCode],
+  );
 
   useEffect(() => {
+    if (!shouldHighlight) {
+      setHighlightedHtml(null);
+      return;
+    }
+
     let cancelled = false;
 
     async function highlight() {
@@ -125,7 +135,7 @@ export function CodeBlock({
     return () => {
       cancelled = true;
     };
-  }, [truncatedCode, language]);
+  }, [truncatedCode, language, shouldHighlight]);
 
   const handleCopy = useCallback(async () => {
     await navigator.clipboard.writeText(code);

@@ -233,44 +233,26 @@ def _get_trial_s3_prefix(trial: TrialModel) -> str:
 
 async def list_trial_files_s3(
     trial: TrialModel,
+    prefix: str | None = None,
+    recursive: bool = True,
+    limit: int = 1000,
+    cursor: str | None = None,
     presign: bool = True,
     presign_expiration: int = 900,
 ) -> dict:
-    """List all files in a trial's S3 directory with presigned URLs."""
+    """List files in a trial's S3 directory with optional presigned URLs."""
     storage = get_storage_client()
-    s3_prefix = _get_trial_s3_prefix(trial)
 
     try:
-        objects = await storage.list_objects_all(s3_prefix)
-        files = []
-        for obj in objects:
-            key = obj.get("key")
-            if not key:
-                continue
-            relative_path = key[len(s3_prefix) :]
-            if relative_path:
-                files.append(
-                    {
-                        "path": relative_path,
-                        "key": key,
-                        "size": obj.get("size"),
-                        "last_modified": obj.get("last_modified"),
-                    }
-                )
-
-        if presign and files:
-            s3_keys = [f["key"] for f in files]
-            urls = await storage.get_presigned_urls_batch(s3_keys, presign_expiration)
-            for f in files:
-                f["url"] = urls.get(f["key"])
-
-        return {
-            "trial_id": trial.id,
-            "files": files,
-            "prefix": s3_prefix,
-            "presigned": presign,
-            "presign_expires_in": presign_expiration if presign else None,
-        }
+        return await storage.list_trial_files(
+            trial_id=trial.id,
+            prefix=prefix,
+            recursive=recursive,
+            limit=limit,
+            cursor=cursor,
+            presign=presign,
+            presign_expiration=presign_expiration,
+        )
     except HTTPException:
         raise
     except Exception as e:

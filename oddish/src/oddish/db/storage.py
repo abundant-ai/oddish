@@ -556,6 +556,107 @@ class StorageClient:
             "presign_expires_in": presign_expiration if presign else None,
         }
 
+    async def list_trial_files(
+        self,
+        *,
+        trial_id: str,
+        prefix: str | None,
+        recursive: bool,
+        limit: int,
+        cursor: str | None,
+        presign: bool,
+        presign_expiration: int = 900,
+    ) -> dict:
+        """List files in a trial's S3 directory."""
+        root_prefix = self._trial_prefix(trial_id)
+        relative_prefix = normalize_s3_relative_path(prefix)
+        if relative_prefix and not relative_prefix.endswith("/"):
+            relative_prefix = f"{relative_prefix}/"
+        full_prefix = f"{root_prefix}{relative_prefix}"
+
+        if recursive:
+            objects = await self.list_objects_all(full_prefix)
+            files = []
+            for obj in objects:
+                key = obj.get("key")
+                if not key:
+                    continue
+                relative_path = key[len(root_prefix) :]
+                if relative_path:
+                    files.append(
+                        {
+                            "path": relative_path,
+                            "key": key,
+                            "size": obj.get("size"),
+                            "last_modified": obj.get("last_modified"),
+                        }
+                    )
+
+            if presign and files:
+                s3_keys = [str(f["key"]) for f in files]
+                urls = await self.get_presigned_urls_batch(s3_keys, presign_expiration)
+                for f in files:
+                    key = str(f["key"])
+                    f["url"] = urls.get(key)
+
+            return {
+                "trial_id": trial_id,
+                "files": files,
+                "dirs": [],
+                "prefix": full_prefix,
+                "recursive": True,
+                "presigned": presign,
+                "presign_expires_in": presign_expiration if presign else None,
+            }
+
+        listing = await self.list_objects(
+            full_prefix,
+            delimiter="/",
+            max_keys=limit,
+            continuation_token=cursor,
+        )
+        files = []
+        for obj in listing["objects"]:
+            key = obj.get("key")
+            if not key:
+                continue
+            relative_path = key[len(root_prefix) :]
+            if relative_path:
+                files.append(
+                    {
+                        "path": relative_path,
+                        "key": key,
+                        "size": obj.get("size"),
+                        "last_modified": obj.get("last_modified"),
+                    }
+                )
+
+        if presign and files:
+            s3_keys = [str(f["key"]) for f in files]
+            urls = await self.get_presigned_urls_batch(s3_keys, presign_expiration)
+            for f in files:
+                key = str(f["key"])
+                f["url"] = urls.get(key)
+
+        dirs = []
+        for common_prefix in listing["common_prefixes"]:
+            if not common_prefix:
+                continue
+            relative_dir = common_prefix[len(root_prefix) :].rstrip("/")
+            if relative_dir:
+                dirs.append({"path": relative_dir})
+        return {
+            "trial_id": trial_id,
+            "files": files,
+            "dirs": dirs,
+            "prefix": full_prefix,
+            "recursive": False,
+            "cursor": listing["next_token"],
+            "truncated": listing["is_truncated"],
+            "presigned": presign,
+            "presign_expires_in": presign_expiration if presign else None,
+        }
+
     async def get_task_file_content(
         self,
         *,
