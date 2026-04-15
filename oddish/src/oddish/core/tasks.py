@@ -347,8 +347,15 @@ async def resolve_task_storage(
     When *version* is given the versioned prefix ``tasks/{task_id}/v{version}/``
     is checked first.  Falls back to the legacy un-versioned prefix for
     backwards compatibility with tasks uploaded before versioning.
+
+    When *version* is ``None`` (e.g. first sweep for a newly uploaded task),
+    the function checks whether the archive exists at the unversioned root.
+    If it only exists under a versioned sub-prefix (the init/complete upload
+    path), that versioned prefix is returned so downstream code uses the
+    correct S3 key.
     """
     storage = get_storage_client()
+    archive_name = StorageClient._TASK_ARCHIVE_OBJECT_NAME
 
     # Try versioned prefix first
     if version is not None:
@@ -361,8 +368,36 @@ async def resolve_task_storage(
                 status_code=500, detail=f"Failed to check S3: {str(e)}"
             )
 
-    # Fall back to legacy un-versioned prefix
+    # Check unversioned root archive
     task_s3_key = f"tasks/{task_id}/"
+    root_archive_key = f"{task_s3_key}{archive_name}"
+    try:
+        if await storage.object_exists(root_archive_key):
+            return f"s3://{task_s3_key}", task_s3_key
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to check S3: {str(e)}"
+        )
+
+    # The init/complete upload path places archives at versioned sub-prefixes
+    # (tasks/{task_id}/v{N}/).  Probe for the latest versioned archive so
+    # the caller gets the exact prefix where the tarball lives.
+    try:
+        all_keys = await storage.list_keys(task_s3_key)
+        versioned_archives = sorted(
+            (k for k in all_keys if k.endswith(f"/{archive_name}")),
+            reverse=True,
+        )
+        if versioned_archives:
+            best = versioned_archives[0]
+            prefix = best[: best.rfind("/") + 1]
+            return f"s3://{prefix}", prefix
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to check S3: {str(e)}"
+        )
+
+    # No archive found — check if the prefix contains anything at all
     try:
         exists = await storage.prefix_exists(task_s3_key)
         if not exists:

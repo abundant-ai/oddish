@@ -265,19 +265,38 @@ class StorageClient:
             await self._download_and_extract_task_archive(archive_key, local_path)
             return
 
-        # List all objects with this prefix
+        # Collect all objects under the prefix.  If one of them is a task
+        # archive at a versioned sub-path (e.g. tasks/{id}/v1/.oddish-task.tar.gz)
+        # extract it instead of downloading the tarball as a raw file.
+        nested_archive_key: str | None = None
+        non_archive_objects: list[dict] = []
+
         paginator = self._s3.get_paginator("list_objects_v2")
         async for page in paginator.paginate(
             Bucket=settings.s3_bucket, Prefix=s3_prefix
         ):
             for obj in page.get("Contents", []):
                 s3_key = obj["Key"]
-                relative_path = s3_key[len(s3_prefix) :]
-                if not relative_path:
-                    continue
-                local_file = local_path / relative_path
-                local_file.parent.mkdir(parents=True, exist_ok=True)
-                await self.download_file(s3_key, local_file)
+                if s3_key.endswith(f"/{self._TASK_ARCHIVE_OBJECT_NAME}"):
+                    if nested_archive_key is None or s3_key > nested_archive_key:
+                        nested_archive_key = s3_key
+                else:
+                    non_archive_objects.append(obj)
+
+        if nested_archive_key is not None:
+            await self._download_and_extract_task_archive(
+                nested_archive_key, local_path
+            )
+            return
+
+        for obj in non_archive_objects:
+            s3_key = obj["Key"]
+            relative_path = s3_key[len(s3_prefix) :]
+            if not relative_path:
+                continue
+            local_file = local_path / relative_path
+            local_file.parent.mkdir(parents=True, exist_ok=True)
+            await self.download_file(s3_key, local_file)
 
     async def upload_trial_results(self, trial_id: str, harbor_job_dir: Path) -> str:
         """

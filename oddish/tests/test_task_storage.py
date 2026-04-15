@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.api import tasks as tasks_api
+from oddish.core import tasks as tasks_api
 from oddish.config import settings
 from oddish.db import storage as storage_mod
 
@@ -27,19 +27,39 @@ def _make_task_archive(files: dict[str, str]) -> bytes:
 
 
 class _FakeStorage:
-    def __init__(self, *, exists: bool):
+    """Fake storage for resolve_task_storage tests.
+
+    *object_exists_keys* controls which specific S3 keys ``object_exists``
+    returns ``True`` for.  *prefix_exists_result* controls the final
+    ``prefix_exists`` fallback.
+    """
+
+    def __init__(
+        self,
+        *,
+        exists: bool = True,
+        object_exists_keys: set[str] | None = None,
+        list_keys_result: list[str] | None = None,
+    ):
         self.exists = exists
+        self.object_exists_keys: set[str] = object_exists_keys or set()
+        self.list_keys_result: list[str] = list_keys_result or []
         self.prefix_exists_calls: list[str] = []
-        self.list_keys_called = False
+        self.object_exists_calls: list[str] = []
+        self.list_keys_calls: list[str] = []
         self.download_task_directory_calls: list[tuple[str, Path]] = []
+
+    async def object_exists(self, s3_key: str) -> bool:
+        self.object_exists_calls.append(s3_key)
+        return s3_key in self.object_exists_keys
 
     async def prefix_exists(self, prefix: str) -> bool:
         self.prefix_exists_calls.append(prefix)
         return self.exists
 
     async def list_keys(self, prefix: str) -> list[str]:
-        self.list_keys_called = True
-        raise AssertionError("resolve_task_storage should not call list_keys")
+        self.list_keys_calls.append(prefix)
+        return self.list_keys_result
 
     async def download_task_directory(self, s3_prefix: str, local_path: Path) -> None:
         self.download_task_directory_calls.append((s3_prefix, local_path))
@@ -81,21 +101,57 @@ class _FakeDeleteStorage:
 
 
 @pytest.mark.asyncio
-async def test_resolve_task_storage_uses_prefix_probe_for_s3(monkeypatch):
-    storage = _FakeStorage(exists=True)
+async def test_resolve_task_storage_returns_root_when_root_archive_exists(monkeypatch):
+    """When the archive is at the unversioned root, return the root prefix."""
+    storage = _FakeStorage(
+        object_exists_keys={"tasks/task-123/.oddish-task.tar.gz"},
+    )
     monkeypatch.setattr(tasks_api, "get_storage_client", lambda: storage)
 
     task_path, task_s3_key = await tasks_api.resolve_task_storage("task-123")
 
     assert task_path == "s3://tasks/task-123/"
     assert task_s3_key == "tasks/task-123/"
-    assert storage.prefix_exists_calls == ["tasks/task-123/"]
-    assert storage.list_keys_called is False
+    assert "tasks/task-123/.oddish-task.tar.gz" in storage.object_exists_calls
+
+
+@pytest.mark.asyncio
+async def test_resolve_task_storage_finds_versioned_archive(monkeypatch):
+    """When the archive only exists at a versioned sub-prefix (init/complete
+    upload path), resolve_task_storage should return the versioned prefix."""
+    storage = _FakeStorage(
+        exists=True,
+        list_keys_result=["tasks/task-123/v1/.oddish-task.tar.gz"],
+    )
+    monkeypatch.setattr(tasks_api, "get_storage_client", lambda: storage)
+
+    task_path, task_s3_key = await tasks_api.resolve_task_storage("task-123")
+
+    assert task_path == "s3://tasks/task-123/v1/"
+    assert task_s3_key == "tasks/task-123/v1/"
+
+
+@pytest.mark.asyncio
+async def test_resolve_task_storage_picks_latest_versioned_archive(monkeypatch):
+    """When multiple versioned archives exist, the latest version wins."""
+    storage = _FakeStorage(
+        exists=True,
+        list_keys_result=[
+            "tasks/task-123/v1/.oddish-task.tar.gz",
+            "tasks/task-123/v2/.oddish-task.tar.gz",
+        ],
+    )
+    monkeypatch.setattr(tasks_api, "get_storage_client", lambda: storage)
+
+    task_path, task_s3_key = await tasks_api.resolve_task_storage("task-123")
+
+    assert task_path == "s3://tasks/task-123/v2/"
+    assert task_s3_key == "tasks/task-123/v2/"
 
 
 @pytest.mark.asyncio
 async def test_resolve_task_storage_raises_404_when_prefix_missing(monkeypatch):
-    storage = _FakeStorage(exists=False)
+    storage = _FakeStorage(exists=False, list_keys_result=[])
     monkeypatch.setattr(tasks_api, "get_storage_client", lambda: storage)
 
     with pytest.raises(
@@ -104,7 +160,6 @@ async def test_resolve_task_storage_raises_404_when_prefix_missing(monkeypatch):
         await tasks_api.resolve_task_storage("task-404")
 
     assert exc_info.value.status_code == 404
-    assert storage.prefix_exists_calls == ["tasks/task-404/"]
 
 
 def test_resolve_mounted_task_directory_prefers_worker_mount(monkeypatch, tmp_path):
@@ -186,6 +241,48 @@ async def test_download_task_directory_extracts_archive_object(monkeypatch, tmp_
 
     assert (tmp_path / "task.toml").read_text() == "name = 'demo'\n"
     assert (tmp_path / "environment" / "run.sh").read_text() == "#!/bin/sh\necho hi\n"
+
+
+@pytest.mark.asyncio
+async def test_download_task_directory_finds_versioned_archive(monkeypatch, tmp_path):
+    """When the archive lives at a versioned sub-path (init/complete upload),
+    download_task_directory should detect and extract it rather than
+    downloading the tarball as a raw file."""
+    archive_bytes = _make_task_archive(
+        {
+            "task.toml": "[agent]\ntimeout_sec = 1800\n",
+            "instruction.md": "Do something\n",
+        }
+    )
+    storage = storage_mod.StorageClient()
+    storage._client = object()
+
+    async def fake_object_exists(s3_key: str) -> bool:
+        return False
+
+    download_bytes_calls: list[str] = []
+
+    async def fake_download_bytes(s3_key: str) -> bytes:
+        download_bytes_calls.append(s3_key)
+        return archive_bytes
+
+    fake_pages = [
+        {
+            "Contents": [
+                {"Key": "tasks/task-123/v1/.oddish-task.tar.gz"},
+            ]
+        }
+    ]
+    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
+    storage._client = _FakeS3Client(pages=fake_pages)
+    monkeypatch.setattr(settings, "s3_bucket", "test-bucket")
+
+    await storage.download_task_directory("tasks/task-123/", tmp_path)
+
+    assert (tmp_path / "task.toml").exists()
+    assert (tmp_path / "instruction.md").read_text() == "Do something\n"
+    assert download_bytes_calls == ["tasks/task-123/v1/.oddish-task.tar.gz"]
 
 
 @pytest.mark.asyncio
