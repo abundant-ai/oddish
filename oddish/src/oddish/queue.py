@@ -249,6 +249,11 @@ def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
     parts = name.split("/")
     name = parts[-1] if parts else name
 
+    # Skip versioned path segments (e.g. "v1", "v2") produced by
+    # resolve_task_storage for the init/complete upload path.
+    if re.match(r"^v\d+$", name) and len(parts) > 1:
+        name = parts[-2]
+
     if name == "tasks" and len(parts) > 1:
         name = parts[-2]
 
