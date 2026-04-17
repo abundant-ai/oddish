@@ -174,9 +174,8 @@ class Settings(BaseSettings):
     trial_retry_timer_minutes: int = 60
     auto_start_workers: bool = True
 
-    # Storage paths
+    # Local execution scratch paths
     harbor_jobs_dir: str = "/tmp/harbor-jobs"
-    local_storage_dir: str = "/tmp/oddish-tasks"
 
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
@@ -221,8 +220,7 @@ class Settings(BaseSettings):
         """Database URL without +asyncpg prefix."""
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")
 
-    # S3 Storage (secrets)
-    s3_enabled: bool = False
+    # S3-compatible storage (required)
     s3_endpoint_url: str | None = None
     s3_access_key: str = ""
     s3_secret_key: str = ""

@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import {
   getAuthHeaders,
@@ -6,35 +6,27 @@ import {
   getClerkToken,
 } from "@/lib/backend-config";
 
-export async function POST(
-  _request: Request,
+export async function GET(
+  _request: NextRequest,
   { params }: { params: Promise<{ task_id: string }> },
 ) {
   try {
     const { getToken } = await auth();
     const token = await getClerkToken(getToken);
 
-    if (!token) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     const { task_id } = await params;
-
-    const url = getBackendUrl("tasks", `/${task_id}/cancel`);
+    const url = getBackendUrl("tasks", `/${task_id}/versions`);
     const res = await fetch(url, {
-      method: "POST",
+      cache: "no-store",
       headers: getAuthHeaders(token),
     });
 
-    const text = await res.text();
-    const data = text ? JSON.parse(text) : null;
-
     if (!res.ok) {
-      return NextResponse.json(data ?? { error: "Failed to cancel task" }, {
-        status: res.status,
-      });
+      const error = await res.json();
+      return NextResponse.json(error, { status: res.status });
     }
 
+    const data = await res.json();
     return NextResponse.json(data);
   } catch (error) {
     return NextResponse.json(

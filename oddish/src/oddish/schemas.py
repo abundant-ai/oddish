@@ -84,7 +84,10 @@ class TrialSpec(BaseModel):
 
     @model_validator(mode="after")
     def reject_timeout_override(self) -> "TrialSpec":
-        if "timeout_minutes" in self.model_fields_set and self.timeout_minutes is not None:
+        if (
+            "timeout_minutes" in self.model_fields_set
+            and self.timeout_minutes is not None
+        ):
             raise ValueError(
                 "timeout_minutes is no longer supported. "
                 "Set explicit [agent].timeout_sec, [verifier].timeout_sec, "
@@ -134,6 +137,10 @@ class TaskSubmission(BaseModel):
         default_factory=HarborConfig,  # type: ignore[arg-type]
         description="Harbor execution config (environment, verifier, artifacts, etc.)",
     )
+    content_hash: str | None = Field(
+        None,
+        description="Deterministic hash of task directory contents (set by CLI during upload)",
+    )
 
     @model_validator(mode="after")
     def require_models(self):
@@ -165,8 +172,8 @@ class TaskSweepSubmission(BaseModel):
     task_id: str = Field(
         ...,
         description=(
-            "Task ID from /tasks/upload, or an existing task ID when "
-            "append_to_task is true"
+            "Task ID from /tasks/upload/init and /tasks/upload/complete, or an "
+            "existing task ID when append_to_task is true"
         ),
     )
     append_to_task: bool = Field(
@@ -213,6 +220,10 @@ class TaskSweepSubmission(BaseModel):
         default_factory=HarborConfig,  # type: ignore[arg-type]
         description="Harbor execution config (environment, verifier, artifacts, etc.)",
     )
+    content_hash: str | None = Field(
+        None,
+        description="Deterministic hash of task directory contents (set by CLI during upload)",
+    )
 
     @model_validator(mode="after")
     def require_models(self):
@@ -224,7 +235,10 @@ class TaskSweepSubmission(BaseModel):
 
     @model_validator(mode="after")
     def reject_timeout_override(self) -> "TaskSweepSubmission":
-        if "timeout_minutes" in self.model_fields_set and self.timeout_minutes is not None:
+        if (
+            "timeout_minutes" in self.model_fields_set
+            and self.timeout_minutes is not None
+        ):
             raise ValueError(
                 "timeout_minutes is no longer supported. "
                 "Set explicit [agent].timeout_sec, [verifier].timeout_sec, "
@@ -244,6 +258,32 @@ class ExperimentUpdateRequest(BaseModel):
 # =============================================================================
 
 
+class TaskUploadInitRequest(BaseModel):
+    """Request to prepare a task upload."""
+
+    name: str = Field(..., description="Task name derived from the local directory")
+    content_hash: str = Field(
+        ..., description="Deterministic hash of the task directory contents"
+    )
+    message: str | None = Field(
+        None, description="Optional description of what changed in this version"
+    )
+
+
+class TaskUploadCompleteRequest(BaseModel):
+    """Request to finalize a direct-to-storage task upload."""
+
+    task_id: str
+    name: str
+    version: int = Field(..., ge=1)
+    content_hash: str = Field(
+        ..., description="Deterministic hash of the uploaded task directory contents"
+    )
+    message: str | None = Field(
+        None, description="Optional description of what changed in this version"
+    )
+
+
 class UploadResponse(BaseModel):
     """Task upload response."""
 
@@ -251,6 +291,20 @@ class UploadResponse(BaseModel):
     name: str
     task_path: str | None = None
     s3_key: str | None = None
+    version: int | None = None
+    version_id: str | None = None
+    existing_task: bool = False
+    content_unchanged: bool = False
+    content_hash: str | None = None
+
+
+class TaskUploadInitResponse(UploadResponse):
+    """Task upload preparation response."""
+
+    upload_url: str | None = None
+    upload_method: str | None = None
+    upload_headers: dict[str, str] = Field(default_factory=dict)
+    requires_completion: bool = False
 
 
 class TrialQueueInfo(BaseModel):
@@ -276,11 +330,30 @@ class TrialQueueInfo(BaseModel):
     )
 
 
+class TaskVersionResponse(BaseModel):
+    """Response for a single task version."""
+
+    id: str
+    task_id: str
+    version: int
+    task_path: str
+    task_s3_key: str | None = None
+    content_hash: str | None = None
+    message: str | None = None
+    created_by_user_id: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class TrialResponse(BaseModel):
     id: str
     name: str
     task_id: str
     task_path: str
+    task_version: int | None = None
+    task_version_id: str | None = None
+    experiment_id: str | None = None
     agent: str
     provider: str
     queue_key: str
@@ -292,9 +365,12 @@ class TrialResponse(BaseModel):
     attempts: int
     max_attempts: int
     harbor_stage: str | None
-    reward: int | None = Field(
+    reward: float | None = Field(
         None,
-        description="Test result: 1=passed, 0=failed, null=no result (separate from execution status)",
+        description=(
+            "Verifier score in [0, 1]: 1=full pass, 0=full fail, "
+            "partial values indicate partial credit; null=no result"
+        ),
     )
     error_message: str | None
     result: dict | None
@@ -345,12 +421,58 @@ class TaskResponse(BaseModel):
     priority: Priority
     trials_count: int
     providers: dict[str, int]  # provider -> count of trials
+    experiment_id: str | None = None
+    experiment_name: str | None = None
     created_at: datetime
+
+
+class TaskBatchCancelRequest(BaseModel):
+    task_ids: list[str] = Field(
+        default_factory=list,
+        description="Task IDs to cancel in one request",
+    )
 
 
 class ExperimentUpdateResponse(BaseModel):
     id: str
     name: str
+
+
+class TaskBrowseExperiment(BaseModel):
+    id: str
+    name: str
+
+
+class TaskBrowseTrial(BaseModel):
+    id: str
+    name: str
+    status: TrialStatus
+    reward: float | None = None
+    error_message: str | None = None
+
+
+class TaskBrowseItem(BaseModel):
+    id: str
+    name: str
+    current_version: int | None = None
+    current_version_id: str | None = None
+    version_count: int
+    total_trials: int
+    completed_trials: int
+    failed_trials: int
+    reward_success: int
+    reward_sum: float
+    reward_total: int
+    last_run_at: datetime | None = None
+    latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
+    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+
+
+class TaskBrowseResponse(BaseModel):
+    items: list[TaskBrowseItem]
+    limit: int
+    offset: int
+    has_more: bool
 
 
 class TaskStatusResponse(BaseModel):
@@ -365,11 +487,14 @@ class TaskStatusResponse(BaseModel):
     experiment_id: str
     experiment_name: str
     experiment_is_public: bool = False
+    current_version: int | None = None
+    current_version_id: str | None = None
     total: int
     completed: int
     failed: int
     progress: str  # e.g., "5/10 completed"
     reward_success: int | None = None
+    reward_sum: float | None = None
     reward_total: int | None = None
     run_analysis: bool = False
     verdict_status: VerdictStatus | None = None
@@ -384,3 +509,25 @@ class TaskStatusResponse(BaseModel):
     finished_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+
+# =============================================================================
+# Public Sharing Models
+# =============================================================================
+
+
+class PublicExperimentResponse(BaseModel):
+    """Public experiment metadata."""
+
+    name: str
+    public_token: str
+
+
+class PublicExperimentListItem(BaseModel):
+    """Public dataset list item."""
+
+    id: str
+    name: str
+    public_token: str
+    task_count: int
+    created_at: str

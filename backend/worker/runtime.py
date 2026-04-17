@@ -20,9 +20,7 @@ async def configure_storage_paths() -> None:
     """
     await reconfigure_database_connections()
 
-    os.makedirs(settings.local_storage_dir, exist_ok=True)
     os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
 
-    console.print(f"[dim]Storage: {settings.local_storage_dir}[/dim]")
     console.print(f"[dim]Harbor jobs: {settings.harbor_jobs_dir}[/dim]")
     console.print(f"[dim]Default environment: {settings.harbor_environment}[/dim]")

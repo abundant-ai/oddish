@@ -1,3 +1,5 @@
+from oddish.core import public
+
 from api.routers import (
     admin,
     api_keys,
@@ -5,7 +7,6 @@ from api.routers import (
     dashboard,
     github_webhooks,
     orgs,
-    public,
     tasks,
     trials,
 )

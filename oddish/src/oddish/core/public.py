@@ -1,18 +1,20 @@
+"""Public (unauthenticated) routes for shared experiments, tasks, and trials."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 
-from oddish.api.helpers import build_task_status_response, fetch_trial_queue_info
-from oddish.api.trial_io import (
+from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
+from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
     read_trial_logs_structured,
     read_trial_result,
     read_trial_trajectory,
 )
-from oddish.api.public_helpers import (
+from oddish.core.public_helpers import (
     get_public_experiment,
     get_public_task,
     get_public_trial,
@@ -23,9 +25,13 @@ from oddish.api.public_helpers import (
     list_task_trials_for_task,
     list_trial_files_s3,
 )
-from api.schemas import PublicExperimentListItem, PublicExperimentResponse
 from oddish.db import ExperimentModel, TaskModel, TrialModel, get_session
-from oddish.schemas import TaskStatusResponse, TrialResponse
+from oddish.schemas import (
+    PublicExperimentListItem,
+    PublicExperimentResponse,
+    TaskStatusResponse,
+    TrialResponse,
+)
 
 router = APIRouter(tags=["Public"])
 
@@ -50,23 +56,35 @@ async def list_public_experiments(
 ) -> list[PublicExperimentListItem]:
     """List all public experiments for dataset browsing."""
     async with get_session() as session:
+        direct_tasks = select(
+            TaskModel.experiment_id.label("experiment_id"),
+            TaskModel.id.label("task_id"),
+        ).where(TaskModel.experiment_id.isnot(None))
+        trial_tasks = select(
+            TrialModel.experiment_id.label("experiment_id"),
+            TrialModel.task_id.label("task_id"),
+        ).where(TrialModel.experiment_id.isnot(None))
+        all_exp_tasks = direct_tasks.union(trial_tasks).subquery()
+        task_counts = (
+            select(
+                all_exp_tasks.c.experiment_id,
+                func.count(func.distinct(all_exp_tasks.c.task_id)).label("task_count"),
+            )
+            .group_by(all_exp_tasks.c.experiment_id)
+            .subquery()
+        )
+
         query = (
             select(
                 ExperimentModel.id,
                 ExperimentModel.name,
                 ExperimentModel.public_token,
                 ExperimentModel.created_at,
-                func.count(TaskModel.id).label("task_count"),
+                func.coalesce(task_counts.c.task_count, 0).label("task_count"),
             )
-            .outerjoin(TaskModel, TaskModel.experiment_id == ExperimentModel.id)
+            .outerjoin(task_counts, task_counts.c.experiment_id == ExperimentModel.id)
             .where(ExperimentModel.is_public == True)  # noqa: E712
             .where(ExperimentModel.public_token.is_not(None))
-            .group_by(
-                ExperimentModel.id,
-                ExperimentModel.name,
-                ExperimentModel.public_token,
-                ExperimentModel.created_at,
-            )
             .order_by(ExperimentModel.created_at.desc())
             .limit(limit)
             .offset(offset)
@@ -117,12 +135,31 @@ async def list_public_experiment_tasks(
         if not experiment:
             raise HTTPException(status_code=404, detail="Experiment not found")
 
+        has_trials_in_experiment = (
+            select(TrialModel.task_id)
+            .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
+            .where(
+                ExperimentModel.public_token == public_token,
+                ExperimentModel.is_public == True,  # noqa: E712
+            )
+            .distinct()
+            .correlate(None)
+            .scalar_subquery()
+        )
         query = (
             select(TaskModel)
             .options(selectinload(TaskModel.trials), selectinload(TaskModel.experiment))
-            .join(ExperimentModel)
-            .where(ExperimentModel.public_token == public_token)
-            .where(ExperimentModel.is_public == True)  # noqa: E712
+            .where(
+                or_(
+                    TaskModel.experiment_id.in_(
+                        select(ExperimentModel.id).where(
+                            ExperimentModel.public_token == public_token,
+                            ExperimentModel.is_public == True,  # noqa: E712
+                        )
+                    ),
+                    TaskModel.id.in_(has_trials_in_experiment),
+                )
+            )
             .order_by(TaskModel.created_at.desc())
             .limit(limit)
             .offset(offset)
@@ -130,6 +167,25 @@ async def list_public_experiment_tasks(
 
         result = await session.execute(query)
         tasks = result.scalars().all()
+
+        exp_id_result = await session.execute(
+            select(ExperimentModel.id).where(
+                ExperimentModel.public_token == public_token,
+                ExperimentModel.is_public == True,  # noqa: E712
+            )
+        )
+        exp_id = exp_id_result.scalar_one_or_none()
+        if exp_id:
+            from sqlalchemy.orm.attributes import set_committed_value
+
+            for task in tasks:
+                filtered = [
+                    t
+                    for t in task.trials
+                    if t.experiment_id == exp_id or t.experiment_id is None
+                ]
+                set_committed_value(task, "trials", filtered)
+
         queue_info_by_trial_id = await fetch_trial_queue_info(
             session,
             trials=[trial for task in tasks for trial in task.trials],
@@ -204,10 +260,24 @@ async def get_public_trial_trajectory(trial_id: str) -> dict | None:
 
 
 @router.get("/public/trials/{trial_id}/files")
-async def list_public_trial_files(trial_id: str) -> dict:
+async def list_public_trial_files(
+    trial_id: str,
+    prefix: str | None = Query(None),
+    recursive: bool = Query(True),
+    limit: int = Query(1000, ge=1, le=1000),
+    cursor: str | None = Query(None),
+    presign: bool = Query(True),
+) -> dict:
     """List all files in a public trial's S3 directory."""
     trial = await _get_detached_public_trial(trial_id)
-    return await list_trial_files_s3(trial)
+    return await list_trial_files_s3(
+        trial,
+        prefix=prefix,
+        recursive=recursive,
+        limit=limit,
+        cursor=cursor,
+        presign=presign,
+    )
 
 
 @router.get("/public/trials/{trial_id}/files/{file_path:path}")
@@ -237,16 +307,16 @@ async def list_public_task_files(
     recursive: bool = Query(True),
     limit: int = Query(1000, ge=1, le=1000),
     cursor: str | None = Query(None),
-    presign: bool = Query(
-        True, description="Include presigned URLs for direct S3 access"
-    ),
+    presign: bool = Query(True),
+    version: int | None = Query(None, description="Task version number"),
 ) -> dict:
     """List all files in a public task's S3 directory."""
-    # Verify task belongs to a public experiment
     async with get_session() as session:
         task = await get_public_task(session, task_id)
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        if version is None and task.current_version:
+            version = task.current_version.version
 
     return await list_task_files_s3(
         task_id=task_id,
@@ -255,6 +325,7 @@ async def list_public_task_files(
         limit=limit,
         cursor=cursor,
         presign=presign,
+        version=version,
     )
 
 
@@ -263,16 +334,19 @@ async def get_public_task_file_content(
     task_id: str,
     file_path: str,
     presign: bool = Query(False),
+    version: int | None = Query(None, description="Task version number"),
 ) -> dict:
     """Get content of a specific public task file from S3."""
-    # Verify task belongs to a public experiment
     async with get_session() as session:
         task = await get_public_task(session, task_id)
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        if version is None and task.current_version:
+            version = task.current_version.version
 
     return await get_task_file_content_s3(
         task_id=task_id,
         file_path=file_path,
         presign=presign,
+        version=version,
     )

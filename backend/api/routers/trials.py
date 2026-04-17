@@ -2,22 +2,22 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response
-from oddish.api.endpoints import (
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from oddish.core.endpoints import (
     get_trial_by_index_core,
     get_task_for_org_core,
     get_trial_for_org_core,
     rerun_trial_analysis_core,
     retry_trial_core,
 )
-from oddish.api.trial_io import (
+from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
     read_trial_logs_structured,
     read_trial_result,
     read_trial_trajectory,
 )
-from oddish.api.public_helpers import (
+from oddish.core.public_helpers import (
     get_trial_file_content_s3,
     list_task_trials_for_task,
     list_trial_files_s3,
@@ -126,15 +126,27 @@ async def get_trial_logs_structured(
 async def list_trial_files(
     trial_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    prefix: str | None = Query(None),
+    recursive: bool = Query(True),
+    limit: int = Query(1000, ge=1, le=1000),
+    cursor: str | None = Query(None),
+    presign: bool = Query(True),
 ) -> dict:
     """List all files in S3 for a trial, with presigned URLs for direct access."""
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
-    return await list_trial_files_s3(trial)
+    return await list_trial_files_s3(
+        trial,
+        prefix=prefix,
+        recursive=recursive,
+        limit=limit,
+        cursor=cursor,
+        presign=presign,
+    )
 
 
 @router.get("/trials/{trial_id}/debug-files")
-async def debug_trial_files(
+async def debug_trial_files_endpoint(
     trial_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
@@ -142,35 +154,8 @@ async def debug_trial_files(
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
 
-    result = {
-        "trial_id": trial_id,
-        "trial_s3_key": trial.trial_s3_key,
-        "computed_prefix": StorageClient._trial_prefix(trial_id),
-        "harbor_result_path": trial.harbor_result_path,
-        "s3_enabled": settings.s3_enabled,
-        "files": [],
-        "trajectory_files": [],
-        "error": None,
-    }
-
-    if not settings.s3_enabled:
-        result["error"] = "S3 not enabled"
-        return result
-
-    s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial_id)
-    result["using_prefix"] = s3_prefix
-
-    storage = get_storage_client()
-    try:
-        # List all files under this prefix
-        files = await storage.list_keys(s3_prefix)
-        result["files"] = files
-        # Find any trajectory files
-        result["trajectory_files"] = [f for f in files if "trajectory.json" in f]
-    except Exception as e:
-        result["error"] = f"Failed to list files: {str(e)}"
-
-    return result
+    from oddish.core.trial_io import debug_trial_files
+    return await debug_trial_files(trial)
 
 
 @router.get("/trials/{trial_id}/files/{file_path:path}")

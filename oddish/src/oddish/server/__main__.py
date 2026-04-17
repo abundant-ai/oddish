@@ -1,7 +1,7 @@
 import argparse
 import json
 
-from oddish.api import run_server
+from oddish.server import run_server
 
 
 def main() -> None:

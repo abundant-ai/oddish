@@ -15,7 +15,11 @@ from oddish.db import (
 from oddish.workers.queue.shared import console
 
 
-async def run_verdict_job(task_id: str, queue_key: str) -> None:
+async def run_verdict_job(
+    task_id: str,
+    queue_key: str,
+    modal_function_call_id: str | None = None,
+) -> None:
     """
     Execute verdict synthesis for a claimed task.
 
@@ -30,9 +34,7 @@ async def run_verdict_job(task_id: str, queue_key: str) -> None:
         compute_task_verdict,
     )
 
-    console.print(
-        f"[cyan]Processing verdict[/cyan] {task_id} (queue_key={queue_key})"
-    )
+    console.print(f"[cyan]Processing verdict[/cyan] {task_id} (queue_key={queue_key})")
 
     # Mark as running and load classifications
     classifications = []
@@ -50,6 +52,7 @@ async def run_verdict_job(task_id: str, queue_key: str) -> None:
 
         task.verdict_status = VerdictStatus.RUNNING
         task.verdict_started_at = utcnow()
+        task.verdict_modal_function_call_id = modal_function_call_id
 
         # Load trial classifications
         from sqlalchemy import select
@@ -143,6 +146,7 @@ async def run_verdict_job(task_id: str, queue_key: str) -> None:
                 task.verdict_status = VerdictStatus.SUCCESS
                 task.verdict_error = None
                 task.verdict_finished_at = utcnow()
+                task.verdict_modal_function_call_id = None
                 task.status = TaskStatus.COMPLETED
                 task.finished_at = utcnow()
                 console.print(
@@ -154,6 +158,7 @@ async def run_verdict_job(task_id: str, queue_key: str) -> None:
                     verdict_error or "Verdict synthesis failed with exception"
                 )
                 task.verdict_finished_at = utcnow()
+                task.verdict_modal_function_call_id = None
                 # Still mark task as completed even if verdict failed
                 task.status = TaskStatus.COMPLETED
                 task.finished_at = utcnow()

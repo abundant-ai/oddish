@@ -10,7 +10,7 @@ export type TaskStatus =
 // Trial/job status
 // - "success": Trial executed to completion (regardless of test result)
 // - "failed": Trial encountered an execution error (harness/infrastructure failure)
-// - Test results are stored separately in the `reward` field (1=passed, 0=failed, null=no result)
+// - Test results are stored separately in the `reward` field (0..1 score, null=no result)
 export type TrialStatus =
   | "pending"
   | "queued"
@@ -69,6 +69,8 @@ export interface Trial {
   analysis_status?: JobStatus | null;
   analysis?: TrialAnalysis | null;
   queue_info?: TrialQueueInfo | null;
+  task_version?: number | null;
+  task_version_id?: string | null;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -127,15 +129,67 @@ export interface Task {
   failed: number;
   progress?: string;
   reward_success?: number | null;
+  reward_sum?: number | null;
   reward_total?: number | null;
   run_analysis?: boolean;
   verdict_status?: JobStatus | null;
   verdict?: TaskVerdict | null;
   verdict_error?: string | null;
+  current_version?: number | null;
+  current_version_id?: string | null;
   trials?: Trial[] | null;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
+}
+
+export interface TaskBrowseExperiment {
+  id: string;
+  name: string;
+}
+
+export interface TaskBrowseTrial {
+  id: string;
+  name: string;
+  status: TrialStatus;
+  reward: number | null;
+  error_message?: string | null;
+}
+
+export interface TaskBrowseItem {
+  id: string;
+  name: string;
+  current_version?: number | null;
+  current_version_id?: string | null;
+  version_count: number;
+  total_trials: number;
+  completed_trials: number;
+  failed_trials: number;
+  reward_success: number;
+  reward_sum: number;
+  reward_total: number;
+  last_run_at?: string | null;
+  latest_trials: TaskBrowseTrial[];
+  experiments: TaskBrowseExperiment[];
+}
+
+export interface TaskBrowseResponse {
+  items: TaskBrowseItem[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+// Task version snapshot
+export interface TaskVersion {
+  id: string;
+  task_id: string;
+  version: number;
+  task_path: string;
+  content_hash?: string | null;
+  message?: string | null;
+  created_by_user_id?: string | null;
+  created_at: string;
 }
 
 // Queue statistics keyed by queue key
@@ -189,6 +243,7 @@ export interface DashboardExperiment {
   failed_trials: number;
   active_trials: number;
   reward_success: number;
+  reward_sum: number;
   reward_total: number;
   analysis_tasks: number;
   verdict_good: number;

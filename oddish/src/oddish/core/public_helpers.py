@@ -3,11 +3,11 @@ from __future__ import annotations
 import secrets
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from oddish.api.helpers import (
+from oddish.core.helpers import (
     build_task_status_responses_from_counts,
     build_trial_response,
     fetch_trial_queue_info,
@@ -69,25 +69,56 @@ async def get_public_experiment(
 
 
 async def get_public_task(session: AsyncSession, task_id: str) -> TaskModel | None:
-    """Get a task that belongs to a public experiment."""
+    """Get a task that belongs to a public experiment (via task or trial link)."""
+    via_task_experiment = exists(
+        select(1)
+        .select_from(ExperimentModel)
+        .where(
+            ExperimentModel.id == TaskModel.experiment_id,
+            ExperimentModel.is_public == True,  # noqa: E712
+        )
+    )
+    via_trial_experiment = exists(
+        select(1)
+        .select_from(TrialModel)
+        .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
+        .where(
+            TrialModel.task_id == TaskModel.id,
+            ExperimentModel.is_public == True,  # noqa: E712
+        )
+    )
     result = await session.execute(
         select(TaskModel)
         .options(selectinload(TaskModel.trials), selectinload(TaskModel.experiment))
-        .join(ExperimentModel)
         .where(TaskModel.id == task_id)
-        .where(ExperimentModel.is_public == True)  # noqa: E712
+        .where(or_(via_task_experiment, via_trial_experiment))
     )
     return result.scalar_one_or_none()
 
 
 async def get_public_trial(session: AsyncSession, trial_id: str) -> TrialModel | None:
-    """Get a trial that belongs to a public experiment."""
+    """Get a trial that belongs to a public experiment (via task or trial link)."""
+    via_task = exists(
+        select(1)
+        .select_from(TaskModel)
+        .join(ExperimentModel, ExperimentModel.id == TaskModel.experiment_id)
+        .where(
+            TaskModel.id == TrialModel.task_id,
+            ExperimentModel.is_public == True,  # noqa: E712
+        )
+    )
+    via_trial = exists(
+        select(1)
+        .select_from(ExperimentModel)
+        .where(
+            ExperimentModel.id == TrialModel.experiment_id,
+            ExperimentModel.is_public == True,  # noqa: E712
+        )
+    )
     result = await session.execute(
         select(TrialModel)
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .join(ExperimentModel, ExperimentModel.id == TaskModel.experiment_id)
         .where(TrialModel.id == trial_id)
-        .where(ExperimentModel.is_public == True)  # noqa: E712
+        .where(or_(via_task, via_trial))
     )
     return result.scalar_one_or_none()
 
@@ -151,11 +182,9 @@ async def list_task_files_s3(
     limit: int,
     cursor: str | None,
     presign: bool,
+    version: int | None = None,
 ) -> dict:
     """List files in a task's S3 directory."""
-    if not settings.s3_enabled:
-        raise HTTPException(status_code=501, detail="S3 storage not enabled")
-
     storage = get_storage_client()
 
     try:
@@ -166,6 +195,7 @@ async def list_task_files_s3(
             limit=limit,
             cursor=cursor,
             presign=presign,
+            version=version,
         )
     except HTTPException:
         raise
@@ -177,11 +207,9 @@ async def get_task_file_content_s3(
     task_id: str,
     file_path: str,
     presign: bool,
+    version: int | None = None,
 ) -> dict:
     """Get content of a specific task file from S3."""
-    if not settings.s3_enabled:
-        raise HTTPException(status_code=501, detail="S3 storage not enabled")
-
     storage = get_storage_client()
 
     try:
@@ -189,6 +217,7 @@ async def get_task_file_content_s3(
             task_id=task_id,
             file_path=file_path,
             presign=presign,
+            version=version,
         )
     except HTTPException:
         raise
@@ -204,47 +233,26 @@ def _get_trial_s3_prefix(trial: TrialModel) -> str:
 
 async def list_trial_files_s3(
     trial: TrialModel,
+    prefix: str | None = None,
+    recursive: bool = True,
+    limit: int = 1000,
+    cursor: str | None = None,
     presign: bool = True,
     presign_expiration: int = 900,
 ) -> dict:
-    """List all files in a trial's S3 directory with presigned URLs."""
-    if not settings.s3_enabled:
-        raise HTTPException(status_code=501, detail="S3 storage not enabled")
-
+    """List files in a trial's S3 directory with optional presigned URLs."""
     storage = get_storage_client()
-    s3_prefix = _get_trial_s3_prefix(trial)
 
     try:
-        objects = await storage.list_objects_all(s3_prefix)
-        files = []
-        for obj in objects:
-            key = obj.get("key")
-            if not key:
-                continue
-            relative_path = key[len(s3_prefix) :]
-            if relative_path:
-                files.append(
-                    {
-                        "path": relative_path,
-                        "key": key,
-                        "size": obj.get("size"),
-                        "last_modified": obj.get("last_modified"),
-                    }
-                )
-
-        if presign and files:
-            s3_keys = [f["key"] for f in files]
-            urls = await storage.get_presigned_urls_batch(s3_keys, presign_expiration)
-            for f in files:
-                f["url"] = urls.get(f["key"])
-
-        return {
-            "trial_id": trial.id,
-            "files": files,
-            "prefix": s3_prefix,
-            "presigned": presign,
-            "presign_expires_in": presign_expiration if presign else None,
-        }
+        return await storage.list_trial_files(
+            trial_id=trial.id,
+            prefix=prefix,
+            recursive=recursive,
+            limit=limit,
+            cursor=cursor,
+            presign=presign,
+            presign_expiration=presign_expiration,
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -260,9 +268,6 @@ async def get_trial_file_content_s3(
     """Download a file from a trial's S3 directory by relative path."""
     import mimetypes
     from pathlib import PurePosixPath
-
-    if not settings.s3_enabled:
-        raise HTTPException(status_code=501, detail="S3 storage not enabled")
 
     raw = file_path.replace("\\", "/").strip()
     if not raw or raw.startswith("/"):

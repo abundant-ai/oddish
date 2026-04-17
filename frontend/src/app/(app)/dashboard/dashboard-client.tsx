@@ -41,6 +41,12 @@ import type {
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { encodeExperimentRouteParam, formatShortDateTime } from "@/lib/utils";
+import {
+  buildDashboardApiPath,
+  DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT,
+  DASHBOARD_DEFAULT_USAGE_MINUTES,
+  isDefaultDashboardExperimentsView,
+} from "@/lib/dashboard-request";
 import { Badge } from "@/components/ui/badge";
 import {
   Select,
@@ -69,7 +75,7 @@ import { QueueKeyIcon } from "@/components/queue-key-icon";
 // Dashboard Hook - Single API call for all data
 // =============================================================================
 
-const EXPERIMENTS_PAGE_SIZE = 25;
+const EXPERIMENTS_PAGE_SIZE = DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT;
 const STATUS_FILTER_OPTIONS = [
   { value: "all", label: "All statuses" },
   { value: "active", label: "Active trials" },
@@ -83,14 +89,12 @@ function useDashboardUsage(
   usageMinutes: number | null,
   fallbackData?: DashboardResponse | null,
 ) {
-  const params = new URLSearchParams({
-    include_tasks: "false",
-    include_experiments: "false",
+  const swrKey = buildDashboardApiPath({
+    include_tasks: false,
+    include_experiments: false,
+    usage_minutes: usageMinutes,
   });
-  if (usageMinutes !== null) {
-    params.set("usage_minutes", String(usageMinutes));
-  }
-  const swrKey = `/api/dashboard?${params.toString()}`;
+  const hasFallbackData = fallbackData != null;
 
   const { data, error, isLoading, isValidating } = useSWR<DashboardResponse>(
     swrKey,
@@ -107,6 +111,8 @@ function useDashboardUsage(
         return hasActiveQueue ? 30000 : 90000;
       },
       revalidateOnFocus: false,
+      revalidateOnMount: !hasFallbackData,
+      revalidateIfStale: !hasFallbackData,
       keepPreviousData: true,
       fallbackData: fallbackData ?? undefined,
     },
@@ -131,15 +137,15 @@ function useDashboardExperiments(
   experimentsStatus: string,
   fallbackData?: DashboardResponse | null,
 ) {
-  const params = new URLSearchParams({
-    experiments_limit: String(experimentsLimit),
-    experiments_offset: String(experimentsOffset),
+  const swrKey = buildDashboardApiPath({
+    experiments_limit: experimentsLimit,
+    experiments_offset: experimentsOffset,
     experiments_query: experimentsQuery,
     experiments_status: experimentsStatus,
-    include_tasks: "false",
-    include_usage: "false",
+    include_tasks: false,
+    include_usage: false,
   });
-  const swrKey = `/api/dashboard?${params.toString()}`;
+  const hasFallbackData = fallbackData != null;
 
   const { data, error, isLoading } = useSWR<DashboardResponse>(
     swrKey,
@@ -147,13 +153,10 @@ function useDashboardExperiments(
     {
       refreshInterval: 30000,
       revalidateOnFocus: false,
+      revalidateOnMount: !hasFallbackData,
+      revalidateIfStale: !hasFallbackData,
       keepPreviousData: true,
-      fallbackData:
-        experimentsOffset === 0 &&
-        experimentsQuery.trim().length === 0 &&
-        experimentsStatus === "all"
-          ? (fallbackData ?? undefined)
-          : undefined,
+      fallbackData: hasFallbackData ? (fallbackData ?? undefined) : undefined,
     },
   );
 
@@ -1019,7 +1022,10 @@ function RecentTasksCard({
           </Alert>
         ) : isLoading && experiments.length === 0 ? (
           <p className="text-muted-foreground">Loading...</p>
-        ) : !isLoading && experiments.length === 0 && !hasMoreExperiments && !hasFilters ? (
+        ) : !isLoading &&
+          experiments.length === 0 &&
+          !hasMoreExperiments &&
+          !hasFilters ? (
           <EmptyExperimentsState />
         ) : experiments.length === 0 ? (
           <div className="py-8 text-center text-muted-foreground">
@@ -1035,7 +1041,7 @@ function RecentTasksCard({
                   <TableHead>PR</TableHead>
                   <TableHead>Tasks</TableHead>
                   <TableHead>Trials</TableHead>
-                  <TableHead>Pass rate</TableHead>
+                  <TableHead>Avg score</TableHead>
                   <TableHead className="text-right">Last task</TableHead>
                   <TableHead className="text-right">Delete</TableHead>
                 </TableRow>
@@ -1045,7 +1051,7 @@ function RecentTasksCard({
                   const passRate =
                     experiment.reward_total > 0
                       ? Math.round(
-                          (experiment.reward_success /
+                          (experiment.reward_sum /
                             experiment.reward_total) *
                             100,
                         )
@@ -1112,7 +1118,7 @@ function RecentTasksCard({
                             className={
                               passRate >= 80
                                 ? "text-[#5c8e43] dark:text-[#85b85c]"
-                                : passRate >= 50
+                                : passRate >= 35
                                   ? "text-yellow-400"
                                   : "text-rose-400"
                             }
@@ -1241,8 +1247,16 @@ export function DashboardClient({
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [statusFilter, setStatusFilter] = useState("all");
   const [timeRange, setTimeRange] = useState<TimeRangeKey>("24h");
-  const [showRecentTasks, setShowRecentTasks] = useState(false);
   const usageMinutes = getMinutesFromTimeRange(timeRange);
+  const usageFallbackData =
+    usageMinutes === DASHBOARD_DEFAULT_USAGE_MINUTES ? initialDashboardData : null;
+  const experimentsFallbackData = isDefaultDashboardExperimentsView(
+    experimentsOffset,
+    deferredSearchQuery,
+    statusFilter,
+  )
+    ? initialDashboardData
+    : null;
   const {
     queues,
     modelUsage,
@@ -1251,7 +1265,7 @@ export function DashboardClient({
     isRefreshing: usageIsRefreshing,
   } = useDashboardUsage(
     usageMinutes,
-    usageMinutes === 1440 ? initialDashboardData : null,
+    usageFallbackData,
   );
   const {
     experiments,
@@ -1264,9 +1278,7 @@ export function DashboardClient({
     experimentsOffset,
     deferredSearchQuery,
     statusFilter,
-    deferredSearchQuery.trim().length === 0 && statusFilter === "all"
-      ? initialDashboardData
-      : null,
+    experimentsFallbackData,
   );
   const currentExperimentsPage =
     Math.floor(experimentsOffset / EXPERIMENTS_PAGE_SIZE) + 1;
@@ -1296,11 +1308,6 @@ export function DashboardClient({
     await mutate(experimentsSwrKey);
   };
 
-  useEffect(() => {
-    const timerId = window.setTimeout(() => setShowRecentTasks(true), 0);
-    return () => window.clearTimeout(timerId);
-  }, []);
-
   return (
     <div className="space-y-4">
       {isDefaultExperimentsEmpty && <FirstRunCard />}
@@ -1313,33 +1320,21 @@ export function DashboardClient({
         timeRange={timeRange}
         onTimeRangeChange={setTimeRange}
       />
-      {showRecentTasks ? (
-        <RecentTasksCard
-          experiments={experiments}
-          searchQuery={searchQuery}
-          onSearchQueryChange={setSearchQuery}
-          statusFilter={statusFilter}
-          onStatusFilterChange={setStatusFilter}
-          error={experimentsError}
-          isLoading={isExperimentsLoading}
-          hasMoreExperiments={hasMoreExperiments}
-          onPreviousExperimentsPage={handlePreviousExperimentsPage}
-          onNextExperimentsPage={handleNextExperimentsPage}
-          isPageTransitioning={isExperimentsLoading}
-          onRefreshData={handleRefreshCurrentPage}
-          currentExperimentsPage={currentExperimentsPage}
-        />
-      ) : (
-        <Card className="col-span-5 border-[#6f88b4]/20 shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Recent Experiments</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">Loading table…</p>
-          </CardContent>
-        </Card>
-      )}
+      <RecentTasksCard
+        experiments={experiments}
+        searchQuery={searchQuery}
+        onSearchQueryChange={setSearchQuery}
+        statusFilter={statusFilter}
+        onStatusFilterChange={setStatusFilter}
+        error={experimentsError}
+        isLoading={isExperimentsLoading}
+        hasMoreExperiments={hasMoreExperiments}
+        onPreviousExperimentsPage={handlePreviousExperimentsPage}
+        onNextExperimentsPage={handleNextExperimentsPage}
+        isPageTransitioning={isExperimentsLoading}
+        onRefreshData={handleRefreshCurrentPage}
+        currentExperimentsPage={currentExperimentsPage}
+      />
     </div>
   );
 }
-

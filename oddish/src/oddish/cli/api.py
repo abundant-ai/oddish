@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import tarfile
@@ -24,9 +25,23 @@ from harbor.models.job.config import LocalDatasetConfig, RegistryDatasetConfig
 from harbor.dataset.client import DatasetClient
 
 from oddish.cli.config import get_auth_headers, error_console
+from oddish.task_timeouts import (
+    TaskTimeoutValidationError,
+    validate_task_timeout_config,
+)
 
 console = Console()
 TASK_SWEEP_TIMEOUT_SECONDS = 600.0
+
+
+def format_reward_value(reward: float | None) -> str:
+    if reward is None:
+        return "-"
+    if reward == 1:
+        return "[green]✓[/green]"
+    if reward == 0:
+        return "[red]✗[/red]"
+    return f"[yellow]{reward:.2f}[/yellow]"
 
 
 # =============================================================================
@@ -81,9 +96,7 @@ def validate_tasks(task_paths: list[Path]) -> list[Path]:
             error_console.print(f"  [red]✗[/red] {task_path.name}: {msg}")
 
     if not valid:
-        error_console.print(
-            "\n[red]All tasks failed validation. Nothing to run.[/red]"
-        )
+        error_console.print("\n[red]All tasks failed validation. Nothing to run.[/red]")
         raise typer.Exit(1)
 
     if errors:
@@ -158,6 +171,21 @@ def get_task_paths_from_registry(
 # =============================================================================
 
 
+def compute_task_content_hash(task_path: Path) -> str:
+    """Deterministic SHA-256 of a task directory's contents.
+
+    Walks files in sorted order and hashes (relative_path, file_bytes) for each,
+    so the result is independent of filesystem timestamps or tarball packaging.
+    """
+    hasher = hashlib.sha256()
+    for file_path in sorted(task_path.rglob("*")):
+        if file_path.is_file():
+            rel = file_path.relative_to(task_path)
+            hasher.update(str(rel).encode("utf-8"))
+            hasher.update(file_path.read_bytes())
+    return hasher.hexdigest()
+
+
 def archive_task_dir(task_path: Path) -> Path:
     """Create a tarball of a task directory."""
     # Create tarball in temp directory
@@ -173,35 +201,90 @@ def archive_task_dir(task_path: Path) -> Path:
     return tarball_path
 
 
+def _upload_to_presigned_url(url: str, tarball_path: Path, headers: dict[str, str]) -> None:
+    upload_headers = dict(headers)
+    upload_headers.setdefault("Content-Length", str(tarball_path.stat().st_size))
+    with httpx.Client(timeout=600.0, follow_redirects=True) as upload_client:
+        response = upload_client.put(
+            url,
+            headers=upload_headers,
+            content=tarball_path.read_bytes(),
+        )
+    if response.status_code not in {200, 201, 204}:
+        error_console.print(
+            f"[red]Failed to upload task directly to storage:[/red] {response.text}"
+        )
+        raise typer.Exit(1)
+
+
 def upload_task(
     api_url: str,
     task_path: Path,
-) -> str:
-    """Upload a task directory to the API. Returns task_id."""
+) -> dict:
+    """Upload a task directory to the API.
+
+    Returns the full upload response dict which includes ``task_id``,
+    ``existing_task``, ``content_unchanged``, ``version``, etc.
+    """
+    try:
+        validate_task_timeout_config(task_path)
+    except TaskTimeoutValidationError as exc:
+        error_console.print(f"[red]Invalid task timeout config:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    content_hash = compute_task_content_hash(task_path)
     tarball_path = archive_task_dir(task_path)
 
     try:
         with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
-            with open(tarball_path, "rb") as f:
-                response = client.post(
-                    f"{api_url}/tasks/upload",
-                    files={
-                        "file": (
-                            f"{task_path.name}.tar.gz",
-                            f,
-                            "application/gzip",
-                        )
-                    },
+            init_response = client.post(
+                f"{api_url}/tasks/upload/init",
+                json={
+                    "name": task_path.name,
+                    "content_hash": content_hash,
+                },
+            )
+
+            if init_response.status_code != 200:
+                error_console.print(
+                    f"[red]Failed to initialize direct task upload:[/red] "
+                    f"{init_response.text}"
                 )
+                raise typer.Exit(1)
+
+            init_payload = cast(dict, init_response.json())
+            if init_payload.get("content_unchanged"):
+                return init_payload
+
+            upload_url = init_payload.get("upload_url")
+            if not isinstance(upload_url, str) or not upload_url:
+                error_console.print(
+                    "[red]Task upload initialization did not return a presigned upload URL.[/red]\n"
+                    "Direct task uploads require S3-compatible storage."
+                )
+                raise typer.Exit(1)
+
+            _upload_to_presigned_url(
+                upload_url,
+                tarball_path,
+                cast(dict[str, str], init_payload.get("upload_headers") or {}),
+            )
+            response = client.post(
+                f"{api_url}/tasks/upload/complete",
+                json={
+                    "task_id": init_payload["task_id"],
+                    "name": init_payload["name"],
+                    "version": init_payload["version"],
+                    "content_hash": content_hash,
+                },
+            )
 
         if response.status_code != 200:
             error_console.print(f"[red]Failed to upload task:[/red] {response.text}")
             raise typer.Exit(1)
 
-        result: str = response.json()["task_id"]
-        return result
+        return cast(dict, response.json())
     finally:
-        # Cleanup tarball
         shutil.rmtree(Path(tarball_path).parent, ignore_errors=True)
 
 
@@ -240,6 +323,7 @@ def submit_sweep(
     agent_kwargs: list[str] | None = None,
     artifact_paths: list[str] | None = None,
     append_to_task: bool = False,
+    content_hash: str | None = None,
 ) -> dict:
     """Submit a task sweep to the API."""
     env_value = environment.value if environment else None
@@ -300,6 +384,8 @@ def submit_sweep(
         payload["harbor"] = harbor
     if append_to_task:
         payload["append_to_task"] = True
+    if content_hash:
+        payload["content_hash"] = content_hash
 
     with httpx.Client(
         timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()
@@ -730,8 +816,9 @@ def print_final_results(result: dict) -> None:
 
         reward = trial.get("reward")
         if reward is not None:
-            rewards.append(reward)
-            reward_str = f"{reward:.2f}" if isinstance(reward, float) else str(reward)
+            reward_value = float(reward)
+            rewards.append(reward_value)
+            reward_str = format_reward_value(reward_value)
         else:
             reward_str = "-"
 
@@ -757,14 +844,22 @@ def print_final_results(result: dict) -> None:
         summary_parts.append(f"[red]{failed} failed[/red]")
     if rewards:
         avg_reward = sum(rewards) / len(rewards)
-        summary_parts.append(f"avg reward: [cyan]{avg_reward:.2f}[/cyan]")
+        summary_parts.append(f"avg score: [cyan]{avg_reward:.2f}[/cyan]")
 
     console.print("  " + " | ".join(summary_parts))
     console.print()
 
 
-def watch_task(api_url: str, task_id: str) -> dict | None:
-    """Watch a task until completion. Returns the final result."""
+def watch_task(
+    api_url: str,
+    task_id: str,
+    experiment_id: str | None = None,
+) -> dict | None:
+    """Watch a task until completion. Returns the final result.
+
+    When *experiment_id* is given, only trials belonging to that experiment
+    are displayed (others are hidden from the table and summary counts).
+    """
     final_result = None
     headers = get_auth_headers()
     with Live(console=console, refresh_per_second=2) as live:
@@ -780,6 +875,12 @@ def watch_task(api_url: str, task_id: str) -> dict | None:
                 result = cast(dict, response.json())
                 final_result = result
 
+                all_trials = result.get("trials", [])
+                if experiment_id:
+                    all_trials = [
+                        t for t in all_trials if t.get("experiment_id") == experiment_id
+                    ]
+
                 task_status = result.get("status", "unknown")
                 task_status_display = format_task_status(task_status)
 
@@ -791,18 +892,15 @@ def watch_task(api_url: str, task_id: str) -> dict | None:
                 table.add_column("Status")
                 table.add_column("Reward", justify="center")
 
-                for trial in result.get("trials", []):
+                for trial in all_trials:
                     status = trial["status"]
                     harbor_stage = trial.get("harbor_stage")
                     status_display = format_trial_status(status, harbor_stage)
 
                     reward = trial.get("reward")
-                    if reward == 1:
-                        reward_str = "[green]✓[/green]"
-                    elif reward == 0:
-                        reward_str = "[red]✗[/red]"
-                    else:
-                        reward_str = "-"
+                    reward_str = format_reward_value(
+                        float(reward) if reward is not None else None
+                    )
 
                     table.add_row(
                         trial["id"].split("-")[-1],  # Just the index
@@ -813,23 +911,34 @@ def watch_task(api_url: str, task_id: str) -> dict | None:
                     )
 
                 # Add summary row
-                total = result.get("total", 0)
-                completed = result.get("completed", 0)
-                failed = result.get("failed", 0)
+                total = len(all_trials)
+                completed = sum(1 for t in all_trials if t.get("status") == "success")
+                failed = sum(1 for t in all_trials if t.get("status") == "failed")
 
-                # Count rewards
-                trials = result.get("trials", [])
-                reward_pass = sum(1 for t in trials if t.get("reward") == 1)
-                reward_fail = sum(1 for t in trials if t.get("reward") == 0)
+                rewards = [
+                    float(t["reward"]) for t in all_trials if t.get("reward") is not None
+                ]
+                reward_pass = sum(1 for reward in rewards if reward == 1)
+                reward_fail = sum(1 for reward in rewards if reward == 0)
+                reward_partial = sum(1 for reward in rewards if 0 < reward < 1)
 
                 table.add_section()
                 summary_parts = [f"[bold]{completed}/{total}[/bold] done"]
                 if failed > 0:
                     summary_parts.append(f"[red]{failed} failed[/red]")
-                if reward_pass > 0 or reward_fail > 0:
+                if rewards:
                     summary_parts.append(
-                        f"[green]{reward_pass}✓[/green]/[red]{reward_fail}✗[/red]"
+                        f"avg [cyan]{sum(rewards) / len(rewards):.2f}[/cyan]"
                     )
+                if reward_pass > 0 or reward_fail > 0 or reward_partial > 0:
+                    reward_summary = []
+                    if reward_pass > 0:
+                        reward_summary.append(f"[green]{reward_pass}✓[/green]")
+                    if reward_partial > 0:
+                        reward_summary.append(f"[yellow]{reward_partial}~[/yellow]")
+                    if reward_fail > 0:
+                        reward_summary.append(f"[red]{reward_fail}✗[/red]")
+                    summary_parts.append("/".join(reward_summary))
 
                 table.add_row("", ", ".join(summary_parts), "", "", "")
 
@@ -849,7 +958,13 @@ def watch_task(api_url: str, task_id: str) -> dict | None:
                 live.update(table)
 
                 # Check if done
-                if task_status in ("completed", "failed"):
+                if experiment_id:
+                    terminal = {"success", "failed", "cancelled"}
+                    if all_trials and all(
+                        t.get("status") in terminal for t in all_trials
+                    ):
+                        break
+                elif task_status in ("completed", "failed"):
                     break
 
                 time.sleep(2)

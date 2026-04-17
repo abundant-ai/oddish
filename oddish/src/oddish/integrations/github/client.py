@@ -38,7 +38,6 @@ class GitHubMeta:
         if not raw:
             return None
 
-        # Handle both string (JSON) and dict formats
         import json
 
         if isinstance(raw, str):
@@ -51,14 +50,12 @@ class GitHubMeta:
         else:
             return None
 
-        # Extract required fields
         pr_number = meta.get("pr_number")
         pr_repo = meta.get("pr_repo")
 
         if not pr_number or not pr_repo:
             return None
 
-        # Parse owner/repo from pr_repo (e.g., "abundant-ai/harbor-forge")
         parts = pr_repo.split("/")
         if len(parts) != 2:
             return None
@@ -105,10 +102,7 @@ class GitHubClient:
     async def find_oddish_comment(
         self, owner: str, repo: str, pr_number: int
     ) -> dict[str, Any] | None:
-        """Find existing Oddish comment on a PR.
-
-        Looks for comments with any of the Oddish markers.
-        """
+        """Find existing Oddish comment on a PR."""
         client = await self._get_client()
         try:
             response = await client.get(
@@ -117,7 +111,6 @@ class GitHubClient:
             )
             response.raise_for_status()
 
-            # Check for any Oddish marker (validation or experiment)
             markers = [
                 "<!-- oddish-validation-results -->",
                 "<!-- oddish-experiment-results -->",
@@ -174,7 +167,6 @@ class GitHubClient:
         return await self.create_comment(owner, repo, pr_number, body)
 
 
-# Singleton client instance
 _client: GitHubClient | None = None
 
 

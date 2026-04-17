@@ -15,7 +15,7 @@ import { fetcher } from "@/lib/api";
 import { Beaker, Check, Copy, Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 
-const TRIALS_BATCH_SIZE = 50;
+const TRIALS_BATCH_SIZE = 100;
 const ACTIVE_TASK_STATUSES = new Set([
   "pending",
   "queued",
@@ -26,10 +26,12 @@ const ACTIVE_TASK_STATUSES = new Set([
 
 type ExperimentClientPageProps = {
   experimentId: string;
+  initialTasks?: Task[] | null;
 };
 
 export function ExperimentClientPage({
   experimentId,
+  initialTasks,
 }: ExperimentClientPageProps) {
   const { orgRole } = useAuth();
   const { mutate: mutateKey } = useSWRConfig();
@@ -59,6 +61,9 @@ export function ExperimentClientPage({
   } = useSWR<Task[]>(allTasksUrl, fetcher, {
     refreshInterval: 0,
     revalidateOnFocus: false,
+    revalidateOnMount: initialTasks == null,
+    revalidateIfStale: initialTasks == null,
+    fallbackData: initialTasks ?? undefined,
   });
 
   // Phase 2: Progressively fetch compact trial data in batches.
@@ -77,7 +82,6 @@ export function ExperimentClientPage({
     data: trialPages,
     isLoading: isLoadingTrialPages,
     isValidating: isValidatingTrials,
-    size: trialsSize,
     setSize: setTrialsSize,
     mutate: mutateTrials,
   } = useSWRInfinite<Task[]>(getTrialsPageKey, fetcher, {
@@ -86,30 +90,13 @@ export function ExperimentClientPage({
     revalidateFirstPage: false,
     persistSize: true,
   });
-
-  // Auto-advance: once a batch arrives and there's more data, request next
   const trialsLastPage = trialPages?.[trialPages.length - 1] ?? null;
   const hasMoreTrials = Boolean(
     trialsLastPage && trialsLastPage.length === TRIALS_BATCH_SIZE,
   );
-  const allTrialPagesLoaded = trialPages
-    ? trialPages.length === trialsSize
-    : false;
 
-  useEffect(() => {
-    if (
-      allTrialPagesLoaded &&
-      !isValidatingTrials &&
-      hasMoreTrials
-    ) {
-      const timeout = setTimeout(() => {
-        setTrialsSize((s) => s + 1);
-      }, 50);
-      return () => clearTimeout(timeout);
-    }
-  }, [allTrialPagesLoaded, isValidatingTrials, hasMoreTrials, setTrialsSize]);
-
-  // Merge lightweight task shells with trial-enriched data
+  // Merge lightweight task shells with trial-enriched data, then keep only
+  // trials that ran against the task's latest version so there's no ambiguity.
   const tasksForExperiment = useMemo(() => {
     const trialDataById = new Map<string, Task>();
     for (const page of trialPages ?? []) {
@@ -133,20 +120,58 @@ export function ExperimentClientPage({
       }
     }
 
-    return merged.sort(
-      (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-    );
+    return merged
+      .sort(
+        (a, b) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      )
+      .map((task) => {
+        const trials = task.trials;
+        if (!trials || trials.length === 0 || task.current_version == null) {
+          return task;
+        }
+        const filtered = trials.filter(
+          (t) =>
+            t.task_version == null || t.task_version === task.current_version,
+        );
+        if (filtered.length === trials.length) return task;
+        const completed = filtered.filter((t) => t.status === "success").length;
+        const failed = filtered.filter((t) => t.status === "failed").length;
+        const rewardSuccess = filtered.filter((t) => t.reward === 1).length;
+        const rewardSum = filtered.reduce(
+          (sum, trial) => sum + (trial.reward ?? 0),
+          0,
+        );
+        const rewardTotal = filtered.filter((t) => t.reward != null).length;
+        return {
+          ...task,
+          trials: filtered,
+          total: filtered.length,
+          completed,
+          failed,
+          reward_success: rewardTotal > 0 ? rewardSuccess : null,
+          reward_sum: rewardTotal > 0 ? rewardSum : null,
+          reward_total: rewardTotal > 0 ? rewardTotal : null,
+        };
+      });
   }, [lightweightTasks, trialPages]);
 
   const isLoading = isLoadingTasks;
   const isLoadingTrials =
-    (lightweightTasks?.length ?? 0) > 0 &&
-    (isLoadingTrialPages || isValidatingTrials || hasMoreTrials);
+    (lightweightTasks?.length ?? 0) > 0 && (isLoadingTrialPages || isValidatingTrials);
   const trialsLoadedCount = useMemo(() => {
     if (!trialPages) return 0;
     return trialPages.reduce((sum, page) => sum + (page?.length ?? 0), 0);
   }, [trialPages]);
+  const totalTaskCount = lightweightTasks?.length ?? 0;
+  const remainingTrialTaskCount = Math.max(0, totalTaskCount - trialsLoadedCount);
+  const canLoadMoreTrials =
+    hasMoreTrials && !isLoadingTrialPages && !isValidatingTrials;
+  const canLoadAllTrials =
+    totalTaskCount > 0 &&
+    remainingTrialTaskCount > 0 &&
+    !isLoadingTrialPages &&
+    !isValidatingTrials;
 
   const refreshIntervalMs = useMemo(() => {
     if (tasksForExperiment.length === 0) return 5000;
@@ -172,6 +197,16 @@ export function ExperimentClientPage({
     },
     [mutateLightweight, mutateTrials],
   );
+
+  const loadMoreTrials = useCallback(() => {
+    if (!canLoadMoreTrials) return;
+    void setTrialsSize((size) => size + 1);
+  }, [canLoadMoreTrials, setTrialsSize]);
+
+  const loadAllTrials = useCallback(() => {
+    if (!canLoadAllTrials || totalTaskCount === 0) return;
+    void setTrialsSize(Math.ceil(totalTaskCount / TRIALS_BATCH_SIZE));
+  }, [canLoadAllTrials, setTrialsSize, totalTaskCount]);
 
   useEffect(() => {
     if (!isEditingName) {
@@ -403,12 +438,44 @@ export function ExperimentClientPage({
             ) : null
           }
           inlineAlert={
-            nameError ? (
-              <Alert variant="destructive">
-                <AlertTitle>Rename failed</AlertTitle>
-                <AlertDescription>{nameError}</AlertDescription>
-              </Alert>
-            ) : null
+            <>
+              {nameError ? (
+                <Alert variant="destructive">
+                  <AlertTitle>Rename failed</AlertTitle>
+                  <AlertDescription>{nameError}</AlertDescription>
+                </Alert>
+              ) : null}
+              {remainingTrialTaskCount > 0 ? (
+                <Alert>
+                  <AlertTitle>Trial details are loading on demand</AlertTitle>
+                  <AlertDescription className="flex flex-wrap items-center gap-2">
+                    <span>
+                      Loaded compact trial data for {trialsLoadedCount}/{totalTaskCount} tasks.
+                    </span>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="h-7"
+                      onClick={loadMoreTrials}
+                      disabled={!canLoadMoreTrials}
+                    >
+                      Load next {Math.min(TRIALS_BATCH_SIZE, remainingTrialTaskCount)}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7"
+                      onClick={loadAllTrials}
+                      disabled={!canLoadAllTrials}
+                    >
+                      Load all
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              ) : null}
+            </>
           }
           readOnly={false}
           allowRetry

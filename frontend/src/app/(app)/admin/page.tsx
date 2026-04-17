@@ -8,13 +8,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Table,
   TableBody,
   TableCell,
@@ -45,7 +38,6 @@ import {
   Server,
   Database,
   Clock,
-  Zap,
   AlertCircle,
 } from "lucide-react";
 
@@ -1025,8 +1017,7 @@ function OrphanedStateCard() {
 
   const counts = data?.counts;
   const totalIssues = counts
-    ? counts.running_stale_heartbeat +
-      counts.active_tasks_without_active_trials
+    ? counts.running_stale_heartbeat + counts.active_tasks_without_active_trials
     : 0;
 
   return (
@@ -1246,7 +1237,10 @@ function QueueStatusCard() {
           </Alert>
         ) : isLoading && !data ? (
           <p className="text-muted-foreground">Loading...</p>
-        ) : !data || (data.trial_queues.length === 0 && data.analysis_queued === 0 && data.verdict_queued === 0) ? (
+        ) : !data ||
+          (data.trial_queues.length === 0 &&
+            data.analysis_queued === 0 &&
+            data.verdict_queued === 0) ? (
           <div className="py-8 text-center text-muted-foreground">
             <Database className="mx-auto mb-3 h-12 w-12 opacity-50" />
             <p>No active queue items</p>

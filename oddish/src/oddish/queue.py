@@ -12,9 +12,9 @@ from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
-    Priority,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
@@ -28,10 +28,135 @@ from oddish.task_timeouts import validate_task_timeout_config
 
 logger = logging.getLogger(__name__)
 
+USER_CANCELLED_MESSAGE = "Cancelled by user"
+CANCELLED_HARBOR_STAGE = "cancelled"
+ACTIVE_TRIAL_STATUSES = (
+    TrialStatus.PENDING,
+    TrialStatus.QUEUED,
+    TrialStatus.RUNNING,
+    TrialStatus.RETRYING,
+)
+ACTIVE_PIPELINE_STATUSES = (
+    AnalysisStatus.PENDING,
+    AnalysisStatus.QUEUED,
+    AnalysisStatus.RUNNING,
+)
+ACTIVE_TASK_STATUSES = (
+    TaskStatus.PENDING,
+    TaskStatus.RUNNING,
+    TaskStatus.ANALYZING,
+    TaskStatus.VERDICT_PENDING,
+)
+
 
 # =============================================================================
 # Task/Trial Cancellation (user-initiated)
 # =============================================================================
+
+
+async def cancel_tasks_runs(
+    session: AsyncSession,
+    task_ids: list[str],
+    org_id: str | None = None,
+) -> dict:
+    """Cancel in-flight runs for a batch of tasks without deleting data."""
+    requested_task_ids = list(dict.fromkeys(task_ids))
+    if not requested_task_ids:
+        return {
+            "task_ids": [],
+            "not_found_task_ids": [],
+            "tasks_found": 0,
+            "tasks_cancelled": 0,
+            "trials_cancelled": 0,
+            "modal_function_call_ids": [],
+        }
+
+    query = select(TaskModel).where(TaskModel.id.in_(requested_task_ids))
+    if org_id:
+        query = query.where(TaskModel.org_id == org_id)
+    result = await session.execute(query)
+    tasks = list(result.scalars().all())
+    if not tasks:
+        return {"error": "not_found"}
+
+    tasks_by_id = {task.id: task for task in tasks}
+    found_task_ids = [
+        task_id for task_id in requested_task_ids if task_id in tasks_by_id
+    ]
+    not_found_task_ids = [
+        task_id for task_id in requested_task_ids if task_id not in tasks_by_id
+    ]
+
+    trial_rows = await session.execute(
+        select(TrialModel).where(
+            TrialModel.task_id.in_(found_task_ids),
+            or_(
+                TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+                TrialModel.analysis_status.in_(ACTIVE_PIPELINE_STATUSES),
+            ),
+        )
+    )
+    trials = list(trial_rows.scalars().all())
+
+    modal_fc_ids: list[str] = []
+    trials_cancelled = 0
+    tasks_cancelled = 0
+    now = utcnow()
+
+    for trial in trials:
+        trial_updated = False
+        if trial.status in ACTIVE_TRIAL_STATUSES:
+            if trial.modal_function_call_id:
+                modal_fc_ids.append(trial.modal_function_call_id)
+            trial.status = TrialStatus.FAILED
+            trial.error_message = USER_CANCELLED_MESSAGE
+            trial.finished_at = now
+            trial.harbor_stage = CANCELLED_HARBOR_STAGE
+            trial.max_attempts = trial.attempts
+            trial.current_worker_id = None
+            trial.current_queue_slot = None
+            trial.modal_function_call_id = None
+            trials_cancelled += 1
+            trial_updated = True
+        if trial.analysis_status in ACTIVE_PIPELINE_STATUSES:
+            if trial.analysis_modal_function_call_id:
+                modal_fc_ids.append(trial.analysis_modal_function_call_id)
+            trial.analysis_status = AnalysisStatus.FAILED
+            trial.analysis_error = USER_CANCELLED_MESSAGE
+            trial.analysis_finished_at = now
+            trial.analysis_modal_function_call_id = None
+            trial_updated = True
+
+        if not trial_updated:
+            continue
+
+    for task in tasks:
+        task_updated = False
+        if task.status in ACTIVE_TASK_STATUSES:
+            task.status = TaskStatus.FAILED
+            task.finished_at = now
+            task_updated = True
+        if task.verdict_status in ACTIVE_PIPELINE_STATUSES:
+            if task.verdict_modal_function_call_id:
+                modal_fc_ids.append(task.verdict_modal_function_call_id)
+            task.verdict_status = VerdictStatus.FAILED
+            task.verdict_error = USER_CANCELLED_MESSAGE
+            task.verdict_finished_at = now
+            task.verdict_modal_function_call_id = None
+            task_updated = True
+        if task_updated:
+            tasks_cancelled += 1
+
+    await session.flush()
+
+    return {
+        "task_ids": found_task_ids,
+        "not_found_task_ids": not_found_task_ids,
+        "tasks_found": len(found_task_ids),
+        "tasks_cancelled": tasks_cancelled,
+        "trials_cancelled": trials_cancelled,
+        "modal_function_call_ids": list(dict.fromkeys(modal_fc_ids)),
+    }
 
 
 async def cancel_task_runs(
@@ -46,76 +171,14 @@ async def cancel_task_runs(
 
     Returns a summary dict with counts and modal_function_call_ids to cancel.
     """
-    query = select(TaskModel).where(TaskModel.id == task_id)
-    if org_id:
-        query = query.where(TaskModel.org_id == org_id)
-    result = await session.execute(query)
-    task = result.scalar_one_or_none()
-    if not task:
+    result = await cancel_tasks_runs(session, [task_id], org_id=org_id)
+    if result.get("error") == "not_found":
         return {"error": "not_found"}
-
-    trial_rows = await session.execute(
-        select(TrialModel).where(TrialModel.task_id == task_id)
-    )
-    trials = list(trial_rows.scalars().all())
-
-    active_statuses = {
-        TrialStatus.PENDING,
-        TrialStatus.QUEUED,
-        TrialStatus.RUNNING,
-        TrialStatus.RETRYING,
-    }
-    active_pipeline_statuses = {
-        AnalysisStatus.PENDING,
-        AnalysisStatus.QUEUED,
-        AnalysisStatus.RUNNING,
-    }
-    modal_fc_ids: list[str] = []
-    trials_cancelled = 0
-    now = utcnow()
-
-    for trial in trials:
-        if trial.status not in active_statuses:
-            if trial.analysis_status in active_pipeline_statuses:
-                trial.analysis_status = AnalysisStatus.FAILED
-                trial.analysis_error = "Cancelled by user"
-                trial.analysis_finished_at = now
-            continue
-        if trial.modal_function_call_id:
-            modal_fc_ids.append(trial.modal_function_call_id)
-        trial.status = TrialStatus.FAILED
-        trial.error_message = "Cancelled by user"
-        trial.finished_at = now
-        trial.harbor_stage = "cancelled"
-        trial.max_attempts = trial.attempts
-        trial.current_worker_id = None
-        trial.current_queue_slot = None
-        trial.modal_function_call_id = None
-        if trial.analysis_status in active_pipeline_statuses:
-            trial.analysis_status = AnalysisStatus.FAILED
-            trial.analysis_error = "Cancelled by user"
-            trial.analysis_finished_at = now
-        trials_cancelled += 1
-
-    if task.status in (
-        TaskStatus.PENDING,
-        TaskStatus.RUNNING,
-        TaskStatus.ANALYZING,
-        TaskStatus.VERDICT_PENDING,
-    ):
-        task.status = TaskStatus.FAILED
-        task.finished_at = now
-    if task.verdict_status in active_pipeline_statuses:
-        task.verdict_status = VerdictStatus.FAILED
-        task.verdict_error = "Cancelled by user"
-        task.verdict_finished_at = now
-
-    await session.flush()
 
     return {
         "task_id": task_id,
-        "trials_cancelled": trials_cancelled,
-        "modal_function_call_ids": modal_fc_ids,
+        "trials_cancelled": result.get("trials_cancelled", 0),
+        "modal_function_call_ids": result.get("modal_function_call_ids", []),
     }
 
 
@@ -124,7 +187,7 @@ async def cancel_task_runs(
 # =============================================================================
 
 
-async def _get_or_create_experiment(
+async def get_or_create_experiment(
     session: AsyncSession, name: str, org_id: str | None = None
 ) -> ExperimentModel:
     """Fetch an experiment by name (and org_id if provided) or create it if missing."""
@@ -160,7 +223,7 @@ async def _get_experiment_by_id(
     return result.scalar_one_or_none()
 
 
-async def _get_experiment_by_id_or_name(
+async def get_experiment_by_id_or_name(
     session: AsyncSession, experiment_id_or_name: str, org_id: str | None = None
 ) -> ExperimentModel | None:
     """Fetch an experiment by ID or name with optional org scoping."""
@@ -185,6 +248,11 @@ def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
 
     parts = name.split("/")
     name = parts[-1] if parts else name
+
+    # Skip versioned path segments (e.g. "v1", "v2") produced by
+    # resolve_task_storage for the init/complete upload path.
+    if re.match(r"^v\d+$", name) and len(parts) > 1:
+        name = parts[-2]
 
     if name == "tasks" and len(parts) > 1:
         name = parts[-2]
@@ -245,6 +313,9 @@ async def create_task(
 
     Trials are created with status=QUEUED which makes them immediately
     visible to the fair-scheduling claim query in workers.
+
+    A ``TaskVersionModel`` (v1) is also created to snapshot the task
+    content for this first submission.
     """
     if task_id is None:
         task_id = generate_id()
@@ -253,29 +324,26 @@ async def create_task(
 
     task_path = submission.task_path
     task_s3_key = extract_s3_key_from_path(task_path)
-    if not task_s3_key and settings.s3_enabled:
+    if not task_s3_key:
         local_path = Path(task_path)
         if local_path.exists() and local_path.is_dir():
             validate_task_timeout_config(local_path)
             storage = get_storage_client()
             task_s3_key = await storage.upload_task_directory(task_id, local_path)
-    elif not task_s3_key:
-        local_path = Path(task_path)
-        if local_path.exists() and local_path.is_dir():
-            validate_task_timeout_config(local_path)
 
     if submission.experiment_id:
-        experiment = await _get_experiment_by_id_or_name(
+        experiment = await get_experiment_by_id_or_name(
             session, submission.experiment_id, org_id
         )
         if not experiment:
-            experiment = await _get_or_create_experiment(
+            experiment = await get_or_create_experiment(
                 session, submission.experiment_id, org_id
             )
     else:
         experiment_name = generate_experiment_name()
-        experiment = await _get_or_create_experiment(session, experiment_name, org_id)
+        experiment = await get_or_create_experiment(session, experiment_name, org_id)
 
+    # Insert the task first (without version pointer to avoid circular FK).
     task = TaskModel(
         id=task_id,
         name=task_name,
@@ -289,6 +357,42 @@ async def create_task(
         run_analysis=submission.run_analysis,
     )
     session.add(task)
+    await session.flush()
+
+    # Determine the version: if one was pre-created during upload, use the
+    # latest; otherwise create v1 now that the task row exists.
+    existing_max = await session.scalar(
+        select(func.max(TaskVersionModel.version)).where(
+            TaskVersionModel.task_id == task_id
+        )
+    )
+
+    if existing_max is not None:
+        latest_version_row = (
+            await session.execute(
+                select(TaskVersionModel).where(
+                    TaskVersionModel.task_id == task_id,
+                    TaskVersionModel.version == existing_max,
+                )
+            )
+        ).scalar_one()
+        version_id = latest_version_row.id
+    else:
+        version_number = 1
+        version_id = f"{task_id}-v{version_number}"
+        version_row = TaskVersionModel(
+            id=version_id,
+            task_id=task_id,
+            version=version_number,
+            task_path=submission.task_path,
+            task_s3_key=task_s3_key,
+            content_hash=submission.content_hash,
+        )
+        session.add(version_row)
+        await session.flush()
+
+    # Now safe to set the back-pointer and create trials.
+    task.current_version_id = version_id
 
     for i, spec in enumerate(submission.trials):
         model = settings.normalize_trial_model(spec.agent, spec.model)
@@ -303,6 +407,8 @@ async def create_task(
             id=trial_id,
             name=trial_name,
             task_id=task_id,
+            task_version_id=version_id,
+            experiment_id=experiment.id,
             org_id=org_id,
             agent=spec.agent,
             provider=provider,
@@ -325,8 +431,14 @@ async def append_trials_to_task(
     *,
     task: TaskModel,
     submission: TaskSubmission,
+    experiment_id: str | None = None,
 ) -> list[TrialModel]:
-    """Append new queued trials to an existing task."""
+    """Append new queued trials to an existing task.
+
+    New trials are pinned to the task's ``current_version_id``.
+    If *experiment_id* is given, new trials are associated with that experiment
+    rather than the task's current experiment.
+    """
     trial_rows = await session.execute(
         select(TrialModel)
         .where(TrialModel.task_id == task.id)
@@ -334,6 +446,9 @@ async def append_trials_to_task(
     )
     existing_trials = list(trial_rows.scalars().all())
     next_index = _get_next_trial_index(task.id, existing_trials)
+
+    current_version_id = task.current_version_id
+    trial_experiment_id = experiment_id or task.experiment_id
 
     new_trials: list[TrialModel] = []
     for spec in submission.trials:
@@ -349,6 +464,8 @@ async def append_trials_to_task(
             id=trial_id,
             name=trial_name,
             task_id=task.id,
+            task_version_id=current_version_id,
+            experiment_id=trial_experiment_id,
             org_id=task.org_id,
             agent=spec.agent,
             provider=provider,
@@ -378,6 +495,7 @@ async def append_trials_to_task(
         task.verdict_error = None
         task.verdict_started_at = None
         task.verdict_finished_at = None
+        task.verdict_modal_function_call_id = None
 
     await session.flush()
     await session.refresh(task, attribute_names=["trials"])
@@ -457,6 +575,7 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
         if analysis_pending_count == 0:
             task.status = TaskStatus.VERDICT_PENDING
             task.verdict_status = VerdictStatus.QUEUED
+            task.verdict_modal_function_call_id = None
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
@@ -510,6 +629,7 @@ async def maybe_start_verdict_stage(session: AsyncSession, trial_id: str) -> boo
 
     task.status = TaskStatus.VERDICT_PENDING
     task.verdict_status = VerdictStatus.QUEUED
+    task.verdict_modal_function_call_id = None
     await session.flush()
 
     return True
@@ -605,6 +725,58 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
         _add(verdict_queue_key, verdict_status.value, int(count))
 
     return stats
+
+
+async def get_queue_and_pipeline_stats_with_concurrency(
+    session: AsyncSession, org_id: str | None = None
+) -> tuple[dict[str, dict], dict[str, dict[str, int]]]:
+    """Collect queue and pipeline stats without duplicating status scans."""
+    stats = await get_queue_stats(session, org_id)
+    queue_stats: dict[str, dict] = {}
+    queue_keys = set(stats.keys()) | settings.get_known_queue_keys()
+    for queue_key in sorted(queue_keys):
+        provider_stats = stats.get(
+            queue_key,
+            {
+                "pending": 0,
+                "queued": 0,
+                "running": 0,
+                "success": 0,
+                "failed": 0,
+                "retrying": 0,
+            },
+        )
+        queue_stats[queue_key] = {
+            **provider_stats,
+            "recommended_concurrency": settings.get_model_concurrency(queue_key),
+        }
+
+    trial_pipeline: dict[str, int] = {}
+    analysis_pipeline: dict[str, int] = {}
+    verdict_pipeline: dict[str, int] = {}
+    analysis_queue_key = settings.get_analysis_queue_key()
+    verdict_queue_key = settings.get_verdict_queue_key()
+
+    for queue_key, provider_stats in stats.items():
+        for status_name, count in provider_stats.items():
+            if queue_key == analysis_queue_key:
+                analysis_pipeline[status_name] = analysis_pipeline.get(status_name, 0) + int(
+                    count
+                )
+            elif queue_key == verdict_queue_key:
+                verdict_pipeline[status_name] = verdict_pipeline.get(status_name, 0) + int(
+                    count
+                )
+            else:
+                trial_pipeline[status_name] = trial_pipeline.get(status_name, 0) + int(
+                    count
+                )
+
+    return queue_stats, {
+        "trials": trial_pipeline,
+        "analyses": analysis_pipeline,
+        "verdicts": verdict_pipeline,
+    }
 
 
 async def get_queue_stats_with_concurrency(

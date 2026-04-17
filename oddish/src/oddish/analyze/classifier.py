@@ -138,8 +138,10 @@ class TrialClassifier:
             result_str = "pass"
         elif reward == 0.0:
             result_str = "fail"
+        elif reward is not None:
+            result_str = f"partial (reward={reward})"
         else:
-            result_str = f"unknown (reward={reward})"
+            result_str = "unknown"
 
         prompt = _CLASSIFY_PROMPT.format(
             result=result_str,

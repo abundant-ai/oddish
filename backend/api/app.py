@@ -4,11 +4,18 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from oddish.config import settings
 from oddish.db import close_database_connections
+from oddish.timing import (
+    add_server_timing_metric,
+    elapsed_ms,
+    format_server_timing,
+    join_server_timing_headers,
+    now,
+)
 
 
 def _get_cors_origins() -> list[str]:
@@ -40,7 +47,6 @@ async def lifespan(_api: FastAPI):
     ASGI app from hard-failing when the Supabase pooler is briefly unavailable.
     """
     Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
-    Path(settings.local_storage_dir).mkdir(parents=True, exist_ok=True)
 
     yield
 
@@ -51,10 +57,9 @@ async def lifespan(_api: FastAPI):
 
 
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
+    """Create and configure the FastAPI application with all routers."""
     api = FastAPI(
         title="Oddish Cloud",
-        description="Multi-tenant evaluation platform for Harbor tasks on Modal.",
         version="0.3.0",
         lifespan=lifespan,
     )
@@ -67,5 +72,44 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @api.middleware("http")
+    async def add_server_timing_header(request: Request, call_next):
+        request.state.server_timing_metrics = []
+        started_at = now()
+        response = await call_next(request)
+        add_server_timing_metric(
+            request,
+            "backend_total",
+            elapsed_ms(started_at),
+            "Backend request total",
+        )
+        header = format_server_timing(request.state.server_timing_metrics)
+        combined = join_server_timing_headers(response.headers.get("Server-Timing"), header)
+        if combined:
+            response.headers["Server-Timing"] = combined
+        return response
+
+    from api.routers import (
+        admin,
+        api_keys,
+        clerk_webhooks,
+        dashboard,
+        github_webhooks,
+        orgs,
+        public,
+        tasks,
+        trials,
+    )
+
+    api.include_router(dashboard.router)
+    api.include_router(orgs.router)
+    api.include_router(api_keys.router)
+    api.include_router(clerk_webhooks.router)
+    api.include_router(github_webhooks.router)
+    api.include_router(tasks.router)
+    api.include_router(trials.router)
+    api.include_router(public.router)
+    api.include_router(admin.router)
 
     return api

@@ -1,6 +1,8 @@
-from sqlalchemy import select, text
+from typing import cast
 
-from oddish.config import settings
+from sqlalchemy import text
+from sqlalchemy.engine import CursorResult
+
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -20,6 +22,14 @@ def _clear_trial_runtime_refs(trial: TrialModel) -> None:
     trial.current_worker_id = None
     trial.current_queue_slot = None
     trial.modal_function_call_id = None
+
+
+def _clear_analysis_runtime_refs(trial: TrialModel) -> None:
+    trial.analysis_modal_function_call_id = None
+
+
+def _clear_verdict_runtime_refs(task: TaskModel) -> None:
+    task.verdict_modal_function_call_id = None
 
 
 async def cleanup_orphaned_queue_state(
@@ -125,6 +135,7 @@ async def cleanup_orphaned_queue_state(
             trial.analysis_error = None
             trial.analysis_started_at = None
             trial.analysis_finished_at = None
+            _clear_analysis_runtime_refs(trial)
             stale_analysis_reset += 1
 
         # ---------------------------------------------------------------
@@ -151,6 +162,7 @@ async def cleanup_orphaned_queue_state(
             task.verdict_error = None
             task.verdict_started_at = None
             task.verdict_finished_at = None
+            _clear_verdict_runtime_refs(task)
             stale_verdict_reset += 1
 
         # ---------------------------------------------------------------
@@ -229,59 +241,60 @@ async def cleanup_orphaned_queue_state(
                 task.verdict_error = None
                 task.verdict_started_at = None
                 task.verdict_finished_at = None
+                _clear_verdict_runtime_refs(task)
                 stale_verdict_reset += 1
 
         # ---------------------------------------------------------------
         # 7. Clear stale runtime refs on terminal trials
         # ---------------------------------------------------------------
-        terminal_trial_runtime_refs_cleared = int(
-            (
-                await session.execute(
-                    text(
-                        """
-                        UPDATE trials
-                        SET current_worker_id = NULL,
-                            current_queue_slot = NULL,
-                            modal_function_call_id = NULL
-                        WHERE status::text IN ('SUCCESS', 'FAILED')
-                          AND (
-                              current_worker_id IS NOT NULL
-                              OR current_queue_slot IS NOT NULL
-                              OR modal_function_call_id IS NOT NULL
-                          )
-                        """
-                    )
+        terminal_trial_cleanup_result = cast(
+            CursorResult,
+            await session.execute(
+                text(
+                    """
+                    UPDATE trials
+                    SET current_worker_id = NULL,
+                        current_queue_slot = NULL,
+                        modal_function_call_id = NULL
+                    WHERE status::text IN ('SUCCESS', 'FAILED')
+                      AND (
+                          current_worker_id IS NOT NULL
+                          OR current_queue_slot IS NOT NULL
+                          OR modal_function_call_id IS NOT NULL
+                      )
+                    """
                 )
-            ).rowcount
-            or 0
+            ),
+        )
+        terminal_trial_runtime_refs_cleared = int(
+            terminal_trial_cleanup_result.rowcount or 0
         )
 
         # ---------------------------------------------------------------
         # 8. Clear orphaned queue slot leases (no running trial on that key)
         # ---------------------------------------------------------------
-        orphaned_active_slots_cleared = int(
-            (
-                await session.execute(
-                    text(
-                        """
-                        UPDATE queue_slots qs
-                        SET locked_by = NULL,
-                            locked_until = NULL
-                        WHERE qs.locked_by IS NOT NULL
-                          AND qs.locked_until IS NOT NULL
-                          AND qs.locked_until > NOW()
-                          AND NOT EXISTS (
-                              SELECT 1
-                              FROM trials t
-                              WHERE t.status::text = 'RUNNING'
-                                AND t.queue_key = qs.queue_key
-                          )
-                        """
-                    )
+        orphaned_slot_cleanup_result = cast(
+            CursorResult,
+            await session.execute(
+                text(
+                    """
+                    UPDATE queue_slots qs
+                    SET locked_by = NULL,
+                        locked_until = NULL
+                    WHERE qs.locked_by IS NOT NULL
+                      AND qs.locked_until IS NOT NULL
+                      AND qs.locked_until > NOW()
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM trials t
+                          WHERE t.status::text = 'RUNNING'
+                            AND t.queue_key = qs.queue_key
+                      )
+                    """
                 )
-            ).rowcount
-            or 0
+            ),
         )
+        orphaned_active_slots_cleared = int(orphaned_slot_cleanup_result.rowcount or 0)
 
     return {
         "running_stale_heartbeat": running_stale_heartbeat_failed,

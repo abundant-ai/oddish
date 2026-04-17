@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import getpass
 import json
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated, Optional
@@ -500,7 +501,11 @@ def run(
 
     if environment is None and not existing_task_ids:
         environment = EnvironmentType.MODAL if is_modal_api else EnvironmentType.DOCKER
-    elif environment is not None and is_modal_api and environment != EnvironmentType.MODAL:
+    elif (
+        environment is not None
+        and is_modal_api
+        and environment != EnvironmentType.MODAL
+    ):
         console.print(
             "[yellow]Oddish Cloud runs on Modal (no Docker-in-Docker); forcing --env modal[/yellow]"
         )
@@ -511,7 +516,12 @@ def run(
     total_trials_submitted = 0
     append_mode = bool(existing_task_ids)
 
-    def submit_task(task_id: str, *, append_to_task: bool) -> dict:
+    def submit_task(
+        task_id: str,
+        *,
+        append_to_task: bool,
+        task_content_hash: str | None = None,
+    ) -> dict:
         tags: dict[str, str] = {}
         if github_meta:
             tags["github_meta"] = github_meta
@@ -539,16 +549,36 @@ def run(
             agent_kwargs=agent_kwargs,
             artifact_paths=artifact_paths,
             append_to_task=append_to_task,
+            content_hash=task_content_hash,
         )
 
     def upload_and_submit_task(task_path: Path) -> dict:
-        task_id = upload_task(api_url, task_path)
-        return submit_task(task_id, append_to_task=False)
+        result = upload_task(api_url, task_path)
+        task_id = result["task_id"]
+        is_existing = result.get("existing_task", False)
+        upload_hash = result.get("content_hash")
+
+        if is_existing and not quiet:
+            ver = result.get("version", "?")
+            if result.get("content_unchanged"):
+                console.print(
+                    f"[dim]Task '{task_path.name}' unchanged, reusing version {ver}[/dim]"
+                )
+            else:
+                console.print(
+                    f"[dim]Task '{task_path.name}' updated, created version {ver}[/dim]"
+                )
+
+        return submit_task(
+            task_id,
+            append_to_task=is_existing,
+            task_content_hash=upload_hash,
+        )
 
     def append_to_existing_task(task_id: str) -> dict:
         return submit_task(task_id, append_to_task=True)
 
-    task_targets: list[Path | str]
+    task_targets: Sequence[Path | str]
     progress_verb: str
     if existing_task_ids:
         task_targets = existing_task_ids
@@ -605,10 +635,17 @@ def run(
     experiment_id_resolved: str | None = None
     experiment_name = ""
 
+    # Prefer experiment info returned directly by the sweep response (avoids
+    # stale task-level experiment_id when appending trials to a new experiment).
+    if all_results:
+        first = all_results[0]
+        experiment_id_resolved = first.get("experiment_id") or None
+        experiment_name = first.get("experiment_name") or ""
+
     # JSON output mode (for CI/scripts)
     if json_output:
         dashboard_url = get_dashboard_url(api_url)
-        if all_results:
+        if all_results and not experiment_id_resolved:
             task_summary = get_task_summary(api_url, all_results[0]["id"])
             if task_summary:
                 experiment_id_resolved = task_summary.get("experiment_id")
@@ -647,7 +684,7 @@ def run(
     # Print summary (human-readable)
     console.print()
     dashboard_url = get_dashboard_url(api_url)
-    if all_results:
+    if all_results and not experiment_id_resolved:
         task_summary = get_task_summary(api_url, all_results[0]["id"])
         if task_summary:
             experiment_id_resolved = task_summary.get("experiment_id")
@@ -710,7 +747,11 @@ def run(
             console.print("[dim]Watching task progress (Ctrl+C to stop)...[/dim]")
             console.print()
         try:
-            final_result = watch_task(api_url, all_results[0]["id"])
+            final_result = watch_task(
+                api_url,
+                all_results[0]["id"],
+                experiment_id=experiment_id_resolved,
+            )
             # Print final results table
             if final_result:
                 print_final_results(final_result)

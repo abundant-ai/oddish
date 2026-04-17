@@ -23,6 +23,16 @@ from oddish.cli.config import (
 console = Console()
 
 
+def _format_reward_display(reward: float | None) -> str:
+    if reward is None:
+        return "-"
+    if reward == 1:
+        return "[green]✓[/green]"
+    if reward == 0:
+        return "[red]✗[/red]"
+    return f"[yellow]{reward:.2f}[/yellow]"
+
+
 def status(
     task_id: Annotated[
         Optional[str],
@@ -242,12 +252,20 @@ def status(
         # Show reward summary
         trials = result.get("trials", [])
         if trials:
-            reward_pass = sum(1 for t in trials if t.get("reward") == 1)
-            reward_fail = sum(1 for t in trials if t.get("reward") == 0)
-            if reward_pass > 0 or reward_fail > 0:
+            rewards = [float(t["reward"]) for t in trials if t.get("reward") is not None]
+            reward_pass = sum(1 for reward in rewards if reward == 1)
+            reward_fail = sum(1 for reward in rewards if reward == 0)
+            partial_scores = sum(1 for reward in rewards if 0 < reward < 1)
+            if rewards:
+                summary = [f"avg [cyan]{sum(rewards) / len(rewards):.2f}[/cyan]"]
+                if reward_pass > 0:
+                    summary.append(f"[green]{reward_pass} perfect[/green]")
+                if partial_scores > 0:
+                    summary.append(f"[yellow]{partial_scores} partial[/yellow]")
+                if reward_fail > 0:
+                    summary.append(f"[red]{reward_fail} zero[/red]")
                 console.print(
-                    f"[bold]Rewards:[/bold] [green]{reward_pass} passed[/green], "
-                    f"[red]{reward_fail} failed[/red]"
+                    f"[bold]Rewards:[/bold] " + ", ".join(summary)
                 )
 
         # Show verdict if available
@@ -292,12 +310,9 @@ def status(
                 trial_status_display = format_trial_status(trial_status)
 
                 reward = trial.get("reward")
-                if reward == 1:
-                    reward_str = "[green]✓[/green]"
-                elif reward == 0:
-                    reward_str = "[red]✗[/red]"
-                else:
-                    reward_str = "-"
+                reward_str = _format_reward_display(
+                    float(reward) if reward is not None else None
+                )
 
                 attempts = trial.get("attempts", 0)
                 max_attempts = trial.get("max_attempts", 6)

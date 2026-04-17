@@ -16,9 +16,9 @@ from harbor.viewer.scanner import JobScanner
 from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
-    Priority,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialStatus,
     utcnow,
 )
@@ -202,9 +202,21 @@ async def _prepare_trial_run(
             task.status = TaskStatus.RUNNING
             task.started_at = utcnow()
 
-        task_path = task.task_path if task else None
-        task_s3_key = task.task_s3_key if task else None
         task_id = task.id if task else trial.task_id
+
+        # Prefer the version-specific path so the worker runs the exact
+        # content the trial was created against.
+        task_path: str | None = None
+        task_s3_key: str | None = None
+        if trial.task_version_id:
+            tv = await session.get(TaskVersionModel, trial.task_version_id)
+            if tv:
+                task_path = tv.task_path
+                task_s3_key = tv.task_s3_key
+        if task_path is None and task:
+            task_path = task.task_path
+        if task_s3_key is None and task:
+            task_s3_key = task.task_s3_key
         trial_agent = trial.agent
         trial_model = settings.normalize_trial_model(trial_agent, trial.model)
         if trial.model != trial_model:
@@ -268,7 +280,7 @@ async def _store_trial_results(
                     str(outcome.job_result_path) if outcome.job_result_path else None
                 )
                 if verifier_ran:
-                    derived_reward = 0
+                    derived_reward = 0.0
                     console.print(
                         f"[yellow]Trial {trial_id} agent timeout -> reward=0[/yellow]"
                     )
@@ -298,7 +310,7 @@ async def _store_trial_results(
             # SUCCESS means "trial executed to completion" (regardless of reward)
             # FAILED means "trial encountered an execution error"
             if derived_reward is not None:
-                # Harbor produced a test result (0 or 1) - trial executed successfully
+                # Harbor produced a verifier score - trial executed successfully.
                 # Hook may have already set status to SUCCESS - that's OK, we're confirming it
                 trial.status = TrialStatus.SUCCESS
                 trial.finished_at = utcnow()
@@ -334,6 +346,7 @@ async def _store_trial_results(
             task = await session.get(TaskModel, trial.task_id)
             if task and task.run_analysis and trial.analysis_status is None:
                 trial.analysis_status = AnalysisStatus.QUEUED
+                trial.analysis_modal_function_call_id = None
                 console.print(f"[cyan]Queued analysis for {trial_id}[/cyan]")
 
             # Check if all trials done → transition task status
@@ -410,7 +423,7 @@ async def _handle_harbor_event(
                     if result.verifier_result and result.verifier_result.rewards:
                         reward_value = result.verifier_result.rewards.get("reward")
                         if reward_value is not None:
-                            extracted_reward = int(float(reward_value))
+                            extracted_reward = float(reward_value)
                             console.print(
                                 f"[dim]Trial {trial_id} reward: {extracted_reward}[/dim]"
                             )
@@ -430,7 +443,7 @@ async def _handle_harbor_event(
                                 and result.verifier_result is not None
                             ):
                                 # Agent timeout is a normal trial failure (reward=0).
-                                extracted_reward = 0
+                                extracted_reward = 0.0
                             # Keep error message for transparency, but don't mark as harness error.
                             if extracted_reward is not None:
                                 trial.error_message = str(error_msg)
@@ -558,9 +571,7 @@ async def run_trial_job(
     3. Mark trial as success/failed/retrying
     4. Transition task once all trials complete
     """
-    console.print(
-        f"[cyan]Processing trial[/cyan] {trial_id} (queue_key={queue_key})"
-    )
+    console.print(f"[cyan]Processing trial[/cyan] {trial_id} (queue_key={queue_key})")
 
     # Check idempotency
     async with _trial_session(trial_id) as (session, trial):
@@ -607,9 +618,8 @@ async def run_trial_job(
     else:
         console.print(f"[dim]Using local task path: {task_path_to_run}[/dim]")
 
-    # Ensure storage directories exist before Harbor uses them
+    # Ensure Harbor scratch directories exist before execution starts.
     os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
-    os.makedirs(settings.local_storage_dir, exist_ok=True)
 
     execution = await _execute_trial(
         trial_id=trial_id,
@@ -622,12 +632,8 @@ async def run_trial_job(
 
     # Upload trial results to S3.
     #
-    # NOTE: In some deployments (e.g., Modal) tasks may be stored in S3 even if
-    # ODDISH_S3_ENABLED isn't set inside the worker environment. If the task came
-    # from S3 (task_s3_key is present), we still want to upload artifacts so the
-    # UI can fetch logs/result.json.
     trial_s3_key = None
-    should_upload_to_s3 = settings.s3_enabled or bool(resolved_task_s3_key)
+    should_upload_to_s3 = bool(resolved_task_s3_key)
     if should_upload_to_s3 and execution.outcome and execution.outcome.job_dir:
         try:
             storage = get_storage_client()

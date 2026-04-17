@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__version__ = "0.1.3"
+__version__ = "0.1.7"
 
 _EXPORTS: dict[str, tuple[str, str]] = {
     # Config

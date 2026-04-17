@@ -14,7 +14,6 @@ from cloud_policy import enforce_trial_environment
 from modal_app import (
     MAX_WORKERS_PER_POLL,
     POLL_INTERVAL_SECONDS,
-    VOLUME_MOUNT_PATH,
     WORKER_BUFFER_CONTAINERS,
     WORKER_MAX_CONTAINERS,
     WORKER_MIN_CONTAINERS,
@@ -23,7 +22,7 @@ from modal_app import (
     app,
     image,
     runtime_secrets,
-    volume,
+    worker_volumes,
 )
 from oddish.config import settings
 from oddish.db import close_database_connections
@@ -46,7 +45,7 @@ from .runtime import configure_storage_paths, console
 
 @app.function(
     image=image,
-    volumes={VOLUME_MOUNT_PATH: volume},
+    volumes=worker_volumes,
     secrets=runtime_secrets,
     min_containers=WORKER_MIN_CONTAINERS,
     buffer_containers=WORKER_BUFFER_CONTAINERS,
@@ -145,7 +144,7 @@ async def process_single_job(queue_key: str):
 
 @app.function(
     image=image,
-    volumes={VOLUME_MOUNT_PATH: volume},
+    volumes=worker_volumes,
     secrets=runtime_secrets,
     timeout=60,  # Dispatcher is lightweight, should complete quickly
     max_containers=1,  # Keep the scheduled dispatcher singleton-ish.

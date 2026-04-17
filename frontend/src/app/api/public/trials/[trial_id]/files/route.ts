@@ -1,25 +1,27 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getBackendUrl } from "@/lib/backend-config";
 
 export async function GET(
-  _request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ trial_id: string }> },
 ) {
   try {
     const { trial_id } = await params;
-    const url = getBackendUrl("public/trials", `/${trial_id}/files`);
-    const res = await fetch(url, { cache: "no-store" });
-
-    const text = await res.text();
-    const data = text ? JSON.parse(text) : null;
+    const search = request.nextUrl.search;
+    const url = getBackendUrl("public/trials", `/${trial_id}/files${search}`);
+    const res = await fetch(url);
 
     if (!res.ok) {
-      return NextResponse.json(data ?? { error: "Upstream error" }, {
-        status: res.status,
-      });
+      const error = await res.json().catch(() => ({ detail: res.statusText }));
+      return NextResponse.json(error, { status: res.status });
     }
 
-    return NextResponse.json(data);
+    const data = await res.json();
+    return NextResponse.json(data, {
+      headers: {
+        "Cache-Control": "public, max-age=600, stale-while-revalidate=60",
+      },
+    });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },

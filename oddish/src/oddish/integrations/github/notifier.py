@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
@@ -25,7 +25,6 @@ from .formatter import (
 
 logger = logging.getLogger(__name__)
 
-# Dashboard URL for links in comments
 DASHBOARD_URL = os.getenv("ODDISH_DASHBOARD_URL", "https://www.oddish.app")
 
 
@@ -65,7 +64,6 @@ async def _build_trial_summary(
 
 async def _build_task_summary(session: AsyncSession, task: TaskModel) -> TaskSummary:
     """Build a TaskSummary from a TaskModel."""
-    # Load trials
     result = await session.execute(
         select(TrialModel).where(TrialModel.task_id == task.id).order_by(TrialModel.id)
     )
@@ -90,47 +88,53 @@ async def _build_task_summary(session: AsyncSession, task: TaskModel) -> TaskSum
 async def _get_experiment_tasks(
     session: AsyncSession, experiment_id: str
 ) -> list[TaskModel]:
-    """Get all tasks for an experiment."""
+    """Get all tasks for an experiment (via task or trial link)."""
+    has_trials_in_experiment = (
+        select(TrialModel.task_id)
+        .where(TrialModel.experiment_id == experiment_id)
+        .distinct()
+        .correlate(None)
+        .scalar_subquery()
+    )
     result = await session.execute(
         select(TaskModel)
-        .where(TaskModel.experiment_id == experiment_id)
+        .where(
+            or_(
+                TaskModel.experiment_id == experiment_id,
+                TaskModel.id.in_(has_trials_in_experiment),
+            )
+        )
         .order_by(TaskModel.created_at)
     )
     return list(result.scalars().all())
 
 
 async def _update_pr_comment_for_task(task: TaskModel) -> bool:
-    """
-    Update the PR comment for a task.
-
-    Returns True if update was successful, False otherwise.
-    """
-    # Check if task has GitHub metadata
+    """Update the PR comment for a task. Returns True on success."""
     github_meta = GitHubMeta.from_tags(task.tags)
     if not github_meta:
         logger.debug(f"Task {task.id} has no GitHub metadata, skipping PR update")
         return False
 
-    # Check if GitHub integration is configured
     client = get_github_client()
     if not client.token:
         logger.warning("GITHUB_TOKEN not configured, skipping PR update")
         return False
 
+    if not task.experiment_id:
+        logger.debug(f"Task {task.id} has no experiment_id, skipping PR update")
+        return False
+
     async with get_session() as session:
-        # Build task summary
         task_summary = await _build_task_summary(session, task)
 
-        # Get experiment for context
         experiment = task.experiment
         experiment_name = experiment.name if experiment else task.experiment_id
         experiment_url = f"{DASHBOARD_URL}/experiments/{task.experiment_id}"
 
-        # Check if we should use experiment-level comment (multiple tasks)
         experiment_tasks = await _get_experiment_tasks(session, task.experiment_id)
 
         if len(experiment_tasks) > 1:
-            # Multiple tasks: use experiment-level comment
             task_summaries = [
                 await _build_task_summary(session, t) for t in experiment_tasks
             ]
@@ -141,7 +145,6 @@ async def _update_pr_comment_for_task(task: TaskModel) -> bool:
                 dashboard_url=DASHBOARD_URL,
             )
         else:
-            # Single task: use task-level comment
             comment_body = format_task_comment(
                 task=task_summary,
                 experiment_name=experiment_name,
@@ -149,7 +152,6 @@ async def _update_pr_comment_for_task(task: TaskModel) -> bool:
                 dashboard_url=DASHBOARD_URL,
             )
 
-    # Update PR comment
     try:
         result = await client.upsert_oddish_comment(
             owner=github_meta.owner,
@@ -169,11 +171,7 @@ async def _update_pr_comment_for_task(task: TaskModel) -> bool:
 
 
 async def notify_trial_update(trial_id: str) -> bool:
-    """
-    Notify GitHub when a trial status changes.
-
-    Called after trial completion (success/failed).
-    """
+    """Notify GitHub when a trial status changes."""
     try:
         async with get_session() as session:
             trial = await session.get(TrialModel, trial_id)
@@ -196,11 +194,7 @@ async def notify_trial_update(trial_id: str) -> bool:
 
 
 async def notify_analysis_update(trial_id: str) -> bool:
-    """
-    Notify GitHub when an analysis completes.
-
-    Called after analysis completion (success/failed).
-    """
+    """Notify GitHub when an analysis completes."""
     try:
         async with get_session() as session:
             trial = await session.get(TrialModel, trial_id)
@@ -223,11 +217,7 @@ async def notify_analysis_update(trial_id: str) -> bool:
 
 
 async def notify_verdict_update(task_id: str) -> bool:
-    """
-    Notify GitHub when a verdict completes.
-
-    Called after verdict completion (success/failed).
-    """
+    """Notify GitHub when a verdict completes."""
     try:
         async with get_session() as session:
             task = await session.get(TaskModel, task_id)

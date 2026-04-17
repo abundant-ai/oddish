@@ -16,7 +16,9 @@ alembic revision --autogenerate -m "describe changes"
 
 ## Helper CLI
 
+With `ODDISH_DATABASE_URL` set (for example in `oddish/.env`):
+
 ```bash
-python -m oddish.db init
-python -m oddish.db setup
+python -m oddish.db init    # run migrations only
+python -m oddish.db setup   # alias for init
 ```

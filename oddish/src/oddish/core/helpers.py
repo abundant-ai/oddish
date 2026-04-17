@@ -127,7 +127,9 @@ async def fetch_trial_queue_info(
     session: AsyncSession, *, trials: Sequence[TrialModel]
 ) -> dict[str, TrialQueueInfo]:
     """Return live queue snapshots for queued/retrying trials."""
-    queued_trials = [trial for trial in trials if trial.status in _QUEUE_PENDING_STATUSES]
+    queued_trials = [
+        trial for trial in trials if trial.status in _QUEUE_PENDING_STATUSES
+    ]
     if not queued_trials:
         return {}
 
@@ -172,6 +174,19 @@ async def fetch_trial_queue_info(
     )
 
 
+def _resolve_trial_version_fields(
+    trial: TrialModel,
+) -> tuple[int | None, str | None]:
+    """Extract version number and id from a trial's linked TaskVersionModel."""
+    version_id = trial.task_version_id
+    if version_id is None:
+        return None, None
+    # Parse version number from the id convention "{task_id}-v{N}"
+    parts = version_id.rsplit("-v", 1)
+    version_number = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else None
+    return version_number, version_id
+
+
 def build_trial_response(
     trial: TrialModel,
     task_path: str,
@@ -180,11 +195,15 @@ def build_trial_response(
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
+    task_version, task_version_id = _resolve_trial_version_fields(trial)
     return TrialResponse(
         id=trial.id,
         name=trial.name,
         task_id=trial.task_id,
         task_path=task_path,
+        task_version=task_version,
+        task_version_id=task_version_id,
+        experiment_id=trial.experiment_id,
         agent=trial.agent,
         provider=trial.provider,
         queue_key=settings.normalize_queue_key(trial.queue_key),
@@ -236,12 +255,16 @@ def build_compact_trial_response(
             analysis_summary if isinstance(analysis_summary, dict) else None
         )
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
+    task_version, task_version_id = _resolve_trial_version_fields(trial)
 
     return TrialResponse(
         id=trial.id,
         name=trial.name,
         task_id=trial.task_id,
         task_path=task_path,
+        task_version=task_version,
+        task_version_id=task_version_id,
+        experiment_id=trial.experiment_id,
         agent=trial.agent,
         provider=trial.provider,
         queue_key=settings.normalize_queue_key(trial.queue_key),
@@ -281,12 +304,13 @@ def resolve_task_status(
 def _format_reward_fields(
     *,
     reward_success: int,
+    reward_sum: float,
     reward_total: int,
     include_empty_rewards: bool,
-) -> tuple[int | None, int | None]:
+) -> tuple[int | None, float | None, int | None]:
     if include_empty_rewards or reward_total > 0:
-        return reward_success, reward_total
-    return None, None
+        return reward_success, reward_sum, reward_total
+    return None, None, None
 
 
 def _parse_github_meta(tags: dict | None) -> dict[str, str] | None:
@@ -304,6 +328,26 @@ def _parse_github_meta(tags: dict | None) -> dict[str, str] | None:
     return {str(k): str(v) for k, v in parsed.items()}
 
 
+def _resolve_task_version_fields(
+    task: TaskModel,
+) -> tuple[int | None, str | None]:
+    """Extract current version number and id from a task."""
+    version_id = task.current_version_id
+    if version_id is None:
+        return None, None
+    parts = version_id.rsplit("-v", 1)
+    version_number = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else None
+    return version_number, version_id
+
+
+def get_task_status_trials(task: TaskModel) -> list[TrialModel]:
+    """Return only the trials that should appear in task status views."""
+    current_version_id = task.current_version_id
+    if current_version_id is None:
+        return list(task.trials)
+    return [trial for trial in task.trials if trial.task_version_id == current_version_id]
+
+
 def _build_task_status_response(
     task: TaskModel,
     *,
@@ -311,15 +355,20 @@ def _build_task_status_response(
     completed: int,
     failed: int,
     reward_success: int,
+    reward_sum: float,
     reward_total: int,
     include_empty_rewards: bool,
     trials: list[TrialResponse] | None,
 ) -> TaskStatusResponse:
-    formatted_reward_success, formatted_reward_total = _format_reward_fields(
+    formatted_reward_success, formatted_reward_sum, formatted_reward_total = (
+        _format_reward_fields(
         reward_success=reward_success,
+        reward_sum=reward_sum,
         reward_total=reward_total,
         include_empty_rewards=include_empty_rewards,
+        )
     )
+    current_version, current_version_id = _resolve_task_version_fields(task)
     return TaskStatusResponse(
         id=task.id,
         name=task.name,
@@ -334,12 +383,15 @@ def _build_task_status_response(
         experiment_id=task.experiment_id,
         experiment_name=task.experiment.name,
         experiment_is_public=task.experiment.is_public if task.experiment else False,
+        current_version=current_version,
+        current_version_id=current_version_id,
         total=total,
         completed=completed,
         failed=failed,
         progress=f"{completed}/{total} completed",
         trials=trials,
         reward_success=formatted_reward_success,
+        reward_sum=formatted_reward_sum,
         reward_total=formatted_reward_total,
         run_analysis=task.run_analysis,
         verdict_status=task.verdict_status,
@@ -358,11 +410,13 @@ def build_task_status_response(
     queue_info_by_trial_id: dict[str, TrialQueueInfo] | None = None,
 ) -> TaskStatusResponse:
     """Build a TaskStatusResponse from a TaskModel with eagerly loaded trials."""
-    total = len(task.trials)
-    completed = sum(1 for t in task.trials if t.status == TrialStatus.SUCCESS)
-    failed = sum(1 for t in task.trials if t.status == TrialStatus.FAILED)
-    reward_success = sum(1 for t in task.trials if t.reward == 1)
-    reward_total = sum(1 for t in task.trials if t.reward is not None)
+    task_trials = get_task_status_trials(task)
+    total = len(task_trials)
+    completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
+    failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)
+    reward_success = sum(1 for t in task_trials if t.reward == 1)
+    reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
+    reward_total = sum(1 for t in task_trials if t.reward is not None)
     trials = [
         build_trial_response(
             t,
@@ -373,7 +427,7 @@ def build_task_status_response(
                 else None
             ),
         )
-        for t in task.trials
+        for t in task_trials
     ]
 
     return _build_task_status_response(
@@ -382,6 +436,7 @@ def build_task_status_response(
         completed=completed,
         failed=failed,
         reward_success=reward_success,
+        reward_sum=reward_sum,
         reward_total=reward_total,
         include_empty_rewards=include_empty_rewards,
         trials=trials,
@@ -396,11 +451,13 @@ def build_task_status_response_compact(
     queue_info_by_trial_id: dict[str, TrialQueueInfo] | None = None,
 ) -> TaskStatusResponse:
     """Build TaskStatusResponse with compact per-trial payloads."""
-    total = len(task.trials)
-    completed = sum(1 for t in task.trials if t.status == TrialStatus.SUCCESS)
-    failed = sum(1 for t in task.trials if t.status == TrialStatus.FAILED)
-    reward_success = sum(1 for t in task.trials if t.reward == 1)
-    reward_total = sum(1 for t in task.trials if t.reward is not None)
+    task_trials = get_task_status_trials(task)
+    total = len(task_trials)
+    completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
+    failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)
+    reward_success = sum(1 for t in task_trials if t.reward == 1)
+    reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
+    reward_total = sum(1 for t in task_trials if t.reward is not None)
     trials = [
         build_compact_trial_response(
             t,
@@ -416,7 +473,7 @@ def build_task_status_response_compact(
                 else None
             ),
         )
-        for t in task.trials
+        for t in task_trials
     ]
 
     return _build_task_status_response(
@@ -425,6 +482,7 @@ def build_task_status_response_compact(
         completed=completed,
         failed=failed,
         reward_success=reward_success,
+        reward_sum=reward_sum,
         reward_total=reward_total,
         include_empty_rewards=include_empty_rewards,
         trials=trials,
@@ -484,6 +542,7 @@ async def build_task_status_responses_from_counts(
                 "failed"
             ),
             func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
+            func.sum(TrialModel.reward).label("reward_sum"),
             func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
         )
         .where(TrialModel.task_id.in_(task_ids))
@@ -501,6 +560,11 @@ async def build_task_status_responses_from_counts(
             failed=int(stats_map[task.id].failed) if task.id in stats_map else 0,
             reward_success=(
                 int(stats_map[task.id].reward_success) if task.id in stats_map else 0
+            ),
+            reward_sum=(
+                float(stats_map[task.id].reward_sum or 0.0)
+                if task.id in stats_map
+                else 0.0
             ),
             reward_total=(
                 int(stats_map[task.id].reward_total) if task.id in stats_map else 0

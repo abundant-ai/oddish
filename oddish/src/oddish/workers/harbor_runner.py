@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
 import shutil
 import sys
@@ -29,6 +30,67 @@ from oddish.task_timeouts import validate_task_timeout_config
 
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+# Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
+# "us.anthropic.claude-opus-4-7-20250514-v1:0".
+_BEDROCK_REGION_PREFIXES: tuple[str, ...] = ("us.", "eu.", "apac.", "apn.", "global.")
+_BEDROCK_ENV_VARS: tuple[str, ...] = (
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "CLAUDE_CODE_USE_BEDROCK",
+)
+
+
+def _looks_like_bedrock_model_id(model: str | None) -> bool:
+    """Return True if *model* is a Bedrock-style id that should route through AWS.
+
+    Handles the three shapes AWS Bedrock accepts:
+      * ARNs: ``arn:aws:bedrock:...``
+      * Native ids: ``anthropic.claude-...``
+      * Cross-region inference profiles: ``us.anthropic.claude-...``
+    """
+    if not model:
+        return False
+    tail = model.split("/", 1)[-1].strip().lower()
+    if not tail:
+        return False
+    if tail.startswith("arn:aws:bedrock:"):
+        return True
+    if tail.startswith("anthropic."):
+        return True
+    if any(tail.startswith(p) for p in _BEDROCK_REGION_PREFIXES) and (
+        ".anthropic." in tail
+    ):
+        return True
+    return False
+
+
+@contextlib.contextmanager
+def _scoped_bedrock_env(model: str | None) -> Iterator[None]:
+    """Route a trial between Anthropic's API and AWS Bedrock by model id.
+
+    Harbor's ``ClaudeCodeAgent._is_bedrock_mode()`` only inspects ``os.environ``,
+    so with ``AWS_BEARER_TOKEN_BEDROCK`` set globally every claude-code trial
+    defaults to Bedrock.  When the trial's model id does not look Bedrock-native
+    (ARNs, ``anthropic.*`` ids, or region-prefixed inference profiles), we
+    temporarily unset the Bedrock signals for the process so Harbor falls back
+    to ``ANTHROPIC_API_KEY``.
+
+    Safe on Modal single-job workers (one trial per container).  In the
+    standalone local worker multiple trials can share a process, but local dev
+    typically does not set ``AWS_BEARER_TOKEN_BEDROCK`` so the race does not
+    manifest in practice.
+    """
+    if _looks_like_bedrock_model_id(model):
+        yield
+        return
+    previous: dict[str, str] = {
+        name: os.environ.pop(name) for name in _BEDROCK_ENV_VARS if name in os.environ
+    }
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            os.environ[name] = value
 
 
 class _TeeTextIO:
@@ -69,12 +131,13 @@ class HarborOutcome:
 
     Not Harbor's TrialResult/JobResult — this flattens the deeply nested Harbor
     result tree into a simple struct that Oddish persists to Postgres and returns
-    via its API.  Fields like reward (int 0/1), cost_usd, and phase_timing are
+    via its API.  Fields like reward (float score in [0, 1]), cost_usd, and
+    phase_timing are
     extracted from Harbor's TrialResult/AgentContext/VerifierResult in
     _extract_outcome_from_job_result().
     """
 
-    reward: int | None  # 0 or 1
+    reward: float | None
     error: str | None
     exit_code: int
     duration_sec: float
@@ -279,7 +342,7 @@ def _extract_outcome_from_job_result(
 
     has_trajectory = _detect_trajectory(job_dir)
 
-    def _outcome(reward: int | None) -> HarborOutcome:
+    def _outcome(reward: float | None) -> HarborOutcome:
         return HarborOutcome(
             reward=reward,
             error=error,
@@ -300,17 +363,24 @@ def _extract_outcome_from_job_result(
         first_eval = next(iter(job_result.stats.evals.values()))
         if first_eval.reward_stats and "reward" in first_eval.reward_stats:
             reward_map = first_eval.reward_stats["reward"]
-            if 1 in reward_map or 1.0 in reward_map:
-                return _outcome(1)
-            if 0 in reward_map or 0.0 in reward_map:
-                return _outcome(0)
+            for reward_key, reward_count in sorted(
+                reward_map.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            ):
+                if not reward_count:
+                    continue
+                try:
+                    return _outcome(float(reward_key))
+                except (TypeError, ValueError):
+                    continue
 
     # Method 2: Check trial results directly
     for trial_result in job_result.trial_results:
         if trial_result.verifier_result and trial_result.verifier_result.rewards:
             reward_value = trial_result.verifier_result.rewards.get("reward")
             if reward_value is not None:
-                return _outcome(int(float(reward_value)))
+                return _outcome(float(reward_value))
 
     return _outcome(None)
 
@@ -512,7 +582,10 @@ async def run_harbor_trial_async(
     modal_debug_log_path: Path | None = None
 
     try:
-        with _capture_modal_output(actual_job_dir, environment) as captured_log_path:
+        with (
+            _scoped_bedrock_env(model),
+            _capture_modal_output(actual_job_dir, environment) as captured_log_path,
+        ):
             modal_debug_log_path = captured_log_path
             # Harbor's job.run() returns JobResult object directly
             job_result = await job.run()

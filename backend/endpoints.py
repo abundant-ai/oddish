@@ -2,11 +2,24 @@ from __future__ import annotations
 
 from oddish.config import Settings
 
-# API containers handle many concurrent requests in a warm Modal container.
-# Use fresh DB connections per request here so stale pooled connections do not
-# get reused across requests and tiny QueuePool settings do not become a
-# bottleneck for auth/dashboard traffic.
-Settings.db_use_null_pool = True
+# API containers are warm and long-lived (min_containers >= 1).  Reuse pooled
+# connections rather than opening a fresh one per request.  pool_pre_ping=True,
+# pool_recycle=300, and statement_cache_size=0 are already set in the engine
+# for Supavisor transaction-mode compatibility.
+#
+# Connection budget (worst case):
+#   Workers:  256 containers × 1 SQLAlchemy + 1 asyncpg = up to 512
+#   API:      16 containers  × pool_size(2) idle         = 32  (at rest)
+#             16 containers  × max_overflow(2) burst      = +32 (peak)
+#   Total API peak: 64 — well under the NullPool worst-case of 128
+#                   (API_CONCURRENCY_MAX=8 × 16 containers with NullPool)
+#
+# max_overflow=2 gives each container up to 4 simultaneous connections,
+# enough for the dashboard parallel gather (primary session + experiments
+# session) under 2 concurrent dashboard requests per container.
+Settings.db_use_null_pool = False
+Settings.db_pool_size = 2
+Settings.db_pool_max_overflow = 2
 
 import modal
 
@@ -16,48 +29,19 @@ from modal_app import (
     API_CONCURRENCY_TARGET,
     API_MAX_CONTAINERS,
     API_MIN_CONTAINERS,
-    VOLUME_MOUNT_PATH,
+    api_volumes,
     app,
     image,
     runtime_secrets,
-    volume,
 )
 from api.app import create_app
-from api.routers import (
-    admin,
-    api_keys,
-    clerk_webhooks,
-    dashboard,
-    github_webhooks,
-    orgs,
-    public,
-    tasks,
-    trials,
-)
 
-# Create the FastAPI application
 api = create_app()
-
-# Register all routers
-api.include_router(dashboard.router)
-api.include_router(orgs.router)
-api.include_router(api_keys.router)
-api.include_router(clerk_webhooks.router)
-api.include_router(github_webhooks.router)
-api.include_router(tasks.router)
-api.include_router(trials.router)
-api.include_router(public.router)
-api.include_router(admin.router)
-
-
-# =============================================================================
-# Modal ASGI App
-# =============================================================================
 
 
 @app.function(
     image=image,
-    volumes={VOLUME_MOUNT_PATH: volume},
+    volumes=api_volumes,
     secrets=runtime_secrets,
     timeout=600,
     min_containers=API_MIN_CONTAINERS,

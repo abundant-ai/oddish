@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 import logging
+from typing import TypeAlias
 
 from harbor.models.environment_type import EnvironmentType
 
@@ -9,7 +10,7 @@ from oddish.db import TrialModel, get_session
 
 logger = logging.getLogger(__name__)
 
-EnvironmentName = str | EnvironmentType
+EnvironmentName: TypeAlias = str | EnvironmentType
 
 
 def _normalize_environment_value(environment: EnvironmentName | None) -> str | None:

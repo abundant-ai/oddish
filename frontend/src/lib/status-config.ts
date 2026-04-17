@@ -1,10 +1,12 @@
 import {
+  CircleDashed,
   CheckCircle2,
   XCircle,
   Ban,
   Loader2,
   type LucideIcon,
 } from "lucide-react";
+import type { CSSProperties } from "react";
 
 /**
  * Trial status types that map to visual states in the UI.
@@ -12,6 +14,7 @@ import {
  */
 export type MatrixStatus =
   | "pass"
+  | "partial"
   | "fail"
   | "harness-error"
   | "pending"
@@ -48,6 +51,19 @@ export const STATUS_CONFIG: Record<
       "bg-emerald-500 text-white border-emerald-500 hover:!bg-emerald-500/90",
     bracketClass: "bg-emerald-600 text-white",
     panelBadgeClass: "bg-emerald-500/20 text-emerald-400 border-emerald-500/50",
+  },
+  partial: {
+    icon: CircleDashed,
+    label: "PARTIAL",
+    shortLabel: "Partial",
+    symbol: "~",
+    description: "Task earned partial credit",
+    badgeClass:
+      "bg-amber-500/90 text-slate-950 border-amber-400 hover:bg-amber-600",
+    matrixClass:
+      "bg-amber-500 text-slate-950 border-amber-500 hover:!bg-amber-500/90",
+    bracketClass: "bg-amber-500 text-slate-950",
+    panelBadgeClass: "bg-amber-500/20 text-amber-400 border-amber-500/50",
   },
   fail: {
     icon: XCircle,
@@ -110,6 +126,120 @@ export const STATUS_CONFIG: Record<
   },
 };
 
+export function hasRewardValue(
+  reward: number | null | undefined,
+): reward is number {
+  return typeof reward === "number" && Number.isFinite(reward);
+}
+
+export function formatRewardValue(
+  reward: number | null | undefined,
+  digits = 2,
+): string {
+  if (!hasRewardValue(reward)) return "—";
+  return reward.toFixed(digits);
+}
+
+export function formatRewardPercent(
+  reward: number | null | undefined,
+  digits = 0,
+): string {
+  if (!hasRewardValue(reward)) return "—";
+  return `${(reward * 100).toFixed(digits)}%`;
+}
+
+export function formatPartialRewardBadgeValue(
+  reward: number | null | undefined,
+): string {
+  if (!hasRewardValue(reward)) return "—";
+  const fixed = reward.toFixed(2);
+  if (fixed.startsWith("0.")) return fixed.slice(1);
+  if (fixed.startsWith("-0.")) return `-${fixed.slice(2)}`;
+  return fixed;
+}
+
+export function getRewardMatrixStatus(reward: number): MatrixStatus {
+  if (reward === 1) return "pass";
+  if (reward === 0) return "fail";
+  return "partial";
+}
+
+function isPartialReward(
+  reward: number | null | undefined,
+): reward is number {
+  return hasRewardValue(reward) && reward > 0 && reward < 1;
+}
+
+type RgbColor = {
+  r: number;
+  g: number;
+  b: number;
+};
+
+const FAIL_BG: RgbColor = { r: 239, g: 68, b: 68 }; // red-500
+const PASS_BG: RgbColor = { r: 16, g: 185, b: 129 }; // emerald-500
+const FAIL_BORDER: RgbColor = { r: 220, g: 38, b: 38 }; // red-600
+const PASS_BORDER: RgbColor = { r: 5, g: 150, b: 105 }; // emerald-600
+
+function clampChannel(value: number): number {
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function interpolateRgb(from: RgbColor, to: RgbColor, weight: number): RgbColor {
+  const clamped = Math.max(0, Math.min(1, weight));
+  return {
+    r: clampChannel(from.r + (to.r - from.r) * clamped),
+    g: clampChannel(from.g + (to.g - from.g) * clamped),
+    b: clampChannel(from.b + (to.b - from.b) * clamped),
+  };
+}
+
+function rgbCss(color: RgbColor, alpha?: number): string {
+  if (alpha == null) {
+    return `rgb(${color.r} ${color.g} ${color.b})`;
+  }
+  return `rgb(${color.r} ${color.g} ${color.b} / ${alpha})`;
+}
+
+function getPartialRewardColors(reward: number): {
+  background: RgbColor;
+  border: RgbColor;
+} {
+  return {
+    // Interpolate directly between the existing fail/pass palette so
+    // partials feel like "between fail and pass" rather than a brighter
+    // independent spectrum.
+    background: interpolateRgb(FAIL_BG, PASS_BG, reward),
+    border: interpolateRgb(FAIL_BORDER, PASS_BORDER, reward),
+  };
+}
+
+export function getRewardStyle(
+  reward: number | null | undefined,
+  variant: "matrix" | "badge" | "panel" = "matrix",
+): CSSProperties | undefined {
+  if (!isPartialReward(reward)) return undefined;
+  const { background, border } = getPartialRewardColors(reward);
+  if (variant === "matrix") {
+    return {
+      backgroundColor: rgbCss(background),
+      borderColor: rgbCss(border),
+      color: "white",
+    };
+  }
+  if (variant === "badge") {
+    return {
+      backgroundColor: rgbCss(background, 0.18),
+      borderColor: rgbCss(border, 0.45),
+      color: rgbCss(background),
+    };
+  }
+  return {
+    backgroundColor: rgbCss(background, 0.12),
+    borderColor: rgbCss(border, 0.3),
+  };
+}
+
 /**
  * Get the matrix status from a trial's status, reward, and error message.
  */
@@ -122,7 +252,7 @@ export function getMatrixStatus(
     !!errorMessage &&
     (errorMessage.includes("AgentTimeoutError") ||
       errorMessage.includes("Agent execution timed out"));
-  const hasReward = reward === 0 || reward === 1;
+  const hasReward = hasRewardValue(reward);
 
   // If there's an error message, treat as harness error regardless of status,
   // except for agent timeouts that still produced a reward.
@@ -133,15 +263,14 @@ export function getMatrixStatus(
   // Failed execution = harness error
   if (trialStatus === "failed") {
     if (isAgentTimeout && hasReward) {
-      return reward === 1 ? "pass" : "fail";
+      return getRewardMatrixStatus(reward);
     }
     return "harness-error";
   }
 
   // Success execution - check reward
   if (trialStatus === "success") {
-    if (reward === 1) return "pass";
-    if (reward === 0) return "fail";
+    if (hasReward) return getRewardMatrixStatus(reward);
     // No reward yet (null/undefined) - still pending result
     return "pending";
   }

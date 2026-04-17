@@ -50,7 +50,11 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import {
+  formatPartialRewardBadgeValue,
+  formatRewardPercent,
+  formatRewardValue,
   getMatrixStatus,
+  getRewardStyle,
   STATUS_CONFIG,
   type MatrixStatus,
 } from "@/lib/status-config";
@@ -125,19 +129,22 @@ const EMPTY_TRIAL_INDEX: ReadonlyMap<string, number> = new Map<
 const VIRTUALIZATION_THRESHOLD = 50;
 const INITIAL_LOADING_COLUMN_COUNT = 4;
 const INITIAL_LOADING_ROW_COUNT = 8;
-const SEARCH_INPUT_WIDTH = 320;
-const LOADING_AGENT_COLUMNS: AgentSummary[] = Array.from({ length: 4 }, (_, index) => ({
-  key: `__loading_agent_${index}`,
-  label: `loading-${index}`,
-  agent: "Loading",
-  model: null,
-  queueKey: null,
-  isModelScoped: false,
-}));
+const LOADING_AGENT_COLUMNS: AgentSummary[] = Array.from(
+  { length: 4 },
+  (_, index) => ({
+    key: `__loading_agent_${index}`,
+    label: `loading-${index}`,
+    agent: "Loading",
+    model: null,
+    queueKey: null,
+    isModelScoped: false,
+  }),
+);
 const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "queued",
   "running",
   "pass",
+  "partial",
   "fail",
   "harness-error",
   "pending",
@@ -319,9 +326,7 @@ function getTrialTitle(trial: Trial, status: MatrixStatus) {
   const reward =
     trial.reward === null
       ? "reward pending"
-      : trial.reward === 1
-        ? "reward 1"
-        : "reward 0";
+      : `reward ${formatRewardValue(trial.reward)} (${formatRewardPercent(trial.reward)})`;
   const error = trial.error_message ? ` • ${trial.error_message}` : "";
   const queueInfo = trial.queue_info;
   const queueSnapshot = queueInfo
@@ -368,8 +373,12 @@ export function ExperimentTrialsTable({
     Set<AnalysisLegendKey>
   >(new Set());
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
-  const [copiedAgentNameKey, setCopiedAgentNameKey] = useState<string | null>(null);
-  const [copiedAgentModelKey, setCopiedAgentModelKey] = useState<string | null>(null);
+  const [copiedAgentNameKey, setCopiedAgentNameKey] = useState<string | null>(
+    null,
+  );
+  const [copiedAgentModelKey, setCopiedAgentModelKey] = useState<string | null>(
+    null,
+  );
   const [copiedTable, setCopiedTable] = useState(false);
   const [deleteTargets, setDeleteTargets] = useState<Task[]>([]);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -520,7 +529,8 @@ export function ExperimentTrialsTable({
     () => sortedAgentSummaries.filter((agent) => !hiddenAgents.has(agent.key)),
     [sortedAgentSummaries, hiddenAgents],
   );
-  const showLoadingMatrixColumns = isLoadingTrials && visibleAgents.length === 0;
+  const showLoadingMatrixColumns =
+    isLoadingTrials && visibleAgents.length === 0;
   const renderedAgents = showLoadingMatrixColumns
     ? LOADING_AGENT_COLUMNS
     : visibleAgents;
@@ -927,27 +937,23 @@ export function ExperimentTrialsTable({
     setCancelError(null);
 
     try {
-      const results = await Promise.allSettled(
-        selectedCancellableTasks.map(async (task) => {
-          const res = await fetch(`/api/tasks/${task.id}/cancel`, {
-            method: "POST",
-          });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            throw new Error(
-              data.detail || data.error || "Failed to cancel task",
-            );
-          }
-        }),
-      );
-
-      const failures = results.filter((result) => result.status === "rejected");
-      if (failures.length > 0) {
-        setCancelError(`Failed to cancel ${failures.length} task(s).`);
-      } else {
-        setCancelError(null);
+      const taskIds = selectedCancellableTasks.map((task) => task.id);
+      const res = await fetch(`/api/tasks/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_ids: taskIds }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || data.error || "Failed to cancel tasks");
       }
+
+      setCancelError(null);
       onRerun?.(selectedCancellableTasks.map((task) => task.id));
+    } catch (error) {
+      setCancelError(
+        error instanceof Error ? error.message : "Failed to cancel tasks",
+      );
     } finally {
       setIsCancellingSelected(false);
     }
@@ -1354,34 +1360,34 @@ export function ExperimentTrialsTable({
         Analyzer
       </div>
       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 sm:justify-end">
-          {ANALYSIS_LEGEND_ITEMS.map((item) => (
-            <Tooltip key={item.key}>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  onClick={() => toggleAnalysisKey(item.key)}
-                  variant="ghost"
-                  size="sm"
-                  className={`flex h-auto items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition ${
-                    dimmedAnalysisKeys.has(item.key)
-                      ? "border-border text-muted-foreground line-through"
-                      : "border-transparent hover:border-border"
+        {ANALYSIS_LEGEND_ITEMS.map((item) => (
+          <Tooltip key={item.key}>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                onClick={() => toggleAnalysisKey(item.key)}
+                variant="ghost"
+                size="sm"
+                className={`flex h-auto items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition ${
+                  dimmedAnalysisKeys.has(item.key)
+                    ? "border-border text-muted-foreground line-through"
+                    : "border-transparent hover:border-border"
+                }`}
+              >
+                <span
+                  className={`inline-flex h-2.5 w-2.5 rounded-full ${item.dotClass} ${
+                    item.animate ? "animate-pulse" : ""
                   }`}
-                >
-                  <span
-                    className={`inline-flex h-2.5 w-2.5 rounded-full ${item.dotClass} ${
-                      item.animate ? "animate-pulse" : ""
-                    }`}
-                  />
-                  <span>{item.label}</span>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                {item.label} (
-                {dimmedAnalysisKeys.has(item.key) ? "dimmed" : "visible"})
-              </TooltipContent>
-            </Tooltip>
-          ))}
+                />
+                <span>{item.label}</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {item.label} (
+              {dimmedAnalysisKeys.has(item.key) ? "dimmed" : "visible"})
+            </TooltipContent>
+          </Tooltip>
+        ))}
       </div>
     </div>
   );
@@ -1455,7 +1461,9 @@ export function ExperimentTrialsTable({
                       variant="outline"
                       size="sm"
                       onClick={handleRerunSelectedTasks}
-                      disabled={isRerunning || selectedRetryableTrials.length === 0}
+                      disabled={
+                        isRerunning || selectedRetryableTrials.length === 0
+                      }
                       className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:border-muted disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
                     >
                       {isRerunning
@@ -1469,7 +1477,10 @@ export function ExperimentTrialsTable({
                       variant="destructive"
                       size="sm"
                       onClick={handleCancelSelectedTasks}
-                      disabled={isCancellingSelected || selectedCancellableTasks.length === 0}
+                      disabled={
+                        isCancellingSelected ||
+                        selectedCancellableTasks.length === 0
+                      }
                       className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
                     >
                       {isCancellingSelected ? (
@@ -1551,7 +1562,9 @@ export function ExperimentTrialsTable({
               {verdictError && (
                 <span className="text-[10px] text-red-500">{verdictError}</span>
               )}
-              <div className={`flex flex-wrap items-center gap-2 ${readOnly ? "" : "ml-auto"}`}>
+              <div
+                className={`flex flex-wrap items-center gap-2 ${readOnly ? "" : "ml-auto"}`}
+              >
                 {renderAgentFilterMenu()}
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -1586,7 +1599,11 @@ export function ExperimentTrialsTable({
           >
             <table
               className="w-full min-w-[960px] caption-bottom text-sm"
-              style={{ tableLayout: "fixed", width: "100%", minWidth: tableMinWidth }}
+              style={{
+                tableLayout: "fixed",
+                width: "100%",
+                minWidth: tableMinWidth,
+              }}
             >
               <colgroup>
                 <col style={{ width: `${getDisplayedWidth("task")}px` }} />
@@ -1677,7 +1694,10 @@ export function ExperimentTrialsTable({
                                 <button
                                   type="button"
                                   onClick={() =>
-                                    handleCopyAgentModel(agent.key, agent.model!)
+                                    handleCopyAgentModel(
+                                      agent.key,
+                                      agent.model!,
+                                    )
                                   }
                                   className="flex w-full min-w-0 items-center justify-center gap-1 rounded-sm px-1 font-mono text-[9px] font-normal text-muted-foreground transition hover:bg-background/70 hover:text-foreground sm:text-[10px]"
                                   aria-label={`Copy model id ${agent.model}`}
@@ -1714,24 +1734,25 @@ export function ExperimentTrialsTable({
                             <TooltipContent side="bottom">
                               {copiedAgentModelKey === agent.key
                                 ? "Copied model id"
-                                : agent.model ?? "—"}
+                                : (agent.model ?? "—")}
                             </TooltipContent>
                           </Tooltip>
                         </div>
                       )}
-                      {agentIndex < renderedAgents.length - 1 && !showLoadingMatrixColumns && (
-                        <div
-                          className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize"
-                          onMouseDown={(event) =>
-                            startResize(
-                              event,
-                              agent.key,
-                              agentColumnWidths[agent.key] ??
-                                DEFAULT_AGENT_WIDTH,
-                            )
-                          }
-                        />
-                      )}
+                      {agentIndex < renderedAgents.length - 1 &&
+                        !showLoadingMatrixColumns && (
+                          <div
+                            className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize"
+                            onMouseDown={(event) =>
+                              startResize(
+                                event,
+                                agent.key,
+                                agentColumnWidths[agent.key] ??
+                                  DEFAULT_AGENT_WIDTH,
+                              )
+                            }
+                          />
+                        )}
                     </TableHead>
                   ))}
                 </TableRow>
@@ -1753,7 +1774,8 @@ export function ExperimentTrialsTable({
                   const task = row.task;
                   const index = row.index;
                   if (!task) return null;
-                  const isTrialDataPending = isLoadingTrials && task.trials == null;
+                  const isTrialDataPending =
+                    isLoadingTrials && task.trials == null;
                   const context = getTaskContext(task);
                   const grouped =
                     context?.groupedTrialsByAgent ?? EMPTY_TRIAL_MAP;
@@ -1827,6 +1849,11 @@ export function ExperimentTrialsTable({
                                 </TooltipTrigger>
                                 <TooltipContent>View task files</TooltipContent>
                               </Tooltip>
+                              {task.current_version != null && (
+                                <span className="inline-flex shrink-0 items-center rounded border border-border bg-muted/50 px-1 py-px font-mono text-[10px] font-medium leading-none text-muted-foreground">
+                                  v{task.current_version}
+                                </span>
+                              )}
                               <VerdictIndicator task={task} />
                             </div>
                           </div>
@@ -1849,9 +1876,9 @@ export function ExperimentTrialsTable({
                                   <Skeleton className="h-5 w-5 rounded-sm" />
                                 </div>
                               ) : (
-                              <span className="text-xs text-muted-foreground">
-                                —
-                              </span>
+                                <span className="text-xs text-muted-foreground">
+                                  —
+                                </span>
                               )
                             ) : (
                               <div className="flex flex-wrap justify-center gap-1">
@@ -1882,6 +1909,10 @@ export function ExperimentTrialsTable({
                                     trial,
                                     status,
                                   );
+                                  const badgeLabel =
+                                    status === "partial"
+                                      ? formatPartialRewardBadgeValue(trial.reward)
+                                      : config.symbol;
                                   const analysisTitle = analysisIndicator
                                     ? ` • ${analysisIndicator.title}`
                                     : "";
@@ -1904,7 +1935,8 @@ export function ExperimentTrialsTable({
                                             trialGroups,
                                           });
                                         }}
-                                        className={`h-5 w-5 shrink-0 rounded-sm border p-0 text-sm font-semibold leading-none transition hover:opacity-90 ${config.matrixClass}`}
+                                        className={`h-5 w-5 shrink-0 rounded-sm border p-0 font-mono font-semibold leading-none transition hover:opacity-90 ${config.matrixClass} ${status === "partial" ? "text-[8px] tracking-[-0.03em]" : "text-sm"}`}
+                                        style={getRewardStyle(trial.reward)}
                                         aria-label={`Trial ${trialIndex + 1} ${config.shortLabel}`}
                                         title={fullTitle}
                                       >
@@ -1915,7 +1947,7 @@ export function ExperimentTrialsTable({
                                         ) : status === "harness-error" ? (
                                           <Ban className="h-3.5 w-3.5" />
                                         ) : (
-                                          config.symbol
+                                          badgeLabel
                                         )}
                                       </Button>
                                       {analysisIndicator && (

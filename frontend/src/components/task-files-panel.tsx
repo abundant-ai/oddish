@@ -79,7 +79,7 @@ interface TaskFilesPanelProps {
   contentOnly?: boolean;
   /**
    * Override the files URL base (e.g. `/api/trials/{id}/files`).
-   * When set, the component fetches the listing from `${filesUrl}?recursive=1`
+   * When set, the component fetches directory listings from `${filesUrl}`
    * and individual file content from `${filesUrl}/${path}`.
    * This allows reusing the file tree viewer for trial files.
    */
@@ -128,52 +128,6 @@ function buildNodesFromListing(
   const sortedDirs = dirNodes.sort((a, b) => a.name.localeCompare(b.name));
   const sortedFiles = fileNodes.sort((a, b) => a.name.localeCompare(b.name));
   return [...sortedDirs, ...sortedFiles];
-}
-
-function buildTreeFromPaths(files: TaskFile[]): TreeNode[] {
-  const root: TreeNode[] = [];
-  const dirMap = new Map<string, TreeNode>();
-
-  const sortedFiles = [...files].sort((a, b) => a.path.localeCompare(b.path));
-
-  for (const file of sortedFiles) {
-    const parts = file.path.split("/").filter(Boolean);
-    if (parts.length === 0) continue;
-
-    let currentLevel = root;
-    let currentPath = "";
-
-    for (let i = 0; i < parts.length - 1; i++) {
-      const dirName = parts[i];
-      currentPath = currentPath ? `${currentPath}/${dirName}` : dirName;
-
-      let dir = dirMap.get(currentPath);
-      if (!dir) {
-        dir = {
-          name: dirName,
-          path: currentPath,
-          type: "dir",
-          children: [],
-          isLoaded: true,
-        };
-        dirMap.set(currentPath, dir);
-        currentLevel.push(dir);
-      }
-      currentLevel = dir.children!;
-    }
-
-    const fileName = parts[parts.length - 1];
-    currentLevel.push({
-      name: fileName,
-      path: file.path,
-      type: "file",
-      content: file.content,
-      url: file.url,
-      size: file.size,
-    });
-  }
-
-  return root;
 }
 
 function updateTree(
@@ -243,6 +197,19 @@ function findFirstFile(nodes: TreeNode[]): TreeNode | null {
   return null;
 }
 
+function getAncestorPaths(path: string): string[] {
+  const parts = path.split("/").filter(Boolean);
+  const ancestors: string[] = [];
+  let currentPath = "";
+
+  for (let i = 0; i < parts.length - 1; i++) {
+    currentPath = currentPath ? `${currentPath}/${parts[i]}` : parts[i];
+    ancestors.push(currentPath);
+  }
+
+  return ancestors;
+}
+
 /**
  * Get the appropriate icon for a file based on its extension.
  */
@@ -281,6 +248,61 @@ function isTextContent(contentType: string): boolean {
     normalized.includes("javascript") ||
     normalized.includes("typescript")
   );
+}
+
+function shouldSniffTextContent(contentType: string): boolean {
+  const normalized = contentType.toLowerCase();
+  return (
+    normalized === "" ||
+    normalized === "application/octet-stream" ||
+    normalized.startsWith("application/octet-stream;")
+  );
+}
+
+function looksLikeTextBytes(bytes: Uint8Array): boolean {
+  const sample = bytes.subarray(0, Math.min(bytes.length, 8 * 1024));
+  if (sample.length === 0) {
+    return true;
+  }
+
+  let suspiciousBytes = 0;
+
+  for (const byte of sample) {
+    if (byte === 0) {
+      return false;
+    }
+
+    const isAllowedControl =
+      byte === 9 || byte === 10 || byte === 12 || byte === 13;
+    if (byte < 32 && !isAllowedControl) {
+      suspiciousBytes += 1;
+    }
+  }
+
+  return suspiciousBytes / sample.length < 0.1;
+}
+
+async function readResponseTextContent(response: Response): Promise<string | null> {
+  const contentType = response.headers.get("content-type") || "";
+
+  if (isTextContent(contentType)) {
+    return response.text();
+  }
+
+  if (!shouldSniffTextContent(contentType)) {
+    return null;
+  }
+
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!looksLikeTextBytes(bytes)) {
+    return null;
+  }
+
+  return new TextDecoder().decode(bytes);
+}
+
+function getBinaryFileMessage(contentType: string): string {
+  return `Binary file (content-type: ${contentType || "unknown"})`;
 }
 
 export function TaskFilesPanel({
@@ -337,16 +359,34 @@ export function TaskFilesPanel({
     },
     revalidateOnFocus: false,
   });
-  const recursiveFilesKey =
-    isOpen && filesUrl ? `${resolvedFilesUrl}?recursive=1` : null;
-  const {
-    data: recursiveFilesData,
-    error: recursiveFilesError,
-    isLoading: recursiveFilesLoading,
-  } = useSWR<FilesListingResponse>(recursiveFilesKey, fetcher, {
-    revalidateOnFocus: false,
-  });
+  const currentVersion = (verdictTask ?? task)?.current_version ?? null;
+
   const verdictSource = verdictTask ?? task;
+  const buildListingUrl = useCallback(
+    ({
+      recursive = false,
+      prefix,
+      cursor,
+    }: {
+      recursive?: boolean;
+      prefix?: string;
+      cursor?: string;
+    } = {}) => {
+      const params = new URLSearchParams();
+      params.set("recursive", recursive ? "1" : "0");
+      if (prefix) {
+        params.set("prefix", prefix);
+      }
+      if (cursor) {
+        params.set("cursor", cursor);
+      }
+      if (!filesUrl && currentVersion != null) {
+        params.set("version", String(currentVersion));
+      }
+      return `${resolvedFilesUrl}?${params.toString()}`;
+    },
+    [resolvedFilesUrl, filesUrl, currentVersion],
+  );
 
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
   const resolvedIndex =
@@ -465,8 +505,10 @@ export function TaskFilesPanel({
 
     try {
       const id = task?.id ?? taskId;
-      const res = await fetch(`${baseUrl}/tasks/${id}/cancel`, {
+      const res = await fetch(`${baseUrl}/tasks/cancel`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_ids: id ? [id] : [] }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -551,41 +593,9 @@ export function TaskFilesPanel({
     );
   };
 
+  // Fetch root file list when panel opens
   useEffect(() => {
-    if (!isOpen || !filesUrl) {
-      return;
-    }
-
-    setError(null);
-    setFileTree([]);
-    setSelectedFile(null);
-    setFileContent(null);
-    setExpandedDirs(new Set());
-  }, [isOpen, filesUrl]);
-
-  useEffect(() => {
-    if (!isOpen || !filesUrl) {
-      return;
-    }
-
-    if (!recursiveFilesData) {
-      return;
-    }
-
-    const files: TaskFile[] = recursiveFilesData.files || [];
-    const tree = buildTreeFromPaths(files);
-    setFileTree(tree);
-    setSelectedFile((prev) => {
-      if (prev) {
-        return findNodeByPath(tree, prev.path) ?? prev;
-      }
-      return findFirstFile(tree);
-    });
-  }, [isOpen, filesUrl, recursiveFilesData]);
-
-  // Fetch task file list when panel opens
-  useEffect(() => {
-    if (!isOpen || !taskId || filesUrl) {
+    if (!isOpen || (!taskId && !filesUrl)) {
       return;
     }
 
@@ -598,16 +608,17 @@ export function TaskFilesPanel({
       setSelectedFile(null);
       setFileContent(null);
       setExpandedDirs(new Set());
+      setLoadingDirs(new Set());
 
       try {
-        const res = await fetch(`${resolvedFilesUrl}?recursive=0`);
+        const res = await fetch(buildListingUrl());
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(
             data.detail || `Failed to fetch files: ${res.statusText}`,
           );
         }
-        const data = await res.json();
+        const data: FilesListingResponse = await res.json();
 
         if (cancelled) return;
 
@@ -637,21 +648,18 @@ export function TaskFilesPanel({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, taskId, filesUrl, resolvedFilesUrl]);
+  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, buildListingUrl]);
 
   const loadDirectory = useCallback(
     async (path: string) => {
       if (!taskId && !filesUrl) return;
       setLoadingDirs((prev) => new Set(prev).add(path));
       try {
-        const prefix = encodeURIComponent(path);
-        const res = await fetch(
-          `${resolvedFilesUrl}?recursive=0&prefix=${prefix}`,
-        );
+        const res = await fetch(buildListingUrl({ prefix: path }));
         if (!res.ok) {
           throw new Error("Failed to fetch directory");
         }
-        const data = await res.json();
+        const data: FilesListingResponse = await res.json();
         const files: TaskFile[] = data.files || [];
         const dirs: TaskDirectory[] = data.dirs || [];
         const children = buildNodesFromListing(files, dirs);
@@ -674,7 +682,7 @@ export function TaskFilesPanel({
         });
       }
     },
-    [taskId, filesUrl, resolvedFilesUrl],
+    [taskId, filesUrl, buildListingUrl],
   );
 
   // Fetch file content when a file is selected
@@ -726,14 +734,15 @@ export function TaskFilesPanel({
             // 200 = Full content (Range not supported or file smaller than range)
             if (s3Res.ok || s3Res.status === 206) {
               const contentType = s3Res.headers.get("content-type") || "";
-              if (isTextContent(contentType)) {
-                content = await s3Res.text();
+              const textContent = await readResponseTextContent(s3Res);
+              if (textContent !== null) {
+                content = textContent;
                 // Check if we got partial content
                 truncated =
                   s3Res.status === 206 ||
                   (!!shouldTruncate && content.length >= TRUNCATE_THRESHOLD);
               } else {
-                content = `Binary file (content-type: ${contentType || "unknown"})`;
+                content = getBinaryFileMessage(contentType);
               }
             }
           } catch {
@@ -744,12 +753,23 @@ export function TaskFilesPanel({
         // Fallback: fetch via backend proxy (slower, but works if presigned URL expired)
         if (content === null) {
           const encodedPath = encodeURIComponent(filePath);
-          const res = await fetch(`${resolvedFilesUrl}/${encodedPath}`);
+          const params = new URLSearchParams();
+          if (!filesUrl && currentVersion != null) {
+            params.set("version", String(currentVersion));
+          }
+          const res = await fetch(
+            `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`,
+          );
           if (!res.ok) {
             throw new Error("Failed to fetch file content");
           }
           if (filesUrl) {
-            content = await res.text();
+            const contentType = res.headers.get("content-type") || "";
+            const textContent = await readResponseTextContent(res);
+            content =
+              textContent !== null
+                ? textContent
+                : getBinaryFileMessage(contentType);
           } else {
             const data = await res.json();
             content = data.content || "";
@@ -779,32 +799,60 @@ export function TaskFilesPanel({
     return () => {
       cancelled = true;
     };
-  }, [selectedFile, taskId, filesUrl, resolvedFilesUrl]);
+  }, [selectedFile, taskId, filesUrl, resolvedFilesUrl, currentVersion]);
 
   // Load full file content (when user clicks "Load full file")
   const loadFullFile = useCallback(async () => {
-    if (!selectedFile || !selectedFile.url || !taskId) return;
+    if (!selectedFile) return;
 
     setLoadingFullFile(true);
     try {
-      const s3Res = await fetch(selectedFile.url);
-      if (s3Res.ok) {
-        const contentType = s3Res.headers.get("content-type") || "";
-        if (isTextContent(contentType)) {
-          const content = await s3Res.text();
-          setFileContent(content);
-          setIsTruncated(false);
-          // Update cache
-          selectedFile.content = content;
-          selectedFile.isTruncated = false;
+      if (selectedFile.url) {
+        const s3Res = await fetch(selectedFile.url);
+        if (s3Res.ok) {
+          const contentType = s3Res.headers.get("content-type") || "";
+          const content = await readResponseTextContent(s3Res);
+          if (content !== null) {
+            setFileContent(content);
+            setIsTruncated(false);
+            // Update cache
+            selectedFile.content = content;
+            selectedFile.isTruncated = false;
+          } else {
+            setFileContent(getBinaryFileMessage(contentType));
+          }
         }
+        return;
       }
+
+      const encodedPath = encodeURIComponent(selectedFile.path);
+      const params = new URLSearchParams();
+      if (!filesUrl && currentVersion != null) {
+        params.set("version", String(currentVersion));
+      }
+      const res = await fetch(
+        `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`,
+      );
+      if (!res.ok) {
+        return;
+      }
+      if (filesUrl) {
+        const contentType = res.headers.get("content-type") || "";
+        const content = await readResponseTextContent(res);
+        setFileContent(
+          content !== null ? content : getBinaryFileMessage(contentType),
+        );
+      } else {
+        const data = await res.json();
+        setFileContent(data.content || "");
+      }
+      setIsTruncated(false);
     } catch {
       // Keep truncated content on error
     } finally {
       setLoadingFullFile(false);
     }
-  }, [selectedFile, taskId]);
+  }, [selectedFile, filesUrl, resolvedFilesUrl, currentVersion]);
 
   // Scroll to top when selected file changes
   useEffect(() => {
@@ -813,7 +861,7 @@ export function TaskFilesPanel({
     }
   }, [selectedFile]);
 
-  // Reset state when panel closes
+  // Reset state when panel closes or task changes
   useEffect(() => {
     if (!isOpen) {
       setFileTree([]);
@@ -821,6 +869,7 @@ export function TaskFilesPanel({
       setFileContent(null);
       setError(null);
       setExpandedDirs(new Set());
+      setLoadingDirs(new Set());
       setIsTruncated(false);
       setFullFileSize(null);
       setLoadingFullFile(false);
@@ -829,7 +878,7 @@ export function TaskFilesPanel({
       setVerdictActionError(null);
       setIsRunningVerdict(false);
     }
-  }, [isOpen]);
+  }, [isOpen, taskId]);
 
   // Navigate to a specific file when initialFilePath changes (suffix match)
   useEffect(() => {
@@ -838,23 +887,35 @@ export function TaskFilesPanel({
     const node =
       findNodeByPath(fileTree, initialFilePath) ??
       findNodeBySuffix(fileTree, initialFilePath);
-    if (!node || node.type !== "file") return;
-
-    const parts = node.path.split("/").filter(Boolean);
-    if (parts.length > 1) {
+    const targetPath = node?.path ?? initialFilePath;
+    const ancestorPaths = getAncestorPaths(targetPath);
+    if (ancestorPaths.length > 0) {
       setExpandedDirs((prev) => {
         const next = new Set(prev);
-        let accumulated = "";
-        for (let i = 0; i < parts.length - 1; i++) {
-          accumulated = accumulated ? `${accumulated}/${parts[i]}` : parts[i];
-          next.add(accumulated);
+        for (const ancestorPath of ancestorPaths) {
+          next.add(ancestorPath);
         }
         return next;
       });
     }
 
+    if (!node || node.type !== "file") {
+      const nextDirToLoad = ancestorPaths.find((ancestorPath) => {
+        const ancestorNode = findNodeByPath(fileTree, ancestorPath);
+        return (
+          ancestorNode?.type === "dir" &&
+          !ancestorNode.isLoaded &&
+          !loadingDirs.has(ancestorPath)
+        );
+      });
+      if (nextDirToLoad) {
+        void loadDirectory(nextDirToLoad);
+      }
+      return;
+    }
+
     setSelectedFile(node);
-  }, [initialFilePath, fileTree]);
+  }, [initialFilePath, fileTree, loadingDirs, loadDirectory]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1048,6 +1109,24 @@ export function TaskFilesPanel({
     };
   }, []);
 
+  const { rewardSuccess, rewardTotal, averageRewardPct } = useMemo(() => {
+    const trials = task?.trials ?? [];
+    const versionTrials =
+      currentVersion != null
+        ? trials.filter((t) => t.task_version === currentVersion)
+        : trials;
+    const rewardSum = versionTrials.reduce(
+      (sum, trial) => sum + (trial.reward ?? 0),
+      0,
+    );
+    const total = versionTrials.filter((t) => t.reward != null).length;
+    return {
+      rewardSuccess: total > 0 ? rewardSum : null,
+      rewardTotal: total > 0 ? total : null,
+      averageRewardPct: total > 0 ? Math.round((rewardSum / total) * 100) : null,
+    };
+  }, [task?.trials, currentVersion]);
+
   if (!taskId && !filesUrl) {
     return null;
   }
@@ -1067,18 +1146,10 @@ export function TaskFilesPanel({
   const showVerdictCard =
     Boolean(verdictSource) &&
     Boolean(verdictSource?.verdict_status || verdictSource?.verdict);
-  const taskSummary = verdictSource ?? task;
   const verdictReasoning = verdictSource?.verdict?.reasoning?.trim() || null;
-  const rewardSuccess =
-    taskSummary?.reward_success ?? task?.reward_success ?? null;
-  const rewardTotal = taskSummary?.reward_total ?? task?.reward_total ?? null;
-  const averageRewardPct =
-    rewardTotal && rewardTotal > 0 && rewardSuccess != null
-      ? Math.round((rewardSuccess / rewardTotal) * 100)
-      : null;
-  const isListingLoading = filesUrl ? recursiveFilesLoading : loading;
-  const listingError =
-    filesUrl && recursiveFilesError ? recursiveFilesError.message : error;
+
+  const isListingLoading = loading;
+  const listingError = error;
 
   const fileTreeContent = (
     <>
@@ -1142,16 +1213,21 @@ export function TaskFilesPanel({
       <DrawerHeader className="shrink-0 border-b border-border px-4 py-3">
         <div className="mb-2 flex flex-wrap items-start justify-between gap-3 pr-20">
           <div className="min-w-0 flex-1">
-            <DrawerTitle className="font-mono text-base font-semibold">
+            <DrawerTitle className="flex items-center gap-2 font-mono text-base font-semibold">
               <button
                 type="button"
                 onClick={handleCopyTaskName}
-                className="block max-w-full truncate text-left transition hover:text-blue-400"
+                className="block min-w-0 max-w-full truncate text-left transition hover:text-blue-400"
                 title="Copy task name"
                 aria-label={`Copy task name ${taskName}`}
               >
                 {taskName}
               </button>
+              {currentVersion != null && (
+                <span className="inline-flex shrink-0 items-center rounded-md border border-border bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-foreground">
+                  v{currentVersion}
+                </span>
+              )}
             </DrawerTitle>
             <div className="mt-1 min-h-3 text-[10px] text-emerald-600">
               {copiedTaskName ? "Copied to clipboard" : null}
@@ -1251,7 +1327,7 @@ export function TaskFilesPanel({
               <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
                 <div className="rounded-md border border-border bg-muted/30 px-3 py-1.5 text-right">
                   <div className="text-[9px] uppercase leading-none tracking-wider text-muted-foreground">
-                    Avg reward
+                    Avg score
                   </div>
                   <div className="mt-1 flex items-baseline justify-end gap-2">
                     <span className="font-mono text-sm font-semibold leading-none">
@@ -1259,7 +1335,7 @@ export function TaskFilesPanel({
                     </span>
                     <span className="text-[10px] leading-none text-muted-foreground">
                       {rewardTotal && rewardTotal > 0 && rewardSuccess != null
-                        ? `${rewardSuccess}/${rewardTotal}`
+                        ? `${rewardSuccess.toFixed(2)}/${rewardTotal}`
                         : "No results"}
                     </span>
                   </div>
@@ -1420,10 +1496,10 @@ export function TaskFilesPanel({
                       )}
                       {verdictSource?.verdict?.primary_issue &&
                         verdictSource?.verdict?.is_good === false && (
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {verdictSource.verdict.primary_issue}
-                        </p>
-                      )}
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {verdictSource.verdict.primary_issue}
+                          </p>
+                        )}
                       {verdictSource?.verdict?.recommendations &&
                         verdictSource.verdict.recommendations.length > 0 && (
                           <div className="mt-2 space-y-1">

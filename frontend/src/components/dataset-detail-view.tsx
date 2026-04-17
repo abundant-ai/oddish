@@ -23,14 +23,14 @@ type ModelAggregate = {
   queueKey: string | null;
   total: number;
   scored: number;
-  pass: number;
-  passRate: number | null;
+  rewardSum: number;
+  averageScore: number | null;
 };
 
 type ExplorerView = "overview" | "tasks";
 
 function aggregateModels(tasks: Task[]): ModelAggregate[] {
-  const map = new Map<string, Omit<ModelAggregate, "passRate">>();
+  const map = new Map<string, Omit<ModelAggregate, "averageScore">>();
   for (const task of tasks) {
     for (const trial of task.trials ?? []) {
       const modelName = trial.model || trial.agent;
@@ -42,12 +42,12 @@ function aggregateModels(tasks: Task[]): ModelAggregate[] {
         queueKey: trial.provider ?? null,
         total: 0,
         scored: 0,
-        pass: 0,
+        rewardSum: 0,
       };
       existing.total += 1;
       if (trial.reward !== null) {
         existing.scored += 1;
-        if (trial.reward === 1) existing.pass += 1;
+        existing.rewardSum += trial.reward;
       }
       map.set(key, existing);
     }
@@ -56,13 +56,14 @@ function aggregateModels(tasks: Task[]): ModelAggregate[] {
   return Array.from(map.values())
     .map((entry) => ({
       ...entry,
-      passRate:
+      averageScore:
         entry.scored > 0
-          ? Number(((entry.pass / entry.scored) * 100).toFixed(1))
+          ? Number(((entry.rewardSum / entry.scored) * 100).toFixed(1))
           : null,
     }))
     .sort(
-      (a, b) => (b.passRate ?? -1) - (a.passRate ?? -1) || b.scored - a.scored,
+      (a, b) =>
+        (b.averageScore ?? -1) - (a.averageScore ?? -1) || b.scored - a.scored,
     );
 }
 
@@ -106,7 +107,9 @@ function inferTaskDomain(task: Task, category: string): string {
 
 function passRateForTask(task: Task): number | null {
   if (!task.reward_total || task.reward_total <= 0) return null;
-  return Math.round(((task.reward_success ?? 0) / task.reward_total) * 100);
+  return Math.round(
+    (((task.reward_sum ?? task.reward_success ?? 0) / task.reward_total) * 100),
+  );
 }
 
 export function DatasetDetailView({
@@ -131,7 +134,7 @@ export function DatasetDetailView({
           world,
           domain,
           criteriaCount: task.reward_total ?? task.total,
-          passRate: passRateForTask(task),
+                          passRate: passRateForTask(task),
         };
       }),
     [tasks],
@@ -217,87 +220,89 @@ export function DatasetDetailView({
                   <CardContent className="p-4">
                     <div className="text-sm">{datasetName}</div>
                     <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-                      Oddish dataset explorer for public benchmarks. Browse tasks,
-                      compare model outcomes, and inspect aggregate benchmark
-                      signals.
+                      Oddish dataset explorer for public benchmarks. Browse
+                      tasks, compare model outcomes, and inspect aggregate
+                      benchmark signals.
                     </p>
                   </CardContent>
                 </Card>
 
-                <Card><CardContent className="p-4">
-                  <div className="mb-3 flex items-center justify-between">
-                    <div className="text-xs font-medium text-muted-foreground">
-                      Model
-                    </div>
-                    <div className="text-xs font-medium text-muted-foreground">
-                      Score
-                    </div>
-                  </div>
-                  <div className="space-y-3">
-                    {topModels.length === 0 ? (
-                      <div className="text-sm text-muted-foreground">
-                        No model data yet.
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="mb-3 flex items-center justify-between">
+                      <div className="text-xs font-medium text-muted-foreground">
+                        Model
                       </div>
-                    ) : (
-                      topModels.map((model, index) => {
-                        const score = model.passRate ?? 0;
-                        const widthPct = Math.max(
-                          0,
-                          Math.min(100, (score / chartRangeMax) * 100),
-                        );
-                        return (
-                          <div key={model.key} className="space-y-1.5">
-                            <div className="flex items-center justify-between text-sm">
-                              <div className="flex items-center gap-2 truncate">
-                                <QueueKeyIcon
-                                  queueKey={model.queueKey}
-                                  model={model.model}
-                                  className="text-muted-foreground"
-                                  size={14}
+                      <div className="text-xs font-medium text-muted-foreground">
+                        Score
+                      </div>
+                    </div>
+                    <div className="space-y-3">
+                      {topModels.length === 0 ? (
+                        <div className="text-sm text-muted-foreground">
+                          No model data yet.
+                        </div>
+                      ) : (
+                        topModels.map((model, index) => {
+                          const score = model.averageScore ?? 0;
+                          const widthPct = Math.max(
+                            0,
+                            Math.min(100, (score / chartRangeMax) * 100),
+                          );
+                          return (
+                            <div key={model.key} className="space-y-1.5">
+                              <div className="flex items-center justify-between text-sm">
+                                <div className="flex items-center gap-2 truncate">
+                                  <QueueKeyIcon
+                                    queueKey={model.queueKey}
+                                    model={model.model}
+                                    className="text-muted-foreground"
+                                    size={14}
+                                  />
+                                  <span className="truncate font-mono">
+                                    {model.model}
+                                  </span>
+                                </div>
+                                <div className="font-medium">
+                                  {model.averageScore === null
+                                    ? "—"
+                                    : `${model.averageScore}%`}
+                                </div>
+                              </div>
+                              <div className="h-3 rounded-full bg-muted">
+                                <div
+                                  className={`h-full rounded-full ${
+                                    index % 2 === 0 ? "bg-primary" : "bg-accent"
+                                  }`}
+                                  style={{ width: `${widthPct}%` }}
                                 />
-                                <span className="truncate font-mono">
-                                  {model.model}
-                                </span>
-                              </div>
-                              <div className="font-medium">
-                                {model.passRate === null
-                                  ? "—"
-                                  : `${model.passRate}%`}
                               </div>
                             </div>
-                            <div className="h-3 rounded-full bg-muted">
-                              <div
-                                className={`h-full rounded-full ${
-                                  index % 2 === 0 ? "bg-primary" : "bg-accent"
-                                }`}
-                                style={{ width: `${widthPct}%` }}
-                              />
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
+                          );
+                        })
+                      )}
+                    </div>
 
-                  <div className="mt-4 border-t border-border pt-3">
-                    <div className="relative h-5">
-                      {chartTicks.map((tick) => (
-                        <span
-                          key={tick}
-                          className="absolute top-0 -translate-x-1/2 text-[11px] text-muted-foreground"
-                          style={{ left: `${(tick / chartRangeMax) * 100}%` }}
-                        >
-                          {tick}%
+                    <div className="mt-4 border-t border-border pt-3">
+                      <div className="relative h-5">
+                        {chartTicks.map((tick) => (
+                          <span
+                            key={tick}
+                            className="absolute top-0 -translate-x-1/2 text-[11px] text-muted-foreground"
+                            style={{ left: `${(tick / chartRangeMax) * 100}%` }}
+                          >
+                            {tick}%
+                          </span>
+                        ))}
+                      </div>
+                      <div className="mt-3 flex items-center justify-end">
+                        <span className="rounded-md bg-secondary px-2.5 py-1 text-xs text-secondary-foreground">
+                          Mean Score
                         </span>
-                      ))}
+                      </div>
                     </div>
-                    <div className="mt-3 flex items-center justify-end">
-                      <span className="rounded-md bg-secondary px-2.5 py-1 text-xs text-secondary-foreground">
-                        Mean Score
-                      </span>
-                    </div>
-                  </div>
-                </CardContent></Card>
+                  </CardContent>
+                </Card>
               </div>
 
               <div className="grid grid-cols-1 gap-3">
@@ -333,13 +338,15 @@ export function DatasetDetailView({
                   {filteredTasks.map((row) => (
                     <Card key={row.task.id}>
                       <CardContent className="p-3">
-                        <div className="text-sm font-medium">{row.task.name}</div>
+                        <div className="text-sm font-medium">
+                          {row.task.name}
+                        </div>
                         <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
                           <span>{row.domain}</span>
                           <span>
                             {row.passRate === null
                               ? "—"
-                              : `${row.passRate}% pass`}
+                              : `${row.passRate}% avg`}
                           </span>
                         </div>
                       </CardContent>
