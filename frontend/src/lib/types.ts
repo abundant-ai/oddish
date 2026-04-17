@@ -10,7 +10,7 @@ export type TaskStatus =
 // Trial/job status
 // - "success": Trial executed to completion (regardless of test result)
 // - "failed": Trial encountered an execution error (harness/infrastructure failure)
-// - Test results are stored separately in the `reward` field (1=passed, 0=failed, null=no result)
+// - Test results are stored separately in the `reward` field (0..1 score, null=no result)
 export type TrialStatus =
   | "pending"
   | "queued"
@@ -129,6 +129,7 @@ export interface Task {
   failed: number;
   progress?: string;
   reward_success?: number | null;
+  reward_sum?: number | null;
   reward_total?: number | null;
   run_analysis?: boolean;
   verdict_status?: JobStatus | null;
@@ -165,6 +166,7 @@ export interface TaskBrowseItem {
   completed_trials: number;
   failed_trials: number;
   reward_success: number;
+  reward_sum: number;
   reward_total: number;
   last_run_at?: string | null;
   latest_trials: TaskBrowseTrial[];
@@ -241,6 +243,7 @@ export interface DashboardExperiment {
   failed_trials: number;
   active_trials: number;
   reward_success: number;
+  reward_sum: number;
   reward_total: number;
   analysis_tasks: number;
   verdict_good: number;

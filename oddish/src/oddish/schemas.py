@@ -365,9 +365,12 @@ class TrialResponse(BaseModel):
     attempts: int
     max_attempts: int
     harbor_stage: str | None
-    reward: int | None = Field(
+    reward: float | None = Field(
         None,
-        description="Test result: 1=passed, 0=failed, null=no result (separate from execution status)",
+        description=(
+            "Verifier score in [0, 1]: 1=full pass, 0=full fail, "
+            "partial values indicate partial credit; null=no result"
+        ),
     )
     error_message: str | None
     result: dict | None
@@ -444,7 +447,7 @@ class TaskBrowseTrial(BaseModel):
     id: str
     name: str
     status: TrialStatus
-    reward: int | None = None
+    reward: float | None = None
     error_message: str | None = None
 
 
@@ -458,6 +461,7 @@ class TaskBrowseItem(BaseModel):
     completed_trials: int
     failed_trials: int
     reward_success: int
+    reward_sum: float
     reward_total: int
     last_run_at: datetime | None = None
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
@@ -490,6 +494,7 @@ class TaskStatusResponse(BaseModel):
     failed: int
     progress: str  # e.g., "5/10 completed"
     reward_success: int | None = None
+    reward_sum: float | None = None
     reward_total: int | None = None
     run_analysis: bool = False
     verdict_status: VerdictStatus | None = None

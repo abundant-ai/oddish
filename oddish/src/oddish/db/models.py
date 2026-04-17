@@ -67,12 +67,13 @@ class JobStatus(str, Enum):
     """Execution status for trials, analyses, and verdicts.
 
     For trials specifically:
-    - SUCCESS: Trial executed to completion and produced a result (reward can be 0 or 1)
+    - SUCCESS: Trial executed to completion and produced a result (reward can be any score in [0, 1])
     - FAILED: Trial encountered an execution error (harness failure, API error, timeout, etc.)
 
     The trial's `reward` field stores the test result separately:
-    - reward=1: Test passed (agent successfully fixed the bug)
-    - reward=0: Test failed (agent did not fix the bug)
+    - reward=1.0: Perfect score / full pass
+    - reward=0.0: No credit / full fail
+    - 0 < reward < 1: Partial credit
     - reward=None: No test result available (error occurred before/during verification)
     """
 
@@ -354,7 +355,7 @@ class TrialModel(Base):
     )
 
     # Results
-    reward: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reward: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     harbor_result_path: Mapped[str | None] = mapped_column(
         Text, nullable=True

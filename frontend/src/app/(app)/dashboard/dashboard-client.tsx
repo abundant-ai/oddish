@@ -1041,7 +1041,7 @@ function RecentTasksCard({
                   <TableHead>PR</TableHead>
                   <TableHead>Tasks</TableHead>
                   <TableHead>Trials</TableHead>
-                  <TableHead>Pass rate</TableHead>
+                  <TableHead>Avg score</TableHead>
                   <TableHead className="text-right">Last task</TableHead>
                   <TableHead className="text-right">Delete</TableHead>
                 </TableRow>
@@ -1051,7 +1051,7 @@ function RecentTasksCard({
                   const passRate =
                     experiment.reward_total > 0
                       ? Math.round(
-                          (experiment.reward_success /
+                          (experiment.reward_sum /
                             experiment.reward_total) *
                             100,
                         )
@@ -1118,7 +1118,7 @@ function RecentTasksCard({
                             className={
                               passRate >= 80
                                 ? "text-[#5c8e43] dark:text-[#85b85c]"
-                                : passRate >= 50
+                                : passRate >= 35
                                   ? "text-yellow-400"
                                   : "text-rose-400"
                             }

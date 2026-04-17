@@ -280,7 +280,7 @@ async def _store_trial_results(
                     str(outcome.job_result_path) if outcome.job_result_path else None
                 )
                 if verifier_ran:
-                    derived_reward = 0
+                    derived_reward = 0.0
                     console.print(
                         f"[yellow]Trial {trial_id} agent timeout -> reward=0[/yellow]"
                     )
@@ -310,7 +310,7 @@ async def _store_trial_results(
             # SUCCESS means "trial executed to completion" (regardless of reward)
             # FAILED means "trial encountered an execution error"
             if derived_reward is not None:
-                # Harbor produced a test result (0 or 1) - trial executed successfully
+                # Harbor produced a verifier score - trial executed successfully.
                 # Hook may have already set status to SUCCESS - that's OK, we're confirming it
                 trial.status = TrialStatus.SUCCESS
                 trial.finished_at = utcnow()
@@ -423,7 +423,7 @@ async def _handle_harbor_event(
                     if result.verifier_result and result.verifier_result.rewards:
                         reward_value = result.verifier_result.rewards.get("reward")
                         if reward_value is not None:
-                            extracted_reward = int(float(reward_value))
+                            extracted_reward = float(reward_value)
                             console.print(
                                 f"[dim]Trial {trial_id} reward: {extracted_reward}[/dim]"
                             )
@@ -443,7 +443,7 @@ async def _handle_harbor_event(
                                 and result.verifier_result is not None
                             ):
                                 # Agent timeout is a normal trial failure (reward=0).
-                                extracted_reward = 0
+                                extracted_reward = 0.0
                             # Keep error message for transparency, but don't mark as harness error.
                             if extracted_reward is not None:
                                 trial.error_message = str(error_msg)

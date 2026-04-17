@@ -304,12 +304,13 @@ def resolve_task_status(
 def _format_reward_fields(
     *,
     reward_success: int,
+    reward_sum: float,
     reward_total: int,
     include_empty_rewards: bool,
-) -> tuple[int | None, int | None]:
+) -> tuple[int | None, float | None, int | None]:
     if include_empty_rewards or reward_total > 0:
-        return reward_success, reward_total
-    return None, None
+        return reward_success, reward_sum, reward_total
+    return None, None, None
 
 
 def _parse_github_meta(tags: dict | None) -> dict[str, str] | None:
@@ -354,14 +355,18 @@ def _build_task_status_response(
     completed: int,
     failed: int,
     reward_success: int,
+    reward_sum: float,
     reward_total: int,
     include_empty_rewards: bool,
     trials: list[TrialResponse] | None,
 ) -> TaskStatusResponse:
-    formatted_reward_success, formatted_reward_total = _format_reward_fields(
+    formatted_reward_success, formatted_reward_sum, formatted_reward_total = (
+        _format_reward_fields(
         reward_success=reward_success,
+        reward_sum=reward_sum,
         reward_total=reward_total,
         include_empty_rewards=include_empty_rewards,
+        )
     )
     current_version, current_version_id = _resolve_task_version_fields(task)
     return TaskStatusResponse(
@@ -386,6 +391,7 @@ def _build_task_status_response(
         progress=f"{completed}/{total} completed",
         trials=trials,
         reward_success=formatted_reward_success,
+        reward_sum=formatted_reward_sum,
         reward_total=formatted_reward_total,
         run_analysis=task.run_analysis,
         verdict_status=task.verdict_status,
@@ -409,6 +415,7 @@ def build_task_status_response(
     completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
     failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)
     reward_success = sum(1 for t in task_trials if t.reward == 1)
+    reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
     reward_total = sum(1 for t in task_trials if t.reward is not None)
     trials = [
         build_trial_response(
@@ -429,6 +436,7 @@ def build_task_status_response(
         completed=completed,
         failed=failed,
         reward_success=reward_success,
+        reward_sum=reward_sum,
         reward_total=reward_total,
         include_empty_rewards=include_empty_rewards,
         trials=trials,
@@ -448,6 +456,7 @@ def build_task_status_response_compact(
     completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
     failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)
     reward_success = sum(1 for t in task_trials if t.reward == 1)
+    reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
     reward_total = sum(1 for t in task_trials if t.reward is not None)
     trials = [
         build_compact_trial_response(
@@ -473,6 +482,7 @@ def build_task_status_response_compact(
         completed=completed,
         failed=failed,
         reward_success=reward_success,
+        reward_sum=reward_sum,
         reward_total=reward_total,
         include_empty_rewards=include_empty_rewards,
         trials=trials,
@@ -532,6 +542,7 @@ async def build_task_status_responses_from_counts(
                 "failed"
             ),
             func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
+            func.sum(TrialModel.reward).label("reward_sum"),
             func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
         )
         .where(TrialModel.task_id.in_(task_ids))
@@ -549,6 +560,11 @@ async def build_task_status_responses_from_counts(
             failed=int(stats_map[task.id].failed) if task.id in stats_map else 0,
             reward_success=(
                 int(stats_map[task.id].reward_success) if task.id in stats_map else 0
+            ),
+            reward_sum=(
+                float(stats_map[task.id].reward_sum or 0.0)
+                if task.id in stats_map
+                else 0.0
             ),
             reward_total=(
                 int(stats_map[task.id].reward_total) if task.id in stats_map else 0

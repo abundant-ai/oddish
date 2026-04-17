@@ -68,7 +68,11 @@ def _format_duration(seconds: float | None) -> str:
 def _format_reward(reward: float | None) -> str:
     if reward is None:
         return "-"
-    return "\u2713" if reward >= 0.5 else "\u2717"
+    if reward == 1.0:
+        return "\u2713"
+    if reward == 0.0:
+        return "\u2717"
+    return f"~ {reward:.2f}"
 
 
 _CLASSIFICATION_BADGES: dict[str, str] = {

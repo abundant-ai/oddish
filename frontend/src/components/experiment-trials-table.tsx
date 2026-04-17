@@ -50,7 +50,11 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import {
+  formatPartialRewardBadgeValue,
+  formatRewardPercent,
+  formatRewardValue,
   getMatrixStatus,
+  getRewardStyle,
   STATUS_CONFIG,
   type MatrixStatus,
 } from "@/lib/status-config";
@@ -140,6 +144,7 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "queued",
   "running",
   "pass",
+  "partial",
   "fail",
   "harness-error",
   "pending",
@@ -321,9 +326,7 @@ function getTrialTitle(trial: Trial, status: MatrixStatus) {
   const reward =
     trial.reward === null
       ? "reward pending"
-      : trial.reward === 1
-        ? "reward 1"
-        : "reward 0";
+      : `reward ${formatRewardValue(trial.reward)} (${formatRewardPercent(trial.reward)})`;
   const error = trial.error_message ? ` • ${trial.error_message}` : "";
   const queueInfo = trial.queue_info;
   const queueSnapshot = queueInfo
@@ -1906,6 +1909,10 @@ export function ExperimentTrialsTable({
                                     trial,
                                     status,
                                   );
+                                  const badgeLabel =
+                                    status === "partial"
+                                      ? formatPartialRewardBadgeValue(trial.reward)
+                                      : config.symbol;
                                   const analysisTitle = analysisIndicator
                                     ? ` • ${analysisIndicator.title}`
                                     : "";
@@ -1928,7 +1935,8 @@ export function ExperimentTrialsTable({
                                             trialGroups,
                                           });
                                         }}
-                                        className={`h-5 w-5 shrink-0 rounded-sm border p-0 text-sm font-semibold leading-none transition hover:opacity-90 ${config.matrixClass}`}
+                                        className={`h-5 w-5 shrink-0 rounded-sm border p-0 font-mono font-semibold leading-none transition hover:opacity-90 ${config.matrixClass} ${status === "partial" ? "text-[8px] tracking-[-0.03em]" : "text-sm"}`}
+                                        style={getRewardStyle(trial.reward)}
                                         aria-label={`Trial ${trialIndex + 1} ${config.shortLabel}`}
                                         title={fullTitle}
                                       >
@@ -1939,7 +1947,7 @@ export function ExperimentTrialsTable({
                                         ) : status === "harness-error" ? (
                                           <Ban className="h-3.5 w-3.5" />
                                         ) : (
-                                          config.symbol
+                                          badgeLabel
                                         )}
                                       </Button>
                                       {analysisIndicator && (

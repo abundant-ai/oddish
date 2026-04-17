@@ -325,6 +325,7 @@ async def browse_tasks_core(
             "failed_trials"
         ),
         func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
+        func.sum(TrialModel.reward).label("reward_sum"),
         func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
         func.max(trial_activity_at).label("last_run_at"),
     )
@@ -347,6 +348,7 @@ async def browse_tasks_core(
             ),
             func.coalesce(trial_aggregates.c.failed_trials, 0).label("failed_trials"),
             func.coalesce(trial_aggregates.c.reward_success, 0).label("reward_success"),
+            func.coalesce(trial_aggregates.c.reward_sum, 0.0).label("reward_sum"),
             func.coalesce(trial_aggregates.c.reward_total, 0).label("reward_total"),
             trial_aggregates.c.last_run_at.label("last_run_at"),
         )
@@ -497,6 +499,7 @@ async def browse_tasks_core(
                 completed_trials=int(row["completed_trials"] or 0),
                 failed_trials=int(row["failed_trials"] or 0),
                 reward_success=int(row["reward_success"] or 0),
+                reward_sum=float(row["reward_sum"] or 0.0),
                 reward_total=int(row["reward_total"] or 0),
                 last_run_at=row["last_run_at"],
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),

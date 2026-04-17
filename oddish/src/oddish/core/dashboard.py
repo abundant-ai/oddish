@@ -184,6 +184,7 @@ async def load_dashboard_experiments(
             )
         ).label("active_trials"),
         func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
+        func.sum(TrialModel.reward).label("reward_sum"),
         func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
     ).where(TrialModel.experiment_id.isnot(None))
     if org_id is not None:
@@ -233,6 +234,7 @@ async def load_dashboard_experiments(
             func.coalesce(trial_agg.c.failed_trials, 0).label("failed_trials"),
             func.coalesce(trial_agg.c.active_trials, 0).label("active_trials"),
             func.coalesce(trial_agg.c.reward_success, 0).label("reward_success"),
+            func.coalesce(trial_agg.c.reward_sum, 0.0).label("reward_sum"),
             func.coalesce(trial_agg.c.reward_total, 0).label("reward_total"),
             func.coalesce(
                 func.greatest(
@@ -337,6 +339,7 @@ async def load_dashboard_experiments(
                 "failed_trials": failed_trials,
                 "active_trials": active_trials,
                 "reward_success": int(row["reward_success"] or 0),
+                "reward_sum": float(row["reward_sum"] or 0.0),
                 "reward_total": int(row["reward_total"] or 0),
                 "analysis_tasks": int(row["analysis_tasks"] or 0),
                 "verdict_good": int(row["verdict_good"] or 0),

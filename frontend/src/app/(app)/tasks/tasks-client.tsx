@@ -16,7 +16,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { fetcher } from "@/lib/api";
-import { STATUS_CONFIG, getMatrixStatus } from "@/lib/status-config";
+import {
+  formatPartialRewardBadgeValue,
+  formatRewardPercent,
+  formatRewardValue,
+  getMatrixStatus,
+  getRewardStyle,
+  STATUS_CONFIG,
+} from "@/lib/status-config";
 import type { TaskBrowseItem, TaskBrowseResponse } from "@/lib/types";
 import {
   encodeExperimentRouteParam,
@@ -106,6 +113,7 @@ function getLatestTrialStatusCounts(task: TaskBrowseItem) {
     },
     {
       pass: 0,
+      partial: 0,
       fail: 0,
       "harness-error": 0,
       pending: 0,
@@ -116,21 +124,23 @@ function getLatestTrialStatusCounts(task: TaskBrowseItem) {
 }
 
 function PassRateCell({ task }: { task: TaskBrowseItem }) {
-  const hasPassRate = task.reward_total > 0;
-  const passRate = hasPassRate
-    ? Math.round((task.reward_success / task.reward_total) * 100)
+  const rewardSum = task.reward_sum ?? task.reward_success;
+  const hasScore = task.reward_total > 0;
+  const avgScore = hasScore
+    ? Math.round((rewardSum / task.reward_total) * 100)
     : null;
   const toneClass =
-    passRate == null
+    avgScore == null
       ? "text-muted-foreground"
-      : passRate >= 80
+      : avgScore >= 80
         ? "text-[#5c8e43] dark:text-[#85b85c]"
-        : passRate >= 50
+        : avgScore >= 35
           ? "text-yellow-400"
           : "text-rose-400";
   const statusCounts = getLatestTrialStatusCounts(task);
   const summaryItems = [
     { key: "pass", label: "Pass", count: statusCounts.pass },
+    { key: "partial", label: "Partial", count: statusCounts.partial },
     { key: "fail", label: "Fail", count: statusCounts.fail },
     {
       key: "harness-error",
@@ -148,11 +158,11 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between gap-3">
         <div className={`text-base font-medium leading-none ${toneClass}`}>
-          {passRate == null ? "—" : `${passRate}%`}
+          {avgScore == null ? "—" : `${avgScore}%`}
         </div>
         <div className="text-[11px] leading-none text-muted-foreground">
-          {hasPassRate
-            ? `${task.reward_success}/${task.reward_total}`
+          {hasScore
+            ? `${rewardSum.toFixed(2)}/${task.reward_total}`
             : "No completed trials"}
         </div>
       </div>
@@ -201,19 +211,32 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
           trial.error_message,
         );
         const config = STATUS_CONFIG[status];
+        const badgeLabel =
+          status === "partial"
+            ? formatPartialRewardBadgeValue(trial.reward)
+            : null;
 
         return (
           <Tooltip key={trial.id}>
             <TooltipTrigger asChild>
               <div
-                className={`h-[18px] w-[18px] rounded-[4px] border ${config.matrixClass}`}
+                className={`flex h-[18px] w-[18px] items-center justify-center rounded-[4px] border font-mono font-semibold leading-none ${config.matrixClass} ${status === "partial" ? "text-[7px] tracking-[-0.03em]" : ""}`}
+                style={getRewardStyle(trial.reward)}
                 aria-label={`${trial.name} ${config.shortLabel}`}
-              />
+              >
+                {badgeLabel}
+              </div>
             </TooltipTrigger>
             <TooltipContent>
               <div className="space-y-0.5">
                 <div className="font-medium">{trial.name}</div>
                 <div className="text-muted-foreground">{config.shortLabel}</div>
+                {trial.reward !== null && (
+                  <div className="text-muted-foreground">
+                    Score {formatRewardValue(trial.reward)} (
+                    {formatRewardPercent(trial.reward)})
+                  </div>
+                )}
               </div>
             </TooltipContent>
           </Tooltip>
@@ -263,7 +286,7 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
         <div className="grid gap-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)]">
           <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-              Pass rate
+              Avg score
             </div>
             <div className="mt-1 text-sm font-semibold">
               <PassRateCell task={task} />

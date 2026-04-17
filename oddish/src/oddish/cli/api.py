@@ -34,6 +34,16 @@ console = Console()
 TASK_SWEEP_TIMEOUT_SECONDS = 600.0
 
 
+def format_reward_value(reward: float | None) -> str:
+    if reward is None:
+        return "-"
+    if reward == 1:
+        return "[green]✓[/green]"
+    if reward == 0:
+        return "[red]✗[/red]"
+    return f"[yellow]{reward:.2f}[/yellow]"
+
+
 # =============================================================================
 # Task Path Resolution
 # =============================================================================
@@ -806,8 +816,9 @@ def print_final_results(result: dict) -> None:
 
         reward = trial.get("reward")
         if reward is not None:
-            rewards.append(reward)
-            reward_str = f"{reward:.2f}" if isinstance(reward, float) else str(reward)
+            reward_value = float(reward)
+            rewards.append(reward_value)
+            reward_str = format_reward_value(reward_value)
         else:
             reward_str = "-"
 
@@ -833,7 +844,7 @@ def print_final_results(result: dict) -> None:
         summary_parts.append(f"[red]{failed} failed[/red]")
     if rewards:
         avg_reward = sum(rewards) / len(rewards)
-        summary_parts.append(f"avg reward: [cyan]{avg_reward:.2f}[/cyan]")
+        summary_parts.append(f"avg score: [cyan]{avg_reward:.2f}[/cyan]")
 
     console.print("  " + " | ".join(summary_parts))
     console.print()
@@ -887,12 +898,9 @@ def watch_task(
                     status_display = format_trial_status(status, harbor_stage)
 
                     reward = trial.get("reward")
-                    if reward == 1:
-                        reward_str = "[green]✓[/green]"
-                    elif reward == 0:
-                        reward_str = "[red]✗[/red]"
-                    else:
-                        reward_str = "-"
+                    reward_str = format_reward_value(
+                        float(reward) if reward is not None else None
+                    )
 
                     table.add_row(
                         trial["id"].split("-")[-1],  # Just the index
@@ -907,17 +915,30 @@ def watch_task(
                 completed = sum(1 for t in all_trials if t.get("status") == "success")
                 failed = sum(1 for t in all_trials if t.get("status") == "failed")
 
-                reward_pass = sum(1 for t in all_trials if t.get("reward") == 1)
-                reward_fail = sum(1 for t in all_trials if t.get("reward") == 0)
+                rewards = [
+                    float(t["reward"]) for t in all_trials if t.get("reward") is not None
+                ]
+                reward_pass = sum(1 for reward in rewards if reward == 1)
+                reward_fail = sum(1 for reward in rewards if reward == 0)
+                reward_partial = sum(1 for reward in rewards if 0 < reward < 1)
 
                 table.add_section()
                 summary_parts = [f"[bold]{completed}/{total}[/bold] done"]
                 if failed > 0:
                     summary_parts.append(f"[red]{failed} failed[/red]")
-                if reward_pass > 0 or reward_fail > 0:
+                if rewards:
                     summary_parts.append(
-                        f"[green]{reward_pass}✓[/green]/[red]{reward_fail}✗[/red]"
+                        f"avg [cyan]{sum(rewards) / len(rewards):.2f}[/cyan]"
                     )
+                if reward_pass > 0 or reward_fail > 0 or reward_partial > 0:
+                    reward_summary = []
+                    if reward_pass > 0:
+                        reward_summary.append(f"[green]{reward_pass}✓[/green]")
+                    if reward_partial > 0:
+                        reward_summary.append(f"[yellow]{reward_partial}~[/yellow]")
+                    if reward_fail > 0:
+                        reward_summary.append(f"[red]{reward_fail}✗[/red]")
+                    summary_parts.append("/".join(reward_summary))
 
                 table.add_row("", ", ".join(summary_parts), "", "", "")
 

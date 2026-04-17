@@ -36,7 +36,11 @@ import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { ArtifactsViewer } from "@/components/artifacts-viewer";
 import type { Trial, Task } from "@/lib/types";
 import {
+  formatPartialRewardBadgeValue,
+  formatRewardPercent,
+  formatRewardValue,
   getMatrixStatus,
+  getRewardStyle,
   STATUS_CONFIG,
   type MatrixStatus,
 } from "@/lib/status-config";
@@ -67,6 +71,7 @@ interface TrialDetailPanelProps {
 
 const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   pass: "border-emerald-500/30 bg-emerald-500/10",
+  partial: "border-amber-500/30 bg-amber-500/10",
   fail: "border-red-500/30 bg-red-500/10",
   "harness-error": "border-yellow-500/30 bg-yellow-500/10",
   pending: "border-gray-500/30 bg-gray-500/10",
@@ -443,6 +448,10 @@ export function TrialDetailPanel({
                     groupTrial.error_message,
                   );
                   const groupConfig = STATUS_CONFIG[groupStatus];
+                  const badgeLabel =
+                    groupStatus === "partial"
+                      ? formatPartialRewardBadgeValue(groupTrial.reward)
+                      : groupConfig.symbol;
                   const isActive = index === currentGroupTrialIndex;
                   return (
                     <Button
@@ -452,7 +461,10 @@ export function TrialDetailPanel({
                       size="icon"
                       onClick={() => navigateToGroupTrial(index)}
                       className={cn(
-                        "flex h-5 w-5 items-center justify-center rounded-sm border p-0 text-sm font-semibold leading-none transition",
+                        "flex h-5 w-5 items-center justify-center rounded-sm border p-0 font-mono font-semibold leading-none transition",
+                        groupStatus === "partial"
+                          ? "text-[8px] tracking-[-0.03em]"
+                          : "text-sm",
                         groupConfig.matrixClass,
                         isActive
                           ? "ring-2 ring-primary/60 ring-offset-1 ring-offset-background"
@@ -468,7 +480,7 @@ export function TrialDetailPanel({
                       ) : groupStatus === "harness-error" ? (
                         <Ban className="h-3.5 w-3.5" />
                       ) : (
-                        groupConfig.symbol
+                        badgeLabel
                       )}
                     </Button>
                   );
@@ -494,6 +506,7 @@ export function TrialDetailPanel({
                 "min-w-[145px] border",
                 OUTCOME_CARD_TONE[trialStatus],
               )}
+              style={getRewardStyle(trial.reward, "panel")}
             >
               <CardContent className="px-2 py-1">
                 <div className="flex items-center gap-1.5">
@@ -502,6 +515,8 @@ export function TrialDetailPanel({
                       "h-3.5 w-3.5 shrink-0",
                       trialStatus === "pass"
                         ? "text-emerald-500"
+                        : trialStatus === "partial"
+                          ? "text-amber-500"
                         : trialStatus === "fail"
                           ? "text-red-500"
                           : trialStatus === "harness-error"
@@ -523,8 +538,13 @@ export function TrialDetailPanel({
                     </div>
                     <div className="flex items-baseline gap-1">
                       <span className="font-mono text-sm font-bold leading-none">
-                        {trial.reward !== null ? trial.reward : "—"}
+                        {formatRewardValue(trial.reward)}
                       </span>
+                      {trial.reward !== null && (
+                        <span className="text-[9px] leading-none text-muted-foreground">
+                          {formatRewardPercent(trial.reward)}
+                        </span>
+                      )}
                       <span className="text-[9px] capitalize leading-none text-muted-foreground">
                         {trialStatusConfig.shortLabel}
                       </span>

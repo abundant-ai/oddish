@@ -69,12 +69,13 @@ class HarborOutcome:
 
     Not Harbor's TrialResult/JobResult — this flattens the deeply nested Harbor
     result tree into a simple struct that Oddish persists to Postgres and returns
-    via its API.  Fields like reward (int 0/1), cost_usd, and phase_timing are
+    via its API.  Fields like reward (float score in [0, 1]), cost_usd, and
+    phase_timing are
     extracted from Harbor's TrialResult/AgentContext/VerifierResult in
     _extract_outcome_from_job_result().
     """
 
-    reward: int | None  # 0 or 1
+    reward: float | None
     error: str | None
     exit_code: int
     duration_sec: float
@@ -279,7 +280,7 @@ def _extract_outcome_from_job_result(
 
     has_trajectory = _detect_trajectory(job_dir)
 
-    def _outcome(reward: int | None) -> HarborOutcome:
+    def _outcome(reward: float | None) -> HarborOutcome:
         return HarborOutcome(
             reward=reward,
             error=error,
@@ -300,17 +301,24 @@ def _extract_outcome_from_job_result(
         first_eval = next(iter(job_result.stats.evals.values()))
         if first_eval.reward_stats and "reward" in first_eval.reward_stats:
             reward_map = first_eval.reward_stats["reward"]
-            if 1 in reward_map or 1.0 in reward_map:
-                return _outcome(1)
-            if 0 in reward_map or 0.0 in reward_map:
-                return _outcome(0)
+            for reward_key, reward_count in sorted(
+                reward_map.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            ):
+                if not reward_count:
+                    continue
+                try:
+                    return _outcome(float(reward_key))
+                except (TypeError, ValueError):
+                    continue
 
     # Method 2: Check trial results directly
     for trial_result in job_result.trial_results:
         if trial_result.verifier_result and trial_result.verifier_result.rewards:
             reward_value = trial_result.verifier_result.rewards.get("reward")
             if reward_value is not None:
-                return _outcome(int(float(reward_value)))
+                return _outcome(float(reward_value))
 
     return _outcome(None)
 

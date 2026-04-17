@@ -23,14 +23,14 @@ type ModelAggregate = {
   queueKey: string | null;
   total: number;
   scored: number;
-  pass: number;
-  passRate: number | null;
+  rewardSum: number;
+  averageScore: number | null;
 };
 
 type ExplorerView = "overview" | "tasks";
 
 function aggregateModels(tasks: Task[]): ModelAggregate[] {
-  const map = new Map<string, Omit<ModelAggregate, "passRate">>();
+  const map = new Map<string, Omit<ModelAggregate, "averageScore">>();
   for (const task of tasks) {
     for (const trial of task.trials ?? []) {
       const modelName = trial.model || trial.agent;
@@ -42,12 +42,12 @@ function aggregateModels(tasks: Task[]): ModelAggregate[] {
         queueKey: trial.provider ?? null,
         total: 0,
         scored: 0,
-        pass: 0,
+        rewardSum: 0,
       };
       existing.total += 1;
       if (trial.reward !== null) {
         existing.scored += 1;
-        if (trial.reward === 1) existing.pass += 1;
+        existing.rewardSum += trial.reward;
       }
       map.set(key, existing);
     }
@@ -56,13 +56,14 @@ function aggregateModels(tasks: Task[]): ModelAggregate[] {
   return Array.from(map.values())
     .map((entry) => ({
       ...entry,
-      passRate:
+      averageScore:
         entry.scored > 0
-          ? Number(((entry.pass / entry.scored) * 100).toFixed(1))
+          ? Number(((entry.rewardSum / entry.scored) * 100).toFixed(1))
           : null,
     }))
     .sort(
-      (a, b) => (b.passRate ?? -1) - (a.passRate ?? -1) || b.scored - a.scored,
+      (a, b) =>
+        (b.averageScore ?? -1) - (a.averageScore ?? -1) || b.scored - a.scored,
     );
 }
 
@@ -106,7 +107,9 @@ function inferTaskDomain(task: Task, category: string): string {
 
 function passRateForTask(task: Task): number | null {
   if (!task.reward_total || task.reward_total <= 0) return null;
-  return Math.round(((task.reward_success ?? 0) / task.reward_total) * 100);
+  return Math.round(
+    (((task.reward_sum ?? task.reward_success ?? 0) / task.reward_total) * 100),
+  );
 }
 
 export function DatasetDetailView({
@@ -131,7 +134,7 @@ export function DatasetDetailView({
           world,
           domain,
           criteriaCount: task.reward_total ?? task.total,
-          passRate: passRateForTask(task),
+                          passRate: passRateForTask(task),
         };
       }),
     [tasks],
@@ -241,7 +244,7 @@ export function DatasetDetailView({
                         </div>
                       ) : (
                         topModels.map((model, index) => {
-                          const score = model.passRate ?? 0;
+                          const score = model.averageScore ?? 0;
                           const widthPct = Math.max(
                             0,
                             Math.min(100, (score / chartRangeMax) * 100),
@@ -261,9 +264,9 @@ export function DatasetDetailView({
                                   </span>
                                 </div>
                                 <div className="font-medium">
-                                  {model.passRate === null
+                                  {model.averageScore === null
                                     ? "—"
-                                    : `${model.passRate}%`}
+                                    : `${model.averageScore}%`}
                                 </div>
                               </div>
                               <div className="h-3 rounded-full bg-muted">
@@ -343,7 +346,7 @@ export function DatasetDetailView({
                           <span>
                             {row.passRate === null
                               ? "—"
-                              : `${row.passRate}% pass`}
+                              : `${row.passRate}% avg`}
                           </span>
                         </div>
                       </CardContent>

@@ -1115,12 +1115,15 @@ export function TaskFilesPanel({
       currentVersion != null
         ? trials.filter((t) => t.task_version === currentVersion)
         : trials;
-    const success = versionTrials.filter((t) => t.reward === 1).length;
+    const rewardSum = versionTrials.reduce(
+      (sum, trial) => sum + (trial.reward ?? 0),
+      0,
+    );
     const total = versionTrials.filter((t) => t.reward != null).length;
     return {
-      rewardSuccess: total > 0 ? success : null,
+      rewardSuccess: total > 0 ? rewardSum : null,
       rewardTotal: total > 0 ? total : null,
-      averageRewardPct: total > 0 ? Math.round((success / total) * 100) : null,
+      averageRewardPct: total > 0 ? Math.round((rewardSum / total) * 100) : null,
     };
   }, [task?.trials, currentVersion]);
 
@@ -1324,7 +1327,7 @@ export function TaskFilesPanel({
               <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
                 <div className="rounded-md border border-border bg-muted/30 px-3 py-1.5 text-right">
                   <div className="text-[9px] uppercase leading-none tracking-wider text-muted-foreground">
-                    Avg reward
+                    Avg score
                   </div>
                   <div className="mt-1 flex items-baseline justify-end gap-2">
                     <span className="font-mono text-sm font-semibold leading-none">
@@ -1332,7 +1335,7 @@ export function TaskFilesPanel({
                     </span>
                     <span className="text-[10px] leading-none text-muted-foreground">
                       {rewardTotal && rewardTotal > 0 && rewardSuccess != null
-                        ? `${rewardSuccess}/${rewardTotal}`
+                        ? `${rewardSuccess.toFixed(2)}/${rewardTotal}`
                         : "No results"}
                     </span>
                   </div>

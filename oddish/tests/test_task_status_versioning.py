@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.api import helpers
+from oddish.core import helpers
 from oddish.db import TrialStatus
 
 
@@ -15,7 +15,7 @@ def _trial(
     *,
     task_version_id: str | None,
     status: TrialStatus,
-    reward: int | None,
+    reward: float | None,
 ):
     return SimpleNamespace(
         id=trial_id,
@@ -47,12 +47,22 @@ def test_get_task_status_trials_filters_to_current_version():
                 status=TrialStatus.FAILED,
                 reward=0,
             ),
+            _trial(
+                "task-1-3",
+                task_version_id="task-1-v2",
+                status=TrialStatus.SUCCESS,
+                reward=0.25,
+            ),
         ],
     )
 
     visible_trials = helpers.get_task_status_trials(task)
 
-    assert [trial.id for trial in visible_trials] == ["task-1-1", "task-1-2"]
+    assert [trial.id for trial in visible_trials] == [
+        "task-1-1",
+        "task-1-2",
+        "task-1-3",
+    ]
 
 
 def test_get_task_status_trials_keeps_all_trials_for_legacy_tasks():
@@ -116,6 +126,12 @@ def test_build_task_status_response_uses_current_version_trials(monkeypatch):
                 status=TrialStatus.FAILED,
                 reward=0,
             ),
+            _trial(
+                "task-1-3",
+                task_version_id="task-1-v2",
+                status=TrialStatus.SUCCESS,
+                reward=0.25,
+            ),
         ],
     )
 
@@ -124,9 +140,10 @@ def test_build_task_status_response_uses_current_version_trials(monkeypatch):
         queue_info_by_trial_id={},
     )
 
-    assert captured["total"] == 2
-    assert captured["completed"] == 1
+    assert captured["total"] == 3
+    assert captured["completed"] == 2
     assert captured["failed"] == 1
     assert captured["reward_success"] == 1
-    assert captured["reward_total"] == 2
-    assert captured["trials"] == ["task-1-1", "task-1-2"]
+    assert captured["reward_sum"] == 1.25
+    assert captured["reward_total"] == 3
+    assert captured["trials"] == ["task-1-1", "task-1-2", "task-1-3"]

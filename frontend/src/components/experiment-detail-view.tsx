@@ -68,11 +68,13 @@ function getModelScopedAgentsFromSummaries(
 
 type ExperimentSummary = {
   rewardSuccess: number;
+  rewardSum: number;
   rewardTotal: number;
   totalTrials: number;
   completedTrials: number;
   failedTrials: number;
   passCount: number;
+  partialCount: number;
   failCount: number;
   harnessErrorCount: number;
   pendingCount: number;
@@ -80,12 +82,14 @@ type ExperimentSummary = {
 
 function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
   let rewardSuccess = 0;
+  let rewardSum = 0;
   let rewardTotal = 0;
   let totalTrials = 0;
   let completedTrials = 0;
   let failedTrials = 0;
 
   let passCount = 0;
+  let partialCount = 0;
   let failCount = 0;
   let harnessErrorCount = 0;
   let pendingCount = 0;
@@ -95,13 +99,17 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     if (trials.length > 0) {
       // Compute from the (already version-filtered) trials array
       for (const trial of trials) {
-        if (trial.status === "success" && trial.reward === 1) {
-          passCount++;
-          rewardSuccess++;
+        if (trial.status === "success" && trial.reward != null) {
+          rewardSum += trial.reward;
           rewardTotal++;
-        } else if (trial.status === "success" && trial.reward === 0) {
-          failCount++;
-          rewardTotal++;
+          if (trial.reward === 1) {
+            passCount++;
+            rewardSuccess++;
+          } else if (trial.reward === 0) {
+            failCount++;
+          } else {
+            partialCount++;
+          }
         } else if (trial.status === "success" && trial.reward == null) {
           // Completed but reward not yet set
         } else if (trial.status === "failed") {
@@ -116,6 +124,7 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     } else {
       // Trials not loaded yet — fall back to server-provided aggregates
       rewardSuccess += task.reward_success ?? 0;
+      rewardSum += task.reward_sum ?? task.reward_success ?? 0;
       rewardTotal += task.reward_total ?? 0;
       totalTrials += task.total;
       completedTrials += task.completed;
@@ -125,11 +134,13 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
 
   return {
     rewardSuccess,
+    rewardSum,
     rewardTotal,
     totalTrials,
     completedTrials,
     failedTrials,
     passCount,
+    partialCount,
     failCount,
     harnessErrorCount,
     pendingCount,
@@ -210,14 +221,17 @@ function ExperimentSummaryBar({
         </div>
         <div className="text-muted-foreground">•</div>
         <div className="font-mono text-muted-foreground">
-          Pass rate{" "}
+          Avg score{" "}
           {summary.rewardTotal > 0
-            ? `${Math.round((summary.rewardSuccess / summary.rewardTotal) * 100)}%`
+            ? `${Math.round((summary.rewardSum / summary.rewardTotal) * 100)}%`
             : "—"}
         </div>
         <div className="text-muted-foreground">•</div>
         <div className="flex items-center gap-2 font-mono text-muted-foreground">
           <span className="text-emerald-400">{summary.passCount}✓</span>
+          {summary.partialCount > 0 && (
+            <span className="text-amber-400">{summary.partialCount}~</span>
+          )}
           <span className="text-red-400">{summary.failCount}✗</span>
           {summary.harnessErrorCount > 0 && (
             <span className="text-yellow-400">
