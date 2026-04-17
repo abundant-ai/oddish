@@ -3,6 +3,7 @@ from typing import cast
 from sqlalchemy import text
 from sqlalchemy.engine import CursorResult
 
+from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -14,6 +15,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.queue import maybe_start_analysis_stage, maybe_start_verdict_stage
+from oddish.workers.queue.shared import console
 
 # Bumped from 10 -> 15 after incidents where a burst of user-cancels /
 # Supabase pooler pressure caused the whole worker fleet's heartbeat writes to
@@ -21,6 +23,14 @@ from oddish.queue import maybe_start_analysis_stage, maybe_start_verdict_stage
 # in a single sweep. 15 minutes is more forgiving of transient pooler blips
 # without meaningfully delaying detection of actually-crashed workers.
 STALE_HEARTBEAT_MINUTES = 15
+
+# Age at which an "idle in transaction" backend is considered a zombie from a
+# SIGKILLed worker (typical legitimate transactions are <5s). Must be greater
+# than the idle_in_transaction_session_timeout server setting so we never
+# fight Postgres's built-in enforcement; this only catches cases where that
+# enforcement was disabled or the session GUC didn't take effect (e.g.
+# older Supavisor versions that don't pass through startup parameters).
+ZOMBIE_IDLE_MINUTES = 10
 
 
 def _clear_trial_runtime_refs(trial: TrialModel) -> None:
@@ -35,6 +45,76 @@ def _clear_analysis_runtime_refs(trial: TrialModel) -> None:
 
 def _clear_verdict_runtime_refs(task: TaskModel) -> None:
     task.verdict_modal_function_call_id = None
+
+
+async def reap_idle_in_transaction_zombies(
+    *,
+    idle_after_minutes: int = ZOMBIE_IDLE_MINUTES,
+) -> int:
+    """Terminate Postgres backends stuck "idle in transaction" for too long.
+
+    Motivated by real incidents: when a Modal worker is SIGKILLed by the
+    cancel API (`terminate_containers=True`) mid-transaction, the TCP
+    connection to the pooler dies but the Postgres backend on the other
+    side of the pooler keeps holding the row/table locks the transaction
+    had acquired -- potentially forever. In one observed incident a single
+    bulk cancel left 26 such zombies holding `AccessShareLock` on `trials`
+    for 1h43m, blocking every subsequent heartbeat write and DDL migration.
+
+    Returns the number of backends terminated. Safe to call on every
+    dispatcher tick; this does nothing when there are no zombies.
+
+    Targeting: only sessions whose `application_name` is in the configured
+    reaper allow-list. On Supabase this includes the pooler identity
+    ('Supavisor') -- Supabase-internal services use distinct names
+    ('postgrest', 'pg_cron scheduler', 'Supabase Storage API Canary',
+    etc) and are never matched.
+    """
+    allowed_names = [n for n in (settings.db_reaper_application_names or []) if n]
+    if not allowed_names:
+        return 0
+
+    try:
+        async with get_session() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT pid, pg_terminate_backend(pid) AS terminated
+                        FROM pg_stat_activity
+                        WHERE state = 'idle in transaction'
+                          AND application_name = ANY(:app_names)
+                          AND state_change < NOW() - make_interval(mins => :idle_after_minutes)
+                          AND pid <> pg_backend_pid()
+                        """
+                    ),
+                    {
+                        "app_names": allowed_names,
+                        "idle_after_minutes": idle_after_minutes,
+                    },
+                )
+            ).all()
+    except Exception as exc:
+        # pg_terminate_backend requires privileges we may not have in
+        # every deployment (self-hosted Postgres, tests, etc). Don't let
+        # that fail the whole cleanup sweep -- zombie reaping is a
+        # safety net, not a correctness requirement.
+        console.print(
+            f"[yellow]Zombie transaction reaper skipped: {exc}[/yellow]"
+        )
+        return 0
+
+    terminated = sum(1 for row in rows if row.terminated)
+    if terminated > 0:
+        console.print(
+            f"metric=zombie_txn_reaped count={terminated} idle_after_minutes={idle_after_minutes}"
+        )
+        console.print(
+            f"[yellow]Reaped {terminated} zombie 'idle in transaction' "
+            f"backend(s) (application_names={allowed_names}, "
+            f"idle>{idle_after_minutes}m)[/yellow]"
+        )
+    return terminated
 
 
 async def cleanup_orphaned_queue_state(
@@ -56,6 +136,12 @@ async def cleanup_orphaned_queue_state(
     tasks_progressed_to_verdict = 0
     terminal_trial_runtime_refs_cleared = 0
     orphaned_active_slots_cleared = 0
+
+    # Reap zombie 'idle in transaction' backends BEFORE everything else:
+    # they hold AccessShareLocks on trials that block the UPDATEs further
+    # down in this function. Runs in its own session so a permissions
+    # error can't abort the rest of the cleanup sweep.
+    zombie_txn_reaped = await reap_idle_in_transaction_zombies()
 
     async with get_session() as session:
         # ---------------------------------------------------------------
@@ -323,4 +409,5 @@ async def cleanup_orphaned_queue_state(
         "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
         "terminal_trial_runtime_refs_cleared": terminal_trial_runtime_refs_cleared,
         "orphaned_active_slots_cleared": orphaned_active_slots_cleared,
+        "zombie_txn_reaped": zombie_txn_reaped,
     }

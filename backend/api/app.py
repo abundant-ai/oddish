@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,6 +18,27 @@ from oddish.timing import (
     join_server_timing_headers,
     now,
 )
+
+logger = logging.getLogger(__name__)
+
+
+async def _apply_role_defaults_bg() -> None:
+    """Best-effort DB role configuration.
+
+    Runs in the background so a slow pooler or a role without ALTER
+    privilege doesn't block the API container's startup. Installs
+    `idle_in_transaction_session_timeout` on the connecting role so
+    orphaned transactions left by SIGKILLed workers get auto-killed by
+    Postgres itself, which is the server-side half of the fix for the
+    incidents where zombies held trials locks for hours.
+    """
+    try:
+        from oddish.db.connection import apply_role_defaults
+
+        result = await apply_role_defaults()
+        logger.info("applied DB role defaults: %s", result)
+    except Exception:
+        logger.warning("could not apply DB role defaults", exc_info=True)
 
 
 def _get_cors_origins() -> list[str]:
@@ -48,7 +71,15 @@ async def lifespan(_api: FastAPI):
     """
     Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
 
+    role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
+
     yield
+
+    role_defaults_task.cancel()
+    try:
+        await role_defaults_task
+    except (asyncio.CancelledError, Exception):
+        pass
 
     try:
         await close_database_connections()

@@ -14,6 +14,7 @@ async def _slot_connection() -> AsyncIterator[asyncpg.Connection]:
     conn = await asyncpg.connect(
         settings.asyncpg_url,
         statement_cache_size=0,
+        server_settings=settings.asyncpg_server_settings(),
     )
     try:
         yield conn

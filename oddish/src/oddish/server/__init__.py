@@ -137,6 +137,23 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    # Install server-side idle_in_transaction_session_timeout on the
+    # connecting role so Postgres auto-kills orphaned transactions left
+    # behind by SIGKILLed workers, even when server_settings can't be
+    # delivered through the transaction-mode pooler.
+    try:
+        from oddish.db.connection import apply_role_defaults
+
+        result = await apply_role_defaults()
+        console.print(
+            f"[dim]Applied role defaults: {result}[/dim]"
+        )
+    except Exception as e:
+        console.print(
+            f"[yellow]Warning: Could not apply role defaults "
+            f"(idle_in_transaction_session_timeout): {e}[/yellow]"
+        )
+
     # Pre-warm the connection pool (so workers don't have to wait)
     # This ensures the pool is ready when workers start
     try:

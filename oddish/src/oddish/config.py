@@ -215,10 +215,51 @@ class Settings(BaseSettings):
     asyncpg_pool_min_size: int = 1
     asyncpg_pool_max_size: int = 4
 
+    # Postgres safety net against orphaned transactions.
+    #
+    # When a Modal worker is killed mid-transaction (e.g. cancel API calling
+    # terminate_containers=True), SIGKILL prevents Python from running any
+    # rollback. The TCP connection dies, but a transaction-mode pooler
+    # (Supavisor / PgBouncer) keeps the Postgres backend open and Postgres
+    # sees the transaction as "idle in transaction" forever, holding row and
+    # table locks that block heartbeat writes and DDL migrations.
+    #
+    # When we can, we ship this via server_settings so Postgres itself
+    # aborts any transaction left idle this long. NOTE: Supavisor (Supabase)
+    # currently drops client-supplied server_settings, so on Supabase this
+    # setting only applies on direct (non-pooled) connections; on pooled
+    # connections you need to run ALTER ROLE postgres SET
+    # idle_in_transaction_session_timeout=... (see oddish.db.apply_role_defaults)
+    # and rely on the reaper in cleanup as a backstop.
+    idle_in_transaction_session_timeout_ms: int = 300_000
+    # Advertised to pg_stat_activity.application_name. On Supabase this
+    # ends up overwritten by Supavisor; we still set it because (a) it
+    # works on direct connections and (b) the reaper also matches it.
+    db_application_name: str = "oddish"
+    # Application names that, when seen in pg_stat_activity, identify
+    # connections the reaper is allowed to terminate. Matches either our
+    # configured application_name (direct connections) or the transaction
+    # pooler identity (Supavisor / PgBouncer) that rewrites it. Other
+    # Supabase-native services use distinct names like 'postgrest',
+    # 'Supabase Storage API Canary', 'pg_cron scheduler' and are never
+    # matched here.
+    db_reaper_application_names: list[str] = Field(
+        default_factory=lambda: ["oddish", "Supavisor"]
+    )
+
     @property
     def asyncpg_url(self) -> str:
         """Database URL without +asyncpg prefix."""
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")
+
+    def asyncpg_server_settings(self) -> dict[str, str]:
+        """Postgres session GUCs to apply to every asyncpg connection."""
+        return {
+            "application_name": self.db_application_name,
+            "idle_in_transaction_session_timeout": str(
+                self.idle_in_transaction_session_timeout_ms
+            ),
+        }
 
     # S3-compatible storage (required)
     s3_endpoint_url: str | None = None

@@ -15,29 +15,47 @@ from oddish.db.models import Base
 
 # Ensure we use asyncpg driver explicitly (URL should already have +asyncpg).
 db_url = settings.database_url
-DB_CONNECT_ARGS = {
-    "statement_cache_size": 0,
-    "timeout": 10,
-    "command_timeout": 30,
-}
+
+
+def _base_connect_args() -> dict[str, object]:
+    """Connection kwargs used by both SQLAlchemy (via connect_args) and the
+    direct asyncpg.create_pool path.
+
+    The `server_settings` block is what prevents the Supavisor / terminated-
+    worker zombie-transaction class of incident: it makes Postgres itself
+    abort any transaction left idle too long, releasing its locks, even if
+    the client process was SIGKILLed without a chance to rollback.
+
+    IMPORTANT: called fresh on every engine creation (not cached at import
+    time) so `reconfigure_database_connections()` picks up any runtime
+    settings overrides -- e.g. backend/worker/functions.py mutating
+    Settings.db_pool_size before importing this module.
+    """
+    return {
+        "statement_cache_size": 0,
+        "timeout": 10,
+        "command_timeout": 30,
+        "server_settings": settings.asyncpg_server_settings(),
+    }
 
 
 def _create_engine() -> AsyncEngine:
     # Disable prepared statements for connection poolers (Supavisor, PgBouncer)
     # that run in transaction mode. Pre-ping and LIFO checkout reduce failures
     # from stale pooled connections in long-lived API containers.
+    connect_args = _base_connect_args()
     if settings.db_use_null_pool:
         return create_async_engine(
             db_url,
             echo=False,
-            connect_args=DB_CONNECT_ARGS,
+            connect_args=connect_args,
             poolclass=pool.NullPool,
         )
 
     return create_async_engine(
         db_url,
         echo=False,
-        connect_args=DB_CONNECT_ARGS,
+        connect_args=connect_args,
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_pool_max_overflow,
         pool_pre_ping=True,
@@ -72,6 +90,7 @@ async def get_pool() -> asyncpg.Pool:
             statement_cache_size=0,
             timeout=10,
             command_timeout=30,
+            server_settings=settings.asyncpg_server_settings(),
         )
     return _pool
 
@@ -136,6 +155,63 @@ async def init_db():
     """Initialize database schema."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+import re as _re
+
+# Conservative identifier shape for role names we're willing to splice
+# into a DDL statement. Postgres technically allows more (quoted
+# identifiers can contain anything but nul), but Supabase/standard
+# deployments only ever produce names in this set, and we'd rather
+# fail loudly than do risky escaping.
+_ROLE_NAME_RE = _re.compile(r"^[A-Za-z0-9_.]{1,64}$")
+
+
+async def apply_role_defaults() -> dict[str, str]:
+    """Install server-side defaults that aren't reliably delivered via
+    per-connection `server_settings`.
+
+    The big one is `idle_in_transaction_session_timeout`: Supavisor (the
+    transaction-mode pooler in front of Supabase) silently drops
+    client-supplied server_settings, so the only way to guarantee that
+    orphaned transactions are auto-aborted is to stick the GUC onto the
+    connecting role itself. New Postgres backends inherit it; already-
+    established pool backends will pick it up when they next reconnect
+    (or you can terminate them to force a refresh).
+
+    Idempotent. Safe to call at startup. Raises if the connected role
+    lacks ALTER ROLE privilege -- call sites should handle that.
+    """
+    from sqlalchemy import text as _text
+
+    timeout_ms = int(settings.idle_in_transaction_session_timeout_ms)
+    async with engine.begin() as conn:
+        # Who are we actually connecting as? Supavisor uses the shared
+        # `postgres` role internally, while direct Postgres connections
+        # usually use an app-specific role. `current_user` in the context
+        # of the running session is what gets the default applied.
+        current_user = (
+            await conn.execute(_text("SELECT current_user"))
+        ).scalar_one()
+        # Defense in depth: we have to interpolate the role name into
+        # DDL (parameter binding doesn't work for identifiers), and
+        # `current_user` comes from Postgres itself -- but validate
+        # the shape anyway so we fail safely on anything weird.
+        if not isinstance(current_user, str) or not _ROLE_NAME_RE.match(current_user):
+            raise ValueError(
+                f"Refusing to ALTER ROLE: unexpected current_user shape: "
+                f"{current_user!r}"
+            )
+        await conn.execute(
+            _text(
+                f'ALTER ROLE "{current_user}" '
+                f"SET idle_in_transaction_session_timeout = '{timeout_ms}'"
+            )
+        )
+    return {
+        "role": current_user,
+        "idle_in_transaction_session_timeout_ms": str(timeout_ms),
+    }
 
 
 async def drop_db():
