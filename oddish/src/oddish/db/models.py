@@ -124,7 +124,10 @@ class ExperimentModel(Base):
     public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     tasks: Mapped[list["TaskModel"]] = relationship(  # type: ignore[assignment]
-        "TaskModel", back_populates="experiment", lazy="selectin"
+        "TaskModel",
+        back_populates="experiment",
+        lazy="selectin",
+        passive_deletes=True,
     )
 
 
@@ -213,13 +216,17 @@ class TaskModel(Base):
         "ExperimentModel", back_populates="tasks", lazy="selectin"
     )
     trials: Mapped[list["TrialModel"]] = relationship(  # type: ignore[assignment]
-        "TrialModel", back_populates="task", lazy="selectin"
+        "TrialModel",
+        back_populates="task",
+        lazy="selectin",
+        passive_deletes=True,
     )
     versions: Mapped[list["TaskVersionModel"]] = relationship(  # type: ignore[assignment]
         "TaskVersionModel",
         back_populates="task",
         lazy="selectin",
         foreign_keys="TaskVersionModel.task_id",
+        passive_deletes=True,
     )
     current_version: Mapped["TaskVersionModel | None"] = relationship(  # type: ignore[assignment]
         "TaskVersionModel",

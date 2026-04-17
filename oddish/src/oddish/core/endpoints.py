@@ -990,26 +990,48 @@ async def delete_task_core(
     org_id: str | None = None,
 ) -> dict:
     """Delete a task and its trials with optional org scoping."""
-    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
-    
+    task_query = select(
+        TaskModel.id,
+        TaskModel.task_s3_key,
+        TaskModel.task_path,
+    ).where(TaskModel.id == task_id)
+    if org_id is not None:
+        task_query = task_query.where(TaskModel.org_id == org_id)
+    task_result = await session.execute(task_query)
+    task_row = task_result.one_or_none()
+    if not task_row:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    resolved_task_id, task_s3_key, task_path = task_row
+
     trial_rows_result = await session.execute(
         select(TrialModel.id, TrialModel.trial_s3_key).where(
-            TrialModel.task_id == task.id
+            TrialModel.task_id == resolved_task_id
         )
     )
     trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
-    
+
     from oddish.db.storage import collect_s3_prefixes_for_deletion
+
     s3_prefixes = collect_s3_prefixes_for_deletion(
-        tasks=[(task.task_s3_key, task.task_path)],
+        tasks=[(task_s3_key, task_path)],
         trials=trial_rows,
     )
 
-    await session.delete(task)
-    
+    await session.execute(
+        delete(TrialModel)
+        .where(TrialModel.task_id == resolved_task_id)
+        .execution_options(synchronize_session=False)
+    )
+    await session.execute(
+        delete(TaskModel)
+        .where(TaskModel.id == resolved_task_id)
+        .execution_options(synchronize_session=False)
+    )
+
     return {
         "s3_prefixes": s3_prefixes,
-        "deleted": {"task_id": task_id}
+        "deleted": {"task_id": task_id},
     }
 
 
