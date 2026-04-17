@@ -10,7 +10,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import type { TooltipProps } from "recharts";
+import type { TooltipContentProps } from "recharts";
 import type { Task, Trial } from "@/lib/types";
 import { calculatePassAtKCurve, type AgentPassAtKStats } from "@/lib/pass-at-k";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
@@ -141,7 +141,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
 
   // Custom tooltip that sorts entries by value (descending) to match visual line order
   const renderTooltip = useCallback(
-    (props: TooltipProps<number, string>) => {
+    (props: TooltipContentProps<number, string>) => {
       const { active, payload, label } = props;
       if (!active || !payload || payload.length === 0) return null;
 
