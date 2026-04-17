@@ -271,6 +271,8 @@ uv run alembic upgrade head
 uv run alembic upgrade head
 ```
 
+Apply migrations against the database in `ODDISH_DATABASE_URL` (for example a hosted Postgres instance).
+
 ## Development Workflows
 
 ```bash
@@ -285,31 +287,19 @@ cd backend
 uv run modal serve deploy.py
 ```
 
-For full-stack local development, use one of these flows:
+For full-stack local development, run the Modal backend and point the frontend at it:
 
 ```bash
-# Flow A: Frontend + local core API
-# Terminal 1 — start Postgres, then the API
-docker run -d --name oddish-db -e POSTGRES_USER=oddish -e POSTGRES_PASSWORD=oddish -e POSTGRES_DB=oddish -p 5432:5432 postgres:16-alpine
-cd oddish
-uv run python -m oddish.db setup
-uv run python -m oddish.server
-
-# Terminal 2
-cd frontend
-pnpm dev:local
-```
-
-```bash
-# Flow B: Frontend + Modal backend
-# Terminal 1
+# Terminal 1 — backend
 cd backend
 uv run modal serve deploy.py
 
-# Terminal 2
+# Terminal 2 — frontend
 cd frontend
 pnpm dev:modal
 ```
+
+Configure `NEXT_PUBLIC_API_URL` in `frontend/.env.local` (see `frontend/env.example`).
 
 ### Smoke tests
 
