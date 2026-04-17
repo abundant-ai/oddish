@@ -212,7 +212,7 @@ async def get_queue_status_core(session: AsyncSession) -> QueueStatusResponse:
 async def get_orphaned_state_core(
     session: AsyncSession,
     *,
-    stale_after_minutes: int = 10,
+    stale_after_minutes: int = 15,
 ) -> OrphanedStateResponse:
     """Summarize stale queue/pipeline state."""
     now = utcnow()

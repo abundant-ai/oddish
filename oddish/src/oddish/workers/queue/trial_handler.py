@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
 import json
 import os
@@ -111,13 +112,30 @@ def _cleanup_uploaded_job_dir(job_dir: Path | None, trial_id: str) -> None:
         console.print(f"[yellow]Failed to cleanup local Harbor artifacts: {e}[/yellow]")
 
 
+# Maximum length we persist for last_heartbeat_error. We truncate aggressively
+# because it's for operator diagnosis, not full stack traces.
+_HEARTBEAT_ERROR_MAX_LEN = 500
+
+
 async def _touch_trial_execution(
     *,
     trial_id: str,
     worker_id: str | None,
     queue_slot: int | None,
     claimed: bool = False,
+    pending_failure_count: int = 0,
+    pending_last_error: str | None = None,
+    pending_last_error_at: datetime | None = None,
 ) -> None:
+    """Update the trial's heartbeat state.
+
+    When pending_failure_count > 0, we also flush accumulated heartbeat-write
+    failure metadata into the row. This is how a recovered worker tells the DB
+    "by the way, I tried to write N heartbeats during the last outage and
+    they all failed with $error" -- which lets operators distinguish a real
+    worker crash (no recovery) from a DB/pooler outage (counter bumps, then
+    heartbeats resume).
+    """
     async with _trial_session(trial_id, allow_missing=True) as (session, trial):
         if not trial or trial.status != TrialStatus.RUNNING:
             return
@@ -131,6 +149,17 @@ async def _touch_trial_execution(
             trial.claimed_at = now
         trial.heartbeat_at = now
 
+        if pending_failure_count > 0:
+            trial.heartbeat_failure_count = (
+                trial.heartbeat_failure_count or 0
+            ) + pending_failure_count
+            if pending_last_error is not None:
+                trial.last_heartbeat_error = pending_last_error[
+                    :_HEARTBEAT_ERROR_MAX_LEN
+                ]
+            if pending_last_error_at is not None:
+                trial.last_heartbeat_error_at = pending_last_error_at
+
 
 async def _heartbeat_trial_execution(
     *,
@@ -139,6 +168,19 @@ async def _heartbeat_trial_execution(
     queue_slot: int | None,
     stop_event: asyncio.Event,
 ) -> None:
+    """Periodically write heartbeat_at to keep the trial out of stale-reap.
+
+    If the DB write fails we DO NOT crash the trial -- the underlying work
+    can continue. We accumulate failure info locally and flush it on the
+    next successful write so operators can tell after the fact whether a
+    stale-heartbeat reap was caused by (a) the worker dying silently or
+    (b) the DB/pooler being unreachable for a stretch.
+    """
+    consecutive_failures = 0
+    pending_failure_count = 0
+    pending_last_error: str | None = None
+    pending_last_error_at: datetime | None = None
+
     while True:
         try:
             await asyncio.wait_for(
@@ -155,9 +197,28 @@ async def _heartbeat_trial_execution(
                 trial_id=trial_id,
                 worker_id=worker_id,
                 queue_slot=queue_slot,
+                pending_failure_count=pending_failure_count,
+                pending_last_error=pending_last_error,
+                pending_last_error_at=pending_last_error_at,
             )
+            if consecutive_failures > 0:
+                console.print(
+                    f"[green]Trial {trial_id} heartbeat recovered after "
+                    f"{consecutive_failures} consecutive failure(s)[/green]"
+                )
+            consecutive_failures = 0
+            pending_failure_count = 0
+            pending_last_error = None
+            pending_last_error_at = None
         except Exception as exc:
-            console.print(f"[yellow]Trial heartbeat update failed: {exc}[/yellow]")
+            consecutive_failures += 1
+            pending_failure_count += 1
+            pending_last_error = f"{type(exc).__name__}: {exc}"
+            pending_last_error_at = utcnow()
+            console.print(
+                f"[yellow]Trial {trial_id} heartbeat write failed "
+                f"(consecutive={consecutive_failures}): {exc}[/yellow]"
+            )
 
 
 async def _prepare_trial_run(

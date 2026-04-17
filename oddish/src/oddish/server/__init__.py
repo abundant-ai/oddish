@@ -658,7 +658,7 @@ async def admin_queue_status() -> QueueStatusResponse:
 
 @api.get("/admin/orphaned-state", response_model=OrphanedStateResponse)
 async def admin_orphaned_state(
-    stale_after_minutes: int = Query(10, ge=1, le=240),
+    stale_after_minutes: int = Query(15, ge=1, le=240),
 ) -> OrphanedStateResponse:
     """Summarize stale queue/pipeline state."""
     async with get_session() as session:

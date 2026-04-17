@@ -15,7 +15,12 @@ from oddish.db import (
 )
 from oddish.queue import maybe_start_analysis_stage, maybe_start_verdict_stage
 
-STALE_HEARTBEAT_MINUTES = 10
+# Bumped from 10 -> 15 after incidents where a burst of user-cancels /
+# Supabase pooler pressure caused the whole worker fleet's heartbeat writes to
+# stall for ~12-17 minutes, which then reaped 25-70 healthy in-flight trials
+# in a single sweep. 15 minutes is more forgiving of transient pooler blips
+# without meaningfully delaying detection of actually-crashed workers.
+STALE_HEARTBEAT_MINUTES = 15
 
 
 def _clear_trial_runtime_refs(trial: TrialModel) -> None:
@@ -78,13 +83,27 @@ async def cleanup_orphaned_queue_state(
             if not trial or trial.status != TrialStatus.RUNNING:
                 continue
             trial.status = TrialStatus.FAILED
-            trial.error_message = (
-                "Trial was cancelled by queue cleanup because the worker heartbeat "
-                f"went stale for over {stale_after_minutes} minutes."
-            )
+            hb_failures = trial.heartbeat_failure_count or 0
+            if hb_failures > 0 and trial.last_heartbeat_error:
+                # Worker was alive but could not write to Postgres; this is
+                # almost always a pooler / DB availability issue, not a
+                # worker crash. Surface that in the error message.
+                trial.error_message = (
+                    "Trial was cancelled by queue cleanup because the worker heartbeat "
+                    f"went stale for over {stale_after_minutes} minutes. "
+                    f"The worker reported {hb_failures} heartbeat write failure(s) "
+                    f"before going silent; last error was: {trial.last_heartbeat_error}"
+                )
+            else:
+                trial.error_message = (
+                    "Trial was cancelled by queue cleanup because the worker heartbeat "
+                    f"went stale for over {stale_after_minutes} minutes."
+                )
             trial.finished_at = trial.finished_at or utcnow()
             _clear_trial_runtime_refs(trial)
-            trial.heartbeat_at = utcnow()
+            # Record when we reaped this trial, but preserve the worker's
+            # last successful heartbeat timestamp for post-mortem analysis.
+            trial.stale_reaped_at = utcnow()
             if trial.harbor_stage not in {"completed", "cancelled"}:
                 trial.harbor_stage = "cancelled"
 

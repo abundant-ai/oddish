@@ -342,6 +342,24 @@ class TrialModel(Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Timestamp set when stale-heartbeat cleanup killed this trial. Kept
+    # separate from heartbeat_at so the worker's last successful heartbeat
+    # is preserved for post-mortem analysis (previously we overwrote
+    # heartbeat_at on cleanup, destroying that evidence).
+    stale_reaped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Observability for heartbeat write failures. Populated by the worker's
+    # heartbeat loop whenever a DB write raises. Lets operators distinguish
+    # "worker process died" from "DB/pooler was unreachable" after a
+    # stale-heartbeat reap without digging through Modal logs.
+    heartbeat_failure_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default="0"
+    )
+    last_heartbeat_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_heartbeat_error_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Timing
     started_at: Mapped[datetime | None] = mapped_column(
