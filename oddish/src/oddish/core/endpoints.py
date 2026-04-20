@@ -666,6 +666,19 @@ async def retry_trial_core(
         task.status = TaskStatus.RUNNING
         task.finished_at = None
 
+    # Enqueue a fresh worker_jobs TRIAL row so the dispatcher picks
+    # this retry up. Imported lazily to avoid a circular import through
+    # ``oddish.queue`` -> ``oddish.workers.jobs.enqueue``.
+    from oddish.queue import _enqueue_trial_worker_job
+
+    await _enqueue_trial_worker_job(
+        session,
+        trial_id=trial_id,
+        queue_key=trial.queue_key,
+        org_id=trial.org_id,
+        max_attempts=trial.max_attempts,
+    )
+
     await session.commit()
     return {"status": "queued", "trial_id": trial_id}
 
@@ -765,6 +778,12 @@ async def rerun_trial_analysis_core(
     task.finished_at = None
     trial.analysis_status = AnalysisStatus.QUEUED
 
+    from oddish.queue import _enqueue_analysis_worker_job
+
+    await _enqueue_analysis_worker_job(
+        session, trial_id=trial_id, org_id=trial.org_id
+    )
+
     await session.commit()
     return {"status": "queued", "trial_id": trial_id}
 
@@ -817,9 +836,14 @@ async def rerun_task_analysis_core(
             detail="Cannot rerun analysis while the task verdict is still running",
         )
 
+    from oddish.queue import _enqueue_analysis_worker_job
+
     for trial in task.trials:
         _reset_trial_analysis(trial)
         trial.analysis_status = AnalysisStatus.QUEUED
+        await _enqueue_analysis_worker_job(
+            session, trial_id=trial.id, org_id=trial.org_id
+        )
 
     _reset_task_verdict(task)
     task.run_analysis = True
@@ -889,6 +913,12 @@ async def rerun_task_verdict_core(
     task.verdict_status = VerdictStatus.QUEUED
     task.verdict_started_at = None
     task.verdict_finished_at = None
+
+    from oddish.queue import _enqueue_verdict_worker_job
+
+    await _enqueue_verdict_worker_job(
+        session, task_id=task_id, org_id=task.org_id
+    )
 
     await session.commit()
     return {"status": "queued", "task_id": task_id}

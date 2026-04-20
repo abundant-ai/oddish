@@ -7,7 +7,6 @@ from pathlib import Path
 from oddish.config import settings
 from oddish.db import AnalysisStatus, TaskModel, utcnow
 from oddish.db.storage import resolve_task_directory, resolve_trial_directory
-from oddish.queue import maybe_start_verdict_stage
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
 
@@ -178,7 +177,11 @@ async def run_analysis_job(
                 trial.analysis_modal_function_call_id = None
                 console.print(f"[red]Analysis {trial_id} FAILED[/red]")
 
-            # Check if all analyses done → start verdict stage
+            # Check if all analyses done → start verdict stage.
+            # Imported lazily to avoid a circular import with
+            # ``oddish.queue`` (handler auto-registration path).
+            from oddish.queue import maybe_start_verdict_stage
+
             started = await maybe_start_verdict_stage(session, trial_id)
             if started:
                 console.print(

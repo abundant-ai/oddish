@@ -31,6 +31,94 @@ from oddish.workers.queue import trial_handler  # noqa: E402
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_also_writes_worker_jobs_when_job_id_provided(monkeypatch):
+    """Regression guard: the trial heartbeat must touch worker_jobs too.
+
+    The unified stale-reap sweep in ``cleanup.py`` reads
+    ``worker_jobs.heartbeat_at``. If the heartbeat loop only writes to
+    ``trials.heartbeat_at`` (the pre-unification behavior), long trials
+    get falsely reaped after ``STALE_HEARTBEAT_MINUTES``. Harbor trials
+    can run 12h -- so skipping the worker_jobs write is catastrophic.
+    """
+
+    async def fake_touch(**kwargs):
+        # Pretend the trial row was touched successfully.
+        return None
+
+    wj_calls: list[dict] = []
+
+    async def fake_heartbeat_worker_job(job_id, **kwargs):
+        wj_calls.append({"job_id": job_id, **kwargs})
+
+    monkeypatch.setattr(trial_handler, "_touch_trial_execution", fake_touch)
+    monkeypatch.setattr(
+        trial_handler, "heartbeat_worker_job", fake_heartbeat_worker_job
+    )
+    monkeypatch.setattr(trial_handler, "TRIAL_HEARTBEAT_INTERVAL_SECONDS", 0)
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        trial_handler._heartbeat_trial_execution(
+            trial_id="trial-1",
+            worker_id="worker-1",
+            queue_slot=3,
+            stop_event=stop_event,
+            worker_job_id="wj-1",
+        )
+    )
+
+    for _ in range(200):
+        if len(wj_calls) >= 1:
+            break
+        await asyncio.sleep(0)
+
+    stop_event.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert len(wj_calls) >= 1
+    assert wj_calls[0]["job_id"] == "wj-1"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_skips_worker_jobs_write_when_job_id_absent(monkeypatch):
+    """Legacy callers (no worker_job_id) should still work without worker_jobs."""
+
+    async def fake_touch(**kwargs):
+        return None
+
+    wj_calls: list[dict] = []
+
+    async def fake_heartbeat_worker_job(job_id, **kwargs):
+        wj_calls.append({"job_id": job_id})
+
+    monkeypatch.setattr(trial_handler, "_touch_trial_execution", fake_touch)
+    monkeypatch.setattr(
+        trial_handler, "heartbeat_worker_job", fake_heartbeat_worker_job
+    )
+    monkeypatch.setattr(trial_handler, "TRIAL_HEARTBEAT_INTERVAL_SECONDS", 0)
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        trial_handler._heartbeat_trial_execution(
+            trial_id="trial-1",
+            worker_id="worker-1",
+            queue_slot=3,
+            stop_event=stop_event,
+            # No worker_job_id -- the worker_jobs write is skipped.
+        )
+    )
+
+    # Let the loop tick a couple of times to be sure.
+    for _ in range(50):
+        await asyncio.sleep(0)
+
+    stop_event.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert wj_calls == []
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_accumulates_failures_and_flushes_on_recovery(monkeypatch):
     """Heartbeat failures are stashed locally and flushed on the next success.
 

@@ -18,6 +18,8 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
     VerdictStatus,
+    WorkerJobKind,
+    WorkerJobModel,
     generate_id,
     utcnow,
 )
@@ -25,6 +27,7 @@ from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
 from oddish.schemas import TaskSubmission, TrialSpec
 from oddish.task_timeouts import validate_task_timeout_config
+from oddish.workers.jobs.enqueue import EnqueueRequest, enqueue_worker_job
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +62,14 @@ async def cancel_tasks_runs(
     task_ids: list[str],
     org_id: str | None = None,
 ) -> dict:
-    """Cancel in-flight runs for a batch of tasks without deleting data."""
+    """Cancel in-flight runs for a batch of tasks without deleting data.
+
+    The cancel path walks ``worker_jobs`` (single UPDATE covers trial /
+    analysis / verdict kinds uniformly) and then mirrors the terminal
+    state back onto the domain rows for live-UI visibility. Modal
+    function call ids are harvested from the cancelled rows so callers
+    can terminate the remote containers.
+    """
     requested_task_ids = list(dict.fromkeys(task_ids))
     if not requested_task_ids:
         return {
@@ -88,37 +98,93 @@ async def cancel_tasks_runs(
     ]
 
     trial_rows = await session.execute(
-        select(TrialModel).where(
-            TrialModel.task_id.in_(found_task_ids),
-            or_(
-                TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
-                TrialModel.analysis_status.in_(ACTIVE_PIPELINE_STATUSES),
-            ),
-        )
+        select(TrialModel).where(TrialModel.task_id.in_(found_task_ids))
     )
     trials = list(trial_rows.scalars().all())
+    trial_ids = [trial.id for trial in trials]
 
-    modal_fc_ids: list[str] = []
-    trials_cancelled = 0
-    tasks_cancelled = 0
     now = utcnow()
 
+    # Cancel every active worker_jobs row belonging to these trials /
+    # tasks. One UPDATE, every kind. Returning the canceled rows gives
+    # us the Modal function-call ids to terminate remotely and the kind
+    # breakdown for the domain-mirror pass below.
+    canceled_rows = (
+        await session.execute(
+            text(
+                """
+                UPDATE worker_jobs
+                SET    status = 'CANCELLED',
+                       finished_at = NOW(),
+                       error_message = :cancel_msg,
+                       current_worker_id = NULL,
+                       current_queue_slot = NULL,
+                       modal_function_call_id = NULL
+                WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                  AND  (
+                      (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
+                      OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))
+                  )
+                RETURNING id,
+                          kind::text AS kind,
+                          subject_id,
+                          modal_function_call_id
+                """
+            ),
+            {
+                "cancel_msg": USER_CANCELLED_MESSAGE,
+                "task_ids": found_task_ids,
+                "trial_ids": trial_ids or [""],
+            },
+        )
+    ).mappings().all()
+
+    modal_fc_ids: list[str] = []
+    canceled_trial_kinds: set[str] = set()
+    canceled_verdict_task_ids: set[str] = set()
+    canceled_analysis_trial_ids: set[str] = set()
+
+    for row in canceled_rows:
+        fc = row.get("modal_function_call_id")
+        if fc:
+            modal_fc_ids.append(str(fc))
+        kind = row["kind"]
+        subject_id = row["subject_id"]
+        if kind == "TRIAL" and subject_id:
+            canceled_trial_kinds.add(str(subject_id))
+        elif kind == "ANALYSIS" and subject_id:
+            canceled_analysis_trial_ids.add(str(subject_id))
+        elif kind == "VERDICT" and subject_id:
+            canceled_verdict_task_ids.add(str(subject_id))
+
+    # Mirror terminal state back to the domain rows so the dashboard
+    # sees "FAILED / Cancelled by user" even before handlers exit.
+    trials_cancelled = 0
     for trial in trials:
         trial_updated = False
-        if trial.status in ACTIVE_TRIAL_STATUSES:
+        if (
+            trial.id in canceled_trial_kinds
+            or trial.status in ACTIVE_TRIAL_STATUSES
+        ):
             if trial.modal_function_call_id:
                 modal_fc_ids.append(trial.modal_function_call_id)
             trial.status = TrialStatus.FAILED
             trial.error_message = USER_CANCELLED_MESSAGE
             trial.finished_at = now
             trial.harbor_stage = CANCELLED_HARBOR_STAGE
+            # max_attempts==attempts is the legacy signal the runtime
+            # uses to recognise "cancelled by user" during late-arriving
+            # Harbor hooks; preserve that contract.
             trial.max_attempts = trial.attempts
             trial.current_worker_id = None
             trial.current_queue_slot = None
             trial.modal_function_call_id = None
             trials_cancelled += 1
             trial_updated = True
-        if trial.analysis_status in ACTIVE_PIPELINE_STATUSES:
+        if (
+            trial.id in canceled_analysis_trial_ids
+            or trial.analysis_status in ACTIVE_PIPELINE_STATUSES
+        ):
             if trial.analysis_modal_function_call_id:
                 modal_fc_ids.append(trial.analysis_modal_function_call_id)
             trial.analysis_status = AnalysisStatus.FAILED
@@ -126,17 +192,20 @@ async def cancel_tasks_runs(
             trial.analysis_finished_at = now
             trial.analysis_modal_function_call_id = None
             trial_updated = True
-
         if not trial_updated:
             continue
 
+    tasks_cancelled = 0
     for task in tasks:
         task_updated = False
         if task.status in ACTIVE_TASK_STATUSES:
             task.status = TaskStatus.FAILED
             task.finished_at = now
             task_updated = True
-        if task.verdict_status in ACTIVE_PIPELINE_STATUSES:
+        if (
+            task.id in canceled_verdict_task_ids
+            or task.verdict_status in ACTIVE_PIPELINE_STATUSES
+        ):
             if task.verdict_modal_function_call_id:
                 modal_fc_ids.append(task.verdict_modal_function_call_id)
             task.verdict_status = VerdictStatus.FAILED
@@ -263,6 +332,80 @@ def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
             return cleaned
 
     return name
+
+
+# =============================================================================
+# Worker-jobs enqueue helpers
+# =============================================================================
+#
+# Every domain-row insertion or stage transition that schedules compute
+# work has a sibling ``worker_jobs`` row in the same transaction. The
+# dispatcher claims from ``worker_jobs`` only; these helpers are the
+# single enqueue surface for the TRIAL / ANALYSIS / VERDICT kinds.
+
+
+async def _enqueue_trial_worker_job(
+    session: AsyncSession,
+    *,
+    trial_id: str,
+    queue_key: str,
+    org_id: str | None,
+    max_attempts: int,
+    parent_job_id: str | None = None,
+) -> WorkerJobModel:
+    return await enqueue_worker_job(
+        session,
+        EnqueueRequest(
+            kind=WorkerJobKind.TRIAL,
+            queue_key=queue_key,
+            payload={"trial_id": trial_id},
+            subject_table="trials",
+            subject_id=trial_id,
+            org_id=org_id,
+            max_attempts=max_attempts,
+            parent_job_id=parent_job_id,
+        ),
+    )
+
+
+async def _enqueue_analysis_worker_job(
+    session: AsyncSession,
+    *,
+    trial_id: str,
+    org_id: str | None,
+    parent_job_id: str | None = None,
+) -> WorkerJobModel:
+    return await enqueue_worker_job(
+        session,
+        EnqueueRequest(
+            kind=WorkerJobKind.ANALYSIS,
+            queue_key=settings.get_analysis_queue_key(),
+            payload={"trial_id": trial_id},
+            subject_table="trials",
+            subject_id=trial_id,
+            org_id=org_id,
+            parent_job_id=parent_job_id,
+        ),
+    )
+
+
+async def _enqueue_verdict_worker_job(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    org_id: str | None,
+) -> WorkerJobModel:
+    return await enqueue_worker_job(
+        session,
+        EnqueueRequest(
+            kind=WorkerJobKind.VERDICT,
+            queue_key=settings.get_verdict_queue_key(),
+            payload={"task_id": task_id},
+            subject_table="tasks",
+            subject_id=task_id,
+            org_id=org_id,
+        ),
+    )
 
 
 def _build_harbor_config_for_trial(
@@ -420,6 +563,13 @@ async def create_task(
             status=TrialStatus.QUEUED,
         )
         session.add(trial)
+        await _enqueue_trial_worker_job(
+            session,
+            trial_id=trial_id,
+            queue_key=queue_key,
+            org_id=org_id,
+            max_attempts=trial.max_attempts,
+        )
 
     await session.flush()
     await session.refresh(task, attribute_names=["trials"])
@@ -477,6 +627,13 @@ async def append_trials_to_task(
             status=TrialStatus.QUEUED,
         )
         session.add(trial)
+        await _enqueue_trial_worker_job(
+            session,
+            trial_id=trial_id,
+            queue_key=queue_key,
+            org_id=task.org_id,
+            max_attempts=trial.max_attempts,
+        )
         new_trials.append(trial)
         next_index += 1
 
@@ -496,6 +653,29 @@ async def append_trials_to_task(
         task.verdict_started_at = None
         task.verdict_finished_at = None
         task.verdict_modal_function_call_id = None
+        # Cancel any in-flight VERDICT worker_job for this task so a
+        # worker that's already claimed (or about to claim) the old
+        # row doesn't overwrite the new verdict with stale data.
+        # The dispatcher re-enqueues a fresh VERDICT row once all
+        # analyses for the new trial set complete.
+        await session.execute(
+            text(
+                """
+                UPDATE worker_jobs
+                SET    status = 'CANCELLED',
+                       finished_at = NOW(),
+                       error_message = 'Superseded by appended trials',
+                       current_worker_id = NULL,
+                       current_queue_slot = NULL,
+                       modal_function_call_id = NULL
+                WHERE  kind::text = 'VERDICT'
+                  AND  subject_table = 'tasks'
+                  AND  subject_id = :task_id
+                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                """
+            ),
+            {"task_id": task.id},
+        )
 
     await session.flush()
     await session.refresh(task, attribute_names=["trials"])
@@ -576,6 +756,9 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
             task.status = TaskStatus.VERDICT_PENDING
             task.verdict_status = VerdictStatus.QUEUED
             task.verdict_modal_function_call_id = None
+            await _enqueue_verdict_worker_job(
+                session, task_id=task_id, org_id=task.org_id
+            )
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
@@ -630,6 +813,7 @@ async def maybe_start_verdict_stage(session: AsyncSession, trial_id: str) -> boo
     task.status = TaskStatus.VERDICT_PENDING
     task.verdict_status = VerdictStatus.QUEUED
     task.verdict_modal_function_call_id = None
+    await _enqueue_verdict_worker_job(session, task_id=task_id, org_id=task.org_id)
     await session.flush()
 
     return True

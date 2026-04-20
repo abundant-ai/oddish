@@ -7,11 +7,14 @@ from oddish.db.models import (
     TaskStatus,
     TrialStatus,
     VerdictStatus,
+    WorkerJobKind,
+    WorkerJobStatus,
     # ORM Models
     ExperimentModel,
     TaskModel,
     TaskVersionModel,
     TrialModel,
+    WorkerJobModel,
     # Helpers
     generate_id,
     utcnow,
@@ -47,12 +50,15 @@ __all__ = [
     "AnalysisStatus",
     "VerdictStatus",
     "Priority",
+    "WorkerJobKind",
+    "WorkerJobStatus",
     # ORM Models
     "ExperimentModel",
     "QueueSlotModel",
     "TaskModel",
     "TaskVersionModel",
     "TrialModel",
+    "WorkerJobModel",
     # Helpers
     "generate_id",
     "utcnow",

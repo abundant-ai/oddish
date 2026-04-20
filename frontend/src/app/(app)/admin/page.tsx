@@ -32,6 +32,7 @@ import type {
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
+import { WorkerJobsCard } from "@/components/worker-jobs-card";
 import {
   ChevronDown,
   RefreshCw,
@@ -1329,17 +1330,22 @@ export default function AdminPage() {
         </p>
       </div>
 
-      <Tabs defaultValue="overview" className="space-y-4">
+      <Tabs defaultValue="worker-jobs" className="space-y-4">
         <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="worker-jobs">Worker Jobs</TabsTrigger>
+          <TabsTrigger value="overview">Queues</TabsTrigger>
           <TabsTrigger value="slots">Worker Slots</TabsTrigger>
           <TabsTrigger value="queue">Queue Status</TabsTrigger>
         </TabsList>
 
+        <TabsContent value="worker-jobs" className="space-y-4">
+          <WorkerJobsCard />
+          <OrphanedStateCard />
+        </TabsContent>
+
         <TabsContent value="overview" className="space-y-4">
           <QueuesAndPipelineCard />
           <QueueHealthCard />
-          <OrphanedStateCard />
         </TabsContent>
 
         <TabsContent value="slots">

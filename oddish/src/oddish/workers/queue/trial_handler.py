@@ -24,10 +24,10 @@ from oddish.db import (
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
-from oddish.queue import maybe_start_analysis_stage
 from oddish.workers.harbor_runner import HarborOutcome, run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
+from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
 
@@ -167,8 +167,21 @@ async def _heartbeat_trial_execution(
     worker_id: str | None,
     queue_slot: int | None,
     stop_event: asyncio.Event,
+    worker_job_id: str | None = None,
 ) -> None:
     """Periodically write heartbeat_at to keep the trial out of stale-reap.
+
+    Writes to *both* tables every tick:
+    - ``trials.heartbeat_at`` (domain-state denorm used by live UI)
+    - ``worker_jobs.heartbeat_at`` (scheduling-state, read by the
+      stale-reap sweep)
+
+    The unified stale-reap in ``cleanup.py`` reads only ``worker_jobs``,
+    so missing the worker_jobs write would cause long-running trials
+    (Harbor can run for hours) to get falsely reaped after the 15-minute
+    threshold. Kept as two separate writes rather than a single txn
+    because a pooler blip on one shouldn't silence heartbeats on the
+    other; the failure-folding behavior below applies uniformly.
 
     If the DB write fails we DO NOT crash the trial -- the underlying work
     can continue. We accumulate failure info locally and flush it on the
@@ -201,6 +214,15 @@ async def _heartbeat_trial_execution(
                 pending_last_error=pending_last_error,
                 pending_last_error_at=pending_last_error_at,
             )
+            if worker_job_id:
+                # Second write to worker_jobs.heartbeat_at. This is what
+                # the stale-reap sweep actually reads, so missing it
+                # falsely reaps healthy trials after 15 minutes.
+                await heartbeat_worker_job(
+                    worker_job_id,
+                    pending_failure_count=pending_failure_count,
+                    pending_last_error=pending_last_error,
+                )
             if consecutive_failures > 0:
                 console.print(
                     f"[green]Trial {trial_id} heartbeat recovered after "
@@ -405,12 +427,24 @@ async def _store_trial_results(
 
         if trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED):
             task = await session.get(TaskModel, trial.task_id)
+            # Check if all trials done → transition task status.
+            # Imported lazily to avoid a circular import with
+            # ``oddish.queue`` (which imports the worker_jobs enqueue
+            # helpers, which in turn import this module via the handler
+            # auto-registration).
+            from oddish.queue import (
+                _enqueue_analysis_worker_job,
+                maybe_start_analysis_stage,
+            )
+
             if task and task.run_analysis and trial.analysis_status is None:
                 trial.analysis_status = AnalysisStatus.QUEUED
                 trial.analysis_modal_function_call_id = None
+                await _enqueue_analysis_worker_job(
+                    session, trial_id=trial_id, org_id=trial.org_id
+                )
                 console.print(f"[cyan]Queued analysis for {trial_id}[/cyan]")
 
-            # Check if all trials done → transition task status
             started = await maybe_start_analysis_stage(session, trial_id)
             if started:
                 console.print(
@@ -554,6 +588,7 @@ async def _execute_trial(
     prepared_trial: PreparedTrialRun,
     worker_id: str | None,
     queue_slot: int | None,
+    worker_job_id: str | None = None,
 ) -> TrialExecutionResult:
     execution_error: str | None = None
     heartbeat_stop = asyncio.Event()
@@ -563,6 +598,7 @@ async def _execute_trial(
             worker_id=worker_id,
             queue_slot=queue_slot,
             stop_event=heartbeat_stop,
+            worker_job_id=worker_job_id,
         )
     )
     try:
@@ -623,6 +659,7 @@ async def run_trial_job(
     worker_id: str | None = None,
     queue_slot: int | None = None,
     modal_function_call_id: str | None = None,
+    worker_job_id: str | None = None,
 ) -> None:
     """
     Execute a claimed trial.
@@ -689,6 +726,7 @@ async def run_trial_job(
         prepared_trial=prepared_trial,
         worker_id=worker_id,
         queue_slot=queue_slot,
+        worker_job_id=worker_job_id,
     )
 
     # Upload trial results to S3.

@@ -425,6 +425,67 @@ export interface OrphanedStateResponse {
   timestamp: string;
 }
 
+// ---------------------------------------------------------------------------
+// Unified worker_jobs admin view
+// ---------------------------------------------------------------------------
+
+// Matches `WorkerJobKind` on the backend. Declared as a string union so
+// additional kinds (QA_REVIEW, ...) don't break the type check when the
+// backend starts returning them before the frontend has opinions.
+export type WorkerJobKind =
+  | "TRIAL"
+  | "ANALYSIS"
+  | "VERDICT"
+  | "QA_REVIEW"
+  | (string & {});
+
+export type WorkerJobStatus =
+  | "QUEUED"
+  | "RUNNING"
+  | "RETRYING"
+  | "SUCCESS"
+  | "FAILED"
+  | "CANCELLED"
+  | "BLOCKED"
+  | (string & {});
+
+export interface WorkerJobSample {
+  id: string;
+  kind: WorkerJobKind;
+  status: WorkerJobStatus;
+  queue_key: string;
+  subject_table: string | null;
+  subject_id: string | null;
+  attempts: number;
+  max_attempts: number;
+  claimed_at: string | null;
+  heartbeat_at: string | null;
+  stale_reaped_at: string | null;
+  finished_at: string | null;
+  error_message: string | null;
+  heartbeat_failure_count: number;
+  last_heartbeat_error: string | null;
+  current_worker_id: string | null;
+  org_id: string | null;
+}
+
+export interface WorkerJobDurationStat {
+  kind: WorkerJobKind;
+  queue_key: string;
+  sample_count: number;
+  p50_seconds: number;
+  p95_seconds: number;
+}
+
+export interface WorkerJobsResponse {
+  counts: Partial<Record<WorkerJobKind, Partial<Record<WorkerJobStatus, number>>>>;
+  stale_running: WorkerJobSample[];
+  recent_failures: WorkerJobSample[];
+  durations_last_hour: WorkerJobDurationStat[];
+  stale_after_minutes: number;
+  timestamp: string;
+}
+
 export interface PublicExperimentInfo {
   name: string;
   public_token: string;

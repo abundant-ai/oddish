@@ -91,6 +91,61 @@ class OrphanedStateResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# worker_jobs admin
+#
+# Surfaces the unified queue table as a first-class admin view so
+# analysis/verdict look like their own "agent jobs" rather than sidecar
+# metadata on trials/tasks. Everything below reads from worker_jobs
+# only; it joins to domain tables only to display context (never to
+# reconstruct scheduling state).
+# ---------------------------------------------------------------------------
+
+
+class WorkerJobSample(BaseModel):
+    id: str
+    kind: str
+    status: str
+    queue_key: str
+    subject_table: str | None
+    subject_id: str | None
+    attempts: int
+    max_attempts: int
+    claimed_at: datetime | None
+    heartbeat_at: datetime | None
+    stale_reaped_at: datetime | None
+    finished_at: datetime | None
+    error_message: str | None
+    heartbeat_failure_count: int
+    last_heartbeat_error: str | None
+    current_worker_id: str | None
+    org_id: str | None
+
+
+class WorkerJobDurationStat(BaseModel):
+    kind: str
+    queue_key: str
+    sample_count: int
+    p50_seconds: float
+    p95_seconds: float
+
+
+class WorkerJobsResponse(BaseModel):
+    """Per-kind × status counts + recent stale/failed samples.
+
+    Counts are a dict-of-dicts so the frontend can iterate without
+    knowing the enum values in advance -- new kinds automatically show
+    up once they start producing rows.
+    """
+
+    counts: dict[str, dict[str, int]]
+    stale_running: list[WorkerJobSample]
+    recent_failures: list[WorkerJobSample]
+    durations_last_hour: list[WorkerJobDurationStat]
+    stale_after_minutes: int
+    timestamp: str
+
+
+# ---------------------------------------------------------------------------
 # Core query functions
 # ---------------------------------------------------------------------------
 
@@ -362,6 +417,187 @@ async def get_orphaned_state_core(
             )
             for row in task_rows
         ],
+        stale_after_minutes=stale_after_minutes,
+        timestamp=now.isoformat(),
+    )
+
+
+async def get_worker_jobs_admin_core(
+    session: AsyncSession,
+    *,
+    stale_after_minutes: int = 15,
+    sample_limit: int = 25,
+) -> WorkerJobsResponse:
+    """Summarize the unified ``worker_jobs`` table for the admin page.
+
+    Returns a matrix of ``{kind: {status: count}}`` plus recent
+    diagnostic samples: RUNNING rows with a stale heartbeat, the most
+    recently FAILED rows, and per-kind × queue_key duration
+    percentiles over the last hour. Everything is derived from
+    ``worker_jobs`` alone -- domain tables are not involved.
+    """
+    now = utcnow()
+
+    # -- counts matrix -----------------------------------------------------
+    count_rows = (
+        await session.execute(
+            text(
+                """
+                SELECT kind::text AS kind,
+                       status::text AS status,
+                       COUNT(*) AS n
+                FROM   worker_jobs
+                GROUP  BY kind, status
+                """
+            )
+        )
+    ).all()
+    counts: dict[str, dict[str, int]] = {}
+    for row in count_rows:
+        counts.setdefault(row.kind, {})[row.status] = int(row.n or 0)
+
+    # -- stale RUNNING -----------------------------------------------------
+    stale_running_rows = (
+        await session.execute(
+            text(
+                """
+                SELECT id,
+                       kind::text AS kind,
+                       status::text AS status,
+                       queue_key,
+                       subject_table,
+                       subject_id,
+                       attempts,
+                       max_attempts,
+                       claimed_at,
+                       heartbeat_at,
+                       stale_reaped_at,
+                       finished_at,
+                       error_message,
+                       heartbeat_failure_count,
+                       last_heartbeat_error,
+                       current_worker_id,
+                       org_id
+                FROM   worker_jobs
+                WHERE  status::text = 'RUNNING'
+                  AND  (
+                      heartbeat_at IS NULL
+                      OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
+                  )
+                ORDER  BY heartbeat_at ASC NULLS FIRST
+                LIMIT  :sample_limit
+                """
+            ),
+            {
+                "stale_after_minutes": stale_after_minutes,
+                "sample_limit": sample_limit,
+            },
+        )
+    ).all()
+
+    # -- recent failures ---------------------------------------------------
+    recent_failure_rows = (
+        await session.execute(
+            text(
+                """
+                SELECT id,
+                       kind::text AS kind,
+                       status::text AS status,
+                       queue_key,
+                       subject_table,
+                       subject_id,
+                       attempts,
+                       max_attempts,
+                       claimed_at,
+                       heartbeat_at,
+                       stale_reaped_at,
+                       finished_at,
+                       error_message,
+                       heartbeat_failure_count,
+                       last_heartbeat_error,
+                       current_worker_id,
+                       org_id
+                FROM   worker_jobs
+                WHERE  status::text IN ('FAILED', 'CANCELLED')
+                ORDER  BY finished_at DESC NULLS LAST
+                LIMIT  :sample_limit
+                """
+            ),
+            {"sample_limit": sample_limit},
+        )
+    ).all()
+
+    def _sample(row) -> WorkerJobSample:
+        return WorkerJobSample(
+            id=row.id,
+            kind=row.kind,
+            status=row.status,
+            queue_key=settings.normalize_queue_key(row.queue_key),
+            subject_table=row.subject_table,
+            subject_id=row.subject_id,
+            attempts=int(row.attempts or 0),
+            max_attempts=int(row.max_attempts or 0),
+            claimed_at=row.claimed_at,
+            heartbeat_at=row.heartbeat_at,
+            stale_reaped_at=row.stale_reaped_at,
+            finished_at=row.finished_at,
+            error_message=row.error_message,
+            heartbeat_failure_count=int(row.heartbeat_failure_count or 0),
+            last_heartbeat_error=row.last_heartbeat_error,
+            current_worker_id=row.current_worker_id,
+            org_id=row.org_id,
+        )
+
+    stale_running = [_sample(r) for r in stale_running_rows]
+    recent_failures = [_sample(r) for r in recent_failure_rows]
+
+    # -- per-kind × queue_key duration percentiles ------------------------
+    # Only jobs that actually completed (claimed_at + finished_at) count
+    # toward the duration distribution. Percent_cont is exact on
+    # Postgres and doesn't need a window function -- we're already
+    # grouping.
+    duration_rows = (
+        await session.execute(
+            text(
+                """
+                SELECT kind::text AS kind,
+                       queue_key,
+                       COUNT(*) AS n,
+                       percentile_cont(0.50) WITHIN GROUP (
+                           ORDER BY EXTRACT(EPOCH FROM (finished_at - claimed_at))
+                       ) AS p50,
+                       percentile_cont(0.95) WITHIN GROUP (
+                           ORDER BY EXTRACT(EPOCH FROM (finished_at - claimed_at))
+                       ) AS p95
+                FROM   worker_jobs
+                WHERE  status::text IN ('SUCCESS', 'FAILED')
+                  AND  claimed_at IS NOT NULL
+                  AND  finished_at IS NOT NULL
+                  AND  finished_at >= NOW() - INTERVAL '1 hour'
+                GROUP  BY kind, queue_key
+                HAVING COUNT(*) >= 3
+                ORDER  BY kind, queue_key
+                """
+            )
+        )
+    ).all()
+
+    durations_last_hour = [
+        WorkerJobDurationStat(
+            kind=row.kind,
+            queue_key=settings.normalize_queue_key(row.queue_key),
+            sample_count=int(row.n or 0),
+            p50_seconds=float(row.p50 or 0.0),
+            p95_seconds=float(row.p95 or 0.0),
+        )
+        for row in duration_rows
+    ]
+
+    return WorkerJobsResponse(
+        counts=counts,
+        stale_running=stale_running,
+        recent_failures=recent_failures,
+        durations_last_hour=durations_last_hour,
         stale_after_minutes=stale_after_minutes,
         timestamp=now.isoformat(),
     )

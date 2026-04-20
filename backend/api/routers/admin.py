@@ -11,9 +11,11 @@ from oddish.core.admin import (
     QueueSlotsResponse,
     QueueStatusResponse,
     OrphanedStateResponse,
+    WorkerJobsResponse,
     get_queue_slots_core,
     get_queue_status_core,
     get_orphaned_state_core,
+    get_worker_jobs_admin_core,
 )
 from oddish.db import get_session
 
@@ -47,4 +49,23 @@ async def get_orphaned_state(
     async with get_session() as session:
         return await get_orphaned_state_core(
             session, stale_after_minutes=stale_after_minutes
+        )
+
+
+@router.get("/worker-jobs", response_model=WorkerJobsResponse)
+async def get_worker_jobs(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+    stale_after_minutes: int = Query(15, ge=1, le=240),
+    sample_limit: int = Query(25, ge=1, le=100),
+) -> WorkerJobsResponse:
+    """Summarize the unified ``worker_jobs`` queue by (kind, status).
+
+    Powers the "Worker Jobs" admin panel which treats each kind (TRIAL,
+    ANALYSIS, VERDICT, ...) as an independently queued agent job.
+    """
+    async with get_session() as session:
+        return await get_worker_jobs_admin_core(
+            session,
+            stale_after_minutes=stale_after_minutes,
+            sample_limit=sample_limit,
         )

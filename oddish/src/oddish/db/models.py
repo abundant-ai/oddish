@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     text,
@@ -96,6 +97,36 @@ class Priority(str, Enum):
 
     HIGH = "high"
     LOW = "low"
+
+
+class WorkerJobKind(str, Enum):
+    """Kind of work represented by a `worker_jobs` row.
+
+    The polymorphism discriminator for the unified queue table. Handlers
+    register against a kind; the dispatcher is kind-agnostic.
+    """
+
+    TRIAL = "TRIAL"
+    ANALYSIS = "ANALYSIS"
+    VERDICT = "VERDICT"
+    QA_REVIEW = "QA_REVIEW"
+
+
+class WorkerJobStatus(str, Enum):
+    """Single state machine for every kind of worker job.
+
+    `BLOCKED` is reserved for future M-of-N dependency gating; v1 keeps
+    stage transitions driven by application-level enqueue helpers and
+    does not enter BLOCKED.
+    """
+
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    RETRYING = "RETRYING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+    BLOCKED = "BLOCKED"
 
 
 # =============================================================================
@@ -462,5 +493,156 @@ class QueueSlotModel(Base):
             "idx_queue_slots_queue_key_locked_until",
             "queue_key",
             "locked_until",
+        ),
+    )
+
+
+class WorkerJobModel(Base):
+    """Unified queue row for every kind of compute work.
+
+    Phase A of the `worker_jobs` migration introduces the table with no
+    readers or writers. The dispatcher, claim path, cleanup sweep, and
+    cancel path will cut over to this table in later phases; see
+    ``.cursor/plans/unified_worker_jobs_table.plan.md``.
+
+    The source-of-truth rule is: this table is authoritative for
+    *scheduling state* only. Domain tables (``trials`` / ``tasks``)
+    remain authoritative for domain state (``trials.status``,
+    ``trials.harbor_stage``, ``trials.reward``, ``tasks.verdict`` ...).
+    Harbor lifecycle hooks keep writing domain-state columns during
+    execution; handlers mirror the terminal state back on completion.
+    """
+
+    __tablename__ = "worker_jobs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+
+    kind: Mapped[WorkerJobKind] = mapped_column(
+        SQLEnum(
+            WorkerJobKind,
+            name="worker_job_kind",
+            native_enum=True,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    status: Mapped[WorkerJobStatus] = mapped_column(
+        SQLEnum(
+            WorkerJobStatus,
+            name="worker_job_status",
+            native_enum=True,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=WorkerJobStatus.QUEUED,
+        server_default="QUEUED",
+    )
+
+    queue_key: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=0, server_default="0"
+    )
+
+    # Denormalized pointer to the domain row this job is about. Not a
+    # foreign key because different `kind`s target different tables
+    # (TRIAL/ANALYSIS -> trials, VERDICT -> tasks, QA_REVIEW -> trials,
+    # future free-floating jobs -> null). Kept as a pair of TEXT
+    # columns so dispatcher and reaper reads stay join-free.
+    subject_table: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subject_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Application-level parent pointer (see plan: "Dependencies").
+    # v1 uses this only for audit trails; stage transitions are still
+    # driven by enqueue helpers rather than a BLOCKED-state gate.
+    parent_job_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("worker_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    payload: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=6, server_default="6"
+    )
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    available_after: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=text("NOW()"),
+    )
+
+    current_worker_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_queue_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    modal_function_call_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    stale_reaped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    heartbeat_failure_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    last_heartbeat_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_heartbeat_error_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Small per-kind result (a few KB max). Large blobs like the full
+    # classification / verdict stay on the domain table.
+    result_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    org_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index(
+            "idx_worker_jobs_claim",
+            "queue_key",
+            "priority",
+            "available_after",
+            "created_at",
+            postgresql_where=text("status IN ('QUEUED', 'RETRYING')"),
+        ),
+        Index(
+            "idx_worker_jobs_heartbeat",
+            "status",
+            "heartbeat_at",
+            postgresql_where=text("status = 'RUNNING'"),
+        ),
+        Index(
+            "idx_worker_jobs_subject",
+            "subject_table",
+            "subject_id",
+        ),
+        Index(
+            "idx_worker_jobs_parent",
+            "parent_job_id",
+            postgresql_where=text("parent_job_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_worker_jobs_org",
+            "org_id",
+            "status",
+            postgresql_where=text("org_id IS NOT NULL"),
         ),
     )

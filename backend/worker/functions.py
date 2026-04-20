@@ -25,22 +25,41 @@ from modal_app import (
     worker_volumes,
 )
 from oddish.config import settings
-from oddish.db import close_database_connections
+from oddish.db import close_database_connections, WorkerJobKind
+from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
-from oddish.workers.queue.dispatch_planner import (
-    build_spawn_plan,
-    discover_active_queue_keys,
-    get_queue_counts,
-)
-from oddish.workers.queue.single_job import run_single_job
 from oddish.workers.queue.slots import (
     acquire_queue_slot,
     cleanup_stale_queue_slots,
     release_queue_slot,
 )
+from oddish.workers.queue.worker_job_dispatcher import (
+    build_spawn_plan,
+    discover_active_worker_job_queue_keys,
+    get_worker_job_queue_counts,
+)
+from oddish.workers.queue.worker_job_single_job import run_single_worker_job
 
 from .github import notify_github_analysis, notify_github_trial, notify_github_verdict
 from .runtime import configure_storage_paths, console
+
+# Register TRIAL / ANALYSIS / VERDICT handlers against the unified
+# registry as soon as this module loads in a worker container. The
+# dispatcher and single-job runner also call this defensively, but
+# doing it here makes the startup order explicit for readers.
+ensure_builtin_handlers_registered()
+
+
+# Post-success hooks: fired after the worker_jobs row is in SUCCESS
+# state. Mirrors the ``on_trial_complete`` / ``on_analysis_complete`` /
+# ``on_verdict_complete`` hooks the legacy dispatcher passed through
+# ``run_single_job``. Hook exceptions are swallowed by the runner so a
+# GitHub API hiccup never corrupts scheduling state.
+_POST_SUCCESS_HOOKS = {
+    WorkerJobKind.TRIAL: notify_github_trial,
+    WorkerJobKind.ANALYSIS: notify_github_analysis,
+    WorkerJobKind.VERDICT: notify_github_verdict,
+}
 
 
 @app.function(
@@ -56,20 +75,19 @@ from .runtime import configure_storage_paths, console
 )
 async def process_single_job(queue_key: str):
     """
-    Process exactly ONE job from the queue.
+    Process exactly ONE ``worker_jobs`` row from the unified queue.
 
-    1. Acquires a concurrency slot for the queue key
-    2. Claims one job directly from the trials/tasks table (atomic SKIP LOCKED)
-    3. Processes the job completely (trial, analysis, or verdict)
-    4. Exits after completion
+    1. Acquires a queue-key concurrency slot (``queue_slots``)
+    2. Claims one row via ``FOR UPDATE SKIP LOCKED`` on ``worker_jobs``
+    3. Dispatches to the handler registered for the row's ``kind``
+    4. Records the terminal outcome on the ``worker_jobs`` row; the
+       handler mirrors it back to domain tables (``trials`` / ``tasks``)
 
-    Multiple instances run in parallel.
     Each worker gets the full timeout budget for its single job.
     """
     console.print(f"[cyan]Job worker starting (queue_key={queue_key})...[/cyan]")
     await configure_storage_paths()
 
-    # Capture Modal function call ID for remote cancellation support
     fc_id: str | None = None
     try:
         fc_id = modal.current_function_call_id()
@@ -110,15 +128,12 @@ async def process_single_job(queue_key: str):
             f"[dim]Acquired queue slot {lock_slot + 1}/{queue_limit} (queue_key={queue_key})[/dim]"
         )
 
-        job_found = await run_single_job(
+        job_found = await run_single_worker_job(
             queue_key=queue_key,
             worker_id=worker_id,
             queue_slot=lock_slot,
             modal_function_call_id=fc_id,
-            prepare_trial=enforce_trial_environment,
-            on_trial_complete=notify_github_trial,
-            on_analysis_complete=notify_github_analysis,
-            on_verdict_complete=notify_github_verdict,
+            post_success_hooks=_POST_SUCCESS_HOOKS,
         )
         if not job_found:
             console.print(
@@ -152,18 +167,16 @@ async def process_single_job(queue_key: str):
 )
 async def poll_queue():
     """
-    Queue-aware dispatcher that spawns job workers based on queue depth.
+    Queue-aware dispatcher that spawns ``process_single_job`` workers
+    based on per-queue-key depth in the unified ``worker_jobs`` table.
 
-    This function:
-    1. Runs every 30 seconds (via Modal schedule)
-    2. Checks queued + running counts per queue key
-    3. Spawns job workers without exceeding queue-key concurrency
-    4. Each worker processes exactly one job
-
-    Benefits:
-    - Jobs start processing immediately (no waiting for next poll)
-    - Each job gets full timeout budget in its own container
-    - Parallelism scales with queue depth (up to MAX_WORKERS_PER_POLL per cycle)
+    Runs every ``POLL_INTERVAL_SECONDS``:
+    1. Reaps orphaned ``queue_slots`` leases and stale ``worker_jobs``
+       rows so the queue can make forward progress.
+    2. Scans ``worker_jobs`` for active queue keys and their
+       queued/running counts.
+    3. Spawns up to ``MAX_WORKERS_PER_POLL`` ``process_single_job``
+       workers, budgeted per queue_key against concurrency limits.
     """
     console.print("[cyan]Queue dispatcher starting...[/cyan]")
     await configure_storage_paths()
@@ -191,8 +204,8 @@ async def poll_queue():
                 )
             )
 
-        queue_keys = await discover_active_queue_keys()
-        queue_counts = await get_queue_counts(queue_keys)
+        queue_keys = await discover_active_worker_job_queue_keys()
+        queue_counts = await get_worker_job_queue_counts(queue_keys)
         concurrency_limits = {
             queue_key: settings.get_model_concurrency(queue_key)
             for queue_key in queue_keys

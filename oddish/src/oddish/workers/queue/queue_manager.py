@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 
 from oddish.config import settings
-from oddish.workers.queue.dispatch_planner import discover_active_queue_keys
 from oddish.workers.queue.shared import console
-from oddish.workers.queue.single_job import run_single_job
+from oddish.workers.queue.worker_job_dispatcher import (
+    discover_active_worker_job_queue_keys,
+)
+from oddish.workers.queue.worker_job_single_job import run_single_worker_job
 
 POLL_INTERVAL_SECONDS = 2.0
 
@@ -25,14 +27,20 @@ async def run_polling_worker(
 ) -> None:
     """Simple polling worker that claims and executes jobs.
 
-    Each queue key gets up to its concurrency limit of concurrent jobs.
-    The loop polls periodically and fills capacity.
+    Each queue key gets up to its concurrency limit of concurrent
+    jobs. The loop polls periodically and fills capacity. Jobs come
+    from the unified ``worker_jobs`` table and are routed to the
+    registered handler for each row's ``kind``.
     """
     active_tasks: dict[str, set[asyncio.Task]] = {}
 
+    # Importing the jobs package registers the built-in handlers as a
+    # side effect.
+    from oddish.workers import jobs as _jobs  # noqa: F401
+
     while True:
         try:
-            queue_keys = await discover_active_queue_keys()
+            queue_keys = await discover_active_worker_job_queue_keys()
             limits = _get_concurrency_limits(queue_keys)
 
             for qk in queue_keys:
@@ -65,7 +73,7 @@ async def _run_job_safe(queue_key: str) -> None:
     """Claim and run one job, swallowing errors so the task set stays clean."""
     worker_id = f"oss-{queue_key}"
     try:
-        await run_single_job(
+        await run_single_worker_job(
             queue_key,
             worker_id=worker_id,
             queue_slot=0,
