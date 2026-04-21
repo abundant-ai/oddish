@@ -311,9 +311,11 @@ async def _prepare_trial_run(
         trial_harbor_config = trial.harbor_config
         trial.current_worker_id = worker_id
         trial.current_queue_slot = queue_slot
-        trial.modal_function_call_id = modal_function_call_id
         trial.claimed_at = utcnow()
         trial.heartbeat_at = trial.claimed_at
+        # ``modal_function_call_id`` now lives exclusively on
+        # ``worker_jobs``. The claim SQL stamped it; the cancel path
+        # harvests it from ``worker_jobs.RETURNING``.
 
         return PreparedTrialRun(
             task_path=task_path,
@@ -422,7 +424,6 @@ async def _store_trial_results(
 
         trial.current_worker_id = None
         trial.current_queue_slot = None
-        trial.modal_function_call_id = None
         trial.heartbeat_at = utcnow()
 
         if trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED):
@@ -433,14 +434,13 @@ async def _store_trial_results(
             # helpers, which in turn import this module via the handler
             # auto-registration).
             from oddish.queue import (
-                _enqueue_analysis_worker_job,
+                enqueue_analysis_worker_job,
                 maybe_start_analysis_stage,
             )
 
             if task and task.run_analysis and trial.analysis_status is None:
                 trial.analysis_status = AnalysisStatus.QUEUED
-                trial.analysis_modal_function_call_id = None
-                await _enqueue_analysis_worker_job(
+                await enqueue_analysis_worker_job(
                     session, trial_id=trial_id, org_id=trial.org_id
                 )
                 console.print(f"[cyan]Queued analysis for {trial_id}[/cyan]")

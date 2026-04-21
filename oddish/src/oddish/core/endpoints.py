@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, delete, func, nulls_last, or_, select, tuple_
+from sqlalchemy import and_, case, delete, func, nulls_last, or_, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm import load_only, selectinload
@@ -659,19 +659,43 @@ async def retry_trial_core(
     trial.idempotency_key = None
     trial.current_worker_id = None
     trial.current_queue_slot = None
-    trial.modal_function_call_id = None
 
     # Move completed tasks back to running once a trial is requeued.
     if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
         task.status = TaskStatus.RUNNING
         task.finished_at = None
 
-    # Enqueue a fresh worker_jobs TRIAL row so the dispatcher picks
-    # this retry up. Imported lazily to avoid a circular import through
-    # ``oddish.queue`` -> ``oddish.workers.jobs.enqueue``.
-    from oddish.queue import _enqueue_trial_worker_job
+    # Cancel any in-flight TRIAL worker_job for this trial before
+    # enqueueing the new one. Without this, a "stuck RUNNING" retry
+    # leaves two non-terminal worker_jobs rows with the same
+    # ``subject_id`` -- the old stuck row still holds a queue_slot
+    # lease until cleanup reaps it, and when it does the handler's
+    # outcome can race with the new attempt. Same pattern as
+    # ``append_trials_to_task`` uses for superseded VERDICT rows.
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = 'Superseded by user retry',
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  kind::text = 'TRIAL'
+              AND  subject_table = 'trials'
+              AND  subject_id = :trial_id
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        ),
+        {"trial_id": trial_id},
+    )
 
-    await _enqueue_trial_worker_job(
+    # Imported lazily to avoid a circular import through
+    # ``oddish.queue`` -> ``oddish.workers.jobs.enqueue``.
+    from oddish.queue import enqueue_trial_worker_job
+
+    await enqueue_trial_worker_job(
         session,
         trial_id=trial_id,
         queue_key=trial.queue_key,
@@ -690,7 +714,6 @@ def _reset_task_verdict(task: TaskModel) -> None:
     task.verdict_error = None
     task.verdict_started_at = None
     task.verdict_finished_at = None
-    task.verdict_modal_function_call_id = None
 
 
 def _reset_trial_analysis(trial: TrialModel) -> None:
@@ -700,7 +723,6 @@ def _reset_trial_analysis(trial: TrialModel) -> None:
     trial.analysis_error = None
     trial.analysis_started_at = None
     trial.analysis_finished_at = None
-    trial.analysis_modal_function_call_id = None
 
 
 async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
@@ -778,9 +800,9 @@ async def rerun_trial_analysis_core(
     task.finished_at = None
     trial.analysis_status = AnalysisStatus.QUEUED
 
-    from oddish.queue import _enqueue_analysis_worker_job
+    from oddish.queue import enqueue_analysis_worker_job
 
-    await _enqueue_analysis_worker_job(
+    await enqueue_analysis_worker_job(
         session, trial_id=trial_id, org_id=trial.org_id
     )
 
@@ -836,12 +858,12 @@ async def rerun_task_analysis_core(
             detail="Cannot rerun analysis while the task verdict is still running",
         )
 
-    from oddish.queue import _enqueue_analysis_worker_job
+    from oddish.queue import enqueue_analysis_worker_job
 
     for trial in task.trials:
         _reset_trial_analysis(trial)
         trial.analysis_status = AnalysisStatus.QUEUED
-        await _enqueue_analysis_worker_job(
+        await enqueue_analysis_worker_job(
             session, trial_id=trial.id, org_id=trial.org_id
         )
 
@@ -914,9 +936,9 @@ async def rerun_task_verdict_core(
     task.verdict_started_at = None
     task.verdict_finished_at = None
 
-    from oddish.queue import _enqueue_verdict_worker_job
+    from oddish.queue import enqueue_verdict_worker_job
 
-    await _enqueue_verdict_worker_job(
+    await enqueue_verdict_worker_job(
         session, task_id=task_id, org_id=task.org_id
     )
 

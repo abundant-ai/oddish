@@ -18,9 +18,39 @@ anticipated a staged rollout; we compressed it). Domain tables
 live-UI visibility; `worker_jobs` is authoritative for scheduling.
 
 - In-tree: **done** (code, migrations, tests).
-- Deploy: **not rolled out yet** — requires a coordinated
-  deploy-order sequence (see [Deployment](#deployment)).
+- Deployed: **yes**, to production Supabase at head
+  `b5c6d7e8f9a0`. Backend deployed via `modal deploy`. Verified
+  end-to-end: one earlier task went through the full
+  trial → analysis → verdict → COMPLETED pipeline on the new
+  stack with verdict=SUCCESS. A small test experiment ran 15
+  trials across 5 queue keys concurrently; 0 orphans,
+  heartbeats all < 35s old, fair-scheduling worked.
 - Known residuals: see [Follow-ups](#follow-ups).
+
+## Deployment verification (post-cutover)
+
+After running migrations and deploying the Modal worker:
+
+- `alembic current` = `b5c6d7e8f9a0 (head)`.
+- `worker_jobs` is populated and claim-path works:
+  - 15 `TRIAL` rows dispatched concurrently across
+    `default`, `openai/gpt-5.4-mini`,
+    `bedrock/global.anthropic.claude-haiku-4-5`,
+    `gemini/gemini-3.1-flash-lite-preview`,
+    `gemini/gemini-3.1-pro-preview`.
+  - Durations 24s–142s for completed TRIAL rows (within
+    normal spread).
+  - Every RUNNING row has a distinct `current_worker_id` —
+    no ghost claims, no double-claiming.
+- Source-of-truth invariants hold:
+  - Non-terminal trials missing a `TRIAL` worker_job: **0**
+  - Non-terminal analyses missing an `ANALYSIS` worker_job: **0**
+  - Non-terminal verdicts missing a `VERDICT` worker_job: **0**
+  - Stale RUNNING rows (heartbeat > 15m): **0**
+- Critical heartbeat-to-worker_jobs fix confirmed in prod: a
+  4.9-minute-old RUNNING trial has a 13-second heartbeat age.
+  On the old code that value would have been 4.9 minutes and
+  drifting toward 15m reap.
 
 ---
 

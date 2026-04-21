@@ -52,7 +52,6 @@ async def run_verdict_job(
 
         task.verdict_status = VerdictStatus.RUNNING
         task.verdict_started_at = utcnow()
-        task.verdict_modal_function_call_id = modal_function_call_id
 
         # Load trial classifications
         from sqlalchemy import select
@@ -146,7 +145,6 @@ async def run_verdict_job(
                 task.verdict_status = VerdictStatus.SUCCESS
                 task.verdict_error = None
                 task.verdict_finished_at = utcnow()
-                task.verdict_modal_function_call_id = None
                 task.status = TaskStatus.COMPLETED
                 task.finished_at = utcnow()
                 console.print(
@@ -158,7 +156,6 @@ async def run_verdict_job(
                     verdict_error or "Verdict synthesis failed with exception"
                 )
                 task.verdict_finished_at = utcnow()
-                task.verdict_modal_function_call_id = None
                 # Still mark task as completed even if verdict failed
                 task.status = TaskStatus.COMPLETED
                 task.finished_at = utcnow()

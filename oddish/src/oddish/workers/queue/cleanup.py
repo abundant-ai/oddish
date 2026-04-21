@@ -229,7 +229,6 @@ async def cleanup_orphaned_queue_state(
                     trial.error_message = row["error_message"]
                     trial.current_worker_id = None
                     trial.current_queue_slot = None
-                    trial.modal_function_call_id = None
                     trial.stale_reaped_at = utcnow()
                 else:
                     trial.status = TrialStatus.FAILED
@@ -237,7 +236,6 @@ async def cleanup_orphaned_queue_state(
                     trial.finished_at = trial.finished_at or utcnow()
                     trial.current_worker_id = None
                     trial.current_queue_slot = None
-                    trial.modal_function_call_id = None
                     trial.stale_reaped_at = utcnow()
                     if trial.harbor_stage not in {"completed", "cancelled"}:
                         trial.harbor_stage = "cancelled"
@@ -265,14 +263,12 @@ async def cleanup_orphaned_queue_state(
                     trial.analysis_status = AnalysisStatus.FAILED
                     trial.analysis_error = row["error_message"]
                     trial.analysis_finished_at = utcnow()
-                    trial.analysis_modal_function_call_id = None
                 else:
                     # Retrying: show "queued for retry" in the UI rather
                     # than leaving the row on RUNNING. The handler
                     # resets to QUEUED explicitly on next claim as well.
                     trial.analysis_status = AnalysisStatus.QUEUED
                     trial.analysis_error = row["error_message"]
-                    trial.analysis_modal_function_call_id = None
 
             elif kind == "VERDICT":
                 task = await session.get(TaskModel, str(subject_id))
@@ -282,11 +278,9 @@ async def cleanup_orphaned_queue_state(
                     task.verdict_status = VerdictStatus.FAILED
                     task.verdict_error = row["error_message"]
                     task.verdict_finished_at = utcnow()
-                    task.verdict_modal_function_call_id = None
                 else:
                     task.verdict_status = VerdictStatus.QUEUED
                     task.verdict_error = row["error_message"]
-                    task.verdict_modal_function_call_id = None
 
         await session.flush()
 
@@ -373,7 +367,7 @@ async def cleanup_orphaned_queue_state(
             )
         ).all()
 
-        from oddish.queue import _enqueue_verdict_worker_job
+        from oddish.queue import enqueue_verdict_worker_job
 
         for (task_id,) in stale_verdict_pending:
             task = await session.get(TaskModel, str(task_id))
@@ -388,8 +382,7 @@ async def cleanup_orphaned_queue_state(
                 task.verdict_error = None
                 task.verdict_started_at = None
                 task.verdict_finished_at = None
-                task.verdict_modal_function_call_id = None
-                await _enqueue_verdict_worker_job(
+                await enqueue_verdict_worker_job(
                     session, task_id=task.id, org_id=task.org_id
                 )
 
@@ -405,13 +398,11 @@ async def cleanup_orphaned_queue_state(
                     """
                     UPDATE trials
                     SET    current_worker_id = NULL,
-                           current_queue_slot = NULL,
-                           modal_function_call_id = NULL
+                           current_queue_slot = NULL
                     WHERE  status::text IN ('SUCCESS', 'FAILED')
                       AND  (
                           current_worker_id IS NOT NULL
                           OR current_queue_slot IS NOT NULL
-                          OR modal_function_call_id IS NOT NULL
                       )
                     """
                 )

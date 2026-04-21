@@ -166,8 +166,9 @@ async def cancel_tasks_runs(
             trial.id in canceled_trial_kinds
             or trial.status in ACTIVE_TRIAL_STATUSES
         ):
-            if trial.modal_function_call_id:
-                modal_fc_ids.append(trial.modal_function_call_id)
+            # Modal function-call ids now live only on ``worker_jobs``;
+            # the ``UPDATE worker_jobs ... RETURNING`` above is the
+            # single source for FCs to terminate.
             trial.status = TrialStatus.FAILED
             trial.error_message = USER_CANCELLED_MESSAGE
             trial.finished_at = now
@@ -178,19 +179,15 @@ async def cancel_tasks_runs(
             trial.max_attempts = trial.attempts
             trial.current_worker_id = None
             trial.current_queue_slot = None
-            trial.modal_function_call_id = None
             trials_cancelled += 1
             trial_updated = True
         if (
             trial.id in canceled_analysis_trial_ids
             or trial.analysis_status in ACTIVE_PIPELINE_STATUSES
         ):
-            if trial.analysis_modal_function_call_id:
-                modal_fc_ids.append(trial.analysis_modal_function_call_id)
             trial.analysis_status = AnalysisStatus.FAILED
             trial.analysis_error = USER_CANCELLED_MESSAGE
             trial.analysis_finished_at = now
-            trial.analysis_modal_function_call_id = None
             trial_updated = True
         if not trial_updated:
             continue
@@ -206,12 +203,9 @@ async def cancel_tasks_runs(
             task.id in canceled_verdict_task_ids
             or task.verdict_status in ACTIVE_PIPELINE_STATUSES
         ):
-            if task.verdict_modal_function_call_id:
-                modal_fc_ids.append(task.verdict_modal_function_call_id)
             task.verdict_status = VerdictStatus.FAILED
             task.verdict_error = USER_CANCELLED_MESSAGE
             task.verdict_finished_at = now
-            task.verdict_modal_function_call_id = None
             task_updated = True
         if task_updated:
             tasks_cancelled += 1
@@ -344,7 +338,7 @@ def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
 # single enqueue surface for the TRIAL / ANALYSIS / VERDICT kinds.
 
 
-async def _enqueue_trial_worker_job(
+async def enqueue_trial_worker_job(
     session: AsyncSession,
     *,
     trial_id: str,
@@ -368,7 +362,7 @@ async def _enqueue_trial_worker_job(
     )
 
 
-async def _enqueue_analysis_worker_job(
+async def enqueue_analysis_worker_job(
     session: AsyncSession,
     *,
     trial_id: str,
@@ -389,7 +383,7 @@ async def _enqueue_analysis_worker_job(
     )
 
 
-async def _enqueue_verdict_worker_job(
+async def enqueue_verdict_worker_job(
     session: AsyncSession,
     *,
     task_id: str,
@@ -563,7 +557,7 @@ async def create_task(
             status=TrialStatus.QUEUED,
         )
         session.add(trial)
-        await _enqueue_trial_worker_job(
+        await enqueue_trial_worker_job(
             session,
             trial_id=trial_id,
             queue_key=queue_key,
@@ -627,7 +621,7 @@ async def append_trials_to_task(
             status=TrialStatus.QUEUED,
         )
         session.add(trial)
-        await _enqueue_trial_worker_job(
+        await enqueue_trial_worker_job(
             session,
             trial_id=trial_id,
             queue_key=queue_key,
@@ -652,7 +646,6 @@ async def append_trials_to_task(
         task.verdict_error = None
         task.verdict_started_at = None
         task.verdict_finished_at = None
-        task.verdict_modal_function_call_id = None
         # Cancel any in-flight VERDICT worker_job for this task so a
         # worker that's already claimed (or about to claim) the old
         # row doesn't overwrite the new verdict with stale data.
@@ -755,8 +748,7 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
         if analysis_pending_count == 0:
             task.status = TaskStatus.VERDICT_PENDING
             task.verdict_status = VerdictStatus.QUEUED
-            task.verdict_modal_function_call_id = None
-            await _enqueue_verdict_worker_job(
+            await enqueue_verdict_worker_job(
                 session, task_id=task_id, org_id=task.org_id
             )
     else:
@@ -812,8 +804,7 @@ async def maybe_start_verdict_stage(session: AsyncSession, trial_id: str) -> boo
 
     task.status = TaskStatus.VERDICT_PENDING
     task.verdict_status = VerdictStatus.QUEUED
-    task.verdict_modal_function_call_id = None
-    await _enqueue_verdict_worker_job(session, task_id=task_id, org_id=task.org_id)
+    await enqueue_verdict_worker_job(session, task_id=task_id, org_id=task.org_id)
     await session.flush()
 
     return True

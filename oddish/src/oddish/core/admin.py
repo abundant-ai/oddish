@@ -204,62 +204,59 @@ async def get_queue_status_core(session: AsyncSession) -> QueueStatusResponse:
     """Get queue status from the trials/tasks tables."""
     now = utcnow()
 
-    trial_rows = (
+    # One grouped query against ``worker_jobs`` replaces three separate
+    # scans on trials/analysis_status/verdict_status. The legacy
+    # ``QueueStatusResponse`` shape is kept so the admin "Queue Status"
+    # card keeps rendering without a frontend change.
+    rows = (
         await session.execute(
             text(
                 """
                 SELECT
+                    kind::text AS kind,
                     queue_key,
                     COUNT(*) FILTER (WHERE status::text IN ('QUEUED', 'RETRYING')) AS queued,
                     COUNT(*) FILTER (WHERE status::text = 'RUNNING') AS running
-                FROM trials
+                FROM worker_jobs
                 WHERE status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
-                GROUP BY queue_key
-                ORDER BY queue_key
+                GROUP BY kind, queue_key
+                ORDER BY kind, queue_key
                 """
             )
         )
     ).all()
 
-    analysis_row = (
-        await session.execute(
-            text(
-                """
-                SELECT
-                    COUNT(*) FILTER (WHERE analysis_status::text = 'QUEUED') AS queued,
-                    COUNT(*) FILTER (WHERE analysis_status::text = 'RUNNING') AS running
-                FROM trials WHERE analysis_status IS NOT NULL
-                """
+    trial_queues: list[QueueStatusEntry] = []
+    analysis_queued = analysis_running = 0
+    verdict_queued = verdict_running = 0
+    for row in rows:
+        kind = row.kind
+        queued = int(row.queued or 0)
+        running = int(row.running or 0)
+        if kind == "TRIAL":
+            trial_queues.append(
+                QueueStatusEntry(
+                    queue_key=settings.normalize_queue_key(row.queue_key),
+                    queued=queued,
+                    running=running,
+                )
             )
-        )
-    ).one()
-
-    verdict_row = (
-        await session.execute(
-            text(
-                """
-                SELECT
-                    COUNT(*) FILTER (WHERE verdict_status::text = 'QUEUED') AS queued,
-                    COUNT(*) FILTER (WHERE verdict_status::text = 'RUNNING') AS running
-                FROM tasks WHERE verdict_status IS NOT NULL
-                """
-            )
-        )
-    ).one()
+        elif kind == "ANALYSIS":
+            analysis_queued += queued
+            analysis_running += running
+        elif kind == "VERDICT":
+            verdict_queued += queued
+            verdict_running += running
+        # Unknown kinds (e.g. future QA_REVIEW) silently ignored by
+        # this endpoint; the ``WorkerJobsCard`` admin panel surfaces
+        # them in the kind-agnostic matrix instead.
 
     return QueueStatusResponse(
-        trial_queues=[
-            QueueStatusEntry(
-                queue_key=settings.normalize_queue_key(row[0]),
-                queued=int(row[1] or 0),
-                running=int(row[2] or 0),
-            )
-            for row in trial_rows
-        ],
-        analysis_queued=int(analysis_row[0] or 0),
-        analysis_running=int(analysis_row[1] or 0),
-        verdict_queued=int(verdict_row[0] or 0),
-        verdict_running=int(verdict_row[1] or 0),
+        trial_queues=trial_queues,
+        analysis_queued=analysis_queued,
+        analysis_running=analysis_running,
+        verdict_queued=verdict_queued,
+        verdict_running=verdict_running,
         timestamp=now.isoformat(),
     )
 
@@ -269,7 +266,17 @@ async def get_orphaned_state_core(
     *,
     stale_after_minutes: int = 15,
 ) -> OrphanedStateResponse:
-    """Summarize stale queue/pipeline state."""
+    """Summarize stale queue/pipeline state.
+
+    Stale-heartbeat detection reads ``worker_jobs.heartbeat_at`` --
+    the authoritative scheduling-state table. ``trials.heartbeat_at``
+    is a display denorm maintained in parallel; reading it here would
+    duplicate the ``WorkerJobsCard`` admin panel and lie about the
+    reap criterion (cleanup reaps based on ``worker_jobs``).
+    Task-stuckness detection still reads domain state because the
+    scheduling model of "task waiting for downstream stage to start"
+    lives on the ``tasks.status`` field.
+    """
     now = utcnow()
 
     counts_row = (
@@ -279,11 +286,12 @@ async def get_orphaned_state_core(
                 SELECT
                     (
                         SELECT COUNT(*)
-                        FROM trials t
-                        WHERE t.status::text = 'RUNNING'
+                        FROM worker_jobs wj
+                        WHERE wj.kind::text = 'TRIAL'
+                          AND wj.status::text = 'RUNNING'
                           AND (
-                              t.heartbeat_at IS NULL
-                              OR t.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
+                              wj.heartbeat_at IS NULL
+                              OR wj.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
                           )
                     ) AS running_stale_heartbeat,
                     (
@@ -315,29 +323,34 @@ async def get_orphaned_state_core(
         )
     ).one()
 
+    # Pull the worker_jobs samples and join back to trials for
+    # display-only fields (``harbor_stage``). Scheduling-state fields
+    # come from ``worker_jobs`` directly.
     trial_rows = (
         await session.execute(
             text(
                 """
                 SELECT
-                    t.id AS trial_id,
-                    t.task_id,
-                    t.queue_key,
-                    t.status::text AS status,
+                    tr.id AS trial_id,
+                    tr.task_id,
+                    wj.queue_key,
+                    tr.status::text AS status,
                     'running_stale_heartbeat'::text AS issue,
-                    t.harbor_stage,
-                    t.current_worker_id,
-                    t.current_queue_slot,
-                    t.claimed_at,
-                    t.heartbeat_at,
-                    t.updated_at
-                FROM trials t
-                WHERE t.status::text = 'RUNNING'
+                    tr.harbor_stage,
+                    wj.current_worker_id,
+                    wj.current_queue_slot,
+                    wj.claimed_at,
+                    wj.heartbeat_at,
+                    tr.updated_at
+                FROM worker_jobs wj
+                JOIN trials tr ON wj.subject_table = 'trials' AND wj.subject_id = tr.id
+                WHERE wj.kind::text = 'TRIAL'
+                  AND wj.status::text = 'RUNNING'
                   AND (
-                      t.heartbeat_at IS NULL
-                      OR t.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
+                      wj.heartbeat_at IS NULL
+                      OR wj.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
                   )
-                ORDER BY t.updated_at ASC NULLS FIRST
+                ORDER BY wj.heartbeat_at ASC NULLS FIRST
                 LIMIT 20
                 """
             ),

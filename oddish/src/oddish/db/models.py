@@ -238,10 +238,6 @@ class TaskModel(Base):
     verdict_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # Modal function call ID for a running verdict worker (hosted only)
-    verdict_modal_function_call_id: Mapped[str | None] = mapped_column(
-        String(128), nullable=True
-    )
 
     # Relationships
     experiment: Mapped["ExperimentModel"] = relationship(  # type: ignore[assignment]
@@ -363,10 +359,6 @@ class TrialModel(Base):
         String(160), nullable=True, index=True
     )
     current_queue_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Modal function call ID for remote cancellation (set by Modal workers only)
-    modal_function_call_id: Mapped[str | None] = mapped_column(
-        String(128), nullable=True
-    )
     claimed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -440,10 +432,6 @@ class TrialModel(Base):
     analysis_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # Modal function call ID for a running analysis worker (hosted only)
-    analysis_modal_function_call_id: Mapped[str | None] = mapped_column(
-        String(128), nullable=True
-    )
 
     # Relationships
     task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]
@@ -451,12 +439,13 @@ class TrialModel(Base):
     )
 
     __table_args__ = (
-        # Composite index for efficient trial claiming queries
-        Index("idx_trials_claimable", "status", "queue_key", "next_retry_at"),
         Index("idx_trials_task_id", "task_id"),
         Index("idx_trials_task_version_id", "task_version_id"),
+        # Display / API filter path. Claim/stale-reap indexes on
+        # trials were retired in the ``worker_jobs`` refactor --
+        # scheduling queries now hit ``idx_worker_jobs_claim`` and
+        # ``idx_worker_jobs_heartbeat`` instead.
         Index("idx_trials_status", "status"),
-        Index("idx_trials_status_heartbeat_at", "status", "heartbeat_at"),
         # Composite index for efficient queue stats aggregation (no JOIN needed)
         Index("idx_trials_org_provider_status", "org_id", "provider", "status"),
         Index("idx_trials_org_queue_key_status", "org_id", "queue_key", "status"),
