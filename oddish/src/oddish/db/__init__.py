@@ -15,6 +15,7 @@ from oddish.db.models import (
     TaskVersionModel,
     TrialModel,
     WorkerJobModel,
+    task_experiments,
     # Helpers
     generate_id,
     utcnow,
@@ -59,6 +60,7 @@ __all__ = [
     "TaskVersionModel",
     "TrialModel",
     "WorkerJobModel",
+    "task_experiments",
     # Helpers
     "generate_id",
     "utcnow",

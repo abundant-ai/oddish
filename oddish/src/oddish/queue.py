@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -489,12 +490,13 @@ async def create_task(
         priority=submission.priority,
         task_path=submission.task_path,
         task_s3_key=task_s3_key,
-        experiment_id=experiment.id,
         tags=submission.tags,
         run_analysis=submission.run_analysis,
     )
     session.add(task)
     await session.flush()
+
+    await _link_task_to_experiment(session, task_id=task_id, experiment_id=experiment.id)
 
     # Determine the version: if one was pre-created during upload, use the
     # latest; otherwise create v1 now that the task row exists.
@@ -570,6 +572,19 @@ async def create_task(
     return task
 
 
+async def _link_task_to_experiment(
+    session: AsyncSession, *, task_id: str, experiment_id: str
+) -> None:
+    """Insert a ``task_experiments`` association row if missing."""
+    from oddish.db import task_experiments
+
+    await session.execute(
+        pg_insert(task_experiments)
+        .values(task_id=task_id, experiment_id=experiment_id)
+        .on_conflict_do_nothing(index_elements=["task_id", "experiment_id"])
+    )
+
+
 async def append_trials_to_task(
     session: AsyncSession,
     *,
@@ -579,9 +594,10 @@ async def append_trials_to_task(
 ) -> list[TrialModel]:
     """Append new queued trials to an existing task.
 
-    New trials are pinned to the task's ``current_version_id``.
-    If *experiment_id* is given, new trials are associated with that experiment
-    rather than the task's current experiment.
+    New trials are pinned to the task's ``current_version_id``. When
+    ``experiment_id`` is given, new trials use that experiment and the
+    task is auto-linked to it via ``task_experiments`` (matching the
+    implicit behavior of the old single-FK world).
     """
     trial_rows = await session.execute(
         select(TrialModel)
@@ -592,7 +608,21 @@ async def append_trials_to_task(
     next_index = _get_next_trial_index(task.id, existing_trials)
 
     current_version_id = task.current_version_id
-    trial_experiment_id = experiment_id or task.experiment_id
+
+    # Pick the target experiment: explicit argument wins, otherwise fall back
+    # to the first linked experiment (the task's "primary" association).
+    if experiment_id is None:
+        primary = list(task.experiments or [])
+        if not primary:
+            raise ValueError(
+                f"Task {task.id} has no linked experiments; cannot append trials"
+            )
+        trial_experiment_id = primary[0].id
+    else:
+        trial_experiment_id = experiment_id
+        await _link_task_to_experiment(
+            session, task_id=task.id, experiment_id=experiment_id
+        )
 
     new_trials: list[TrialModel] = []
     for spec in submission.trials:
@@ -819,7 +849,7 @@ async def get_task_with_trials(session: AsyncSession, task_id: str) -> TaskModel
     """Get a task with all its trials."""
     result = await session.execute(
         select(TaskModel)
-        .options(selectinload(TaskModel.experiment))
+        .options(selectinload(TaskModel.experiments))
         .where(TaskModel.id == task_id)
     )
     return result.scalar_one_or_none()

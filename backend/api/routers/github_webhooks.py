@@ -92,23 +92,16 @@ async def refresh_experiment_pr_comment(
     """
     auth.require_scope(APIKeyScope.TASKS)
 
-    from sqlalchemy import or_, select
+    from sqlalchemy import select
+
+    from oddish.db import task_experiments
 
     async with get_session() as session:
-        has_trials_in_experiment = (
-            select(TrialModel.task_id)
-            .where(TrialModel.experiment_id == experiment_id)
-            .distinct()
-            .correlate(None)
-            .scalar_subquery()
-        )
         result = await session.execute(
             select(TaskModel)
+            .join(task_experiments, task_experiments.c.task_id == TaskModel.id)
             .where(
-                or_(
-                    TaskModel.experiment_id == experiment_id,
-                    TaskModel.id.in_(has_trials_in_experiment),
-                ),
+                task_experiments.c.experiment_id == experiment_id,
                 TaskModel.org_id == auth.org_id,
             )
             .limit(1)
@@ -134,7 +127,9 @@ async def refresh_experiment_pr_comment(
         # Trigger update (will aggregate all tasks)
         from oddish.integrations.github.notifier import _update_pr_comment_for_task
 
-        success = await _update_pr_comment_for_task(task)
+        success = await _update_pr_comment_for_task(
+            task, experiment_id=experiment_id
+        )
 
         if success:
             return RefreshResponse(

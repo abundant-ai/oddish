@@ -46,6 +46,18 @@ from oddish.schemas import (
 from oddish.timing import TimingRecorder, elapsed_ms, now
 
 
+def _primary_experiment_for_task_model(
+    task: TaskModel,
+) -> ExperimentModel | None:
+    """Pick the first linked experiment as the task's "primary" experiment.
+
+    Used by response builders and sweep/append plumbing that still need a
+    single experiment context when the task participates in several.
+    """
+    experiments = list(task.experiments or [])
+    return experiments[0] if experiments else None
+
+
 async def get_task_for_org_core(
     session: AsyncSession,
     *,
@@ -81,7 +93,7 @@ async def list_tasks_core(
     query = select(TaskModel).order_by(TaskModel.created_at.desc())
     if include_trials:
         trials_loader = selectinload(TaskModel.trials)
-        experiment_loader = selectinload(TaskModel.experiment)
+        experiments_loader = selectinload(TaskModel.experiments)
         if compact_trials:
             trials_loader = trials_loader.load_only(
                 TrialModel.id,
@@ -106,7 +118,7 @@ async def list_tasks_core(
                 TrialModel.started_at,
                 TrialModel.finished_at,
             )
-            experiment_loader = experiment_loader.load_only(
+            experiments_loader = experiments_loader.load_only(
                 ExperimentModel.id,
                 ExperimentModel.name,
                 ExperimentModel.is_public,
@@ -121,7 +133,6 @@ async def list_tasks_core(
                     TaskModel.tags,
                     TaskModel.task_path,
                     TaskModel.current_version_id,
-                    TaskModel.experiment_id,
                     TaskModel.run_analysis,
                     TaskModel.verdict_status,
                     TaskModel.verdict,
@@ -131,12 +142,12 @@ async def list_tasks_core(
                     TaskModel.finished_at,
                 ),
                 trials_loader,
-                experiment_loader,
+                experiments_loader,
             )
         else:
-            query = query.options(trials_loader, experiment_loader)
+            query = query.options(trials_loader, experiments_loader)
     else:
-        query = query.options(selectinload(TaskModel.experiment))
+        query = query.options(selectinload(TaskModel.experiments))
 
     if org_id is not None:
         query = query.where(TaskModel.org_id == org_id)
@@ -145,18 +156,8 @@ async def list_tasks_core(
     if user:
         query = query.where(TaskModel.user == user)
     if experiment_id:
-        has_trials_in_experiment = (
-            select(TrialModel.task_id)
-            .where(TrialModel.experiment_id == experiment_id)
-            .distinct()
-            .correlate(None)
-            .scalar_subquery()
-        )
         query = query.where(
-            or_(
-                TaskModel.experiment_id == experiment_id,
-                TaskModel.id.in_(has_trials_in_experiment),
-            )
+            TaskModel.experiments.any(ExperimentModel.id == experiment_id)
         )
 
     query = query.limit(limit).offset(offset)
@@ -180,9 +181,7 @@ async def list_tasks_core(
             filtered_trials = list(task.trials)
             if experiment_id:
                 filtered_trials = [
-                    t
-                    for t in filtered_trials
-                    if t.experiment_id == experiment_id or t.experiment_id is None
+                    t for t in filtered_trials if t.experiment_id == experiment_id
                 ]
                 set_committed_value(task, "trials", filtered_trials)
             set_committed_value(task, "trials", get_task_status_trials(task))
@@ -217,6 +216,7 @@ async def list_tasks_core(
                     include_empty_rewards=include_empty_rewards,
                     analysis_summaries=analysis_summaries,
                     queue_info_by_trial_id=queue_info_by_trial_id,
+                    experiment_context_id=experiment_id,
                 )
                 for task in tasks
             ]
@@ -233,6 +233,7 @@ async def list_tasks_core(
                 task,
                 include_empty_rewards=include_empty_rewards,
                 queue_info_by_trial_id=queue_info_by_trial_id,
+                experiment_context_id=experiment_id,
             )
             for task in tasks
         ]
@@ -249,6 +250,7 @@ async def list_tasks_core(
         session,
         tasks=tasks,
         include_empty_rewards=include_empty_rewards,
+        experiment_context_id=experiment_id,
     )
     if record_timing is not None:
         record_timing(
@@ -529,7 +531,7 @@ async def get_task_status_core(
     org_id: str | None = None,
 ) -> TaskStatusResponse:
     """Get task status with optional org scoping."""
-    query = select(TaskModel).options(selectinload(TaskModel.experiment))
+    query = select(TaskModel).options(selectinload(TaskModel.experiments))
     if include_trials:
         query = query.options(selectinload(TaskModel.trials))
     query = query.where(TaskModel.id == task_id)
@@ -1043,8 +1045,19 @@ async def delete_task_core(
     *,
     task_id: str,
     org_id: str | None = None,
+    experiment_id: str | None = None,
 ) -> dict:
-    """Delete a task and its trials with optional org scoping."""
+    """Delete a task and its trials, optionally scoped to one experiment.
+
+    When ``experiment_id`` is ``None`` the task and all of its trials are
+    deleted unconditionally, along with every ``task_experiments`` row
+    (via ``ondelete=CASCADE``).
+
+    When ``experiment_id`` is given, only trials whose ``experiment_id``
+    matches are removed and the ``(task_id, experiment_id)`` join row is
+    deleted. The task itself is only dropped if no trials and no other
+    experiment links remain.
+    """
     task_query = select(
         TaskModel.id,
         TaskModel.task_s3_key,
@@ -1059,34 +1072,165 @@ async def delete_task_core(
 
     resolved_task_id, task_s3_key, task_path = task_row
 
-    trial_rows_result = await session.execute(
-        select(TrialModel.id, TrialModel.trial_s3_key).where(
-            TrialModel.task_id == resolved_task_id
+    from oddish.db.storage import collect_s3_prefixes_for_deletion
+    from oddish.db import task_experiments
+
+    # Unscoped: legacy "delete everything" behavior and response shape.
+    if experiment_id is None:
+        trial_rows_result = await session.execute(
+            select(TrialModel.id, TrialModel.trial_s3_key).where(
+                TrialModel.task_id == resolved_task_id
+            )
+        )
+        trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
+
+        s3_prefixes = collect_s3_prefixes_for_deletion(
+            tasks=[(task_s3_key, task_path)],
+            trials=trial_rows,
+        )
+
+        await session.execute(
+            delete(TrialModel)
+            .where(TrialModel.task_id == resolved_task_id)
+            .execution_options(synchronize_session=False)
+        )
+        await session.execute(
+            delete(TaskModel)
+            .where(TaskModel.id == resolved_task_id)
+            .execution_options(synchronize_session=False)
+        )
+
+        return {
+            "s3_prefixes": s3_prefixes,
+            "deleted": {"task_id": task_id},
+        }
+
+    # Scoped delete: only this experiment's trials + the join row.
+    scoped_trial_rows = (
+        await session.execute(
+            select(TrialModel.id, TrialModel.trial_s3_key).where(
+                TrialModel.task_id == resolved_task_id,
+                TrialModel.experiment_id == experiment_id,
+            )
+        )
+    ).all()
+    scoped_trial_ids = [row[0] for row in scoped_trial_rows]
+
+    # Check that this task really belongs to the given experiment.
+    link_exists = await session.scalar(
+        select(func.count())
+        .select_from(task_experiments)
+        .where(
+            task_experiments.c.task_id == resolved_task_id,
+            task_experiments.c.experiment_id == experiment_id,
         )
     )
-    trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
+    if not link_exists and not scoped_trial_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Task {task_id} has no trials in experiment {experiment_id}"
+            ),
+        )
 
-    from oddish.db.storage import collect_s3_prefixes_for_deletion
+    # Cancel live worker_jobs for those trials so workers release slots.
+    if scoped_trial_ids:
+        await session.execute(
+            text(
+                """
+                UPDATE worker_jobs
+                SET    status = 'CANCELLED',
+                       finished_at = NOW(),
+                       error_message = 'Task deleted by user',
+                       current_worker_id = NULL,
+                       current_queue_slot = NULL,
+                       modal_function_call_id = NULL
+                WHERE  subject_table = 'trials'
+                  AND  subject_id = ANY(:trial_ids)
+                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                """
+            ),
+            {"trial_ids": scoped_trial_ids},
+        )
 
-    s3_prefixes = collect_s3_prefixes_for_deletion(
-        tasks=[(task_s3_key, task_path)],
-        trials=trial_rows,
-    )
+        await session.execute(
+            delete(TrialModel)
+            .where(TrialModel.id.in_(scoped_trial_ids))
+            .execution_options(synchronize_session=False)
+        )
 
+    # Remove the (task_id, experiment_id) association.
     await session.execute(
-        delete(TrialModel)
-        .where(TrialModel.task_id == resolved_task_id)
-        .execution_options(synchronize_session=False)
+        delete(task_experiments).where(
+            task_experiments.c.task_id == resolved_task_id,
+            task_experiments.c.experiment_id == experiment_id,
+        )
     )
-    await session.execute(
-        delete(TaskModel)
-        .where(TaskModel.id == resolved_task_id)
-        .execution_options(synchronize_session=False)
+
+    # If the task has no remaining trials and no other experiment links, it
+    # is now orphaned — drop it outright so the S3 prefix gets cleaned up.
+    remaining_trials = int(
+        await session.scalar(
+            select(func.count(TrialModel.id)).where(
+                TrialModel.task_id == resolved_task_id
+            )
+        )
+        or 0
     )
+    remaining_links = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(task_experiments)
+            .where(task_experiments.c.task_id == resolved_task_id)
+        )
+        or 0
+    )
+
+    task_removed = False
+    if remaining_trials == 0 and remaining_links == 0:
+        await session.execute(
+            text(
+                """
+                UPDATE worker_jobs
+                SET    status = 'CANCELLED',
+                       finished_at = NOW(),
+                       error_message = 'Task deleted by user',
+                       current_worker_id = NULL,
+                       current_queue_slot = NULL,
+                       modal_function_call_id = NULL
+                WHERE  subject_table = 'tasks'
+                  AND  subject_id = :task_id
+                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                """
+            ),
+            {"task_id": resolved_task_id},
+        )
+        await session.execute(
+            delete(TaskModel)
+            .where(TaskModel.id == resolved_task_id)
+            .execution_options(synchronize_session=False)
+        )
+        s3_prefixes = collect_s3_prefixes_for_deletion(
+            tasks=[(task_s3_key, task_path)],
+            trials=scoped_trial_rows,
+        )
+        task_removed = True
+    else:
+        s3_prefixes = collect_s3_prefixes_for_deletion(
+            tasks=[], trials=scoped_trial_rows
+        )
+        task = await session.get(TaskModel, resolved_task_id)
+        if task is not None:
+            _reset_task_verdict(task)
 
     return {
         "s3_prefixes": s3_prefixes,
-        "deleted": {"task_id": task_id},
+        "deleted": {
+            "task_id": task_id,
+            "experiment_id": experiment_id,
+            "trials_deleted": len(scoped_trial_ids),
+            "task_removed": task_removed,
+        },
     }
 
 
@@ -1096,85 +1240,152 @@ async def delete_experiment_core(
     experiment_id: str,
     org_id: str | None = None,
 ) -> dict:
-    """Delete an experiment and all associated tasks/trials with optional org scoping."""
-    query = select(ExperimentModel).where(ExperimentModel.id == experiment_id)
+    """Delete an experiment, its trials, and any now-orphaned tasks.
+
+    Only trials whose ``experiment_id`` matches this experiment are
+    removed. Tasks linked to this experiment via ``task_experiments``
+    have that link removed (CASCADE does this when the experiment row is
+    dropped below); any task left without trials or other experiment
+    links is then deleted outright.
+    """
+    from oddish.db import task_experiments
+    from oddish.db.storage import collect_s3_prefixes_for_deletion
+
+    exp_query = select(ExperimentModel).where(ExperimentModel.id == experiment_id)
     if org_id is not None:
-        query = query.where(ExperimentModel.org_id == org_id)
-    
-    result = await session.execute(query)
-    experiment = result.scalar_one_or_none()
+        exp_query = exp_query.where(ExperimentModel.org_id == org_id)
+
+    exp_result = await session.execute(exp_query)
+    experiment = exp_result.scalar_one_or_none()
     if not experiment:
         raise HTTPException(
             status_code=404, detail=f"Experiment {experiment_id} not found"
         )
 
-    task_ids_query = select(TaskModel.id).where(TaskModel.experiment_id == experiment_id)
-    if org_id is not None:
-        task_ids_query = task_ids_query.where(TaskModel.org_id == org_id)
-    
-    task_ids_result = await session.execute(task_ids_query)
-    task_ids = [row[0] for row in task_ids_result.all()]
-
-    task_rows_query = select(TaskModel.task_s3_key, TaskModel.task_path).where(
-        TaskModel.experiment_id == experiment_id
-    )
-    if org_id is not None:
-        task_rows_query = task_rows_query.where(TaskModel.org_id == org_id)
-    
-    task_rows_result = await session.execute(task_rows_query)
-    task_rows = [(row[0], row[1]) for row in task_rows_result.all()]
-
-    trial_rows: list[tuple[str, str | None]] = []
-    if task_ids:
-        trial_rows_result = await session.execute(
-            select(TrialModel.id, TrialModel.trial_s3_key).where(
-                TrialModel.task_id.in_(task_ids)
+    # Tasks linked to this experiment — snapshot them now so we can check
+    # which ones orphan out after the scoped trial delete + link drop.
+    linked_task_rows = (
+        await session.execute(
+            select(TaskModel.id, TaskModel.task_s3_key, TaskModel.task_path)
+            .join(
+                task_experiments,
+                task_experiments.c.task_id == TaskModel.id,
             )
+            .where(task_experiments.c.experiment_id == experiment_id)
         )
-        trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
+    ).all()
+    linked_task_ids = [row[0] for row in linked_task_rows]
+    linked_task_s3 = {row[0]: (row[1], row[2]) for row in linked_task_rows}
 
-    trial_only_query = select(TrialModel.id, TrialModel.trial_s3_key).where(
-        TrialModel.experiment_id == experiment_id
+    # Trials scoped to this experiment.
+    trial_where = [TrialModel.experiment_id == experiment_id]
+    if org_id is not None:
+        trial_where.append(
+            or_(TrialModel.org_id == org_id, TrialModel.org_id.is_(None))
+        )
+
+    scoped_trial_rows = (
+        await session.execute(
+            select(TrialModel.id, TrialModel.trial_s3_key).where(*trial_where)
+        )
+    ).all()
+    scoped_trial_ids = [row[0] for row in scoped_trial_rows]
+
+    # Cancel any live worker_jobs for the trials we're about to delete.
+    if scoped_trial_ids:
+        await session.execute(
+            text(
+                """
+                UPDATE worker_jobs
+                SET    status = 'CANCELLED',
+                       finished_at = NOW(),
+                       error_message = 'Experiment deleted by user',
+                       current_worker_id = NULL,
+                       current_queue_slot = NULL,
+                       modal_function_call_id = NULL
+                WHERE  subject_table = 'trials'
+                  AND  subject_id = ANY(:trial_ids)
+                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                """
+            ),
+            {"trial_ids": scoped_trial_ids},
+        )
+
+        trials_del = await session.execute(
+            delete(TrialModel)
+            .where(TrialModel.id.in_(scoped_trial_ids))
+            .execution_options(synchronize_session=False)
+        )
+        deleted_trials = int(trials_del.rowcount or 0)
+    else:
+        deleted_trials = 0
+
+    # Drop the experiment row. CASCADE on ``task_experiments.experiment_id``
+    # automatically removes link rows pointing at this experiment.
+    experiments_del_query = delete(ExperimentModel).where(
+        ExperimentModel.id == experiment_id
     )
     if org_id is not None:
-        trial_only_query = trial_only_query.where(TrialModel.org_id == org_id)
-    if task_ids:
-        trial_only_query = trial_only_query.where(~TrialModel.task_id.in_(task_ids))
-
-    trial_only_result = await session.execute(trial_only_query)
-    extra_trial_rows = [(r[0], r[1]) for r in trial_only_result.all()]
-    trial_rows.extend(extra_trial_rows)
-
-    from oddish.db.storage import collect_s3_prefixes_for_deletion
-    s3_prefixes = collect_s3_prefixes_for_deletion(
-        tasks=task_rows,
-        trials=trial_rows,
-    )
-
-    deleted_trials = 0
-    if task_ids:
-        trials_result = await session.execute(
-            delete(TrialModel).where(TrialModel.task_id.in_(task_ids))
+        experiments_del_query = experiments_del_query.where(
+            ExperimentModel.org_id == org_id
         )
-        deleted_trials += int(trials_result.rowcount or 0)
-
-    trial_only_del_query = delete(TrialModel).where(TrialModel.experiment_id == experiment_id)
-    if org_id is not None:
-        trial_only_del_query = trial_only_del_query.where(TrialModel.org_id == org_id)
-    trial_only_del_result = await session.execute(trial_only_del_query)
-    deleted_trials += int(trial_only_del_result.rowcount or 0)
-
-    tasks_del_query = delete(TaskModel).where(TaskModel.experiment_id == experiment_id)
-    if org_id is not None:
-        tasks_del_query = tasks_del_query.where(TaskModel.org_id == org_id)
-    tasks_result = await session.execute(tasks_del_query)
-    deleted_tasks = int(tasks_result.rowcount or 0)
-
-    experiments_del_query = delete(ExperimentModel).where(ExperimentModel.id == experiment_id)
-    if org_id is not None:
-        experiments_del_query = experiments_del_query.where(ExperimentModel.org_id == org_id)
     experiments_result = await session.execute(experiments_del_query)
     deleted_experiments = int(experiments_result.rowcount or 0)
+
+    # Any of the previously-linked tasks that now have no trials and no
+    # other experiment links are orphaned — drop them + their S3 prefix.
+    task_s3_to_delete: list[tuple[str | None, str | None]] = []
+    deleted_tasks = 0
+
+    for tid in linked_task_ids:
+        remaining_trials = int(
+            await session.scalar(
+                select(func.count(TrialModel.id)).where(TrialModel.task_id == tid)
+            )
+            or 0
+        )
+        remaining_links = int(
+            await session.scalar(
+                select(func.count())
+                .select_from(task_experiments)
+                .where(task_experiments.c.task_id == tid)
+            )
+            or 0
+        )
+        if remaining_trials == 0 and remaining_links == 0:
+            await session.execute(
+                text(
+                    """
+                    UPDATE worker_jobs
+                    SET    status = 'CANCELLED',
+                           finished_at = NOW(),
+                           error_message = 'Experiment deleted by user',
+                           current_worker_id = NULL,
+                           current_queue_slot = NULL,
+                           modal_function_call_id = NULL
+                    WHERE  subject_table = 'tasks'
+                      AND  subject_id = :task_id
+                      AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                    """
+                ),
+                {"task_id": tid},
+            )
+            task_del_result = await session.execute(
+                delete(TaskModel)
+                .where(TaskModel.id == tid)
+                .execution_options(synchronize_session=False)
+            )
+            deleted_tasks += int(task_del_result.rowcount or 0)
+            task_s3_to_delete.append(linked_task_s3[tid])
+        else:
+            task = await session.get(TaskModel, tid)
+            if task is not None:
+                _reset_task_verdict(task)
+
+    s3_prefixes = collect_s3_prefixes_for_deletion(
+        tasks=task_s3_to_delete,
+        trials=[(row[0], row[1]) for row in scoped_trial_rows],
+    )
 
     return {
         "s3_prefixes": s3_prefixes,
@@ -1182,7 +1393,7 @@ async def delete_experiment_core(
             "trials": deleted_trials,
             "tasks": deleted_tasks,
             "experiments": deleted_experiments,
-        }
+        },
     }
 
 
@@ -1297,13 +1508,14 @@ async def create_task_sweep_core(
 
         new_experiment_id: str | None = None
         experiment: ExperimentModel | None = None
+        primary_experiment = _primary_experiment_for_task_model(task)
         if submission.experiment_id:
             experiment = await get_experiment_by_id_or_name(session, submission.experiment_id, org_id)
             if not experiment:
                 experiment = await get_or_create_experiment(session, submission.experiment_id, org_id)
             new_experiment_id = experiment.id
-        else:
-            experiment = await get_experiment_by_id_or_name(session, task.experiment_id, org_id)
+        elif primary_experiment is not None:
+            experiment = primary_experiment
 
         # Determine default environment from existing trial, if present.
         existing_env_result = await session.execute(
@@ -1326,11 +1538,14 @@ async def create_task_sweep_core(
             allowed_environments=allowed_environments,
         )
         
+        fallback_experiment_id = (
+            primary_experiment.id if primary_experiment else None
+        )
         append_submission = submission.model_copy(
             update={
                 "name": task.name,
                 "priority": task.priority,
-                "experiment_id": new_experiment_id or task.experiment_id,
+                "experiment_id": new_experiment_id or fallback_experiment_id,
                 "tags": task.tags or {},
                 "run_analysis": task.run_analysis,
                 "user": task.user,
@@ -1378,11 +1593,7 @@ async def create_task_sweep_core(
 
     if task_s3_key:
         task.task_s3_key = task_s3_key
-        
-    from oddish.queue import get_experiment_by_id_or_name
-    experiment = (
-        await get_experiment_by_id_or_name(session, task.experiment_id, org_id)
-        if task.experiment_id else None
-    )
+
+    experiment = _primary_experiment_for_task_model(task)
 
     return task, list(task.trials), False, experiment

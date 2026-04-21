@@ -180,8 +180,8 @@ async def _maybe_publish_experiment(
     if not should_publish:
         return
 
-    experiment = await session.get(ExperimentModel, task.experiment_id)
-    if experiment:
+    experiments = list(task.experiments or [])
+    for experiment in experiments:
         await ensure_experiment_public(session, experiment)
 
 
@@ -261,8 +261,12 @@ async def create_task_sweep(
         provider_counts: Counter[str] = Counter(
             t.provider for t in (new_trials if is_append else task.trials)
         )
-        resp_experiment_id = experiment.id if experiment else task.experiment_id
-        resp_experiment_name = experiment.name if experiment else None
+        primary = (
+            experiment
+            or (task.experiments[0] if task.experiments else None)
+        )
+        resp_experiment_id = primary.id if primary else None
+        resp_experiment_name = primary.name if primary else None
         
         return TaskResponse(
             id=task.id,

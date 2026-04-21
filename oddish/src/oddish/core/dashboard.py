@@ -19,6 +19,7 @@ from oddish.db import (
     TrialStatus,
     VerdictStatus,
     get_session,
+    task_experiments,
 )
 from oddish.queue import get_queue_and_pipeline_stats_with_concurrency
 from oddish.timing import TimingRecorder, elapsed_ms, now
@@ -94,67 +95,76 @@ async def load_dashboard_experiments(
 ) -> tuple[list[dict[str, Any]], bool]:
     """Load experiment summaries for the dashboard."""
 
-    # Task-level aggregation (via task.experiment_id)
-    task_agg_query = select(
-        TaskModel.experiment_id.label("experiment_id"),
-        func.count(TaskModel.id).label("task_count"),
-        func.count(case((TaskModel.run_analysis.is_(True), 1))).label("analysis_tasks"),
-        func.count(
-            case(
-                (
-                    and_(
-                        TaskModel.verdict_status == VerdictStatus.SUCCESS,
-                        TaskModel.verdict["is_good"].astext == "true",
-                    ),
-                    1,
+    # Task-level aggregation (via task_experiments join table). A task
+    # linked to multiple experiments contributes to each experiment's
+    # aggregation.
+    task_agg_query = (
+        select(
+            task_experiments.c.experiment_id.label("experiment_id"),
+            func.count(TaskModel.id).label("task_count"),
+            func.count(case((TaskModel.run_analysis.is_(True), 1))).label(
+                "analysis_tasks"
+            ),
+            func.count(
+                case(
+                    (
+                        and_(
+                            TaskModel.verdict_status == VerdictStatus.SUCCESS,
+                            TaskModel.verdict["is_good"].astext == "true",
+                        ),
+                        1,
+                    )
                 )
-            )
-        ).label("verdict_good"),
-        func.count(
-            case(
-                (
-                    and_(
-                        TaskModel.verdict_status == VerdictStatus.SUCCESS,
-                        TaskModel.verdict["is_good"].astext == "false",
-                    ),
-                    1,
+            ).label("verdict_good"),
+            func.count(
+                case(
+                    (
+                        and_(
+                            TaskModel.verdict_status == VerdictStatus.SUCCESS,
+                            TaskModel.verdict["is_good"].astext == "false",
+                        ),
+                        1,
+                    )
                 )
-            )
-        ).label("verdict_needs_review"),
-        func.count(case((TaskModel.verdict_status == VerdictStatus.FAILED, 1))).label(
-            "verdict_failed"
-        ),
-        func.count(
-            case(
-                (
-                    and_(
-                        TaskModel.run_analysis.is_(True),
-                        or_(
-                            TaskModel.verdict_status.is_(None),
-                            TaskModel.verdict_status.in_(
-                                [
-                                    VerdictStatus.PENDING,
-                                    VerdictStatus.QUEUED,
-                                    VerdictStatus.RUNNING,
-                                ]
-                            ),
-                            TaskModel.status.in_(
-                                [
-                                    TaskStatus.ANALYZING,
-                                    TaskStatus.VERDICT_PENDING,
-                                ]
+            ).label("verdict_needs_review"),
+            func.count(
+                case((TaskModel.verdict_status == VerdictStatus.FAILED, 1))
+            ).label("verdict_failed"),
+            func.count(
+                case(
+                    (
+                        and_(
+                            TaskModel.run_analysis.is_(True),
+                            or_(
+                                TaskModel.verdict_status.is_(None),
+                                TaskModel.verdict_status.in_(
+                                    [
+                                        VerdictStatus.PENDING,
+                                        VerdictStatus.QUEUED,
+                                        VerdictStatus.RUNNING,
+                                    ]
+                                ),
+                                TaskModel.status.in_(
+                                    [
+                                        TaskStatus.ANALYZING,
+                                        TaskStatus.VERDICT_PENDING,
+                                    ]
+                                ),
                             ),
                         ),
-                    ),
-                    1,
+                        1,
+                    )
                 )
-            )
-        ).label("verdict_pending"),
-        func.max(TaskModel.created_at).label("last_task_created_at"),
-    ).where(TaskModel.experiment_id.isnot(None))
+            ).label("verdict_pending"),
+            func.max(TaskModel.created_at).label("last_task_created_at"),
+        )
+        .select_from(
+            task_experiments.join(TaskModel, TaskModel.id == task_experiments.c.task_id)
+        )
+    )
     if org_id is not None:
         task_agg_query = task_agg_query.where(TaskModel.org_id == org_id)
-    task_agg = task_agg_query.group_by(TaskModel.experiment_id).subquery()
+    task_agg = task_agg_query.group_by(task_experiments.c.experiment_id).subquery()
 
     # Trial-level aggregation (via trial.experiment_id)
     trial_agg_query = select(
@@ -191,22 +201,24 @@ async def load_dashboard_experiments(
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
     trial_agg = trial_agg_query.group_by(TrialModel.experiment_id).subquery()
 
-    # Latest task author info (via task.experiment_id)
+    # Latest task author info per experiment (via task_experiments).
     latest_task_query = select(
-        TaskModel.experiment_id.label("experiment_id"),
+        task_experiments.c.experiment_id.label("experiment_id"),
         TaskModel.user.label("last_user"),
         TaskModel.tags["github_username"].astext.label("last_github_username"),
         TaskModel.tags["github_meta"].astext.label("last_github_meta"),
-    ).where(TaskModel.experiment_id.isnot(None))
+    ).select_from(
+        task_experiments.join(TaskModel, TaskModel.id == task_experiments.c.task_id)
+    )
     if org_id is not None:
         latest_task_query = latest_task_query.where(TaskModel.org_id == org_id)
     latest_task = (
         latest_task_query.order_by(
-            TaskModel.experiment_id.asc(),
+            task_experiments.c.experiment_id.asc(),
             TaskModel.created_at.desc(),
             TaskModel.id.desc(),
         )
-        .distinct(TaskModel.experiment_id)
+        .distinct(task_experiments.c.experiment_id)
         .subquery()
     )
 
@@ -591,7 +603,7 @@ async def get_dashboard_core(
         if include_tasks:
             tasks_q = (
                 select(TaskModel)
-                .options(selectinload(TaskModel.experiment))
+                .options(selectinload(TaskModel.experiments))
                 .order_by(TaskModel.created_at.desc())
                 .limit(tasks_limit + 1)
                 .offset(tasks_offset)

@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    Column,
     DateTime,
     Float,
     ForeignKey,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     Integer,
     SmallInteger,
     String,
+    Table,
     Text,
     text,
 )
@@ -134,6 +136,35 @@ class WorkerJobStatus(str, Enum):
 # =============================================================================
 
 
+# Association table: tasks ↔ experiments is many-to-many. A single task can
+# belong to several experiments (e.g. the same dataset sweep re-run under
+# a new experiment label), while a trial still belongs to exactly one
+# experiment via ``TrialModel.experiment_id``.
+task_experiments = Table(
+    "task_experiments",
+    Base.metadata,
+    Column(
+        "task_id",
+        String(64),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "experiment_id",
+        String(64),
+        ForeignKey("experiments.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    ),
+    Index("idx_task_experiments_experiment_id", "experiment_id"),
+)
+
+
 class ExperimentModel(Base):
     """Experiment database model (grouping for tasks)."""
 
@@ -157,7 +188,8 @@ class ExperimentModel(Base):
 
     tasks: Mapped[list["TaskModel"]] = relationship(  # type: ignore[assignment]
         "TaskModel",
-        back_populates="experiment",
+        secondary=task_experiments,
+        back_populates="experiments",
         lazy="selectin",
         passive_deletes=True,
     )
@@ -169,8 +201,6 @@ class TaskModel(Base):
     __tablename__ = "tasks"
     __table_args__ = (
         Index("idx_tasks_org_created_at", "org_id", "created_at"),
-        Index("idx_tasks_experiment_id", "experiment_id"),
-        Index("idx_tasks_org_experiment_created_at", "org_id", "experiment_id", "created_at"),
         Index(
             "idx_tasks_unique_org_name",
             text("COALESCE(org_id, '')"),
@@ -204,9 +234,6 @@ class TaskModel(Base):
     task_s3_key: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )  # S3 prefix for task files (mirrors latest version)
-    experiment_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("experiments.id", ondelete="RESTRICT"), nullable=False
-    )
     tags: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     # Versioning: points to the latest TaskVersionModel row
@@ -240,8 +267,11 @@ class TaskModel(Base):
     )
 
     # Relationships
-    experiment: Mapped["ExperimentModel"] = relationship(  # type: ignore[assignment]
-        "ExperimentModel", back_populates="tasks", lazy="selectin"
+    experiments: Mapped[list["ExperimentModel"]] = relationship(  # type: ignore[assignment]
+        "ExperimentModel",
+        secondary=task_experiments,
+        back_populates="tasks",
+        lazy="selectin",
     )
     trials: Mapped[list["TrialModel"]] = relationship(  # type: ignore[assignment]
         "TrialModel",
@@ -315,10 +345,10 @@ class TrialModel(Base):
     task_version_id: Mapped[str | None] = mapped_column(
         String(128), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
     )
-    experiment_id: Mapped[str | None] = mapped_column(
+    experiment_id: Mapped[str] = mapped_column(
         String(64),
-        ForeignKey("experiments.id", ondelete="SET NULL"),
-        nullable=True,
+        ForeignKey("experiments.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
 

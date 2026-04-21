@@ -11,7 +11,14 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
-from oddish.db import Priority, TaskModel, TaskStatus, TrialModel, TrialStatus
+from oddish.db import (
+    ExperimentModel,
+    Priority,
+    TaskModel,
+    TaskStatus,
+    TrialModel,
+    TrialStatus,
+)
 from oddish.schemas import TaskStatusResponse, TrialQueueInfo, TrialResponse
 
 _ANALYSIS_SUMMARY_UNSET = object()
@@ -348,6 +355,32 @@ def get_task_status_trials(task: TaskModel) -> list[TrialModel]:
     return [trial for trial in task.trials if trial.task_version_id == current_version_id]
 
 
+def _primary_experiment_for_task(
+    task: TaskModel, *, preferred_experiment_id: str | None = None
+) -> ExperimentModel | None:
+    """Pick the experiment that best represents this task for response payloads.
+
+    With the task ↔ experiments many-to-many relationship, a task can belong
+    to several experiments at once. Response shapes that still expose a
+    single ``experiment_id``/``experiment_name`` need to pick one:
+
+    - If ``preferred_experiment_id`` is in the task's set, use it (lets
+      experiment-scoped list endpoints return the experiment the caller
+      is actually looking at).
+    - Otherwise fall back to the first linked experiment (stable ordering
+      comes from SQLAlchemy's relationship load, which in turn respects
+      the association table's ``created_at`` insertion order).
+    """
+    experiments = list(task.experiments or [])
+    if not experiments:
+        return None
+    if preferred_experiment_id is not None:
+        for exp in experiments:
+            if exp.id == preferred_experiment_id:
+                return exp
+    return experiments[0]
+
+
 def _build_task_status_response(
     task: TaskModel,
     *,
@@ -359,6 +392,7 @@ def _build_task_status_response(
     reward_total: int,
     include_empty_rewards: bool,
     trials: list[TrialResponse] | None,
+    experiment_context_id: str | None = None,
 ) -> TaskStatusResponse:
     formatted_reward_success, formatted_reward_sum, formatted_reward_total = (
         _format_reward_fields(
@@ -369,6 +403,14 @@ def _build_task_status_response(
         )
     )
     current_version, current_version_id = _resolve_task_version_fields(task)
+    primary_experiment = _primary_experiment_for_task(
+        task, preferred_experiment_id=experiment_context_id
+    )
+    experiment_id = primary_experiment.id if primary_experiment else ""
+    experiment_name = primary_experiment.name if primary_experiment else ""
+    experiment_is_public = (
+        primary_experiment.is_public if primary_experiment else False
+    )
     return TaskStatusResponse(
         id=task.id,
         name=task.name,
@@ -380,9 +422,9 @@ def _build_task_status_response(
         github_username=task.tags.get("github_username") if task.tags else None,
         github_meta=_parse_github_meta(task.tags) if task.tags else None,
         task_path=task.task_path,
-        experiment_id=task.experiment_id,
-        experiment_name=task.experiment.name,
-        experiment_is_public=task.experiment.is_public if task.experiment else False,
+        experiment_id=experiment_id,
+        experiment_name=experiment_name,
+        experiment_is_public=experiment_is_public,
         current_version=current_version,
         current_version_id=current_version_id,
         total=total,
@@ -408,6 +450,7 @@ def build_task_status_response(
     *,
     include_empty_rewards: bool = True,
     queue_info_by_trial_id: dict[str, TrialQueueInfo] | None = None,
+    experiment_context_id: str | None = None,
 ) -> TaskStatusResponse:
     """Build a TaskStatusResponse from a TaskModel with eagerly loaded trials."""
     task_trials = get_task_status_trials(task)
@@ -440,6 +483,7 @@ def build_task_status_response(
         reward_total=reward_total,
         include_empty_rewards=include_empty_rewards,
         trials=trials,
+        experiment_context_id=experiment_context_id,
     )
 
 
@@ -449,6 +493,7 @@ def build_task_status_response_compact(
     include_empty_rewards: bool = True,
     analysis_summaries: dict[str, dict[str, str | None]] | None = None,
     queue_info_by_trial_id: dict[str, TrialQueueInfo] | None = None,
+    experiment_context_id: str | None = None,
 ) -> TaskStatusResponse:
     """Build TaskStatusResponse with compact per-trial payloads."""
     task_trials = get_task_status_trials(task)
@@ -486,6 +531,7 @@ def build_task_status_response_compact(
         reward_total=reward_total,
         include_empty_rewards=include_empty_rewards,
         trials=trials,
+        experiment_context_id=experiment_context_id,
     )
 
 
@@ -525,6 +571,7 @@ async def build_task_status_responses_from_counts(
     *,
     tasks: Sequence[TaskModel],
     include_empty_rewards: bool = True,
+    experiment_context_id: str | None = None,
 ) -> list[TaskStatusResponse]:
     """Build TaskStatusResponse objects with aggregated trial counts."""
     if not tasks:
@@ -571,6 +618,7 @@ async def build_task_status_responses_from_counts(
             ),
             include_empty_rewards=include_empty_rewards,
             trials=None,
+            experiment_context_id=experiment_context_id,
         )
         for task in tasks
     ]

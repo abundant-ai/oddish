@@ -9,11 +9,18 @@ from __future__ import annotations
 import logging
 import os
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from oddish.config import settings
-from oddish.db import TaskModel, TrialModel, get_session
+from oddish.db import (
+    ExperimentModel,
+    TaskModel,
+    TrialModel,
+    get_session,
+    task_experiments,
+)
 
 from .client import GitHubMeta, get_github_client
 from .formatter import (
@@ -62,10 +69,20 @@ async def _build_trial_summary(
     )
 
 
-async def _build_task_summary(session: AsyncSession, task: TaskModel) -> TaskSummary:
-    """Build a TaskSummary from a TaskModel."""
+async def _build_task_summary(
+    session: AsyncSession,
+    task: TaskModel,
+    *,
+    experiment_id: str,
+) -> TaskSummary:
+    """Build a TaskSummary from a TaskModel, URL-scoped to the given experiment."""
     result = await session.execute(
-        select(TrialModel).where(TrialModel.task_id == task.id).order_by(TrialModel.id)
+        select(TrialModel)
+        .where(
+            TrialModel.task_id == task.id,
+            TrialModel.experiment_id == experiment_id,
+        )
+        .order_by(TrialModel.id)
     )
     trials = result.scalars().all()
 
@@ -73,7 +90,7 @@ async def _build_task_summary(session: AsyncSession, task: TaskModel) -> TaskSum
         await _build_trial_summary(t, task_name=task.name) for t in trials
     ]
 
-    task_url = f"{DASHBOARD_URL}/experiments/{task.experiment_id}"
+    task_url = f"{DASHBOARD_URL}/experiments/{experiment_id}"
 
     return TaskSummary(
         task_id=task.id,
@@ -88,29 +105,53 @@ async def _build_task_summary(session: AsyncSession, task: TaskModel) -> TaskSum
 async def _get_experiment_tasks(
     session: AsyncSession, experiment_id: str
 ) -> list[TaskModel]:
-    """Get all tasks for an experiment (via task or trial link)."""
-    has_trials_in_experiment = (
-        select(TrialModel.task_id)
-        .where(TrialModel.experiment_id == experiment_id)
-        .distinct()
-        .correlate(None)
-        .scalar_subquery()
-    )
+    """Get all tasks linked to an experiment (via task_experiments)."""
     result = await session.execute(
         select(TaskModel)
-        .where(
-            or_(
-                TaskModel.experiment_id == experiment_id,
-                TaskModel.id.in_(has_trials_in_experiment),
-            )
-        )
+        .join(task_experiments, task_experiments.c.task_id == TaskModel.id)
+        .where(task_experiments.c.experiment_id == experiment_id)
         .order_by(TaskModel.created_at)
     )
     return list(result.scalars().all())
 
 
-async def _update_pr_comment_for_task(task: TaskModel) -> bool:
-    """Update the PR comment for a task. Returns True on success."""
+async def _resolve_task_experiment(
+    session: AsyncSession,
+    task: TaskModel,
+    *,
+    explicit_experiment_id: str | None = None,
+) -> ExperimentModel | None:
+    """Pick the experiment that represents this task for PR notifications.
+
+    Prefer the caller-supplied id (e.g. the trial's experiment_id) when it
+    is actually linked to the task. Fall back to the task's primary
+    (first-linked) experiment.
+    """
+    if explicit_experiment_id is not None:
+        experiment = await session.get(ExperimentModel, explicit_experiment_id)
+        if experiment is not None:
+            return experiment
+
+    result = await session.execute(
+        select(ExperimentModel)
+        .join(task_experiments, task_experiments.c.experiment_id == ExperimentModel.id)
+        .where(task_experiments.c.task_id == task.id)
+        .order_by(task_experiments.c.created_at.asc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _update_pr_comment_for_task(
+    task: TaskModel,
+    *,
+    experiment_id: str | None = None,
+) -> bool:
+    """Update the PR comment for a task. Returns True on success.
+
+    ``experiment_id`` selects which experiment's view to render. If omitted,
+    the task's first-linked experiment is used.
+    """
     github_meta = GitHubMeta.from_tags(task.tags)
     if not github_meta:
         logger.debug(f"Task {task.id} has no GitHub metadata, skipping PR update")
@@ -121,22 +162,31 @@ async def _update_pr_comment_for_task(task: TaskModel) -> bool:
         logger.warning("GITHUB_TOKEN not configured, skipping PR update")
         return False
 
-    if not task.experiment_id:
-        logger.debug(f"Task {task.id} has no experiment_id, skipping PR update")
-        return False
-
     async with get_session() as session:
-        task_summary = await _build_task_summary(session, task)
+        experiment = await _resolve_task_experiment(
+            session, task, explicit_experiment_id=experiment_id
+        )
+        if experiment is None:
+            logger.debug(
+                f"Task {task.id} has no linked experiment, skipping PR update"
+            )
+            return False
 
-        experiment = task.experiment
-        experiment_name = experiment.name if experiment else task.experiment_id
-        experiment_url = f"{DASHBOARD_URL}/experiments/{task.experiment_id}"
+        resolved_experiment_id = experiment.id
+        experiment_name = experiment.name
+        experiment_url = f"{DASHBOARD_URL}/experiments/{resolved_experiment_id}"
 
-        experiment_tasks = await _get_experiment_tasks(session, task.experiment_id)
+        task_summary = await _build_task_summary(
+            session, task, experiment_id=resolved_experiment_id
+        )
+        experiment_tasks = await _get_experiment_tasks(session, resolved_experiment_id)
 
         if len(experiment_tasks) > 1:
             task_summaries = [
-                await _build_task_summary(session, t) for t in experiment_tasks
+                await _build_task_summary(
+                    session, t, experiment_id=resolved_experiment_id
+                )
+                for t in experiment_tasks
             ]
             comment_body = format_experiment_comment(
                 tasks=task_summaries,
@@ -186,7 +236,9 @@ async def notify_trial_update(trial_id: str) -> bool:
                 )
                 return False
 
-            return await _update_pr_comment_for_task(task)
+            return await _update_pr_comment_for_task(
+                task, experiment_id=trial.experiment_id
+            )
 
     except Exception as e:
         logger.error(f"Error in notify_trial_update for {trial_id}: {e}")
@@ -209,7 +261,9 @@ async def notify_analysis_update(trial_id: str) -> bool:
                 )
                 return False
 
-            return await _update_pr_comment_for_task(task)
+            return await _update_pr_comment_for_task(
+                task, experiment_id=trial.experiment_id
+            )
 
     except Exception as e:
         logger.error(f"Error in notify_analysis_update for {trial_id}: {e}")

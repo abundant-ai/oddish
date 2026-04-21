@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
@@ -25,7 +25,13 @@ from oddish.core.public_helpers import (
     list_task_trials_for_task,
     list_trial_files_s3,
 )
-from oddish.db import ExperimentModel, TaskModel, TrialModel, get_session
+from oddish.db import (
+    ExperimentModel,
+    TaskModel,
+    TrialModel,
+    get_session,
+    task_experiments,
+)
 from oddish.schemas import (
     PublicExperimentListItem,
     PublicExperimentResponse,
@@ -56,21 +62,14 @@ async def list_public_experiments(
 ) -> list[PublicExperimentListItem]:
     """List all public experiments for dataset browsing."""
     async with get_session() as session:
-        direct_tasks = select(
-            TaskModel.experiment_id.label("experiment_id"),
-            TaskModel.id.label("task_id"),
-        ).where(TaskModel.experiment_id.isnot(None))
-        trial_tasks = select(
-            TrialModel.experiment_id.label("experiment_id"),
-            TrialModel.task_id.label("task_id"),
-        ).where(TrialModel.experiment_id.isnot(None))
-        all_exp_tasks = direct_tasks.union(trial_tasks).subquery()
         task_counts = (
             select(
-                all_exp_tasks.c.experiment_id,
-                func.count(func.distinct(all_exp_tasks.c.task_id)).label("task_count"),
+                task_experiments.c.experiment_id.label("experiment_id"),
+                func.count(func.distinct(task_experiments.c.task_id)).label(
+                    "task_count"
+                ),
             )
-            .group_by(all_exp_tasks.c.experiment_id)
+            .group_by(task_experiments.c.experiment_id)
             .subquery()
         )
 
@@ -135,29 +134,18 @@ async def list_public_experiment_tasks(
         if not experiment:
             raise HTTPException(status_code=404, detail="Experiment not found")
 
-        has_trials_in_experiment = (
-            select(TrialModel.task_id)
-            .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
-            .where(
-                ExperimentModel.public_token == public_token,
-                ExperimentModel.is_public == True,  # noqa: E712
-            )
-            .distinct()
-            .correlate(None)
-            .scalar_subquery()
-        )
         query = (
             select(TaskModel)
-            .options(selectinload(TaskModel.trials), selectinload(TaskModel.experiment))
+            .options(
+                selectinload(TaskModel.trials),
+                selectinload(TaskModel.experiments),
+            )
             .where(
-                or_(
-                    TaskModel.experiment_id.in_(
-                        select(ExperimentModel.id).where(
-                            ExperimentModel.public_token == public_token,
-                            ExperimentModel.is_public == True,  # noqa: E712
-                        )
-                    ),
-                    TaskModel.id.in_(has_trials_in_experiment),
+                TaskModel.experiments.any(
+                    and_(
+                        ExperimentModel.public_token == public_token,
+                        ExperimentModel.is_public == True,  # noqa: E712
+                    )
                 )
             )
             .order_by(TaskModel.created_at.desc())
@@ -179,11 +167,7 @@ async def list_public_experiment_tasks(
             from sqlalchemy.orm.attributes import set_committed_value
 
             for task in tasks:
-                filtered = [
-                    t
-                    for t in task.trials
-                    if t.experiment_id == exp_id or t.experiment_id is None
-                ]
+                filtered = [t for t in task.trials if t.experiment_id == exp_id]
                 set_committed_value(task, "trials", filtered)
 
         queue_info_by_trial_id = await fetch_trial_queue_info(
@@ -194,6 +178,7 @@ async def list_public_experiment_tasks(
             build_task_status_response(
                 task,
                 queue_info_by_trial_id=queue_info_by_trial_id,
+                experiment_context_id=exp_id,
             )
             for task in tasks
         ]

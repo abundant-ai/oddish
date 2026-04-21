@@ -18,6 +18,7 @@ from oddish.db import (
     TaskModel,
     TrialModel,
     get_storage_client,
+    task_experiments,
 )
 from oddish.schemas import TaskStatusResponse, TrialResponse
 
@@ -69,56 +70,36 @@ async def get_public_experiment(
 
 
 async def get_public_task(session: AsyncSession, task_id: str) -> TaskModel | None:
-    """Get a task that belongs to a public experiment (via task or trial link)."""
-    via_task_experiment = exists(
+    """Get a task that belongs to at least one public experiment."""
+    public_link_exists = exists(
         select(1)
-        .select_from(ExperimentModel)
-        .where(
-            ExperimentModel.id == TaskModel.experiment_id,
-            ExperimentModel.is_public == True,  # noqa: E712
+        .select_from(
+            task_experiments.join(
+                ExperimentModel,
+                ExperimentModel.id == task_experiments.c.experiment_id,
+            )
         )
-    )
-    via_trial_experiment = exists(
-        select(1)
-        .select_from(TrialModel)
-        .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
         .where(
-            TrialModel.task_id == TaskModel.id,
+            task_experiments.c.task_id == TaskModel.id,
             ExperimentModel.is_public == True,  # noqa: E712
         )
     )
     result = await session.execute(
         select(TaskModel)
-        .options(selectinload(TaskModel.trials), selectinload(TaskModel.experiment))
+        .options(selectinload(TaskModel.trials), selectinload(TaskModel.experiments))
         .where(TaskModel.id == task_id)
-        .where(or_(via_task_experiment, via_trial_experiment))
+        .where(public_link_exists)
     )
     return result.scalar_one_or_none()
 
 
 async def get_public_trial(session: AsyncSession, trial_id: str) -> TrialModel | None:
-    """Get a trial that belongs to a public experiment (via task or trial link)."""
-    via_task = exists(
-        select(1)
-        .select_from(TaskModel)
-        .join(ExperimentModel, ExperimentModel.id == TaskModel.experiment_id)
-        .where(
-            TaskModel.id == TrialModel.task_id,
-            ExperimentModel.is_public == True,  # noqa: E712
-        )
-    )
-    via_trial = exists(
-        select(1)
-        .select_from(ExperimentModel)
-        .where(
-            ExperimentModel.id == TrialModel.experiment_id,
-            ExperimentModel.is_public == True,  # noqa: E712
-        )
-    )
+    """Get a trial whose experiment is public."""
     result = await session.execute(
         select(TrialModel)
+        .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
         .where(TrialModel.id == trial_id)
-        .where(or_(via_task, via_trial))
+        .where(ExperimentModel.is_public == True)  # noqa: E712
     )
     return result.scalar_one_or_none()
 
@@ -134,7 +115,10 @@ async def get_task_status_counts(
     query = select(TaskModel).where(TaskModel.id == task_id)
     if join_experiment:
         query = query.join(
-            ExperimentModel, ExperimentModel.id == TaskModel.experiment_id
+            task_experiments, task_experiments.c.task_id == TaskModel.id
+        ).join(
+            ExperimentModel,
+            ExperimentModel.id == task_experiments.c.experiment_id,
         )
     for clause in filters:
         query = query.where(clause)
