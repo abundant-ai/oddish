@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ExperimentShareButton } from "@/components/experiment-share-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
-import type { Task } from "@/lib/types";
+import type { Task, Trial } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { Beaker, Check, Copy, Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
@@ -324,6 +324,33 @@ export function ExperimentClientPage({
     await refreshTaskPages();
   };
 
+  const handleDeleteTrial = async (trial: Trial, _task: Task | null) => {
+    const res = await fetch(`/api/trials/${encodeURIComponent(trial.id)}`, {
+      method: "DELETE",
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(
+        errorData.detail || errorData.error || "Failed to delete trial",
+      );
+    }
+
+    const filterTrials = (tasks: Task[] | undefined) =>
+      tasks?.map((task) =>
+        task.trials?.some((t) => t.id === trial.id)
+          ? { ...task, trials: task.trials.filter((t) => t.id !== trial.id) }
+          : task,
+      );
+
+    await mutateLightweight(filterTrials, { revalidate: false });
+    await mutateTrials(
+      (pages) => pages?.map((page) => filterTrials(page) ?? page),
+      { revalidate: false },
+    );
+    await refreshTaskPages();
+  };
+
   const handleCopyExperimentName = async () => {
     await navigator.clipboard.writeText(displayName);
     setCopiedExperimentName(true);
@@ -480,6 +507,7 @@ export function ExperimentClientPage({
           readOnly={false}
           allowRetry
           onTaskDelete={handleDeleteTask}
+          onTrialDelete={handleDeleteTrial}
           onRerun={refreshTaskPages}
         />
       )}

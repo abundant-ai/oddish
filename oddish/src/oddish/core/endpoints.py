@@ -1186,6 +1186,69 @@ async def delete_experiment_core(
     }
 
 
+async def delete_trial_core(
+    session: AsyncSession,
+    *,
+    trial_id: str,
+    org_id: str | None = None,
+) -> dict:
+    """Delete a single trial, cancel its in-flight jobs, and collect its S3 prefix.
+
+    Also invalidates the parent task's cached verdict so stale aggregates from
+    the now-deleted trial do not leak into the dashboard.
+    """
+    trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
+
+    from oddish.db.storage import collect_s3_prefixes_for_deletion
+
+    s3_prefixes = collect_s3_prefixes_for_deletion(
+        tasks=[],
+        trials=[(trial.id, trial.trial_s3_key)],
+    )
+
+    # Cancel any live worker_jobs belonging to this trial (TRIAL runs and
+    # ANALYSIS jobs) so workers stop heart-beating and release slots before
+    # the domain row disappears underneath them.
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = 'Trial deleted by user',
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  subject_table = 'trials'
+              AND  subject_id = :trial_id
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        ),
+        {"trial_id": trial_id},
+    )
+
+    task_id = trial.task_id
+
+    await session.execute(
+        delete(TrialModel)
+        .where(TrialModel.id == trial_id)
+        .execution_options(synchronize_session=False)
+    )
+
+    # Task aggregates (total/completed/failed) are derived from the remaining
+    # trials, but the cached verdict for the task may reference this trial.
+    # Clear it so the dashboard doesn't show stale data.
+    if task_id:
+        task = await session.get(TaskModel, task_id)
+        if task is not None:
+            _reset_task_verdict(task)
+
+    return {
+        "s3_prefixes": s3_prefixes,
+        "deleted": {"trial_id": trial_id, "task_id": task_id},
+    }
+
+
 async def create_task_sweep_core(
     session: AsyncSession,
     *,

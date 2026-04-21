@@ -11,6 +11,17 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   FileText,
   FolderOpen,
@@ -28,6 +39,7 @@ import {
   AlertTriangle,
   Route,
   Package,
+  Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TrajectoryViewer } from "@/components/trajectory-viewer";
@@ -63,8 +75,10 @@ interface TrialDetailPanelProps {
   onNavigate?: (trial: Trial, trialIndex: number) => void;
   onNavigateToTask?: () => void;
   onRetry?: (taskIds?: string[]) => void;
+  onDelete?: (trial: Trial, task: Task | null) => Promise<void>;
   apiBaseUrl?: string;
   allowRetry?: boolean;
+  allowDelete?: boolean;
   /** Render content only without ResizableDrawer wrapper */
   contentOnly?: boolean;
 }
@@ -104,8 +118,10 @@ export function TrialDetailPanel({
   onNavigate,
   onNavigateToTask,
   onRetry,
+  onDelete,
   apiBaseUrl = "/api",
   allowRetry = true,
+  allowDelete = false,
   contentOnly = false,
 }: TrialDetailPanelProps) {
   const searchParams = useSearchParams();
@@ -124,6 +140,9 @@ export function TrialDetailPanel({
   const [retryError, setRetryError] = useState<string | null>(null);
   const [analysisRunning, setAnalysisRunning] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [filesTargetPath, setFilesTargetPath] = useState<string | null>(() =>
     searchParams.get("file"),
   );
@@ -168,6 +187,7 @@ export function TrialDetailPanel({
 
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
+  const canDelete = allowDelete && Boolean(onDelete) && Boolean(trial);
   const taskHasActiveTrials =
     task !== null
       ? Math.max(0, task.total - task.completed - task.failed) > 0
@@ -204,6 +224,24 @@ export function TrialDetailPanel({
       setRetryError(err instanceof Error ? err.message : "Failed to retry");
     } finally {
       setRetrying(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!trial || !onDelete || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+
+    try {
+      await onDelete(trial, task);
+      setDeleteDialogOpen(false);
+      onClose();
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error ? err.message : "Failed to delete trial",
+      );
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -262,6 +300,9 @@ export function TrialDetailPanel({
       setRetryError(null);
       setAnalysisRunning(false);
       setAnalysisError(null);
+      setDeleteDialogOpen(false);
+      setDeleting(false);
+      setDeleteError(null);
       setFilesTargetPath(null);
       hydratedFromUrl.current = false;
     }
@@ -595,6 +636,30 @@ export function TrialDetailPanel({
                 )}
               </Button>
             )}
+            {canDelete && (
+              <Button
+                onClick={() => {
+                  setDeleteError(null);
+                  setDeleteDialogOpen(true);
+                }}
+                disabled={deleting}
+                variant="outline"
+                size="sm"
+                className="h-7 min-w-[112px] px-2 text-[10px] font-semibold uppercase tracking-wide text-destructive hover:bg-destructive/10 hover:text-destructive"
+              >
+                {deleting ? (
+                  <>
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="mr-1 h-3.5 w-3.5" />
+                    Delete
+                  </>
+                )}
+              </Button>
+            )}
           </div>
         </div>
         {retryError && (
@@ -851,23 +916,76 @@ export function TrialDetailPanel({
     </>
   );
 
+  const deleteDialog = canDelete ? (
+    <AlertDialog
+      open={deleteDialogOpen}
+      onOpenChange={(open) => {
+        if (!open && !deleting) {
+          setDeleteDialogOpen(false);
+          setDeleteError(null);
+        }
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this trial?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This permanently deletes the trial, its logs, and any stored
+            artifacts. In-flight runs for this trial will be cancelled. This
+            action cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {deleteError && (
+          <Alert variant="destructive">
+            <AlertTitle>Delete failed</AlertTitle>
+            <AlertDescription>{deleteError}</AlertDescription>
+          </Alert>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={(event) => {
+              event.preventDefault();
+              void handleDelete();
+            }}
+            disabled={deleting}
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+          >
+            {deleting ? (
+              <>
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                Deleting...
+              </>
+            ) : (
+              "Delete trial"
+            )}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  ) : null;
+
   if (contentOnly) {
     return (
       <div className="flex h-full flex-1 flex-col overflow-hidden">
         {content}
+        {deleteDialog}
       </div>
     );
   }
 
   return (
-    <ResizableDrawer
-      open={isOpen}
-      onOpenChange={(open) => !open && onClose()}
-      defaultWidth={700}
-      minWidth={420}
-      maxWidth={900}
-    >
-      {content}
-    </ResizableDrawer>
+    <>
+      <ResizableDrawer
+        open={isOpen}
+        onOpenChange={(open) => !open && onClose()}
+        defaultWidth={700}
+        minWidth={420}
+        maxWidth={900}
+      >
+        {content}
+      </ResizableDrawer>
+      {deleteDialog}
+    </>
   );
 }

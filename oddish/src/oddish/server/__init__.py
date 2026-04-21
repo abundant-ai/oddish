@@ -18,6 +18,7 @@ from oddish.core.endpoints import (
     create_task_sweep_core,
     delete_experiment_core,
     delete_task_core,
+    delete_trial_core,
     get_task_status_core,
     get_task_version_core,
     get_trial_by_index_core,
@@ -460,6 +461,22 @@ async def delete_experiment(experiment_id: str):
         "status": "success",
         "deleted": result["deleted"],
     }
+
+
+@api.delete("/trials/{trial_id}")
+async def delete_trial(trial_id: str) -> dict:
+    """Delete a single trial and its associated artifacts."""
+    async with get_session() as session:
+        result = await delete_trial_core(session, trial_id=trial_id)
+        await session.commit()
+
+    if result.get("s3_prefixes"):
+        try:
+            await delete_s3_prefixes(result["s3_prefixes"])
+        except Exception:
+            logger.exception("Failed to delete S3 artifacts for trial %s", trial_id)
+
+    return {"status": "success", "deleted": result["deleted"]}
 
 
 @api.patch("/experiments/{experiment_id}", response_model=ExperimentUpdateResponse)

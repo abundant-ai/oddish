@@ -244,6 +244,7 @@ uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/
 | PATCH | `/experiments/{experiment_id}` | Update experiment metadata |
 | GET | `/tasks/{task_id}/trials/{index}` | Fetch a trial by 0-based index |
 | POST | `/trials/{trial_id}/analysis/retry` | Queue or rerun analysis for one trial |
+| DELETE | `/trials/{trial_id}` | Delete a single trial, cancel its in-flight jobs, and remove its S3 artifacts when enabled |
 | GET | `/trials/{trial_id}/logs` | Fetch logs for a trial |
 | GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
 
