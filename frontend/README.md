@@ -12,7 +12,7 @@ Current app surface:
 - `/experiments` base page directing users to select an experiment
 - `/experiments/[experiment]` experiment detail, task and trial inspection, logs, results, files, version history, share controls, per-task retry actions, and **cancel** for in-flight work (task drawer **Cancel (N)** or experiment table bulk **Cancel** when tasks are selected; both use `POST /tasks/cancel` with one or more task ids)
 - `/settings` organization management and API key management
-- `/admin` worker queues, queue slots, queue health, and orphaned state monitoring
+- `/admin` two tabs: **Worker Jobs** (default) showing the unified `worker_jobs` kind×status matrix, stale-RUNNING samples, recent failures/cancels, duration percentiles, plus the `OrphanedStateCard`; and **Concurrency** with `queue_slots` leases and per-queue-key health
 - `/share/[token]` read-only public experiment view
 - `/datasets` and `/datasets/[token]` public dataset listing and detail pages
 
@@ -121,11 +121,11 @@ If you want backend JWTs to include org context, configure a Clerk JWT template 
 The frontend proxies backend requests through `src/app/api/*`. Main groups:
 
 - `/api/dashboard` for dashboard data
-- `/api/tasks/*` for task browse/search, task detail, versions, trials, files, `POST /api/tasks/cancel`, and per-task analysis or verdict retry actions
+- `/api/tasks/*` for task browse/search, task detail, versions, trials, files, direct-to-S3 upload init/complete, `POST /api/tasks/cancel`, and per-task analysis or verdict retry actions
 - `/api/trials/*` for trial logs, structured logs, result payloads, retries, analysis retries, trajectories, and files
 - `/api/experiments/*` for experiment detail, task listing, publish, unpublish, and share token creation
 - `/api/settings/api-keys*` for API key management
-- `/api/admin/*` for queue slots, queue status, and orphaned state detection
+- `/api/admin/*` for queue slots, queue status, orphaned state, and the unified `worker-jobs` matrix (`/api/admin/worker-jobs`)
 - `/api/public/*` for public experiment, dataset, task-file, and trial artifact access
 
 ## Project Structure

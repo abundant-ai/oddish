@@ -28,11 +28,12 @@ oddish/                         # Core Python package (CLI, server, workers, DB)
 │   ├── core/                   # shared business logic (reused by backend/)
 │   ├── server/                 # standalone FastAPI app (python -m oddish.server)
 │   ├── db/                     # models, connection helpers, storage
-│   ├── workers/                # Harbor execution plus shared queue runtime
+│   ├── workers/                # Unified worker_jobs runtime: dispatcher,
+│   │                           #   single-job runner, handlers, cleanup
 │   ├── backfill_queue_keys.py
 │   ├── config.py
 │   ├── experiment.py
-│   ├── queue.py
+│   ├── queue.py                # task/trial enqueue + worker_jobs enqueue helpers
 │   └── schemas.py
 ├── alembic/                    # Core DB migrations
 ├── env.example
@@ -82,29 +83,40 @@ FastAPI server — oddish standalone (python -m oddish.server)
            or backend cloud layer (Modal / Railway)
         |
         v
-Postgres (trials table = the queue)
+Postgres
+  - worker_jobs       # unified queue (TRIAL / ANALYSIS / VERDICT / …)
+  - trials / tasks    # domain state + live UI columns
+  - queue_slots       # per-queue-key concurrency leases
         |
         v
 Workers (auto-started by API, or standalone via python -m oddish.workers.queue.worker)
         |
         v
-Harbor task execution → logs/results/artifacts (S3 / Modal volumes)
+Harbor task execution → logs/results/artifacts (S3 + optional Modal volumes)
 ```
 
 High-level flow:
 
-1. Upload a task bundle.
-2. Submit a sweep of agent/model trials for that task.
-3. Workers execute trials and optionally run analysis and verdict stages.
-4. Use the CLI or dashboard to watch progress and pull logs and artifacts back locally.
+1. Upload a task bundle directly to S3 via a presigned PUT URL.
+2. Submit a sweep of agent/model trials for that task; each trial, analysis,
+   and verdict is enqueued as a row in `worker_jobs` in the same transaction
+   as its domain row.
+3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
+   handler (`TRIAL` / `ANALYSIS` / `VERDICT`), write heartbeats, and exit.
+4. Use the CLI or dashboard to watch progress and pull logs/artifacts
+   back locally.
 
 ## Package Boundaries
 
 `oddish` owns the execution core and shared queue/runtime primitives:
 
-- core models and migrations, including `queue_slots`
-- shared queue-slot leasing and one-job worker execution helpers
-- stale-heartbeat cleanup and pipeline stage reconciliation
+- core models and migrations, including `worker_jobs` and `queue_slots`
+- unified claim/dispatch SQL, one `run_single_worker_job` runner, and a
+  handler registry (`TrialJobHandler`, `AnalysisJobHandler`, `VerdictJobHandler`)
+- shared queue-slot leasing, per-queue-key concurrency limits, and
+  per-user fairness on `TRIAL` claims
+- stale-heartbeat reaping, RETRYING → QUEUED mirror-back, and pipeline
+  stage reconciliation in one cleanup sweep
 
 `backend` wraps `oddish` with the hosted-only layer:
 
@@ -141,6 +153,22 @@ pip install oddish[all]       # everything including dev tools
 - Standalone worker: `python -m oddish.workers.queue.worker` (requires `oddish[worker]`)
 - DB helper CLI: `python -m oddish.db` (requires `oddish[server]`)
 - Queue key backfill: `python -m oddish.backfill_queue_keys`
+
+### Worker Runtime (`oddish.workers.queue`)
+
+| File | Purpose |
+|------|---------|
+| `worker_job_dispatcher.py` | `discover_active_worker_job_queue_keys`, `get_worker_job_queue_counts`, `build_spawn_plan` |
+| `worker_job_single_job.py` | `_CLAIM_WORKER_JOB_SQL`, `run_single_worker_job`, `heartbeat_worker_job` |
+| `trial_handler.py` / `analysis_handler.py` / `verdict_handler.py` | Per-kind execution bodies |
+| `cleanup.py` | Zombie reaper, stale-heartbeat sweep, stage safety nets, orphaned-slot release |
+| `slots.py` | `queue_slots` lease acquire/release |
+| `queue_manager.py` | Per-queue-key concurrency bookkeeping |
+| `worker.py` | Standalone poll loop (`python -m oddish.workers.queue.worker`) |
+
+Handler registration lives in `oddish.workers.jobs` (`registry.py`,
+`handlers.py`). Both the standalone worker and the backend call
+`ensure_builtin_handlers_registered()` at startup.
 
 ### Local Development
 
@@ -255,7 +283,10 @@ MODAL_TOKEN_SECRET=...
 
 Storage defaults:
 
-- uploaded task bundles: `tasks/<task_id>/.oddish-task.tar.gz` in S3-compatible storage
+- S3-compatible storage is **required**. Clients PUT task bundles directly
+  to a presigned URL returned by `/tasks/upload/init` and then call
+  `/tasks/upload/complete`.
+- uploaded task bundles: `tasks/<task_id>/.oddish-task.tar.gz`
 - Harbor job outputs: `/tmp/harbor-jobs`
 - Modal workers also check `/mnt/oddish-tasks` before falling back to the S3 download path
 
@@ -263,7 +294,15 @@ Storage defaults:
 
 ```python
 from oddish.config import settings
-from oddish.db import TaskModel, TrialModel, get_session, init_db
+from oddish.db import (
+    TaskModel,
+    TrialModel,
+    WorkerJobModel,
+    WorkerJobKind,
+    WorkerJobStatus,
+    get_session,
+    init_db,
+)
 from oddish.queue import create_task
 from oddish.schemas import HarborConfig, TaskSubmission, TaskSweepSubmission, TrialSpec
 from oddish.workers import run_polling_worker
@@ -286,10 +325,25 @@ If a Clerk JWT arrives without `org_id`, the backend tries to resolve a single e
 
 ### Worker Architecture
 
-Dispatcher + single-job pattern:
+Dispatcher + single-job pattern, backed by the unified `worker_jobs` table:
 
-1. `poll_queue()` runs on a 120s Modal schedule, clears stale queue state, and launches up to `MAX_WORKERS_PER_POLL` single-job workers based on queue depth and concurrency limits.
-2. `process_single_job(queue_key)` acquires a queue-slot lease, processes one `trial`/`analysis`/`verdict`, emits updates, and exits.
+1. `poll_queue()` runs on a 120s Modal schedule. It calls
+   `cleanup_orphaned_queue_state` (zombie-txn reap + stale-heartbeat sweep +
+   stage safety nets + orphaned slot release), discovers active queue keys
+   via `discover_active_worker_job_queue_keys`, and launches up to
+   `MAX_WORKERS_PER_POLL` single-job containers.
+2. `process_single_job(queue_key)` acquires a `queue_slots` lease for the
+   queue key and calls `run_single_worker_job`, which atomically claims one
+   row from `worker_jobs`, dispatches to the registered handler
+   (`TRIAL` / `ANALYSIS` / `VERDICT`), writes heartbeats on both
+   `worker_jobs.heartbeat_at` and the mirrored domain column, records the
+   outcome (`SUCCESS` / `RETRYING` / `FAILED` / `CANCELLED`), runs the
+   post-success hook (GitHub notification) when applicable, and exits.
+
+Handler registration happens at container load via
+`ensure_builtin_handlers_registered()`. Post-success hooks
+(`notify_github_trial`, `notify_github_analysis`, `notify_github_verdict`)
+are wired through `_POST_SUCCESS_HOOKS` in `worker/functions.py`.
 
 ### Local Development
 
@@ -381,9 +435,11 @@ uv run alembic upgrade head
 | `api/routers/tasks.py` | Task upload, browse, sweep, sharing, retries |
 | `api/routers/trials.py` | Trial logs, result, trajectory, retries |
 | `api/routers/dashboard.py` | Cached aggregate dashboard endpoint |
+| `api/routers/admin.py` | Auth wrapper over `oddish.core.admin` (slots, queue status, orphaned state, worker_jobs) |
 | `auth/verification.py` | API key + Clerk JWT verification |
-| `worker/functions.py` | Modal dispatcher and worker spawning |
+| `worker/functions.py` | Modal dispatcher (`poll_queue`) and kind-agnostic single-job runner |
 | `worker/runtime.py` | Modal runtime patching and storage setup |
+| `worker/github.py` | GitHub notification hooks used as post-success actions |
 
 ---
 
@@ -396,7 +452,11 @@ uv run alembic upgrade head
 - `/tasks` — authenticated task browser with search, pagination, version summaries
 - `/experiments/[experiment]` — experiment detail, task and trial inspection, logs, results, files, version history, share controls, cancel
 - `/settings` — organization and API key management
-- `/admin` — worker queues, queue slots, and orphaned state monitoring
+- `/admin` — two tabs:
+  - **Worker Jobs** (default): unified `worker_jobs` kind×status matrix,
+    stale-RUNNING samples, recent failures/cancels, duration percentiles,
+    plus `OrphanedStateCard`
+  - **Concurrency**: `queue_slots` leases and per-queue-key health
 - `/share/[token]` — read-only public experiment view
 - `/datasets` and `/datasets/[token]` — public dataset listing and detail
 
@@ -530,7 +590,12 @@ curl http://localhost:8000/health
 - Make sure the API is healthy.
 - `oddish.server` auto-starts workers; or run `python -m oddish.workers.queue.worker` separately.
 - Check queue concurrency settings if a model-specific queue is saturated.
-- Stale-heartbeat cleanup runs periodically and will fail trials whose workers crashed; stuck analyses and verdicts are automatically re-queued.
+- Inspect the unified queue directly: `GET /admin/worker-jobs` returns a
+  `{kind: {status: count}}` matrix plus stale-RUNNING samples and recent
+  failures; the `/admin` dashboard surfaces the same data.
+- Stale-heartbeat cleanup runs periodically and transitions stuck
+  `worker_jobs` rows to `RETRYING` (if attempts remain) or `FAILED`; the
+  outcome is mirrored back onto `trials` / `tasks` for the live UI.
 
 ### Pulling from a remote API fails
 

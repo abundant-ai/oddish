@@ -21,27 +21,52 @@ User (Dashboard, CLI, SDK)
   ▼
 Modal API (FastAPI in `endpoints.py` and `api/routers/*`)
   │  - Auth: API key or Clerk JWT
-  │  - Writes task/trial state in Postgres
+  │  - Enqueues trial / analysis / verdict work as worker_jobs rows
   ▼
-Postgres (oddish + cloud tables)
+Postgres
+  - worker_jobs   (unified queue; TRIAL / ANALYSIS / VERDICT)
+  - trials/tasks  (domain state + live UI columns)
+  - queue_slots   (per-queue-key concurrency leases)
+  + cloud tables  (orgs / users / api_keys)
   │
   ▼
-Worker dispatcher (`worker/functions.py`, every 120s)
-  │  - Spawns single-job workers by queue key
+Worker dispatcher (`worker/functions.py::poll_queue`, every 120s)
+  │  - Runs unified cleanup (stale-heartbeat + stage safety nets)
+  │  - Discovers active queue keys from worker_jobs
+  │  - Spawns single-job Modal containers per queue key
   ▼
-Single-job workers (process one job, then exit)
-  │
+Single-job worker (`process_single_job`)
+  │  - Acquires a queue_slots lease
+  │  - Claims ONE worker_jobs row (any kind)
+  │  - Dispatches to the registered handler
+  │  - Writes heartbeats, records outcome, exits
   ▼
-Modal sandboxes (Harbor execution, logs/artifacts to S3 or volume)
+Modal sandboxes (Harbor execution, logs/artifacts to S3)
 ```
 
 ### Worker architecture
 
-Dispatcher + single-job pattern:
-1. `poll_queue()` runs on a 120s Modal schedule, clears stale queue state, and launches up to `MAX_WORKERS_PER_POLL` single-job workers based on queue depth and concurrency limits.
-2. `process_single_job(queue_key)` acquires a queue-slot lease, processes one `trial`/`analysis`/`verdict`, emits updates, and exits.
+Dispatcher + single-job pattern backed by the unified `worker_jobs` table:
 
-This keeps concurrency deterministic and avoids long-lived worker drift.
+1. `poll_queue()` runs on a 120s Modal schedule. It calls
+   `cleanup_orphaned_queue_state` (zombie-txn reap, stale-heartbeat sweep,
+   stage safety nets, orphaned-slot release), discovers active queue keys
+   via `discover_active_worker_job_queue_keys`, and launches up to
+   `MAX_WORKERS_PER_POLL` single-job containers.
+2. `process_single_job(queue_key)` acquires a `queue_slots` lease for the
+   queue key and calls `run_single_worker_job`, which atomically claims one
+   row from `worker_jobs`, dispatches to the registered handler
+   (`TRIAL` / `ANALYSIS` / `VERDICT`), writes heartbeats to both
+   `worker_jobs.heartbeat_at` and the mirrored domain column, records the
+   outcome, runs the post-success hook, releases the lease, and exits.
+
+`_POST_SUCCESS_HOOKS = {TRIAL: notify_github_trial, ANALYSIS: …,
+VERDICT: …}` is threaded through so GitHub notifications fire after the
+row is `SUCCESS`. Handlers are registered at module load via
+`ensure_builtin_handlers_registered()` so every container has
+`TRIAL` / `ANALYSIS` / `VERDICT` wired up before any claim. Adding a new
+kind (e.g. `QA_REVIEW`) is one handler class plus a `register` call — no
+new claim SQL, cleanup step, or dispatcher branch.
 
 ## Authentication Model
 
@@ -101,14 +126,14 @@ The API layer enforces this scope in all list/read/write queries.
 | `api/routers/dashboard.py` | Cached aggregate dashboard endpoint (queues, usage, tasks, experiments) |
 | `api/routers/orgs.py` | Current org lookup and Clerk-backed user management |
 | `api/routers/api_keys.py` | Org API key listing, creation, and revocation |
-| `api/routers/admin.py` | Queue-slot and queue-status inspection endpoints |
+| `api/routers/admin.py` | Queue-slot, queue-status, orphaned-state, and **worker_jobs** inspection endpoints |
 | `api/routers/clerk_webhooks.py` | Clerk org/user synchronization |
 | `api/routers/github_webhooks.py` | GitHub status/refresh integrations |
 | `auth/verification.py` | API key + Clerk JWT verification and auth caches |
 | `auth/provisioning.py` | Clerk user/org provisioning helpers |
 | `auth/types.py` | `AuthContext` dataclass and `AuthMethod` enum |
 | `models.py` | Cloud auth models (orgs/users/api keys) |
-| `worker/functions.py` | Modal dispatcher and worker spawn orchestration |
+| `worker/functions.py` | Modal dispatcher (`poll_queue`) and kind-agnostic `process_single_job` runner |
 | `worker/runtime.py` | Modal runtime patching and storage setup |
 | `worker/github.py` | Thin wrappers delegating GitHub notifications to `oddish.integrations.github` |
 | `alembic/` | Cloud migrations (auth + cloud table extensions) |
@@ -133,12 +158,22 @@ Required if you want Clerk webhook ingestion enabled:
 
 - `CLERK_WEBHOOK_SECRET`
 
+S3-compatible storage is **required**. Task bundles and trial artifacts are
+uploaded directly from the client to S3 via presigned PUT URLs, and the
+backend streams logs/results/files back through the same bucket. You must
+configure the full `ODDISH_S3_*` set:
+
+- `ODDISH_S3_BUCKET`
+- `ODDISH_S3_REGION`
+- `ODDISH_S3_ACCESS_KEY`
+- `ODDISH_S3_SECRET_KEY`
+- `ODDISH_S3_ENDPOINT_URL` (for non-AWS S3-compatible providers)
+
 Common optional settings:
 
 - `CORS_ALLOWED_ORIGINS`
 - `CLERK_ISSUER`
 - `CLERK_JWT_AUDIENCE`
-- `ODDISH_S3_*`
 - provider keys such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DAYTONA_API_KEY`
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`
 
@@ -180,7 +215,8 @@ All routes require auth unless marked public.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/dashboard` | Cached aggregate response for queues, pipeline stats, usage, tasks, and experiments |
-| POST | `/tasks/upload` | Upload task archive |
+| POST | `/tasks/upload/init` | Start a direct-to-S3 task upload and return a presigned PUT URL |
+| POST | `/tasks/upload/complete` | Finalize a direct-to-S3 task upload after the client PUT succeeds |
 | POST | `/tasks/sweep` | Expand one task into multiple trials |
 | GET | `/tasks` | List tasks (org-scoped, paginated/filtered) |
 | GET | `/tasks/browse` | Browse latest task versions with pagination and search |
@@ -249,9 +285,10 @@ All routes require auth unless marked public.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/admin/slots` | Queue slot lease state |
-| GET | `/admin/queue-status` | Queue status (trials/analysis/verdict counts) |
-| GET | `/admin/orphaned-state` | Orphaned queue state diagnostics |
+| GET | `/admin/slots` | `queue_slots` lease state |
+| GET | `/admin/queue-status` | Per-kind queue counts sourced from `trials`/`tasks` |
+| GET | `/admin/orphaned-state` | Stale/orphaned queue state diagnostics |
+| GET | `/admin/worker-jobs` | Unified `worker_jobs` kind×status matrix, stale-RUNNING samples, recent failures/cancels, and duration percentiles |
 | POST | `/webhooks/clerk` | Clerk webhook ingestion |
 | POST | `/github/tasks/{task_id}/refresh` | Refresh task PR comment |
 | POST | `/github/experiments/{experiment_id}/refresh` | Refresh experiment PR comments |
