@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { Button } from "@/components/ui/button";
 import { Copy, Check } from "lucide-react";
 
 let shikiPromise: Promise<typeof import("shiki")> | null = null;
@@ -148,20 +147,19 @@ export function CodeBlock({
   return (
     <div className={`group relative ${className || ""}`}>
       {showCopyButton && (
-        <Button
+        <button
           type="button"
-          variant="ghost"
-          size="icon"
           onClick={handleCopy}
-          className="absolute right-2 top-2 z-10 rounded bg-muted/80 p-1.5 opacity-0 transition-opacity hover:bg-muted group-hover:opacity-100"
+          className="absolute right-1.5 top-1.5 z-10 inline-flex h-6 w-6 items-center justify-center rounded bg-muted/80 opacity-0 transition-opacity hover:bg-muted group-hover:opacity-100"
           title="Copy to clipboard"
+          aria-label="Copy to clipboard"
         >
           {copied ? (
             <Check className="h-3 w-3 text-green-600 dark:text-green-400" />
           ) : (
             <Copy className="h-3 w-3 text-muted-foreground" />
           )}
-        </Button>
+        </button>
       )}
       {highlightedHtml ? (
         <div

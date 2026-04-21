@@ -262,104 +262,43 @@ function getAnalysisIndicator(trial: Trial): {
   return null;
 }
 
-// Task-level pipeline pill that treats each downstream stage as its
-// own first-class agent job. Left segment summarises trajectory
-// analysis progress ("A: 3/5"), right segment renders the task
-// verdict. Source of truth for scheduling state is the unified
-// ``worker_jobs`` table; this pill reads the domain denormalization
-// (``trial.analysis_status`` / ``task.verdict_status``) because those
-// stay fresh for display.
-function TaskPipelineStatus({ task }: { task: Task }) {
+function VerdictIndicator({ task }: { task: Task }) {
   if (!task.run_analysis) return null;
 
-  const trials = task.trials ?? [];
-  const analysisTotal = trials.length;
-  const analysisDone = trials.filter(
-    (trial) => trial.analysis_status === "success",
-  ).length;
-  const analysisFailed = trials.filter(
-    (trial) => trial.analysis_status === "failed",
-  ).length;
-  const analysisInFlight = trials.filter(
-    (trial) =>
-      trial.analysis_status === "pending" ||
-      trial.analysis_status === "queued" ||
-      trial.analysis_status === "running",
-  ).length;
-
-  const verdictStatus = task.verdict_status;
+  const status = task.verdict_status;
   const verdict = task.verdict;
 
-  const analysisTone = (() => {
-    if (analysisInFlight > 0) return "text-blue-400";
-    if (analysisFailed > 0 && analysisDone === 0) return "text-red-400";
-    if (analysisDone === analysisTotal && analysisTotal > 0)
-      return "text-emerald-500";
-    return "text-muted-foreground";
-  })();
+  if (status === "pending" || status === "queued" || status === "running") {
+    return (
+      <span className="ml-1 inline-flex items-center">
+        <Microscope className="h-3 w-3 animate-pulse text-muted-foreground" />
+      </span>
+    );
+  }
 
-  const analysisTooltip =
-    analysisTotal === 0
-      ? "No analyses scheduled yet"
-      : `Trajectory analyses: ${analysisDone}/${analysisTotal} done${
-          analysisInFlight > 0 ? ` · ${analysisInFlight} in flight` : ""
-        }${analysisFailed > 0 ? ` · ${analysisFailed} failed` : ""}`;
-
-  const verdictIcon = (() => {
-    if (
-      verdictStatus === "pending" ||
-      verdictStatus === "queued" ||
-      verdictStatus === "running"
-    ) {
-      return {
-        element: (
-          <Microscope className="h-3 w-3 animate-pulse text-blue-400" />
-        ),
-        label: `Verdict: ${verdictStatus}`,
-      };
-    }
-    if (verdictStatus === "success" && verdict) {
-      return {
-        element: verdict.is_good ? (
+  if (status === "success" && verdict) {
+    return (
+      <span className="ml-1 inline-flex items-center">
+        {verdict.is_good ? (
           <Check className="h-3 w-3 text-emerald-500" />
         ) : (
           <AlertTriangle className="h-3 w-3 text-amber-500" />
-        ),
-        label: `Verdict: ${verdict.is_good ? "good" : "needs review"}`,
-      };
-    }
-    if (verdictStatus === "failed") {
-      return {
-        element: <Microscope className="h-3 w-3 text-red-400" />,
-        label: "Verdict failed",
-      };
-    }
-    return {
-      element: <Microscope className="h-3 w-3 text-muted-foreground/50" />,
-      label: "Verdict not queued yet",
-    };
-  })();
+        )}
+      </span>
+    );
+  }
+
+  if (status === "failed") {
+    return (
+      <span className="ml-1 inline-flex items-center">
+        <Microscope className="h-3 w-3 text-red-400" />
+      </span>
+    );
+  }
 
   return (
-    <span className="ml-1 inline-flex items-center gap-1 rounded border border-border/60 bg-muted/30 px-1 py-px text-[10px] font-normal leading-none">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className={`inline-flex items-center gap-0.5 ${analysisTone}`}>
-            <Microscope className="h-3 w-3" />
-            <span className="font-mono">
-              {analysisDone}/{analysisTotal || "—"}
-            </span>
-          </span>
-        </TooltipTrigger>
-        <TooltipContent>{analysisTooltip}</TooltipContent>
-      </Tooltip>
-      <span className="text-muted-foreground/50">·</span>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="inline-flex items-center">{verdictIcon.element}</span>
-        </TooltipTrigger>
-        <TooltipContent>{verdictIcon.label}</TooltipContent>
-      </Tooltip>
+    <span className="ml-1 inline-flex items-center">
+      <Microscope className="h-3 w-3 text-muted-foreground/50" />
     </span>
   );
 }
@@ -1903,7 +1842,7 @@ export function ExperimentTrialsTable({
                                   v{task.current_version}
                                 </span>
                               )}
-                              <TaskPipelineStatus task={task} />
+                              <VerdictIndicator task={task} />
                             </div>
                           </div>
                         </div>

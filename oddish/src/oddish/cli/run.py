@@ -441,11 +441,10 @@ def run(
                 "[red]--task does not support task filtering flags.[/red]"
             )
             raise typer.Exit(1)
-        if experiment_id:
-            error_console.print(
-                "[red]--experiment cannot be used with --task because the task already belongs to an experiment.[/red]"
-            )
-            raise typer.Exit(1)
+        # --experiment is allowed with --task: tasks can belong to multiple
+        # experiments (see `task_experiments` M2M in `oddish/db/models.py`),
+        # and the server will file the new trials under the provided
+        # experiment (auto-linking the task if it isn't already a member).
         existing_task_ids = [existing_task_id]
     elif dataset:
         task_paths = get_task_paths_from_registry(

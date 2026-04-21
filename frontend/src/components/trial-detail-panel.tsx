@@ -46,6 +46,7 @@ import { TrajectoryViewer } from "@/components/trajectory-viewer";
 import { TaskFilesPanel } from "@/components/task-files-panel";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { ArtifactsViewer } from "@/components/artifacts-viewer";
+import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
 import {
   formatPartialRewardBadgeValue,
@@ -92,6 +93,38 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   queued: "border-purple-500/30 bg-purple-500/10",
   running: "border-blue-500/30 bg-blue-500/10",
 };
+
+function buildOddishRunCommand(trial: Trial, task: Task): string {
+  const parts: string[] = ["oddish run"];
+
+  // `--task <task_id>` re-queues trials against the existing server-side
+  // task, so it works even when the user doesn't have the task files locally.
+  // Tasks have a many-to-many relationship with experiments (see
+  // `task_experiments` in oddish/db/models.py), so we pass `--experiment`
+  // explicitly to make sure new trials land in the experiment the user was
+  // viewing rather than the task's oldest linked experiment.
+  if (task.id) {
+    parts.push(`--task ${task.id}`);
+  }
+
+  if (task.experiment_id) {
+    parts.push(`--experiment ${task.experiment_id}`);
+  }
+
+  if (trial.agent) {
+    parts.push(`-a ${trial.agent}`);
+  }
+
+  if (trial.model) {
+    const modelArg =
+      trial.provider && !trial.model.includes("/")
+        ? `${trial.provider}/${trial.model}`
+        : trial.model;
+    parts.push(`-m ${modelArg}`);
+  }
+
+  return parts.join(" ");
+}
 
 function getQueueSnapshotItems(trial: Trial): string[] {
   const queueInfo = trial.queue_info;
@@ -882,6 +915,14 @@ export function TrialDetailPanel({
                   </CardContent>
                 </Card>
               )}
+
+              {/* Discreet reproduction command */}
+              <CodeBlock
+                code={buildOddishRunCommand(trial, task)}
+                language="bash"
+                maxHeight="none"
+                className="opacity-60 transition-opacity hover:opacity-100"
+              />
             </div>
           </TabsContent>
 
