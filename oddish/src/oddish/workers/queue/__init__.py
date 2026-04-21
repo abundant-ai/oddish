@@ -7,6 +7,7 @@ from oddish.workers.queue.slots import (
     ensure_queue_slots,
     release_queue_slot,
 )
+from oddish.workers.queue.task_expand_handler import run_task_expand_job
 from oddish.workers.queue.trial_handler import run_trial_job
 from oddish.workers.queue.verdict_handler import run_verdict_job
 from oddish.workers.queue.worker import run_worker
@@ -26,6 +27,7 @@ __all__ = [
     "run_polling_worker",
     "cleanup_orphaned_queue_state",
     "run_analysis_job",
+    "run_task_expand_job",
     "run_trial_job",
     "run_verdict_job",
     "run_worker",

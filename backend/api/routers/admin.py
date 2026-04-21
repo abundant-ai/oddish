@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
+from sqlalchemy import and_, select
 
 from auth import AuthContext, require_admin
 from oddish.core.admin import (
@@ -17,7 +19,8 @@ from oddish.core.admin import (
     get_orphaned_state_core,
     get_worker_jobs_admin_core,
 )
-from oddish.db import get_session
+from oddish.db import TaskVersionModel, get_session
+from oddish.queue import enqueue_task_expand_worker_job
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -69,3 +72,64 @@ async def get_worker_jobs(
             stale_after_minutes=stale_after_minutes,
             sample_limit=sample_limit,
         )
+
+
+class ExpandBackfillResponse(BaseModel):
+    enqueued: int
+    skipped: int
+    total_candidates: int
+
+
+@router.post("/tasks/expand-backfill", response_model=ExpandBackfillResponse)
+async def backfill_task_expansions(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+    task_id: str | None = Query(None, description="Restrict to one task_id"),
+    org_id: str | None = Query(None, description="Restrict to one org_id"),
+    limit: int = Query(500, ge=1, le=5000),
+) -> ExpandBackfillResponse:
+    """Enqueue ``TASK_EXPAND`` jobs for task versions that haven't been expanded.
+
+    The handler is idempotent (keyed on the archive's etag via
+    ``.oddish-manifest.json``) so callers can re-run the backfill
+    without duplicating work.
+    """
+    filters = [
+        TaskVersionModel.expanded_at.is_(None),
+        TaskVersionModel.task_s3_key.isnot(None),
+    ]
+    if task_id:
+        filters.append(TaskVersionModel.task_id == task_id)
+
+    async with get_session() as session:
+        query = (
+            select(TaskVersionModel)
+            .where(and_(*filters))
+            .order_by(TaskVersionModel.created_at.asc())
+            .limit(limit)
+        )
+        rows = (await session.execute(query)).scalars().all()
+
+        enqueued = 0
+        skipped = 0
+        for version_row in rows:
+            row_org_id = None
+            if version_row.task is not None:
+                row_org_id = version_row.task.org_id
+            if org_id and row_org_id != org_id:
+                skipped += 1
+                continue
+            await enqueue_task_expand_worker_job(
+                session,
+                task_id=version_row.task_id,
+                version=version_row.version,
+                org_id=row_org_id,
+            )
+            enqueued += 1
+
+        await session.commit()
+
+    return ExpandBackfillResponse(
+        enqueued=enqueued,
+        skipped=skipped,
+        total_candidates=len(rows),
+    )

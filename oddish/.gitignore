@@ -213,5 +213,10 @@ node_modules/
 
 .state/
 jobs/
+# The worker jobs package (handler registry + enqueue helpers) lives
+# in-tree and must be versioned; the broad ``jobs/`` ignore above
+# otherwise swallows it.
+!src/oddish/workers/jobs/
+!src/oddish/workers/jobs/**
 
 frontend/.npm-cache

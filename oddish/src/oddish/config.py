@@ -271,6 +271,22 @@ class Settings(BaseSettings):
     # Task upload limits (MB)
     max_task_upload_mb: int = 50
 
+    # Task archive expansion (derived per-file layout for fast listings).
+    # When enabled, uploading a new task version enqueues a
+    # ``TASK_EXPAND`` worker job that writes the tarball's contents out
+    # as individual S3 objects under ``tasks/{task_id}/v{N}-files/``
+    # alongside a ``.oddish-manifest.json`` sentinel. The canonical
+    # archive at ``tasks/{task_id}/v{N}/.oddish-task.tar.gz`` is never
+    # touched, so runner download paths remain unchanged.
+    tasks_expand_archive: bool = True
+    tasks_expand_max_bytes: int = 1_073_741_824  # 1 GiB
+    tasks_expand_max_member_bytes: int = 104_857_600  # 100 MiB
+    # Per-process in-memory cache for downloaded task archives, keyed by
+    # ``(archive_key, etag)``. Covers the archive fallback read path so
+    # pre-expansion versions and legacy tasks don't re-download the
+    # tarball on every click.
+    tasks_archive_cache_mb: int = 256
+
     # API keys (read from env without ODDISH_ prefix)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
@@ -371,6 +387,15 @@ class Settings(BaseSettings):
 
     def get_verdict_queue_key(self) -> str:
         return self.normalize_queue_key(self.verdict_model)
+
+    def get_task_expand_queue_key(self) -> str:
+        """Dedicated queue key for task-expansion jobs.
+
+        Expansion is I/O bound against S3 rather than LLM-rate-limited, so
+        a plain literal queue key is fine; it still benefits from the
+        per-queue-key concurrency leases that gate every other kind.
+        """
+        return "task_expand"
 
     def get_model_concurrency(self, queue_key: str) -> int:
         normalized = self.normalize_queue_key(queue_key)
