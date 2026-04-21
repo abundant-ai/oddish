@@ -713,8 +713,11 @@ export function TaskFilesPanel({
 
     async function fetchContent() {
       setFileContentLoading(true);
-      setIsTruncated(false);
       setFullFileSize(fileSize || null);
+      // Deliberately keep the previously rendered ``fileContent`` and
+      // ``isTruncated`` visible while a new file loads so the preview
+      // doesn't blink between selections. They'll be replaced when the new
+      // content arrives.
 
       try {
         let content: string | null = null;
