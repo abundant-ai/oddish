@@ -33,8 +33,8 @@ Use `oddish run` to launch a task, dataset, or multi-agent sweep.
 # Single task
 oddish run ./my-task -a claude-code -m anthropic/claude-sonnet-4-5 --n-trials 5
 
-# Registry dataset
-oddish run -d terminal-bench@2.0 -a claude-code -m anthropic/claude-sonnet-4-5 --n-trials 3
+# Append trials to an existing task
+oddish run --task <task_id> -a gemini-cli -m google/gemini-3.1-pro-preview
 
 # Complex sweep from config
 oddish run ./my-task -c sweep.yaml
@@ -45,8 +45,9 @@ oddish run ./my-task -c sweep.yaml
 
 - `--path`, `-p PATH` - Harbor-compatible path flag for a local task or dataset directory
 - `--dataset`, `-d TEXT` - Registry dataset such as `swebench@1.0`
+- `--task TEXT` - Append trials to an existing task ID instead of uploading task files
 - `--config`, `-c PATH` - YAML or JSON config for multi-agent sweeps
-- `--agent`, `-a TEXT` - Agent name for simple single-agent runs
+- `--agent`, `-a TEXT` - Agent name for simple single-agent runs (defaults to `claude-code`)
 - `--model`, `-m TEXT` - Model override for the selected agent
 - `--n-trials INTEGER` - Number of trials per task
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
