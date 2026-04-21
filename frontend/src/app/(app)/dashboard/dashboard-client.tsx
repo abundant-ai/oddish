@@ -56,14 +56,23 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   ArrowRight,
+  Beaker,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock,
   Copy,
+  Gavel,
   Loader2,
+  Microscope,
   Trash2,
   Globe,
   Key,
@@ -388,6 +397,93 @@ type UsageRow = {
   hasUsageMetrics: boolean;
 };
 
+type PipelineKind = "TRIAL" | "ANALYSIS" | "VERDICT";
+
+const PIPELINE_KIND_DISPLAY: Record<
+  PipelineKind,
+  {
+    label: string;
+    description: string;
+    Icon: typeof Beaker;
+    accentText: string;
+    accentBorder: string;
+  }
+> = {
+  TRIAL: {
+    label: "Trials",
+    description: "Harbor agent runs",
+    Icon: Beaker,
+    accentText: "text-blue-500 dark:text-blue-300",
+    accentBorder: "border-blue-500/30",
+  },
+  ANALYSIS: {
+    label: "Trajectory Analysis",
+    description: "LLM classification per trial",
+    Icon: Microscope,
+    accentText: "text-purple-500 dark:text-purple-300",
+    accentBorder: "border-purple-500/30",
+  },
+  VERDICT: {
+    label: "Task Verdict",
+    description: "Cross-trial synthesis",
+    Icon: Gavel,
+    accentText: "text-amber-500 dark:text-amber-300",
+    accentBorder: "border-amber-500/30",
+  },
+};
+
+// Compact tooltip surface used on the Status header badges to drill
+// down into "N running" → TRIAL / ANALYSIS / VERDICT splits. The
+// aggregate numbers would otherwise collapse all three kinds into a
+// single counter -- hovering exposes which agent-job kind is actually
+// backed up.
+function KindBreakdownTooltip({
+  pipeline,
+  metric,
+}: {
+  pipeline: Record<PipelineKind, { running: number; queued: number; retrying: number }>;
+  metric: "running" | "queued" | "retrying";
+}) {
+  const kinds = Object.keys(PIPELINE_KIND_DISPLAY) as PipelineKind[];
+  const total = kinds.reduce((sum, k) => sum + pipeline[k][metric], 0);
+
+  return (
+    <div className="space-y-1 py-1 text-left text-[11px]">
+      <div className="font-medium capitalize">{metric}</div>
+      {kinds.map((kind) => {
+        const display = PIPELINE_KIND_DISPLAY[kind];
+        const Icon = display.Icon;
+        const value = pipeline[kind][metric];
+        return (
+          <div
+            key={kind}
+            className="flex items-center justify-between gap-3"
+          >
+            <span
+              className={`inline-flex items-center gap-1 ${
+                value > 0 ? display.accentText : "text-muted-foreground"
+              }`}
+            >
+              <Icon className="h-3 w-3" />
+              {display.label}
+            </span>
+            <span
+              className={`font-mono tabular-nums ${
+                value > 0 ? "" : "text-muted-foreground/60"
+              }`}
+            >
+              {value}
+            </span>
+          </div>
+        );
+      })}
+      <div className="border-t border-border/40 pt-1 text-muted-foreground">
+        Total: <span className="font-mono tabular-nums">{total}</span>
+      </div>
+    </div>
+  );
+}
+
 function UsageOverviewCard({
   queues,
   modelUsage,
@@ -522,6 +618,36 @@ function UsageOverviewCard({
     [usageRows],
   );
 
+  // Pipeline aggregation: group the usage rows into the three
+  // ``worker_jobs`` kinds so users see TRIAL / ANALYSIS / VERDICT as
+  // independently-queued agent jobs instead of lumping everything
+  // under one "Active Now" number. ANALYSIS and VERDICT have fixed
+  // queue keys (``analysis`` / ``verdict``); everything else is a
+  // trial execution queue.
+  const pipelineByKind = useMemo(() => {
+    const kinds: Record<
+      "TRIAL" | "ANALYSIS" | "VERDICT",
+      { running: number; queued: number; retrying: number }
+    > = {
+      TRIAL: { running: 0, queued: 0, retrying: 0 },
+      ANALYSIS: { running: 0, queued: 0, retrying: 0 },
+      VERDICT: { running: 0, queued: 0, retrying: 0 },
+    };
+    for (const row of usageRows) {
+      const key = row.queueKey.toLowerCase();
+      const kind: "TRIAL" | "ANALYSIS" | "VERDICT" =
+        key === "analysis"
+          ? "ANALYSIS"
+          : key === "verdict"
+            ? "VERDICT"
+            : "TRIAL";
+      kinds[kind].running += row.running;
+      kinds[kind].queued += row.queued;
+      kinds[kind].retrying += row.retrying;
+    }
+    return kinds;
+  }, [usageRows]);
+
   const selectedWindowValue = timeRange.startsWith("custom:")
     ? "custom"
     : timeRange;
@@ -558,30 +684,62 @@ function UsageOverviewCard({
                 {isLoading ? "Loading" : "Updating"}
               </Badge>
             )}
-            {totals.running > 0 && (
-              <Badge
-                variant="outline"
-                className="border-[#85b85c]/30 text-[10px] font-normal text-[#5c8e43] dark:text-[#85b85c]"
-              >
-                {totals.running} running
-              </Badge>
-            )}
-            {totals.queued > 0 && (
-              <Badge
-                variant="outline"
-                className="border-[#6f88b4]/30 text-[10px] font-normal text-[#5d77a5] dark:text-[#a8b8d2]"
-              >
-                {totals.queued} queued
-              </Badge>
-            )}
-            {totals.retrying > 0 && (
-              <Badge
-                variant="outline"
-                className="border-amber-500/30 text-[10px] font-normal text-amber-600 dark:text-amber-300"
-              >
-                {totals.retrying} retrying
-              </Badge>
-            )}
+            <TooltipProvider delayDuration={150}>
+              {totals.running > 0 && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge
+                      variant="outline"
+                      className="cursor-help border-[#85b85c]/30 text-[10px] font-normal text-[#5c8e43] dark:text-[#85b85c]"
+                    >
+                      {totals.running} running
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent className="w-[220px]">
+                    <KindBreakdownTooltip
+                      pipeline={pipelineByKind}
+                      metric="running"
+                    />
+                  </TooltipContent>
+                </Tooltip>
+              )}
+              {totals.queued > 0 && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge
+                      variant="outline"
+                      className="cursor-help border-[#6f88b4]/30 text-[10px] font-normal text-[#5d77a5] dark:text-[#a8b8d2]"
+                    >
+                      {totals.queued} queued
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent className="w-[220px]">
+                    <KindBreakdownTooltip
+                      pipeline={pipelineByKind}
+                      metric="queued"
+                    />
+                  </TooltipContent>
+                </Tooltip>
+              )}
+              {totals.retrying > 0 && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge
+                      variant="outline"
+                      className="cursor-help border-amber-500/30 text-[10px] font-normal text-amber-600 dark:text-amber-300"
+                    >
+                      {totals.retrying} retrying
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent className="w-[220px]">
+                    <KindBreakdownTooltip
+                      pipeline={pipelineByKind}
+                      metric="retrying"
+                    />
+                  </TooltipContent>
+                </Tooltip>
+              )}
+            </TooltipProvider>
           </div>
           <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1">
             <DropdownMenu modal={false}>

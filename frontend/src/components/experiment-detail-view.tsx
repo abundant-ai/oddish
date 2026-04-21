@@ -11,6 +11,7 @@ import { TaskFilesPanel } from "@/components/task-files-panel";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import type { Task, Trial } from "@/lib/types";
 import { Loader2 } from "lucide-react";
+import { StatusIcon } from "@/components/status-icon";
 import {
   buildExperimentAgentSummaries,
   getExperimentAgentKey,
@@ -228,19 +229,30 @@ function ExperimentSummaryBar({
         </div>
         <div className="text-muted-foreground">•</div>
         <div className="flex items-center gap-2 font-mono text-muted-foreground">
-          <span className="text-emerald-400">{summary.passCount}✓</span>
+          <span className="inline-flex items-center gap-0.5 text-emerald-400">
+            {summary.passCount}
+            <StatusIcon status="pass" className="h-3 w-3" />
+          </span>
           {summary.partialCount > 0 && (
-            <span className="text-amber-400">{summary.partialCount}~</span>
+            <span className="inline-flex items-center gap-0.5 text-amber-400">
+              {summary.partialCount}
+              <StatusIcon status="partial" className="h-3 w-3" />
+            </span>
           )}
-          <span className="text-red-400">{summary.failCount}✗</span>
+          <span className="inline-flex items-center gap-0.5 text-red-400">
+            {summary.failCount}
+            <StatusIcon status="fail" className="h-3 w-3" />
+          </span>
           {summary.harnessErrorCount > 0 && (
-            <span className="text-yellow-400">
-              {summary.harnessErrorCount}⊘
+            <span className="inline-flex items-center gap-0.5 text-yellow-400">
+              {summary.harnessErrorCount}
+              <StatusIcon status="harness-error" className="h-3 w-3" />
             </span>
           )}
           {summary.pendingCount > 0 && (
-            <span className="text-muted-foreground">
-              {summary.pendingCount}◌
+            <span className="inline-flex items-center gap-0.5 text-muted-foreground">
+              {summary.pendingCount}
+              <StatusIcon status="pending" className="h-3 w-3" />
             </span>
           )}
         </div>

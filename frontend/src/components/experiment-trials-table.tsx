@@ -60,7 +60,6 @@ import {
 } from "@/lib/status-config";
 import {
   Loader2,
-  Ban,
   Microscope,
   Check,
   AlertTriangle,
@@ -69,6 +68,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { QueueKeyIcon } from "./queue-key-icon";
+import { StatusIcon } from "./status-icon";
 
 const PassAtKGraph = dynamic(
   () => import("./pass-at-k-graph").then((mod) => mod.PassAtKGraph),
@@ -1319,15 +1319,7 @@ export function ExperimentTrialsTable({
                 <span
                   className={`inline-flex h-4 w-4 items-center justify-center rounded-sm text-[10px] ${config.matrixClass}`}
                 >
-                  {status === "pending" ||
-                  status === "queued" ||
-                  status === "running" ? (
-                    <Loader2 className="h-3 w-3" />
-                  ) : status === "harness-error" ? (
-                    <Ban className="h-3 w-3" />
-                  ) : (
-                    config.symbol
-                  )}
+                  <StatusIcon status={status} className="h-3 w-3" />
                 </span>
                 <span className="uppercase tracking-wide">
                   {config.shortLabel}
@@ -1966,10 +1958,10 @@ export function ExperimentTrialsTable({
                                     trial,
                                     status,
                                   );
-                                  const badgeLabel =
-                                    status === "partial"
-                                      ? formatPartialRewardBadgeValue(trial.reward)
-                                      : config.symbol;
+                                  const isPartial = status === "partial";
+                                  const partialLabel = isPartial
+                                    ? formatPartialRewardBadgeValue(trial.reward)
+                                    : null;
                                   const analysisTitle = analysisIndicator
                                     ? ` • ${analysisIndicator.title}`
                                     : "";
@@ -1992,19 +1984,18 @@ export function ExperimentTrialsTable({
                                             trialGroups,
                                           });
                                         }}
-                                        className={`h-5 w-5 shrink-0 rounded-sm border p-0 font-mono font-semibold leading-none transition hover:opacity-90 ${config.matrixClass} ${status === "partial" ? "text-[8px] tracking-[-0.03em]" : "text-sm"}`}
+                                        className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border p-0 leading-none transition hover:opacity-90 ${config.matrixClass} ${isPartial ? "font-mono text-[8px] font-semibold tracking-[-0.03em]" : ""}`}
                                         style={getRewardStyle(trial.reward)}
                                         aria-label={`Trial ${trialIndex + 1} ${config.shortLabel}`}
                                         title={fullTitle}
                                       >
-                                        {status === "pending" ||
-                                        status === "queued" ||
-                                        status === "running" ? (
-                                          <Loader2 className="h-3.5 w-3.5" />
-                                        ) : status === "harness-error" ? (
-                                          <Ban className="h-3.5 w-3.5" />
+                                        {isPartial ? (
+                                          partialLabel
                                         ) : (
-                                          badgeLabel
+                                          <StatusIcon
+                                            status={status}
+                                            className="h-3.5 w-3.5"
+                                          />
                                         )}
                                       </Button>
                                       {analysisIndicator && (
