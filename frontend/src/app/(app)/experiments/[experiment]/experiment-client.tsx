@@ -95,8 +95,10 @@ export function ExperimentClientPage({
     trialsLastPage && trialsLastPage.length === TRIALS_BATCH_SIZE,
   );
 
-  // Merge lightweight task shells with trial-enriched data, then keep only
-  // trials that ran against the task's latest version so there's no ambiguity.
+  // Merge lightweight task shells with trial-enriched data.  The backend
+  // already scopes each task's trials, counts, and reported ``current_version``
+  // to the experiment-relevant version, so no extra client-side filtering is
+  // required here.
   const tasksForExperiment = useMemo(() => {
     const trialDataById = new Map<string, Task>();
     for (const page of trialPages ?? []) {
@@ -120,40 +122,10 @@ export function ExperimentClientPage({
       }
     }
 
-    return merged
-      .sort(
-        (a, b) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-      )
-      .map((task) => {
-        const trials = task.trials;
-        if (!trials || trials.length === 0 || task.current_version == null) {
-          return task;
-        }
-        const filtered = trials.filter(
-          (t) =>
-            t.task_version == null || t.task_version === task.current_version,
-        );
-        if (filtered.length === trials.length) return task;
-        const completed = filtered.filter((t) => t.status === "success").length;
-        const failed = filtered.filter((t) => t.status === "failed").length;
-        const rewardSuccess = filtered.filter((t) => t.reward === 1).length;
-        const rewardSum = filtered.reduce(
-          (sum, trial) => sum + (trial.reward ?? 0),
-          0,
-        );
-        const rewardTotal = filtered.filter((t) => t.reward != null).length;
-        return {
-          ...task,
-          trials: filtered,
-          total: filtered.length,
-          completed,
-          failed,
-          reward_success: rewardTotal > 0 ? rewardSuccess : null,
-          reward_sum: rewardTotal > 0 ? rewardSum : null,
-          reward_total: rewardTotal > 0 ? rewardTotal : null,
-        };
-      });
+    return merged.sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
   }, [lightweightTasks, trialPages]);
 
   const isLoading = isLoadingTasks;

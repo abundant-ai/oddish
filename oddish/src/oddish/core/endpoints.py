@@ -11,9 +11,11 @@ from oddish.core.helpers import (
     build_task_status_response,
     build_task_status_responses_from_counts,
     build_trial_response,
+    fetch_experiment_effective_version_ids,
     fetch_trial_queue_info,
     fetch_trial_analysis_summaries,
     get_task_status_trials,
+    resolve_effective_version_id,
 )
 from collections.abc import Collection
 from harbor.models.environment_type import EnvironmentType
@@ -173,18 +175,29 @@ async def list_tasks_core(
 
     # When trial payloads are loaded, constrain them to the subset the status UI
     # should reflect: first the requested experiment, then the task's active
-    # version within that experiment.
+    # version within that experiment.  Within an experiment the "active version"
+    # is the latest version that has trials in that experiment — not the task's
+    # global ``current_version_id`` — so an experiment still shows its own
+    # trials after the underlying task is re-uploaded elsewhere.
     if include_trials:
         from sqlalchemy.orm.attributes import set_committed_value
 
         for task in tasks:
-            filtered_trials = list(task.trials)
             if experiment_id:
-                filtered_trials = [
-                    t for t in filtered_trials if t.experiment_id == experiment_id
+                scoped_trials = [
+                    t for t in task.trials if t.experiment_id == experiment_id
                 ]
-                set_committed_value(task, "trials", filtered_trials)
-            set_committed_value(task, "trials", get_task_status_trials(task))
+                set_committed_value(task, "trials", scoped_trials)
+                effective = resolve_effective_version_id(
+                    task, experiment_context_id=experiment_id
+                )
+                set_committed_value(
+                    task,
+                    "trials",
+                    get_task_status_trials(task, version_id=effective),
+                )
+            else:
+                set_committed_value(task, "trials", get_task_status_trials(task))
 
     if include_trials:
         queue_info_started_at = now()
@@ -246,11 +259,21 @@ async def list_tasks_core(
         return response
 
     build_started_at = now()
+    effective_version_id_by_task_id: dict[str, str] = {}
+    if experiment_id and tasks:
+        effective_version_id_by_task_id = (
+            await fetch_experiment_effective_version_ids(
+                session,
+                experiment_id=experiment_id,
+                task_ids=[task.id for task in tasks],
+            )
+        )
     response = await build_task_status_responses_from_counts(
         session,
         tasks=tasks,
         include_empty_rewards=include_empty_rewards,
         experiment_context_id=experiment_id,
+        effective_version_id_by_task_id=effective_version_id_by_task_id or None,
     )
     if record_timing is not None:
         record_timing(
