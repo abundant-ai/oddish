@@ -50,11 +50,9 @@ class TrialJobHandler:
         return payload
 
     async def run(self, job: Any) -> JobOutcome:
-        trial_id = getattr(job, "subject_id", None) or (
-            (getattr(job, "payload", {}) or {}).get("trial_id")
-        )
+        trial_id = getattr(job, "subject_id", None)
         if not trial_id:
-            raise ValueError("TRIAL worker_job missing subject_id / payload.trial_id")
+            raise ValueError("TRIAL worker_job missing subject_id")
 
         await run_trial_job(
             trial_id,

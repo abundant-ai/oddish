@@ -36,6 +36,7 @@ def test_worker_job_kind_members():
         "ANALYSIS",
         "VERDICT",
         "QA_REVIEW",
+        "TASK_EXPAND",
     }
 
 

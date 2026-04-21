@@ -177,11 +177,17 @@ class StorageClient:
 
         Uses the ETag when the backend returns one (AWS S3, MinIO). Falls back
         to ``(ContentLength, LastModified)`` so S3-compatible backends that
-        drop the ETag still get a working cache.
+        drop the ETag still get a working cache. Returns ``None`` for any
+        backend / fake that doesn't expose ``head_object`` (e.g. test
+        doubles), which disables caching for that call without breaking
+        the read path.
         """
         await self._ensure_client()
+        head_fn = getattr(self._s3, "head_object", None)
+        if head_fn is None:
+            return None
         try:
-            head = await self._s3.head_object(
+            head = await head_fn(
                 Bucket=settings.s3_bucket, Key=archive_key
             )
         except ClientError as exc:
@@ -189,6 +195,10 @@ class StorageClient:
             if error_code in {"404", "NoSuchKey", "NotFound"}:
                 return None
             raise
+        except Exception:
+            # A fake client or transient error shouldn't poison the
+            # primary read path; fall through to the uncached download.
+            return None
 
         etag = head.get("ETag")
         if etag:
