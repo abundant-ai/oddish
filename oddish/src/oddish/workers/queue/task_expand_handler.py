@@ -197,12 +197,29 @@ async def _migrate_loose_task_files(
         source_key = str(entry["source_key"])
         rel_path = str(entry["relative_path"])
         async with semaphore:
-            body = await storage.download_bytes(source_key)
-            content_type, _ = mimetypes.guess_type(rel_path)
-            target_key = f"{expanded_prefix}{rel_path}"
-            await storage.upload_bytes(
-                body, target_key, content_type=content_type or None
-            )
+            try:
+                body = await storage.download_bytes(source_key)
+                content_type, _ = mimetypes.guess_type(rel_path)
+                target_key = f"{expanded_prefix}{rel_path}"
+                await storage.upload_bytes(
+                    body, target_key, content_type=content_type or None
+                )
+            except Exception as exc:
+                # Supabase S3 (and other S3-compatible backends) reject
+                # keys containing certain characters like ``[``, ``]``,
+                # URL-encoded bytes, etc. Record the skip in the manifest
+                # so the rest of the task still migrates instead of the
+                # whole job 6x-retrying and permanently FAILING.
+                return {
+                    "path": rel_path,
+                    "size": int(entry.get("size") or 0),
+                    "skipped": True,
+                    "skip_reason": (
+                        f"upload_failed: {type(exc).__name__}: "
+                        f"{str(exc)[:200]}"
+                    ),
+                    "source_key": source_key,
+                }
         return {
             "path": rel_path,
             "size": int(entry.get("size") or 0) or len(body),
@@ -422,7 +439,10 @@ async def run_task_expand_job(
         )
 
         manifest_files: list[dict[str, object]] = []
-        upload_plan: list[tuple[str, bytes, str]] = []
+        # Upload plan entries carry the manifest index so a rejected
+        # upload can swap the success-shaped manifest entry for a skip
+        # entry without unbalancing the list.
+        upload_plan: list[tuple[int, str, bytes, str]] = []
 
         for entry in extracted_members:
             normalized = normalize_s3_relative_path(str(entry["name"]))
@@ -445,7 +465,7 @@ async def run_task_expand_job(
             digest = hashlib.sha256(body).hexdigest()
             content_type, _ = mimetypes.guess_type(normalized)
             target_key = f"{expanded_prefix}{normalized}"
-            upload_plan.append((target_key, bytes(body), content_type or ""))
+            idx = len(manifest_files)
             manifest_files.append(
                 {
                     "path": normalized,
@@ -453,22 +473,50 @@ async def run_task_expand_job(
                     "sha256": digest,
                 }
             )
+            upload_plan.append((idx, target_key, bytes(body), content_type or ""))
 
         semaphore = asyncio.Semaphore(_MAX_CONCURRENT_MEMBER_UPLOADS)
 
         async def _upload_one(
+            idx: int,
             target_key: str,
             body: bytes,
             content_type: str,
-        ) -> None:
+        ) -> tuple[int, str] | None:
             async with semaphore:
-                await storage.upload_bytes(
-                    body,
-                    target_key,
-                    content_type=content_type or None,
-                )
+                try:
+                    await storage.upload_bytes(
+                        body,
+                        target_key,
+                        content_type=content_type or None,
+                    )
+                    return None
+                except Exception as exc:
+                    # Per-file tolerance: a single unacceptable key
+                    # (e.g. Supabase rejects ``[brackets]`` or URL-
+                    # encoded bytes) shouldn't bury a 300-file task.
+                    return (
+                        idx,
+                        (
+                            f"upload_failed: {type(exc).__name__}: "
+                            f"{str(exc)[:200]}"
+                        ),
+                    )
 
-        await asyncio.gather(*(_upload_one(*item) for item in upload_plan))
+        failures = await asyncio.gather(
+            *(_upload_one(*item) for item in upload_plan)
+        )
+        for fail in failures:
+            if fail is None:
+                continue
+            failed_idx, reason = fail
+            original = manifest_files[failed_idx]
+            manifest_files[failed_idx] = {
+                "path": original["path"],
+                "size": original["size"],
+                "skipped": True,
+                "skip_reason": reason,
+            }
 
         manifest_payload = {
             "task_id": task_id,

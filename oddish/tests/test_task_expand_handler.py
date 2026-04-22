@@ -115,6 +115,11 @@ class _FakeStorage:
     async def download_json(self, s3_key: str) -> dict:
         return json.loads(self._objects[s3_key].decode("utf-8"))
 
+    # Tests can set ``reject_key_substrings`` to simulate Supabase's S3
+    # proxy rejecting certain key characters (``[``, URL-encoded bytes,
+    # etc.) without monkey-patching the entire upload path.
+    reject_key_substrings: tuple[str, ...] = ()
+
     async def upload_bytes(
         self,
         data: bytes,
@@ -122,6 +127,12 @@ class _FakeStorage:
         *,
         content_type: str | None = None,
     ) -> None:
+        for needle in self.reject_key_substrings:
+            if needle in s3_key:
+                raise RuntimeError(
+                    f"ClientError: An error occurred (InvalidKey) when "
+                    f"calling the PutObject operation: Invalid key: {s3_key}"
+                )
         self._objects[s3_key] = data
         self.upload_calls.append((s3_key, data, content_type))
 
@@ -384,6 +395,103 @@ async def test_expand_fails_when_task_has_neither_archive_nor_loose_files(
         await task_expand_handler.run_task_expand_job(
             task_id="task-empty", version=1
         )
+
+
+@pytest.mark.asyncio
+async def test_expand_tolerates_per_file_upload_failures_in_archive_path(
+    monkeypatch, _patched_get_session
+):
+    """A single rejected key (e.g. Supabase's S3 proxy bans ``[brackets]``
+    or URL-encoded bytes) must not fail the whole task. Good members
+    still land under ``v{N}-files/``; rejected ones are recorded as
+    ``skipped: true`` in the manifest with an explanatory reason."""
+    archive_bytes = _make_archive(
+        {
+            "task.toml": b"name = 'demo'\n",
+            # Two files with characters Supabase's S3 proxy rejects.
+            "tests/app/[subdomain]/page.tsx": b"export default () => null\n",
+            "pages/%5Fhidden.md": b"hidden\n",
+            # And a plain file that must still succeed.
+            "solution/solve.sh": b"#!/bin/sh\n",
+        }
+    )
+    storage = _FakeStorage(
+        archive_key="tasks/task-brackets/v1/.oddish-task.tar.gz",
+        archive_bytes=archive_bytes,
+    )
+    storage.reject_key_substrings = ("[", "%5F")
+    monkeypatch.setattr(task_expand_handler, "get_storage_client", lambda: storage)
+
+    summary = await task_expand_handler.run_task_expand_job(
+        task_id="task-brackets", version=1
+    )
+
+    assert summary["status"] == "expanded"
+    # 2 OK files + 2 rejected => 2 skipped, 2 real.
+    assert summary["files"] == 2
+    assert summary["skipped"] == 2
+
+    expanded_prefix = "tasks/task-brackets/v1-files/"
+    # OK files landed.
+    assert f"{expanded_prefix}task.toml" in storage._objects
+    assert f"{expanded_prefix}solution/solve.sh" in storage._objects
+    # Rejected keys did NOT land.
+    assert f"{expanded_prefix}tests/app/[subdomain]/page.tsx" not in storage._objects
+    assert f"{expanded_prefix}pages/%5Fhidden.md" not in storage._objects
+
+    manifest = json.loads(
+        storage._objects[
+            f"{expanded_prefix}{StorageClient._EXPANDED_MANIFEST_OBJECT_NAME}"
+        ].decode("utf-8")
+    )
+    by_path = {f["path"]: f for f in manifest["files"]}
+    assert by_path["tests/app/[subdomain]/page.tsx"]["skipped"] is True
+    assert "InvalidKey" in by_path["tests/app/[subdomain]/page.tsx"]["skip_reason"]
+    assert by_path["pages/%5Fhidden.md"]["skipped"] is True
+    # Plain files carry a sha256 and no ``skipped`` flag.
+    assert "sha256" in by_path["task.toml"]
+    assert "skipped" not in by_path["task.toml"]
+
+
+@pytest.mark.asyncio
+async def test_expand_tolerates_per_file_upload_failures_in_loose_path(
+    monkeypatch, _patched_get_session
+):
+    """Same tolerance guarantee for the loose-file migration path:
+    a Supabase-rejected key in the source tree yields a skipped
+    manifest entry, not a whole-task failure."""
+    storage = _FakeStorage(
+        loose_objects={
+            "tasks/task-loose-brackets/task.toml": b"name = 'demo'\n",
+            "tasks/task-loose-brackets/pages/[slug]/page.tsx": b"ok\n",
+            "tasks/task-loose-brackets/instruction.md": b"do it\n",
+        },
+    )
+    storage.reject_key_substrings = ("[",)
+    monkeypatch.setattr(task_expand_handler, "get_storage_client", lambda: storage)
+
+    summary = await task_expand_handler.run_task_expand_job(
+        task_id="task-loose-brackets", version=1
+    )
+
+    assert summary["status"] == "expanded"
+    assert summary["source"] == "loose_files"
+    # summary["files"] counts ALL manifest entries, successful + skipped;
+    # that's the same semantic as the archive path returns.
+    expanded_prefix = "tasks/task-loose-brackets/v1-files/"
+    # 2 files landed, the bracketed one didn't.
+    assert f"{expanded_prefix}task.toml" in storage._objects
+    assert f"{expanded_prefix}instruction.md" in storage._objects
+    assert f"{expanded_prefix}pages/[slug]/page.tsx" not in storage._objects
+
+    manifest = json.loads(
+        storage._objects[
+            f"{expanded_prefix}{StorageClient._EXPANDED_MANIFEST_OBJECT_NAME}"
+        ].decode("utf-8")
+    )
+    by_path = {f["path"]: f for f in manifest["files"]}
+    assert by_path["pages/[slug]/page.tsx"]["skipped"] is True
+    assert "InvalidKey" in by_path["pages/[slug]/page.tsx"]["skip_reason"]
 
 
 @pytest.mark.asyncio
