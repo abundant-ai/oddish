@@ -12,7 +12,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
-from oddish.db import TaskModel, TaskVersionModel, get_session
+from oddish.db import Priority, TaskModel, TaskVersionModel, get_session
 from oddish.db.storage import StorageClient, extract_task_tarfile, get_storage_client
 from oddish.schemas import TaskUploadInitResponse, UploadResponse
 from oddish.task_timeouts import (
@@ -187,8 +187,18 @@ async def complete_task_upload(
     message: str | None = None,
     org_id: str | None = None,
     created_by_user_id: str | None = None,
+    register: bool = False,
+    user: str | None = None,
+    priority: Priority | None = None,
 ) -> UploadResponse:
-    """Finalize a direct-to-S3 upload after the client has uploaded bytes."""
+    """Finalize a direct-to-S3 upload after the client has uploaded bytes.
+
+    When ``register`` is True and the task does not yet exist in the DB, a
+    new ``TaskModel`` + v1 ``TaskVersionModel`` pair is created so the task
+    becomes visible in the UI without any trials attached. The default
+    (``register=False``) preserves the legacy behavior used by the sweep
+    path, where the task row is created later by ``create_task``.
+    """
     normalized_name = _normalize_task_name(task_name)
     s3_key = _task_s3_prefix_for_version(task_id, version)
     archive_key = _task_archive_key_for_version(task_id, version)
@@ -209,13 +219,58 @@ async def complete_task_upload(
 
     async with get_session() as session:
         existing_task = await session.get(TaskModel, task_id)
-        if existing_task is None:
+
+        if existing_task is None and not register:
+            # Legacy behavior: leave creation of the task row to the
+            # subsequent /tasks/sweep call.
             return UploadResponse(
                 task_id=task_id,
                 name=normalized_name,
                 s3_key=s3_key,
                 version=version,
                 version_id=version_id,
+                content_hash=content_hash,
+            )
+
+        if existing_task is None:
+            # Upload-only registration path: create the task row and its
+            # v1 version so the task is browsable before any trials run.
+            new_task = TaskModel(
+                id=task_id,
+                name=normalized_name,
+                org_id=org_id,
+                created_by_user_id=created_by_user_id,
+                user=user or created_by_user_id or "unknown",
+                priority=priority or Priority.LOW,
+                task_path=task_path,
+                task_s3_key=s3_key,
+            )
+            session.add(new_task)
+            await session.flush()
+
+            version_row = TaskVersionModel(
+                id=version_id,
+                task_id=task_id,
+                version=version,
+                task_path=task_path,
+                task_s3_key=s3_key,
+                content_hash=content_hash,
+                message=message,
+                created_by_user_id=created_by_user_id,
+            )
+            session.add(version_row)
+            await session.flush()
+
+            new_task.current_version_id = version_id
+            await session.commit()
+
+            return UploadResponse(
+                task_id=task_id,
+                name=normalized_name,
+                s3_key=s3_key,
+                version=version,
+                version_id=version_id,
+                existing_task=False,
                 content_hash=content_hash,
             )
 

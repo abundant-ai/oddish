@@ -54,6 +54,10 @@ from oddish.core.admin import (
 from oddish.core.dashboard import get_dashboard_core
 from oddish.core.public import router as public_router
 from oddish.core.tasks import complete_task_upload, initialize_task_upload, resolve_task_storage
+from oddish.core.trial_imports import (
+    complete_trial_import,
+    initialize_trial_import,
+)
 from oddish.config import settings
 from oddish.db import (
     ExperimentModel,
@@ -77,6 +81,10 @@ from oddish.schemas import (
     TaskStatusResponse,
     TaskSweepSubmission,
     TaskVersionResponse,
+    TrialImportCompleteRequest,
+    TrialImportCompleteResponse,
+    TrialImportInitRequest,
+    TrialImportInitResponse,
     TrialResponse,
     UploadResponse,
 )
@@ -293,7 +301,36 @@ async def finalize_task_upload(payload: TaskUploadCompleteRequest) -> UploadResp
         version=payload.version,
         content_hash=payload.content_hash,
         message=payload.message,
+        register=payload.register_task,
+        user=payload.user,
+        priority=payload.priority,
     )
+
+
+# =============================================================================
+# Trial Import (off-oddish Harbor runs)
+# =============================================================================
+
+
+@api.post("/trials/import/init", response_model=TrialImportInitResponse)
+async def init_trial_import(
+    payload: TrialImportInitRequest,
+) -> TrialImportInitResponse:
+    """Register an off-oddish trial and return a presigned artifact URL."""
+    return await initialize_trial_import(
+        task_id=payload.task_id,
+        experiment_id_or_name=payload.experiment_id,
+        trial_spec=payload.trial,
+        upload_artifacts=payload.upload_artifacts,
+    )
+
+
+@api.post("/trials/import/complete", response_model=TrialImportCompleteResponse)
+async def finalize_trial_import(
+    payload: TrialImportCompleteRequest,
+) -> TrialImportCompleteResponse:
+    """Finalize an imported trial after the client PUTs its archive to S3."""
+    return await complete_trial_import(trial_id=payload.trial_id)
 
 
 # =============================================================================

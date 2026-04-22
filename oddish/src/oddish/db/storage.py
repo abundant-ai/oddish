@@ -125,6 +125,10 @@ class StorageClient:
 
     _MAX_CONCURRENT_UPLOADS = 8
     _TASK_ARCHIVE_OBJECT_NAME = ".oddish-task.tar.gz"
+    # Staging archive written by ``oddish import`` clients via a presigned
+    # PUT; the complete endpoint extracts it into the trial prefix and
+    # deletes the staging object.
+    _TRIAL_IMPORT_ARCHIVE_OBJECT_NAME = ".oddish-trial-import.tar.gz"
 
     async def _ensure_client(self):
         """Lazy initialization of aioboto3 client."""
@@ -318,6 +322,78 @@ class StorageClient:
         await self._upload_directory(harbor_job_dir, s3_prefix)
 
         return s3_prefix
+
+    @classmethod
+    def _trial_import_archive_key(cls, trial_id: str) -> str:
+        """Key for the staging tarball uploaded during ``oddish import``."""
+        prefix = cls._trial_prefix(trial_id)
+        return f"{prefix}{cls._TRIAL_IMPORT_ARCHIVE_OBJECT_NAME}"
+
+    async def extract_trial_import_archive(self, trial_id: str) -> int:
+        """Extract a previously-uploaded trial import tarball into the trial prefix.
+
+        Expected flow:
+
+        1. ``/trials/import/init`` returns a presigned PUT URL for the
+           key returned by ``_trial_import_archive_key(trial_id)``.
+        2. Client tars the harbor trial subdir and PUTs it to that URL.
+        3. ``/trials/import/complete`` calls this method, which downloads
+           the staging object, extracts it into the trial prefix
+           (``tasks/<task_id>/trials/<trial_id>/``), and deletes the
+           staging object. The individual files are what the existing
+           ``/trials/<id>/logs|result|trajectory`` endpoints read, so no
+           other plumbing needs to know an import happened.
+
+        Returns the number of files extracted.
+        """
+        await self._ensure_client()
+        archive_key = self._trial_import_archive_key(trial_id)
+        s3_prefix = self._trial_prefix(trial_id)
+
+        if not await self.object_exists(archive_key):
+            raise HTTPException(
+                status_code=400,
+                detail="Uploaded trial archive not found in S3",
+            )
+
+        archive_bytes = await self.download_bytes(archive_key)
+
+        extracted = 0
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
+            members = [m for m in tar.getmembers() if m.isfile()]
+            # Path-traversal protection: reject absolute paths, symlinks,
+            # and ``..`` segments that would escape the prefix.
+            for member in members:
+                if member.issym() or member.islnk():
+                    raise HTTPException(
+                        status_code=400, detail="links not allowed in trial archive"
+                    )
+                normalized = normalize_s3_relative_path(member.name)
+                if not normalized:
+                    continue
+                extracted_file = tar.extractfile(member)
+                if extracted_file is None:
+                    continue
+                data = extracted_file.read()
+                s3_key = f"{s3_prefix}{normalized}"
+                await self._s3.put_object(
+                    Bucket=settings.s3_bucket,
+                    Key=s3_key,
+                    Body=data,
+                )
+                extracted += 1
+
+        # Best-effort cleanup of the staging object. Failing to delete it
+        # is not fatal -- the trial row already points at the prefix.
+        try:
+            await self._s3.delete_object(
+                Bucket=settings.s3_bucket,
+                Key=archive_key,
+            )
+        except Exception:
+            pass
+
+        return extracted
 
     async def _upload_directory(self, local_path: Path, s3_prefix: str) -> None:
         """Upload a directory tree to S3 with bounded concurrency."""

@@ -6,8 +6,9 @@ import shutil
 import tarfile
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import httpx
 import typer
@@ -21,8 +22,10 @@ from harbor.models.task.paths import TaskPaths
 from harbor.models.task.task import Task
 from harbor.models.registry import RemoteRegistryInfo
 from harbor.models.trial.config import AgentConfig
+from harbor.models.trial.result import TrialResult
 from harbor.models.job.config import LocalDatasetConfig, RegistryDatasetConfig
 from harbor.dataset.client import DatasetClient
+from harbor.viewer.scanner import JobScanner
 
 from oddish.cli.config import get_auth_headers, error_console
 from oddish.task_timeouts import (
@@ -220,11 +223,20 @@ def _upload_to_presigned_url(url: str, tarball_path: Path, headers: dict[str, st
 def upload_task(
     api_url: str,
     task_path: Path,
+    *,
+    register: bool = False,
+    message: str | None = None,
+    user: str | None = None,
+    priority: str | None = None,
 ) -> dict:
     """Upload a task directory to the API.
 
     Returns the full upload response dict which includes ``task_id``,
     ``existing_task``, ``content_unchanged``, ``version``, etc.
+
+    When ``register`` is True, asks the server to persist a TaskModel row
+    immediately (used by ``oddish upload``). The legacy sweep path leaves
+    this False so task-row creation still happens inside ``/tasks/sweep``.
     """
     try:
         validate_task_timeout_config(task_path)
@@ -235,14 +247,18 @@ def upload_task(
     content_hash = compute_task_content_hash(task_path)
     tarball_path = archive_task_dir(task_path)
 
+    init_body: dict[str, object] = {
+        "name": task_path.name,
+        "content_hash": content_hash,
+    }
+    if message:
+        init_body["message"] = message
+
     try:
         with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
             init_response = client.post(
                 f"{api_url}/tasks/upload/init",
-                json={
-                    "name": task_path.name,
-                    "content_hash": content_hash,
-                },
+                json=init_body,
             )
 
             if init_response.status_code != 200:
@@ -269,14 +285,23 @@ def upload_task(
                 tarball_path,
                 cast(dict[str, str], init_payload.get("upload_headers") or {}),
             )
+            complete_body: dict[str, object] = {
+                "task_id": init_payload["task_id"],
+                "name": init_payload["name"],
+                "version": init_payload["version"],
+                "content_hash": content_hash,
+            }
+            if message:
+                complete_body["message"] = message
+            if register:
+                complete_body["register_task"] = True
+            if user:
+                complete_body["user"] = user
+            if priority:
+                complete_body["priority"] = priority
             response = client.post(
                 f"{api_url}/tasks/upload/complete",
-                json={
-                    "task_id": init_payload["task_id"],
-                    "name": init_payload["name"],
-                    "version": init_payload["version"],
-                    "content_hash": content_hash,
-                },
+                json=complete_body,
             )
 
         if response.status_code != 200:
@@ -407,6 +432,313 @@ def get_experiment_share(api_url: str, experiment_id: str) -> dict | None:
     if response.status_code != 200:
         return None
     return cast(dict, response.json())
+
+
+# =============================================================================
+# Trial Import (off-oddish Harbor run -> oddish trial rows)
+# =============================================================================
+#
+# These helpers let ``oddish upload`` register trials executed outside of
+# Oddish (e.g. a local ``harbor run``) as regular trial rows on an
+# existing task. See ``oddish/core/trial_imports.py`` for the server side.
+
+
+def is_harbor_job_dir(path: Path) -> bool:
+    """Return True if *path* looks like a Harbor ``job_dir``.
+
+    Harbor writes ``result.json`` at the top of every job dir and a
+    per-trial ``result.json`` in each trial subdir. We only check the
+    top-level one here -- the subdirs get filtered separately via
+    ``JobScanner.list_trials``.
+    """
+    return path.is_dir() and (path / "result.json").is_file()
+
+
+def is_harbor_jobs_dir(path: Path) -> bool:
+    """Return True if *path* is a parent directory of multiple job dirs.
+
+    Used to disambiguate ``./jobs`` (many harbor runs) from ``./jobs/my-run``
+    (a single harbor run) when the user passes a single positional path
+    to ``oddish upload``.
+    """
+    if not path.is_dir():
+        return False
+    if is_harbor_job_dir(path):
+        return False
+    # A jobs dir has at least one child that is itself a job dir.
+    try:
+        for child in path.iterdir():
+            if is_harbor_job_dir(child):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def discover_trial_entries(job_path: Path) -> list[tuple[str, str, Path]]:
+    """Return ``(job_name, trial_name, trial_dir)`` tuples from *job_path*.
+
+    Accepts either a single Harbor ``job_dir`` or a parent ``jobs_dir``
+    with multiple job subdirs. Trial dirs without a ``result.json`` are
+    skipped (Harbor writes one on every completed trial).
+    """
+    entries: list[tuple[str, str, Path]] = []
+
+    if is_harbor_job_dir(job_path):
+        scanner = JobScanner(job_path.parent)
+        for trial_name in scanner.list_trials(job_path.name):
+            entries.append((job_path.name, trial_name, job_path / trial_name))
+        return entries
+
+    scanner = JobScanner(job_path)
+    for job_name in scanner.list_jobs():
+        job_dir = job_path / job_name
+        if not is_harbor_job_dir(job_dir):
+            continue
+        for trial_name in scanner.list_trials(job_name):
+            entries.append((job_name, trial_name, job_dir / trial_name))
+
+    return entries
+
+
+def load_harbor_trial_result(trial_dir: Path) -> TrialResult | None:
+    """Load the ``TrialResult`` stored at ``<trial_dir>/result.json``."""
+    scanner = JobScanner(trial_dir.parent.parent)
+    return scanner.get_trial_result(trial_dir.parent.name, trial_dir.name)
+
+
+def detect_trajectory_in_dir(trial_dir: Path) -> bool:
+    """Mirror ``oddish.workers.harbor_runner._detect_trajectory``."""
+    if not trial_dir.exists():
+        return False
+    if any(trial_dir.rglob("trajectory.json")):
+        return True
+    if any(trial_dir.rglob("trajectory.jsonl")):
+        return True
+    return False
+
+
+def trial_result_to_import_spec(
+    trial_result: TrialResult,
+    *,
+    has_trajectory: bool,
+) -> dict[str, Any]:
+    """Convert a Harbor ``TrialResult`` to an ``ImportedTrialSpec`` payload.
+
+    Per-trial equivalent of
+    ``oddish.workers.harbor_runner._extract_outcome_from_job_result``.
+    Multi-trial Harbor jobs (``-k > 1`` or multi-agent) become separate
+    oddish trial rows.
+    """
+    agent_info = trial_result.agent_info
+    model_info = agent_info.model_info
+
+    reward: float | None = None
+    if trial_result.verifier_result and trial_result.verifier_result.rewards:
+        raw = trial_result.verifier_result.rewards.get("reward")
+        if raw is not None:
+            reward = float(raw)
+
+    error_message: str | None = None
+    if trial_result.exception_info is not None:
+        exc = trial_result.exception_info
+        error_message = (
+            exc.exception_message
+            or exc.exception_type
+            or "Harbor execution error"
+        )
+
+    input_tokens: int | None = None
+    cache_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    ctx = trial_result.agent_result
+    if ctx is not None and not ctx.is_empty():
+        input_tokens = ctx.n_input_tokens
+        cache_tokens = ctx.n_cache_tokens
+        output_tokens = ctx.n_output_tokens
+        cost_usd = ctx.cost_usd
+
+    phase_timing: dict[str, dict[str, Any]] = {}
+    for phase in ("environment_setup", "agent_setup", "agent_execution", "verifier"):
+        info = getattr(trial_result, phase, None)
+        if info is None or info.started_at is None or info.finished_at is None:
+            continue
+        phase_timing[phase] = {
+            "started_at": info.started_at.isoformat(),
+            "finished_at": info.finished_at.isoformat(),
+            "duration_sec": round(
+                (info.finished_at - info.started_at).total_seconds(), 2
+            ),
+        }
+
+    # SUCCESS iff the verifier produced a reward (partial counts as
+    # SUCCESS in oddish -- matches the live semantics). Otherwise the
+    # execution hit an error and the row is FAILED.
+    status = "success" if reward is not None else "failed"
+
+    def _iso(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        return value.isoformat()
+
+    return {
+        "agent": agent_info.name,
+        "model": model_info.name if model_info is not None else None,
+        "status": status,
+        "reward": reward,
+        "error_message": error_message,
+        "harbor_stage": "completed",
+        "input_tokens": input_tokens,
+        "cache_tokens": cache_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd": cost_usd,
+        "phase_timing": phase_timing or None,
+        "has_trajectory": has_trajectory,
+        "started_at": _iso(trial_result.started_at),
+        "finished_at": _iso(trial_result.finished_at),
+        "external_trial_id": str(trial_result.id),
+    }
+
+
+def _tar_trial_dir(trial_dir: Path) -> Path:
+    """Tarball a Harbor trial's artifacts for upload via presigned PUT.
+
+    Mirrors the live Oddish S3 layout (see
+    ``StorageClient.upload_trial_results`` in
+    ``oddish/src/oddish/workers/queue/trial_handler.py``) so the file
+    viewer, ``/trials/<id>/result``, and trajectory lookups return
+    identical shapes for imported and live trials.
+
+    The layout written under ``tasks/<task_id>/trials/<trial_id>/`` is:
+
+        <root>/
+            config.json            # JOB-level config (from job_dir root)
+            job.log
+            modal-output.log       # if the job produced one
+            result.json            # JOB-level result (JobResult blob)
+            <trial_name>/          # trial subdir nested one level
+                config.json        # TRIAL-level config
+                result.json        # TRIAL-level result
+                trial.log
+                verifier/
+                agent/trajectory.json
+                ...
+
+    Top-level sibling trial subdirs from the same Harbor job are
+    excluded on purpose -- each imported trial gets its own S3 prefix
+    and shouldn't drag in its sibling trials' logs.
+    """
+    tmpdir = tempfile.mkdtemp(prefix="oddish-trial-import-")
+    tarball_path = Path(tmpdir) / f"{trial_dir.name}.tar.gz"
+    job_dir = trial_dir.parent
+    with tarfile.open(tarball_path, "w:gz", compresslevel=1) as tar:
+        # 1. Add the job dir's top-level FILES only (config, logs,
+        #    job-level result.json). Skipping subdirectories here
+        #    omits sibling trials' data from this trial's archive.
+        if job_dir.exists():
+            for item in job_dir.iterdir():
+                if item.is_file():
+                    tar.add(item, arcname=item.name)
+        # 2. Add the trial's own subdir nested under its trial_name so
+        #    ``<prefix>/<trial_name>/agent/trajectory.json`` etc. line
+        #    up with the live path's ``_trajectory_candidate_keys``.
+        tar.add(trial_dir, arcname=trial_dir.name)
+    return tarball_path
+
+
+def _call_trial_import_init(
+    api_url: str,
+    *,
+    task_id: str,
+    experiment_id: str | None,
+    trial_payload: dict[str, Any],
+    upload_artifacts: bool,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "task_id": task_id,
+        "trial": trial_payload,
+        "upload_artifacts": upload_artifacts,
+    }
+    if experiment_id:
+        body["experiment_id"] = experiment_id
+    with httpx.Client(timeout=120.0, headers=get_auth_headers()) as client:
+        resp = client.post(f"{api_url}/trials/import/init", json=body)
+    if resp.status_code != 200:
+        error_console.print(
+            f"[red]Failed to initialize trial import:[/red] {resp.text}"
+        )
+        raise typer.Exit(1)
+    return cast(dict[str, Any], resp.json())
+
+
+def _call_trial_import_complete(
+    api_url: str, *, trial_id: str
+) -> dict[str, Any]:
+    with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
+        resp = client.post(
+            f"{api_url}/trials/import/complete",
+            json={"trial_id": trial_id},
+        )
+    if resp.status_code != 200:
+        error_console.print(
+            f"[red]Failed to finalize trial import:[/red] {resp.text}"
+        )
+        raise typer.Exit(1)
+    return cast(dict[str, Any], resp.json())
+
+
+def import_trial(
+    api_url: str,
+    *,
+    task_id: str,
+    experiment_id: str | None,
+    trial_dir: Path,
+    upload_artifacts: bool,
+) -> dict[str, Any]:
+    """Import a single Harbor trial dir into Oddish.
+
+    Returns the init response augmented with ``files_extracted`` from
+    the complete step (0 when ``upload_artifacts`` is False).
+    """
+    trial_result = load_harbor_trial_result(trial_dir)
+    if trial_result is None:
+        raise typer.Exit(code=2)
+
+    has_trajectory = detect_trajectory_in_dir(trial_dir)
+    spec_payload = trial_result_to_import_spec(
+        trial_result, has_trajectory=has_trajectory
+    )
+
+    init = _call_trial_import_init(
+        api_url,
+        task_id=task_id,
+        experiment_id=experiment_id,
+        trial_payload=spec_payload,
+        upload_artifacts=upload_artifacts,
+    )
+    trial_id = init["trial_id"]
+
+    if upload_artifacts:
+        upload_url = init.get("upload_url")
+        if isinstance(upload_url, str) and upload_url:
+            tarball_path = _tar_trial_dir(trial_dir)
+            try:
+                _upload_to_presigned_url(
+                    upload_url,
+                    tarball_path,
+                    cast(dict[str, str], init.get("upload_headers") or {}),
+                )
+            finally:
+                shutil.rmtree(Path(tarball_path).parent, ignore_errors=True)
+            complete = _call_trial_import_complete(api_url, trial_id=trial_id)
+            init["files_extracted"] = complete.get("files_extracted", 0)
+        else:
+            init["files_extracted"] = 0
+    else:
+        init["files_extracted"] = 0
+
+    return init
 
 
 def get_task_summary(api_url: str, task_id: str) -> dict | None:

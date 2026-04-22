@@ -101,6 +101,20 @@ class Priority(str, Enum):
     LOW = "low"
 
 
+class TrialOrigin(str, Enum):
+    """Where a trial's execution happened.
+
+    ``ODDISH`` trials were scheduled and run by Oddish's worker runtime
+    (the default, live path).  ``IMPORTED`` trials were executed on an
+    external Harbor invocation and uploaded via ``oddish import`` / the
+    ``/trials/import/*`` endpoints. Imported trials skip the queue and
+    land in a terminal state with the artifacts the client uploaded.
+    """
+
+    ODDISH = "oddish"
+    IMPORTED = "imported"
+
+
 class WorkerJobKind(str, Enum):
     """Kind of work represented by a `worker_jobs` row.
 
@@ -378,6 +392,26 @@ class TrialModel(Base):
     status: Mapped[TrialStatus] = mapped_column(
         SQLEnum(TrialStatus), default=TrialStatus.PENDING, nullable=False
     )
+    # Whether this trial ran on Oddish's worker runtime or was uploaded
+    # from an external Harbor invocation via ``oddish import``.
+    #
+    # ``values_callable`` is required because SQLAlchemy's default enum
+    # lookup uses *member names* (``ODDISH`` / ``IMPORTED``), while the
+    # migration stores the lowercase *values* (``oddish`` / ``imported``)
+    # to match the CHECK constraint and ``server_default``. Without it,
+    # reads fail with ``LookupError: 'oddish' is not among the defined
+    # enum values``. Mirrors ``WorkerJobKind`` / ``WorkerJobStatus``.
+    origin: Mapped[TrialOrigin] = mapped_column(
+        SQLEnum(
+            TrialOrigin,
+            name="trial_origin",
+            native_enum=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        default=TrialOrigin.ODDISH,
+        nullable=False,
+        server_default=TrialOrigin.ODDISH.value,
+    )
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     max_attempts: Mapped[int] = mapped_column(Integer, default=6, nullable=False)
 
@@ -476,6 +510,14 @@ class TrialModel(Base):
         # scheduling queries now hit ``idx_worker_jobs_claim`` and
         # ``idx_worker_jobs_heartbeat`` instead.
         Index("idx_trials_status", "status"),
+        # Supports "imported only" filters without scanning every
+        # oddish-origin row. Kept partial because oddish-origin is the
+        # common case and indexing it gains nothing.
+        Index(
+            "idx_trials_origin",
+            "origin",
+            postgresql_where=text("origin <> 'oddish'"),
+        ),
         # Composite index for efficient queue stats aggregation (no JOIN needed)
         Index("idx_trials_org_provider_status", "org_id", "provider", "status"),
         Index("idx_trials_org_queue_key_status", "org_id", "queue_key", "status"),

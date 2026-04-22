@@ -62,6 +62,7 @@ oddish --help
 Available commands:
 
 - `oddish run` uploads a local task or dataset, downloads a registry dataset, or expands a sweep config into trials
+- `oddish upload` registers task bundles (no trials) or uploads off-oddish Harbor trial results (logs, rewards, tokens) onto an existing task
 - `oddish status` shows system, task, or experiment status
 - `oddish cancel` stops all in-flight runs for a task
 - `oddish pull` downloads logs, results, trajectories, and artifact files for a trial, task, or experiment
@@ -162,6 +163,92 @@ You can also set `path`, `exclude_task_names`, and `experiment_id` in the
 config file. Per-agent overrides use `env` and `kwargs`. Timeouts and
 per-provider concurrency are no longer configured in sweep files; declare task
 timeouts in `task.toml` and API concurrency at server startup.
+
+### `oddish upload`
+
+`oddish upload` covers two related flows. The mode is picked
+automatically from the positional `PATH` you provide:
+
+1. **Task upload** — if `PATH` is a Harbor task directory (or a
+   dataset directory of tasks), the task bundle is uploaded to storage
+   and a task row is created in the DB so it shows up in the task
+   browser. No trials are queued.
+2. **Trial import** — if `PATH` is a Harbor `job_dir` (or a parent
+   `jobs_dir` with multiple job subdirs), each trial in the job is
+   registered against an existing task as if it had run on Oddish.
+   Imported trials show up in the experiment view with their reward,
+   tokens, cost, phase timing, and artifacts; the only difference is
+   an `origin = "imported"` flag on the trial row.
+
+Task uploads:
+
+```bash
+# Upload a single local task
+oddish upload ./my-task
+
+# Upload every task in a local dataset directory
+oddish upload ./my-dataset
+
+# Upload all tasks from a Harbor registry dataset
+oddish upload -d swebench@1.0
+
+# Filter which tasks to upload
+oddish upload ./my-dataset -t "django__*" -l 10
+oddish upload -d swebench@1.0 -x "*-slow"
+```
+
+Trial imports from a local `harbor run`:
+
+```bash
+# Import every trial in a single Harbor job dir into an existing task
+oddish upload ./jobs/my-task.claude-code.abcd --task task_123
+
+# Pin the imported trials to a named experiment (new or existing)
+oddish upload ./jobs/my-task.claude-code.abcd --task task_123 \
+    --experiment my-local-sweep
+
+# Import multiple Harbor jobs at once from a parent jobs directory
+oddish upload ./jobs --task task_123 --experiment my-local-sweep
+
+# One-shot: upload the task and import its trials in a single command
+oddish upload ./jobs/my-task.claude-code.abcd --path ./my-task
+
+# Register metadata only (no logs/trajectory uploads)
+oddish upload ./jobs/my-task.claude-code.abcd --task task_123 \
+    --skip-artifacts
+```
+
+Common flags:
+
+- `PATH` selects the source (task dir, dataset dir, Harbor job dir,
+  or Harbor jobs parent dir). `-p, --path` is an alias that also
+  doubles as a one-shot task upload in trial-import mode.
+- `-d, --dataset` pulls tasks from the Harbor registry (task-upload mode)
+- `-t, --task-name`, `-x, --exclude-task-name`, and `-l, --n-tasks`
+  filter datasets (task-upload mode)
+- `-M, --message` attaches a description to the uploaded task version
+  (task-upload mode)
+- `-u, --user` attributes the created task row to a user (defaults to OS username)
+- `-P, --priority` sets the task priority (`low` or `high`) (task-upload mode)
+- `--task` pins imported trials to an existing task ID (trial-import mode)
+- `-E, --experiment` pins imported trials to a new or existing
+  experiment; omitted, each import creates a fresh experiment
+  (trial-import mode)
+- `--skip-artifacts` registers imported trial metadata only, without
+  logs/trajectory (trial-import mode)
+- `--api`, `--json`, `-q, --quiet` match the other commands
+
+Notes:
+
+- Task rows uploaded this way appear in the task browser in `pending`
+  state until their first trials run (or are imported).
+- `oddish run --task <task_id> ...` attaches fresh trials to a
+  previously-uploaded task.
+- The target task for a trial import must have been created *without*
+  `run_analysis` enabled. Imports skip the worker queue and cannot
+  feed the analysis pipeline.
+- Experiments can be heterogeneous — one experiment can mix trials
+  that ran on Oddish with trials that were imported.
 
 ### `oddish status`
 
