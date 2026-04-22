@@ -37,13 +37,24 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
 
 import modal
 
-from modal_app import VOLUME_MOUNT_PATH, app, image, runtime_secrets, volume, worker_volumes
+# ``modal_app`` lives at ``backend/modal_app.py`` as a top-level module;
+# importing it only works when ``backend/`` is on ``sys.path``. The repo
+# convention for ``modal deploy`` is to ``cd backend`` first, which puts
+# the entrypoint's own dir on the path implicitly. This one-off sweeper
+# should also work from the repo root (``modal run backend/worker/...``)
+# so we add the parent dir explicitly.
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
+
+from modal_app import VOLUME_MOUNT_PATH, app, image, runtime_secrets, volume, worker_volumes  # noqa: E402
 
 
 _HARBOR_JOBS_DIR = Path(f"{VOLUME_MOUNT_PATH}/harbor")
