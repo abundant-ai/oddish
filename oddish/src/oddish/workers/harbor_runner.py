@@ -30,6 +30,8 @@ from oddish.task_timeouts import validate_task_timeout_config
 
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_MIN_REQUIRED_FREE_GB = 5.0
+_MIN_REQUIRED_FREE_INODES = 1024
 
 # Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
 # "us.anthropic.claude-opus-4-7-20250514-v1:0".
@@ -292,6 +294,80 @@ def _maybe_add_modal_debug_hint(error_message: str, debug_log_path: Path | None)
     )
 
 
+def _storage_probe_paths(jobs_dir: Path) -> list[Path]:
+    """Return the local scratch roots Oddish should verify before Harbor runs."""
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for raw_path in (jobs_dir, Path(tempfile.gettempdir())):
+        resolved = raw_path.resolve()
+        if resolved in seen:
+            continue
+        candidates.append(resolved)
+        seen.add(resolved)
+    return candidates
+
+
+def _probe_storage_root(
+    path: Path,
+    *,
+    min_required_gb: float,
+    min_required_inodes: int,
+) -> str | None:
+    """Check bytes, inode headroom, and writeability for one local root."""
+    path.mkdir(parents=True, exist_ok=True)
+
+    disk_usage = shutil.disk_usage(path)
+    free_gb = disk_usage.free / (1024**3)
+    if free_gb < min_required_gb:
+        return (
+            f"Insufficient local storage at {path}: {free_gb:.1f}GB free "
+            f"(minimum {min_required_gb:.1f}GB required)"
+        )
+
+    statvfs = os.statvfs(path)
+    free_inodes = getattr(statvfs, "f_favail", None)
+    if free_inodes is None or free_inodes < 0:
+        free_inodes = getattr(statvfs, "f_ffree", None)
+    if free_inodes is not None and free_inodes < min_required_inodes:
+        return (
+            f"Insufficient local storage inodes at {path}: {free_inodes} free "
+            f"(minimum {min_required_inodes} required)"
+        )
+
+    probe_dir = path / f".oddish-preflight-{uuid.uuid4().hex}"
+    probe_file = probe_dir / "probe.txt"
+    try:
+        probe_dir.mkdir()
+        probe_file.write_text("ok", encoding="utf-8")
+        probe_file.unlink()
+        probe_dir.rmdir()
+    except OSError as exc:
+        shutil.rmtree(probe_dir, ignore_errors=True)
+        return f"Local storage probe failed at {path}: {type(exc).__name__}: {exc}"
+    return None
+
+
+def _check_local_storage_preflight(
+    jobs_dir: Path,
+    *,
+    min_required_gb: float = _MIN_REQUIRED_FREE_GB,
+    min_required_inodes: int = _MIN_REQUIRED_FREE_INODES,
+) -> str | None:
+    """Return a user-facing error when Harbor scratch space is not viable."""
+    for root in _storage_probe_paths(jobs_dir):
+        try:
+            error = _probe_storage_root(
+                root,
+                min_required_gb=min_required_gb,
+                min_required_inodes=min_required_inodes,
+            )
+        except OSError as exc:
+            return f"Local storage preflight failed at {root}: {type(exc).__name__}: {exc}"
+        if error is not None:
+            return error
+    return None
+
+
 def _extract_outcome_from_job_result(
     job_result: JobResult,
     job_result_path: Path,
@@ -507,15 +583,11 @@ async def run_harbor_trial_async(
     Returns:
         HarborOutcome with reward, error, tokens, cost, timing, trajectory, and paths
     """
-    # Check disk space before running trial
-    disk_usage = shutil.disk_usage(jobs_dir)
-    free_gb = disk_usage.free / (1024**3)
-    min_required_gb = 5.0
-
-    if free_gb < min_required_gb:
+    preflight_error = _check_local_storage_preflight(jobs_dir)
+    if preflight_error is not None:
         return HarborOutcome(
             reward=None,
-            error=f"Insufficient disk space: {free_gb:.1f}GB free (minimum {min_required_gb}GB required)",
+            error=preflight_error,
             exit_code=-1,
             duration_sec=0.0,
             job_result_path=None,

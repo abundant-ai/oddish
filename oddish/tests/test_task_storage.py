@@ -48,6 +48,7 @@ class _FakeStorage:
         self.object_exists_calls: list[str] = []
         self.list_keys_calls: list[str] = []
         self.download_task_directory_calls: list[tuple[str, Path]] = []
+        self.download_trial_directory_calls: list[tuple[str, Path]] = []
 
     async def object_exists(self, s3_key: str) -> bool:
         self.object_exists_calls.append(s3_key)
@@ -65,6 +66,11 @@ class _FakeStorage:
         self.download_task_directory_calls.append((s3_prefix, local_path))
         local_path.mkdir(parents=True, exist_ok=True)
         (local_path / "task.toml").write_text("name = 'demo'\n")
+
+    async def download_trial_directory(self, s3_prefix: str, local_path: Path) -> None:
+        self.download_trial_directory_calls.append((s3_prefix, local_path))
+        local_path.mkdir(parents=True, exist_ok=True)
+        (local_path / "result.json").write_text("{}\n")
 
 
 class _FakePaginator:
@@ -213,6 +219,72 @@ async def test_resolve_task_directory_falls_back_to_download_when_mount_missing(
     assert temp_dir == task_dir
     assert task_dir.exists()
     assert storage.download_task_directory_calls
+
+
+@pytest.mark.asyncio
+async def test_resolve_task_directory_cleans_temp_dir_before_local_fallback(
+    monkeypatch, tmp_path
+):
+    storage = _FakeStorage(exists=True)
+    failed_download_dirs: list[Path] = []
+
+    async def _fail_download(s3_prefix: str, local_path: Path) -> None:
+        failed_download_dirs.append(local_path)
+        local_path.mkdir(parents=True, exist_ok=True)
+        (local_path / "partial.txt").write_text("partial\n")
+        raise RuntimeError("boom")
+
+    local_task_path = tmp_path / "local-task"
+    local_task_path.mkdir()
+    (local_task_path / "task.toml").write_text("name = 'fallback'\n")
+
+    monkeypatch.setattr(
+        storage_mod, "WORKER_TASK_MOUNT_PATH", tmp_path / "missing-mount"
+    )
+    monkeypatch.setattr(storage_mod, "WORKER_TASK_KEY_PREFIX", "tasks/")
+    monkeypatch.setattr(storage, "download_task_directory", _fail_download)
+    monkeypatch.setattr(storage_mod, "get_storage_client", lambda: storage)
+
+    task_dir, temp_dir, resolved_s3_key = await storage_mod.resolve_task_directory(
+        "task-123",
+        task_s3_key="tasks/task-123/",
+        task_path=str(local_task_path),
+    )
+
+    assert resolved_s3_key == "tasks/task-123/"
+    assert task_dir == local_task_path
+    assert temp_dir is None
+    assert len(failed_download_dirs) == 1
+    assert not failed_download_dirs[0].exists()
+
+
+@pytest.mark.asyncio
+async def test_resolve_trial_directory_cleans_temp_dir_on_download_failure(
+    monkeypatch, tmp_path
+):
+    storage = _FakeStorage(exists=True)
+    failed_download_dirs: list[Path] = []
+
+    async def _fail_download(s3_prefix: str, local_path: Path) -> None:
+        failed_download_dirs.append(local_path)
+        local_path.mkdir(parents=True, exist_ok=True)
+        (local_path / "partial.json").write_text("{}\n")
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(storage, "download_trial_directory", _fail_download)
+    monkeypatch.setattr(storage_mod, "get_storage_client", lambda: storage)
+
+    with pytest.raises(
+        ValueError, match="Failed to download trial from S3 and no local path available"
+    ):
+        await storage_mod.resolve_trial_directory(
+            "trial-123",
+            trial_s3_key="tasks/task-123/trials/trial-123/",
+            trial_result_path=None,
+        )
+
+    assert len(failed_download_dirs) == 1
+    assert not failed_download_dirs[0].exists()
 
 
 @pytest.mark.asyncio
