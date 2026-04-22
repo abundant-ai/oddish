@@ -1,0 +1,69 @@
+name: Supabase DB Migrations
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+      - "oddish/**"
+      - ".github/workflows/supabase-db-migrations.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: supabase-db-migrations-production
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ODDISH_DATABASE_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Validate production Supabase URL is configured
+        run: |
+          if [ -z "${ODDISH_DATABASE_URL}" ]; then
+            echo "Missing GitHub secret: ODDISH_DATABASE_URL" >&2
+            exit 1
+          fi
+
+      - name: Sync oddish dependencies
+        working-directory: oddish
+        run: uv sync --frozen
+
+      - name: Run oddish migrations
+        working-directory: oddish
+        run: uv run alembic upgrade head
+
+      - name: Sync backend dependencies
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Run backend migrations
+        working-directory: backend
+        run: uv run alembic upgrade head
+
+      - name: Summarize migration run
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## Supabase DB migrations"
+            echo
+            echo "- Database: production Supabase via \`ODDISH_DATABASE_URL\`"
+            echo "- Core migrations: \`oddish/alembic\`"
+            echo "- Cloud migrations: \`backend/alembic\`"
+            echo "- Trigger: \`${{ github.event_name }}\`"
+            echo "- Commit: \`${{ github.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -114,8 +114,8 @@ The API layer enforces this scope in all list/read/write queries.
 | Path | Purpose |
 |------|---------|
 | `deploy.py` | Modal app entrypoint (imports API + worker functions) |
-| `modal_app.py` | Modal image, volumes, and shared runtime setup |
-| `endpoints.py` | Modal ASGI app function with concurrency, volume, and secrets wiring |
+| `modal_app.py` | Modal image, bucket mounts, and shared runtime setup |
+| `endpoints.py` | Modal ASGI app function with concurrency and secrets wiring |
 | `serve.py` | Railway/uvicorn entrypoint for non-Modal deployment |
 | `Dockerfile` | Container image for Railway or standalone deployment |
 | `cloud_policy.py` | Hosted-only environment policy (allowed sandboxes, default cloud env) |
@@ -194,7 +194,6 @@ Modal runtime knobs are read directly by `modal_app.py`, including:
 - `ODDISH_MODAL_MAX_WORKERS_PER_POLL`
 - `ODDISH_MODEL_CONCURRENCY_DEFAULT`
 - `MODAL_APP_NAME`
-- `MODAL_VOLUME_NAME`
 - `MODAL_SECRET_ENVIRONMENT`
 
 Local `backend/.env` values are layered on top of the shared Modal secret for local deploys.
@@ -204,7 +203,7 @@ Local `backend/.env` values are layered on top of the shared Modal secret for lo
 `endpoints.py`, `serve.py`, and `worker/runtime.py` patch oddish settings at startup:
 
 - `endpoints.py` / `serve.py`: set `db_use_null_pool` for per-request DB connections
-- `worker/runtime.py`: disable auto-started local workers, point storage paths to mounted Modal volumes, and force Harbor environment to Modal-compatible mode
+- `worker/runtime.py`: refresh DB connection pools per container, ensure the per-container Harbor scratch dir exists (defaults to `/tmp/harbor-jobs`), and force Harbor environment to Modal-compatible mode
 
 ## API Endpoints
 

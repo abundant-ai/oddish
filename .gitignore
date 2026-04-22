@@ -35,3 +35,4 @@ oddish-pulls/
 **/oddish-pulls/
 .oddish/
 **/.oddish/
+.cursor/

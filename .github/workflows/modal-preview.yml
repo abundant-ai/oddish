@@ -24,7 +24,6 @@ jobs:
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       MODAL_ENVIRONMENT: preview
       MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
-      MODAL_VOLUME_NAME: oddish-preview
       MODAL_SECRET_ENVIRONMENT: main
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}

@@ -92,7 +92,7 @@ Postgres
 Workers (auto-started by API, or standalone via python -m oddish.workers.queue.worker)
         |
         v
-Harbor task execution → logs/results/artifacts (S3 + optional Modal volumes)
+Harbor task execution → logs/results/artifacts (S3)
 ```
 
 High-level flow:
@@ -407,7 +407,6 @@ ODDISH_MODAL_WORKER_TIMEOUT_SECONDS=...
 ODDISH_MODAL_MAX_WORKERS_PER_POLL=...
 ODDISH_MODEL_CONCURRENCY_DEFAULT=...
 MODAL_APP_NAME=...
-MODAL_VOLUME_NAME=...
 MODAL_SECRET_ENVIRONMENT=...
 ```
 
@@ -554,26 +553,18 @@ docker run --rm -p 3000:3000 --env-file frontend/.env.local oddish-frontend
 
 ## Full-Stack Local Development
 
-### Flow A: Frontend + local core API
-
-```bash
-# Terminal 1 — start Postgres, then the core API
-docker run -d --name oddish-db -e POSTGRES_USER=oddish -e POSTGRES_PASSWORD=oddish -e POSTGRES_DB=oddish -p 5432:5432 postgres:16-alpine
-cd oddish && uv run python -m oddish.db setup && uv run python -m oddish.server
-
-# Terminal 2
-cd frontend && pnpm dev:local
-```
-
-### Flow B: Frontend + Modal backend
+### Frontend + (ephemeral) Modal backend
 
 ```bash
 # Terminal 1
 cd backend && uv run modal serve deploy.py
 
+# use modal deploy deploy.py for prod deployment
+
 # Terminal 2
-cd frontend && pnpm dev:modal
+cd frontend && sudo rm -rf /Users/rishi/Documents/GitHubProjects/oddish/frontend/.next && ./run-prod-clerk-local.sh # ensure -dev suffix on API URL
 ```
+
 
 ---
 
@@ -585,18 +576,6 @@ cd frontend && pnpm dev:modal
 uv run python -m oddish.db setup
 curl http://localhost:8000/health
 ```
-
-### Tasks stay queued
-
-- Make sure the API is healthy.
-- `oddish.server` auto-starts workers; or run `python -m oddish.workers.queue.worker` separately.
-- Check queue concurrency settings if a model-specific queue is saturated.
-- Inspect the unified queue directly: `GET /admin/worker-jobs` returns a
-  `{kind: {status: count}}` matrix plus stale-RUNNING samples and recent
-  failures; the `/admin` dashboard surfaces the same data.
-- Stale-heartbeat cleanup runs periodically and transitions stuck
-  `worker_jobs` rows to `RETRYING` (if attempts remain) or `FAILED`; the
-  outcome is mirrored back onto `trials` / `tasks` for the live UI.
 
 ### Pulling from a remote API fails
 

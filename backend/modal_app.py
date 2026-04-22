@@ -20,7 +20,6 @@ def _env_int(name: str, default: int) -> int:
 
 
 MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
-MODAL_VOLUME_NAME = os.environ.get("MODAL_VOLUME_NAME", "oddish")
 MODAL_SECRET_ENVIRONMENT = os.environ.get("MODAL_SECRET_ENVIRONMENT", "main")
 RUNTIME_SECRET_NAME = "oddish-prod"
 ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
@@ -38,10 +37,11 @@ LOCAL_DOTENV_VARS = {
 
 app = modal.App(MODAL_APP_NAME)
 
-# Create Modal Volumes for shared storage between functions
-# the volume isn't really used for anything
-volume = modal.Volume.from_name(MODAL_VOLUME_NAME, create_if_missing=True)
-VOLUME_MOUNT_PATH = "/data"
+# No shared Modal Volume: each container uses its own ephemeral ``/tmp`` for
+# Harbor scratch (see ``oddish.config.Settings.harbor_jobs_dir`` default of
+# ``/tmp/harbor-jobs``). Sharing a Modal Volume between workers previously
+# caused cross-container inode accumulation; per-container ``/tmp`` makes that
+# class of leak structurally impossible.
 WORKER_TASK_MOUNT_PATH = "/mnt/oddish-tasks"
 WORKER_TASK_MOUNT_KEY_PREFIX = "tasks/"
 
@@ -89,8 +89,6 @@ ENV_VARS = {
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
-    "ODDISH_LOCAL_STORAGE_DIR": f"{VOLUME_MOUNT_PATH}/tasks",
-    "ODDISH_HARBOR_JOBS_DIR": f"{VOLUME_MOUNT_PATH}/harbor",
     "ODDISH_HARBOR_ENVIRONMENT": "modal",
     "ODDISH_AUTO_START_WORKERS": "false",
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",
@@ -161,8 +159,12 @@ def _build_worker_task_bucket_mount() -> modal.CloudBucketMount | None:
 
 
 worker_task_bucket_mount = _build_worker_task_bucket_mount()
-api_volumes = {VOLUME_MOUNT_PATH: volume}
-worker_volumes = dict(api_volumes)
+# No shared Modal Volume: every container uses its own ephemeral ``/tmp`` for
+# Harbor scratch. Worker containers keep the optional read-only
+# ``CloudBucketMount`` that lets them stream task files from S3 without
+# downloading.
+api_volumes: dict[str, object] = {}
+worker_volumes: dict[str, object] = {}
 if worker_task_bucket_mount is not None:
     worker_volumes[WORKER_TASK_MOUNT_PATH] = worker_task_bucket_mount
 
