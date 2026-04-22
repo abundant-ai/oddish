@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from datetime import datetime, timezone
 import io
 import json
@@ -125,10 +126,150 @@ class StorageClient:
 
     _MAX_CONCURRENT_UPLOADS = 8
     _TASK_ARCHIVE_OBJECT_NAME = ".oddish-task.tar.gz"
+    _EXPANDED_MANIFEST_OBJECT_NAME = ".oddish-manifest.json"
     # Staging archive written by ``oddish import`` clients via a presigned
     # PUT; the complete endpoint extracts it into the trial prefix and
     # deletes the staging object.
     _TRIAL_IMPORT_ARCHIVE_OBJECT_NAME = ".oddish-trial-import.tar.gz"
+
+    # Per-process archive cache: maps (archive_key, etag) -> (bytes, members)
+    # where members is the list produced by ``_task_archive_members_from_bytes``.
+    # Size-bounded in total decompressed byte footprint so a single task doesn't
+    # blow the limit. Keys without a known etag fall back to
+    # ``(content_length, last_modified)``.
+    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]]]]" = OrderedDict()
+    _archive_cache_bytes: int = 0
+
+    @classmethod
+    def _archive_cache_capacity_bytes(cls) -> int:
+        mb = getattr(settings, "tasks_archive_cache_mb", 256) or 0
+        return max(int(mb), 0) * 1024 * 1024
+
+    @classmethod
+    def _archive_cache_get(
+        cls, cache_key: tuple[str, str]
+    ) -> tuple[bytes, list[dict[str, object]]] | None:
+        entry = cls._archive_cache.get(cache_key)
+        if entry is None:
+            return None
+        cls._archive_cache.move_to_end(cache_key)
+        return entry
+
+    @classmethod
+    def _archive_cache_put(
+        cls,
+        cache_key: tuple[str, str],
+        value: tuple[bytes, list[dict[str, object]]],
+    ) -> None:
+        capacity = cls._archive_cache_capacity_bytes()
+        if capacity <= 0:
+            return
+        size = len(value[0])
+        if size > capacity:
+            return
+        existing = cls._archive_cache.pop(cache_key, None)
+        if existing is not None:
+            cls._archive_cache_bytes -= len(existing[0])
+        cls._archive_cache[cache_key] = value
+        cls._archive_cache_bytes += size
+        while cls._archive_cache_bytes > capacity and cls._archive_cache:
+            _, evicted = cls._archive_cache.popitem(last=False)
+            cls._archive_cache_bytes -= len(evicted[0])
+
+    async def _head_archive_cache_key(self, archive_key: str) -> tuple[str, str] | None:
+        """Build a stable cache key for an archive object.
+
+        Uses the ETag when the backend returns one (AWS S3, MinIO). Falls back
+        to ``(ContentLength, LastModified)`` so S3-compatible backends that
+        drop the ETag still get a working cache. Returns ``None`` for any
+        backend / fake that doesn't expose ``head_object`` (e.g. test
+        doubles), which disables caching for that call without breaking
+        the read path.
+        """
+        await self._ensure_client()
+        head_fn = getattr(self._s3, "head_object", None)
+        if head_fn is None:
+            return None
+        try:
+            head = await head_fn(
+                Bucket=settings.s3_bucket, Key=archive_key
+            )
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code")
+            if error_code in {"404", "NoSuchKey", "NotFound"}:
+                return None
+            raise
+        except Exception:
+            # A fake client or transient error shouldn't poison the
+            # primary read path; fall through to the uncached download.
+            return None
+
+        etag = head.get("ETag")
+        if etag:
+            return (archive_key, str(etag))
+        length = head.get("ContentLength")
+        last_modified = head.get("LastModified")
+        fallback = f"{length}:{last_modified}"
+        return (archive_key, fallback)
+
+    # archive_key -> etag-or-fallback from the most recent successful
+    # ``_head_archive_cache_key`` call. Lets ``_head_archive_etag`` reuse
+    # the HEAD that ``_load_task_archive`` already issued for the cache
+    # lookup so a single read path doesn't pay two HEADs per file click.
+    # Immutable-per-version archives mean stale hints are only possible
+    # if an archive is rewritten out-of-band, which never happens in the
+    # current upload flow; ``_load_task_archive`` refreshes the hint on
+    # every call regardless.
+    _archive_etag_hints: "OrderedDict[str, str]" = OrderedDict()
+    _ARCHIVE_ETAG_HINTS_MAX = 1024
+
+    @classmethod
+    def _remember_archive_etag(cls, archive_key: str, etag: str) -> None:
+        cls._archive_etag_hints[archive_key] = etag
+        cls._archive_etag_hints.move_to_end(archive_key)
+        while len(cls._archive_etag_hints) > cls._ARCHIVE_ETAG_HINTS_MAX:
+            cls._archive_etag_hints.popitem(last=False)
+
+    async def _load_task_archive(
+        self, archive_key: str
+    ) -> tuple[bytes, list[dict[str, object]]]:
+        """Fetch and parse a task archive, preferring the in-process cache.
+
+        Callers that need both the listing and a member body can reuse the
+        returned ``(bytes, members)`` tuple without re-downloading or
+        re-decompressing the tarball. As a side effect the archive's
+        ETag (or ``(length, last_modified)`` fallback) is stashed so a
+        subsequent ``_head_archive_etag`` call doesn't re-issue HEAD.
+        """
+        cache_key = await self._head_archive_cache_key(archive_key)
+        if cache_key is not None:
+            self._remember_archive_etag(archive_key, cache_key[1])
+            cached = self._archive_cache_get(cache_key)
+            if cached is not None:
+                return cached
+
+        archive_bytes = await self.download_bytes(archive_key)
+        members = _task_archive_members_from_bytes(archive_bytes)
+        value = (archive_bytes, members)
+        if cache_key is not None:
+            self._archive_cache_put(cache_key, value)
+        return value
+
+    async def _head_archive_etag(self, archive_key: str) -> str | None:
+        """Return the current ETag for an archive object, if the backend exposes it.
+
+        Reuses the hint populated by a recent ``_load_task_archive``
+        call so the common "list + read one file" flow does a single
+        HEAD instead of two.
+        """
+        hinted = self._archive_etag_hints.get(archive_key)
+        if hinted is not None:
+            return hinted
+        cache_key = await self._head_archive_cache_key(archive_key)
+        if cache_key is None:
+            return None
+        self._remember_archive_etag(archive_key, cache_key[1])
+        return cache_key[1]
 
     async def _ensure_client(self):
         """Lazy initialization of aioboto3 client."""
@@ -488,10 +629,26 @@ class StorageClient:
         files live at the unversioned ``tasks/{task_id}/`` prefix) the method
         falls back automatically.
         """
+        # Prefer the per-file expanded layout when available. Sibling prefix
+        # (``v{N}-files/``) isolates expansion artifacts from user files.
+        if version is not None:
+            expanded_prefix = f"tasks/{task_id}/v{version}-files/"
+            manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
+            if await self.object_exists(manifest_key):
+                return await self._list_expanded_task_files(
+                    task_id=task_id,
+                    expanded_prefix=expanded_prefix,
+                    prefix=prefix,
+                    recursive=recursive,
+                    limit=limit,
+                    cursor=cursor,
+                    presign=presign,
+                    presign_expiration=presign_expiration,
+                )
+
         root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
         if await self.object_exists(archive_key):
-            archive_bytes = await self.download_bytes(archive_key)
-            archive_files = _task_archive_members_from_bytes(archive_bytes)
+            archive_bytes, archive_files = await self._load_task_archive(archive_key)
             relative_prefix = normalize_s3_relative_path(prefix)
             if relative_prefix and not relative_prefix.endswith("/"):
                 relative_prefix = f"{relative_prefix}/"
@@ -651,6 +808,117 @@ class StorageClient:
             "presign_expires_in": presign_expiration if presign else None,
         }
 
+    async def _list_expanded_task_files(
+        self,
+        *,
+        task_id: str,
+        expanded_prefix: str,
+        prefix: str | None,
+        recursive: bool,
+        limit: int,
+        cursor: str | None,
+        presign: bool,
+        presign_expiration: int,
+    ) -> dict:
+        """List files in a task's expanded per-file S3 layout.
+
+        The manifest sentinel (``.oddish-manifest.json``) is filtered out so
+        callers never see the expansion bookkeeping. Response shape mirrors
+        the archive branch so frontend logic is untouched, except
+        ``archive_key`` / ``archive_url`` are omitted (each file has its own
+        direct ``url`` instead).
+        """
+        relative_prefix = normalize_s3_relative_path(prefix)
+        if relative_prefix and not relative_prefix.endswith("/"):
+            relative_prefix = f"{relative_prefix}/"
+        full_prefix = f"{expanded_prefix}{relative_prefix}"
+        manifest_object = self._EXPANDED_MANIFEST_OBJECT_NAME
+
+        if recursive:
+            objects = await self.list_objects_all(full_prefix)
+            files: list[dict[str, object]] = []
+            for obj in objects:
+                key = obj.get("key")
+                if not key:
+                    continue
+                relative_path = key[len(expanded_prefix) :]
+                if not relative_path or relative_path == manifest_object:
+                    continue
+                files.append(
+                    {
+                        "path": relative_path,
+                        "key": key,
+                        "size": obj.get("size"),
+                        "last_modified": obj.get("last_modified"),
+                    }
+                )
+
+            if presign and files:
+                s3_keys = [str(f["key"]) for f in files]
+                urls = await self.get_presigned_urls_batch(s3_keys, presign_expiration)
+                for f in files:
+                    key = str(f["key"])
+                    f["url"] = urls.get(key)
+
+            return {
+                "task_id": task_id,
+                "files": files,
+                "dirs": [],
+                "prefix": full_prefix,
+                "recursive": True,
+                "presigned": presign,
+                "presign_expires_in": presign_expiration if presign else None,
+            }
+
+        listing = await self.list_objects(
+            full_prefix,
+            delimiter="/",
+            max_keys=limit,
+            continuation_token=cursor,
+        )
+        files = []
+        for obj in listing["objects"]:
+            key = obj.get("key")
+            if not key:
+                continue
+            relative_path = key[len(expanded_prefix) :]
+            if not relative_path or relative_path == manifest_object:
+                continue
+            files.append(
+                {
+                    "path": relative_path,
+                    "key": key,
+                    "size": obj.get("size"),
+                    "last_modified": obj.get("last_modified"),
+                }
+            )
+
+        if presign and files:
+            s3_keys = [str(f["key"]) for f in files]
+            urls = await self.get_presigned_urls_batch(s3_keys, presign_expiration)
+            for f in files:
+                key = str(f["key"])
+                f["url"] = urls.get(key)
+
+        dirs = []
+        for common_prefix in listing["common_prefixes"]:
+            if not common_prefix:
+                continue
+            relative_dir = common_prefix[len(expanded_prefix) :].rstrip("/")
+            if relative_dir:
+                dirs.append({"path": relative_dir})
+        return {
+            "task_id": task_id,
+            "files": files,
+            "dirs": dirs,
+            "prefix": full_prefix,
+            "recursive": False,
+            "cursor": listing["next_token"],
+            "truncated": listing["is_truncated"],
+            "presigned": presign,
+            "presign_expires_in": presign_expiration if presign else None,
+        }
+
     async def list_trial_files(
         self,
         *,
@@ -761,18 +1029,60 @@ class StorageClient:
         presign_expiration: int = 900,
         version: int | None = None,
     ) -> dict:
-        """Get content of a specific task file from S3."""
+        """Get content of a specific task file from S3.
+
+        Prefers the per-file expanded layout when the manifest sentinel
+        exists under ``tasks/{id}/v{N}-files/``. Falls back to reading from
+        the tarball otherwise. The response shape always includes ``path``
+        and ``key``; ``content`` is populated for archive reads (or when
+        ``presign=False`` on expanded) and ``url`` when ``presign=True`` on
+        the expanded layout. When an archive is the source we additionally
+        return ``archive_etag`` so HTTP layers can emit immutable
+        ``ETag`` / ``Cache-Control`` headers.
+        """
         normalized_path = normalize_s3_relative_path(file_path)
         if not normalized_path:
             raise HTTPException(status_code=400, detail="Invalid file path")
+
+        if version is not None:
+            expanded_prefix = f"tasks/{task_id}/v{version}-files/"
+            manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
+            if await self.object_exists(manifest_key):
+                s3_key = f"{expanded_prefix}{normalized_path}"
+                # Some members may be absent from the expanded tree
+                # (oversize-member skips, mid-flight expansions, or
+                # ad-hoc object deletions). Check presence before
+                # handing out a URL / downloading, and fall through to
+                # the archive branch on miss so deep-links keep
+                # working.
+                if await self.object_exists(s3_key):
+                    if presign:
+                        url = await self.get_presigned_url(
+                            s3_key, expiration=presign_expiration
+                        )
+                        return {
+                            "path": normalized_path,
+                            "key": s3_key,
+                            "url": url,
+                        }
+                    content = await self.download_text(s3_key)
+                    return {
+                        "path": normalized_path,
+                        "content": content,
+                        "key": s3_key,
+                    }
+
         root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
         if await self.object_exists(archive_key):
-            archive_bytes = await self.download_bytes(archive_key)
+            archive_bytes, _members = await self._load_task_archive(archive_key)
             content = _read_task_archive_text(archive_bytes, normalized_path)
+            archive_etag = await self._head_archive_etag(archive_key)
             return {
                 "path": normalized_path,
                 "content": content,
                 "key": f"{archive_key}#{normalized_path}",
+                "archive_key": archive_key,
+                "archive_etag": archive_etag,
             }
         s3_key = f"{root_prefix}{normalized_path}"
 
@@ -811,6 +1121,25 @@ class StorageClient:
                 Key=s3_key,
                 Body=f,
             )
+
+    async def upload_bytes(
+        self,
+        data: bytes,
+        s3_key: str,
+        *,
+        content_type: str | None = None,
+    ) -> None:
+        """Upload an in-memory byte buffer to S3."""
+        await self._ensure_client()
+        extra: dict[str, str] = {}
+        if content_type:
+            extra["ContentType"] = content_type
+        await self._s3.put_object(
+            Bucket=settings.s3_bucket,
+            Key=s3_key,
+            Body=data,
+            **extra,
+        )
 
     async def download_file(self, s3_key: str, local_path: Path) -> None:
         """Download a file from S3."""

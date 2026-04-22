@@ -403,6 +403,34 @@ async def enqueue_verdict_worker_job(
     )
 
 
+async def enqueue_task_expand_worker_job(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    version: int,
+    org_id: str | None,
+) -> WorkerJobModel:
+    """Schedule a task-version expansion.
+
+    Expansion writes each member of the task's tarball as an individual
+    S3 object under ``tasks/{task_id}/v{version}-files/`` plus a
+    ``.oddish-manifest.json`` sentinel that records the source archive's
+    etag. The handler short-circuits when the manifest already matches
+    the current archive, so repeat enqueues are cheap.
+    """
+    return await enqueue_worker_job(
+        session,
+        EnqueueRequest(
+            kind=WorkerJobKind.TASK_EXPAND,
+            queue_key=settings.get_task_expand_queue_key(),
+            payload={"task_id": task_id, "version": version},
+            subject_table="task_versions",
+            subject_id=f"{task_id}-v{version}",
+            org_id=org_id,
+        ),
+    )
+
+
 def _build_harbor_config_for_trial(
     submission: TaskSubmission,
     spec: TrialSpec,
@@ -529,6 +557,19 @@ async def create_task(
         )
         session.add(version_row)
         await session.flush()
+
+        if settings.tasks_expand_archive and task_s3_key:
+            # Brand-new task created via /tasks/sweep: enqueue the
+            # expansion so the drawer's first click hits S3 directly.
+            # Re-uploads and registration-only uploads enqueue in
+            # ``oddish.core.tasks``; this covers the sweep-creates-v1
+            # path they don't exercise.
+            await enqueue_task_expand_worker_job(
+                session,
+                task_id=task_id,
+                version=version_number,
+                org_id=org_id,
+            )
 
     # Now safe to set the back-pointer and create trials.
     task.current_version_id = version_id

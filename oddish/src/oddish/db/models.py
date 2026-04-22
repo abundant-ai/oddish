@@ -126,6 +126,11 @@ class WorkerJobKind(str, Enum):
     ANALYSIS = "ANALYSIS"
     VERDICT = "VERDICT"
     QA_REVIEW = "QA_REVIEW"
+    # Expand a task tarball into a per-file S3 tree at
+    # ``tasks/{task_id}/v{N}-files/``. Derived cache only; the archive
+    # at ``tasks/{task_id}/v{N}/.oddish-task.tar.gz`` remains the
+    # canonical, immutable artifact.
+    TASK_EXPAND = "TASK_EXPAND"
 
 
 class WorkerJobStatus(str, Enum):
@@ -335,6 +340,17 @@ class TaskVersionModel(Base):
     content_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Expansion bookkeeping: set when a ``TASK_EXPAND`` worker job has
+    # successfully materialized the per-file tree under
+    # ``tasks/{task_id}/v{N}-files/``. Readers check the sibling
+    # ``.oddish-manifest.json`` sentinel in S3 directly, so these columns
+    # are observability / admin-backfill state rather than a required
+    # fast-path signal.
+    expanded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expanded_manifest_key: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
     task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]

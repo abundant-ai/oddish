@@ -213,5 +213,13 @@ node_modules/
 
 .state/
 jobs/
+# The worker jobs package (handler registry + enqueue helpers) lives
+# in-tree and must be versioned; the broad ``jobs/`` ignore above
+# otherwise swallows it.
+!src/oddish/workers/jobs/
+!src/oddish/workers/jobs/**
+# Re-ignore pycache within the unignored package.
+src/oddish/workers/jobs/**/__pycache__/
+src/oddish/workers/jobs/**/*.pyc
 
 frontend/.npm-cache

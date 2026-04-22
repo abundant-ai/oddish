@@ -262,6 +262,20 @@ async def complete_task_upload(
             await session.flush()
 
             new_task.current_version_id = version_id
+
+            if settings.tasks_expand_archive:
+                # Brand-new tasks need the same expansion kick-off as
+                # re-uploads; without it the first drawer open still
+                # pays the full tarball download+parse cost.
+                from oddish.queue import enqueue_task_expand_worker_job
+
+                await enqueue_task_expand_worker_job(
+                    session,
+                    task_id=task_id,
+                    version=version,
+                    org_id=new_task.org_id,
+                )
+
             await session.commit()
 
             return UploadResponse(
@@ -294,6 +308,20 @@ async def complete_task_upload(
         existing_task.task_path = task_path
         existing_task.task_s3_key = s3_key
         existing_task.current_version_id = version_id
+
+        if settings.tasks_expand_archive:
+            # Kick off the per-file expansion so the task-files drawer
+            # can list directly from S3 on the next open. Lazy import to
+            # avoid a circular dep via ``oddish.queue`` -> this module.
+            from oddish.queue import enqueue_task_expand_worker_job
+
+            await enqueue_task_expand_worker_job(
+                session,
+                task_id=task_id,
+                version=version,
+                org_id=existing_task.org_id,
+            )
+
         await session.commit()
 
     return UploadResponse(
@@ -376,6 +404,16 @@ async def _handle_existing_task_upload(
             task.task_path = task_path
             task.task_s3_key = s3_key
             task.current_version_id = version_id
+
+        if settings.tasks_expand_archive:
+            from oddish.queue import enqueue_task_expand_worker_job
+
+            await enqueue_task_expand_worker_job(
+                session,
+                task_id=task_id,
+                version=version,
+                org_id=existing_task.org_id,
+            )
 
         await session.commit()
 
