@@ -79,7 +79,6 @@ oddish = "oddish.cli:app"
 
 [tool.hatch.build.targets.sdist]
 exclude = [".git", "uv.lock", ".pre-commit-config.yaml"]
-include = ["src/oddish/analyze/*.txt"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/oddish"]
