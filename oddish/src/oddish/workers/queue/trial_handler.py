@@ -105,6 +105,13 @@ def _cleanup_uploaded_job_dir(job_dir: Path | None, trial_id: str) -> None:
             )
             return
         shutil.rmtree(resolved_job_dir, ignore_errors=True)
+        current = resolved_job_dir.parent
+        while current != base_dir and current.is_relative_to(base_dir):
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent
         console.print(
             f"[dim]Cleaned local Harbor artifacts for {trial_id}: {resolved_job_dir}[/dim]"
         )

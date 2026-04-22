@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import io
 import json
 import posixpath
+import shutil
 import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -18,6 +19,13 @@ from oddish.config import settings
 
 WORKER_TASK_MOUNT_PATH = Path("/mnt/oddish-tasks")
 WORKER_TASK_KEY_PREFIX = "tasks/"
+
+
+def _cleanup_temp_directory(path: Path | None) -> None:
+    """Best-effort removal for temporary S3 download directories."""
+    if path is None:
+        return
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def normalize_s3_relative_path(value: str | None) -> str:
@@ -1504,6 +1512,7 @@ async def resolve_task_directory(
             await storage.download_task_directory(resolved_s3_key, temp_dir)
             return temp_dir, temp_dir, resolved_s3_key
         except Exception as exc:
+            _cleanup_temp_directory(temp_dir)
             if task_path:
                 local_task_path = Path(task_path)
                 if local_task_path.exists():
@@ -1542,6 +1551,7 @@ async def resolve_trial_directory(
             await storage.download_trial_directory(resolved_s3_key, temp_dir)
             return temp_dir, temp_dir, resolved_s3_key
         except Exception as exc:
+            _cleanup_temp_directory(temp_dir)
             if trial_result_path:
                 local_trial_path = Path(trial_result_path)
                 if local_trial_path.exists():
