@@ -12,7 +12,7 @@ The expanded layout lets the dashboard list task files with a single
 immutable artifact; the expanded tree is a derived cache.
 
 Revision ID: c4b5a6d7e8f9
-Revises: e8f9a0b1c2d3
+Revises: f9a0b1c2d3e4
 Create Date: 2026-04-21 12:00:00.000000
 """
 
@@ -23,7 +23,7 @@ import sqlalchemy as sa
 
 
 revision: str = "c4b5a6d7e8f9"
-down_revision: Union[str, Sequence[str], None] = "e8f9a0b1c2d3"
+down_revision: Union[str, Sequence[str], None] = "f9a0b1c2d3e4"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

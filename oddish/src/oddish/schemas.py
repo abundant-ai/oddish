@@ -15,7 +15,14 @@ from harbor.models.trial.config import (
 )
 
 from oddish.config import normalize_model_id
-from oddish.db import AnalysisStatus, Priority, TaskStatus, TrialStatus, VerdictStatus
+from oddish.db import (
+    AnalysisStatus,
+    Priority,
+    TaskStatus,
+    TrialOrigin,
+    TrialStatus,
+    VerdictStatus,
+)
 
 
 # =============================================================================
@@ -282,6 +289,30 @@ class TaskUploadCompleteRequest(BaseModel):
     message: str | None = Field(
         None, description="Optional description of what changed in this version"
     )
+    register_task: bool = Field(
+        False,
+        description=(
+            "If True, persist a TaskModel + v1 TaskVersionModel row when the "
+            "task does not yet exist. Use this for upload-only flows "
+            "(`oddish upload`) so the task becomes visible in the UI even "
+            "without any trials. The sweep path leaves this False and "
+            "continues to create the task row itself."
+        ),
+    )
+    user: str | None = Field(
+        None,
+        description=(
+            "Submitting user name used when `register_task=True` creates a "
+            "new TaskModel. Ignored when the task already exists."
+        ),
+    )
+    priority: Priority | None = Field(
+        None,
+        description=(
+            "Priority used when `register_task=True` creates a new TaskModel. "
+            "Defaults to LOW. Ignored when the task already exists."
+        ),
+    )
 
 
 class UploadResponse(BaseModel):
@@ -361,6 +392,14 @@ class TrialResponse(BaseModel):
     status: TrialStatus = Field(
         ...,
         description="Execution status: 'success'=completed (regardless of test result), 'failed'=execution error",
+    )
+    origin: TrialOrigin = Field(
+        TrialOrigin.ODDISH,
+        description=(
+            "Where this trial was executed. 'oddish' = ran on Oddish's "
+            "worker runtime (default). 'imported' = uploaded from an "
+            "external Harbor run via `oddish import`."
+        ),
     )
     attempts: int
     max_attempts: int
@@ -509,6 +548,156 @@ class TaskStatusResponse(BaseModel):
     finished_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+
+# =============================================================================
+# Trial Import (off-oddish Harbor runs -> existing task)
+# =============================================================================
+
+
+class ImportedTrialSpec(BaseModel):
+    """Per-trial metadata for an off-oddish Harbor execution.
+
+    The CLI extracts these fields from a ``harbor.models.trial.result.TrialResult``
+    and posts them to ``/trials/import/init``. The server creates a
+    ``TrialModel`` row in terminal state with ``origin=IMPORTED`` and
+    returns a presigned PUT URL for the artifact tarball; the client
+    then PUTs the archive and calls ``/trials/import/complete``.
+    """
+
+    agent: str = Field(..., description="Agent name (e.g., 'claude-code')")
+    model: str | None = Field(
+        None, description="Model name (normalized server-side via settings)"
+    )
+    environment: EnvironmentType | None = Field(
+        None, description="Execution backend that actually ran the trial"
+    )
+    status: TrialStatus = Field(
+        TrialStatus.SUCCESS,
+        description=(
+            "Terminal status for the imported trial. Must be SUCCESS or "
+            "FAILED -- imports never enter the queue."
+        ),
+    )
+    reward: float | None = Field(
+        None, description="Verifier score in [0, 1]; None if no verifier result"
+    )
+    error_message: str | None = Field(
+        None, description="Execution error message, if any"
+    )
+    harbor_stage: str | None = Field(
+        "completed",
+        description="Harbor lifecycle stage (defaults to 'completed' for imports)",
+    )
+    input_tokens: int | None = None
+    cache_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    phase_timing: dict | None = Field(
+        None,
+        description=(
+            "Per-phase duration breakdown matching the live schema: "
+            "{environment_setup, agent_setup, agent_execution, verifier}"
+        ),
+    )
+    has_trajectory: bool = Field(
+        False, description="Whether the uploaded archive contains a trajectory file"
+    )
+    harbor_config: dict | None = Field(
+        None,
+        description="Serialized Harbor config used during external execution",
+    )
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    external_trial_id: str | None = Field(
+        None,
+        description=(
+            "Harbor TrialResult UUID (or any stable external ID). Stored as "
+            "the trial's idempotency_key; re-imports with the same key are "
+            "rejected by the unique index."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_terminal_status(self) -> "ImportedTrialSpec":
+        if self.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED):
+            raise ValueError(
+                "Imported trials must have status SUCCESS or FAILED"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _normalize_model(self) -> "ImportedTrialSpec":
+        self.model = normalize_model_id(self.model)
+        return self
+
+
+class TrialImportInitRequest(BaseModel):
+    """Request to create an imported trial row + presigned artifact URL."""
+
+    task_id: str = Field(
+        ..., description="Existing task ID (upload via `oddish upload` first)"
+    )
+    experiment_id: str | None = Field(
+        None,
+        description=(
+            "Experiment ID or name to attach the trial to. Creates the "
+            "experiment if the name does not exist. When None, a fresh "
+            "auto-named experiment is created (matching `oddish run`'s "
+            "default behaviour)."
+        ),
+    )
+    trial: ImportedTrialSpec = Field(..., description="Imported trial metadata")
+    upload_artifacts: bool = Field(
+        True,
+        description=(
+            "When True, the response includes a presigned PUT URL for a "
+            "``.oddish-trial-import.tar.gz`` staging archive that the "
+            "client then uploads and finalizes with /trials/import/complete. "
+            "When False, the trial row is created without any artifacts "
+            "and complete does not need to be called."
+        ),
+    )
+
+
+class TrialImportInitResponse(BaseModel):
+    """Response for `/trials/import/init`."""
+
+    trial_id: str
+    task_id: str
+    experiment_id: str
+    experiment_name: str
+    trial_s3_key: str | None = Field(
+        None,
+        description="S3 prefix where the trial artifacts will live once uploaded",
+    )
+    archive_s3_key: str | None = Field(
+        None,
+        description="S3 key the client should PUT the archive tarball to",
+    )
+    upload_url: str | None = Field(
+        None, description="Presigned PUT URL for the archive"
+    )
+    upload_method: str | None = None
+    upload_headers: dict[str, str] = Field(default_factory=dict)
+    requires_completion: bool = Field(
+        False,
+        description="Whether the client must call /trials/import/complete after PUT",
+    )
+
+
+class TrialImportCompleteRequest(BaseModel):
+    """Finalize an imported trial after the artifact archive was uploaded."""
+
+    trial_id: str
+
+
+class TrialImportCompleteResponse(BaseModel):
+    """Response for `/trials/import/complete`."""
+
+    trial_id: str
+    trial_s3_key: str
+    files_extracted: int
 
 
 # =============================================================================

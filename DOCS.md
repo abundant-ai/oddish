@@ -20,6 +20,7 @@ export ODDISH_API_KEY="ok_..."
 **Commands:**
 
 - `oddish run` - submit a job
+- `oddish upload` - register a task or upload existing trials
 - `oddish status` - view progress
 - `oddish cancel` - stop in-flight trials for a task
 - `oddish pull` - download logs and artifacts

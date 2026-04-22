@@ -18,6 +18,10 @@ from oddish.core.trial_io import (
     read_trial_result,
     read_trial_trajectory,
 )
+from oddish.core.trial_imports import (
+    complete_trial_import,
+    initialize_trial_import,
+)
 from oddish.core.public_helpers import (
     get_trial_file_content_s3,
     list_task_trials_for_task,
@@ -31,7 +35,13 @@ from oddish.db import (
     get_storage_client,
 )
 from oddish.db.storage import StorageClient, delete_s3_prefixes
-from oddish.schemas import TrialResponse
+from oddish.schemas import (
+    TrialImportCompleteRequest,
+    TrialImportCompleteResponse,
+    TrialImportInitRequest,
+    TrialImportInitResponse,
+    TrialResponse,
+)
 
 import logging
 
@@ -77,6 +87,42 @@ async def list_task_trials(
         await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
 
         return await list_task_trials_for_task(session, task_id)
+
+
+# =============================================================================
+# Trial Import (off-oddish Harbor runs)
+# =============================================================================
+
+
+@router.post("/trials/import/init", response_model=TrialImportInitResponse)
+async def init_trial_import(
+    payload: TrialImportInitRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> TrialImportInitResponse:
+    """Register an off-oddish trial and return a presigned artifact URL."""
+    auth.require_scope(APIKeyScope.TASKS)
+    return await initialize_trial_import(
+        task_id=payload.task_id,
+        experiment_id_or_name=payload.experiment_id,
+        trial_spec=payload.trial,
+        upload_artifacts=payload.upload_artifacts,
+        org_id=auth.org_id,
+    )
+
+
+@router.post(
+    "/trials/import/complete", response_model=TrialImportCompleteResponse
+)
+async def finalize_trial_import(
+    payload: TrialImportCompleteRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> TrialImportCompleteResponse:
+    """Finalize an imported trial after the client PUTs its archive."""
+    auth.require_scope(APIKeyScope.TASKS)
+    return await complete_trial_import(
+        trial_id=payload.trial_id,
+        org_id=auth.org_id,
+    )
 
 
 @router.delete("/trials/{trial_id}")

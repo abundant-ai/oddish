@@ -108,6 +108,11 @@ async def list_tasks_core(
                 TrialModel.queue_key,
                 TrialModel.model,
                 TrialModel.status,
+                # ``origin`` is surfaced in compact responses, so it must
+                # be loaded eagerly; otherwise the response builder
+                # triggers a lazy-load attempt outside the async
+                # greenlet and fails with MissingGreenlet.
+                TrialModel.origin,
                 TrialModel.attempts,
                 TrialModel.max_attempts,
                 TrialModel.harbor_stage,
@@ -391,7 +396,14 @@ async def browse_tasks_core(
         )
         .where(ranked_tasks_subquery.c.name_rank == 1)
         .order_by(
-            nulls_last(trial_aggregates.c.last_run_at.desc()),
+            # Fresh "never run" tasks should appear near the top of the
+            # browser (ordered by upload time), not buried below every
+            # real experiment. Fall back to the task's created_at when
+            # no trials have finished yet.
+            func.coalesce(
+                trial_aggregates.c.last_run_at,
+                ranked_tasks_subquery.c.created_at,
+            ).desc(),
             nulls_last(ranked_tasks_subquery.c.current_version.desc()),
             ranked_tasks_subquery.c.name.asc(),
         )
@@ -1539,6 +1551,20 @@ async def create_task_sweep_core(
             new_experiment_id = experiment.id
         elif primary_experiment is not None:
             experiment = primary_experiment
+        else:
+            # Task was uploaded via ``oddish upload`` (or otherwise
+            # landed in the DB without any trials) and therefore has no
+            # linked experiment yet. Auto-create one here so the user
+            # can run trials against an upload-only task without having
+            # to pass ``--experiment`` explicitly -- mirroring plain
+            # ``oddish run`` which also auto-generates an experiment
+            # when none is supplied.
+            from oddish.experiment import generate_experiment_name
+
+            experiment = await get_or_create_experiment(
+                session, generate_experiment_name(), org_id
+            )
+            new_experiment_id = experiment.id
 
         # Determine default environment from existing trial, if present.
         existing_env_result = await session.execute(

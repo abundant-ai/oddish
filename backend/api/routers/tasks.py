@@ -220,6 +220,9 @@ async def finalize_task_upload(
         message=payload.message,
         org_id=auth.org_id,
         created_by_user_id=auth.user_id,
+        register=payload.register_task,
+        user=payload.user,
+        priority=payload.priority,
     )
 
 
