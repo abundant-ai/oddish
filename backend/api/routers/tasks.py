@@ -647,6 +647,19 @@ async def get_task_version(
 # =============================================================================
 
 
+def _build_task_file_etag(archive_etag: str, file_path: str) -> str:
+    """Compose an RFC 7232 weak-etag for a task-archive-served file.
+
+    S3's ``head_object`` returns the ``ETag`` already wrapped in double
+    quotes (e.g. ``'"abc123"'``); embedding that verbatim inside
+    ``W/"..."`` would emit a malformed header that browsers silently
+    ignore, which would defeat the whole HTTP-cache fast path. Strip
+    any leading/trailing quotes before composing the wire form.
+    """
+    normalized = archive_etag.strip().strip('"')
+    return f'W/"{normalized}:{file_path}"'
+
+
 @router.get("/tasks/{task_id}/files")
 async def list_task_files(
     task_id: str,
@@ -716,7 +729,7 @@ async def get_task_file_content(
 
     archive_etag = result.get("archive_etag") if isinstance(result, dict) else None
     if archive_etag and version is not None:
-        etag_value = f'W/"{archive_etag}:{file_path}"'
+        etag_value = _build_task_file_etag(str(archive_etag), file_path)
         if_none_match = request.headers.get("if-none-match")
         if if_none_match and etag_value in {h.strip() for h in if_none_match.split(",")}:
             return Response(
