@@ -20,6 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import DeclarativeBase, mapped_column  # type: ignore[attr-defined]
 
@@ -29,7 +30,7 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class Base(DeclarativeBase):
+class Base(AsyncAttrs, DeclarativeBase):
     """SQLAlchemy declarative base with common fields for all models."""
 
     # All models inherit these fields

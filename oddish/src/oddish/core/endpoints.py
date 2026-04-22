@@ -48,15 +48,18 @@ from oddish.schemas import (
 from oddish.timing import TimingRecorder, elapsed_ms, now
 
 
-def _primary_experiment_for_task_model(
+async def _primary_experiment_for_task_model(
     task: TaskModel,
 ) -> ExperimentModel | None:
     """Pick the first linked experiment as the task's "primary" experiment.
 
     Used by response builders and sweep/append plumbing that still need a
     single experiment context when the task participates in several.
+
+    Uses ``awaitable_attrs`` so the ``experiments`` relationship is safe to
+    access even when it hasn't been eagerly loaded on ``task``.
     """
-    experiments = list(task.experiments or [])
+    experiments = list(await task.awaitable_attrs.experiments or [])
     return experiments[0] if experiments else None
 
 
@@ -1543,7 +1546,7 @@ async def create_task_sweep_core(
 
         new_experiment_id: str | None = None
         experiment: ExperimentModel | None = None
-        primary_experiment = _primary_experiment_for_task_model(task)
+        primary_experiment = await _primary_experiment_for_task_model(task)
         if submission.experiment_id:
             experiment = await get_experiment_by_id_or_name(session, submission.experiment_id, org_id)
             if not experiment:
@@ -1643,6 +1646,6 @@ async def create_task_sweep_core(
     if task_s3_key:
         task.task_s3_key = task_s3_key
 
-    experiment = _primary_experiment_for_task_model(task)
+    experiment = await _primary_experiment_for_task_model(task)
 
     return task, list(task.trials), False, experiment
