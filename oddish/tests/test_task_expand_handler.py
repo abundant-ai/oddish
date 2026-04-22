@@ -36,11 +36,21 @@ def _make_archive(files: dict[str, bytes]) -> bytes:
 
 class _FakeS3:
     """Just enough of the aioboto3 client surface for
-    ``run_task_expand_job`` to head/upload/download objects."""
+    ``run_task_expand_job`` to head/upload/download objects.
 
-    def __init__(self, archive_key: str, archive_bytes: bytes, etag: str) -> None:
-        self._objects: dict[str, bytes] = {archive_key: archive_bytes}
-        self._etags: dict[str, str] = {archive_key: etag}
+    Shares the backing ``objects`` / ``etags`` dicts with the parent
+    ``_FakeStorage`` so a manifest written via ``upload_bytes`` is
+    visible to a later ``head_object`` (and vice versa) without
+    test-setup juggling.
+    """
+
+    def __init__(
+        self,
+        objects: dict[str, bytes],
+        etags: dict[str, str],
+    ) -> None:
+        self._objects = objects
+        self._etags = etags
 
     async def head_object(self, Bucket: str, Key: str) -> dict:
         if Key not in self._objects:
@@ -56,35 +66,41 @@ class _FakeS3:
 
 
 class _FakeStorage:
-    """Stand-in for ``StorageClient`` that ``run_task_expand_job`` uses."""
+    """Stand-in for ``StorageClient`` that ``run_task_expand_job`` uses.
+
+    Accepts either an ``archive_key`` (tarball layout) or ``loose_objects``
+    (pre-archive loose-file layout), or both. Tests can omit ``archive_key``
+    to simulate a task that has no archive anywhere.
+    """
 
     _EXPANDED_MANIFEST_OBJECT_NAME = StorageClient._EXPANDED_MANIFEST_OBJECT_NAME
 
     def __init__(
         self,
         *,
-        archive_key: str,
-        archive_bytes: bytes,
+        archive_key: str | None = None,
+        archive_bytes: bytes | None = None,
         etag: str = '"etag-v1"',
         manifest_bytes: bytes | None = None,
+        loose_objects: dict[str, bytes] | None = None,
     ) -> None:
-        self._archive_key = archive_key
-        self._archive_bytes = archive_bytes
         self._etag = etag
-        self._objects: dict[str, bytes] = {archive_key: archive_bytes}
-        if manifest_bytes is not None:
-            manifest_key = archive_key.replace(
-                "/.oddish-task.tar.gz", "-files/.oddish-manifest.json"
-            ).replace(
-                "tasks/", "tasks/"
-            )
+        self._objects: dict[str, bytes] = {}
+        self._etags: dict[str, str] = {}
+        if archive_key is not None and archive_bytes is not None:
+            self._objects[archive_key] = archive_bytes
+            self._etags[archive_key] = etag
+        if loose_objects:
+            for k, v in loose_objects.items():
+                self._objects[k] = v
+        if manifest_bytes is not None and archive_key is not None:
+            archive_dir = archive_key.rsplit("/", 1)[0]  # tasks/{id}/v{N}
             # Derive the ``-files/`` sibling prefix from the versioned
             # archive key: ``tasks/{id}/v{N}/.oddish-task.tar.gz`` ->
             # ``tasks/{id}/v{N}-files/.oddish-manifest.json``.
-            archive_dir = archive_key.rsplit("/", 1)[0]  # tasks/{id}/v{N}
             manifest_key = f"{archive_dir}-files/.oddish-manifest.json"
             self._objects[manifest_key] = manifest_bytes
-        self._s3 = _FakeS3(archive_key, archive_bytes, etag)
+        self._s3 = _FakeS3(self._objects, self._etags)
         self.upload_calls: list[tuple[str, bytes, str | None]] = []
 
     async def _ensure_client(self) -> None:
@@ -111,6 +127,13 @@ class _FakeStorage:
 
     async def _load_task_archive(self, archive_key: str):
         return (self._objects[archive_key], [])
+
+    async def list_objects_all(self, prefix: str) -> list[dict]:
+        return [
+            {"key": k, "size": len(v), "last_modified": None}
+            for k, v in self._objects.items()
+            if k.startswith(prefix)
+        ]
 
     async def _resolve_task_prefix(
         self, task_id: str, version: int | None
@@ -247,6 +270,120 @@ async def test_expand_falls_back_to_unversioned_archive(
     # The manifest records the actual resolved archive key so operators
     # can tell which source produced the expansion.
     assert manifest["archive_key"] == "tasks/task-legacy/.oddish-task.tar.gz"
+
+
+@pytest.mark.asyncio
+async def test_expand_migrates_loose_file_task_without_archive(
+    monkeypatch, _patched_get_session
+):
+    """Pre-archive uploads (``upload_task_directory``) stored each task
+    file as its own S3 object under ``tasks/{id}/`` with no tarball
+    anywhere. The expansion handler must migrate those directly into
+    the canonical ``v{N}-files/`` layout so the reader has one code
+    path for every task, regardless of how it was uploaded.
+
+    Trial artifacts under ``trials/`` and other versioned sub-prefixes
+    must be excluded — only the task's own source files get migrated.
+    """
+    storage = _FakeStorage(
+        # No archive anywhere: archive_key is None.
+        loose_objects={
+            "tasks/task-loose/task.toml": b"name = 'loose'\n",
+            "tasks/task-loose/instruction.md": b"do the thing\n",
+            "tasks/task-loose/tests/test.sh": b"#!/bin/sh\n",
+            # Trial artifacts live under ``trials/`` and must NOT be
+            # migrated into the task's expanded file list.
+            "tasks/task-loose/trials/task-loose-0/result.json": b"{}",
+            "tasks/task-loose/trials/task-loose-0/job.log": b"...",
+            # Any versioned sibling layout (e.g. partially-migrated
+            # state) should also be ignored.
+            "tasks/task-loose/v2/.oddish-task.tar.gz": b"\x00",
+            "tasks/task-loose/v1-files/stale.txt": b"stale",
+        },
+    )
+    monkeypatch.setattr(task_expand_handler, "get_storage_client", lambda: storage)
+
+    summary = await task_expand_handler.run_task_expand_job(
+        task_id="task-loose", version=1
+    )
+
+    assert summary["status"] == "expanded"
+    assert summary["source"] == "loose_files"
+    assert summary["files"] == 3
+
+    expanded_prefix = "tasks/task-loose/v1-files/"
+    assert storage._objects[f"{expanded_prefix}task.toml"] == b"name = 'loose'\n"
+    assert storage._objects[f"{expanded_prefix}instruction.md"] == b"do the thing\n"
+    assert storage._objects[f"{expanded_prefix}tests/test.sh"] == b"#!/bin/sh\n"
+    assert f"{expanded_prefix}trials/task-loose-0/result.json" not in storage._objects
+    assert f"{expanded_prefix}v2/.oddish-task.tar.gz" not in storage._objects
+
+    manifest = json.loads(
+        storage._objects[
+            f"{expanded_prefix}{StorageClient._EXPANDED_MANIFEST_OBJECT_NAME}"
+        ].decode("utf-8")
+    )
+    assert manifest["source"] == "loose_files"
+    assert manifest["source_prefix"] == "tasks/task-loose/"
+    assert {f["path"] for f in manifest["files"]} == {
+        "task.toml",
+        "instruction.md",
+        "tests/test.sh",
+    }
+    assert all(
+        f["source_key"].startswith("tasks/task-loose/") for f in manifest["files"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_expand_short_circuits_when_loose_manifest_already_exists(
+    monkeypatch, _patched_get_session
+):
+    """Re-running expansion on a loose-file task that's already been
+    migrated must not redo the copy work. Checked on manifest presence
+    alone (pre-archive tasks are frozen)."""
+    existing_manifest = json.dumps(
+        {
+            "task_id": "task-loose",
+            "version": 1,
+            "source": "loose_files",
+            "source_prefix": "tasks/task-loose/",
+            "files_count": 1,
+            "files": [{"path": "task.toml", "size": 15, "source_key": "..."}],
+        }
+    ).encode("utf-8")
+    storage = _FakeStorage(
+        loose_objects={
+            "tasks/task-loose/task.toml": b"name = 'loose'\n",
+            "tasks/task-loose/v1-files/.oddish-manifest.json": existing_manifest,
+        },
+    )
+    monkeypatch.setattr(task_expand_handler, "get_storage_client", lambda: storage)
+
+    summary = await task_expand_handler.run_task_expand_job(
+        task_id="task-loose", version=1
+    )
+
+    assert summary["status"] == "already_expanded"
+    assert summary["source"] == "loose_files"
+    assert storage.upload_calls == []
+
+
+@pytest.mark.asyncio
+async def test_expand_fails_when_task_has_neither_archive_nor_loose_files(
+    monkeypatch, _patched_get_session
+):
+    """A task_version row whose S3 prefix is empty (archive deleted,
+    no loose files) is genuinely unrecoverable. The job should raise so
+    the worker records a failure rather than silently marking it
+    expanded with zero files."""
+    storage = _FakeStorage(loose_objects={})
+    monkeypatch.setattr(task_expand_handler, "get_storage_client", lambda: storage)
+
+    with pytest.raises(RuntimeError, match="no archive"):
+        await task_expand_handler.run_task_expand_job(
+            task_id="task-empty", version=1
+        )
 
 
 @pytest.mark.asyncio

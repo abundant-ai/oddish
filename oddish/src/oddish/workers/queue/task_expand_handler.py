@@ -128,6 +128,114 @@ async def _maybe_short_circuit_on_manifest(
     return None
 
 
+async def _list_loose_task_files(
+    storage: StorageClient, task_id: str
+) -> list[dict[str, object]]:
+    """List a pre-archive task's files directly under ``tasks/{task_id}/``.
+
+    Used when no ``.oddish-task.tar.gz`` exists anywhere for the task.
+    These uploads went through the old ``upload_task_directory()`` flow
+    that wrote loose objects to S3 instead of a single tarball. Filters
+    out trial artifacts (``trials/``), versioned sub-prefixes (``v{N}/``,
+    ``v{N}-files/``), and the archive sentinel itself so the result is
+    exactly the task's source tree.
+    """
+    root = f"tasks/{task_id}/"
+    objects = await storage.list_objects_all(root)
+    out: list[dict[str, object]] = []
+    for obj in objects:
+        key = str(obj.get("key") or "")
+        if not key.startswith(root):
+            continue
+        rel = key[len(root):]
+        if not rel or rel.endswith("/"):
+            continue
+        first = rel.split("/", 1)[0]
+        if first == "trials":
+            continue
+        # Skip anything already inside a versioned sub-prefix
+        # (``v1/``, ``v1-files/``, ``v2/`` ...) so we never accidentally
+        # surface another version's contents as this version's files.
+        if first and first[0] == "v":
+            tail = first[1:].split("-", 1)[0]
+            if tail.isdigit():
+                continue
+        if rel == StorageClient._TASK_ARCHIVE_OBJECT_NAME:
+            continue
+        out.append(
+            {
+                "relative_path": rel,
+                "source_key": key,
+                "size": int(obj.get("size") or 0),
+            }
+        )
+    return out
+
+
+async def _migrate_loose_task_files(
+    storage: StorageClient,
+    *,
+    task_id: str,
+    version: int,
+    expanded_prefix: str,
+    manifest_key: str,
+    loose_files: list[dict[str, object]],
+) -> dict:
+    """Copy a loose-file task into the unified ``v{N}-files/`` layout.
+
+    For pre-archive tasks the source bytes already live as individual
+    S3 objects, so this is the moral equivalent of the tar-extraction
+    branch in ``run_task_expand_job`` — just with sources coming from
+    separate objects instead of members of one tarball. Uses download +
+    upload for maximum S3-compatible-backend support; the files are
+    typically a handful of small configs / scripts so the extra
+    round-trip versus a server-side ``CopyObject`` is negligible.
+    """
+    semaphore = asyncio.Semaphore(_MAX_CONCURRENT_MEMBER_UPLOADS)
+
+    async def _copy_one(entry: dict[str, object]) -> dict[str, object]:
+        source_key = str(entry["source_key"])
+        rel_path = str(entry["relative_path"])
+        async with semaphore:
+            body = await storage.download_bytes(source_key)
+            content_type, _ = mimetypes.guess_type(rel_path)
+            target_key = f"{expanded_prefix}{rel_path}"
+            await storage.upload_bytes(
+                body, target_key, content_type=content_type or None
+            )
+        return {
+            "path": rel_path,
+            "size": int(entry.get("size") or 0) or len(body),
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "source_key": source_key,
+        }
+
+    manifest_files = list(
+        await asyncio.gather(*(_copy_one(f) for f in loose_files))
+    )
+
+    manifest_payload = {
+        "task_id": task_id,
+        "version": version,
+        "source": "loose_files",
+        "source_prefix": f"tasks/{task_id}/",
+        "expanded_at": datetime.now(timezone.utc).isoformat(),
+        "files_count": len(manifest_files),
+        "files": manifest_files,
+    }
+    manifest_bytes = json.dumps(
+        manifest_payload, sort_keys=True, default=str
+    ).encode("utf-8")
+    await storage.upload_bytes(
+        manifest_bytes, manifest_key, content_type="application/json"
+    )
+    return {
+        "status": "expanded",
+        "source": "loose_files",
+        "files": len(manifest_files),
+    }
+
+
 def _extract_regular_members(
     archive_bytes: bytes,
     *,
@@ -217,9 +325,49 @@ async def run_task_expand_job(
                 Bucket=settings.s3_bucket, Key=archive_key
             )
         except Exception as exc:
-            raise RuntimeError(
-                f"Task archive missing at {archive_key}: {exc}"
-            ) from exc
+            # No archive. Pre-archive uploads via ``upload_task_directory``
+            # stored loose per-file S3 objects at ``tasks/{task_id}/``;
+            # migrate those directly into the same ``v{N}-files/`` layout
+            # so the reader has one canonical fast path for every task.
+            # A short-circuit on an existing manifest keeps re-runs cheap
+            # (pre-archive tasks are frozen, so the stale-manifest risk
+            # is nil).
+            if await storage.object_exists(manifest_key):
+                await _mark_version_expanded(
+                    task_id=task_id,
+                    version=version,
+                    manifest_key=manifest_key,
+                )
+                return {
+                    "status": "already_expanded",
+                    "source": "loose_files",
+                }
+
+            loose_files = await _list_loose_task_files(storage, task_id)
+            if not loose_files:
+                raise RuntimeError(
+                    f"Task {task_id} v{version}: no archive at {archive_key} "
+                    f"and no loose files under tasks/{task_id}/"
+                ) from exc
+
+            result = await _migrate_loose_task_files(
+                storage,
+                task_id=task_id,
+                version=version,
+                expanded_prefix=expanded_prefix,
+                manifest_key=manifest_key,
+                loose_files=loose_files,
+            )
+            await _mark_version_expanded(
+                task_id=task_id,
+                version=version,
+                manifest_key=manifest_key,
+            )
+            console.print(
+                f"[green]TASK_EXPAND {task_id} v{version} "
+                f"(loose_files): {result}[/green]"
+            )
+            return result
 
         archive_size = int(head.get("ContentLength") or 0)
         raw_etag = head.get("ETag")
