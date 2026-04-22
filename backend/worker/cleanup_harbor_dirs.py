@@ -1,64 +1,62 @@
 """One-shot cleanup for leaked Harbor per-trial wrapper directories.
 
-Pre-PR-14, a successful trial upload removed the nested Harbor job
-directory but left the outer wrapper directory (pattern
-``{task_temp}.{agent}.{task_id}-{idx}``) behind under
-``/data/harbor``. Over time these empty wrappers exhausted the Modal
-volume's inodes, so Harbor's ``unique_parent.mkdir(...)`` started
-raising ``OSError: [Errno 28] No space left on device`` even when
-bytes-free looked fine.
+Pre-PR-#14, a successful trial upload removed the nested Harbor job
+directory but left the outer wrapper (pattern
+``{task_temp}.{agent}.{task_id}-{idx}``) behind under ``/data/harbor``.
+Over time these empty wrappers exhausted the Modal volume's inodes, so
+Harbor's ``unique_parent.mkdir(...)`` started raising
+``OSError: [Errno 28] No space left on device`` even when bytes-free
+looked fine. PR #14 prunes these on upload going forward but doesn't
+sweep up historical leaks. This module is that sweeper.
 
-PR #14 prunes these on upload going forward, but doesn't sweep up
-historical leaks. This module is that sweeper. Run it once after the
-PR-14 image is live on a worker container:
+This script is intentionally standalone: it declares its own tiny
+Modal app with a ``debian_slim`` image and mounts the live Oddish
+volume by name (same ``MODAL_VOLUME_NAME`` convention
+``backend/modal_app.py`` uses). That keeps cold-start tiny compared to
+importing the full backend image + Oddish deps.
 
-    modal run backend/worker/cleanup_harbor_dirs.py
+Invoke from the repo root (works from anywhere — no ``cd backend``
+needed):
 
-Flags (all optional):
+    modal run backend/worker/cleanup_harbor_dirs.py                 # dry-run
+    modal run backend/worker/cleanup_harbor_dirs.py --no-dry-run    # commit
 
-    --min-age-hours 13   Only remove wrappers whose mtime is older than
-                         this many hours. Default is 13 (slightly more
-                         than ``WORKER_TIMEOUT_SECONDS`` = 12h) so an
+Flags:
+
+    --min-age-hours 13   Only remove wrappers whose mtime and every
+                         direct child's mtime are older than this
+                         cutoff. Default 13h (slightly above
+                         ``WORKER_TIMEOUT_SECONDS`` = 12h) so an
                          in-flight long-running trial is never touched.
     --dry-run / --no-dry-run
-                         Report what would be removed without deleting.
-                         Default is ``True`` — rerun with
-                         ``--no-dry-run`` once the preview looks right.
+                         Default ``True`` — preview first, then flip
+                         to ``--no-dry-run`` once the preview numbers
+                         look right.
     --pattern 'task-*'   Glob matched against direct children of the
                          Harbor jobs dir. Default matches Harbor's
                          per-trial wrapper name.
-
-The function reports disk free, inode free, and directory count before
-and after so you can see the reclaim. It commits the volume at the end
-so the deletes are visible to every other container.
 """
 
 from __future__ import annotations
 
 import os
 import shutil
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
 
 import modal
 
-# ``modal_app`` lives at ``backend/modal_app.py`` as a top-level module;
-# importing it only works when ``backend/`` is on ``sys.path``. The repo
-# convention for ``modal deploy`` is to ``cd backend`` first, which puts
-# the entrypoint's own dir on the path implicitly. This one-off sweeper
-# should also work from the repo root (``modal run backend/worker/...``)
-# so we add the parent dir explicitly.
-_BACKEND_DIR = Path(__file__).resolve().parent.parent
-if str(_BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(_BACKEND_DIR))
 
-from modal_app import VOLUME_MOUNT_PATH, app, image, runtime_secrets, volume, worker_volumes  # noqa: E402
-
-
-_HARBOR_JOBS_DIR = Path(f"{VOLUME_MOUNT_PATH}/harbor")
+_VOLUME_NAME = os.environ.get("MODAL_VOLUME_NAME", "oddish")
+_VOLUME_MOUNT_PATH = "/data"
+_HARBOR_JOBS_DIR = Path(f"{_VOLUME_MOUNT_PATH}/harbor")
 _SECONDS_PER_HOUR = 3600
+
+
+app = modal.App("oddish-harbor-cleanup")
+image = modal.Image.debian_slim(python_version="3.12")
+volume = modal.Volume.from_name(_VOLUME_NAME, create_if_missing=False)
 
 
 @dataclass
@@ -108,10 +106,9 @@ def _format_stats(stats: _StorageStats) -> str:
 
 @app.function(
     image=image,
-    volumes=worker_volumes,
-    secrets=runtime_secrets,
+    volumes={_VOLUME_MOUNT_PATH: volume},
     timeout=3600,
-    memory=1024,
+    memory=512,
 )
 def cleanup_harbor_leaked_wrappers(
     min_age_hours: float = 13.0,
@@ -120,8 +117,7 @@ def cleanup_harbor_leaked_wrappers(
 ) -> dict:
     """Remove stale Harbor wrapper directories under ``/data/harbor``.
 
-    Uses the direct-child mtime as the liveness signal. A wrapper
-    directory is eligible for removal iff:
+    A wrapper directory is eligible for removal iff:
 
     - its name matches ``pattern`` (default ``"task-*"``), AND
     - its own mtime is older than ``min_age_hours`` hours, AND
@@ -129,12 +125,8 @@ def cleanup_harbor_leaked_wrappers(
 
     The "any direct child touched recently" guard covers the case where
     Harbor adds subdirectories to the wrapper shortly after creating
-    it — the wrapper's own mtime updates only on direct add/remove,
-    not on nested writes, so we double-check one level deep before
-    removing. This is still not a hard guarantee for pathologically
-    long-running trials that don't touch the outer two levels for
-    > ``min_age_hours``, which is why the default is conservatively set
-    above ``WORKER_TIMEOUT_SECONDS`` (12h).
+    it — the outer dir's mtime only updates on direct add/remove, not
+    on nested writes, so we double-check one level deep.
     """
     print(
         f"[cleanup] harbor_jobs_dir={_HARBOR_JOBS_DIR} "
@@ -158,7 +150,6 @@ def cleanup_harbor_leaked_wrappers(
     skipped_recent = 0
     skipped_nonmatch = 0
     errors = 0
-    bytes_freed_est = 0
 
     for entry in _HARBOR_JOBS_DIR.iterdir():
         if not entry.is_dir():
@@ -198,12 +189,9 @@ def cleanup_harbor_leaked_wrappers(
             skipped_recent += 1
             continue
 
-        # Crude size estimate before removal: stat the outer dir's
-        # ``du`` isn't available cheaply, so we skip a precise number.
-        # We'll report the reclaimed bytes via disk-usage delta below.
-
         if dry_run:
-            print(f"[cleanup] DRY-RUN would remove {entry}")
+            if removed < 10:
+                print(f"[cleanup] DRY-RUN would remove {entry.name}")
             removed += 1
             continue
 
@@ -226,7 +214,6 @@ def cleanup_harbor_leaked_wrappers(
     print(
         f"[cleanup] done: removed={removed} skipped_recent={skipped_recent} "
         f"skipped_nonmatch={skipped_nonmatch} errors={errors} "
-        f"freed_bytes_est={bytes_freed_est:,} "
         f"freed_gb_est={bytes_freed_est / (1024**3):.2f}"
     )
     return {
@@ -254,11 +241,7 @@ def main(
     dry_run: bool = True,
     pattern: str = "task-*",
 ) -> None:
-    """Invoke with ``modal run backend/worker/cleanup_harbor_dirs.py``.
-
-    Preview first (default), then re-run with ``--no-dry-run`` once the
-    reported numbers look right.
-    """
+    """Invoke with ``modal run backend/worker/cleanup_harbor_dirs.py``."""
     result = cleanup_harbor_leaked_wrappers.remote(
         min_age_hours=min_age_hours,
         dry_run=dry_run,
