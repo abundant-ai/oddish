@@ -216,6 +216,8 @@ All routes require auth unless marked public.
 | GET | `/dashboard` | Cached aggregate response for queues, pipeline stats, usage, tasks, and experiments |
 | POST | `/tasks/upload/init` | Start a direct-to-S3 task upload and return a presigned PUT URL |
 | POST | `/tasks/upload/complete` | Finalize a direct-to-S3 task upload after the client PUT succeeds |
+| POST | `/trials/import/init` | Register an off-oddish trial and return a presigned artifact URL |
+| POST | `/trials/import/complete` | Finalize an imported trial after the client PUT succeeds |
 | POST | `/tasks/sweep` | Expand one task into multiple trials |
 | GET | `/tasks` | List tasks (org-scoped, paginated/filtered) |
 | GET | `/tasks/browse` | Browse latest task versions with pagination and search |
@@ -228,6 +230,7 @@ All routes require auth unless marked public.
 | GET | `/tasks/{task_id}/trials/{index}` | Trial by index |
 | GET | `/tasks/{task_id}/versions` | List stored task versions |
 | GET | `/tasks/{task_id}/versions/{version}` | Get one stored task version |
+| DELETE | `/trials/{trial_id}` | Delete a single trial and its associated S3 artifacts (admin only) |
 | POST | `/trials/{trial_id}/retry` | Re-queue trial |
 | POST | `/trials/{trial_id}/analysis/retry` | Re-queue analysis for a completed trial |
 | GET | `/trials/{trial_id}/logs` | Trial logs |
@@ -288,6 +291,7 @@ All routes require auth unless marked public.
 | GET | `/admin/queue-status` | Per-kind queue counts sourced from `trials`/`tasks` |
 | GET | `/admin/orphaned-state` | Stale/orphaned queue state diagnostics |
 | GET | `/admin/worker-jobs` | Unified `worker_jobs` kind×status matrix, stale-RUNNING samples, recent failures/cancels, and duration percentiles |
+| POST | `/admin/tasks/expand-backfill` | Backfill sweep expansion for older tasks missing worker_jobs rows (admin only) |
 | POST | `/webhooks/clerk` | Clerk webhook ingestion |
 | POST | `/github/tasks/{task_id}/refresh` | Refresh task PR comment |
 | POST | `/github/experiments/{experiment_id}/refresh` | Refresh experiment PR comments |
@@ -332,10 +336,14 @@ uv run modal serve deploy.py
 
 # Terminal 2 — frontend
 cd frontend
-pnpm dev:modal
+pnpm dev
 ```
 
-Configure `NEXT_PUBLIC_API_URL` in `frontend/.env.local` (see `frontend/env.example`).
+Set `NEXT_PUBLIC_API_URL` in `frontend/.env.local` to the `modal serve` URL
+(printed by Terminal 1, e.g. `https://<workspace>--api-dev.modal.run`). See
+`frontend/env.example` for the full frontend env surface, and
+[`../SELF_HOSTING.md`](../SELF_HOSTING.md) for the HTTPS / production-Clerk
+variant of this loop.
 
 ### Smoke tests
 

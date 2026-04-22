@@ -48,7 +48,7 @@ export ODDISH_API_KEY="ok_..."
 
 ```bash
 # Run a single agent
-oddish run -d terminal-bench@2.0 -a codex -m gpt-5.2-codex --n-trials 3
+oddish run -d terminal-bench@2.0 -a codex -m gpt-5.4 --n-trials 3
 ```
 
 ```bash
@@ -56,23 +56,8 @@ oddish run -d terminal-bench@2.0 -a codex -m gpt-5.2-codex --n-trials 3
 oddish run -d terminal-bench@2.0 -c job.yaml
 ```
 
-<details>
-<summary>Example <a href="assets/light-run.yaml">job.yaml</a></summary>
+Example [job.yaml](assets/light-run.yaml)
 
-```yaml
-agents:
-  - name: claude-code
-    model_name: anthropic/claude-haiku-4-5
-    n_trials: 3
-  - name: codex
-    model_name: openai/gpt-5.4-mini
-    n_trials: 3
-  - name: terminus-2
-    model_name: gemini/gemini-3.1-flash-lite-preview
-    n_trials: 3
-```
-
-</details>
 
 ### 4. Monitor Progress
 

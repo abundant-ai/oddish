@@ -276,11 +276,31 @@ ANTHROPIC_API_KEY=...
 OPENAI_API_KEY=...
 GEMINI_API_KEY=...
 
+# AWS Bedrock (alternate route for Claude models)
+AWS_BEARER_TOKEN_BEDROCK=...
+
 # Optional sandbox credentials
 DAYTONA_API_KEY=...
 MODAL_TOKEN_ID=...
 MODAL_TOKEN_SECRET=...
 ```
+
+### Claude model routing: Anthropic API vs Bedrock
+
+Claude models can be called either via the Anthropic API or via AWS Bedrock.
+The model string tells the provider layer which route to take:
+
+- `anthropic/claude-opus-4-7` — routes through the Anthropic API using
+  `ANTHROPIC_API_KEY`.
+- `bedrock/global.anthropic.claude-opus-4-7` — routes through AWS Bedrock
+  using `AWS_BEARER_TOKEN_BEDROCK`. The `global.` prefix selects the
+  cross-region inference profile; swap it for a region prefix
+  (`us.`, `eu.`, `apac.`) if you need region-pinned inference.
+
+Pass these strings anywhere a model is accepted: `oddish run -m ...`, sweep
+configs (`model_name:`), or `--n-concurrent` overrides. Concurrency limits
+are keyed off the full `provider/model` string, so Anthropic API traffic
+and Bedrock traffic for the same Claude model are accounted separately.
 
 Storage defaults:
 
@@ -555,15 +575,35 @@ docker run --rm -p 3000:3000 --env-file frontend/.env.local oddish-frontend
 
 ### Frontend + (ephemeral) Modal backend
 
-```bash
-# Terminal 1
-cd backend && uv run modal serve deploy.py
+Two workflows, both documented in detail in [`SELF_HOSTING.md`](SELF_HOSTING.md):
 
-# use modal deploy deploy.py for prod deployment
+1. **Plain HTTP localhost** (Clerk *test* keys):
 
-# Terminal 2
-cd frontend && sudo rm -rf /Users/rishi/Documents/GitHubProjects/oddish/frontend/.next && ./run-prod-clerk-local.sh # ensure -dev suffix on API URL
-```
+   ```bash
+   # Terminal 1
+   cd backend && uv run modal serve deploy.py
+
+   # Terminal 2 — set NEXT_PUBLIC_API_URL to the modal serve URL
+   cd frontend && pnpm dev
+   ```
+
+2. **Local HTTPS on `local.oddish.app`** (Clerk *production* keys). The helper
+   script listens on port 443 and re-execs itself under `sudo`, so the
+   root-owned `.next/` from a prior run has to be cleared:
+
+   ```bash
+   # Terminal 1
+   cd backend && uv run modal serve deploy.py
+
+   # Terminal 2 — ensures Clerk prod keys accept the oddish.app origin
+   cd frontend && sudo rm -rf .next && ./run-prod-clerk-local.sh
+   ```
+
+   `NEXT_PUBLIC_API_URL` in `.env.local` should point at the `-dev` Modal URL
+   from Terminal 1, and `NEXT_PUBLIC_APP_URL` should be
+   `https://local.oddish.app`.
+
+Use `modal deploy deploy.py` for production deployments (see `SELF_HOSTING.md`).
 
 
 ---
