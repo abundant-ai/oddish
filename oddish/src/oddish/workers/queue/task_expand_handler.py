@@ -118,18 +118,53 @@ async def _maybe_short_circuit_on_manifest(
     return None
 
 
-def _parse_members(archive_bytes: bytes) -> list[tarfile.TarInfo]:
-    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
-        return [m for m in tar.getmembers() if m.isfile()]
+def _extract_regular_members(
+    archive_bytes: bytes,
+    *,
+    max_member_bytes: int,
+) -> list[dict[str, object]]:
+    """Stream every regular-file member out of the tarball in a single pass.
 
+    Returns a list of ``{"name", "size", "body", "skipped", "skip_reason"}``
+    dicts. Oversize members carry ``skipped=True`` and ``body=b""`` so the
+    caller can emit a manifest entry without ever touching their bytes.
 
-def _read_member_bytes(archive_bytes: bytes, name: str) -> bytes:
+    A previous version extracted per-member by re-opening the gzip stream
+    from the start, which was O(N^2) in decompression cost. The iterator
+    below walks each tar record once.
+    """
+    members: list[dict[str, object]] = []
     with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
-        member = tar.getmember(name)
-        extracted = tar.extractfile(member)
-        if extracted is None:
-            return b""
-        return extracted.read()
+        for member in tar:
+            if not member.isfile():
+                continue
+            size = int(member.size or 0)
+            if max_member_bytes and size > max_member_bytes:
+                members.append(
+                    {
+                        "name": member.name,
+                        "size": size,
+                        "body": b"",
+                        "skipped": True,
+                        "skip_reason": "member_too_large",
+                    }
+                )
+                # ``tar`` streams sequentially; advancing past the
+                # skipped body is handled by the next iteration
+                # because tarfile discards unread member data on the
+                # next ``next()`` call.
+                continue
+            extracted = tar.extractfile(member)
+            body = extracted.read() if extracted is not None else b""
+            members.append(
+                {
+                    "name": member.name,
+                    "size": size,
+                    "body": body,
+                    "skipped": False,
+                }
+            )
+    return members
 
 
 async def run_task_expand_job(
@@ -192,11 +227,12 @@ async def run_task_expand_job(
                 f"[yellow]TASK_EXPAND skip: archive_size={archive_size} "
                 f"exceeds limit {max_bytes}[/yellow]"
             )
-            await _mark_version_expanded(
-                task_id=task_id,
-                version=version,
-                manifest_key=None,
-            )
+            # Intentionally leave ``expanded_at`` NULL so
+            # ``/admin/tasks/expand-backfill`` (which filters on
+            # ``expanded_at IS NULL``) re-picks this version if the
+            # operator raises ``tasks_expand_max_bytes`` later. The
+            # worker-job outcome is still SUCCESS — expansion was
+            # skipped by policy, not failed.
             return summary
 
         existing = await _maybe_short_circuit_on_manifest(
@@ -222,32 +258,36 @@ async def run_task_expand_job(
         # later read doesn't re-download).
         archive_bytes, _members = await storage._load_task_archive(archive_key)
 
-        members = _parse_members(archive_bytes)
         max_member = int(settings.tasks_expand_max_member_bytes)
+        extracted_members = _extract_regular_members(
+            archive_bytes, max_member_bytes=max_member
+        )
 
         manifest_files: list[dict[str, object]] = []
-        upload_plan: list[tuple[tarfile.TarInfo, str, str, bytes, str]] = []
+        upload_plan: list[tuple[str, bytes, str]] = []
 
-        for member in members:
-            normalized = normalize_s3_relative_path(member.name)
+        for entry in extracted_members:
+            normalized = normalize_s3_relative_path(str(entry["name"]))
             if not normalized:
                 continue
-            size = int(member.size or 0)
-            if max_member and size > max_member:
+            size = int(entry["size"])
+            if entry.get("skipped"):
                 manifest_files.append(
                     {
                         "path": normalized,
                         "size": size,
                         "skipped": True,
-                        "skip_reason": "member_too_large",
+                        "skip_reason": str(entry.get("skip_reason", "skipped")),
                     }
                 )
                 continue
-            body = _read_member_bytes(archive_bytes, member.name)
+            body = entry["body"]  # type: ignore[assignment]
+            if not isinstance(body, (bytes, bytearray)):
+                body = b""
             digest = hashlib.sha256(body).hexdigest()
             content_type, _ = mimetypes.guess_type(normalized)
             target_key = f"{expanded_prefix}{normalized}"
-            upload_plan.append((member, normalized, target_key, body, content_type or ""))
+            upload_plan.append((target_key, bytes(body), content_type or ""))
             manifest_files.append(
                 {
                     "path": normalized,
@@ -259,8 +299,6 @@ async def run_task_expand_job(
         semaphore = asyncio.Semaphore(_MAX_CONCURRENT_MEMBER_UPLOADS)
 
         async def _upload_one(
-            _member: tarfile.TarInfo,
-            _path: str,
             target_key: str,
             body: bytes,
             content_type: str,

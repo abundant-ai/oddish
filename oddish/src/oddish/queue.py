@@ -558,6 +558,19 @@ async def create_task(
         session.add(version_row)
         await session.flush()
 
+        if settings.tasks_expand_archive and task_s3_key:
+            # Brand-new task created via /tasks/sweep: enqueue the
+            # expansion so the drawer's first click hits S3 directly.
+            # Re-uploads and registration-only uploads enqueue in
+            # ``oddish.core.tasks``; this covers the sweep-creates-v1
+            # path they don't exercise.
+            await enqueue_task_expand_worker_job(
+                session,
+                task_id=task_id,
+                version=version_number,
+                org_id=org_id,
+            )
+
     # Now safe to set the back-pointer and create trials.
     task.current_version_id = version_id
 

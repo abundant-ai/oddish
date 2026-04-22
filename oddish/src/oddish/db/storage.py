@@ -1019,13 +1019,28 @@ class StorageClient:
             manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
             if await self.object_exists(manifest_key):
                 s3_key = f"{expanded_prefix}{normalized_path}"
-                if presign:
-                    url = await self.get_presigned_url(
-                        s3_key, expiration=presign_expiration
-                    )
-                    return {"path": normalized_path, "key": s3_key, "url": url}
-                content = await self.download_text(s3_key)
-                return {"path": normalized_path, "content": content, "key": s3_key}
+                # Some members may be absent from the expanded tree
+                # (oversize-member skips, mid-flight expansions, or
+                # ad-hoc object deletions). Check presence before
+                # handing out a URL / downloading, and fall through to
+                # the archive branch on miss so deep-links keep
+                # working.
+                if await self.object_exists(s3_key):
+                    if presign:
+                        url = await self.get_presigned_url(
+                            s3_key, expiration=presign_expiration
+                        )
+                        return {
+                            "path": normalized_path,
+                            "key": s3_key,
+                            "url": url,
+                        }
+                    content = await self.download_text(s3_key)
+                    return {
+                        "path": normalized_path,
+                        "content": content,
+                        "key": s3_key,
+                    }
 
         root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
         if await self.object_exists(archive_key):

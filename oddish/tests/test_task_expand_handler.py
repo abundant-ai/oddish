@@ -225,6 +225,17 @@ async def test_expand_skips_oversize_archive(
     # Pretend every archive is oversize.
     monkeypatch.setattr(settings, "tasks_expand_max_bytes", 1)
 
+    # Spy on ``_mark_version_expanded`` so we can verify it's NOT called
+    # on the oversize path (stamping ``expanded_at`` would permanently
+    # hide the version from /admin/tasks/expand-backfill if the cap is
+    # raised later).
+    stamp_calls: list[dict] = []
+
+    async def _spy_mark(**kwargs):
+        stamp_calls.append(kwargs)
+
+    monkeypatch.setattr(task_expand_handler, "_mark_version_expanded", _spy_mark)
+
     summary = await task_expand_handler.run_task_expand_job(
         task_id="task-abc", version=1
     )
@@ -233,6 +244,9 @@ async def test_expand_skips_oversize_archive(
     assert summary["reason"] == "archive_too_large"
     # Nothing written beyond the archive itself.
     assert storage.upload_calls == []
+    # expanded_at must remain NULL so a future cap raise can re-pick
+    # this version via the backfill endpoint.
+    assert stamp_calls == []
 
 
 @pytest.mark.asyncio
@@ -271,6 +285,79 @@ async def test_expand_skips_oversize_member(monkeypatch, _patched_get_session):
     assert by_path["small.txt"].get("skipped") is None or not by_path["small.txt"].get(
         "skipped"
     )
+
+
+@pytest.mark.asyncio
+async def test_expand_single_pass_extracts_every_member_correctly(
+    monkeypatch, _patched_get_session
+):
+    """A previous implementation re-opened the tarball per member
+    (O(N^2) decompression). The streaming extractor must still produce
+    exact per-member bytes for every file in the archive."""
+    files = {
+        f"dir/file_{i:03d}.txt": (f"content-{i}\n" * (i + 1)).encode("utf-8")
+        for i in range(25)
+    }
+    archive_bytes = _make_archive(files)
+    storage = _FakeStorage(
+        archive_key="tasks/task-abc/v1/.oddish-task.tar.gz",
+        archive_bytes=archive_bytes,
+    )
+    monkeypatch.setattr(task_expand_handler, "get_storage_client", lambda: storage)
+
+    summary = await task_expand_handler.run_task_expand_job(
+        task_id="task-abc", version=1
+    )
+
+    assert summary["status"] == "expanded"
+    assert summary["files"] == len(files)
+
+    expanded_prefix = "tasks/task-abc/v1-files/"
+    for path, expected in files.items():
+        assert storage._objects[f"{expanded_prefix}{path}"] == expected
+
+
+def test_extract_regular_members_reads_every_body_in_one_pass():
+    """Unit test for the streaming extractor: exhaust an archive in a
+    single tarfile-open and confirm we get the full bytes for every
+    member (the bug the refactor fixes would surface as truncated or
+    swapped bodies)."""
+    files = {
+        "alpha.txt": b"aaaaaaaaaaaaaaaaaaaa",
+        "beta.txt": b"bbbb",
+        "nested/gamma.txt": b"gamma-" * 32,
+    }
+    archive_bytes = _make_archive(files)
+
+    members = task_expand_handler._extract_regular_members(
+        archive_bytes, max_member_bytes=0
+    )
+
+    by_name = {str(m["name"]): m for m in members}
+    assert set(by_name) == set(files)
+    for name, payload in files.items():
+        assert by_name[name]["body"] == payload
+        assert by_name[name]["size"] == len(payload)
+        assert by_name[name]["skipped"] is False
+
+
+def test_extract_regular_members_marks_oversize_members_skipped():
+    files = {
+        "small.txt": b"ok",
+        "big.bin": b"x" * 200,
+    }
+    archive_bytes = _make_archive(files)
+
+    members = task_expand_handler._extract_regular_members(
+        archive_bytes, max_member_bytes=10
+    )
+
+    by_name = {str(m["name"]): m for m in members}
+    assert by_name["small.txt"]["skipped"] is False
+    assert by_name["small.txt"]["body"] == b"ok"
+    assert by_name["big.bin"]["skipped"] is True
+    # Skipped entries must not carry their body into memory.
+    assert by_name["big.bin"]["body"] == b""
 
 
 @pytest.mark.asyncio

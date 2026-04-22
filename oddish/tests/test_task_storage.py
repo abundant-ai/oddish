@@ -574,7 +574,11 @@ async def test_get_task_file_content_uses_expanded_layout(monkeypatch):
     expanded_prefix = "tasks/task-123/v3-files/"
 
     async def fake_object_exists(s3_key: str) -> bool:
-        return s3_key == f"{expanded_prefix}.oddish-manifest.json"
+        # Manifest sentinel AND the per-file expanded object both exist.
+        return s3_key in {
+            f"{expanded_prefix}.oddish-manifest.json",
+            f"{expanded_prefix}task.toml",
+        }
 
     async def fake_download_text(s3_key: str) -> str:
         assert s3_key == f"{expanded_prefix}task.toml"
@@ -605,6 +609,60 @@ async def test_get_task_file_content_uses_expanded_layout(monkeypatch):
     )
     assert presigned_payload["url"] == "https://example.com/expanded-task"
     assert "content" not in presigned_payload
+
+
+@pytest.mark.asyncio
+async def test_get_task_file_content_falls_back_to_archive_when_expanded_member_missing(
+    monkeypatch,
+):
+    """Deep-linking to a file the expansion handler skipped (oversize
+    member, mid-flight expansion, ad-hoc deletion) must fall through to
+    the archive read instead of 404-ing."""
+    archive_bytes = _make_task_archive(
+        {
+            "task.toml": "name = 'demo'\n",
+            "big.bin": "large payload\n",
+        }
+    )
+    storage = storage_mod.StorageClient()
+    storage._client = object()
+
+    expanded_prefix = "tasks/task-123/v2-files/"
+
+    async def fake_object_exists(s3_key: str) -> bool:
+        # Manifest exists and ``task.toml`` is materialized, but
+        # ``big.bin`` was skipped (oversize member) so the per-file
+        # object isn't there.
+        if s3_key == f"{expanded_prefix}.oddish-manifest.json":
+            return True
+        if s3_key == f"{expanded_prefix}task.toml":
+            return True
+        if s3_key == "tasks/task-123/v2/.oddish-task.tar.gz":
+            return True
+        return False
+
+    async def fake_load_task_archive(s3_key: str):
+        return (
+            archive_bytes,
+            storage_mod._task_archive_members_from_bytes(archive_bytes),
+        )
+
+    async def fake_head_archive_etag(s3_key: str) -> str | None:
+        return None
+
+    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "_load_task_archive", fake_load_task_archive)
+    monkeypatch.setattr(storage, "_head_archive_etag", fake_head_archive_etag)
+
+    payload = await storage.get_task_file_content(
+        task_id="task-123",
+        file_path="big.bin",
+        presign=False,
+        version=2,
+    )
+    # The archive branch served the content, not a 404.
+    assert payload["content"] == "large payload\n"
+    assert "archive_key" in payload
 
 
 @pytest.mark.asyncio
