@@ -212,6 +212,24 @@ class StorageClient:
         fallback = f"{length}:{last_modified}"
         return (archive_key, fallback)
 
+    # archive_key -> etag-or-fallback from the most recent successful
+    # ``_head_archive_cache_key`` call. Lets ``_head_archive_etag`` reuse
+    # the HEAD that ``_load_task_archive`` already issued for the cache
+    # lookup so a single read path doesn't pay two HEADs per file click.
+    # Immutable-per-version archives mean stale hints are only possible
+    # if an archive is rewritten out-of-band, which never happens in the
+    # current upload flow; ``_load_task_archive`` refreshes the hint on
+    # every call regardless.
+    _archive_etag_hints: "OrderedDict[str, str]" = OrderedDict()
+    _ARCHIVE_ETAG_HINTS_MAX = 1024
+
+    @classmethod
+    def _remember_archive_etag(cls, archive_key: str, etag: str) -> None:
+        cls._archive_etag_hints[archive_key] = etag
+        cls._archive_etag_hints.move_to_end(archive_key)
+        while len(cls._archive_etag_hints) > cls._ARCHIVE_ETAG_HINTS_MAX:
+            cls._archive_etag_hints.popitem(last=False)
+
     async def _load_task_archive(
         self, archive_key: str
     ) -> tuple[bytes, list[dict[str, object]]]:
@@ -219,10 +237,13 @@ class StorageClient:
 
         Callers that need both the listing and a member body can reuse the
         returned ``(bytes, members)`` tuple without re-downloading or
-        re-decompressing the tarball.
+        re-decompressing the tarball. As a side effect the archive's
+        ETag (or ``(length, last_modified)`` fallback) is stashed so a
+        subsequent ``_head_archive_etag`` call doesn't re-issue HEAD.
         """
         cache_key = await self._head_archive_cache_key(archive_key)
         if cache_key is not None:
+            self._remember_archive_etag(archive_key, cache_key[1])
             cached = self._archive_cache_get(cache_key)
             if cached is not None:
                 return cached
@@ -235,10 +256,19 @@ class StorageClient:
         return value
 
     async def _head_archive_etag(self, archive_key: str) -> str | None:
-        """Return the current ETag for an archive object, if the backend exposes it."""
+        """Return the current ETag for an archive object, if the backend exposes it.
+
+        Reuses the hint populated by a recent ``_load_task_archive``
+        call so the common "list + read one file" flow does a single
+        HEAD instead of two.
+        """
+        hinted = self._archive_etag_hints.get(archive_key)
+        if hinted is not None:
+            return hinted
         cache_key = await self._head_archive_cache_key(archive_key)
         if cache_key is None:
             return None
+        self._remember_archive_etag(archive_key, cache_key[1])
         return cache_key[1]
 
     async def _ensure_client(self):

@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 
 from auth import AuthContext, require_admin
 from oddish.core.admin import (
@@ -19,7 +19,7 @@ from oddish.core.admin import (
     get_orphaned_state_core,
     get_worker_jobs_admin_core,
 )
-from oddish.db import TaskVersionModel, get_session
+from oddish.db import TaskModel, TaskVersionModel, get_session
 from oddish.queue import enqueue_task_expand_worker_job
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -75,9 +75,21 @@ async def get_worker_jobs(
 
 
 class ExpandBackfillResponse(BaseModel):
+    """Response for a single backfill batch.
+
+    - ``enqueued`` is the number of ``TASK_EXPAND`` jobs scheduled by
+      this call.
+    - ``pending_total`` is the full-table count of versions matching
+      the current filters (``expanded_at IS NULL AND task_s3_key IS
+      NOT NULL``, plus any ``task_id`` / ``org_id`` filter), measured
+      before this call's inserts.  ``pending_total - enqueued`` tells
+      the operator how many more calls are needed to drain the
+      backlog; re-run once the workers have chewed through the
+      current batch and ``pending_total`` drops accordingly.
+    """
+
     enqueued: int
-    skipped: int
-    total_candidates: int
+    pending_total: int
 
 
 @router.post("/tasks/expand-backfill", response_model=ExpandBackfillResponse)
@@ -92,6 +104,10 @@ async def backfill_task_expansions(
     The handler is idempotent (keyed on the archive's etag via
     ``.oddish-manifest.json``) so callers can re-run the backfill
     without duplicating work.
+
+    When ``org_id`` is supplied, the filter is pushed into SQL (joined
+    on ``task.org_id``) rather than applied after the fetch, so a
+    single-org backfill doesn't drag unrelated versions into memory.
     """
     filters = [
         TaskVersionModel.expanded_at.is_(None),
@@ -99,10 +115,28 @@ async def backfill_task_expansions(
     ]
     if task_id:
         filters.append(TaskVersionModel.task_id == task_id)
+    if org_id:
+        filters.append(TaskModel.org_id == org_id)
+
+    def _apply_join(stmt):
+        if org_id:
+            return stmt.join(
+                TaskModel, TaskModel.id == TaskVersionModel.task_id
+            )
+        return stmt
 
     async with get_session() as session:
+        pending_total = int(
+            await session.scalar(
+                _apply_join(select(func.count()).select_from(TaskVersionModel)).where(
+                    and_(*filters)
+                )
+            )
+            or 0
+        )
+
         query = (
-            select(TaskVersionModel)
+            _apply_join(select(TaskVersionModel))
             .where(and_(*filters))
             .order_by(TaskVersionModel.created_at.asc())
             .limit(limit)
@@ -110,14 +144,10 @@ async def backfill_task_expansions(
         rows = (await session.execute(query)).scalars().all()
 
         enqueued = 0
-        skipped = 0
         for version_row in rows:
             row_org_id = None
             if version_row.task is not None:
                 row_org_id = version_row.task.org_id
-            if org_id and row_org_id != org_id:
-                skipped += 1
-                continue
             await enqueue_task_expand_worker_job(
                 session,
                 task_id=version_row.task_id,
@@ -130,6 +160,5 @@ async def backfill_task_expansions(
 
     return ExpandBackfillResponse(
         enqueued=enqueued,
-        skipped=skipped,
-        total_candidates=len(rows),
+        pending_total=pending_total,
     )

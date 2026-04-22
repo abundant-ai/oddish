@@ -727,7 +727,7 @@ async def get_task_file_content(
         version=version,
     )
 
-    archive_etag = result.get("archive_etag") if isinstance(result, dict) else None
+    archive_etag = result.get("archive_etag")
     if archive_etag and version is not None:
         etag_value = _build_task_file_etag(str(archive_etag), file_path)
         if_none_match = request.headers.get("if-none-match")
