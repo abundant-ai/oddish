@@ -294,11 +294,14 @@ def _maybe_add_modal_debug_hint(error_message: str, debug_log_path: Path | None)
     )
 
 
-def _storage_probe_paths(jobs_dir: Path) -> list[Path]:
+def _storage_probe_paths(jobs_dir: Path, *, include_temp_root: bool) -> list[Path]:
     """Return the local scratch roots Oddish should verify before Harbor runs."""
     candidates: list[Path] = []
     seen: set[Path] = set()
-    for raw_path in (jobs_dir, Path(tempfile.gettempdir())):
+    raw_paths: tuple[Path, ...] = (jobs_dir,)
+    if include_temp_root:
+        raw_paths = (jobs_dir, Path(tempfile.gettempdir()))
+    for raw_path in raw_paths:
         resolved = raw_path.resolve()
         if resolved in seen:
             continue
@@ -350,11 +353,12 @@ def _probe_storage_root(
 def _check_local_storage_preflight(
     jobs_dir: Path,
     *,
+    include_temp_root: bool,
     min_required_gb: float = _MIN_REQUIRED_FREE_GB,
     min_required_inodes: int = _MIN_REQUIRED_FREE_INODES,
 ) -> str | None:
     """Return a user-facing error when Harbor scratch space is not viable."""
-    for root in _storage_probe_paths(jobs_dir):
+    for root in _storage_probe_paths(jobs_dir, include_temp_root=include_temp_root):
         try:
             error = _probe_storage_root(
                 root,
@@ -583,7 +587,16 @@ async def run_harbor_trial_async(
     Returns:
         HarborOutcome with reward, error, tokens, cost, timing, trajectory, and paths
     """
-    preflight_error = _check_local_storage_preflight(jobs_dir)
+    raw = harbor_config or {}
+    hc = HarborConfig.model_validate(raw)
+    validate_task_timeout_config(task_path)
+
+    # ── Task patching ────────────────────────────────────────────────────
+    needs_task_patch = bool(hc.docker_image or hc.mcp_servers)
+    preflight_error = _check_local_storage_preflight(
+        jobs_dir,
+        include_temp_root=needs_task_patch,
+    )
     if preflight_error is not None:
         return HarborOutcome(
             reward=None,
@@ -599,12 +612,6 @@ async def run_harbor_trial_async(
     unique_parent = jobs_dir / f"{task_path.name}.{agent}.{unique_suffix}"
     unique_parent.mkdir(parents=True, exist_ok=True)
 
-    raw = harbor_config or {}
-    hc = HarborConfig.model_validate(raw)
-    validate_task_timeout_config(task_path)
-
-    # ── Task patching ────────────────────────────────────────────────────
-    needs_task_patch = bool(hc.docker_image or hc.mcp_servers)
     task_tmpdir: tempfile.TemporaryDirectory | None = None
     effective_task_path = task_path
 
