@@ -90,7 +90,11 @@ ENV_VARS = {
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
     "ODDISH_LOCAL_STORAGE_DIR": f"{VOLUME_MOUNT_PATH}/tasks",
-    "ODDISH_HARBOR_JOBS_DIR": f"{VOLUME_MOUNT_PATH}/harbor",
+    # Harbor job dirs are ephemeral scratch. Keeping them on the shared Modal
+    # Volume lets warm worker containers accumulate inode-heavy local state
+    # between invocations even though the committed volume looks empty. Use the
+    # container-local default instead and rely on S3 for durable trial results.
+    "ODDISH_HARBOR_JOBS_DIR": "/tmp/harbor-jobs",
     "ODDISH_HARBOR_ENVIRONMENT": "modal",
     "ODDISH_AUTO_START_WORKERS": "false",
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",

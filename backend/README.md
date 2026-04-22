@@ -204,7 +204,8 @@ Local `backend/.env` values are layered on top of the shared Modal secret for lo
 `endpoints.py`, `serve.py`, and `worker/runtime.py` patch oddish settings at startup:
 
 - `endpoints.py` / `serve.py`: set `db_use_null_pool` for per-request DB connections
-- `worker/runtime.py`: disable auto-started local workers, point storage paths to mounted Modal volumes, and force Harbor environment to Modal-compatible mode
+- `worker/runtime.py`: disable auto-started local workers and force Harbor environment to Modal-compatible mode
+- Modal workers keep Harbor scratch under `/tmp/harbor-jobs` and rely on S3 for durable trial artifacts; only shared task inputs use the mounted bucket / volume paths
 
 ## API Endpoints
 
