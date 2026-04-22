@@ -63,6 +63,9 @@ import {
   Microscope,
   Check,
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   Copy,
   OctagonX,
   Trash2,
@@ -361,6 +364,9 @@ export function ExperimentTrialsTable({
   const DEFAULT_AGENT_WIDTH = 180;
   const [taskSearch, setTaskSearch] = useState("");
   const deferredTaskSearch = useDeferredValue(taskSearch);
+  const [taskSort, setTaskSort] = useState<
+    "default" | "name-asc" | "name-desc"
+  >("default");
   const [hiddenAgents, setHiddenAgents] = useState<Set<string>>(new Set());
   const [dimmedStatuses, setDimmedStatuses] = useState<Set<MatrixStatus>>(
     new Set(),
@@ -570,16 +576,26 @@ export function ExperimentTrialsTable({
   }, [renderedAgents]);
 
   const filteredTasks = useMemo(() => {
-    if (!deferredTaskSearch.trim()) return tasks;
     const query = deferredTaskSearch.trim().toLowerCase();
-    return tasks.filter((task) => {
-      const haystack = [task.name, task.task_path, task.id]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(query);
-    });
-  }, [tasks, deferredTaskSearch]);
+    const base = query
+      ? tasks.filter((task) => {
+          const haystack = [task.name, task.task_path, task.id]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+          return haystack.includes(query);
+        })
+      : tasks;
+    if (taskSort === "default") return base;
+    const nameOf = (task: Task) => (task.name ?? task.task_path ?? task.id);
+    const sorted = [...base].sort((a, b) =>
+      nameOf(a).localeCompare(nameOf(b), undefined, {
+        numeric: true,
+        sensitivity: "base",
+      }),
+    );
+    return taskSort === "name-desc" ? sorted.reverse() : sorted;
+  }, [tasks, deferredTaskSearch, taskSort]);
 
   const getTaskContext = useMemo(() => {
     const contextCache = new Map<
@@ -1630,7 +1646,36 @@ export function ExperimentTrialsTable({
                           className="h-4 w-4"
                         />
                       )}
-                      <span className="text-xs sm:text-sm">Task</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setTaskSort((prev) =>
+                            prev === "default"
+                              ? "name-asc"
+                              : prev === "name-asc"
+                                ? "name-desc"
+                                : "default",
+                          )
+                        }
+                        className="flex items-center gap-1 rounded-sm px-1 text-xs transition hover:bg-background/70 hover:text-blue-400 sm:text-sm"
+                        title={
+                          taskSort === "default"
+                            ? "Sort by task name (A→Z)"
+                            : taskSort === "name-asc"
+                              ? "Sort by task name (Z→A)"
+                              : "Clear sort (default order)"
+                        }
+                        aria-label="Toggle task sort"
+                      >
+                        <span>Task</span>
+                        {taskSort === "name-asc" ? (
+                          <ArrowUp className="h-3 w-3" />
+                        ) : taskSort === "name-desc" ? (
+                          <ArrowDown className="h-3 w-3" />
+                        ) : (
+                          <ArrowUpDown className="h-3 w-3 text-muted-foreground/60" />
+                        )}
+                      </button>
                     </div>
                     <div
                       className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize"
