@@ -47,6 +47,48 @@ def extract_s3_key_from_path(path: str | None) -> str | None:
     return None
 
 
+def _mounted_task_candidate_paths(task_s3_key: str | None) -> list[Path]:
+    """Return possible mounted task directories for a task S3 prefix.
+
+    Direct mounts work for legacy extracted layouts like ``tasks/<id>/task.toml``.
+    Versioned archive uploads usually materialize as expanded sibling prefixes
+    like ``tasks/<id>/v1-files/task.toml``; those should be preferred when the
+    caller requests ``tasks/<id>/v1/``.
+    """
+    if not task_s3_key:
+        return []
+
+    key_prefix = normalize_s3_relative_path(WORKER_TASK_KEY_PREFIX)
+    normalized_key = normalize_s3_relative_path(task_s3_key).rstrip("/")
+    if not key_prefix:
+        return []
+
+    normalized_prefix = f"{key_prefix.rstrip('/')}/"
+    if not normalized_key.startswith(normalized_prefix):
+        return []
+
+    relative_path = normalized_key[len(normalized_prefix) :]
+    if not relative_path:
+        return []
+
+    relative_parts = list(PurePosixPath(relative_path).parts)
+    candidates: list[Path] = [WORKER_TASK_MOUNT_PATH.joinpath(*relative_parts)]
+    if relative_parts:
+        last = relative_parts[-1]
+        if last.startswith("v") and last[1:].isdigit():
+            expanded_parts = [*relative_parts[:-1], f"{last}-files"]
+            candidates.insert(0, WORKER_TASK_MOUNT_PATH.joinpath(*expanded_parts))
+
+    unique_candidates: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        unique_candidates.append(candidate)
+        seen.add(candidate)
+    return unique_candidates
+
+
 def _validate_task_archive_members(
     members: list[tarfile.TarInfo], destination: Path
 ) -> None:
@@ -1459,25 +1501,9 @@ async def delete_s3_prefixes(prefixes: list[str]) -> int:
 
 def resolve_mounted_task_directory(task_s3_key: str | None) -> Path | None:
     """Return a mounted task path when worker bucket mounts are configured."""
-    if not task_s3_key:
-        return None
-
-    key_prefix = normalize_s3_relative_path(WORKER_TASK_KEY_PREFIX)
-    normalized_key = normalize_s3_relative_path(task_s3_key).rstrip("/")
-    if not key_prefix:
-        return None
-
-    normalized_prefix = f"{key_prefix.rstrip('/')}/"
-    if not normalized_key.startswith(normalized_prefix):
-        return None
-
-    relative_path = normalized_key[len(normalized_prefix) :]
-    if not relative_path:
-        return None
-
-    candidate = WORKER_TASK_MOUNT_PATH / relative_path
-    if candidate.exists() and (candidate / "task.toml").exists():
-        return candidate
+    for candidate in _mounted_task_candidate_paths(task_s3_key):
+        if candidate.exists() and (candidate / "task.toml").exists():
+            return candidate
     return None
 
 

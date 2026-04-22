@@ -192,6 +192,22 @@ def test_resolve_mounted_task_directory_skips_archive_only_mount(monkeypatch, tm
     assert resolved is None
 
 
+def test_resolve_mounted_task_directory_uses_expanded_versioned_mount(
+    monkeypatch, tmp_path
+):
+    mounted_root = tmp_path / "mounted-tasks"
+    expanded_dir = mounted_root / "task-123" / "v2-files"
+    expanded_dir.mkdir(parents=True)
+    (expanded_dir / "task.toml").write_text("name = 'demo'\n")
+
+    monkeypatch.setattr(storage_mod, "WORKER_TASK_MOUNT_PATH", mounted_root)
+    monkeypatch.setattr(storage_mod, "WORKER_TASK_KEY_PREFIX", "tasks/")
+
+    resolved = storage_mod.resolve_mounted_task_directory("tasks/task-123/v2/")
+
+    assert resolved == expanded_dir
+
+
 @pytest.mark.asyncio
 async def test_resolve_task_directory_falls_back_to_download_when_mount_missing(
     monkeypatch, tmp_path
@@ -213,6 +229,32 @@ async def test_resolve_task_directory_falls_back_to_download_when_mount_missing(
     assert temp_dir == task_dir
     assert task_dir.exists()
     assert storage.download_task_directory_calls
+
+
+@pytest.mark.asyncio
+async def test_resolve_task_directory_uses_expanded_mount_without_download(
+    monkeypatch, tmp_path
+):
+    storage = _FakeStorage(exists=True)
+    mounted_root = tmp_path / "mounted-tasks"
+    expanded_dir = mounted_root / "task-123" / "v3-files"
+    expanded_dir.mkdir(parents=True)
+    (expanded_dir / "task.toml").write_text("name = 'expanded'\n")
+
+    monkeypatch.setattr(storage_mod, "WORKER_TASK_MOUNT_PATH", mounted_root)
+    monkeypatch.setattr(storage_mod, "WORKER_TASK_KEY_PREFIX", "tasks/")
+    monkeypatch.setattr(storage_mod, "get_storage_client", lambda: storage)
+
+    task_dir, temp_dir, resolved_s3_key = await storage_mod.resolve_task_directory(
+        "task-123",
+        task_s3_key="tasks/task-123/v3/",
+        task_path=None,
+    )
+
+    assert resolved_s3_key == "tasks/task-123/v3/"
+    assert task_dir == expanded_dir
+    assert temp_dir is None
+    assert storage.download_task_directory_calls == []
 
 
 @pytest.mark.asyncio

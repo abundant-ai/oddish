@@ -30,6 +30,8 @@ from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
+TRIAL_RESULTS_UPLOAD_MAX_ATTEMPTS = 3
+TRIAL_RESULTS_UPLOAD_RETRY_DELAYS_SECONDS = (1.0, 2.0)
 
 
 @dataclass(slots=True)
@@ -110,6 +112,49 @@ def _cleanup_uploaded_job_dir(job_dir: Path | None, trial_id: str) -> None:
         )
     except Exception as e:
         console.print(f"[yellow]Failed to cleanup local Harbor artifacts: {e}[/yellow]")
+
+
+async def _upload_trial_results_with_retry(
+    *,
+    trial_id: str,
+    job_dir: Path,
+) -> str | None:
+    """Upload Harbor artifacts to S3 with bounded retries.
+
+    If every attempt fails, keep the local artifacts in place so the API can
+    still read them from the shared Harbor volume.
+    """
+    storage = get_storage_client()
+    last_error: Exception | None = None
+
+    for attempt in range(1, TRIAL_RESULTS_UPLOAD_MAX_ATTEMPTS + 1):
+        try:
+            trial_s3_key = await storage.upload_trial_results(trial_id, job_dir)
+            console.print(f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]")
+            _cleanup_uploaded_job_dir(job_dir, trial_id)
+            return trial_s3_key
+        except Exception as exc:
+            last_error = exc
+            if attempt >= TRIAL_RESULTS_UPLOAD_MAX_ATTEMPTS:
+                break
+            delay = TRIAL_RESULTS_UPLOAD_RETRY_DELAYS_SECONDS[min(
+                attempt - 1,
+                len(TRIAL_RESULTS_UPLOAD_RETRY_DELAYS_SECONDS) - 1,
+            )]
+            console.print(
+                "[yellow]Failed to upload trial results to S3 for "
+                f"{trial_id} (attempt {attempt}/{TRIAL_RESULTS_UPLOAD_MAX_ATTEMPTS}): "
+                f"{exc}. Retrying in {delay:.1f}s[/yellow]"
+            )
+            await asyncio.sleep(delay)
+
+    if last_error is not None:
+        console.print(
+            "[yellow]Failed to upload trial results to S3 after "
+            f"{TRIAL_RESULTS_UPLOAD_MAX_ATTEMPTS} attempts for {trial_id}: "
+            f"{last_error}. Keeping local Harbor artifacts for fallback reads.[/yellow]"
+        )
+    return None
 
 
 # Maximum length we persist for last_heartbeat_error. We truncate aggressively
@@ -734,15 +779,10 @@ async def run_trial_job(
     trial_s3_key = None
     should_upload_to_s3 = bool(resolved_task_s3_key)
     if should_upload_to_s3 and execution.outcome and execution.outcome.job_dir:
-        try:
-            storage = get_storage_client()
-            trial_s3_key = await storage.upload_trial_results(
-                trial_id, execution.outcome.job_dir
-            )
-            console.print(f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]")
-            _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
-        except Exception as e:
-            console.print(f"[yellow]Failed to upload trial results to S3: {e}[/yellow]")
+        trial_s3_key = await _upload_trial_results_with_retry(
+            trial_id=trial_id,
+            job_dir=execution.outcome.job_dir,
+        )
 
     await asyncio.shield(
         _store_trial_results(
