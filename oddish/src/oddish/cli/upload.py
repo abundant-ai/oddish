@@ -45,15 +45,12 @@ from rich.progress import (
 
 from oddish.cli.api import (
     discover_trial_entries,
-    get_task_paths_from_local,
-    get_task_paths_from_registry,
     import_trial,
     is_harbor_job_dir,
     is_harbor_jobs_dir,
-    is_task_dir,
-    resolve_task_path,
+    resolve_local_task_paths,
     upload_task,
-    validate_tasks,
+    upload_tasks_with_progress,
 )
 from oddish.cli.config import (
     error_console,
@@ -64,11 +61,9 @@ from oddish.cli.config import (
 
 console = Console()
 
-# Task uploads are serialised to keep the presigned-PUT path simple and
-# to avoid overwhelming the API's upload/init rate. Mirrors ``oddish run``.
-TASK_UPLOAD_CONCURRENCY = 1
 # Trial imports are small (per-trial tarballs) and independent, so we
-# allow a modest fan-out.
+# allow a modest fan-out. Task uploads share
+# ``cli.api.TASK_UPLOAD_CONCURRENCY`` via ``upload_tasks_with_progress``.
 TRIAL_IMPORT_CONCURRENCY = 4
 
 
@@ -336,96 +331,36 @@ def _run_task_upload(
     quiet: bool,
     json_output: bool,
 ) -> None:
-    task_paths: list[Path] = []
-    if dataset:
-        if path or path_option:
-            error_console.print(
-                "[red]Provide either a path or --dataset, not both.[/red]"
-            )
-            raise typer.Exit(1)
-        task_paths = get_task_paths_from_registry(
-            dataset_name=dataset,
-            task_names=task_names,
-            exclude_task_names=exclude_task_names,
-            n_tasks=n_tasks,
-            quiet=quiet,
-        )
-    else:
-        local_path = resolve_task_path(path, path_option)
-        if not local_path:
-            error_console.print(
-                "[red]No task source specified.[/red]\n"
-                "Provide a path or use --dataset/-d for registry datasets."
-            )
-            raise typer.Exit(1)
-
-        if is_task_dir(local_path):
-            task_paths = [local_path]
-        else:
-            task_paths = get_task_paths_from_local(
-                dataset_path=local_path,
-                task_names=task_names,
-                exclude_task_names=exclude_task_names,
-                n_tasks=n_tasks,
-            )
-            if not task_paths:
-                error_console.print(
-                    f"[red]No valid tasks found in {local_path}[/red]\n"
-                    "A task directory must contain: task.toml, instruction.md, environment/, tests/"
-                )
-                raise typer.Exit(1)
-            if not quiet:
-                console.print(
-                    f"[dim]Found {len(task_paths)} tasks in {local_path}[/dim]"
-                )
-
-    task_paths = validate_tasks(task_paths)
+    # Step 1 (shared with ``oddish run``): resolve path/--path/--dataset
+    # into a validated list of Harbor task directories.
+    task_paths = resolve_local_task_paths(
+        path=path,
+        path_option=path_option,
+        dataset=dataset,
+        task_names=task_names,
+        exclude_task_names=exclude_task_names,
+        n_tasks=n_tasks,
+        quiet=quiet,
+    )
 
     if not user:
         user = getpass.getuser()
 
-    def _upload_one(task_path: Path) -> dict:
-        return upload_task(
-            api_url,
-            task_path,
-            register=True,
-            message=message,
-            user=user,
-            priority=priority,
-        )
-
-    show_progress = not quiet and not json_output
-    progress = Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-        disable=not show_progress,
+    # Step 2 (shared with ``oddish run``): upload each archive and
+    # register the TaskModel. ``oddish upload`` always uses
+    # ``register=True`` so the task becomes browsable even without
+    # trials; ``oddish run`` passes the same flag so tasks show up
+    # immediately and the subsequent sweep call auto-appends.
+    results = upload_tasks_with_progress(
+        api_url,
+        task_paths,
+        register=True,
+        message=message,
+        user=user,
+        priority=priority,
+        quiet=quiet,
+        json_output=json_output,
     )
-
-    results: list[dict] = []
-    with progress:
-        upload_progress = progress.add_task(
-            f"Uploading {len(task_paths)} tasks...", total=len(task_paths)
-        )
-        if len(task_paths) <= 1:
-            for task_path in task_paths:
-                results.append(_upload_one(task_path))
-                progress.update(upload_progress, advance=1)
-        else:
-            results_by_index: list[dict | None] = [None] * len(task_paths)
-            max_workers = min(TASK_UPLOAD_CONCURRENCY, len(task_paths))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_index = {
-                    executor.submit(_upload_one, task_path): index
-                    for index, task_path in enumerate(task_paths)
-                }
-                for future in as_completed(future_to_index):
-                    index = future_to_index[future]
-                    results_by_index[index] = future.result()
-                    progress.update(upload_progress, advance=1)
-            results = [r for r in results_by_index if r is not None]
 
     dashboard_url = get_dashboard_url(api_url)
 

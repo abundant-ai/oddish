@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import getpass
 import json
-from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated, Optional
@@ -21,17 +20,14 @@ from rich.progress import (
 from harbor.models.environment_type import EnvironmentType
 
 from oddish.cli.api import (
+    TASK_UPLOAD_CONCURRENCY,
     get_experiment_share,
     get_task_summary,
-    get_task_paths_from_local,
-    get_task_paths_from_registry,
-    is_task_dir,
     load_sweep_config,
     print_final_results,
-    resolve_task_path,
+    resolve_local_task_paths,
     submit_sweep,
-    upload_task,
-    validate_tasks,
+    upload_tasks_with_progress,
     watch_task,
 )
 from oddish.cli.config import (
@@ -44,7 +40,6 @@ from oddish.cli.config import (
 from oddish.experiment import generate_experiment_name
 
 console = Console()
-TASK_UPLOAD_CONCURRENCY = 1
 
 
 def run(
@@ -446,49 +441,18 @@ def run(
         # and the server will file the new trials under the provided
         # experiment (auto-linking the task if it isn't already a member).
         existing_task_ids = [existing_task_id]
-    elif dataset:
-        task_paths = get_task_paths_from_registry(
-            dataset_name=dataset,
+    else:
+        # Shared with ``oddish upload``: resolve path/--path/--dataset
+        # into a validated list of local Harbor task directories.
+        task_paths = resolve_local_task_paths(
+            path=path,
+            path_option=path_option,
+            dataset=dataset,
             task_names=task_names,
             exclude_task_names=exclude_task_names,
             n_tasks=n_tasks,
             quiet=quiet,
         )
-    else:
-        # Local path mode
-        local_path = resolve_task_path(path, path_option)
-        if not local_path:
-            error_console.print(
-                "[red]No task source specified.[/red]\n"
-                "Provide a path or use --dataset/-d for registry datasets."
-            )
-            raise typer.Exit(1)
-
-        if is_task_dir(local_path):
-            # Single task
-            task_paths = [local_path]
-        else:
-            # Dataset directory - use Harbor's LocalDatasetConfig
-            task_paths = get_task_paths_from_local(
-                dataset_path=local_path,
-                task_names=task_names,
-                exclude_task_names=exclude_task_names,
-                n_tasks=n_tasks,
-            )
-            if not task_paths:
-                error_console.print(
-                    f"[red]No valid tasks found in {local_path}[/red]\n"
-                    "A task directory must contain: task.toml, instruction.md, environment/, tests/"
-                )
-                raise typer.Exit(1)
-            if not quiet:
-                console.print(
-                    f"[dim]Found {len(task_paths)} tasks in {local_path}[/dim]"
-                )
-
-    # Validate task configs (parses task.toml, checks instruction.md, etc.)
-    if task_paths:
-        task_paths = validate_tasks(task_paths)
 
     # Ensure each run uses a single experiment unless specified.
     if not experiment_id and not existing_task_ids:
@@ -551,85 +515,91 @@ def run(
             content_hash=task_content_hash,
         )
 
-    def upload_and_submit_task(task_path: Path) -> dict:
-        result = upload_task(api_url, task_path)
-        task_id = result["task_id"]
-        is_existing = result.get("existing_task", False)
-        upload_hash = result.get("content_hash")
-
-        if is_existing and not quiet:
-            ver = result.get("version", "?")
-            if result.get("content_unchanged"):
-                console.print(
-                    f"[dim]Task '{task_path.name}' unchanged, reusing version {ver}[/dim]"
-                )
-            else:
-                console.print(
-                    f"[dim]Task '{task_path.name}' updated, created version {ver}[/dim]"
-                )
-
-        return submit_task(
-            task_id,
-            append_to_task=is_existing,
-            task_content_hash=upload_hash,
+    # Phase 1: upload any local task directories (shared with
+    # ``oddish upload``). ``oddish run`` deliberately uses
+    # ``register=False`` so the subsequent sweep call owns TaskModel
+    # creation: this keeps ``--run-analysis`` working for fresh tasks
+    # (the server's append-mode guard rejects enabling run_analysis
+    # on an already-registered task that didn't opt in). ``oddish
+    # upload`` uses ``register=True`` because its whole purpose is
+    # making the task visible before any trials exist.
+    #
+    # When ``--task`` is used the upload phase is skipped -- we
+    # already have a task ID and only need to submit trials against
+    # it.
+    submit_targets: list[tuple[str, bool, str | None]] = []  # (task_id, append, hash)
+    if task_paths:
+        upload_results = upload_tasks_with_progress(
+            api_url,
+            task_paths,
+            register=False,
+            quiet=quiet,
+            json_output=json_output,
+            progress_label="Uploading",
         )
-
-    def append_to_existing_task(task_id: str) -> dict:
-        return submit_task(task_id, append_to_task=True)
-
-    task_targets: Sequence[Path | str]
-    progress_verb: str
-    if existing_task_ids:
-        task_targets = existing_task_ids
-        progress_verb = "Submitting"
+        for task_path, result in zip(task_paths, upload_results):
+            is_existing = bool(result.get("existing_task", False))
+            if not quiet and is_existing:
+                ver = result.get("version", "?")
+                if result.get("content_unchanged"):
+                    console.print(
+                        f"[dim]Task '{task_path.name}' unchanged, reusing version {ver}[/dim]"
+                    )
+                else:
+                    console.print(
+                        f"[dim]Task '{task_path.name}' updated, created version {ver}[/dim]"
+                    )
+            submit_targets.append(
+                (result["task_id"], is_existing, result.get("content_hash"))
+            )
     else:
-        task_targets = task_paths
-        progress_verb = "Uploading"
+        # --task path: nothing to upload; sweep always appends.
+        submit_targets = [(tid, True, None) for tid in existing_task_ids]
 
-    show_progress = not quiet and not json_output
-    progress = Progress(
+    # Phase 2: submit trials for every resolved task.
+    submit_progress = Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
         console=console,
-        disable=not show_progress,
+        disable=quiet or json_output,
     )
-    with progress:
-        upload_task_progress = progress.add_task(
-            f"{progress_verb} {len(task_targets)} tasks...", total=len(task_targets)
+    with submit_progress:
+        progress_task = submit_progress.add_task(
+            f"Submitting {len(submit_targets)} task(s)...",
+            total=len(submit_targets),
         )
-        if len(task_targets) <= 1:
-            for task_target in task_targets:
-                result = (
-                    append_to_existing_task(task_target)
-                    if isinstance(task_target, str)
-                    else upload_and_submit_task(task_target)
+        if len(submit_targets) <= 1:
+            for target_id, append, content_hash in submit_targets:
+                result = submit_task(
+                    target_id,
+                    append_to_task=append,
+                    task_content_hash=content_hash,
                 )
                 all_results.append(result)
                 total_trials_submitted += result["trials_count"]
-                progress.update(upload_task_progress, advance=1)
+                submit_progress.update(progress_task, advance=1)
         else:
-            results_by_index: list[dict | None] = [None] * len(task_targets)
-            max_workers = min(TASK_UPLOAD_CONCURRENCY, len(task_targets))
+            results_by_index: list[dict | None] = [None] * len(submit_targets)
+            max_workers = min(TASK_UPLOAD_CONCURRENCY, len(submit_targets))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_index = {
-                    (
-                        executor.submit(append_to_existing_task, task_target)
-                        if isinstance(task_target, str)
-                        else executor.submit(upload_and_submit_task, task_target)
+                    executor.submit(
+                        submit_task,
+                        target_id,
+                        append_to_task=append,
+                        task_content_hash=content_hash,
                     ): index
-                    for index, task_target in enumerate(task_targets)
+                    for index, (target_id, append, content_hash) in enumerate(submit_targets)
                 }
-
                 for future in as_completed(future_to_index):
                     index = future_to_index[future]
                     result = future.result()
                     results_by_index[index] = result
                     total_trials_submitted += result["trials_count"]
-                    progress.update(upload_task_progress, advance=1)
-
-            all_results = [result for result in results_by_index if result is not None]
+                    submit_progress.update(progress_task, advance=1)
+            all_results = [r for r in results_by_index if r is not None]
 
     experiment_id_resolved: str | None = None
     experiment_name = ""

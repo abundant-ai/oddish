@@ -6,6 +6,7 @@ import shutil
 import tarfile
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
@@ -15,6 +16,13 @@ import typer
 import yaml
 from rich.console import Console
 from rich.live import Live
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+)
 from rich.table import Table
 
 from harbor.models.environment_type import EnvironmentType
@@ -174,6 +182,83 @@ def get_task_paths_from_registry(
 # =============================================================================
 
 
+def resolve_local_task_paths(
+    *,
+    path: Path | None,
+    path_option: Path | None,
+    dataset: str | None,
+    task_names: list[str] | None,
+    exclude_task_names: list[str] | None,
+    n_tasks: int | None,
+    quiet: bool,
+) -> list[Path]:
+    """Resolve a task-source flag bundle into a validated list of task paths.
+
+    Shared by ``oddish run`` and ``oddish upload`` -- the first step of
+    both commands is identical: decide which local task(s) the caller
+    is targeting.
+
+    Supports three input modes:
+
+    - ``dataset`` (registry name, e.g. ``swebench@1.0``) -- downloads
+      tasks via Harbor's ``DatasetClient``.
+    - Positional ``path`` or ``--path`` pointing at a single Harbor
+      task dir -- returns ``[path]``.
+    - The same flags pointing at a *dataset directory* of task dirs --
+      enumerates + filters via Harbor's ``LocalDatasetConfig``.
+
+    In all three cases every candidate is validated with
+    :func:`validate_tasks` so callers can trust the returned paths are
+    real Harbor tasks. Exits via ``typer.Exit(1)`` on validation
+    failure or missing sources.
+    """
+    task_paths: list[Path] = []
+
+    if dataset:
+        if path or path_option:
+            error_console.print(
+                "[red]Provide either a path or --dataset, not both.[/red]"
+            )
+            raise typer.Exit(1)
+        task_paths = get_task_paths_from_registry(
+            dataset_name=dataset,
+            task_names=task_names,
+            exclude_task_names=exclude_task_names,
+            n_tasks=n_tasks,
+            quiet=quiet,
+        )
+    else:
+        local_path = resolve_task_path(path, path_option)
+        if not local_path:
+            error_console.print(
+                "[red]No task source specified.[/red]\n"
+                "Provide a path or use --dataset/-d for registry datasets."
+            )
+            raise typer.Exit(1)
+
+        if is_task_dir(local_path):
+            task_paths = [local_path]
+        else:
+            task_paths = get_task_paths_from_local(
+                dataset_path=local_path,
+                task_names=task_names,
+                exclude_task_names=exclude_task_names,
+                n_tasks=n_tasks,
+            )
+            if not task_paths:
+                error_console.print(
+                    f"[red]No valid tasks found in {local_path}[/red]\n"
+                    "A task directory must contain: task.toml, instruction.md, environment/, tests/"
+                )
+                raise typer.Exit(1)
+            if not quiet:
+                console.print(
+                    f"[dim]Found {len(task_paths)} tasks in {local_path}[/dim]"
+                )
+
+    return validate_tasks(task_paths)
+
+
 def compute_task_content_hash(task_path: Path) -> str:
     """Deterministic SHA-256 of a task directory's contents.
 
@@ -311,6 +396,81 @@ def upload_task(
         return cast(dict, response.json())
     finally:
         shutil.rmtree(Path(tarball_path).parent, ignore_errors=True)
+
+
+# Uploads are serialised to keep the presigned-PUT path simple and to avoid
+# overwhelming the API's upload/init rate. Exported so callers
+# (``oddish run`` / ``oddish upload``) can override if needed.
+TASK_UPLOAD_CONCURRENCY = 1
+
+
+def upload_tasks_with_progress(
+    api_url: str,
+    task_paths: list[Path],
+    *,
+    register: bool,
+    message: str | None = None,
+    user: str | None = None,
+    priority: str | None = None,
+    quiet: bool = False,
+    json_output: bool = False,
+    progress_label: str = "Uploading",
+) -> list[dict]:
+    """Upload a batch of task directories with a shared progress bar.
+
+    Shared by ``oddish run`` (``register=False``-ish legacy mode -- the
+    sweep endpoint creates the TaskModel) and ``oddish upload``
+    (``register=True``, task becomes browsable immediately).
+
+    Returns the upload response dicts in the same order as ``task_paths``.
+    """
+    if not task_paths:
+        return []
+
+    def _upload_one(task_path: Path) -> dict:
+        return upload_task(
+            api_url,
+            task_path,
+            register=register,
+            message=message,
+            user=user,
+            priority=priority,
+        )
+
+    show_progress = not quiet and not json_output
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+        disable=not show_progress,
+    )
+
+    results: list[dict] = []
+    with progress:
+        progress_task = progress.add_task(
+            f"{progress_label} {len(task_paths)} tasks...", total=len(task_paths)
+        )
+        if len(task_paths) <= 1:
+            for task_path in task_paths:
+                results.append(_upload_one(task_path))
+                progress.update(progress_task, advance=1)
+        else:
+            results_by_index: list[dict | None] = [None] * len(task_paths)
+            max_workers = min(TASK_UPLOAD_CONCURRENCY, len(task_paths))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_index = {
+                    executor.submit(_upload_one, task_path): index
+                    for index, task_path in enumerate(task_paths)
+                }
+                for future in as_completed(future_to_index):
+                    index = future_to_index[future]
+                    results_by_index[index] = future.result()
+                    progress.update(progress_task, advance=1)
+            results = [r for r in results_by_index if r is not None]
+
+    return results
 
 
 def _parse_key_value_pairs(pairs: list[str] | None) -> dict[str, str]:
