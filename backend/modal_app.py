@@ -22,6 +22,10 @@ def _env_int(name: str, default: int) -> int:
 MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
 MODAL_SECRET_ENVIRONMENT = os.environ.get("MODAL_SECRET_ENVIRONMENT", "main")
 RUNTIME_SECRET_NAME = "oddish-prod"
+# Per-app webhook label so PR previews don't collide on the shared
+# `{workspace}-{environment}--{label}.modal.run` subdomain. Production keeps
+# the historical "api" label; previews derive a unique one from the app name.
+API_WEBHOOK_LABEL = "api" if MODAL_APP_NAME == "oddish" else f"{MODAL_APP_NAME}-api"
 ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
 API_MIN_CONTAINERS = _env_int("ODDISH_MODAL_API_MIN_CONTAINERS", 1)
 API_BUFFER_CONTAINERS = _env_int("ODDISH_MODAL_API_BUFFER_CONTAINERS", 16)
