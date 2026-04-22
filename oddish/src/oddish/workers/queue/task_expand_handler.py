@@ -93,10 +93,20 @@ def _expanded_prefix_for(task_id: str, version: int) -> str:
     return f"tasks/{task_id}/v{version}-files/"
 
 
-def _task_archive_key_for(task_id: str, version: int) -> str:
-    return (
-        f"tasks/{task_id}/v{version}/{StorageClient._TASK_ARCHIVE_OBJECT_NAME}"
-    )
+async def _resolve_archive_key(
+    storage: StorageClient, task_id: str, version: int
+) -> str:
+    """Return the S3 key of a task's archive, with legacy fallback.
+
+    Mirrors the read-path behavior in ``StorageClient._resolve_task_prefix``:
+    pre-versioning uploads landed at ``tasks/{task_id}/.oddish-task.tar.gz``
+    (no ``v{N}/`` sub-prefix) and still need to be expandable. If the
+    versioned key doesn't exist we fall back to the unversioned one;
+    if neither exists we surface the versioned key so the caller's
+    404 error message points at the expected location.
+    """
+    _root, archive_key = await storage._resolve_task_prefix(task_id, version)
+    return archive_key
 
 
 async def _maybe_short_circuit_on_manifest(
@@ -185,7 +195,7 @@ async def run_task_expand_job(
     )
 
     storage = get_storage_client()
-    archive_key = _task_archive_key_for(task_id, version)
+    archive_key = await _resolve_archive_key(storage, task_id, version)
     expanded_prefix = _expanded_prefix_for(task_id, version)
     manifest_key = f"{expanded_prefix}{StorageClient._EXPANDED_MANIFEST_OBJECT_NAME}"
 

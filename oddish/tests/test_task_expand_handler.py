@@ -112,6 +112,32 @@ class _FakeStorage:
     async def _load_task_archive(self, archive_key: str):
         return (self._objects[archive_key], [])
 
+    async def _resolve_task_prefix(
+        self, task_id: str, version: int | None
+    ) -> tuple[str, str]:
+        """Mirror ``StorageClient._resolve_task_prefix`` for the fake.
+
+        Prefers the versioned archive key, falls back to the unversioned
+        path when the versioned object doesn't exist. Tests exercising
+        legacy v1 layouts can stage the archive at either location and
+        the handler will still resolve it.
+        """
+        if version is not None:
+            vroot = f"tasks/{task_id}/v{version}/"
+            varchive = f"{vroot}{StorageClient._TASK_ARCHIVE_OBJECT_NAME}"
+            if varchive in self._objects:
+                return vroot, varchive
+            fallback_archive = (
+                f"tasks/{task_id}/{StorageClient._TASK_ARCHIVE_OBJECT_NAME}"
+            )
+            if fallback_archive in self._objects:
+                return f"tasks/{task_id}/", fallback_archive
+            return vroot, varchive
+        return (
+            f"tasks/{task_id}/",
+            f"tasks/{task_id}/{StorageClient._TASK_ARCHIVE_OBJECT_NAME}",
+        )
+
 
 @asynccontextmanager
 async def _null_session():
@@ -179,6 +205,48 @@ async def test_expand_writes_members_and_manifest(monkeypatch, _patched_get_sess
         "task.toml",
         "verifier/check.py",
     }
+
+
+@pytest.mark.asyncio
+async def test_expand_falls_back_to_unversioned_archive(
+    monkeypatch, _patched_get_session
+):
+    """Legacy v1 tasks have archives at ``tasks/{id}/.oddish-task.tar.gz``
+    (no ``v{N}/`` sub-prefix, from before task versioning). The handler
+    must resolve that fallback the same way ``list_task_files`` /
+    ``get_task_file_content`` do, otherwise every legacy version 404s
+    and the backfill retries 6 times before permanently failing."""
+    archive_bytes = _make_archive({"task.toml": b"name = 'legacy'\n"})
+    storage = _FakeStorage(
+        # Archive lives at the unversioned path; the versioned key is absent.
+        archive_key="tasks/task-legacy/.oddish-task.tar.gz",
+        archive_bytes=archive_bytes,
+    )
+    monkeypatch.setattr(task_expand_handler, "get_storage_client", lambda: storage)
+
+    summary = await task_expand_handler.run_task_expand_job(
+        task_id="task-legacy", version=1
+    )
+
+    assert summary["status"] == "expanded"
+    # Expanded objects still land under the versioned sibling prefix so
+    # readers can locate them with the ``version`` threaded through from
+    # the router.
+    expanded_prefix = "tasks/task-legacy/v1-files/"
+    assert f"{expanded_prefix}task.toml" in storage._objects
+    assert (
+        f"{expanded_prefix}{StorageClient._EXPANDED_MANIFEST_OBJECT_NAME}"
+        in storage._objects
+    )
+
+    manifest = json.loads(
+        storage._objects[
+            f"{expanded_prefix}{StorageClient._EXPANDED_MANIFEST_OBJECT_NAME}"
+        ].decode("utf-8")
+    )
+    # The manifest records the actual resolved archive key so operators
+    # can tell which source produced the expansion.
+    assert manifest["archive_key"] == "tasks/task-legacy/.oddish-task.tar.gz"
 
 
 @pytest.mark.asyncio
