@@ -4,17 +4,14 @@ import { useState, useEffect } from "react";
 import useSWR from "swr";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Package, ImageOff } from "lucide-react";
-import { CodeBlock, getLanguageFromFilename } from "@/components/code-block";
+import { Package } from "lucide-react";
+import {
+  FileRenderer,
+  isBinaryRendererFile,
+} from "@/components/renderers/file-renderer";
 import { fetcher } from "@/lib/api";
 
-const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
 const MAX_ARTIFACTS = 10;
-
-function isImageFile(filename: string): boolean {
-  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
-  return IMAGE_EXTENSIONS.has(ext);
-}
 
 interface ArtifactFile {
   path: string;
@@ -23,76 +20,50 @@ interface ArtifactFile {
   url?: string;
 }
 
-function ArtifactImageContent({
+function ArtifactContent({
   filesUrl,
   filePath,
+  fileName,
+  fileSize,
 }: {
   filesUrl: string;
   filePath: string;
+  fileName: string;
+  fileSize?: number;
 }) {
-  const [error, setError] = useState(false);
   const encodedPath = encodeURIComponent(filePath);
-  const src = `${filesUrl}/${encodedPath}`;
+  const url = `${filesUrl}/${encodedPath}`;
+  const isBinary = isBinaryRendererFile(fileName);
 
-  if (error) {
-    return (
-      <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
-        <ImageOff className="h-4 w-4" />
-        Failed to load image: {filePath}
-      </div>
-    );
-  }
-
-  return (
-    <div className="p-4">
-      <img
-        src={src}
-        alt={filePath}
-        className="h-auto max-w-full rounded border border-border"
-        style={{ maxHeight: "600px" }}
-        loading="lazy"
-        onError={() => setError(true)}
-      />
-    </div>
-  );
-}
-
-function ArtifactFileContent({
-  filesUrl,
-  filePath,
-  language,
-}: {
-  filesUrl: string;
-  filePath: string;
-  language: string;
-}) {
   const [content, setContent] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!isBinary);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function fetchContent() {
-      setLoading(true);
-      try {
-        const encodedPath = encodeURIComponent(filePath);
-        const res = await fetch(`${filesUrl}/${encodedPath}`);
-        if (res.ok) {
-          const text = await res.text();
-          if (!cancelled) setContent(text);
-        }
-      } catch {
-        // silently fail
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+    if (isBinary) {
+      setContent(null);
+      setLoading(false);
+      return;
     }
-
-    fetchContent();
+    let cancelled = false;
+    setLoading(true);
+    fetch(url)
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.text();
+      })
+      .then((text) => {
+        if (!cancelled) setContent(text);
+      })
+      .catch(() => {
+        if (!cancelled) setContent("");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
     };
-  }, [filesUrl, filePath]);
+  }, [url, isBinary]);
 
   if (loading) {
     return (
@@ -105,7 +76,12 @@ function ArtifactFileContent({
   }
 
   return (
-    <CodeBlock code={content ?? ""} language={language} maxHeight="24rem" />
+    <FileRenderer
+      fileName={fileName}
+      url={url}
+      content={content}
+      fileSize={fileSize}
+    />
   );
 }
 
@@ -163,8 +139,8 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
       id: file.path,
       label: fileName,
       fullPath: file.path,
-      language: getLanguageFromFilename(fileName),
-      isImage: isImageFile(fileName),
+      fileName,
+      fileSize: file.size,
     };
   });
 
@@ -184,18 +160,12 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
         </TabsList>
         {tabs.map((tab) => (
           <TabsContent key={tab.id} value={tab.id} className="mt-2">
-            {tab.isImage ? (
-              <ArtifactImageContent
-                filesUrl={filesUrl}
-                filePath={tab.fullPath}
-              />
-            ) : (
-              <ArtifactFileContent
-                filesUrl={filesUrl}
-                filePath={tab.fullPath}
-                language={tab.language}
-              />
-            )}
+            <ArtifactContent
+              filesUrl={filesUrl}
+              filePath={tab.fullPath}
+              fileName={tab.fileName}
+              fileSize={tab.fileSize}
+            />
           </TabsContent>
         ))}
       </Tabs>

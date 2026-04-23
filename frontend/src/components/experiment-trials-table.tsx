@@ -153,6 +153,75 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "pending",
 ];
 
+// Row-level filter modes. Inspired by sauron's "any/all pass@k=0" toggle:
+// hide tasks where all / any selected agents failed to pass on any trial.
+type RowFilterMode = "none" | "allFail" | "anyFail";
+
+const ROW_FILTER_MODES: Array<{
+  value: RowFilterMode;
+  label: string;
+  description: string;
+}> = [
+  { value: "none", label: "All", description: "Show every task" },
+  {
+    value: "anyFail",
+    label: "Any failed",
+    description:
+      "Show tasks where at least one agent scored 0 on every trial (partial credit doesn't count as failed)",
+  },
+  {
+    value: "allFail",
+    label: "All failed",
+    description:
+      "Show tasks where every agent scored 0 on every trial (partial credit doesn't count as failed)",
+  },
+];
+
+const ROW_FILTER_VALUES = new Set<RowFilterMode>([
+  "none",
+  "allFail",
+  "anyFail",
+]);
+
+// Baseline agents (nop / oracle) are excluded from row-filter evaluation so
+// their deterministic behaviour doesn't influence real-agent analyses.
+function isBaselineAgentName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    lower === "nop" ||
+    lower === "oracle" ||
+    lower.startsWith("nop-") ||
+    lower.startsWith("oracle-") ||
+    lower.startsWith("agent-nop") ||
+    lower.startsWith("agent-oracle")
+  );
+}
+
+/**
+ * Row-filter evaluation for a single (task, agent) cell.
+ *
+ * - `"failed"` — agent has ≥1 terminal trial AND every terminal trial scored
+ *   exactly 0 reward. Partial credit (0 < reward < 1) is NOT considered failed.
+ * - `"scored"` — agent has ≥1 terminal trial with any non-zero reward
+ *   (full pass or partial credit).
+ * - `null` — agent has no terminal trials yet; skip this cell so still-
+ *   running tasks aren't hidden prematurely.
+ */
+function agentRowFilterStatus(
+  trials: readonly Trial[] | undefined,
+): "failed" | "scored" | null {
+  if (!trials || trials.length === 0) return null;
+  let hasTerminal = false;
+  for (const trial of trials) {
+    if (trial.status !== "success" && trial.status !== "failed") continue;
+    hasTerminal = true;
+    // Any positive reward — full or partial — disqualifies the agent
+    // from counting as "failed" on this task.
+    if ((trial.reward ?? 0) > 0) return "scored";
+  }
+  return hasTerminal ? "failed" : null;
+}
+
 // Analysis classification badge styling
 const ANALYSIS_CONFIG: Record<
   AnalysisClassification,
@@ -374,6 +443,7 @@ export function ExperimentTrialsTable({
   const [dimmedAnalysisKeys, setDimmedAnalysisKeys] = useState<
     Set<AnalysisLegendKey>
   >(new Set());
+  const [rowFilterMode, setRowFilterMode] = useState<RowFilterMode>("none");
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
   const [copiedAgentNameKey, setCopiedAgentNameKey] = useState<string | null>(
     null,
@@ -412,6 +482,8 @@ export function ExperimentTrialsTable({
   const prevUrlRef = useRef({
     hide: "",
     dim: "",
+    analysis: "",
+    rowFilter: "",
     taskSearch: "",
   });
   const isFirstFilterSync = useRef(true);
@@ -419,6 +491,8 @@ export function ExperimentTrialsTable({
   useEffect(() => {
     const urlHide = searchParams.get("hide") || "";
     const urlDim = searchParams.get("dim") || "";
+    const urlAnalysis = searchParams.get("analysis") || "";
+    const urlRowFilter = searchParams.get("rowFilter") || "";
     const urlTaskSearch = searchParams.get("taskSearch") || "";
 
     if (urlHide !== prevUrlRef.current.hide) {
@@ -443,6 +517,32 @@ export function ExperimentTrialsTable({
       );
       setDimmedStatuses(next);
       prevUrlRef.current.dim = urlDim;
+    }
+
+    if (urlAnalysis !== prevUrlRef.current.analysis) {
+      const next = new Set(
+        urlAnalysis
+          .split(",")
+          .filter(Boolean)
+          .filter(
+            (value): value is AnalysisLegendKey =>
+              value === "analyzing" ||
+              value === "good" ||
+              value === "bad" ||
+              value === "analysis-failed",
+          ),
+      );
+      setDimmedAnalysisKeys(next);
+      prevUrlRef.current.analysis = urlAnalysis;
+    }
+
+    if (urlRowFilter !== prevUrlRef.current.rowFilter) {
+      const next =
+        urlRowFilter && ROW_FILTER_VALUES.has(urlRowFilter as RowFilterMode)
+          ? (urlRowFilter as RowFilterMode)
+          : "none";
+      setRowFilterMode(next);
+      prevUrlRef.current.rowFilter = urlRowFilter;
     }
 
     if (urlTaskSearch !== prevUrlRef.current.taskSearch) {
@@ -472,6 +572,7 @@ export function ExperimentTrialsTable({
       const params = new URLSearchParams(searchParams.toString());
       const hidden = Array.from(hiddenAgents).sort();
       const dimmed = Array.from(dimmedStatuses).sort();
+      const analysis = Array.from(dimmedAnalysisKeys).sort();
 
       if (hidden.length > 0) {
         params.set("hide", hidden.join(","));
@@ -483,6 +584,18 @@ export function ExperimentTrialsTable({
         params.set("dim", dimmed.join(","));
       } else {
         params.delete("dim");
+      }
+
+      if (analysis.length > 0) {
+        params.set("analysis", analysis.join(","));
+      } else {
+        params.delete("analysis");
+      }
+
+      if (rowFilterMode !== "none") {
+        params.set("rowFilter", rowFilterMode);
+      } else {
+        params.delete("rowFilter");
       }
 
       if (deferredTaskSearch.trim()) {
@@ -503,7 +616,14 @@ export function ExperimentTrialsTable({
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [hiddenAgents, dimmedStatuses, deferredTaskSearch, searchParams]);
+  }, [
+    hiddenAgents,
+    dimmedStatuses,
+    dimmedAnalysisKeys,
+    rowFilterMode,
+    deferredTaskSearch,
+    searchParams,
+  ]);
 
   const sortedAgentSummaries = useMemo(() => {
     const getAgentSortKey = (agentName: string): number => {
@@ -575,27 +695,76 @@ export function ExperimentTrialsTable({
     });
   }, [renderedAgents]);
 
+  // Keys of visible non-baseline agents — the set that row-level filters
+  // evaluate against. Hiding an agent (via hide=) or filtering it out
+  // because it's a nop/oracle baseline removes it from this set.
+  const rowFilterAgentKeys = useMemo(() => {
+    return visibleAgents
+      .filter((agent) => !isBaselineAgentName(agent.agent))
+      .map((agent) => agent.key);
+  }, [visibleAgents]);
+
   const filteredTasks = useMemo(() => {
     const query = deferredTaskSearch.trim().toLowerCase();
-    const base = query
+    const searchFiltered = query
       ? tasks.filter((task) => {
+          // Comma-separated queries use OR logic (any substring matches).
+          const terms = query
+            .split(",")
+            .map((t) => t.trim())
+            .filter(Boolean);
+          if (terms.length === 0) return true;
           const haystack = [task.name, task.task_path, task.id]
             .filter(Boolean)
             .join(" ")
             .toLowerCase();
-          return haystack.includes(query);
+          return terms.some((term) => haystack.includes(term));
         })
       : tasks;
-    if (taskSort === "default") return base;
+
+    // Apply row-level filter using visible non-baseline agents.
+    const rowFiltered =
+      rowFilterMode === "none" || rowFilterAgentKeys.length === 0
+        ? searchFiltered
+        : searchFiltered.filter((task) => {
+            const trialsByAgent = groupTrialsByAgent(
+              task.trials,
+              modelScopedAgents,
+            );
+            // Derive failed/scored per evaluated agent; skip agents that
+            // have no terminal trials yet so running tasks aren't hidden
+            // early. Partial credit (0 < reward < 1) counts as "scored".
+            const perAgent = rowFilterAgentKeys
+              .map((key) => agentRowFilterStatus(trialsByAgent.get(key)))
+              .filter((r): r is "failed" | "scored" => r !== null);
+            if (perAgent.length === 0) return true;
+            const failCount = perAgent.filter((r) => r === "failed").length;
+            if (rowFilterMode === "allFail") {
+              return failCount === perAgent.length;
+            }
+            if (rowFilterMode === "anyFail") {
+              return failCount > 0;
+            }
+            return true;
+          });
+
+    if (taskSort === "default") return rowFiltered;
     const nameOf = (task: Task) => task.name ?? task.task_path ?? task.id;
-    const sorted = [...base].sort((a, b) =>
+    const sorted = [...rowFiltered].sort((a, b) =>
       nameOf(a).localeCompare(nameOf(b), undefined, {
         numeric: true,
         sensitivity: "base",
       }),
     );
     return taskSort === "name-desc" ? sorted.reverse() : sorted;
-  }, [tasks, deferredTaskSearch, taskSort]);
+  }, [
+    tasks,
+    deferredTaskSearch,
+    taskSort,
+    rowFilterMode,
+    rowFilterAgentKeys,
+    modelScopedAgents,
+  ]);
 
   const getTaskContext = useMemo(() => {
     const contextCache = new Map<
@@ -1354,6 +1523,44 @@ export function ExperimentTrialsTable({
     </Popover>
   );
 
+  const renderRowFilterControl = () => {
+    const hasAgentsToFilter = rowFilterAgentKeys.length > 0;
+    return (
+      <div
+        role="group"
+        aria-label="Row filter"
+        className="inline-flex items-center rounded-md border border-border bg-background p-0.5"
+      >
+        {ROW_FILTER_MODES.map((mode) => {
+          const active = rowFilterMode === mode.value;
+          const disabled = !hasAgentsToFilter && mode.value !== "none";
+          return (
+            <Tooltip key={mode.value}>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={disabled}
+                  onClick={() => setRowFilterMode(mode.value)}
+                  className={`h-auto select-none rounded-sm px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition-colors ${
+                    active
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                  aria-pressed={active}
+                >
+                  {mode.label}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{mode.description}</TooltipContent>
+            </Tooltip>
+          );
+        })}
+      </div>
+    );
+  };
+
   const renderLegendBlock = () => (
     <div className="grid w-full min-w-0 grid-cols-[56px_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-[10px] text-muted-foreground sm:ml-auto sm:w-fit">
       <div className="flex items-center font-semibold uppercase tracking-wide text-foreground/80">
@@ -1439,7 +1646,7 @@ export function ExperimentTrialsTable({
                   onChange={(event) =>
                     handleTaskSearchChange(event.target.value)
                   }
-                  placeholder="Search tasks"
+                  placeholder="Search tasks (comma-separated)"
                   className="h-9 text-xs"
                 />
               </div>
@@ -1569,6 +1776,7 @@ export function ExperimentTrialsTable({
               <div
                 className={`flex flex-wrap items-center gap-2 ${readOnly ? "" : "ml-auto"}`}
               >
+                {renderRowFilterControl()}
                 {renderAgentFilterMenu()}
                 <Tooltip>
                   <TooltipTrigger asChild>

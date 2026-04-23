@@ -206,33 +206,29 @@ function KindStatusMatrix({ data }: { data: WorkerJobsResponse }) {
   }
 
   return (
-    <TooltipProvider delayDuration={150}>
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Kind</TableHead>
-            {STATUS_COLUMNS.map((status) => (
-              <TableHead key={status} className="text-right text-[10px]">
-                {status}
-              </TableHead>
-            ))}
-            <TableHead className="text-right text-[10px]">Total</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {kindsToShow.map((kind) => {
-            const row = data.counts[kind] ?? {};
-            const total = Object.values(row).reduce<number>(
-              (sum, value) => sum + (value ?? 0),
-              0,
-            );
-            return (
-              <KindRow key={kind} kind={kind} counts={row} total={total} />
-            );
-          })}
-        </TableBody>
-      </Table>
-    </TooltipProvider>
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Kind</TableHead>
+          {STATUS_COLUMNS.map((status) => (
+            <TableHead key={status} className="text-right text-[10px]">
+              {status}
+            </TableHead>
+          ))}
+          <TableHead className="text-right text-[10px]">Total</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {kindsToShow.map((kind) => {
+          const row = data.counts[kind] ?? {};
+          const total = Object.values(row).reduce<number>(
+            (sum, value) => sum + (value ?? 0),
+            0,
+          );
+          return <KindRow key={kind} kind={kind} counts={row} total={total} />;
+        })}
+      </TableBody>
+    </Table>
   );
 }
 
@@ -593,7 +589,7 @@ export function WorkerJobsCard() {
         ) : !data ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : (
-          <>
+          <TooltipProvider delayDuration={150}>
             <Input
               value={kindFilter}
               onChange={(event) => setKindFilter(event.target.value)}
@@ -632,7 +628,7 @@ export function WorkerJobsCard() {
               </div>
               <DurationsTable durations={filteredDurations} />
             </section>
-          </>
+          </TooltipProvider>
         )}
       </CardContent>
     </Card>

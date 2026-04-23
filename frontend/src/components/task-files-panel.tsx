@@ -30,7 +30,10 @@ import {
   OctagonX,
 } from "lucide-react";
 import { fetcher } from "@/lib/api";
-import { CodeBlock, getLanguageFromFilename } from "@/components/code-block";
+import {
+  FileRenderer,
+  isBinaryRendererFile,
+} from "@/components/renderers/file-renderer";
 import type { Task, Trial } from "@/lib/types";
 
 interface TaskFile {
@@ -697,6 +700,16 @@ export function TaskFilesPanel({
       return;
     }
 
+    // Binary renderer types (images, pdf, video, audio, xlsx, docx, archives)
+    // are rendered straight from the URL — don't fetch as text.
+    if (isBinaryRendererFile(selectedFile.name)) {
+      setFileContent("");
+      setIsTruncated(false);
+      setFullFileSize(selectedFile.size || null);
+      setFileContentLoading(false);
+      return;
+    }
+
     // If we already have content cached in the node, use it
     if (selectedFile.content !== undefined) {
       setFileContent(selectedFile.content);
@@ -1064,18 +1077,31 @@ export function TaskFilesPanel({
       );
     }
 
-    const language = getLanguageFromFilename(selectedFile.name);
+    const isBinary = isBinaryRendererFile(selectedFile.name);
+
+    let fileUrl = selectedFile.url ?? null;
+    if (!fileUrl && (taskId || filesUrl)) {
+      const encodedPath = encodeURIComponent(selectedFile.path);
+      const params = new URLSearchParams();
+      if (!filesUrl && currentVersion != null) {
+        params.set("version", String(currentVersion));
+      }
+      fileUrl = `${resolvedFilesUrl}/${encodedPath}${
+        params.toString() ? `?${params.toString()}` : ""
+      }`;
+    }
 
     return (
       <div className="flex h-full flex-col">
-        <CodeBlock
-          code={fileContent}
-          language={language}
-          className="min-h-0 flex-1"
-          maxHeight="none"
-          truncateAt={0}
-        />
-        {isTruncated && (
+        <div className="min-h-0 flex-1 overflow-auto">
+          <FileRenderer
+            fileName={selectedFile.name}
+            url={fileUrl}
+            content={isBinary ? null : fileContent}
+            fileSize={fullFileSize ?? selectedFile.size}
+          />
+        </div>
+        {!isBinary && isTruncated && (
           <div className="flex items-center justify-between border-t border-border bg-muted/50 px-4 py-3">
             <span className="text-xs text-muted-foreground">
               Showing first {formatFileSize(TRUNCATE_THRESHOLD)} of{" "}
