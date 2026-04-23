@@ -6,8 +6,11 @@ FROM base AS deps
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Pin pnpm to the exact version declared in package.json's ``packageManager``
+# field.  Using ``pnpm@latest`` would defeat the purpose of a frozen lockfile
+# if pnpm itself were compromised upstream; ``--activate`` with an exact
+# version is reproducible across builds.
+RUN corepack enable && corepack prepare pnpm@10.0.0 --activate
 
 # Copy package files
 COPY package.json pnpm-lock.yaml ./
@@ -19,8 +22,8 @@ RUN pnpm install --frozen-lockfile
 FROM base AS builder
 WORKDIR /app
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Install pnpm (same pin as deps stage).
+RUN corepack enable && corepack prepare pnpm@10.0.0 --activate
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .

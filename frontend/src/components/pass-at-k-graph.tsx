@@ -139,15 +139,19 @@ export const PassAtKGraph = memo(function PassAtKGraph({
     return map;
   }, [agentSummaries]);
 
-  // Custom tooltip that sorts entries by value (descending) to match visual line order
+  // Custom tooltip that sorts entries by value (descending) to match visual
+  // line order.  We avoid pinning generics on ``TooltipContentProps`` so that
+  // recharts' default ``ContentType<ValueType, NameType>`` matches what
+  // ``<Tooltip content={renderTooltip}>`` expects; the narrower
+  // ``<number, string>`` form recharts 3.7 accepted broke in 3.8.
   const renderTooltip = useCallback(
-    (props: TooltipContentProps<number, string>) => {
+    (props: TooltipContentProps) => {
       const { active, payload, label } = props;
       if (!active || !payload || payload.length === 0) return null;
 
       const sorted = [...payload]
-        .filter((entry) => entry.value !== undefined)
-        .sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
+        .filter((entry) => typeof entry.value === "number")
+        .sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0));
 
       return (
         <div
@@ -168,7 +172,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
           </div>
           {sorted.map((entry) => (
             <div
-              key={entry.dataKey}
+              key={String(entry.dataKey)}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -197,7 +201,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
                   fontWeight: 500,
                 }}
               >
-                {`${((entry.value ?? 0) * 100).toFixed(1)}%`}
+                {`${((Number(entry.value) || 0) * 100).toFixed(1)}%`}
               </span>
             </div>
           ))}

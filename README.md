@@ -48,7 +48,7 @@ export ODDISH_API_KEY="ok_..."
 
 ```bash
 # Run a single agent
-oddish run -d terminal-bench@2.0 -a codex -m gpt-5.4 --n-trials 3
+oddish run -d terminal-bench@2.0 -a codex -m gpt-5.5 --n-trials 3
 ```
 
 ```bash
