@@ -54,7 +54,7 @@ function TaskCardsSkeleton() {
       {Array.from({ length: 6 }).map((_, index) => (
         <div
           key={index}
-          className="rounded-lg border border-[#6f88b4]/20 bg-card/95 p-4 shadow-sm"
+          className="rounded-lg border border-[#6f88b4]/20 bg-card/95 p-4 shadow-xs"
         >
           <div className="space-y-3">
             <div className="flex items-start justify-between gap-3">
@@ -248,7 +248,7 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
 
 function TaskCard({ task }: { task: TaskBrowseItem }) {
   return (
-    <Card className="border-[#6f88b4]/20 bg-card/95 shadow-sm">
+    <Card className="border-[#6f88b4]/20 bg-card/95 shadow-xs">
       <CardHeader className="space-y-2 px-5 pt-5 pb-2">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -352,7 +352,7 @@ export function TasksPageClient({
   return (
     <TooltipProvider>
       <div className="space-y-6">
-        <Card className="border-[#6f88b4]/20 shadow-sm">
+        <Card className="border-[#6f88b4]/20 shadow-xs">
           <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="space-y-1">
               <CardTitle className="text-base">Recent Tasks</CardTitle>

@@ -224,7 +224,7 @@ function CommandSnippet({ command }: { command: string }) {
 
 function FirstRunCard() {
   return (
-    <Card className="border-[#85b85c]/25 bg-card/95 shadow-sm">
+    <Card className="border-[#85b85c]/25 bg-card/95 shadow-xs">
       <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-2">
           <p className="text-sm font-medium">Set up your first Oddish run</p>
@@ -670,7 +670,7 @@ function UsageOverviewCard({
   };
 
   return (
-    <Card className="border-[#6f88b4]/20 shadow-sm">
+    <Card className="border-[#6f88b4]/20 shadow-xs">
       <CardHeader className="pb-2">
         <div className="flex flex-wrap items-start gap-2 sm:items-center">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
@@ -1122,7 +1122,7 @@ function RecentTasksCard({
   };
 
   return (
-    <Card className="col-span-5 border-[#6f88b4]/20 shadow-sm">
+    <Card className="col-span-5 border-[#6f88b4]/20 shadow-xs">
       <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-1">
           <CardTitle className="text-base">Recent Experiments</CardTitle>

@@ -217,7 +217,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   }
 
   return (
-    <Card className="h-full bg-card/80 shadow-sm">
+    <Card className="h-full bg-card/80 shadow-xs">
       <CardContent className="flex h-full flex-col p-6">
         <h3 className="font-mono text-sm font-bold text-foreground">
           Pass@k{" "}

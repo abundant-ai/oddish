@@ -29,8 +29,8 @@ export function Nav() {
   const { signOut } = useClerk();
 
   return (
-    <nav className="sticky top-0 z-50 border-b border-[#6f88b4]/15 bg-card/80 backdrop-blur-sm">
-      <div className="mx-auto flex h-14 max-w-screen-2xl items-center px-4">
+    <nav className="sticky top-0 z-50 border-b border-[#6f88b4]/15 bg-card/80 backdrop-blur-xs">
+      <div className="mx-auto flex h-14 max-w-(--breakpoint-2xl) items-center px-4">
         <div className="flex w-full items-center justify-between">
           {/* Left side - primary nav */}
           <div className="flex items-center gap-4">
@@ -50,7 +50,7 @@ export function Nav() {
                   alt="Oddish"
                   width={24}
                   height={24}
-                  className="drop-shadow-sm"
+                  className="drop-shadow-xs"
                 />
                 <span>Dashboard</span>
               </Link>
@@ -130,7 +130,7 @@ export function Nav() {
                   <DropdownMenuItem asChild>
                     <Link
                       href="/settings"
-                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none hover:bg-muted focus:bg-muted"
+                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden hover:bg-muted focus:bg-muted"
                     >
                       <User className="h-4 w-4" />
                       Settings
@@ -139,7 +139,7 @@ export function Nav() {
                   <DropdownMenuItem asChild>
                     <Link
                       href="/admin"
-                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none hover:bg-muted focus:bg-muted"
+                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden hover:bg-muted focus:bg-muted"
                     >
                       <Shield className="h-4 w-4" />
                       Admin
@@ -148,7 +148,7 @@ export function Nav() {
                   <DropdownMenuSeparator className="my-2" />
                   <DropdownMenuItem
                     onSelect={() => signOut()}
-                    className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-red-500 outline-none hover:bg-muted focus:bg-muted"
+                    className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-red-500 outline-hidden hover:bg-muted focus:bg-muted"
                   >
                     <LogOut className="h-4 w-4" />
                     Sign out

@@ -97,7 +97,7 @@ export default function LandingPage() {
                   alt="Oddish"
                   width={32}
                   height={32}
-                  className="drop-shadow-sm"
+                  className="drop-shadow-xs"
                 />
                 <span className="text-lg font-semibold">Oddish</span>
               </div>
@@ -107,7 +107,7 @@ export default function LandingPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    className="border-emerald-700/25 bg-background/70 shadow-sm hover:border-emerald-600/35 hover:bg-emerald-500/10 dark:border-emerald-400/20 dark:hover:border-emerald-300/30 dark:hover:bg-emerald-400/10"
+                    className="border-emerald-700/25 bg-background/70 shadow-xs hover:border-emerald-600/35 hover:bg-emerald-500/10 dark:border-emerald-400/20 dark:hover:border-emerald-300/30 dark:hover:bg-emerald-400/10"
                   >
                     Sign Up
                   </Button>

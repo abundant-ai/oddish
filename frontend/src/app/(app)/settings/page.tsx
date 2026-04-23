@@ -75,7 +75,7 @@ const clerkProfileAppearance = {
   elements: {
     rootBox: "w-full",
     cardBox: "w-full max-w-none",
-    card: "w-full rounded-lg border border-border bg-card text-card-foreground shadow-sm",
+    card: "w-full rounded-lg border border-border bg-card text-card-foreground shadow-xs",
     scrollBox: "w-full gap-0",
     navbar: "bg-muted/60 rounded-lg border border-border p-2",
     navbarButton:
@@ -534,7 +534,7 @@ function WorkspaceSelectorCard() {
 
   return (
     <>
-      <Card className="border-[#6f88b4]/18 bg-card/95 shadow-sm">
+      <Card className="border-[#6f88b4]/18 bg-card/95 shadow-xs">
         <CardHeader className="flex flex-row items-start justify-between gap-4 pb-3">
           <div>
             <CardTitle className="text-base">Workspaces</CardTitle>

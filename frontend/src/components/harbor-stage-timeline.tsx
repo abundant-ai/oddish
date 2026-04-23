@@ -133,7 +133,7 @@ export function HarborStageTimeline({
           <div key={stage.id} className="flex gap-2">
             {/* Left column: indicator + line */}
             <div className="flex flex-col items-center">
-              <div className="relative z-10 flex-shrink-0">
+              <div className="relative z-10 shrink-0">
                 {isCompleted ? (
                   <div
                     className={`flex h-5 w-5 items-center justify-center rounded-full border ${completedBg}`}
@@ -205,7 +205,7 @@ export function HarborStageTimeline({
 
       {(isCancelled || currentStage === "cleanup") && (
         <div className="flex gap-2">
-          <div className="relative z-10 flex-shrink-0">
+          <div className="relative z-10 shrink-0">
             <div
               className={`flex h-5 w-5 items-center justify-center rounded-full border ${
                 isCancelled

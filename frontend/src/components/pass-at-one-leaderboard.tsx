@@ -111,7 +111,7 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
   const ticks = [0, 0.2, 0.4, 0.6, 0.8, 1];
 
   return (
-    <Card className="h-full bg-card/80 shadow-sm">
+    <Card className="h-full bg-card/80 shadow-xs">
       <CardContent className="flex h-full flex-col p-6">
         <div className="flex items-center justify-between gap-4">
           <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">

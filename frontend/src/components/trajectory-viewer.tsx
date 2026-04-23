@@ -162,7 +162,7 @@ function ContentRenderer({
 
   if (typeof content === "string") {
     return (
-      <div className="whitespace-pre-wrap break-words text-sm">
+      <div className="whitespace-pre-wrap wrap-break-word text-sm">
         {content || (
           <span className="italic text-muted-foreground">(empty)</span>
         )}
@@ -175,7 +175,7 @@ function ContentRenderer({
       {content.map((part, idx) => {
         if (part.type === "text") {
           return (
-            <div key={idx} className="whitespace-pre-wrap break-words text-sm">
+            <div key={idx} className="whitespace-pre-wrap wrap-break-word text-sm">
               {part.text}
             </div>
           );
