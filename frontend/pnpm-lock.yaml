@@ -60,8 +60,8 @@ importers:
         specifier: 2.1.1
         version: 2.1.1
       lucide-react:
-        specifier: 0.468.0
-        version: 0.468.0(react@19.2.5)
+        specifier: 1.9.0
+        version: 1.9.0(react@19.2.5)
       mammoth:
         specifier: 1.12.0
         version: 1.12.0
@@ -3229,11 +3229,6 @@ packages:
   lru_map@0.4.1:
     resolution: {integrity: sha512-I+lBvqMMFfqaV8CJCISjI3wbjmwVu/VyOoU7+qtu9d7ioW5klMgsTTiUOUp+DJvfTTzKXoPbyC6YfgkNcyPSOg==}
 
-  lucide-react@0.468.0:
-    resolution: {integrity: sha512-6koYRhnM2N0GGZIdXzSeiNwguv1gt/FAjZOiPl76roBi3xKEXa4WmfpxgQwTTL4KipXjefrnf3oV4IsYhi4JFA==}
-    peerDependencies:
-      react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0-rc
-
   lucide-react@0.469.0:
     resolution: {integrity: sha512-28vvUnnKQ/dBwiCQtwJw7QauYnE7yd2Cyp4tTTJpvglX4EMpbflcdBgrgToX2j71B3YvugK/NH3BGUk+E/p/Fw==}
     peerDependencies:
@@ -3246,6 +3241,11 @@ packages:
 
   lucide-react@0.563.0:
     resolution: {integrity: sha512-8dXPB2GI4dI8jV4MgUDGBeLdGk8ekfqVZ0BdLcrRzocGgG75ltNEmWS+gE7uokKF/0oSUuczNDT+g9hFJ23FkA==}
+    peerDependencies:
+      react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
+  lucide-react@1.9.0:
+    resolution: {integrity: sha512-6qVAmbgCjcJz7sAGSPSSJ++RAwjlK2XCbRrZKv63Ciko1KT8jX0//CXxgI3jg2HlJu8tADqdYlNDebmYjeoruA==}
     peerDependencies:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
@@ -8427,10 +8427,6 @@ snapshots:
 
   lru_map@0.4.1: {}
 
-  lucide-react@0.468.0(react@19.2.5):
-    dependencies:
-      react: 19.2.5
-
   lucide-react@0.469.0(react@19.2.5):
     dependencies:
       react: 19.2.5
@@ -8440,6 +8436,10 @@ snapshots:
       react: 19.2.5
 
   lucide-react@0.563.0(react@19.2.5):
+    dependencies:
+      react: 19.2.5
+
+  lucide-react@1.9.0(react@19.2.5):
     dependencies:
       react: 19.2.5
 
