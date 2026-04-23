@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Show, SignUpButton } from "@clerk/nextjs";
-import { ArrowRight, Github } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { GithubIcon } from "@/components/icons/github";
 import { ThemeToggle } from "@/components/theme-toggle";
 import Image from "next/image";
 
@@ -123,7 +124,7 @@ export default function LandingPage() {
                     rel="noopener noreferrer"
                     aria-label="Oddish GitHub"
                   >
-                    <Github className="h-4 w-4" />
+                    <GithubIcon className="h-4 w-4" />
                   </a>
                 </Button>
               </div>
