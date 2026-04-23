@@ -3,7 +3,7 @@ agents:
     model_name: bedrock/global.anthropic.claude-opus-4-7
     n_trials: 3
   - name: codex
-    model_name: openai/gpt-5.3-codex
+    model_name: openai/gpt-5.5
     n_trials: 3
   - name: gemini-cli
     model_name: gemini/gemini-3.1-pro-preview

@@ -7,7 +7,7 @@ name = "oddish"
 version = "0.1.10"
 description = "Run Harbor tasks in the cloud with scheduling, monitoring, and persistent state"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = { file = "LICENSE" }
 authors = [
     { name = "Rishi Desai", email = "rishi@abundant.ai" },
@@ -18,51 +18,60 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Testing",
 ]
 
+# All direct runtime dependencies are pinned to exact versions for
+# supply-chain security.  Upgrades happen via ``uv lock --upgrade-package
+# <name>`` (or ``--upgrade`` to refresh everything), which regenerates
+# ``uv.lock`` with the new pin; CI runs ``uv sync --frozen`` to reject any
+# unpinned drift.  See ``CONTRIBUTING.md`` (or ask) for the upgrade flow.
 dependencies = [
     # CLI
-    "typer>=0.12.0",
-    "rich>=13.7.0",
+    "typer==0.21.1",
+    "rich==14.3.1",
     # HTTP client (CLI talks to the API over HTTP)
-    "httpx>=0.27.0",
+    "httpx==0.28.1",
     # Validation & settings
-    "pydantic>=2.6.0",
-    "pydantic-settings>=2.2.0",
+    "pydantic==2.12.5",
+    "pydantic-settings==2.12.0",
     # Harbor (task models, agent config, dataset handling)
-    "harbor==0.1.45",
+    "harbor==0.5.0",
+    # Source-of-truth pricing table (`litellm.model_cost`) covering ~2,700
+    # models.  See ``oddish.model_pricing`` for our fallback for brand-new
+    # models not yet in the installed litellm release.  Bump this pin on a
+    # regular cadence (e.g. weekly) to pick up newly-launched models.
+    "litellm==1.81.1",
 ]
 
 [project.optional-dependencies]
 server = [
     # Web framework
-    "fastapi>=0.109.0",
-    "uvicorn>=0.27.0",
-    "python-multipart>=0.0.9",
-    "python-jose[cryptography]>=3.3.0",
+    "fastapi==0.128.0",
+    "uvicorn==0.40.0",
+    "python-multipart==0.0.21",
+    "python-jose[cryptography]==3.5.0",
     # Database
-    "sqlalchemy[asyncio]>=2.0.0",
-    "asyncpg>=0.29.0",
-    "alembic>=1.13.0",
+    "sqlalchemy[asyncio]==2.0.46",
+    "asyncpg==0.31.0",
+    "alembic==1.18.1",
     # S3-compatible storage
-    "aioboto3>=13.0.0",
+    "aioboto3==15.5.0",
 ]
 worker = [
     "oddish[server]",
     # LLM providers
-    "anthropic>=0.40.0",
-    "openai>=1.50.0",
-    "google-generativeai>=0.8.0",
+    "anthropic==0.76.0",
+    "openai==2.15.0",
+    "google-generativeai==0.8.6",
 ]
 dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "pre-commit>=4.0.0",
-    "twine>=6.0.0",
+    "pytest==9.0.2",
+    "pytest-asyncio==1.3.0",
+    "pre-commit==4.5.1",
+    "twine==6.2.0",
 ]
 all = [
     "oddish[worker,dev]",
@@ -85,7 +94,7 @@ packages = ["src/oddish"]
 include = ["src/oddish/analyze/*.txt"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 mypy_path = ["src"]
 warn_return_any = true
 warn_unused_configs = true

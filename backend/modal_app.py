@@ -173,7 +173,7 @@ if worker_task_bucket_mount is not None:
     worker_volumes[WORKER_TASK_MOUNT_PATH] = worker_task_bucket_mount
 
 image = (
-    modal.Image.debian_slim(python_version="3.12")
+    modal.Image.debian_slim(python_version="3.14")
     .apt_install(
         "git",
         "curl",

@@ -2,38 +2,46 @@
 name = "oddish-app"
 version = "0.1.0"
 description = "Cloud deployment layer for Oddish - Modal API with multi-tenant auth"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.14"
 
+# All direct runtime dependencies are pinned to exact versions for
+# supply-chain security.  Upgrades happen via ``uv lock --upgrade-package
+# <name>`` (or ``--upgrade`` to refresh everything), which regenerates
+# ``uv.lock`` with the new pin; CI runs ``uv sync --frozen`` to reject any
+# unpinned drift.
 dependencies = [
     # Backend API + Modal workers should install the broadest oddish package set.
+    # Local path dep resolved via [tool.uv.sources]; oddish's own direct
+    # deps are pinned in oddish/pyproject.toml.
     "oddish[all]",
 
     # pyparsing for pyiceberg compatibility
-    "pyparsing",
+    "pyparsing==3.3.2",
 
     # Modal deployment
-    "modal>=0.64.0",
+    "modal==1.3.3",
 
     # Auth - JWT validation for Clerk
-    "python-jose[cryptography]>=3.3.0",
+    "python-jose[cryptography]==3.5.0",
 
     # HTTP client for JWKS fetching
-    "httpx>=0.27.0",
+    "httpx==0.28.1",
 
     # Clerk webhook verification
-    "svix>=1.39.0",
+    "svix==1.84.1",
 
-    # File uploads
-    "python-multipart>=0.0.9",
+    # File uploads (keep aligned with oddish's pin; backend depends on
+    # ``oddish[all]`` which constrains this transitively).
+    "python-multipart==0.0.21",
 
     # Environment loading
-    "python-dotenv>=1.0.0",
+    "python-dotenv==1.2.1",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
+    "pytest==9.0.2",
+    "pytest-asyncio==1.3.0",
 ]
 
 [tool.uv.sources]
