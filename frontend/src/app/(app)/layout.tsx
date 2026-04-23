@@ -1,18 +1,18 @@
-import { SignedIn, SignedOut, RedirectToSignIn } from "@clerk/nextjs";
+import { RedirectToSignIn, Show } from "@clerk/nextjs";
 import { Nav } from "@/components/nav";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
-      <SignedOut>
+      <Show when="signed-out">
         <RedirectToSignIn />
-      </SignedOut>
-      <SignedIn>
+      </Show>
+      <Show when="signed-in">
         <Nav />
-        <main className="mx-auto w-full max-w-screen-2xl px-4 py-4">
+        <main className="mx-auto w-full max-w-(--breakpoint-2xl) px-4 py-4">
           {children}
         </main>
-      </SignedIn>
+      </Show>
     </>
   );
 }

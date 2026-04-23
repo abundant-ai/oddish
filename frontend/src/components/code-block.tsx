@@ -163,13 +163,13 @@ export function CodeBlock({
       )}
       {highlightedHtml ? (
         <div
-          className="overflow-x-auto overflow-y-auto rounded border border-border text-xs [&>pre]:m-0 [&>pre]:overflow-x-auto [&>pre]:whitespace-pre-wrap [&>pre]:break-words [&>pre]:p-3"
+          className="overflow-x-auto overflow-y-auto rounded border border-border text-xs [&>pre]:m-0 [&>pre]:overflow-x-auto [&>pre]:whitespace-pre-wrap [&>pre]:wrap-break-word [&>pre]:p-3"
           style={heightStyle}
           dangerouslySetInnerHTML={{ __html: highlightedHtml }}
         />
       ) : (
         <pre
-          className="overflow-x-auto overflow-y-auto whitespace-pre-wrap break-words rounded border border-border bg-muted/50 p-3 text-xs text-foreground"
+          className="overflow-x-auto overflow-y-auto whitespace-pre-wrap wrap-break-word rounded border border-border bg-muted/50 p-3 text-xs text-foreground"
           style={heightStyle}
         >
           {truncatedCode}

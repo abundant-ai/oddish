@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { SignedIn, SignedOut, SignUpButton } from "@clerk/nextjs";
-import { ArrowRight, Github } from "lucide-react";
+import { Show, SignUpButton } from "@clerk/nextjs";
+import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { GithubIcon } from "@/components/icons/github";
 import { ThemeToggle } from "@/components/theme-toggle";
 import Image from "next/image";
 
@@ -81,11 +82,11 @@ export default function LandingPage() {
 
   return (
     <>
-      <SignedIn>
+      <Show when="signed-in">
         <RedirectToDashboard />
-      </SignedIn>
+      </Show>
 
-      <SignedOut>
+      <Show when="signed-out">
         <div className="flex min-h-screen flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(133,184,92,0.16),transparent_34%),radial-gradient(circle_at_80%_20%,rgba(111,136,180,0.12),transparent_28%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--background)))] text-foreground">
           {/* Header */}
           <header className="w-full border-b border-emerald-700/15 px-6 py-3 dark:border-emerald-400/10">
@@ -96,7 +97,7 @@ export default function LandingPage() {
                   alt="Oddish"
                   width={32}
                   height={32}
-                  className="drop-shadow-sm"
+                  className="drop-shadow-xs"
                 />
                 <span className="text-lg font-semibold">Oddish</span>
               </div>
@@ -106,7 +107,7 @@ export default function LandingPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    className="border-emerald-700/25 bg-background/70 shadow-sm hover:border-emerald-600/35 hover:bg-emerald-500/10 dark:border-emerald-400/20 dark:hover:border-emerald-300/30 dark:hover:bg-emerald-400/10"
+                    className="border-emerald-700/25 bg-background/70 shadow-xs hover:border-emerald-600/35 hover:bg-emerald-500/10 dark:border-emerald-400/20 dark:hover:border-emerald-300/30 dark:hover:bg-emerald-400/10"
                   >
                     Sign Up
                   </Button>
@@ -123,7 +124,7 @@ export default function LandingPage() {
                     rel="noopener noreferrer"
                     aria-label="Oddish GitHub"
                   >
-                    <Github className="h-4 w-4" />
+                    <GithubIcon className="h-4 w-4" />
                   </a>
                 </Button>
               </div>
@@ -237,7 +238,7 @@ export default function LandingPage() {
             </div>
           </footer>
         </div>
-      </SignedOut>
+      </Show>
     </>
   );
 }

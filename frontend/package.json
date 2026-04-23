@@ -11,9 +11,12 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\""
   },
-  "//": "All dependencies pinned to exact versions for supply-chain security. Upgrade via `pnpm up <pkg>@<version>` and commit the regenerated pnpm-lock.yaml. CI + Dockerfile use `pnpm install --frozen-lockfile` to reject drift.",
+  "//": [
+    "All dependencies pinned to exact versions for supply-chain security. Upgrade via `pnpm up <pkg>@<version>` and commit the regenerated pnpm-lock.yaml. CI + Dockerfile use `pnpm install --frozen-lockfile` to reject drift.",
+    "ESLint 10 deferred until eslint-plugin-react releases an eslint@10-compatible version."
+  ],
   "dependencies": {
-    "@clerk/nextjs": "6.36.8",
+    "@clerk/nextjs": "7.2.5",
     "@lobehub/icons": "5.5.4",
     "@radix-ui/react-accordion": "1.2.12",
     "@radix-ui/react-alert-dialog": "1.1.15",
@@ -30,7 +33,7 @@
     "@tanstack/react-virtual": "3.13.24",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
-    "lucide-react": "0.468.0",
+    "lucide-react": "1.9.0",
     "mammoth": "1.12.0",
     "next": "16.2.4",
     "prism-react-renderer": "2.4.1",
@@ -48,17 +51,17 @@
   },
   "devDependencies": {
     "@eslint/js": "9.39.2",
+    "@tailwindcss/postcss": "4.2.4",
     "@types/node": "22.19.5",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "autoprefixer": "10.5.0",
     "eslint": "9.39.2",
     "eslint-plugin-react": "7.37.5",
     "eslint-plugin-react-hooks": "7.1.1",
     "postcss": "8.5.10",
     "prettier": "3.8.3",
-    "prettier-plugin-tailwindcss": "0.6.14",
-    "tailwindcss": "3.4.19",
+    "prettier-plugin-tailwindcss": "0.7.3",
+    "tailwindcss": "4.2.4",
     "typescript": "6.0.3",
     "typescript-eslint": "8.59.0"
   }

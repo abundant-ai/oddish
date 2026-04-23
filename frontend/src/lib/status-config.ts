@@ -48,7 +48,7 @@ export const STATUS_CONFIG: Record<
     badgeClass:
       "bg-emerald-500/90 text-white border-emerald-400 hover:bg-emerald-600",
     matrixClass:
-      "bg-emerald-500 text-white border-emerald-500 hover:!bg-emerald-500/90",
+      "bg-emerald-500 text-white border-emerald-500 hover:bg-emerald-500/90!",
     bracketClass: "bg-emerald-600 text-white",
     panelBadgeClass: "bg-emerald-500/20 text-emerald-400 border-emerald-500/50",
   },
@@ -61,7 +61,7 @@ export const STATUS_CONFIG: Record<
     badgeClass:
       "bg-amber-500/90 text-slate-950 border-amber-400 hover:bg-amber-600",
     matrixClass:
-      "bg-amber-500 text-slate-950 border-amber-500 hover:!bg-amber-500/90",
+      "bg-amber-500 text-slate-950 border-amber-500 hover:bg-amber-500/90!",
     bracketClass: "bg-amber-500 text-slate-950",
     panelBadgeClass: "bg-amber-500/20 text-amber-400 border-amber-500/50",
   },
@@ -72,7 +72,7 @@ export const STATUS_CONFIG: Record<
     symbol: "✗",
     description: "Task did not pass",
     badgeClass: "bg-red-600/90 text-white border-red-500 hover:bg-red-700",
-    matrixClass: "bg-red-500 text-white border-red-500 hover:!bg-red-500/90",
+    matrixClass: "bg-red-500 text-white border-red-500 hover:bg-red-500/90!",
     bracketClass: "bg-red-600 text-white",
     panelBadgeClass: "bg-red-500/20 text-red-400 border-red-500/50",
   },
@@ -85,7 +85,7 @@ export const STATUS_CONFIG: Record<
     badgeClass:
       "bg-yellow-500/90 text-gray-900 border-yellow-400 hover:bg-yellow-600",
     matrixClass:
-      "bg-yellow-500 text-slate-900 border-yellow-500 hover:!bg-yellow-500/90",
+      "bg-yellow-500 text-slate-900 border-yellow-500 hover:bg-yellow-500/90!",
     bracketClass: "bg-yellow-500 text-gray-900",
     panelBadgeClass: "bg-yellow-500/20 text-yellow-400 border-yellow-500/50",
   },
@@ -96,7 +96,7 @@ export const STATUS_CONFIG: Record<
     symbol: "◌",
     description: "Waiting to be queued",
     badgeClass: "bg-gray-500/50 text-gray-300 border-gray-400 animate-pulse",
-    matrixClass: "bg-gray-500 text-white border-gray-500 hover:!bg-gray-500/90",
+    matrixClass: "bg-gray-500 text-white border-gray-500 hover:bg-gray-500/90!",
     bracketClass: "bg-gray-500/50 text-gray-300 animate-pulse",
     panelBadgeClass: "bg-gray-500/20 text-gray-400 border-gray-500/50",
   },
@@ -108,7 +108,7 @@ export const STATUS_CONFIG: Record<
     description: "Queued for execution",
     badgeClass: "bg-purple-500/90 text-white border-purple-400",
     matrixClass:
-      "bg-purple-500 text-white border-purple-500 hover:!bg-purple-500/90",
+      "bg-purple-500 text-white border-purple-500 hover:bg-purple-500/90!",
     bracketClass: "bg-purple-500 text-white",
     panelBadgeClass: "bg-purple-500/20 text-purple-400 border-purple-500/50",
   },
@@ -120,7 +120,7 @@ export const STATUS_CONFIG: Record<
     description: "Currently executing",
     badgeClass: "bg-blue-500/90 text-white border-blue-400 animate-pulse",
     matrixClass:
-      "bg-blue-500 text-white border-blue-500 animate-pulse hover:!bg-blue-500/90",
+      "bg-blue-500 text-white border-blue-500 animate-pulse hover:bg-blue-500/90!",
     bracketClass: "bg-blue-500 text-white animate-pulse",
     panelBadgeClass: "bg-blue-500/20 text-blue-400 border-blue-500/50",
   },

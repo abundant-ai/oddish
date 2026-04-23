@@ -99,7 +99,7 @@ export function XlsxRenderer({ data, fileName }: XlsxRendererProps) {
       <div className="max-h-[600px] overflow-auto">
         <table className="w-full border-collapse text-xs">
           <thead className="sticky top-0 z-10">
-            <tr className="bg-muted/80 backdrop-blur-sm">
+            <tr className="bg-muted/80 backdrop-blur-xs">
               <th className="w-10 border-b border-r border-border px-3 py-2 text-left text-xs font-medium text-muted-foreground">
                 #
               </th>

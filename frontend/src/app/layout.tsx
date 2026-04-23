@@ -44,8 +44,8 @@ export default function RootLayout({
     <ClerkProvider
       signInUrl={toAbsoluteUrl(signInUrl)}
       signUpUrl={toAbsoluteUrl(signUpUrl)}
-      afterSignInUrl={toAbsoluteUrl(afterSignInUrl)}
-      afterSignUpUrl={toAbsoluteUrl(afterSignUpUrl)}
+      signInFallbackRedirectUrl={toAbsoluteUrl(afterSignInUrl)}
+      signUpFallbackRedirectUrl={toAbsoluteUrl(afterSignUpUrl)}
     >
       <html lang="en">
         <body className="min-h-screen antialiased">
