@@ -715,11 +715,17 @@ def run(
         if not quiet:
             console.print("[dim]Watching task progress (Ctrl+C to stop)...[/dim]")
             console.print()
+        # When appending to an existing task, restrict the live view to the
+        # trials we just submitted so prior trials on the same experiment
+        # don't clutter the table. For fresh tasks the list is equivalent
+        # to the full trial set anyway, so passing it is harmless.
+        new_trial_ids = all_results[0].get("new_trial_ids") or None
         try:
             final_result = watch_task(
                 api_url,
                 all_results[0]["id"],
                 experiment_id=experiment_id_resolved,
+                trial_ids=new_trial_ids,
             )
             # Print final results table
             if final_result:

@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any, cast
 
 import httpx
@@ -1346,14 +1347,20 @@ def watch_task(
     api_url: str,
     task_id: str,
     experiment_id: str | None = None,
+    trial_ids: Iterable[str] | None = None,
 ) -> dict | None:
     """Watch a task until completion. Returns the final result.
 
     When *experiment_id* is given, only trials belonging to that experiment
     are displayed (others are hidden from the table and summary counts).
+
+    When *trial_ids* is given, only trials whose ``id`` is in that set are
+    shown. This is useful when appending trials to an existing task and the
+    caller only wants to monitor the freshly-submitted trials.
     """
     final_result = None
     headers = get_auth_headers()
+    trial_id_filter = set(trial_ids) if trial_ids is not None else None
     with Live(console=console, refresh_per_second=2) as live:
         while True:
             try:
@@ -1368,7 +1375,11 @@ def watch_task(
                 final_result = result
 
                 all_trials = result.get("trials", [])
-                if experiment_id:
+                if trial_id_filter is not None:
+                    all_trials = [
+                        t for t in all_trials if t.get("id") in trial_id_filter
+                    ]
+                elif experiment_id:
                     all_trials = [
                         t for t in all_trials if t.get("experiment_id") == experiment_id
                     ]
@@ -1450,7 +1461,7 @@ def watch_task(
                 live.update(table)
 
                 # Check if done
-                if experiment_id:
+                if trial_id_filter is not None or experiment_id:
                     terminal = {"success", "failed", "cancelled"}
                     if all_trials and all(
                         t.get("status") in terminal for t in all_trials

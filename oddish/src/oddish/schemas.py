@@ -463,6 +463,16 @@ class TaskResponse(BaseModel):
     experiment_id: str | None = None
     experiment_name: str | None = None
     created_at: datetime
+    new_trial_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "IDs of the trials created by this sweep submission. "
+            "For append-mode submissions, this contains only the newly appended "
+            "trials (not any pre-existing trials on the task). Clients can use "
+            "this to filter status/watch views to only the trials they just "
+            "submitted."
+        ),
+    )
 
 
 class TaskBatchCancelRequest(BaseModel):

@@ -361,26 +361,26 @@ async def create_task_sweep(submission: TaskSweepSubmission):
         if not is_append and hasattr(task, "task_s3_key") and task.task_s3_key:
             await session.commit()
             
-        provider_counts: Counter[str] = Counter(
-            t.provider for t in (new_trials if is_append else task.trials)
-        )
+        response_trials = new_trials if is_append else list(task.trials)
+        provider_counts: Counter[str] = Counter(t.provider for t in response_trials)
         primary = (
             experiment
             or (task.experiments[0] if task.experiments else None)
         )
         resp_experiment_id = primary.id if primary else None
         resp_experiment_name = primary.name if primary else None
-        
+
         return TaskResponse(
             id=task.id,
             name=task.name,
             status=task.status,
             priority=task.priority,
-            trials_count=len(new_trials) if is_append else len(task.trials),
+            trials_count=len(response_trials),
             providers=dict(provider_counts),
             experiment_id=resp_experiment_id,
             experiment_name=resp_experiment_name,
             created_at=task.created_at,
+            new_trial_ids=[t.id for t in response_trials],
         )
 
 
