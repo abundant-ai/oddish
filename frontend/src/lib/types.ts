@@ -71,6 +71,11 @@ export interface Trial {
   queue_info?: TrialQueueInfo | null;
   task_version?: number | null;
   task_version_id?: string | null;
+  input_tokens?: number | null;
+  cache_tokens?: number | null;
+  output_tokens?: number | null;
+  cost_usd?: number | null;
+  cost_is_estimated?: boolean | null;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;

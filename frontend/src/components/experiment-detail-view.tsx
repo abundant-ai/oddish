@@ -80,6 +80,10 @@ type ExperimentSummary = {
   failCount: number;
   harnessErrorCount: number;
   pendingCount: number;
+  costUsd: number;
+  costTrialCount: number;
+  costHasEstimated: boolean;
+  costHasNative: boolean;
 };
 
 function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
@@ -96,11 +100,25 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
   let harnessErrorCount = 0;
   let pendingCount = 0;
 
+  let costUsd = 0;
+  let costTrialCount = 0;
+  let costHasEstimated = false;
+  let costHasNative = false;
+
   for (const task of tasksForExperiment) {
     const trials = task.trials ?? [];
     if (trials.length > 0) {
       // Compute from the (already version-filtered) trials array
       for (const trial of trials) {
+        if (trial.cost_usd != null) {
+          costUsd += trial.cost_usd;
+          costTrialCount += 1;
+          if (trial.cost_is_estimated === true) {
+            costHasEstimated = true;
+          } else {
+            costHasNative = true;
+          }
+        }
         if (trial.status === "success" && trial.reward != null) {
           rewardSum += trial.reward;
           rewardTotal++;
@@ -146,7 +164,19 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     failCount,
     harnessErrorCount,
     pendingCount,
+    costUsd,
+    costTrialCount,
+    costHasEstimated,
+    costHasNative,
   };
+}
+
+function formatCostUsd(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "$0.00";
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  if (value < 1) return `$${value.toFixed(3)}`;
+  if (value < 100) return `$${value.toFixed(2)}`;
+  return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
 function ExperimentHeaderMeta({
@@ -227,6 +257,34 @@ function ExperimentSummaryBar({
           {summary.rewardTotal > 0
             ? `${Math.round((summary.rewardSum / summary.rewardTotal) * 100)}%`
             : "—"}
+        </div>
+        <div className="text-muted-foreground">•</div>
+        <div
+          className="font-mono text-muted-foreground"
+          title={
+            summary.costTrialCount > 0
+              ? `Summed across ${summary.costTrialCount} trial${
+                  summary.costTrialCount === 1 ? "" : "s"
+                }${
+                  summary.costHasEstimated && summary.costHasNative
+                    ? ". Mixed native + estimated values; ~ marks estimates."
+                    : summary.costHasEstimated
+                      ? ". Estimated from token counts × static model pricing."
+                      : ". Reported by the agent runtime."
+                }`
+              : "No cost data reported yet"
+          }
+        >
+          Cost{" "}
+          {summary.costTrialCount > 0 ? (
+            <>
+              {summary.costHasEstimated && !summary.costHasNative ? "~" : ""}
+              {formatCostUsd(summary.costUsd)}
+              {summary.costHasEstimated && summary.costHasNative ? "*" : ""}
+            </>
+          ) : (
+            "—"
+          )}
         </div>
         <div className="text-muted-foreground">•</div>
         <div className="flex items-center gap-2 font-mono text-muted-foreground">

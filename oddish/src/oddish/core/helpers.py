@@ -19,7 +19,32 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
 )
+from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import TaskStatusResponse, TrialQueueInfo, TrialResponse
+
+
+def _resolve_trial_cost(
+    trial: TrialModel, model_name: str | None
+) -> tuple[float | None, bool | None]:
+    """Return ``(cost_usd, cost_is_estimated)`` for a trial.
+
+    Prefers the native cost reported by the agent runtime. Falls back to
+    estimating from the pricing table when native cost is missing but we
+    have token counts and a known model.
+    """
+    if trial.cost_usd is not None:
+        return float(trial.cost_usd), False
+    if trial.input_tokens is None and trial.output_tokens is None:
+        return None, None
+    estimated = estimate_cost_usd(
+        model_name or trial.model,
+        trial.input_tokens,
+        trial.output_tokens,
+        trial.cache_tokens,
+    )
+    if estimated is None:
+        return None, None
+    return estimated, True
 
 _ANALYSIS_SUMMARY_UNSET = object()
 _VERSION_ID_UNSET: object = object()
@@ -204,6 +229,7 @@ def build_trial_response(
     """Build a TrialResponse from a TrialModel."""
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
     task_version, task_version_id = _resolve_trial_version_fields(trial)
+    cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
     return TrialResponse(
         id=trial.id,
         name=trial.name,
@@ -227,7 +253,8 @@ def build_trial_response(
         input_tokens=trial.input_tokens,
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
-        cost_usd=trial.cost_usd,
+        cost_usd=cost_usd,
+        cost_is_estimated=cost_is_estimated,
         phase_timing=trial.phase_timing,
         has_trajectory=trial.has_trajectory,
         analysis_status=trial.analysis_status,
@@ -265,6 +292,7 @@ def build_compact_trial_response(
         )
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
     task_version, task_version_id = _resolve_trial_version_fields(trial)
+    cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
 
     return TrialResponse(
         id=trial.id,
@@ -286,10 +314,11 @@ def build_compact_trial_response(
         reward=trial.reward,
         error_message=trial.error_message,
         result=None,
-        input_tokens=None,
-        cache_tokens=None,
-        output_tokens=None,
-        cost_usd=None,
+        input_tokens=trial.input_tokens,
+        cache_tokens=trial.cache_tokens,
+        output_tokens=trial.output_tokens,
+        cost_usd=cost_usd,
+        cost_is_estimated=cost_is_estimated,
         phase_timing=trial.phase_timing,
         has_trajectory=trial.has_trajectory,
         analysis_status=trial.analysis_status,
