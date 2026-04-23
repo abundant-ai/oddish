@@ -1,4 +1,5 @@
 """Railway / vanilla uvicorn entrypoint."""
+
 from __future__ import annotations
 
 from oddish.config import Settings

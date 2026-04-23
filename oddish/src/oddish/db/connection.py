@@ -1,4 +1,5 @@
 import asyncio
+import re as _re
 import sys
 import subprocess
 import time
@@ -157,8 +158,6 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
 
 
-import re as _re
-
 # Conservative identifier shape for role names we're willing to splice
 # into a DDL statement. Postgres technically allows more (quoted
 # identifiers can contain anything but nul), but Supabase/standard
@@ -190,9 +189,7 @@ async def apply_role_defaults() -> dict[str, str]:
         # `postgres` role internally, while direct Postgres connections
         # usually use an app-specific role. `current_user` in the context
         # of the running session is what gets the default applied.
-        current_user = (
-            await conn.execute(_text("SELECT current_user"))
-        ).scalar_one()
+        current_user = (await conn.execute(_text("SELECT current_user"))).scalar_one()
         # Defense in depth: we have to interpolate the role name into
         # DDL (parameter binding doesn't work for identifiers), and
         # `current_user` comes from Postgres itself -- but validate

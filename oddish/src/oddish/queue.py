@@ -111,9 +111,10 @@ async def cancel_tasks_runs(
     # us the Modal function-call ids to terminate remotely and the kind
     # breakdown for the domain-mirror pass below.
     canceled_rows = (
-        await session.execute(
-            text(
-                """
+        (
+            await session.execute(
+                text(
+                    """
                 UPDATE worker_jobs
                 SET    status = 'CANCELLED',
                        finished_at = NOW(),
@@ -131,14 +132,17 @@ async def cancel_tasks_runs(
                           subject_id,
                           modal_function_call_id
                 """
-            ),
-            {
-                "cancel_msg": USER_CANCELLED_MESSAGE,
-                "task_ids": found_task_ids,
-                "trial_ids": trial_ids or [""],
-            },
+                ),
+                {
+                    "cancel_msg": USER_CANCELLED_MESSAGE,
+                    "task_ids": found_task_ids,
+                    "trial_ids": trial_ids or [""],
+                },
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     modal_fc_ids: list[str] = []
     canceled_trial_kinds: set[str] = set()
@@ -163,10 +167,7 @@ async def cancel_tasks_runs(
     trials_cancelled = 0
     for trial in trials:
         trial_updated = False
-        if (
-            trial.id in canceled_trial_kinds
-            or trial.status in ACTIVE_TRIAL_STATUSES
-        ):
+        if trial.id in canceled_trial_kinds or trial.status in ACTIVE_TRIAL_STATUSES:
             # Modal function-call ids now live only on ``worker_jobs``;
             # the ``UPDATE worker_jobs ... RETURNING`` above is the
             # single source for FCs to terminate.
@@ -524,7 +525,9 @@ async def create_task(
     session.add(task)
     await session.flush()
 
-    await _link_task_to_experiment(session, task_id=task_id, experiment_id=experiment.id)
+    await _link_task_to_experiment(
+        session, task_id=task_id, experiment_id=experiment.id
+    )
 
     # Determine the version: if one was pre-created during upload, use the
     # latest; otherwise create v1 now that the task row exists.
@@ -1006,13 +1009,13 @@ async def get_queue_and_pipeline_stats_with_concurrency(
     for queue_key, provider_stats in stats.items():
         for status_name, count in provider_stats.items():
             if queue_key == analysis_queue_key:
-                analysis_pipeline[status_name] = analysis_pipeline.get(status_name, 0) + int(
-                    count
-                )
+                analysis_pipeline[status_name] = analysis_pipeline.get(
+                    status_name, 0
+                ) + int(count)
             elif queue_key == verdict_queue_key:
-                verdict_pipeline[status_name] = verdict_pipeline.get(status_name, 0) + int(
-                    count
-                )
+                verdict_pipeline[status_name] = verdict_pipeline.get(
+                    status_name, 0
+                ) + int(count)
             else:
                 trial_pipeline[status_name] = trial_pipeline.get(status_name, 0) + int(
                     count

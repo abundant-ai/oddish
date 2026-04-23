@@ -11,7 +11,6 @@ import os
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from oddish.config import settings
 from oddish.db import (
@@ -167,9 +166,7 @@ async def _update_pr_comment_for_task(
             session, task, explicit_experiment_id=experiment_id
         )
         if experiment is None:
-            logger.debug(
-                f"Task {task.id} has no linked experiment, skipping PR update"
-            )
+            logger.debug(f"Task {task.id} has no linked experiment, skipping PR update")
             return False
 
         resolved_experiment_id = experiment.id

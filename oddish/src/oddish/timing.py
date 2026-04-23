@@ -35,7 +35,9 @@ def format_server_timing(metrics: list[TimingMetric]) -> str:
 
 
 def join_server_timing_headers(*headers: str | None) -> str | None:
-    joined = ", ".join(header.strip() for header in headers if header and header.strip())
+    joined = ", ".join(
+        header.strip() for header in headers if header and header.strip()
+    )
     return joined or None
 
 

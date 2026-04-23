@@ -4,7 +4,10 @@ import {
   getBackendUrl,
   getClerkToken,
 } from "@/lib/backend-config";
-import { buildDashboardBackendParams, DEFAULT_DASHBOARD_REQUEST_PARAMS } from "@/lib/dashboard-request";
+import {
+  buildDashboardBackendParams,
+  DEFAULT_DASHBOARD_REQUEST_PARAMS,
+} from "@/lib/dashboard-request";
 import type { DashboardResponse } from "@/lib/types";
 import { DashboardClient } from "./dashboard-client";
 

@@ -78,7 +78,7 @@ Documentation = "https://github.com/abundant-ai/oddish/blob/main/DOCS.md"
 oddish = "oddish.cli:app"
 
 [tool.hatch.build.targets.sdist]
-exclude = [".git", "uv.lock", ".pre-commit-config.yaml"]
+exclude = [".git", "uv.lock"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/oddish"]

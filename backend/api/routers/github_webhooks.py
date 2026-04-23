@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth import AuthContext, require_auth, APIKeyScope
-from oddish.db import TaskModel, TrialModel, get_session
+from oddish.db import TaskModel, get_session
 
 logger = logging.getLogger(__name__)
 
@@ -127,9 +127,7 @@ async def refresh_experiment_pr_comment(
         # Trigger update (will aggregate all tasks)
         from oddish.integrations.github.notifier import _update_pr_comment_for_task
 
-        success = await _update_pr_comment_for_task(
-            task, experiment_id=experiment_id
-        )
+        success = await _update_pr_comment_for_task(task, experiment_id=experiment_id)
 
         if success:
             return RefreshResponse(

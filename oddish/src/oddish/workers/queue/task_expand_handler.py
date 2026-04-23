@@ -26,6 +26,7 @@ import json
 import mimetypes
 import tarfile
 from datetime import datetime, timezone
+from typing import cast
 
 from sqlalchemy import select
 
@@ -147,7 +148,7 @@ async def _list_loose_task_files(
         key = str(obj.get("key") or "")
         if not key.startswith(root):
             continue
-        rel = key[len(root):]
+        rel = key[len(root) :]
         if not rel or rel.endswith("/"):
             continue
         first = rel.split("/", 1)[0]
@@ -212,24 +213,21 @@ async def _migrate_loose_task_files(
                 # whole job 6x-retrying and permanently FAILING.
                 return {
                     "path": rel_path,
-                    "size": int(entry.get("size") or 0),
+                    "size": int(cast(int, entry.get("size") or 0)),
                     "skipped": True,
                     "skip_reason": (
-                        f"upload_failed: {type(exc).__name__}: "
-                        f"{str(exc)[:200]}"
+                        f"upload_failed: {type(exc).__name__}: " f"{str(exc)[:200]}"
                     ),
                     "source_key": source_key,
                 }
         return {
             "path": rel_path,
-            "size": int(entry.get("size") or 0) or len(body),
+            "size": int(cast(int, entry.get("size") or 0)) or len(body),
             "sha256": hashlib.sha256(body).hexdigest(),
             "source_key": source_key,
         }
 
-    manifest_files = list(
-        await asyncio.gather(*(_copy_one(f) for f in loose_files))
-    )
+    manifest_files = list(await asyncio.gather(*(_copy_one(f) for f in loose_files)))
 
     manifest_payload = {
         "task_id": task_id,
@@ -240,9 +238,9 @@ async def _migrate_loose_task_files(
         "files_count": len(manifest_files),
         "files": manifest_files,
     }
-    manifest_bytes = json.dumps(
-        manifest_payload, sort_keys=True, default=str
-    ).encode("utf-8")
+    manifest_bytes = json.dumps(manifest_payload, sort_keys=True, default=str).encode(
+        "utf-8"
+    )
     await storage.upload_bytes(
         manifest_bytes, manifest_key, content_type="application/json"
     )
@@ -425,7 +423,9 @@ async def run_task_expand_job(
             )
             return {
                 "status": "already_expanded",
-                "files": int(existing.get("files_count", len(existing.get("files", []) or []))),
+                "files": int(
+                    existing.get("files_count", len(existing.get("files", []) or []))
+                ),
                 "archive_etag": archive_etag,
             }
 
@@ -448,7 +448,7 @@ async def run_task_expand_job(
             normalized = normalize_s3_relative_path(str(entry["name"]))
             if not normalized:
                 continue
-            size = int(entry["size"])
+            size = int(cast(int, entry["size"]))
             if entry.get("skipped"):
                 manifest_files.append(
                     {
@@ -497,15 +497,10 @@ async def run_task_expand_job(
                     # encoded bytes) shouldn't bury a 300-file task.
                     return (
                         idx,
-                        (
-                            f"upload_failed: {type(exc).__name__}: "
-                            f"{str(exc)[:200]}"
-                        ),
+                        (f"upload_failed: {type(exc).__name__}: " f"{str(exc)[:200]}"),
                     )
 
-        failures = await asyncio.gather(
-            *(_upload_one(*item) for item in upload_plan)
-        )
+        failures = await asyncio.gather(*(_upload_one(*item) for item in upload_plan))
         for fail in failures:
             if fail is None:
                 continue

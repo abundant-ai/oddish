@@ -163,7 +163,9 @@ export const PassAtKGraph = memo(function PassAtKGraph({
             overflowY: "auto",
           }}
         >
-          <div style={{ marginBottom: "4px", fontWeight: 600 }}>k = {label}</div>
+          <div style={{ marginBottom: "4px", fontWeight: 600 }}>
+            k = {label}
+          </div>
           {sorted.map((entry) => (
             <div
               key={entry.dataKey}
@@ -180,14 +182,21 @@ export const PassAtKGraph = memo(function PassAtKGraph({
                   width: "8px",
                   height: "8px",
                   borderRadius: "2px",
-                  backgroundColor: agentColorMap[entry.dataKey as string] ?? entry.color,
+                  backgroundColor:
+                    agentColorMap[entry.dataKey as string] ?? entry.color,
                   flexShrink: 0,
                 }}
               />
               <span style={{ color: "hsl(var(--muted-foreground))" }}>
                 {agentLabelMap[entry.dataKey as string] ?? entry.dataKey}
               </span>
-              <span style={{ marginLeft: "auto", paddingLeft: "12px", fontWeight: 500 }}>
+              <span
+                style={{
+                  marginLeft: "auto",
+                  paddingLeft: "12px",
+                  fontWeight: 500,
+                }}
+              >
                 {`${((entry.value ?? 0) * 100).toFixed(1)}%`}
               </span>
             </div>
@@ -237,10 +246,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
                 tick={{ fontSize: 11 }}
                 className="font-mono"
               />
-              <Tooltip
-                content={renderTooltip}
-                wrapperStyle={{ zIndex: 10 }}
-              />
+              <Tooltip content={renderTooltip} wrapperStyle={{ zIndex: 10 }} />
               {visibleAgentSummaries.map((summary) => {
                 const originalIdx = agentSummaries.findIndex(
                   (agent) => agent.key === summary.key,

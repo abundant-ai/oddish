@@ -631,9 +631,7 @@ class ImportedTrialSpec(BaseModel):
     @model_validator(mode="after")
     def _validate_terminal_status(self) -> "ImportedTrialSpec":
         if self.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED):
-            raise ValueError(
-                "Imported trials must have status SUCCESS or FAILED"
-            )
+            raise ValueError("Imported trials must have status SUCCESS or FAILED")
         return self
 
     @model_validator(mode="after")

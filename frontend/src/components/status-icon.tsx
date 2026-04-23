@@ -1,11 +1,4 @@
-import {
-  Ban,
-  Check,
-  Loader2,
-  Minus,
-  X,
-  type LucideIcon,
-} from "lucide-react";
+import { Ban, Check, Loader2, Minus, X, type LucideIcon } from "lucide-react";
 import type { MatrixStatus } from "@/lib/status-config";
 
 const STATUS_ICON_MAP: Record<MatrixStatus, LucideIcon> = {

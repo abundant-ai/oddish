@@ -130,13 +130,17 @@ export function ExperimentClientPage({
 
   const isLoading = isLoadingTasks;
   const isLoadingTrials =
-    (lightweightTasks?.length ?? 0) > 0 && (isLoadingTrialPages || isValidatingTrials);
+    (lightweightTasks?.length ?? 0) > 0 &&
+    (isLoadingTrialPages || isValidatingTrials);
   const trialsLoadedCount = useMemo(() => {
     if (!trialPages) return 0;
     return trialPages.reduce((sum, page) => sum + (page?.length ?? 0), 0);
   }, [trialPages]);
   const totalTaskCount = lightweightTasks?.length ?? 0;
-  const remainingTrialTaskCount = Math.max(0, totalTaskCount - trialsLoadedCount);
+  const remainingTrialTaskCount = Math.max(
+    0,
+    totalTaskCount - trialsLoadedCount,
+  );
   const canLoadMoreTrials =
     hasMoreTrials && !isLoadingTrialPages && !isValidatingTrials;
   const canLoadAllTrials =
@@ -449,7 +453,8 @@ export function ExperimentClientPage({
                   <AlertTitle>Trial details are loading on demand</AlertTitle>
                   <AlertDescription className="flex flex-wrap items-center gap-2">
                     <span>
-                      Loaded compact trial data for {trialsLoadedCount}/{totalTaskCount} tasks.
+                      Loaded compact trial data for {trialsLoadedCount}/
+                      {totalTaskCount} tasks.
                     </span>
                     <Button
                       type="button"
@@ -459,7 +464,8 @@ export function ExperimentClientPage({
                       onClick={loadMoreTrials}
                       disabled={!canLoadMoreTrials}
                     >
-                      Load next {Math.min(TRIALS_BATCH_SIZE, remainingTrialTaskCount)}
+                      Load next{" "}
+                      {Math.min(TRIALS_BATCH_SIZE, remainingTrialTaskCount)}
                     </Button>
                     <Button
                       type="button"

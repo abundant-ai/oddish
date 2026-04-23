@@ -115,9 +115,7 @@ def test_check_local_storage_preflight_skips_temp_root_when_not_requested(
         seen_paths.append(path)
         return None
 
-    monkeypatch.setattr(
-        harbor_runner.tempfile, "gettempdir", lambda: str(temp_root)
-    )
+    monkeypatch.setattr(harbor_runner.tempfile, "gettempdir", lambda: str(temp_root))
     monkeypatch.setattr(harbor_runner, "_probe_storage_root", _record_probe)
 
     error = harbor_runner._check_local_storage_preflight(
@@ -154,8 +152,12 @@ def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
             (self.job_dir / "result.json").write_text("{}\n", encoding="utf-8")
             return object()
 
-    monkeypatch.setattr(harbor_runner, "_check_local_storage_preflight", _fake_preflight)
-    monkeypatch.setattr(harbor_runner, "validate_task_timeout_config", lambda path: None)
+    monkeypatch.setattr(
+        harbor_runner, "_check_local_storage_preflight", _fake_preflight
+    )
+    monkeypatch.setattr(
+        harbor_runner, "validate_task_timeout_config", lambda path: None
+    )
     monkeypatch.setattr(harbor_runner, "_build_agent_config", lambda **kwargs: object())
     monkeypatch.setattr(harbor_runner, "TaskConfig", lambda path: path)
     monkeypatch.setattr(harbor_runner, "JobConfig", lambda **kwargs: kwargs)
@@ -194,12 +196,18 @@ def test_run_harbor_trial_async_checks_temp_root_when_task_patch_needed(
     (task_path / "task.toml").write_text("", encoding="utf-8")
     calls: list[bool] = []
 
-    def _fake_preflight(path: Path, *, include_temp_root: bool, **_: object) -> str | None:
+    def _fake_preflight(
+        path: Path, *, include_temp_root: bool, **_: object
+    ) -> str | None:
         calls.append(include_temp_root)
         return "temp root unavailable" if include_temp_root else None
 
-    monkeypatch.setattr(harbor_runner, "_check_local_storage_preflight", _fake_preflight)
-    monkeypatch.setattr(harbor_runner, "validate_task_timeout_config", lambda path: None)
+    monkeypatch.setattr(
+        harbor_runner, "_check_local_storage_preflight", _fake_preflight
+    )
+    monkeypatch.setattr(
+        harbor_runner, "validate_task_timeout_config", lambda path: None
+    )
 
     outcome = asyncio.run(
         harbor_runner.run_harbor_trial_async(

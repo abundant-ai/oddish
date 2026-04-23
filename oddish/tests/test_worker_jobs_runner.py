@@ -261,12 +261,12 @@ def test_claim_sql_increments_attempts_and_stamps_claim_metadata():
 
 
 def _install_fake_claim(monkeypatch, job: ClaimedWorkerJob | None):
-    async def fake_claim(queue_key, *, worker_id, queue_slot, modal_function_call_id=None):
+    async def fake_claim(
+        queue_key, *, worker_id, queue_slot, modal_function_call_id=None
+    ):
         return job
 
-    monkeypatch.setattr(
-        worker_job_single_job, "claim_single_worker_job", fake_claim
-    )
+    monkeypatch.setattr(worker_job_single_job, "claim_single_worker_job", fake_claim)
 
 
 def _capture_record_outcome(monkeypatch):

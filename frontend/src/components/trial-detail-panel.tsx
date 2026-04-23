@@ -591,15 +591,15 @@ export function TrialDetailPanel({
                         ? "text-emerald-500"
                         : trialStatus === "partial"
                           ? "text-amber-500"
-                        : trialStatus === "fail"
-                          ? "text-red-500"
-                          : trialStatus === "harness-error"
-                            ? "text-yellow-500"
-                            : trialStatus === "queued"
-                              ? "text-purple-500"
-                              : trialStatus === "running"
-                                ? "text-blue-500"
-                                : "text-gray-500",
+                          : trialStatus === "fail"
+                            ? "text-red-500"
+                            : trialStatus === "harness-error"
+                              ? "text-yellow-500"
+                              : trialStatus === "queued"
+                                ? "text-purple-500"
+                                : trialStatus === "running"
+                                  ? "text-blue-500"
+                                  : "text-gray-500",
                       (trialStatus === "pending" ||
                         trialStatus === "queued" ||
                         trialStatus === "running") &&

@@ -46,7 +46,6 @@ from oddish.db import (
     TaskVersionModel,
     TrialModel,
     TrialOrigin,
-    TrialStatus,
     get_session,
     utcnow,
 )
@@ -112,13 +111,9 @@ async def _resolve_experiment_for_import(
         # Treat the string as a *name* and create it. This keeps the
         # "pin to a specific experiment" UX symmetrical between imports
         # into new and existing experiments.
-        return await get_or_create_experiment(
-            session, experiment_id_or_name, org_id
-        )
+        return await get_or_create_experiment(session, experiment_id_or_name, org_id)
 
-    return await get_or_create_experiment(
-        session, generate_experiment_name(), org_id
-    )
+    return await get_or_create_experiment(session, generate_experiment_name(), org_id)
 
 
 def _next_trial_index(existing_trial_ids: list[str], task_id: str) -> int:

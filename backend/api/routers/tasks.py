@@ -6,9 +6,7 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from harbor.models.environment_type import EnvironmentType
-from sqlalchemy import delete, select
-from sqlalchemy.engine import CursorResult
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_policy import (
@@ -43,26 +41,16 @@ from models import APIKeyModel, UserModel
 from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
-    resolve_task_storage,
-)
-from oddish.core.sweeps import (
-    build_task_submission_from_sweep,
-    build_trial_specs_from_sweep,
-    validate_sweep_submission,
 )
 from oddish.db import (
     ExperimentModel,
     TaskModel,
-    TaskStatus,
-    TrialModel,
     get_session,
 )
-from oddish.db.storage import collect_s3_prefixes_for_deletion, delete_s3_prefixes
-from oddish.timing import add_server_timing_metric, elapsed_ms, now
+from oddish.db.storage import delete_s3_prefixes
+from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
 from oddish.queue import (
-    append_trials_to_task,
     cancel_tasks_runs,
-    create_task,
 )
 from oddish.schemas import (
     TaskBrowseResponse,
@@ -79,6 +67,15 @@ from oddish.schemas import (
 
 router = APIRouter(tags=["Tasks"])
 logger = logging.getLogger(__name__)
+
+
+def _make_timing_recorder(request: Request) -> TimingRecorder:
+    def _record(name: str, duration_ms: float, description: str | None = None) -> None:
+        add_server_timing_metric(request, name, duration_ms, description)
+
+    return _record
+
+
 MODAL_CANCEL_BATCH_SIZE = 32
 
 
@@ -235,6 +232,7 @@ async def create_task_sweep(
     auth.require_scope(APIKeyScope.TASKS)
 
     from oddish.core.sweeps import validate_sweep_submission
+
     validate_sweep_submission(submission)
     _apply_github_attribution(submission)
 
@@ -255,7 +253,7 @@ async def create_task_sweep(
                 task.created_by_user_id = created_by_user_id
 
             await _maybe_publish_experiment(session, task, submission, auth)
-            
+
         elif experiment and submission.publish_experiment:
             await ensure_experiment_public(session, experiment)
 
@@ -263,10 +261,7 @@ async def create_task_sweep(
 
         response_trials = new_trials if is_append else list(task.trials)
         provider_counts: Counter[str] = Counter(t.provider for t in response_trials)
-        primary = (
-            experiment
-            or (task.experiments[0] if task.experiments else None)
-        )
+        primary = experiment or (task.experiments[0] if task.experiments else None)
         resp_experiment_id = primary.id if primary else None
         resp_experiment_name = primary.name if primary else None
 
@@ -324,9 +319,7 @@ async def list_tasks(
             offset=offset,
             org_id=auth.org_id,
             include_empty_rewards=True,
-            record_timing=lambda name, duration_ms, description=None: add_server_timing_metric(
-                request, name, duration_ms, description
-            ),
+            record_timing=_make_timing_recorder(request),
         )
         return tasks
 
@@ -357,9 +350,7 @@ async def browse_tasks(
             limit=limit,
             offset=offset,
             query=query,
-            record_timing=lambda name, duration_ms, description=None: add_server_timing_metric(
-                request, name, duration_ms, description
-            ),
+            record_timing=_make_timing_recorder(request),
         )
 
 
@@ -492,7 +483,9 @@ async def delete_experiment(
     """Delete an experiment and all associated tasks/trials."""
 
     async with get_session() as session:
-        result = await delete_experiment_core(session, experiment_id=experiment_id, org_id=auth.org_id)
+        result = await delete_experiment_core(
+            session, experiment_id=experiment_id, org_id=auth.org_id
+        )
         await session.commit()
 
     if result.get("s3_prefixes"):
@@ -731,7 +724,9 @@ async def get_task_file_content(
     if archive_etag and version is not None:
         etag_value = _build_task_file_etag(str(archive_etag), file_path)
         if_none_match = request.headers.get("if-none-match")
-        if if_none_match and etag_value in {h.strip() for h in if_none_match.split(",")}:
+        if if_none_match and etag_value in {
+            h.strip() for h in if_none_match.split(",")
+        }:
             return Response(
                 status_code=304,
                 headers={

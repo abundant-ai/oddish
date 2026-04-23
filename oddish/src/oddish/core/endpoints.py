@@ -269,12 +269,10 @@ async def list_tasks_core(
     build_started_at = now()
     effective_version_id_by_task_id: dict[str, str] = {}
     if experiment_id and tasks:
-        effective_version_id_by_task_id = (
-            await fetch_experiment_effective_version_ids(
-                session,
-                experiment_id=experiment_id,
-                task_ids=[task.id for task in tasks],
-            )
+        effective_version_id_by_task_id = await fetch_experiment_effective_version_ids(
+            session,
+            experiment_id=experiment_id,
+            task_ids=[task.id for task in tasks],
         )
     response = await build_task_status_responses_from_counts(
         session,
@@ -842,9 +840,7 @@ async def rerun_trial_analysis_core(
 
     from oddish.queue import enqueue_analysis_worker_job
 
-    await enqueue_analysis_worker_job(
-        session, trial_id=trial_id, org_id=trial.org_id
-    )
+    await enqueue_analysis_worker_job(session, trial_id=trial_id, org_id=trial.org_id)
 
     await session.commit()
     return {"status": "queued", "trial_id": trial_id}
@@ -978,9 +974,7 @@ async def rerun_task_verdict_core(
 
     from oddish.queue import enqueue_verdict_worker_job
 
-    await enqueue_verdict_worker_job(
-        session, task_id=task_id, org_id=task.org_id
-    )
+    await enqueue_verdict_worker_job(session, task_id=task_id, org_id=task.org_id)
 
     await session.commit()
     return {"status": "queued", "task_id": task_id}
@@ -1166,9 +1160,7 @@ async def delete_task_core(
     if not link_exists and not scoped_trial_ids:
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"Task {task_id} has no trials in experiment {experiment_id}"
-            ),
+            detail=(f"Task {task_id} has no trials in experiment {experiment_id}"),
         )
 
     # Cancel live worker_jobs for those trials so workers release slots.
@@ -1250,12 +1242,12 @@ async def delete_task_core(
         )
         s3_prefixes = collect_s3_prefixes_for_deletion(
             tasks=[(task_s3_key, task_path)],
-            trials=scoped_trial_rows,
+            trials=[(row[0], row[1]) for row in scoped_trial_rows],
         )
         task_removed = True
     else:
         s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=[], trials=scoped_trial_rows
+            tasks=[], trials=[(row[0], row[1]) for row in scoped_trial_rows]
         )
         task = await session.get(TaskModel, resolved_task_id)
         if task is not None:
@@ -1354,7 +1346,7 @@ async def delete_experiment_core(
             .where(TrialModel.id.in_(scoped_trial_ids))
             .execution_options(synchronize_session=False)
         )
-        deleted_trials = int(trials_del.rowcount or 0)
+        deleted_trials = int(trials_del.rowcount or 0)  # type: ignore[attr-defined]
     else:
         deleted_trials = 0
 
@@ -1368,7 +1360,7 @@ async def delete_experiment_core(
             ExperimentModel.org_id == org_id
         )
     experiments_result = await session.execute(experiments_del_query)
-    deleted_experiments = int(experiments_result.rowcount or 0)
+    deleted_experiments = int(experiments_result.rowcount or 0)  # type: ignore[attr-defined]
 
     # Any of the previously-linked tasks that now have no trials and no
     # other experiment links are orphaned — drop them + their S3 prefix.
@@ -1413,7 +1405,7 @@ async def delete_experiment_core(
                 .where(TaskModel.id == tid)
                 .execution_options(synchronize_session=False)
             )
-            deleted_tasks += int(task_del_result.rowcount or 0)
+            deleted_tasks += int(task_del_result.rowcount or 0)  # type: ignore[attr-defined]
             task_s3_to_delete.append(linked_task_s3[tid])
         else:
             task = await session.get(TaskModel, tid)
@@ -1532,7 +1524,9 @@ async def create_task_sweep_core(
             submission = submission.model_copy(update={"append_to_task": True})
 
     if submission.append_to_task:
-        task = await get_task_for_org_core(session, task_id=submission.task_id, org_id=org_id)
+        task = await get_task_for_org_core(
+            session, task_id=submission.task_id, org_id=org_id
+        )
         if task.status in (TaskStatus.ANALYZING, TaskStatus.VERDICT_PENDING):
             raise HTTPException(
                 status_code=400,
@@ -1548,9 +1542,13 @@ async def create_task_sweep_core(
         experiment: ExperimentModel | None = None
         primary_experiment = await _primary_experiment_for_task_model(task)
         if submission.experiment_id:
-            experiment = await get_experiment_by_id_or_name(session, submission.experiment_id, org_id)
+            experiment = await get_experiment_by_id_or_name(
+                session, submission.experiment_id, org_id
+            )
             if not experiment:
-                experiment = await get_or_create_experiment(session, submission.experiment_id, org_id)
+                experiment = await get_or_create_experiment(
+                    session, submission.experiment_id, org_id
+                )
             new_experiment_id = experiment.id
         elif primary_experiment is not None:
             experiment = primary_experiment
@@ -1581,7 +1579,9 @@ async def create_task_sweep_core(
         )
         existing_environment = existing_env_result.scalar_one_or_none()
         effective_default_env = (
-            EnvironmentType(existing_environment) if existing_environment else default_environment
+            EnvironmentType(existing_environment)
+            if existing_environment
+            else default_environment
         )
 
         trials = build_trial_specs_from_sweep(
@@ -1589,10 +1589,8 @@ async def create_task_sweep_core(
             default_environment=effective_default_env,
             allowed_environments=allowed_environments,
         )
-        
-        fallback_experiment_id = (
-            primary_experiment.id if primary_experiment else None
-        )
+
+        fallback_experiment_id = primary_experiment.id if primary_experiment else None
         append_submission = submission.model_copy(
             update={
                 "name": task.name,
@@ -1612,7 +1610,7 @@ async def create_task_sweep_core(
             submission=expanded,
             experiment_id=new_experiment_id,
         )
-        
+
         return task, new_trials, True, experiment
 
     # Create mode
@@ -1635,9 +1633,11 @@ async def create_task_sweep_core(
     expanded = build_task_submission_from_sweep(
         submission, task_path=task_path, trials=trials
     )
-    
+
     try:
-        task = await create_task(session, expanded, task_id=submission.task_id, org_id=org_id)
+        task = await create_task(
+            session, expanded, task_id=submission.task_id, org_id=org_id
+        )
     except TaskTimeoutValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:

@@ -591,7 +591,9 @@ def run(
                         append_to_task=append,
                         task_content_hash=content_hash,
                     ): index
-                    for index, (target_id, append, content_hash) in enumerate(submit_targets)
+                    for index, (target_id, append, content_hash) in enumerate(
+                        submit_targets
+                    )
                 }
                 for future in as_completed(future_to_index):
                     index = future_to_index[future]

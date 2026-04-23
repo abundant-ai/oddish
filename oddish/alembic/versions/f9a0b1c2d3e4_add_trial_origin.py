@@ -61,7 +61,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS idx_trials_origin")
-    op.execute(
-        "ALTER TABLE trials DROP CONSTRAINT IF EXISTS trials_origin_check"
-    )
+    op.execute("ALTER TABLE trials DROP CONSTRAINT IF EXISTS trials_origin_check")
     op.execute("ALTER TABLE trials DROP COLUMN IF EXISTS origin")

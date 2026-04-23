@@ -181,9 +181,7 @@ def test_worker_jobs_partial_claim_index_is_scoped():
         if idx.name == "idx_worker_jobs_claim"
     )
     # Partial index predicate lives in dialect_options['postgresql']['where'].
-    where_clause = str(
-        claim_idx.dialect_options["postgresql"]["where"]
-    )
+    where_clause = str(claim_idx.dialect_options["postgresql"]["where"])
     assert "QUEUED" in where_clause and "RETRYING" in where_clause
 
 

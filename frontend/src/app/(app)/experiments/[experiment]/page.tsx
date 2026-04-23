@@ -8,9 +8,7 @@ import { decodeExperimentRouteParam } from "@/lib/utils";
 import { ExperimentClientPage } from "./experiment-client";
 import type { Task } from "@/lib/types";
 
-async function getInitialTasks(
-  experimentId: string,
-): Promise<Task[] | null> {
+async function getInitialTasks(experimentId: string): Promise<Task[] | null> {
   try {
     const authObj = await auth();
     if (!authObj?.userId) return null;

@@ -478,7 +478,9 @@ export interface WorkerJobDurationStat {
 }
 
 export interface WorkerJobsResponse {
-  counts: Partial<Record<WorkerJobKind, Partial<Record<WorkerJobStatus, number>>>>;
+  counts: Partial<
+    Record<WorkerJobKind, Partial<Record<WorkerJobStatus, number>>>
+  >;
   stale_running: WorkerJobSample[];
   recent_failures: WorkerJobSample[];
   durations_last_hour: WorkerJobDurationStat[];

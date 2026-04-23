@@ -58,9 +58,7 @@ def upgrade() -> None:
     # for databases that were manually patched.
     # ------------------------------------------------------------------
     with op.get_context().autocommit_block():
-        op.execute(
-            "ALTER TYPE worker_job_kind ADD VALUE IF NOT EXISTS 'TASK_EXPAND'"
-        )
+        op.execute("ALTER TYPE worker_job_kind ADD VALUE IF NOT EXISTS 'TASK_EXPAND'")
 
 
 def downgrade() -> None:

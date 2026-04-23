@@ -192,7 +192,9 @@ function KindStatusMatrix({ data }: { data: WorkerJobsResponse }) {
   const knownKinds = new Set<string>(Object.keys(data.counts));
   const kindsToShow: WorkerJobKind[] = [
     ...KIND_ORDER.filter((k) => knownKinds.has(k)),
-    ...Array.from(knownKinds).filter((k) => !KIND_ORDER.includes(k as WorkerJobKind)),
+    ...Array.from(knownKinds).filter(
+      (k) => !KIND_ORDER.includes(k as WorkerJobKind),
+    ),
   ];
 
   if (kindsToShow.length === 0) {
@@ -224,7 +226,9 @@ function KindStatusMatrix({ data }: { data: WorkerJobsResponse }) {
               (sum, value) => sum + (value ?? 0),
               0,
             );
-            return <KindRow key={kind} kind={kind} counts={row} total={total} />;
+            return (
+              <KindRow key={kind} kind={kind} counts={row} total={total} />
+            );
           })}
         </TableBody>
       </Table>
@@ -298,7 +302,9 @@ function StaleRunningTable({ samples }: { samples: WorkerJobSample[] }) {
             <TableCell>
               <span className="inline-flex items-center gap-1.5">
                 <QueueKeyIcon queueKey={sample.queue_key} size={12} />
-                <span className="font-mono text-[11px]">{sample.queue_key}</span>
+                <span className="font-mono text-[11px]">
+                  {sample.queue_key}
+                </span>
               </span>
             </TableCell>
             <TableCell className="text-right font-mono text-[11px]">
@@ -379,7 +385,9 @@ function RecentFailuresTable({ samples }: { samples: WorkerJobSample[] }) {
             <TableCell>
               <span className="inline-flex items-center gap-1.5">
                 <QueueKeyIcon queueKey={sample.queue_key} size={12} />
-                <span className="font-mono text-[11px]">{sample.queue_key}</span>
+                <span className="font-mono text-[11px]">
+                  {sample.queue_key}
+                </span>
               </span>
             </TableCell>
             <TableCell className="text-right font-mono text-[11px]">
@@ -515,7 +523,8 @@ export function WorkerJobsCard() {
     for (const kind of Object.keys(data.counts)) {
       const row = data.counts[kind as WorkerJobKind] ?? {};
       for (const status of Object.keys(row)) {
-        totals[status] = (totals[status] ?? 0) + (row[status as WorkerJobStatus] ?? 0);
+        totals[status] =
+          (totals[status] ?? 0) + (row[status as WorkerJobStatus] ?? 0);
       }
     }
     return totals;

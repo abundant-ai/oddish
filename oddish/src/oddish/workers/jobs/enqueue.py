@@ -12,7 +12,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from oddish.db import WorkerJobKind, WorkerJobModel, WorkerJobStatus, generate_id, utcnow
+from oddish.db import (
+    WorkerJobKind,
+    WorkerJobModel,
+    WorkerJobStatus,
+    generate_id,
+    utcnow,
+)
 
 
 @dataclass

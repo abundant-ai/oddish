@@ -61,7 +61,10 @@ async def test_delete_task_core_uses_bulk_deletes_for_task_versions(monkeypatch)
     monkeypatch.setattr(
         storage_mod,
         "collect_s3_prefixes_for_deletion",
-        lambda *, tasks, trials: ["tasks/task-123/", *[row[1] for row in trials if row[1]]],
+        lambda *, tasks, trials: [
+            "tasks/task-123/",
+            *[row[1] for row in trials if row[1]],
+        ],
     )
 
     result = await endpoints.delete_task_core(session, task_id="task-123")

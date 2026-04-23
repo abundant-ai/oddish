@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import shutil
-import tarfile
-import tempfile
 import uuid
 from pathlib import Path
 
@@ -13,12 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.db import Priority, TaskModel, TaskVersionModel, get_session
-from oddish.db.storage import StorageClient, extract_task_tarfile, get_storage_client
+from oddish.db.storage import StorageClient, get_storage_client
 from oddish.schemas import TaskUploadInitResponse, UploadResponse
-from oddish.task_timeouts import (
-    TaskTimeoutValidationError,
-    validate_task_timeout_config,
-)
 
 
 def _compute_file_hash(path: Path) -> str:
@@ -119,7 +112,9 @@ async def initialize_task_upload(
     async with get_session() as session:
         existing_task = await _find_task_by_name(session, normalized_name, org_id)
         latest = (
-            await _latest_version(session, existing_task.id) if existing_task is not None else None
+            await _latest_version(session, existing_task.id)
+            if existing_task is not None
+            else None
         )
 
         if (
@@ -457,9 +452,7 @@ async def resolve_task_storage(
             if await storage.prefix_exists(versioned_key):
                 return f"s3://{versioned_key}", versioned_key
         except Exception as e:
-            raise HTTPException(
-                status_code=500, detail=f"Failed to check S3: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f"Failed to check S3: {str(e)}")
 
     # Check unversioned root archive
     task_s3_key = f"tasks/{task_id}/"
@@ -468,9 +461,7 @@ async def resolve_task_storage(
         if await storage.object_exists(root_archive_key):
             return f"s3://{task_s3_key}", task_s3_key
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to check S3: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to check S3: {str(e)}")
 
     # The init/complete upload path places archives at versioned sub-prefixes
     # (tasks/{task_id}/v{N}/).  Probe for the latest versioned archive so
@@ -486,9 +477,7 @@ async def resolve_task_storage(
             prefix = best[: best.rfind("/") + 1]
             return f"s3://{prefix}", prefix
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to check S3: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to check S3: {str(e)}")
 
     # No archive found — check if the prefix contains anything at all
     try:
@@ -496,7 +485,9 @@ async def resolve_task_storage(
         if not exists:
             raise HTTPException(
                 status_code=404,
-                detail=s3_missing_detail or local_missing_detail or f"Task {task_id} not found in S3",
+                detail=s3_missing_detail
+                or local_missing_detail
+                or f"Task {task_id} not found in S3",
             )
     except HTTPException:
         raise

@@ -587,7 +587,7 @@ export function ExperimentTrialsTable({
         })
       : tasks;
     if (taskSort === "default") return base;
-    const nameOf = (task: Task) => (task.name ?? task.task_path ?? task.id);
+    const nameOf = (task: Task) => task.name ?? task.task_path ?? task.id;
     const sorted = [...base].sort((a, b) =>
       nameOf(a).localeCompare(nameOf(b), undefined, {
         numeric: true,
@@ -1944,7 +1944,9 @@ export function ExperimentTrialsTable({
                                   );
                                   const isPartial = status === "partial";
                                   const partialLabel = isPartial
-                                    ? formatPartialRewardBadgeValue(trial.reward)
+                                    ? formatPartialRewardBadgeValue(
+                                        trial.reward,
+                                      )
                                     : null;
                                   const analysisTitle = analysisIndicator
                                     ? ` • ${analysisIndicator.title}`

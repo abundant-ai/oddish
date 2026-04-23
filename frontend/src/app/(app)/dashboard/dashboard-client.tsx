@@ -441,7 +441,10 @@ function KindBreakdownTooltip({
   pipeline,
   metric,
 }: {
-  pipeline: Record<PipelineKind, { running: number; queued: number; retrying: number }>;
+  pipeline: Record<
+    PipelineKind,
+    { running: number; queued: number; retrying: number }
+  >;
   metric: "running" | "queued" | "retrying";
 }) {
   const kinds = Object.keys(PIPELINE_KIND_DISPLAY) as PipelineKind[];
@@ -455,10 +458,7 @@ function KindBreakdownTooltip({
         const Icon = display.Icon;
         const value = pipeline[kind][metric];
         return (
-          <div
-            key={kind}
-            className="flex items-center justify-between gap-3"
-          >
+          <div key={kind} className="flex items-center justify-between gap-3">
             <span
               className={`inline-flex items-center gap-1 ${
                 value > 0 ? display.accentText : "text-muted-foreground"
@@ -1209,8 +1209,7 @@ function RecentTasksCard({
                   const passRate =
                     experiment.reward_total > 0
                       ? Math.round(
-                          (experiment.reward_sum /
-                            experiment.reward_total) *
+                          (experiment.reward_sum / experiment.reward_total) *
                             100,
                         )
                       : null;
@@ -1407,7 +1406,9 @@ export function DashboardClient({
   const [timeRange, setTimeRange] = useState<TimeRangeKey>("24h");
   const usageMinutes = getMinutesFromTimeRange(timeRange);
   const usageFallbackData =
-    usageMinutes === DASHBOARD_DEFAULT_USAGE_MINUTES ? initialDashboardData : null;
+    usageMinutes === DASHBOARD_DEFAULT_USAGE_MINUTES
+      ? initialDashboardData
+      : null;
   const experimentsFallbackData = isDefaultDashboardExperimentsView(
     experimentsOffset,
     deferredSearchQuery,
@@ -1421,10 +1422,7 @@ export function DashboardClient({
     error: usageError,
     isLoading: usageIsLoading,
     isRefreshing: usageIsRefreshing,
-  } = useDashboardUsage(
-    usageMinutes,
-    usageFallbackData,
-  );
+  } = useDashboardUsage(usageMinutes, usageFallbackData);
   const {
     experiments,
     hasMoreExperiments,

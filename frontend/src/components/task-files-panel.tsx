@@ -282,7 +282,9 @@ function looksLikeTextBytes(bytes: Uint8Array): boolean {
   return suspiciousBytes / sample.length < 0.1;
 }
 
-async function readResponseTextContent(response: Response): Promise<string | null> {
+async function readResponseTextContent(
+  response: Response,
+): Promise<string | null> {
   const contentType = response.headers.get("content-type") || "";
 
   if (isTextContent(contentType)) {
@@ -1126,7 +1128,8 @@ export function TaskFilesPanel({
     return {
       rewardSuccess: total > 0 ? rewardSum : null,
       rewardTotal: total > 0 ? total : null,
-      averageRewardPct: total > 0 ? Math.round((rewardSum / total) * 100) : null,
+      averageRewardPct:
+        total > 0 ? Math.round((rewardSum / total) * 100) : null,
     };
   }, [task?.trials, currentVersion]);
 

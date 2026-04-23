@@ -104,7 +104,9 @@ def test_build_task_status_response_uses_current_version_trials(monkeypatch):
         captured.update(kwargs)
         return kwargs
 
-    monkeypatch.setattr(helpers, "_build_task_status_response", fake_build_task_status_response)
+    monkeypatch.setattr(
+        helpers, "_build_task_status_response", fake_build_task_status_response
+    )
 
     task = SimpleNamespace(
         task_path="/tmp/demo-task",
@@ -156,9 +158,24 @@ def test_get_task_status_trials_honors_explicit_version_override():
     task = SimpleNamespace(
         current_version_id="task-1-v2",
         trials=[
-            _trial("task-1-0", task_version_id="task-1-v1", status=TrialStatus.SUCCESS, reward=1),
-            _trial("task-1-1", task_version_id="task-1-v1", status=TrialStatus.FAILED, reward=0),
-            _trial("task-1-2", task_version_id="task-1-v2", status=TrialStatus.SUCCESS, reward=1),
+            _trial(
+                "task-1-0",
+                task_version_id="task-1-v1",
+                status=TrialStatus.SUCCESS,
+                reward=1,
+            ),
+            _trial(
+                "task-1-1",
+                task_version_id="task-1-v1",
+                status=TrialStatus.FAILED,
+                reward=0,
+            ),
+            _trial(
+                "task-1-2",
+                task_version_id="task-1-v2",
+                status=TrialStatus.SUCCESS,
+                reward=1,
+            ),
         ],
     )
 
@@ -171,8 +188,18 @@ def test_get_task_status_trials_with_version_id_none_returns_all():
     task = SimpleNamespace(
         current_version_id="task-1-v2",
         trials=[
-            _trial("task-1-0", task_version_id="task-1-v1", status=TrialStatus.SUCCESS, reward=1),
-            _trial("task-1-1", task_version_id="task-1-v2", status=TrialStatus.SUCCESS, reward=1),
+            _trial(
+                "task-1-0",
+                task_version_id="task-1-v1",
+                status=TrialStatus.SUCCESS,
+                reward=1,
+            ),
+            _trial(
+                "task-1-1",
+                task_version_id="task-1-v2",
+                status=TrialStatus.SUCCESS,
+                reward=1,
+            ),
         ],
     )
 

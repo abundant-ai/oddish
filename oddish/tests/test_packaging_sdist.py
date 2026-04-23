@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required to build the sdist")
+@pytest.mark.skipif(
+    shutil.which("uv") is None, reason="uv is required to build the sdist"
+)
 def test_sdist_includes_cli_sources(tmp_path: Path) -> None:
     package_root = Path(__file__).resolve().parents[1]
 

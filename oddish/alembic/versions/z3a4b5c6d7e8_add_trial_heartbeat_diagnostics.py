@@ -27,14 +27,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("ALTER TABLE trials ADD COLUMN IF NOT EXISTS stale_reaped_at TIMESTAMPTZ")
+    op.execute(
+        "ALTER TABLE trials ADD COLUMN IF NOT EXISTS stale_reaped_at TIMESTAMPTZ"
+    )
     op.execute(
         "ALTER TABLE trials "
         "ADD COLUMN IF NOT EXISTS heartbeat_failure_count INTEGER NOT NULL DEFAULT 0"
     )
-    op.execute(
-        "ALTER TABLE trials ADD COLUMN IF NOT EXISTS last_heartbeat_error TEXT"
-    )
+    op.execute("ALTER TABLE trials ADD COLUMN IF NOT EXISTS last_heartbeat_error TEXT")
     op.execute(
         "ALTER TABLE trials ADD COLUMN IF NOT EXISTS last_heartbeat_error_at TIMESTAMPTZ"
     )

@@ -589,8 +589,7 @@ async def test_list_task_files_uses_expanded_layout_when_available(monkeypatch):
     ]
     # The manifest sentinel must never leak into the file list.
     assert all(
-        ".oddish-manifest.json" not in str(entry["path"])
-        for entry in listing["files"]
+        ".oddish-manifest.json" not in str(entry["path"]) for entry in listing["files"]
     )
     # Per-file URLs present; archive-level fields absent.
     assert all(entry["url"].startswith("https://") for entry in listing["files"])

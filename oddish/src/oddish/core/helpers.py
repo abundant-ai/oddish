@@ -500,10 +500,10 @@ def _build_task_status_response(
 ) -> TaskStatusResponse:
     formatted_reward_success, formatted_reward_sum, formatted_reward_total = (
         _format_reward_fields(
-        reward_success=reward_success,
-        reward_sum=reward_sum,
-        reward_total=reward_total,
-        include_empty_rewards=include_empty_rewards,
+            reward_success=reward_success,
+            reward_sum=reward_sum,
+            reward_total=reward_total,
+            include_empty_rewards=include_empty_rewards,
         )
     )
     current_version, current_version_id = _resolve_task_version_fields(
@@ -514,9 +514,7 @@ def _build_task_status_response(
     )
     experiment_id = primary_experiment.id if primary_experiment else ""
     experiment_name = primary_experiment.name if primary_experiment else ""
-    experiment_is_public = (
-        primary_experiment.is_public if primary_experiment else False
-    )
+    experiment_is_public = primary_experiment.is_public if primary_experiment else False
     return TaskStatusResponse(
         id=task.id,
         name=task.name,

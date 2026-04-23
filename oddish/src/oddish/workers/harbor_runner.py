@@ -366,7 +366,9 @@ def _check_local_storage_preflight(
                 min_required_inodes=min_required_inodes,
             )
         except OSError as exc:
-            return f"Local storage preflight failed at {root}: {type(exc).__name__}: {exc}"
+            return (
+                f"Local storage preflight failed at {root}: {type(exc).__name__}: {exc}"
+            )
         if error is not None:
             return error
     return None

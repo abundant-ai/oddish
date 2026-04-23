@@ -396,9 +396,7 @@ async def run_single_worker_job(
         console.print(f"[yellow]worker_job {job.id} cancelled[/yellow]")
         raise
     except Exception as exc:  # handler-raised exceptions are retryable by default
-        console.print(
-            f"[red]worker_job {job.id} handler error: {exc!r}[/red]"
-        )
+        console.print(f"[red]worker_job {job.id} handler error: {exc!r}[/red]")
         outcome = JobOutcome.fail(f"{type(exc).__name__}: {exc}", retryable=True)
 
     if (outcome.success is None) == (outcome.failure is None):
@@ -422,11 +420,7 @@ async def run_single_worker_job(
         max_attempts=job.max_attempts,
     )
 
-    if (
-        outcome.success is not None
-        and post_success_hooks
-        and job.subject_id
-    ):
+    if outcome.success is not None and post_success_hooks and job.subject_id:
         hook = post_success_hooks.get(job.kind)
         if hook is not None:
             try:

@@ -96,9 +96,7 @@ async def reap_idle_in_transaction_zombies(
         # pg_terminate_backend requires privileges we may not have in
         # every deployment. Don't let that fail the whole sweep --
         # zombie reaping is a safety net, not a correctness requirement.
-        console.print(
-            f"[yellow]Zombie transaction reaper skipped: {exc}[/yellow]"
-        )
+        console.print(f"[yellow]Zombie transaction reaper skipped: {exc}[/yellow]")
         return 0
 
     terminated = sum(1 for row in rows if row.terminated)
@@ -152,9 +150,10 @@ async def cleanup_orphaned_queue_state(
         #    cleanup.
         # -----------------------------------------------------------------
         stale_rows = (
-            await session.execute(
-                text(
-                    """
+            (
+                await session.execute(
+                    text(
+                        """
                     UPDATE worker_jobs
                     SET    status = CASE
                                WHEN attempts < max_attempts THEN 'RETRYING'::worker_job_status
@@ -194,10 +193,13 @@ async def cleanup_orphaned_queue_state(
                               max_attempts,
                               error_message
                     """
-                ),
-                {"stale_after_minutes": stale_after_minutes},
+                    ),
+                    {"stale_after_minutes": stale_after_minutes},
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
 
         # Mirror the terminal worker_jobs state back onto the domain
         # rows (``trials`` / ``tasks``) so dashboards don't lag. This

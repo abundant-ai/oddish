@@ -13,7 +13,7 @@ buggy handler can't stall a row in ``RUNNING``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from oddish.db import WorkerJobKind

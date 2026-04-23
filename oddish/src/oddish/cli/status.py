@@ -252,7 +252,9 @@ def status(
         # Show reward summary
         trials = result.get("trials", [])
         if trials:
-            rewards = [float(t["reward"]) for t in trials if t.get("reward") is not None]
+            rewards = [
+                float(t["reward"]) for t in trials if t.get("reward") is not None
+            ]
             reward_pass = sum(1 for reward in rewards if reward == 1)
             reward_fail = sum(1 for reward in rewards if reward == 0)
             partial_scores = sum(1 for reward in rewards if 0 < reward < 1)
@@ -264,9 +266,7 @@ def status(
                     summary.append(f"[yellow]{partial_scores} partial[/yellow]")
                 if reward_fail > 0:
                     summary.append(f"[red]{reward_fail} zero[/red]")
-                console.print(
-                    f"[bold]Rewards:[/bold] " + ", ".join(summary)
-                )
+                console.print("[bold]Rewards:[/bold] " + ", ".join(summary))
 
         # Show verdict if available
         verdict_status = result.get("verdict_status")

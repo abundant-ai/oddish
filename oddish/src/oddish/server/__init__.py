@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text, select, delete
+from sqlalchemy import text
 from typing import cast
 import uvicorn
 from rich.console import Console
@@ -53,7 +53,10 @@ from oddish.core.admin import (
 )
 from oddish.core.dashboard import get_dashboard_core
 from oddish.core.public import router as public_router
-from oddish.core.tasks import complete_task_upload, initialize_task_upload, resolve_task_storage
+from oddish.core.tasks import (
+    complete_task_upload,
+    initialize_task_upload,
+)
 from oddish.core.trial_imports import (
     complete_trial_import,
     initialize_trial_import,
@@ -68,7 +71,7 @@ from oddish.db import (
     get_pool,
     utcnow,
 )
-from oddish.db.storage import collect_s3_prefixes_for_deletion, delete_s3_prefixes
+from oddish.db.storage import delete_s3_prefixes
 from oddish.schemas import (
     TaskBatchCancelRequest,
     TaskBrowseResponse,
@@ -88,12 +91,8 @@ from oddish.schemas import (
     TrialResponse,
     UploadResponse,
 )
-from oddish.task_timeouts import TaskTimeoutValidationError
-
 from oddish.queue import (
-    append_trials_to_task,
     cancel_tasks_runs,
-    create_task,
 )
 
 console = Console()
@@ -154,9 +153,7 @@ async def lifespan(app: FastAPI):
         from oddish.db.connection import apply_role_defaults
 
         result = await apply_role_defaults()
-        console.print(
-            f"[dim]Applied role defaults: {result}[/dim]"
-        )
+        console.print(f"[dim]Applied role defaults: {result}[/dim]")
     except Exception as e:
         console.print(
             f"[yellow]Warning: Could not apply role defaults "
@@ -349,6 +346,7 @@ async def create_task_sweep(submission: TaskSweepSubmission):
     """
 
     from oddish.core.sweeps import validate_sweep_submission
+
     validate_sweep_submission(submission)
 
     async with get_session() as session:
@@ -360,13 +358,10 @@ async def create_task_sweep(submission: TaskSweepSubmission):
 
         if not is_append and hasattr(task, "task_s3_key") and task.task_s3_key:
             await session.commit()
-            
+
         response_trials = new_trials if is_append else list(task.trials)
         provider_counts: Counter[str] = Counter(t.provider for t in response_trials)
-        primary = (
-            experiment
-            or (task.experiments[0] if task.experiments else None)
-        )
+        primary = experiment or (task.experiments[0] if task.experiments else None)
         resp_experiment_id = primary.id if primary else None
         resp_experiment_name = primary.name if primary else None
 
@@ -697,7 +692,9 @@ async def debug_trial_files_endpoint(trial_id: str):
     """Debug endpoint: list all files in S3 for a trial."""
     trial = await _get_detached_trial(trial_id)
     from oddish.core.trial_io import debug_trial_files
+
     return await debug_trial_files(trial)
+
 
 @api.get("/trials/{trial_id}/files/{file_path:path}")
 async def get_trial_file(trial_id: str, file_path: str) -> Response:

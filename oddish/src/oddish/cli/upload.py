@@ -248,8 +248,10 @@ def upload(
     harbor_job_path: Path | None = None
     if path is not None and (is_harbor_job_dir(path) or is_harbor_jobs_dir(path)):
         harbor_job_path = path
-    elif path is None and path_option is not None and (
-        is_harbor_job_dir(path_option) or is_harbor_jobs_dir(path_option)
+    elif (
+        path is None
+        and path_option is not None
+        and (is_harbor_job_dir(path_option) or is_harbor_jobs_dir(path_option))
     ):
         # When the user passes the harbor dir via --path (no positional),
         # still route into trial-import mode. The task-source --path
@@ -400,9 +402,7 @@ def _run_task_upload(
                 f"[bold green]Task updated[/bold green] — created version {version}"
             )
         else:
-            console.print(
-                f"[bold green]Task uploaded[/bold green] — version {version}"
-            )
+            console.print(f"[bold green]Task uploaded[/bold green] — version {version}")
         console.print(f"  Task ID:  {uploaded_task_id}")
         if name:
             console.print(f"  Name:     {name}")
@@ -446,9 +446,7 @@ def _run_trial_import(
     json_output: bool,
 ) -> None:
     if task_id_opt and path_option:
-        error_console.print(
-            "[red]Provide either --task or --path, not both.[/red]"
-        )
+        error_console.print("[red]Provide either --task or --path, not both.[/red]")
         raise typer.Exit(1)
 
     resolved_task_id = task_id_opt
@@ -509,9 +507,7 @@ def _run_trial_import(
 
         effective_experiment_id = generate_experiment_name()
         if not quiet:
-            console.print(
-                f"[dim]Creating experiment: {effective_experiment_id}[/dim]"
-            )
+            console.print(f"[dim]Creating experiment: {effective_experiment_id}[/dim]")
 
     if not quiet:
         console.print(
@@ -596,12 +592,8 @@ def _run_trial_import(
                 results.extend(r for r in results_by_index if r is not None)
 
     dashboard_url = get_dashboard_url(api_url)
-    experiment_ids = {
-        r.get("experiment_id") for r in results if r.get("experiment_id")
-    }
-    experiment_ref = (
-        next(iter(experiment_ids)) if len(experiment_ids) == 1 else None
-    )
+    experiment_ids = {r.get("experiment_id") for r in results if r.get("experiment_id")}
+    experiment_ref = next(iter(experiment_ids)) if len(experiment_ids) == 1 else None
 
     if json_output:
         output = {
@@ -633,9 +625,7 @@ def _run_trial_import(
         console.print(f"[yellow]{errored} trial(s) failed to import[/yellow]")
 
     if experiment_ref:
-        console.print(
-            f"  Experiment: {dashboard_url}/experiments/{experiment_ref}"
-        )
+        console.print(f"  Experiment: {dashboard_url}/experiments/{experiment_ref}")
     else:
         # No unified experiment to link to -- point at the task browser
         # since there's no /tasks/<id> frontend page today.

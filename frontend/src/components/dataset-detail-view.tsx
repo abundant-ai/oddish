@@ -108,7 +108,7 @@ function inferTaskDomain(task: Task, category: string): string {
 function passRateForTask(task: Task): number | null {
   if (!task.reward_total || task.reward_total <= 0) return null;
   return Math.round(
-    (((task.reward_sum ?? task.reward_success ?? 0) / task.reward_total) * 100),
+    ((task.reward_sum ?? task.reward_success ?? 0) / task.reward_total) * 100,
   );
 }
 
@@ -134,7 +134,7 @@ export function DatasetDetailView({
           world,
           domain,
           criteriaCount: task.reward_total ?? task.total,
-                          passRate: passRateForTask(task),
+          passRate: passRateForTask(task),
         };
       }),
     [tasks],

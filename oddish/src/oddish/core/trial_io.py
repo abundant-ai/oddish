@@ -315,8 +315,7 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
             # Sort commands by name (command-0, command-1, etc.)
             commands_list.sort(key=lambda x: x[0])
             result["agent"]["commands"] = [
-                {"name": name, "content": content}
-                for name, content in commands_list
+                {"name": name, "content": content} for name, content in commands_list
             ]
 
             # Add other logs

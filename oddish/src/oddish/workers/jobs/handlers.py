@@ -17,13 +17,11 @@ from typing import Any
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
-    TaskVersionModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
     WorkerJobKind,
     get_session,
-    utcnow,
 )
 from oddish.workers.jobs.registry import JobOutcome
 from oddish.workers.queue.analysis_handler import run_analysis_job
@@ -96,7 +94,9 @@ class AnalysisJobHandler:
             (getattr(job, "payload", {}) or {}).get("trial_id")
         )
         if not trial_id:
-            raise ValueError("ANALYSIS worker_job missing subject_id / payload.trial_id")
+            raise ValueError(
+                "ANALYSIS worker_job missing subject_id / payload.trial_id"
+            )
 
         async with get_session() as session:
             trial = await session.get(TrialModel, trial_id)
@@ -212,9 +212,7 @@ class TaskExpandJobHandler:
             except Exception:
                 version = None
         if not task_id or version is None:
-            raise ValueError(
-                "TASK_EXPAND payload missing task_id/version"
-            )
+            raise ValueError("TASK_EXPAND payload missing task_id/version")
 
         summary = await run_task_expand_job(
             task_id=task_id,

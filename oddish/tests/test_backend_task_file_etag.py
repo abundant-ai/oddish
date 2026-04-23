@@ -25,11 +25,7 @@ def _load_helper():
     relevant to etag formatting.
     """
     router_path = (
-        Path(__file__).resolve().parents[2]
-        / "backend"
-        / "api"
-        / "routers"
-        / "tasks.py"
+        Path(__file__).resolve().parents[2] / "backend" / "api" / "routers" / "tasks.py"
     )
     source = router_path.read_text(encoding="utf-8")
 
@@ -51,10 +47,7 @@ def test_etag_strips_s3_surrounding_quotes():
     # S3 / MinIO return the ETag already wrapped in ``"..."``; the
     # helper must unwrap them before composing ``W/"..."`` so the final
     # header is a single valid quoted-string.
-    assert (
-        _build_task_file_etag('"abc123"', "task.py")
-        == 'W/"abc123:task.py"'
-    )
+    assert _build_task_file_etag('"abc123"', "task.py") == 'W/"abc123:task.py"'
 
 
 def test_etag_handles_unquoted_input():
@@ -62,17 +55,11 @@ def test_etag_handles_unquoted_input():
     # forgiving either way so the fallback ``(content_length,
     # last_modified)`` cache key (which has no quotes) still produces
     # a valid header.
-    assert (
-        _build_task_file_etag("abc123", "task.py")
-        == 'W/"abc123:task.py"'
-    )
+    assert _build_task_file_etag("abc123", "task.py") == 'W/"abc123:task.py"'
 
 
 def test_etag_trims_whitespace():
-    assert (
-        _build_task_file_etag('  "abc123"  ', "task.py")
-        == 'W/"abc123:task.py"'
-    )
+    assert _build_task_file_etag('  "abc123"  ', "task.py") == 'W/"abc123:task.py"'
 
 
 @pytest.mark.parametrize("etag", ['"abc"', "abc", '"abc"\n'])

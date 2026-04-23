@@ -7,9 +7,16 @@ from fastapi import APIRouter, Depends, Query, Request
 from auth import APIKeyScope, AuthContext, require_auth
 from oddish.core.dashboard import get_dashboard_core
 from oddish.db import get_session
-from oddish.timing import add_server_timing_metric, elapsed_ms, now
+from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
 
 router = APIRouter(tags=["Dashboard"])
+
+
+def _make_timing_recorder(request: Request) -> TimingRecorder:
+    def _record(name: str, duration_ms: float, description: str | None = None) -> None:
+        add_server_timing_metric(request, name, duration_ms, description)
+
+    return _record
 
 
 @router.get("/dashboard")
@@ -55,7 +62,5 @@ async def get_dashboard(
             include_tasks=include_tasks,
             include_usage=include_usage,
             include_experiments=include_experiments,
-            record_timing=lambda name, duration_ms, description=None: add_server_timing_metric(
-                request, name, duration_ms, description
-            ),
+            record_timing=_make_timing_recorder(request),
         )

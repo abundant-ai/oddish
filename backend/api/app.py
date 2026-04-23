@@ -116,7 +116,9 @@ def create_app() -> FastAPI:
             "Backend request total",
         )
         header = format_server_timing(request.state.server_timing_metrics)
-        combined = join_server_timing_headers(response.headers.get("Server-Timing"), header)
+        combined = join_server_timing_headers(
+            response.headers.get("Server-Timing"), header
+        )
         if combined:
             response.headers["Server-Timing"] = combined
         return response

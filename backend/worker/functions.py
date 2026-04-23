@@ -10,7 +10,6 @@ from uuid import uuid4
 
 import modal
 
-from cloud_policy import enforce_trial_environment
 from modal_app import (
     MAX_WORKERS_PER_POLL,
     POLL_INTERVAL_SECONDS,
@@ -38,7 +37,10 @@ from oddish.workers.queue.worker_job_dispatcher import (
     discover_active_worker_job_queue_keys,
     get_worker_job_queue_counts,
 )
-from oddish.workers.queue.worker_job_single_job import run_single_worker_job
+from oddish.workers.queue.worker_job_single_job import (
+    PostSuccessHooks,
+    run_single_worker_job,
+)
 
 from .github import notify_github_analysis, notify_github_trial, notify_github_verdict
 from .runtime import configure_storage_paths, console
@@ -55,7 +57,7 @@ ensure_builtin_handlers_registered()
 # ``on_verdict_complete`` hooks the legacy dispatcher passed through
 # ``run_single_job``. Hook exceptions are swallowed by the runner so a
 # GitHub API hiccup never corrupts scheduling state.
-_POST_SUCCESS_HOOKS = {
+_POST_SUCCESS_HOOKS: PostSuccessHooks = {
     WorkerJobKind.TRIAL: notify_github_trial,
     WorkerJobKind.ANALYSIS: notify_github_analysis,
     WorkerJobKind.VERDICT: notify_github_verdict,

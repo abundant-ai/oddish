@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 
 from fastapi import HTTPException
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,7 +12,6 @@ from oddish.core.helpers import (
     build_trial_response,
     fetch_trial_queue_info,
 )
-from oddish.config import settings
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -75,7 +74,7 @@ async def get_public_task(session: AsyncSession, task_id: str) -> TaskModel | No
         select(1)
         .select_from(
             task_experiments.join(
-                ExperimentModel,
+                ExperimentModel,  # type: ignore[arg-type]
                 ExperimentModel.id == task_experiments.c.experiment_id,
             )
         )

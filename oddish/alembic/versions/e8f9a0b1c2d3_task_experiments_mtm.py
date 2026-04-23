@@ -23,7 +23,6 @@ Create Date: 2026-04-20 12:00:00.000000
 from typing import Sequence, Union
 
 from alembic import op
-import sqlalchemy as sa
 
 
 revision: str = "e8f9a0b1c2d3"
@@ -104,9 +103,7 @@ def upgrade() -> None:
     # consistent with the new NOT NULL column. ``delete_experiment_core``
     # still scrubs trials explicitly before dropping the experiment row;
     # CASCADE is just a safety net.
-    op.execute(
-        "ALTER TABLE trials DROP CONSTRAINT IF EXISTS fk_trials_experiment_id"
-    )
+    op.execute("ALTER TABLE trials DROP CONSTRAINT IF EXISTS fk_trials_experiment_id")
     op.execute(
         """
         ALTER TABLE trials
@@ -127,9 +124,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Re-add tasks.experiment_id as nullable, backfill from the first join
     # row per task, then recreate the indexes.
-    op.execute(
-        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS experiment_id VARCHAR(64)"
-    )
+    op.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS experiment_id VARCHAR(64)")
     op.execute(
         """
         UPDATE tasks t
@@ -144,8 +139,7 @@ def downgrade() -> None:
         """
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_tasks_experiment_id "
-        "ON tasks (experiment_id)"
+        "CREATE INDEX IF NOT EXISTS idx_tasks_experiment_id " "ON tasks (experiment_id)"
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_org_experiment_created_at "
@@ -155,9 +149,7 @@ def downgrade() -> None:
     # Trials stay populated; just relax the NOT NULL and flip the FK back
     # to ON DELETE SET NULL.
     op.execute("ALTER TABLE trials ALTER COLUMN experiment_id DROP NOT NULL")
-    op.execute(
-        "ALTER TABLE trials DROP CONSTRAINT IF EXISTS fk_trials_experiment_id"
-    )
+    op.execute("ALTER TABLE trials DROP CONSTRAINT IF EXISTS fk_trials_experiment_id")
     op.execute(
         """
         ALTER TABLE trials

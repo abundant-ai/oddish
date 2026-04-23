@@ -57,11 +57,13 @@ class _FakeS3:
             raise RuntimeError(f"NoSuchKey: {Key}")
         return {
             "ContentLength": len(self._objects[Key]),
-            "ETag": self._etags.get(Key, "\"etag-default\""),
+            "ETag": self._etags.get(Key, '"etag-default"'),
         }
 
     async def put_object(self, Bucket: str, Key: str, Body: bytes, **kwargs) -> dict:
-        self._objects[Key] = Body if isinstance(Body, (bytes, bytearray)) else bytes(Body)
+        self._objects[Key] = (
+            Body if isinstance(Body, (bytes, bytearray)) else bytes(Body)
+        )
         return {}
 
 
@@ -392,9 +394,7 @@ async def test_expand_fails_when_task_has_neither_archive_nor_loose_files(
     monkeypatch.setattr(task_expand_handler, "get_storage_client", lambda: storage)
 
     with pytest.raises(RuntimeError, match="no archive"):
-        await task_expand_handler.run_task_expand_job(
-            task_id="task-empty", version=1
-        )
+        await task_expand_handler.run_task_expand_job(task_id="task-empty", version=1)
 
 
 @pytest.mark.asyncio
@@ -495,9 +495,7 @@ async def test_expand_tolerates_per_file_upload_failures_in_loose_path(
 
 
 @pytest.mark.asyncio
-async def test_expand_is_idempotent_on_matching_etag(
-    monkeypatch, _patched_get_session
-):
+async def test_expand_is_idempotent_on_matching_etag(monkeypatch, _patched_get_session):
     archive_bytes = _make_archive({"task.toml": b"name = 'demo'\n"})
     existing_manifest = json.dumps(
         {
@@ -526,9 +524,7 @@ async def test_expand_is_idempotent_on_matching_etag(
 
 
 @pytest.mark.asyncio
-async def test_expand_skips_oversize_archive(
-    monkeypatch, _patched_get_session
-):
+async def test_expand_skips_oversize_archive(monkeypatch, _patched_get_session):
     archive_bytes = _make_archive({"task.toml": b"x" * 1024})
     storage = _FakeStorage(
         archive_key="tasks/task-abc/v1/.oddish-task.tar.gz",
@@ -674,9 +670,7 @@ def test_extract_regular_members_marks_oversize_members_skipped():
 
 
 @pytest.mark.asyncio
-async def test_expand_marks_failed_on_corrupt_tar(
-    monkeypatch, _patched_get_session
-):
+async def test_expand_marks_failed_on_corrupt_tar(monkeypatch, _patched_get_session):
     storage = _FakeStorage(
         archive_key="tasks/task-abc/v1/.oddish-task.tar.gz",
         archive_bytes=b"not a valid gzip tar",
@@ -684,6 +678,4 @@ async def test_expand_marks_failed_on_corrupt_tar(
     monkeypatch.setattr(task_expand_handler, "get_storage_client", lambda: storage)
 
     with pytest.raises(Exception):
-        await task_expand_handler.run_task_expand_job(
-            task_id="task-abc", version=1
-        )
+        await task_expand_handler.run_task_expand_job(task_id="task-abc", version=1)

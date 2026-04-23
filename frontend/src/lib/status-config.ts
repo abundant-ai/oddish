@@ -164,9 +164,7 @@ export function getRewardMatrixStatus(reward: number): MatrixStatus {
   return "partial";
 }
 
-function isPartialReward(
-  reward: number | null | undefined,
-): reward is number {
+function isPartialReward(reward: number | null | undefined): reward is number {
   return hasRewardValue(reward) && reward > 0 && reward < 1;
 }
 
@@ -185,7 +183,11 @@ function clampChannel(value: number): number {
   return Math.max(0, Math.min(255, Math.round(value)));
 }
 
-function interpolateRgb(from: RgbColor, to: RgbColor, weight: number): RgbColor {
+function interpolateRgb(
+  from: RgbColor,
+  to: RgbColor,
+  weight: number,
+): RgbColor {
   const clamped = Math.max(0, Math.min(1, weight));
   return {
     r: clampChannel(from.r + (to.r - from.r) * clamped),

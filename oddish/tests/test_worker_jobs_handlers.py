@@ -182,9 +182,7 @@ async def test_trial_handler_returns_retryable_fail_on_failed_with_budget(monkey
 
 @pytest.mark.asyncio
 async def test_trial_handler_fails_permanently_when_row_missing(monkeypatch):
-    monkeypatch.setattr(
-        handlers_module, "get_session", _fake_get_session_factory(None)
-    )
+    monkeypatch.setattr(handlers_module, "get_session", _fake_get_session_factory(None))
     _patch_run(monkeypatch, "run_trial_job")
 
     outcome = await TrialJobHandler().run(_trial_claim())

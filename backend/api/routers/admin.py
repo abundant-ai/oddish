@@ -120,9 +120,7 @@ async def backfill_task_expansions(
 
     def _apply_join(stmt):
         if org_id:
-            return stmt.join(
-                TaskModel, TaskModel.id == TaskVersionModel.task_id
-            )
+            return stmt.join(TaskModel, TaskModel.id == TaskVersionModel.task_id)
         return stmt
 
     async with get_session() as session:

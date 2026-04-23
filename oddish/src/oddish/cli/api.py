@@ -290,7 +290,9 @@ def archive_task_dir(task_path: Path) -> Path:
     return tarball_path
 
 
-def _upload_to_presigned_url(url: str, tarball_path: Path, headers: dict[str, str]) -> None:
+def _upload_to_presigned_url(
+    url: str, tarball_path: Path, headers: dict[str, str]
+) -> None:
     upload_headers = dict(headers)
     upload_headers.setdefault("Content-Length", str(tarball_path.stat().st_size))
     with httpx.Client(timeout=600.0, follow_redirects=True) as upload_client:
@@ -704,9 +706,7 @@ def trial_result_to_import_spec(
     if trial_result.exception_info is not None:
         exc = trial_result.exception_info
         error_message = (
-            exc.exception_message
-            or exc.exception_type
-            or "Harbor execution error"
+            exc.exception_message or exc.exception_type or "Harbor execution error"
         )
 
     input_tokens: int | None = None
@@ -833,18 +833,14 @@ def _call_trial_import_init(
     return cast(dict[str, Any], resp.json())
 
 
-def _call_trial_import_complete(
-    api_url: str, *, trial_id: str
-) -> dict[str, Any]:
+def _call_trial_import_complete(api_url: str, *, trial_id: str) -> dict[str, Any]:
     with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
         resp = client.post(
             f"{api_url}/trials/import/complete",
             json={"trial_id": trial_id},
         )
     if resp.status_code != 200:
-        error_console.print(
-            f"[red]Failed to finalize trial import:[/red] {resp.text}"
-        )
+        error_console.print(f"[red]Failed to finalize trial import:[/red] {resp.text}")
         raise typer.Exit(1)
     return cast(dict[str, Any], resp.json())
 
@@ -1419,7 +1415,9 @@ def watch_task(
                 failed = sum(1 for t in all_trials if t.get("status") == "failed")
 
                 rewards = [
-                    float(t["reward"]) for t in all_trials if t.get("reward") is not None
+                    float(t["reward"])
+                    for t in all_trials
+                    if t.get("reward") is not None
                 ]
                 reward_pass = sum(1 for reward in rewards if reward == 1)
                 reward_fail = sum(1 for reward in rewards if reward == 0)
