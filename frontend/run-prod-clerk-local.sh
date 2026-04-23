@@ -35,7 +35,8 @@ fi
 
 if [[ "${PORT}" -lt 1024 && "${EUID}" -ne 0 ]]; then
   echo "Port ${PORT} requires elevated privileges. Re-running with sudo..."
-  exec sudo -E SUBDOMAIN="${SUBDOMAIN}" PORT="${PORT}" "$0" "$@"
+  # Keep user PATH so pnpm/nvm shims stay available after sudo re-exec.
+  exec sudo -E env "PATH=${PATH}" SUBDOMAIN="${SUBDOMAIN}" PORT="${PORT}" "$0" "$@"
 fi
 
 if ! grep -Eq "^[[:space:]]*127\.0\.0\.1[[:space:]]+${SUBDOMAIN}([[:space:]]|$)" /etc/hosts; then
