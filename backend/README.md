@@ -30,7 +30,7 @@ Postgres
   + cloud tables  (orgs / users / api_keys)
   │
   ▼
-Worker dispatcher (`worker/functions.py::poll_queue`, every 120s)
+Worker dispatcher (`worker/functions.py::poll_queue`, every 180s)
   │  - Runs unified cleanup (stale-heartbeat + stage safety nets)
   │  - Discovers active queue keys from worker_jobs
   │  - Spawns single-job Modal containers per queue key
@@ -48,7 +48,7 @@ Modal sandboxes (Harbor execution, logs/artifacts to S3)
 
 Dispatcher + single-job pattern backed by the unified `worker_jobs` table:
 
-1. `poll_queue()` runs on a 120s Modal schedule. It calls
+1. `poll_queue()` runs on a 180s Modal schedule. It calls
    `cleanup_orphaned_queue_state` (zombie-txn reap, stale-heartbeat sweep,
    stage safety nets, orphaned-slot release), discovers active queue keys
    via `discover_active_worker_job_queue_keys`, and launches up to

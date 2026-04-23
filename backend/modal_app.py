@@ -50,7 +50,7 @@ WORKER_TASK_MOUNT_PATH = "/mnt/oddish-tasks"
 WORKER_TASK_MOUNT_KEY_PREFIX = "tasks/"
 
 # Worker configuration
-POLL_INTERVAL_SECONDS = 120  # How often to check for new jobs
+POLL_INTERVAL_SECONDS = 180  # How often to check for new jobs (3 minutes)
 # Allow ~12 hour trials with small shutdown buffer.
 WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 43200)
 SHUTDOWN_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_SHUTDOWN_TIMEOUT_SECONDS", 10)
@@ -68,8 +68,8 @@ WORKER_MAX_CONTAINERS = _env_int(
     256,
 )  # High global cap so several queue keys can scale, but still not unbounded.
 
-# Max number of workers spawned per poll cycle (rate limiter)
-MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 16)
+# Max number of workers spawned per poll cycle (rate limiter, global across all queue_keys)
+MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 24)
 
 # Always attach the production Modal secret. Local deploys can layer a backend
 # `.env` file on top for developer-specific overrides.

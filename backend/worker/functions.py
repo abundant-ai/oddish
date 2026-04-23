@@ -164,6 +164,7 @@ async def process_single_job(queue_key: str):
     volumes=worker_volumes,
     secrets=runtime_secrets,
     timeout=60,  # Dispatcher is lightweight, should complete quickly
+    min_containers=1,  # Keep one dispatcher container warm.
     max_containers=1,  # Keep the scheduled dispatcher singleton-ish.
     schedule=modal.Period(seconds=POLL_INTERVAL_SECONDS),
 )
@@ -252,7 +253,7 @@ async def poll_queue():
 
     except OSError as e:
         # Transient network/DNS errors (e.g. socket.gaierror) should not
-        # crash the scheduled function -- the next poll in 30s will retry.
+        # crash the scheduled function -- the next poll in 3 minutes will retry.
         console.print(
             f"[yellow]Dispatcher skipped (transient network error): {e}[/yellow]"
         )
