@@ -14,6 +14,7 @@ from oddish.workers.queue.worker import run_worker
 from oddish.workers.queue.worker_job_dispatcher import (
     build_spawn_plan,
     discover_active_worker_job_queue_keys,
+    get_worker_job_org_queue_counts,
     get_worker_job_queue_counts,
 )
 from oddish.workers.queue.worker_job_single_job import (
@@ -40,6 +41,7 @@ __all__ = [
     "build_spawn_plan",
     "claim_single_worker_job",
     "discover_active_worker_job_queue_keys",
+    "get_worker_job_org_queue_counts",
     "get_worker_job_queue_counts",
     "heartbeat_worker_job",
     "run_single_worker_job",

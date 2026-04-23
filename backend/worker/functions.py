@@ -35,7 +35,7 @@ from oddish.workers.queue.slots import (
 from oddish.workers.queue.worker_job_dispatcher import (
     build_spawn_plan,
     discover_active_worker_job_queue_keys,
-    get_worker_job_queue_counts,
+    get_worker_job_org_queue_counts,
 )
 from oddish.workers.queue.worker_job_single_job import (
     PostSuccessHooks,
@@ -208,24 +208,45 @@ async def poll_queue():
             )
 
         queue_keys = await discover_active_worker_job_queue_keys()
-        queue_counts = await get_worker_job_queue_counts(queue_keys)
+        queued_by_org_queue, running_by_queue = await get_worker_job_org_queue_counts(
+            queue_keys
+        )
         concurrency_limits = {
             queue_key: settings.get_model_concurrency(queue_key)
             for queue_key in queue_keys
         }
 
+        # Per-queue_key summary (aggregated across orgs) is still the
+        # useful operator-facing view.
+        queued_by_queue: dict[str, int] = {}
+        for (_org_id, queue_key), queued in queued_by_org_queue.items():
+            queued_by_queue[queue_key] = queued_by_queue.get(queue_key, 0) + queued
         for queue_key in queue_keys:
-            queued = queue_counts.get(queue_key, {}).get("queued", 0)
-            running = queue_counts.get(queue_key, {}).get("picked", 0)
+            queued = queued_by_queue.get(queue_key, 0)
+            running = running_by_queue.get(queue_key, 0)
             limit = concurrency_limits.get(queue_key, 0)
             console.print(
                 f"[dim]{queue_key}: queued={queued} running={running} limit={limit}[/dim]"
             )
 
+        # Also log the per-(org, queue_key) breakdown so a lopsided
+        # fair-share allocation is debuggable from the poll log without
+        # digging into the DB.
+        if queued_by_org_queue:
+            org_buckets: dict[str, int] = {}
+            for (org_id, _queue_key), queued in queued_by_org_queue.items():
+                key = org_id or "<none>"
+                org_buckets[key] = org_buckets.get(key, 0) + queued
+            summary = ", ".join(
+                f"{org}={count}" for org, count in sorted(org_buckets.items())
+            )
+            console.print(f"[dim]queued_by_org: {summary}[/dim]")
+
         console.print(f"[dim]Spawn cap per poll: {MAX_WORKERS_PER_POLL}[/dim]")
 
         spawn_plan = build_spawn_plan(
-            queue_counts=queue_counts,
+            queued_by_org_queue=queued_by_org_queue,
+            running_by_queue=running_by_queue,
             concurrency_limits=concurrency_limits,
             max_workers=MAX_WORKERS_PER_POLL,
         )
