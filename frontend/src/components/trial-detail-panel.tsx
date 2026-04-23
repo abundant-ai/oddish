@@ -881,7 +881,7 @@ export function TrialDetailPanel({
                     <div className="flex items-start gap-2">
                       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
                       <div className="min-w-0 flex-1">
-                        <pre className="whitespace-pre-wrap break-words font-mono text-sm text-red-600 dark:text-red-400">
+                        <pre className="whitespace-pre-wrap wrap-break-word font-mono text-sm text-red-600 dark:text-red-400">
                           {showFullError
                             ? trial.error_message
                             : trial.error_message.slice(0, 300)}

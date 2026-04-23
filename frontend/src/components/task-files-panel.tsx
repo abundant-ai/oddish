@@ -1031,7 +1031,7 @@ export function TaskFilesPanel({
             )}
             {node.type === "file" && <span className="w-3" />}
             <Icon
-              className={`h-4 w-4 flex-shrink-0 ${
+              className={`h-4 w-4 shrink-0 ${
                 node.type === "dir"
                   ? "text-yellow-500"
                   : "text-muted-foreground"
@@ -1462,7 +1462,7 @@ export function TaskFilesPanel({
 
       <div className="flex flex-1 flex-col overflow-hidden">
         {showVerdictCard && (
-          <div className="flex-shrink-0 border-b border-border bg-muted/10">
+          <div className="shrink-0 border-b border-border bg-muted/10">
             <div className="p-4 sm:p-6">
               <Card
                 className={

@@ -279,7 +279,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
               <img
                 src={src as string | undefined}
                 alt={alt || ""}
-                className="h-auto max-w-full rounded border border-border shadow-sm"
+                className="h-auto max-w-full rounded border border-border shadow-xs"
               />
               {alt && (
                 <span className="mt-1 block text-center text-xs italic text-muted-foreground">

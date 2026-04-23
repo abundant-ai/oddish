@@ -1327,18 +1327,18 @@ export function ExperimentTrialsTable({
       <div className="space-y-4">
         {showPassAtK ? (
           <div className="grid items-stretch gap-4 xl:grid-cols-2">
-            <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
+            <div className="rounded-lg border border-border bg-card p-4 shadow-xs">
               <Skeleton className="h-5 w-36" />
               <Skeleton className="mt-4 h-56 w-full" />
             </div>
-            <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
+            <div className="rounded-lg border border-border bg-card p-4 shadow-xs">
               <Skeleton className="h-5 w-40" />
               <Skeleton className="mt-4 h-56 w-full" />
             </div>
           </div>
         ) : null}
 
-        <div className="max-w-full overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+        <div className="max-w-full overflow-hidden rounded-lg border border-border bg-card shadow-xs">
           <div className="relative z-30 space-y-3 border-b border-border bg-card/70 px-3 py-3">
             <div className="flex flex-wrap items-start gap-3">
               <Skeleton className="h-9 w-full sm:w-[320px]" />
@@ -1636,7 +1636,7 @@ export function ExperimentTrialsTable({
           </div>
         ) : null}
 
-        <div className="max-w-full overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+        <div className="max-w-full overflow-hidden rounded-lg border border-border bg-card shadow-xs">
           <div className="relative z-30 space-y-2 border-b border-border bg-card/70 px-3 py-2">
             <div className="flex flex-wrap items-start gap-3">
               <div className="w-full sm:w-[320px]">
@@ -1835,7 +1835,7 @@ export function ExperimentTrialsTable({
                     style={{ width: getDisplayedWidth("task") }}
                   >
                     <div className="flex items-center gap-2">
-                      <span className="w-5 flex-shrink-0 text-right text-[10px] text-muted-foreground">
+                      <span className="w-5 shrink-0 text-right text-[10px] text-muted-foreground">
                         #
                       </span>
                       {!readOnly && (
@@ -2050,7 +2050,7 @@ export function ExperimentTrialsTable({
                         }}
                       >
                         <div className="flex min-w-0 items-center gap-2">
-                          <span className="w-5 flex-shrink-0 text-right text-[10px] text-muted-foreground">
+                          <span className="w-5 shrink-0 text-right text-[10px] text-muted-foreground">
                             {index + 1}
                           </span>
                           {!readOnly && (
