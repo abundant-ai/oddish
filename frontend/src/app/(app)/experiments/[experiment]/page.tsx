@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { auth } from "@clerk/nextjs/server";
 import {
   getAuthHeaders,
@@ -7,6 +8,38 @@ import {
 import { decodeExperimentRouteParam } from "@/lib/utils";
 import { ExperimentClientPage } from "./experiment-client";
 import type { Task } from "@/lib/types";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ experiment: string }>;
+}): Promise<Metadata> {
+  const { experiment } = await params;
+  const experimentId = decodeExperimentRouteParam(experiment ?? "");
+  const title = experimentId
+    ? `Experiment ${experimentId} · Oddish`
+    : "Experiment · Oddish";
+  const description =
+    "View trials, rewards, and task details for this Oddish experiment.";
+  const image = "/oddish.png";
+  return {
+    title,
+    description,
+    openGraph: {
+      type: "website",
+      siteName: "Oddish",
+      title,
+      description,
+      images: [{ url: image, alt: "Oddish" }],
+    },
+    twitter: {
+      card: "summary",
+      title,
+      description,
+      images: [image],
+    },
+  };
+}
 
 async function getInitialTasks(experimentId: string): Promise<Task[] | null> {
   try {

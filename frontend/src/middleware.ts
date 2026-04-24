@@ -1,12 +1,18 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
 // Define public routes that don't require authentication
+// Note: `/experiments(.*)` is intentionally public so that link-unfurl bots
+// (Slack, Twitter, etc.) can fetch the page shell and read the OpenGraph /
+// Twitter metadata. Real unauthenticated users are redirected to sign-in by
+// the `(app)` layout via `<RedirectToSignIn />`, and the page only fetches
+// data when the user is authenticated (see `getInitialTasks`).
 const isPublicRoute = createRouteMatcher([
   "/",
   "/sign-in(.*)",
   "/sign-up(.*)",
   "/share(.*)",
   "/datasets(.*)",
+  "/experiments(.*)",
   "/api/public(.*)",
 ]);
 

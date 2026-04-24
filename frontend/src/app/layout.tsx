@@ -27,13 +27,39 @@ const fraunces = Fraunces({
   display: "swap",
 });
 
+const SITE_URL = process.env.NEXT_PUBLIC_APP_URL || "https://www.oddish.app";
+const SITE_NAME = "Oddish";
+const SITE_TITLE = "Oddish - Eval Scheduler";
+const SITE_DESCRIPTION = "Postgres-backed eval scheduler for Harbor tasks";
+const SITE_OG_IMAGE = "/oddish.png";
+
 export const metadata: Metadata = {
-  title: "Oddish - Eval Scheduler",
-  description: "Postgres-backed eval scheduler for Harbor tasks",
+  metadataBase: new URL(SITE_URL),
+  title: SITE_TITLE,
+  description: SITE_DESCRIPTION,
   icons: {
     icon: "/oddish.png",
     shortcut: "/oddish.png",
     apple: "/oddish.png",
+  },
+  openGraph: {
+    type: "website",
+    siteName: SITE_NAME,
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    url: SITE_URL,
+    images: [
+      {
+        url: SITE_OG_IMAGE,
+        alt: SITE_NAME,
+      },
+    ],
+  },
+  twitter: {
+    card: "summary",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    images: [SITE_OG_IMAGE],
   },
 };
 
