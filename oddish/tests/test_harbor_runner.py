@@ -147,6 +147,10 @@ def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
         def __init__(self, config):
             self.job_dir = config["jobs_dir"] / "job-1"
 
+        @classmethod
+        async def create(cls, config):
+            return cls(config)
+
         async def run(self):
             self.job_dir.mkdir(parents=True, exist_ok=True)
             (self.job_dir / "result.json").write_text("{}\n", encoding="utf-8")

@@ -440,17 +440,21 @@ def _extract_outcome_from_job_result(
             has_trajectory=has_trajectory,
         )
 
-    # Method 1: Check reward_stats in job stats
+    # Method 1: Check reward_stats in job stats.
+    # Harbor's AgentDatasetStats.reward_stats is
+    # ``dict[str, dict[float | int, list[str]]]`` where the innermost value
+    # is the list of trial IDs that produced each reward value. Pick the
+    # reward with the most trial IDs (most frequent outcome).
     if job_result.stats.evals:
         first_eval = next(iter(job_result.stats.evals.values()))
         if first_eval.reward_stats and "reward" in first_eval.reward_stats:
             reward_map = first_eval.reward_stats["reward"]
-            for reward_key, reward_count in sorted(
+            for reward_key, trial_ids in sorted(
                 reward_map.items(),
-                key=lambda item: item[1],
+                key=lambda item: len(item[1]),
                 reverse=True,
             ):
-                if not reward_count:
+                if not trial_ids:
                     continue
                 try:
                     return _outcome(float(reward_key))
@@ -634,35 +638,55 @@ async def run_harbor_trial_async(
         raw_harbor_config=raw,
     )
 
-    config = JobConfig(
-        tasks=[TaskConfig(path=effective_task_path)],
-        agents=[agent_config],
-        environment=env_config,
-        verifier=hc.verifier,
-        artifacts=hc.artifacts,
-        jobs_dir=unique_parent,
-    )
+    job_config_kwargs: dict[str, Any] = {
+        "tasks": [TaskConfig(path=effective_task_path)],
+        "agents": [agent_config],
+        "environment": env_config,
+        "verifier": hc.verifier,
+        "artifacts": hc.artifacts,
+        "jobs_dir": unique_parent,
+    }
+    if hc.timeout_multiplier is not None:
+        job_config_kwargs["timeout_multiplier"] = hc.timeout_multiplier
+    if hc.agent_timeout_multiplier is not None:
+        job_config_kwargs["agent_timeout_multiplier"] = hc.agent_timeout_multiplier
+    if hc.verifier_timeout_multiplier is not None:
+        job_config_kwargs["verifier_timeout_multiplier"] = (
+            hc.verifier_timeout_multiplier
+        )
+    if hc.agent_setup_timeout_multiplier is not None:
+        job_config_kwargs["agent_setup_timeout_multiplier"] = (
+            hc.agent_setup_timeout_multiplier
+        )
+    if hc.environment_build_timeout_multiplier is not None:
+        job_config_kwargs["environment_build_timeout_multiplier"] = (
+            hc.environment_build_timeout_multiplier
+        )
+    if hc.retry is not None:
+        job_config_kwargs["retry"] = hc.retry
 
-    # Create Harbor Job
-    actual_job_dir = unique_parent
-    job = await Job.create(config)
-    actual_job_dir = job.job_dir
-
-    # Register hooks if callback provided
-    if hook_callback:
-        # Pass the TrialHookEvent directly to the callback
-        job.on_trial_started(hook_callback)
-        job.on_environment_started(hook_callback)
-        job.on_agent_started(hook_callback)
-        job.on_verification_started(hook_callback)
-        job.on_trial_ended(hook_callback)
-        job.on_trial_cancelled(hook_callback)
+    config = JobConfig(**job_config_kwargs)
 
     # Run the job
+    actual_job_dir = unique_parent
     start = time.time()
     modal_debug_log_path: Path | None = None
 
     try:
+        # Job.create performs task/metric resolution + task caching and can
+        # fail on transient I/O. Keep it inside the try so failures produce
+        # a well-formed HarborOutcome instead of a bare exception.
+        job = await Job.create(config)
+        actual_job_dir = job.job_dir
+
+        if hook_callback:
+            job.on_trial_started(hook_callback)
+            job.on_environment_started(hook_callback)
+            job.on_agent_started(hook_callback)
+            job.on_verification_started(hook_callback)
+            job.on_trial_ended(hook_callback)
+            job.on_trial_cancelled(hook_callback)
+
         with (
             _scoped_bedrock_env(model),
             _capture_modal_output(actual_job_dir, environment) as captured_log_path,

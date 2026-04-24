@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from harbor.models.agent.name import AgentName
 from harbor.models.environment_type import EnvironmentType
+from harbor.models.job.config import RetryConfig as HarborRetryConfig
 from harbor.models.task.config import MCPServerConfig as MCPServerSpec
 from harbor.models.trial.config import (
     AgentConfig as HarborAgentConfig,
@@ -43,6 +44,38 @@ class HarborConfig(BaseModel):
     )
     verifier: HarborVerifierConfig = Field(default_factory=HarborVerifierConfig)
     artifacts: list[str | HarborArtifactConfig] = Field(default_factory=list)
+
+    timeout_multiplier: float | None = Field(
+        None,
+        description=(
+            "Global multiplier applied to all Harbor timeouts. Overrides the "
+            "JobConfig default of 1.0 when set."
+        ),
+    )
+    agent_timeout_multiplier: float | None = Field(
+        None,
+        description="Multiplier for the agent execution timeout only.",
+    )
+    verifier_timeout_multiplier: float | None = Field(
+        None,
+        description="Multiplier for the verifier timeout only.",
+    )
+    agent_setup_timeout_multiplier: float | None = Field(
+        None,
+        description="Multiplier for the agent setup timeout only.",
+    )
+    environment_build_timeout_multiplier: float | None = Field(
+        None,
+        description="Multiplier for the environment build timeout only.",
+    )
+    retry: HarborRetryConfig | None = Field(
+        None,
+        description=(
+            "Harbor RetryConfig for trial-level retries (max_retries, wait "
+            "multipliers, include/exclude exceptions). Uses Harbor's default "
+            "when omitted."
+        ),
+    )
 
     docker_image: str | None = Field(
         None,
