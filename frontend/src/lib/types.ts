@@ -76,6 +76,7 @@ export interface Trial {
   output_tokens?: number | null;
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
+  has_trajectory?: boolean;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;

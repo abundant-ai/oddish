@@ -175,7 +175,10 @@ function ContentRenderer({
       {content.map((part, idx) => {
         if (part.type === "text") {
           return (
-            <div key={idx} className="whitespace-pre-wrap wrap-break-word text-sm">
+            <div
+              key={idx}
+              className="whitespace-pre-wrap wrap-break-word text-sm"
+            >
               {part.text}
             </div>
           );
@@ -694,19 +697,32 @@ function StepContent({
 
 interface TrajectoryViewerProps {
   trialId: string;
+  /**
+   * Whether the backend recorded an ATIF trajectory for this trial
+   * (mirrors ``TrialResponse.has_trajectory``).  When ``false`` we skip
+   * the fetch entirely — the endpoint would just return ``null`` after
+   * a multi-second S3 probe, and some trials (older rows with a stale
+   * ``harbor_result_path`` pointing at the decommissioned Modal volume)
+   * additionally surface a spurious 403 on the local-fallback branch.
+   * ``undefined`` preserves legacy behaviour (always fetch) for
+   * consumers that haven't been updated.
+   */
+  hasTrajectory?: boolean;
   apiBaseUrl?: string;
 }
 
 export function TrajectoryViewer({
   trialId,
+  hasTrajectory,
   apiBaseUrl = "/api",
 }: TrajectoryViewerProps) {
+  const shouldFetch = hasTrajectory !== false;
   const {
     data: trajectory,
     isLoading,
     error,
   } = useSWR<Trajectory | null>(
-    `${apiBaseUrl}/trials/${trialId}/trajectory`,
+    shouldFetch ? `${apiBaseUrl}/trials/${trialId}/trajectory` : null,
     fetcher,
     {
       revalidateOnFocus: false,

@@ -503,6 +503,49 @@ export function ExperimentDetailView({
     });
   }, [tasksForExperiment, searchParams, buildTrialGroups]);
 
+  // Re-sync the open drawer with freshly-loaded trial data. On direct URL
+  // loads the drawer opens as soon as the lightweight task shells arrive,
+  // before trial pages stream in; without this, ``trialGroups`` stays empty
+  // and the task↔trial nav row (``onNavigateToFirstTrial``) never appears.
+  // Also handles the case where trials finish loading while a drawer opened
+  // from a row click is already mounted.
+  useEffect(() => {
+    if (!drawerState) return;
+    const liveTask = tasksForExperiment.find(
+      (t) => t.id === drawerState.task.id,
+    );
+    if (!liveTask) return;
+    const liveTrialCount = liveTask.trials?.length ?? 0;
+    const snapshotTrialCount = drawerState.task.trials?.length ?? 0;
+    if (
+      liveTask === drawerState.task &&
+      liveTrialCount === snapshotTrialCount
+    ) {
+      return;
+    }
+    const { trialGroups, orderedTrials } = buildTrialGroups(liveTask);
+    const foundTrialIndex = drawerState.trial
+      ? orderedTrials.findIndex((t) => t.id === drawerState.trial!.id)
+      : -1;
+    const resolvedTrialIndex = foundTrialIndex >= 0 ? foundTrialIndex : null;
+    const resolvedTrial =
+      resolvedTrialIndex != null
+        ? orderedTrials[resolvedTrialIndex]
+        : drawerState.trial;
+    const resolvedTaskIndex = tasksForExperiment.indexOf(liveTask);
+    setDrawerState({
+      ...drawerState,
+      task: liveTask,
+      taskIndex:
+        resolvedTaskIndex >= 0 ? resolvedTaskIndex : drawerState.taskIndex,
+      orderedTasks: tasksForExperiment,
+      trial: resolvedTrial,
+      trialIndex: resolvedTrialIndex,
+      orderedTrials,
+      trialGroups,
+    });
+  }, [tasksForExperiment, drawerState, buildTrialGroups]);
+
   const summary = useMemo(
     () => buildExperimentSummary(tasksForExperiment),
     [tasksForExperiment],

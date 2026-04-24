@@ -30,7 +30,6 @@ import {
   ChevronUp,
   ChevronLeft,
   ChevronRight,
-  Ban,
   RotateCcw,
   Loader2,
   Microscope,
@@ -60,6 +59,7 @@ import {
 import { HarborStageTimeline } from "@/components/harbor-stage-timeline";
 import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
+import { StatusIcon } from "@/components/status-icon";
 
 interface TrialDetailPanelProps {
   isOpen: boolean;
@@ -522,10 +522,10 @@ export function TrialDetailPanel({
                     groupTrial.error_message,
                   );
                   const groupConfig = STATUS_CONFIG[groupStatus];
-                  const badgeLabel =
-                    groupStatus === "partial"
-                      ? formatPartialRewardBadgeValue(groupTrial.reward)
-                      : groupConfig.symbol;
+                  const isPartial = groupStatus === "partial";
+                  const partialLabel = isPartial
+                    ? formatPartialRewardBadgeValue(groupTrial.reward)
+                    : null;
                   const isActive = index === currentGroupTrialIndex;
                   return (
                     <Button
@@ -535,26 +535,26 @@ export function TrialDetailPanel({
                       size="icon"
                       onClick={() => navigateToGroupTrial(index)}
                       className={cn(
-                        "flex h-5 w-5 items-center justify-center rounded-sm border p-0 font-mono font-semibold leading-none transition",
-                        groupStatus === "partial"
-                          ? "text-[8px] tracking-[-0.03em]"
-                          : "text-sm",
+                        "flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border p-0 leading-none transition hover:opacity-90",
                         groupConfig.matrixClass,
+                        isPartial
+                          ? "font-mono text-[8px] font-semibold tracking-[-0.03em]"
+                          : "",
                         isActive
                           ? "ring-2 ring-primary/60 ring-offset-1 ring-offset-background"
                           : "",
                       )}
-                      aria-label={`Trial ${index + 1}`}
+                      style={getRewardStyle(groupTrial.reward)}
+                      aria-label={`Trial ${index + 1} ${groupConfig.shortLabel}`}
                       title={`${groupConfig.shortLabel} • Trial ${index + 1}`}
                     >
-                      {groupStatus === "pending" ||
-                      groupStatus === "queued" ||
-                      groupStatus === "running" ? (
-                        <Loader2 className="h-3.5 w-3.5" />
-                      ) : groupStatus === "harness-error" ? (
-                        <Ban className="h-3.5 w-3.5" />
+                      {isPartial ? (
+                        partialLabel
                       ) : (
-                        badgeLabel
+                        <StatusIcon
+                          status={groupStatus}
+                          className="h-3.5 w-3.5"
+                        />
                       )}
                     </Button>
                   );
@@ -950,7 +950,11 @@ export function TrialDetailPanel({
             value="trajectory"
             className="m-0 h-full overflow-auto p-0"
           >
-            <TrajectoryViewer trialId={trial.id} apiBaseUrl={apiBaseUrl} />
+            <TrajectoryViewer
+              trialId={trial.id}
+              hasTrajectory={trial.has_trajectory}
+              apiBaseUrl={apiBaseUrl}
+            />
           </TabsContent>
         </div>
       </Tabs>

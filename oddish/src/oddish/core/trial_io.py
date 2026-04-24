@@ -61,7 +61,17 @@ def _should_cache_trial(trial: TrialModel) -> bool:
 
 
 def _resolve_local_job_dir(trial: TrialModel) -> Path | None:
-    """Resolve and validate the local Harbor job directory for a trial."""
+    """Resolve and validate the local Harbor job directory for a trial.
+
+    Returns ``None`` (not a 403) when ``harbor_result_path`` points outside the
+    current container's ``harbor_jobs_dir``.  This happens for trials run
+    before the Modal Volume was removed (they stored ``/data/harbor/...``
+    paths that no longer resolve on the ephemeral-``/tmp`` containers);
+    those trials just have no local fallback and should fall through to
+    the "no trajectory / no result" branch rather than surfacing a
+    spurious auth-looking error.  The path comes from our own DB, not
+    user input, so there's no traversal risk to guard against here.
+    """
     if not trial.harbor_result_path:
         return None
 
@@ -76,9 +86,7 @@ def _resolve_local_job_dir(trial: TrialModel) -> Path | None:
         base_dir not in result_path_resolved.parents
         and result_path_resolved != base_dir
     ):
-        raise HTTPException(
-            status_code=403, detail="Refusing to read trial outside harbor_jobs_dir"
-        )
+        return None
 
     job_dir = result_path_resolved.parent
     if not job_dir.exists() or not job_dir.is_dir():
