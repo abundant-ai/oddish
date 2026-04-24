@@ -72,13 +72,22 @@ WORKER_MAX_CONTAINERS = _env_int(
 MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 24)
 
 # Always attach the production Modal secret. Local deploys can layer a backend
-# `.env` file on top for developer-specific overrides.
+# `.env` file on top for developer-specific overrides, and PR preview deploys
+# can layer a per-branch Supabase database URL on top via PREVIEW_DATABASE_URL
+# (set by `.github/workflows/modal-preview.yml`). Later secrets win, so the
+# preview override replaces the production database URL without touching the
+# `oddish-prod` secret.
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
 )
 runtime_secrets = [runtime_secret]
 if LOCAL_DOTENV_VARS:
     runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
+PREVIEW_DATABASE_URL = os.environ.get("PREVIEW_DATABASE_URL")
+if PREVIEW_DATABASE_URL:
+    runtime_secrets.append(
+        modal.Secret.from_dict({"ODDISH_DATABASE_URL": PREVIEW_DATABASE_URL})
+    )
 
 # Queue-key concurrency default for Modal runtime.
 # Example:
