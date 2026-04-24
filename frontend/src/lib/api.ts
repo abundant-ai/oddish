@@ -30,7 +30,7 @@ export const fetcher = async <T>(url: string): Promise<T> => {
 
 // Format Harbor stage for display
 export function formatHarborStage(stage: string | null | undefined): string {
-  if (!stage) return "Pending";
+  if (!stage) return "Queued";
 
   const stageMap: Record<string, string> = {
     starting: "Initializing",

@@ -505,6 +505,13 @@ function ExperimentSummaryBar({
               <span className="text-[color:var(--paper-ink-3)]">error</span>
             </span>
           )}
+          {summary.pendingCount > 0 && (
+            <span className="inline-flex items-center gap-1.5">
+              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-queued)]" />
+              {summary.pendingCount}
+              <span className="text-[color:var(--paper-ink-3)]">queued</span>
+            </span>
+          )}
         </div>
       </KpiTile>
     </div>

@@ -54,6 +54,7 @@ import {
   formatRewardValue,
   getMatrixStatus,
   getRewardStyle,
+  normalizeUiJobStatus,
   STATUS_CONFIG,
   type MatrixStatus,
 } from "@/lib/status-config";
@@ -387,7 +388,7 @@ function groupTrialsByAgent(
 function getTrialTitle(trial: Trial, status: MatrixStatus) {
   const reward =
     trial.reward === null
-      ? "reward pending"
+      ? "reward unavailable"
       : `reward ${formatRewardValue(trial.reward)} (${formatRewardPercent(trial.reward)})`;
   const error = trial.error_message ? ` • ${trial.error_message}` : "";
   const queueInfo = trial.queue_info;
@@ -404,7 +405,7 @@ function getTrialTitle(trial: Trial, status: MatrixStatus) {
         .join(" • ")
     : null;
   const queue = queueSnapshot ? ` • ${queueSnapshot}` : "";
-  return `${STATUS_CONFIG[status].shortLabel} • ${trial.status} • ${reward}${error}${queue}`;
+  return `${STATUS_CONFIG[status].shortLabel} • ${normalizeUiJobStatus(trial.status)} • ${reward}${error}${queue}`;
 }
 
 export function ExperimentTrialsTable({

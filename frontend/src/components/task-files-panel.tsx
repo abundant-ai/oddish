@@ -19,7 +19,6 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronDown,
-  ChevronUp,
   RefreshCw,
   AlertCircle,
   Microscope,
@@ -402,11 +401,6 @@ export function TaskFilesPanel({
     Boolean(onNavigate) && orderedList.length > 1 && resolvedIndex >= 0;
   const canGoPrev = hasNavigation && resolvedIndex > 0;
   const canGoNext = hasNavigation && resolvedIndex < orderedList.length - 1;
-  const progressPct =
-    hasNavigation && orderedList.length > 1
-      ? (resolvedIndex / (orderedList.length - 1)) * 100
-      : 0;
-
   const retryableTrials = useMemo(() => {
     if (!task?.trials) return [];
     return task.trials.filter(
@@ -1267,7 +1261,7 @@ export function TaskFilesPanel({
           </div>
         </div>
 
-        {/* Combined navigation row */}
+        {/* Navigation and task actions */}
         {(onNavigateToFirstTrial ||
           hasNavigation ||
           allowRetry ||
@@ -1275,82 +1269,66 @@ export function TaskFilesPanel({
           canRunVerdict) && (
           <div className="space-y-2 pt-2 text-xs text-muted-foreground">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-3">
-                {/* Horizontal navigation - task icon view */}
+              <div className="flex flex-wrap items-center gap-2">
                 {onNavigateToFirstTrial && (
-                  <div className="flex items-center gap-1">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      disabled={true}
-                      className="h-7 w-7"
-                      aria-label="No previous"
+                  <div className="flex items-center gap-1 rounded-md border border-border bg-muted/20 p-1">
+                    <span
+                      className="inline-flex h-7 items-center gap-1 rounded-sm bg-primary px-2 text-[11px] font-semibold text-primary-foreground"
+                      aria-label="Current view: task files"
+                      title="Task files"
                     >
-                      <ChevronLeft className="h-4 w-4" />
-                    </Button>
-
-                    {/* Task indicator - active since we're viewing the task */}
-                    <div className="flex gap-1">
-                      <span
-                        className="flex h-5 w-5 items-center justify-center rounded-sm border border-blue-500 bg-blue-500 text-[10px] font-bold text-white ring-2 ring-primary ring-offset-1 ring-offset-background transition"
-                        aria-label="Current: Task view"
-                        title="Task view"
-                      >
-                        <FileText className="h-3 w-3" />
-                      </span>
-                    </div>
-
+                      <FileText className="h-3.5 w-3.5" />
+                      Task files
+                    </span>
                     <Button
                       type="button"
-                      variant="ghost"
-                      size="icon"
+                      variant="outline"
+                      size="sm"
                       onClick={onNavigateToFirstTrial}
-                      className="h-7 w-7"
+                      className="h-7 gap-1 px-2 text-[11px] font-semibold"
                       aria-label="View first trial"
                       title="View first trial"
                     >
-                      <ChevronRight className="h-4 w-4" />
+                      First trial
+                      <ChevronRight className="h-3.5 w-3.5" />
                     </Button>
                   </div>
                 )}
 
-                {/* Vertical navigation - task list position */}
                 {hasNavigation && (
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 rounded-md border border-border bg-muted/20 p-1">
                     <Button
                       type="button"
                       variant="ghost"
-                      size="icon"
+                      size="sm"
                       onClick={() => navigateTo(resolvedIndex - 1)}
                       disabled={!canGoPrev}
-                      className="h-7 w-7"
+                      className="h-7 gap-1 px-2 text-[11px] font-semibold"
                       aria-label="Previous task"
                       title="Previous task"
                     >
-                      <ChevronUp className="h-4 w-4" />
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                      Prev task
                     </Button>
-                    <div
-                      className="relative h-6 w-1.5 rounded-full bg-muted"
-                      aria-label="Task position"
-                      title="Task position"
+                    <span
+                      className="inline-flex h-7 min-w-[4.75rem] items-center justify-center rounded-sm border border-border bg-background px-2 font-mono text-[11px] font-medium text-foreground"
+                      aria-label={`Task ${resolvedIndex + 1} of ${orderedList.length}`}
+                      title={`Task ${resolvedIndex + 1} of ${orderedList.length}`}
                     >
-                      <div
-                        className="absolute left-0 right-0 rounded-full bg-primary"
-                        style={{ height: `${progressPct}%`, bottom: 0 }}
-                      />
-                    </div>
+                      {resolvedIndex + 1}/{orderedList.length}
+                    </span>
                     <Button
                       type="button"
                       variant="ghost"
-                      size="icon"
+                      size="sm"
                       onClick={() => navigateTo(resolvedIndex + 1)}
                       disabled={!canGoNext}
-                      className="h-7 w-7"
+                      className="h-7 gap-1 px-2 text-[11px] font-semibold"
                       aria-label="Next task"
                       title="Next task"
                     >
-                      <ChevronDown className="h-4 w-4" />
+                      Next task
+                      <ChevronRight className="h-3.5 w-3.5" />
                     </Button>
                   </div>
                 )}
@@ -1513,7 +1491,7 @@ export function TaskFilesPanel({
                                 ? "Task is Good"
                                 : verdictSource?.verdict?.is_good === false
                                   ? "Needs Review"
-                                  : "Verdict Pending"}
+                                  : "Verdict queued"}
                         </span>
                         {verdictSource?.verdict?.confidence && (
                           <span className="text-xs text-muted-foreground">

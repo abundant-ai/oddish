@@ -6,7 +6,6 @@ const STATUS_ICON_MAP: Record<MatrixStatus, LucideIcon> = {
   fail: X,
   partial: Minus,
   "harness-error": Ban,
-  pending: Loader2,
   queued: Loader2,
   running: Loader2,
 };

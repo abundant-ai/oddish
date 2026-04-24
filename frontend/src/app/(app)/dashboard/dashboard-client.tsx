@@ -90,7 +90,7 @@ const STATUS_FILTER_OPTIONS = [
   { value: "active", label: "Active trials" },
   { value: "completed", label: "Completed" },
   { value: "needs-review", label: "Needs review" },
-  { value: "pending-verdict", label: "Pending verdict" },
+  { value: "pending-verdict", label: "Verdict queued" },
   { value: "failed", label: "Failures" },
 ] as const;
 
