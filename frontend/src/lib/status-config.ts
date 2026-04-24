@@ -56,8 +56,7 @@ export const STATUS_CONFIG: Record<
     description: "Task completed successfully",
     badgeClass:
       "bg-emerald-500/90 text-white border-emerald-400 hover:bg-emerald-600",
-    matrixClass:
-      "bg-paper-pass text-white border-paper-pass hover:opacity-90",
+    matrixClass: "bg-paper-pass text-white border-paper-pass hover:opacity-90",
     bracketClass: "bg-emerald-600 text-white",
     panelBadgeClass: "bg-emerald-500/20 text-emerald-400 border-emerald-500/50",
   },
@@ -81,8 +80,7 @@ export const STATUS_CONFIG: Record<
     symbol: "✗",
     description: "Task did not pass",
     badgeClass: "bg-red-600/90 text-white border-red-500 hover:bg-red-700",
-    matrixClass:
-      "bg-paper-fail text-white border-paper-fail hover:opacity-90",
+    matrixClass: "bg-paper-fail text-white border-paper-fail hover:opacity-90",
     bracketClass: "bg-red-600 text-white",
     panelBadgeClass: "bg-red-500/20 text-red-400 border-red-500/50",
   },
@@ -95,7 +93,7 @@ export const STATUS_CONFIG: Record<
     badgeClass:
       "bg-yellow-500/90 text-gray-900 border-yellow-400 hover:bg-yellow-600",
     matrixClass:
-      "bg-[color:var(--paper-error-bg)] text-paper-error border-[color:color-mix(in_oklch,var(--paper-error),transparent_60%)] hover:opacity-90",
+      "bg-yellow-500 text-slate-900 border-yellow-500 hover:bg-yellow-500/90!",
     bracketClass: "bg-yellow-500 text-gray-900",
     panelBadgeClass: "bg-yellow-500/20 text-yellow-400 border-yellow-500/50",
   },
