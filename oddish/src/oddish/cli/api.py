@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import shutil
@@ -8,6 +9,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from fnmatch import fnmatch
 from pathlib import Path
 from collections.abc import Iterable
 from typing import Any, cast
@@ -27,13 +29,11 @@ from rich.progress import (
 from rich.table import Table
 
 from harbor.models.environment_type import EnvironmentType
+from harbor.models.job.config import DatasetConfig
 from harbor.models.task.paths import TaskPaths
 from harbor.models.task.task import Task
-from harbor.models.registry import RemoteRegistryInfo
 from harbor.models.trial.config import AgentConfig
 from harbor.models.trial.result import TrialResult
-from harbor.models.job.config import LocalDatasetConfig, RegistryDatasetConfig
-from harbor.dataset.client import DatasetClient
 from harbor.viewer.scanner import JobScanner
 
 from oddish.cli.config import get_auth_headers, error_console
@@ -125,15 +125,15 @@ def get_task_paths_from_local(
     exclude_task_names: list[str] | None = None,
     n_tasks: int | None = None,
 ) -> list[Path]:
-    """Get task paths from a local dataset directory using Harbor's LocalDatasetConfig."""
-    config = LocalDatasetConfig(
+    """Get task paths from a local dataset directory using Harbor's DatasetConfig."""
+    config = DatasetConfig(
         path=dataset_path,
         task_names=task_names,
         exclude_task_names=exclude_task_names,
         n_tasks=n_tasks,
     )
-    task_configs = config.get_task_configs()
-    return [tc.path for tc in task_configs]
+    task_configs = asyncio.run(config.get_task_configs())
+    return [tc.path for tc in task_configs if tc.path is not None]
 
 
 def get_task_paths_from_registry(
@@ -144,7 +144,7 @@ def get_task_paths_from_registry(
     n_tasks: int | None = None,
     quiet: bool = False,
 ) -> list[Path]:
-    """Get task paths from Harbor registry using Harbor's RegistryDatasetConfig."""
+    """Download a dataset from the Harbor registry and return local task paths."""
     # Parse name@version format
     if "@" in dataset_name and version is None:
         dataset_name, version = dataset_name.split("@", 1)
@@ -155,23 +155,37 @@ def get_task_paths_from_registry(
         )
 
     try:
-        config = RegistryDatasetConfig(
-            registry=RemoteRegistryInfo(),
-            name=dataset_name,
-            version=version,
-            task_names=task_names,
-            exclude_task_names=exclude_task_names,
-            n_tasks=n_tasks,
-        )
+        if "/" in dataset_name:
+            from harbor.registry.client.package import PackageDatasetClient
 
-        # Use DatasetClient to download and get actual local paths
-        client = DatasetClient()
-        downloaded_tasks = client.download_dataset_from_config(config)
+            client = PackageDatasetClient()
+            dataset_ref = f"{dataset_name}@{version or 'latest'}"
+        else:
+            from harbor.registry.client.factory import RegistryClientFactory
+
+            client = RegistryClientFactory.create()
+            dataset_ref = f"{dataset_name}@{version}" if version else dataset_name
+
+        items = asyncio.run(client.download_dataset(dataset_ref))
+        paths: list[Path] = [item.downloaded_path for item in items]
+
+        if task_names:
+            paths = [
+                p for p in paths if any(fnmatch(p.name, pat) for pat in task_names)
+            ]
+        if exclude_task_names:
+            paths = [
+                p
+                for p in paths
+                if not any(fnmatch(p.name, pat) for pat in exclude_task_names)
+            ]
+        if n_tasks is not None:
+            paths = paths[:n_tasks]
 
         if not quiet:
-            console.print(f"[green]Downloaded {len(downloaded_tasks)} tasks[/green]")
+            console.print(f"[green]Downloaded {len(paths)} tasks[/green]")
 
-        return [task.local_path for task in downloaded_tasks]
+        return paths
 
     except Exception as e:
         error_console.print(f"[red]Failed to download dataset:[/red] {e}")
@@ -202,11 +216,11 @@ def resolve_local_task_paths(
     Supports three input modes:
 
     - ``dataset`` (registry name, e.g. ``swebench@1.0``) -- downloads
-      tasks via Harbor's ``DatasetClient``.
+      tasks via Harbor's registry client.
     - Positional ``path`` or ``--path`` pointing at a single Harbor
       task dir -- returns ``[path]``.
     - The same flags pointing at a *dataset directory* of task dirs --
-      enumerates + filters via Harbor's ``LocalDatasetConfig``.
+      enumerates + filters via Harbor's ``DatasetConfig``.
 
     In all three cases every candidate is validated with
     :func:`validate_tasks` so callers can trust the returned paths are
