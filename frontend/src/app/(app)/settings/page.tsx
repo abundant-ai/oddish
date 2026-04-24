@@ -66,7 +66,7 @@ const clerkProfileAppearance = {
   variables: {
     colorBackground: "hsl(var(--card))",
     colorText: "hsl(var(--foreground))",
-    colorTextSecondary: "hsl(var(--muted-foreground))",
+    colorTextSecondary: "hsl(var(--foreground) / 0.78)",
     colorPrimary: "hsl(var(--primary))",
     colorDanger: "hsl(var(--destructive))",
     colorInputBackground: "hsl(var(--background))",
@@ -85,13 +85,25 @@ const clerkProfileAppearance = {
     profilePage: "gap-0",
     dividerRow: "hidden",
     organizationProfilePage: "gap-0",
+    header: "text-foreground",
     headerTitle: "text-foreground",
     headerSubtitle: "text-muted-foreground",
+    profileSection: "text-foreground",
     profileSectionTitle: "text-foreground",
+    profileSectionTitleText: "text-foreground font-medium",
+    profileSectionSubtitleText: "text-muted-foreground",
+    profileSectionContent: "text-foreground",
+    profileSectionItem: "text-foreground",
     profileSectionPrimaryButton:
       "bg-primary text-primary-foreground hover:bg-primary/90",
     profileSectionSecondaryButton:
       "border border-border text-foreground hover:bg-muted",
+    activeDevice: "text-foreground",
+    activeDeviceListItem: "text-foreground",
+    userPreviewMainIdentifier: "text-foreground",
+    userPreviewSecondaryIdentifier: "text-muted-foreground",
+    organizationPreviewMainIdentifier: "text-foreground",
+    organizationPreviewSecondaryIdentifier: "text-muted-foreground",
     formButtonPrimary: "bg-primary text-primary-foreground hover:bg-primary/90",
     formFieldLabel: "text-foreground",
     formFieldInput:
@@ -702,26 +714,40 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <Tabs value={tab} onValueChange={handleTabChange} className="space-y-4">
+      <Tabs value={tab} onValueChange={handleTabChange} className="space-y-6">
         <TabsList className="grid w-full max-w-xl grid-cols-3">
           <TabsTrigger value="profile">Profile</TabsTrigger>
           <TabsTrigger value="workspace">Workspace</TabsTrigger>
           <TabsTrigger value="api-keys">API Keys</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="profile" className="space-y-6">
-          <ProfileManagementCard />
-        </TabsContent>
+        <div className="relative min-h-[640px]">
+          <TabsContent
+            forceMount
+            value="profile"
+            className="mt-0 w-full space-y-6"
+          >
+            <ProfileManagementCard />
+          </TabsContent>
 
-        <TabsContent value="workspace" className="space-y-6">
-          <WorkspaceManagementSection />
-        </TabsContent>
+          <TabsContent
+            forceMount
+            value="workspace"
+            className="mt-0 w-full space-y-6"
+          >
+            <WorkspaceManagementSection />
+          </TabsContent>
 
-        <TabsContent value="api-keys" className="space-y-6">
-          <div className="grid gap-6">
-            <APIKeysCard />
-          </div>
-        </TabsContent>
+          <TabsContent
+            forceMount
+            value="api-keys"
+            className="mt-0 w-full space-y-6"
+          >
+            <div className="grid gap-6">
+              <APIKeysCard />
+            </div>
+          </TabsContent>
+        </div>
       </Tabs>
     </div>
   );
