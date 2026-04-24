@@ -1881,7 +1881,7 @@ export function ExperimentTrialsTable({
               <TableHeader className="sticky top-0 z-20 bg-[color:var(--paper-surface-2)]">
                 <TableRow className="border-b border-[color:var(--paper-line)] hover:bg-transparent">
                   <TableHead
-                    className="relative sticky left-0 z-30 h-auto border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] py-3 font-mono font-bold text-[color:var(--paper-ink)]"
+                    className="relative sticky left-0 z-30 h-auto border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-3 py-3 font-mono font-bold text-[color:var(--paper-ink)] [&:has([role=checkbox])]:pr-3"
                     style={{ width: getDisplayedWidth("task") }}
                   >
                     <div className="flex items-center gap-2">
@@ -2080,7 +2080,7 @@ export function ExperimentTrialsTable({
                       className="group bg-[color:var(--paper-surface)] hover:bg-[color:var(--paper-surface-2)] [&_td]:hover:!bg-[color:var(--paper-surface-2)]"
                     >
                       <TableCell
-                        className="sticky left-0 z-10 border-b border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3.5 py-2.5 font-mono text-xs text-[color:var(--paper-ink)]"
+                        className="sticky left-0 z-10 border-b border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3.5 py-2.5 font-mono text-xs text-[color:var(--paper-ink)] [&:has([role=checkbox])]:pr-3.5"
                         style={{
                           width: getDisplayedWidth("task"),
                         }}
