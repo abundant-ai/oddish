@@ -317,7 +317,7 @@ def format_experiment_comment(
     lines.append("")
 
     if any(t.verdict_status for t in tasks):
-        lines.append("#### Task Verdicts")
+        lines.append("#### QA Verdicts")
         lines.append("")
         lines.append("| Task | Trials | Verdict |")
         lines.append("|------|--------|---------|")

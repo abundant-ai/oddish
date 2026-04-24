@@ -74,7 +74,7 @@ const KIND_DISPLAY: Record<
     accent: "text-purple-400",
   },
   VERDICT: {
-    label: "Task Verdict",
+    label: "QA Verdict",
     description: "Cross-trial synthesis once analyses complete",
     Icon: Gavel,
     accent: "text-amber-400",

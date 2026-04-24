@@ -424,7 +424,7 @@ const PIPELINE_KIND_DISPLAY: Record<
     accentBorder: "border-purple-500/30",
   },
   VERDICT: {
-    label: "Task Verdict",
+    label: "QA Verdict",
     description: "Cross-trial synthesis",
     Icon: Gavel,
     accentText: "text-amber-500 dark:text-amber-300",
