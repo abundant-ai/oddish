@@ -1,4 +1,4 @@
-@import 'tailwindcss';
+@import "tailwindcss";
 
 @plugin 'tailwindcss-animate';
 
@@ -13,8 +13,7 @@
   --radius-sm: calc(var(--radius) - 4px);
 
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
-  --font-mono:
-    var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
   --font-display: var(--font-fraunces), Georgia, serif;
 
   --color-background: hsl(var(--background));
@@ -121,12 +120,12 @@
      *
      * These values mirror the design reference's oklch tokens.
      */
-    --paper-bg: oklch(96.2% 0.015 72);
-    --paper-bg-2: oklch(94% 0.018 72);
-    --paper-surface: oklch(98.2% 0.01 72);
-    --paper-surface-2: oklch(96.5% 0.012 72);
-    --paper-line: oklch(86% 0.015 70);
-    --paper-line-2: oklch(90.5% 0.013 72);
+    --paper-bg: oklch(94% 0.027 78);
+    --paper-bg-2: oklch(91.5% 0.032 78);
+    --paper-surface: oklch(97.4% 0.014 78);
+    --paper-surface-2: oklch(95.4% 0.018 78);
+    --paper-line: oklch(84.5% 0.02 74);
+    --paper-line-2: oklch(88.5% 0.018 76);
 
     --paper-ink: oklch(22% 0.018 60);
     --paper-ink-2: oklch(38% 0.014 60);
@@ -158,24 +157,24 @@
      * approximate the Paper oklch palette so the entire app reads as
      * one coherent editorial surface.
      */
-    --background: 34 30% 94%;
+    --background: 39 44% 91%;
     --foreground: 24 14% 18%;
-    --card: 34 28% 97%;
+    --card: 38 38% 96%;
     --card-foreground: 24 14% 18%;
-    --popover: 34 28% 97%;
+    --popover: 38 38% 96%;
     --popover-foreground: 24 14% 18%;
     --primary: 24 14% 22%;
     --primary-foreground: 34 30% 96%;
-    --secondary: 34 24% 92%;
+    --secondary: 39 34% 89%;
     --secondary-foreground: 24 14% 22%;
-    --muted: 34 22% 91%;
+    --muted: 39 30% 88%;
     --muted-foreground: 24 10% 42%;
-    --accent: 34 22% 90%;
+    --accent: 39 30% 88%;
     --accent-foreground: 24 14% 22%;
     --destructive: 15 65% 50%;
     --destructive-foreground: 34 30% 96%;
-    --border: 34 20% 84%;
-    --input: 34 20% 84%;
+    --border: 38 24% 81%;
+    --input: 38 24% 81%;
     --ring: 24 14% 28%;
     --chart-1: 150 40% 40%;
     --chart-2: 28 60% 48%;
@@ -241,7 +240,23 @@
   }
   body {
     @apply bg-background text-foreground;
+    background:
+      radial-gradient(
+        circle at 20% 0%,
+        hsl(42 60% 94% / 0.9),
+        transparent 34rem
+      ),
+      linear-gradient(180deg, hsl(39 48% 92%), hsl(var(--background)) 18rem);
     overflow-x: clip;
+  }
+  .dark body {
+    background:
+      radial-gradient(
+        circle at 20% 0%,
+        hsl(35 10% 20% / 0.45),
+        transparent 34rem
+      ),
+      linear-gradient(180deg, hsl(30 8% 16%), hsl(var(--background)) 18rem);
   }
   /*
    * react-remove-scroll-bar injects a \3c style> tag with
