@@ -1,6 +1,16 @@
 "use client";
 
-import { memo, useMemo } from "react";
+import { memo, useCallback, useMemo } from "react";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import type { TooltipContentProps } from "recharts";
 import type { Task, Trial } from "@/lib/types";
 import { calculatePassAtKCurve, type AgentPassAtKStats } from "@/lib/pass-at-k";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
@@ -31,9 +41,6 @@ interface PassAtKGraphProps {
   onHoverAgent?: (key: string | null) => void;
 }
 
-/**
- * Transform tasks with trials into agent-centric stats for pass@k calculation
- */
 function buildAgentStats(
   tasks: Task[],
   agentSummaries: AgentSummary[],
@@ -87,62 +94,118 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   hoverAgent,
   onHoverAgent,
 }: PassAtKGraphProps) {
-  const {
-    series,
-    maxK,
-    hasMultipleAttempts,
-    agentColorByKey,
-    agentLabelByKey,
-  } = useMemo(() => {
-    const { agentStats, maxN } = buildAgentStats(tasks, agentSummaries);
-    const curveData = maxN > 1 ? calculatePassAtKCurve(agentStats, maxN) : [];
+  const visibleAgentSummaries = useMemo(
+    () => agentSummaries.filter((summary) => !hiddenAgents.has(summary.key)),
+    [agentSummaries, hiddenAgents],
+  );
 
-    const colorMap: Record<string, string> = {};
-    const labelMap: Record<string, string> = {};
-    for (let i = 0; i < agentSummaries.length; i++) {
-      colorMap[agentSummaries[i].key] = AGENT_COLORS[i % AGENT_COLORS.length];
-      labelMap[agentSummaries[i].key] = agentSummaries[i].label;
-    }
+  const { data, maxK, hasMultipleAttempts, agentColorByKey, agentLabelByKey } =
+    useMemo(() => {
+      const { agentStats, maxN } = buildAgentStats(tasks, agentSummaries);
+      const curveData = maxN > 1 ? calculatePassAtKCurve(agentStats, maxN) : [];
 
-    const s = agentSummaries
-      .filter((summary) => !hiddenAgents.has(summary.key))
-      .map((summary) => ({
-        key: summary.key,
-        label: summary.label,
-        color: colorMap[summary.key],
-        points: curveData.map((row) => {
-          const raw = (row as Record<string, unknown>)[summary.key];
-          return typeof raw === "number" && Number.isFinite(raw)
-            ? Math.max(0, Math.min(1, raw))
-            : 0;
-        }),
-      }));
+      const colorMap: Record<string, string> = {};
+      const labelMap: Record<string, string> = {};
+      for (let i = 0; i < agentSummaries.length; i++) {
+        colorMap[agentSummaries[i].key] = AGENT_COLORS[i % AGENT_COLORS.length];
+        labelMap[agentSummaries[i].key] = agentSummaries[i].label;
+      }
 
-    return {
-      series: s,
-      maxK: maxN,
-      hasMultipleAttempts: maxN > 1 && curveData.length > 0,
-      agentColorByKey: colorMap,
-      agentLabelByKey: labelMap,
-    };
-  }, [tasks, agentSummaries, hiddenAgents]);
+      return {
+        data: curveData,
+        maxK: maxN,
+        hasMultipleAttempts: maxN > 1 && curveData.length > 0,
+        agentColorByKey: colorMap,
+        agentLabelByKey: labelMap,
+      };
+    }, [tasks, agentSummaries]);
+
+  const renderTooltip = useCallback(
+    (props: TooltipContentProps) => {
+      const { active, payload, label } = props;
+      if (!active || !payload || payload.length === 0) return null;
+
+      const sorted = [...payload]
+        .filter((entry) => typeof entry.value === "number")
+        .sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0));
+
+      return (
+        <div
+          style={{
+            backgroundColor: "var(--paper-surface)",
+            border: "1px solid var(--paper-line)",
+            borderRadius: "8px",
+            padding: "8px 12px",
+            fontSize: "11.5px",
+            fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
+            boxShadow: "0 4px 14px rgba(0,0,0,0.08)",
+            maxHeight: "300px",
+            overflowY: "auto",
+            color: "var(--paper-ink)",
+          }}
+        >
+          <div
+            style={{
+              marginBottom: "4px",
+              fontWeight: 600,
+              color: "var(--paper-ink-2)",
+            }}
+          >
+            k = {label}
+          </div>
+          {sorted.map((entry) => {
+            const key = entry.dataKey as string;
+            const isHovered = hoverAgent != null && hoverAgent === key;
+            return (
+              <div
+                key={key}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "1px 0",
+                  whiteSpace: "nowrap",
+                  fontWeight: isHovered ? 600 : 400,
+                }}
+              >
+                <span
+                  style={{
+                    width: "8px",
+                    height: "8px",
+                    borderRadius: "2px",
+                    backgroundColor:
+                      agentColorByKey[key] ??
+                      (typeof entry.color === "string"
+                        ? entry.color
+                        : "var(--paper-ink-3)"),
+                    flexShrink: 0,
+                  }}
+                />
+                <span style={{ color: "var(--paper-ink-2)" }}>
+                  {agentLabelByKey[key] ?? key}
+                </span>
+                <span
+                  style={{
+                    marginLeft: "auto",
+                    paddingLeft: "12px",
+                    fontWeight: 500,
+                    color: "var(--paper-ink)",
+                  }}
+                >
+                  {`${((Number(entry.value) || 0) * 100).toFixed(1)}%`}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      );
+    },
+    [agentColorByKey, agentLabelByKey, hoverAgent],
+  );
 
   if (!hasMultipleAttempts) {
     return null;
   }
-
-  // SVG chart geometry (matches design reference viewBox 400x180)
-  const W = 400;
-  const H = 180;
-  const padL = 34;
-  const padR = 12;
-  const padT = 10;
-  const padB = 28;
-  const cw = W - padL - padR;
-  const ch = H - padT - padB;
-  const xAt = (k: number) => padL + ((k - 1) / Math.max(1, maxK - 1)) * cw;
-  const yAt = (v: number) => padT + (1 - v) * ch;
-  const gridVals = [0, 0.25, 0.5, 0.75, 1.0];
 
   return (
     <div className="flex h-full min-w-0 flex-col rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3">
@@ -155,140 +218,88 @@ export const PassAtKGraph = memo(function PassAtKGraph({
         </span>
       </div>
 
-      <div className="relative w-full" style={{ aspectRatio: "16 / 5.5" }}>
-        <svg
-          viewBox={`0 0 ${W} ${H}`}
-          preserveAspectRatio="none"
-          className="block h-full w-full overflow-visible"
-          role="img"
-          aria-label="Pass@k line chart"
-        >
-          {/* Grid lines + y labels */}
-          {gridVals.map((v) => (
-            <g key={v}>
-              <line
-                x1={padL}
-                x2={W - padR}
-                y1={yAt(v)}
-                y2={yAt(v)}
-                stroke="var(--paper-line-2)"
-                strokeWidth={1}
-                strokeDasharray="2 4"
-              />
-              <text
-                x={padL - 6}
-                y={yAt(v) + 3.5}
-                textAnchor="end"
-                style={{
-                  fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
-                  fontSize: 9.5,
-                  fill: "var(--paper-ink-3)",
-                }}
-              >
-                {Math.round(v * 100)}%
-              </text>
-            </g>
-          ))}
-          {/* X axis */}
-          <line
-            x1={padL}
-            x2={W - padR}
-            y1={padT + ch}
-            y2={padT + ch}
-            stroke="var(--paper-line)"
-            strokeWidth={1}
-          />
-          {Array.from({ length: maxK }, (_, i) => i + 1).map((k) => (
-            <text
-              key={k}
-              x={xAt(k)}
-              y={padT + ch + 15}
-              textAnchor="middle"
-              style={{
-                fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
+      <div className="h-52 min-w-0">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart
+            data={data}
+            margin={{ top: 5, right: 16, left: 0, bottom: 5 }}
+          >
+            <CartesianGrid
+              strokeDasharray="2 4"
+              stroke="var(--paper-line-2)"
+              vertical={false}
+            />
+            <XAxis
+              dataKey="k"
+              tick={{
                 fontSize: 10.5,
                 fill: "var(--paper-ink-2)",
+                fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
               }}
-            >
-              {k}
-            </text>
-          ))}
-          <text
-            x={W - padR}
-            y={padT + ch + 24}
-            textAnchor="end"
-            style={{
-              fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
-              fontSize: 10,
-              fontStyle: "italic",
-              fill: "var(--paper-ink-3)",
-            }}
-          >
-            k
-          </text>
-
-          {/* Series paths */}
-          {series.map((s) => {
-            const dim = hoverAgent != null && hoverAgent !== s.key;
-            const hi = hoverAgent === s.key;
-            const d = s.points
-              .map(
-                (v, i) =>
-                  `${i === 0 ? "M" : "L"} ${xAt(i + 1).toFixed(2)} ${yAt(
-                    v,
-                  ).toFixed(2)}`,
-              )
-              .join(" ");
-            return (
-              <path
-                key={s.key}
-                d={d}
-                fill="none"
-                stroke={s.color}
-                strokeWidth={hi ? 2.6 : 2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                opacity={dim ? 0.18 : 1}
-                onMouseEnter={() => onHoverAgent?.(s.key)}
-                onMouseLeave={() => onHoverAgent?.(null)}
-                style={{
-                  cursor: "pointer",
-                  transition: "stroke-width .15s, opacity .15s",
-                }}
-              />
-            );
-          })}
-          {/* Series dots (on top of paths so they remain interactive) */}
-          {series.map((s) => {
-            const dim = hoverAgent != null && hoverAgent !== s.key;
-            const hi = hoverAgent === s.key;
-            return (
-              <g
-                key={`${s.key}-dots`}
-                onMouseEnter={() => onHoverAgent?.(s.key)}
-                onMouseLeave={() => onHoverAgent?.(null)}
-              >
-                {s.points.map((v, i) => (
-                  <circle
-                    key={i}
-                    cx={xAt(i + 1)}
-                    cy={yAt(v)}
-                    r={hi ? 4.5 : 3.2}
-                    fill="var(--paper-surface)"
-                    stroke={s.color}
-                    strokeWidth={2}
-                    opacity={dim ? 0.22 : 1}
-                  >
-                    <title>
-                      {agentLabelByKey[s.key] ?? s.key} · k={i + 1} ·{" "}
-                      {(v * 100).toFixed(0)}%
-                    </title>
-                  </circle>
-                ))}
-              </g>
-            );
-          })}
-        </svg>
+              stroke="var(--paper-line)"
+              label={{
+                value: "k",
+                position: "insideBottomRight",
+                offset: -5,
+                fontSize: 10,
+                fontStyle: "italic",
+                fill: "var(--paper-ink-3)",
+              }}
+            />
+            <YAxis
+              domain={[0, 1]}
+              tickFormatter={(v) => `${Math.round(v * 100)}%`}
+              tick={{
+                fontSize: 9.5,
+                fill: "var(--paper-ink-3)",
+                fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
+              }}
+              stroke="var(--paper-line)"
+              width={40}
+            />
+            <Tooltip
+              content={renderTooltip}
+              wrapperStyle={{ zIndex: 10, outline: "none" }}
+              cursor={{
+                stroke: "var(--paper-ink-4)",
+                strokeWidth: 1,
+                strokeDasharray: "3 3",
+              }}
+            />
+            {visibleAgentSummaries.map((summary) => {
+              const color = agentColorByKey[summary.key] ?? AGENT_COLORS[0];
+              const isHovered = hoverAgent === summary.key;
+              const isDimmed = hoverAgent != null && hoverAgent !== summary.key;
+              return (
+                <Line
+                  key={summary.key}
+                  type="monotone"
+                  dataKey={summary.key}
+                  stroke={color}
+                  strokeWidth={isHovered ? 2.6 : 2}
+                  strokeOpacity={isDimmed ? 0.2 : 1}
+                  dot={{
+                    r: isHovered ? 4 : 3,
+                    fill: "var(--paper-surface)",
+                    stroke: color,
+                    strokeWidth: 2,
+                    strokeOpacity: isDimmed ? 0.25 : 1,
+                  }}
+                  activeDot={{
+                    r: 5,
+                    fill: "var(--paper-surface)",
+                    stroke: color,
+                    strokeWidth: 2,
+                  }}
+                  isAnimationActive={false}
+                  onMouseEnter={() => onHoverAgent?.(summary.key)}
+                  onMouseLeave={() => onHoverAgent?.(null)}
+                  style={{ cursor: "pointer" }}
+                />
+              );
+            })}
+          </LineChart>
+        </ResponsiveContainer>
       </div>
 
       <AgentLegend
