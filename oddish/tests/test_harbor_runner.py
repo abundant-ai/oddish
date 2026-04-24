@@ -26,7 +26,7 @@ def test_check_local_storage_preflight_reports_low_bytes(monkeypatch, tmp_path):
     monkeypatch.setattr(
         harbor_runner.os,
         "statvfs",
-        lambda path: SimpleNamespace(f_favail=10_000, f_ffree=10_000),
+        lambda path: SimpleNamespace(f_files=100_000, f_favail=10_000, f_ffree=10_000),
     )
 
     error = harbor_runner._check_local_storage_preflight(
@@ -53,7 +53,7 @@ def test_check_local_storage_preflight_reports_low_inodes(monkeypatch, tmp_path)
     monkeypatch.setattr(
         harbor_runner.os,
         "statvfs",
-        lambda path: SimpleNamespace(f_favail=12, f_ffree=12),
+        lambda path: SimpleNamespace(f_files=100_000, f_favail=12, f_ffree=12),
     )
 
     error = harbor_runner._check_local_storage_preflight(
@@ -68,6 +68,34 @@ def test_check_local_storage_preflight_reports_low_inodes(monkeypatch, tmp_path)
     assert "minimum 1024 required" in error
 
 
+def test_check_local_storage_preflight_skips_inode_check_when_no_table(
+    monkeypatch, tmp_path
+):
+    """Modal's ephemeral /tmp reports f_files == 0; that is unlimited, not 0 free."""
+    monkeypatch.setattr(
+        harbor_runner.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
+    )
+    monkeypatch.setattr(
+        harbor_runner.shutil,
+        "disk_usage",
+        lambda path: _DISK_USAGE(total=10, used=1, free=6 * 1024**3),
+    )
+    monkeypatch.setattr(
+        harbor_runner.os,
+        "statvfs",
+        lambda path: SimpleNamespace(f_files=0, f_favail=0, f_ffree=0),
+    )
+
+    error = harbor_runner._check_local_storage_preflight(
+        tmp_path / "harbor",
+        include_temp_root=True,
+        min_required_gb=5.0,
+        min_required_inodes=1024,
+    )
+
+    assert error is None
+
+
 def test_check_local_storage_preflight_reports_probe_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(
         harbor_runner.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
@@ -80,7 +108,7 @@ def test_check_local_storage_preflight_reports_probe_failure(monkeypatch, tmp_pa
     monkeypatch.setattr(
         harbor_runner.os,
         "statvfs",
-        lambda path: SimpleNamespace(f_favail=10_000, f_ffree=10_000),
+        lambda path: SimpleNamespace(f_files=100_000, f_favail=10_000, f_ffree=10_000),
     )
 
     real_write_text = Path.write_text
@@ -240,3 +268,42 @@ def test_cleanup_uploaded_job_dir_prunes_empty_parent(monkeypatch, tmp_path):
     assert base_dir.exists()
     assert not job_dir.exists()
     assert not job_dir.parent.exists()
+
+
+def test_cleanup_trial_wrapper_dirs_removes_leaked_wrappers(monkeypatch, tmp_path):
+    """Harbor wrapper dirs left behind by failure paths are swept."""
+    base_dir = tmp_path / "harbor"
+    trial_id = "trial-leak"
+    wrapper_a = base_dir / f"task-a.nop.{trial_id}"
+    wrapper_b = base_dir / f"task-b.claude-code.{trial_id}"
+    unrelated = base_dir / "task-c.nop.other-trial"
+    for d in (wrapper_a, wrapper_b, unrelated):
+        (d / "some-timestamp").mkdir(parents=True)
+        (d / "some-timestamp" / "result.json").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(trial_handler.settings, "harbor_jobs_dir", str(base_dir))
+
+    trial_handler._cleanup_trial_wrapper_dirs(trial_id)
+
+    assert base_dir.exists()
+    assert not wrapper_a.exists()
+    assert not wrapper_b.exists()
+    assert unrelated.exists()
+
+
+def test_cleanup_trial_wrapper_dirs_is_noop_when_empty(monkeypatch, tmp_path):
+    base_dir = tmp_path / "harbor"
+    base_dir.mkdir()
+    monkeypatch.setattr(trial_handler.settings, "harbor_jobs_dir", str(base_dir))
+
+    trial_handler._cleanup_trial_wrapper_dirs("trial-missing")
+
+    assert base_dir.exists()
+
+
+def test_cleanup_trial_wrapper_dirs_skips_missing_base(monkeypatch, tmp_path):
+    base_dir = tmp_path / "harbor-does-not-exist"
+    monkeypatch.setattr(trial_handler.settings, "harbor_jobs_dir", str(base_dir))
+
+    # Should not raise even though the base directory never existed.
+    trial_handler._cleanup_trial_wrapper_dirs("trial-missing")

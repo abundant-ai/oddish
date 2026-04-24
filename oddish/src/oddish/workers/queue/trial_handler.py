@@ -119,6 +119,49 @@ def _cleanup_uploaded_job_dir(job_dir: Path | None, trial_id: str) -> None:
         console.print(f"[yellow]Failed to cleanup local Harbor artifacts: {e}[/yellow]")
 
 
+def _cleanup_trial_wrapper_dirs(trial_id: str) -> None:
+    """Remove any Harbor wrapper dirs left over for this trial.
+
+    ``harbor_runner`` creates ``{task_name}.{agent}.{trial_id}`` under
+    ``harbor_jobs_dir`` for each run. ``_cleanup_uploaded_job_dir`` prunes
+    that wrapper on the happy path (S3 upload succeeded). This is the
+    belt-and-suspenders sweep for the other paths — harness exceptions,
+    worker cancellations, S3 upload failures, or a Harbor crash before
+    the timestamp job dir exists — so warm Modal containers reused for
+    subsequent ``process_single_job`` inputs don't accumulate wrapper
+    directories and exhaust inodes on the underlying host filesystem.
+
+    Safe to call at any point: a no-op when nothing matches (which is the
+    normal case after a successful upload cleanup).
+    """
+    try:
+        base_dir = Path(settings.harbor_jobs_dir).resolve()
+        if not base_dir.exists():
+            return
+        removed: list[Path] = []
+        for wrapper in base_dir.glob(f"*.{trial_id}"):
+            try:
+                resolved = wrapper.resolve()
+                if not resolved.is_relative_to(base_dir) or resolved == base_dir:
+                    continue
+                shutil.rmtree(resolved, ignore_errors=True)
+                removed.append(resolved)
+            except Exception as inner_exc:
+                console.print(
+                    "[yellow]Failed to remove Harbor wrapper dir "
+                    f"{wrapper} for {trial_id}: {inner_exc}[/yellow]"
+                )
+        if removed:
+            console.print(
+                f"[dim]Swept {len(removed)} Harbor wrapper dir(s) for "
+                f"{trial_id}[/dim]"
+            )
+    except Exception as exc:
+        console.print(
+            f"[yellow]Harbor wrapper sweep failed for {trial_id}: {exc}[/yellow]"
+        )
+
+
 # Maximum length we persist for last_heartbeat_error. We truncate aggressively
 # because it's for operator diagnosis, not full stack traces.
 _HEARTBEAT_ERROR_MAX_LEN = 500
@@ -726,36 +769,51 @@ async def run_trial_job(
     # Ensure Harbor scratch directories exist before execution starts.
     os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
 
-    execution = await _execute_trial(
-        trial_id=trial_id,
-        task_path_to_run=task_path_to_run,
-        temp_task_dir=temp_task_dir,
-        prepared_trial=prepared_trial,
-        worker_id=worker_id,
-        queue_slot=queue_slot,
-        worker_job_id=worker_job_id,
-    )
-
-    # Upload trial results to S3.
-    #
-    trial_s3_key = None
     should_upload_to_s3 = bool(resolved_task_s3_key)
-    if should_upload_to_s3 and execution.outcome and execution.outcome.job_dir:
-        try:
-            storage = get_storage_client()
-            trial_s3_key = await storage.upload_trial_results(
-                trial_id, execution.outcome.job_dir
-            )
-            console.print(f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]")
-            _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
-        except Exception as e:
-            console.print(f"[yellow]Failed to upload trial results to S3: {e}[/yellow]")
 
-    await asyncio.shield(
-        _store_trial_results(
+    try:
+        execution = await _execute_trial(
             trial_id=trial_id,
-            outcome=execution.outcome,
-            trial_s3_key=trial_s3_key,
-            execution_error=execution.execution_error,
+            task_path_to_run=task_path_to_run,
+            temp_task_dir=temp_task_dir,
+            prepared_trial=prepared_trial,
+            worker_id=worker_id,
+            queue_slot=queue_slot,
+            worker_job_id=worker_job_id,
         )
-    )
+
+        # Upload trial results to S3.
+        trial_s3_key = None
+        if should_upload_to_s3 and execution.outcome and execution.outcome.job_dir:
+            try:
+                storage = get_storage_client()
+                trial_s3_key = await storage.upload_trial_results(
+                    trial_id, execution.outcome.job_dir
+                )
+                console.print(
+                    f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]"
+                )
+                _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
+            except Exception as e:
+                console.print(
+                    f"[yellow]Failed to upload trial results to S3: {e}[/yellow]"
+                )
+
+        await asyncio.shield(
+            _store_trial_results(
+                trial_id=trial_id,
+                outcome=execution.outcome,
+                trial_s3_key=trial_s3_key,
+                execution_error=execution.execution_error,
+            )
+        )
+    finally:
+        # Backstop for the non-happy paths (harness exception, worker
+        # cancel, S3 upload failure, or Harbor dying before producing a
+        # job_dir). On Modal, ``process_single_job`` containers are warm
+        # and reused for subsequent queue inputs, so any wrapper dir we
+        # leave behind here accumulates on ephemeral ``/tmp`` and eats
+        # host inodes. Only runs when S3 is the source of truth so local
+        # dev trials (S3 disabled) keep their harbor-jobs output on disk.
+        if should_upload_to_s3:
+            _cleanup_trial_wrapper_dirs(trial_id)
