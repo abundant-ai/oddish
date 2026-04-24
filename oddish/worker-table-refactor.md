@@ -138,12 +138,12 @@ After:
 - `oddish/src/oddish/workers/queue/worker_job_dispatcher.py`:
   - `discover_active_worker_job_queue_keys()` — one query replacing
     the old three-way union.
-  - `get_worker_job_queue_counts(queue_keys)` — shape matches
-    legacy `{"queued", "picked"}` so downstream spawn code is
-    unchanged.
-  - `build_spawn_plan()` — round-robin across queue keys bounded
-    by per-key concurrency × per-tick budget; inlined from the
-    deleted `dispatch_planner`.
+  - `get_worker_job_org_queue_counts(queue_keys)` — returns queued
+    counts by `(org_id, queue_key)` plus running counts by queue key
+    for org-first fair-share planning.
+  - `build_spawn_plan()` — org-first round-robin with within-org
+    round-robin across queue keys, bounded by per-key concurrency ×
+    per-tick budget; inlined from the deleted `dispatch_planner`.
 - Tests: `tests/test_worker_jobs_runner.py` (19 cases — enqueue
   row shape, validation delegation, claim-SQL invariants, outcome
   recording, cancellation propagation, missing-handler fallback,

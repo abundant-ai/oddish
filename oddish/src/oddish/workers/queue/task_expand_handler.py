@@ -41,7 +41,6 @@ from oddish.db.storage import StorageClient, normalize_s3_relative_path
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
-TASK_EXPAND_TIMEOUT = 600  # 10 minutes
 TASK_EXPAND_HEARTBEAT_INTERVAL_SECONDS = 30
 
 _MAX_CONCURRENT_MEMBER_UPLOADS = 8

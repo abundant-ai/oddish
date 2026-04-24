@@ -14,7 +14,6 @@ from oddish.config import ANALYSIS_MODEL, VERDICT_MODEL
 from oddish.analyze._sdk_utils import Colors, print_process_stream
 
 from .models import (
-    BaselineResult,
     BaselineValidation,
     Classification,
     TaskVerdict,
@@ -393,14 +392,6 @@ class TrialClassifier:
 
         return classifications
 
-    def classify_trials_sync(
-        self,
-        trial_dirs: list[Path],
-        task_dir: Path,
-        console: "Console | None" = None,
-    ) -> list[TrialClassification]:
-        return asyncio.run(self.classify_trials(trial_dirs, task_dir, console))
-
 
 def _compute_task_verdict_openai(
     classifications: list[TrialClassification],
@@ -549,19 +540,4 @@ def compute_task_verdict(
         verbose,
         api_key,
         timeout,
-    )
-
-
-def classify_baseline_result(
-    agent: str,
-    reward: float | None,
-    error: str | None = None,
-) -> BaselineResult:
-    """Create a BaselineResult from agent run outcome."""
-    passed = reward == 1.0 if reward is not None else False
-    return BaselineResult(
-        agent=agent,  # type: ignore[arg-type]
-        passed=passed,
-        reward=reward,
-        error=error,
     )

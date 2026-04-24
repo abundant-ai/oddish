@@ -158,7 +158,7 @@ pip install oddish[all]       # everything including dev tools
 
 | File | Purpose |
 |------|---------|
-| `worker_job_dispatcher.py` | `discover_active_worker_job_queue_keys`, `get_worker_job_queue_counts`, `get_worker_job_org_queue_counts`, `build_spawn_plan` (org-first fair-share, with within-org round-robin across queue_keys) |
+| `worker_job_dispatcher.py` | `discover_active_worker_job_queue_keys`, `get_worker_job_org_queue_counts`, `build_spawn_plan` (org-first fair-share, with within-org round-robin across queue_keys) |
 | `worker_job_single_job.py` | `_CLAIM_WORKER_JOB_SQL`, `run_single_worker_job`, `heartbeat_worker_job` |
 | `trial_handler.py` / `analysis_handler.py` / `verdict_handler.py` | Per-kind execution bodies |
 | `cleanup.py` | Zombie reaper, stale-heartbeat sweep, stage safety nets, orphaned-slot release |
