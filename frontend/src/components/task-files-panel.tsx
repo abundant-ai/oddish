@@ -450,8 +450,8 @@ export function TaskFilesPanel({
   const analysisActionLabel = (task?.trials ?? []).some(
     (trial) => trial.analysis_status || trial.analysis,
   )
-    ? "Rerun analyses"
-    : "Run analyses";
+    ? "Rerun QA"
+    : "Run QA";
   const verdictActionLabel =
     verdictSource?.verdict_status || verdictSource?.verdict
       ? "Rerun verdict"
@@ -1451,7 +1451,7 @@ export function TaskFilesPanel({
                 <CardHeader className="px-4 pb-1 pt-2">
                   <CardTitle className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                     <Microscope className="h-3 w-3" />
-                    Task Verdict
+                    QA Verdict
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="px-4 pb-3">
