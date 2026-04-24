@@ -81,7 +81,6 @@ class JobStatus(str, Enum):
     - reward=None: No test result available (error occurred before/during verification)
     """
 
-    PENDING = "pending"
     QUEUED = "queued"
     RUNNING = "running"
     SUCCESS = "success"  # Execution completed (regardless of test result)
@@ -407,7 +406,7 @@ class TrialModel(Base):
 
     # Status
     status: Mapped[TrialStatus] = mapped_column(
-        SQLEnum(TrialStatus), default=TrialStatus.PENDING, nullable=False
+        SQLEnum(TrialStatus), default=TrialStatus.QUEUED, nullable=False
     )
     # Whether this trial ran on Oddish's worker runtime or was uploaded
     # from an external Harbor invocation via ``oddish import``.

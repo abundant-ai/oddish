@@ -418,7 +418,7 @@ export function TaskFilesPanel({
   const activeTrials = useMemo(() => {
     if (!task?.trials) return [];
     return task.trials.filter((trial) =>
-      ["running", "queued", "retrying", "pending"].includes(trial.status),
+      ["running", "queued", "retrying"].includes(trial.status),
     );
   }, [task]);
   const canCancelTask = allowRetry && activeTrials.length > 0;
@@ -428,7 +428,7 @@ export function TaskFilesPanel({
       (trial) => trial.status === "failed" || trial.status === "success",
     );
   const hasAnalysisInFlight = (task?.trials ?? []).some((trial) =>
-    ["pending", "queued", "running"].includes(trial.analysis_status ?? ""),
+    ["queued", "running"].includes(trial.analysis_status ?? ""),
   );
   const allAnalysesComplete =
     Boolean(task?.trials?.length) &&
@@ -437,7 +437,7 @@ export function TaskFilesPanel({
         trial.analysis_status === "success" ||
         trial.analysis_status === "failed",
     );
-  const verdictInFlight = ["pending", "queued", "running"].includes(
+  const verdictInFlight = ["queued", "running"].includes(
     verdictSource?.verdict_status ?? "",
   );
   const canRunTaskAnalysis =
@@ -1467,7 +1467,6 @@ export function TaskFilesPanel({
               <Card
                 className={
                   verdictSource?.verdict_status === "running" ||
-                  verdictSource?.verdict_status === "pending" ||
                   verdictSource?.verdict_status === "queued"
                     ? "border-blue-500/30 bg-blue-500/5"
                     : verdictSource?.verdict?.is_good
@@ -1488,7 +1487,6 @@ export function TaskFilesPanel({
                 <CardContent className="px-4 pb-3">
                   <div className="flex items-start gap-3">
                     {verdictSource?.verdict_status === "running" ||
-                    verdictSource?.verdict_status === "pending" ||
                     verdictSource?.verdict_status === "queued" ? (
                       <Loader2 className="mt-0.5 h-5 w-5 animate-spin text-blue-500" />
                     ) : verdictSource?.verdict?.is_good ? (
@@ -1504,7 +1502,6 @@ export function TaskFilesPanel({
                       <div className="flex items-center gap-2">
                         <span className="font-mono text-sm font-bold">
                           {verdictSource?.verdict_status === "running" ||
-                          verdictSource?.verdict_status === "pending" ||
                           verdictSource?.verdict_status === "queued"
                             ? "Computing verdict..."
                             : verdictSource?.verdict_status === "failed"

@@ -272,7 +272,6 @@ def status(
         verdict_status = result.get("verdict_status")
         if verdict_status:
             verdict_display = {
-                "pending": "[dim]pending[/dim]",
                 "queued": "[yellow]queued[/yellow]",
                 "running": "[blue]running[/blue]",
                 "success": "[green]done[/green]",
@@ -319,7 +318,7 @@ def status(
 
                 # Show analysis status if available
                 analysis_status = trial.get("analysis_status")
-                if analysis_status and analysis_status not in ("pending", None):
+                if analysis_status:
                     analysis_display = {
                         "queued": "[yellow]A:q[/yellow]",
                         "running": "[blue]A:run[/blue]",

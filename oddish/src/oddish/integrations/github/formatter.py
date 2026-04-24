@@ -44,7 +44,6 @@ class TaskSummary:
 
 def _status_emoji(status: str | None) -> str:
     return {
-        "pending": "\u23f3",
         "queued": "\u23f3",
         "running": "\U0001f504",
         "success": "\u2705",
@@ -94,7 +93,7 @@ def _classification_label(classification: str | None, subtype: str | None) -> st
 
 
 def _trial_status_cell(trial: TrialSummary) -> str:
-    if trial.status in ("queued", "pending"):
+    if trial.status == "queued":
         return "\u23f3 Queued"
     if trial.status == "running":
         return "\U0001f504 Running"
@@ -112,7 +111,7 @@ def _analysis_cell(
         return f"{label} ([View]({view_url}))"
     if trial.analysis_status == "running":
         return "\U0001f504 Analyzing..."
-    if trial.analysis_status in ("queued", "pending"):
+    if trial.analysis_status == "queued":
         return "\u23f3 Pending"
     if trial.analysis_status == "failed":
         return "\u274c Analysis failed"

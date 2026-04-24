@@ -1074,7 +1074,6 @@ def format_task_status(status: str) -> str:
 def format_trial_status(status: str, harbor_stage: str | None = None) -> str:
     """Format trial status with optional harbor stage."""
     style_map = {
-        "pending": "dim",
         "queued": "yellow",
         "running": "blue",
         "retrying": "yellow",
@@ -1092,7 +1091,6 @@ def format_trial_status(status: str, harbor_stage: str | None = None) -> str:
 def format_verdict_status(verdict_status: str) -> str:
     """Format verdict status with color coding."""
     style_map = {
-        "pending": "[dim]pending[/dim]",
         "queued": "[yellow]queued[/yellow]",
         "running": "[blue]running[/blue]",
         "success": "[green]done[/green]",
@@ -1462,7 +1460,6 @@ def watch_task(
                     verdict_status = result.get("verdict_status")
                     if verdict_status:
                         verdict_display = {
-                            "pending": "[dim]pending[/dim]",
                             "queued": "[yellow]queued[/yellow]",
                             "running": "[blue]running[/blue]",
                             "success": "[green]done[/green]",

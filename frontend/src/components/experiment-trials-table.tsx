@@ -149,7 +149,6 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "partial",
   "fail",
   "harness-error",
-  "pending",
 ];
 
 // Row-level filter modes. Inspired by sauron's "any/all pass@k=0" toggle:
@@ -305,7 +304,7 @@ function getAnalysisLegendKey(trial: Trial): AnalysisLegendKey | null {
   const status = trial.analysis_status;
   const classification = trial.analysis?.classification;
 
-  if (status === "pending" || status === "queued" || status === "running") {
+  if (status === "queued" || status === "running") {
     return "analyzing";
   }
 
@@ -340,7 +339,7 @@ function getAnalysisIndicator(trial: Trial): {
   const analysis = trial.analysis;
 
   // Analysis in progress - show pulsing indicator
-  if (status === "pending" || status === "queued" || status === "running") {
+  if (status === "queued" || status === "running") {
     return {
       dotClass: "bg-blue-400",
       animate: true,
@@ -506,7 +505,6 @@ export function ExperimentTrialsTable({
               value === "pass" ||
               value === "fail" ||
               value === "harness-error" ||
-              value === "pending" ||
               value === "queued" ||
               value === "running",
           ),
@@ -845,7 +843,7 @@ export function ExperimentTrialsTable({
     () =>
       selectedTaskList.filter((task) =>
         (task.trials ?? []).some((trial) =>
-          ["running", "queued", "retrying", "pending"].includes(trial.status),
+          ["running", "queued", "retrying"].includes(trial.status),
         ),
       ),
     [selectedTaskList],
@@ -860,11 +858,9 @@ export function ExperimentTrialsTable({
           (trial) => trial.status === "failed" || trial.status === "success",
         );
         const hasAnalysisInFlight = trials.some((trial) =>
-          ["pending", "queued", "running"].includes(
-            trial.analysis_status ?? "",
-          ),
+          ["queued", "running"].includes(trial.analysis_status ?? ""),
         );
-        const verdictInFlight = ["pending", "queued", "running"].includes(
+        const verdictInFlight = ["queued", "running"].includes(
           task.verdict_status ?? "",
         );
         return allTrialsTerminal && !hasAnalysisInFlight && !verdictInFlight;
@@ -885,7 +881,7 @@ export function ExperimentTrialsTable({
             trial.analysis_status === "success" ||
             trial.analysis_status === "failed",
         );
-        const verdictInFlight = ["pending", "queued", "running"].includes(
+        const verdictInFlight = ["queued", "running"].includes(
           task.verdict_status ?? "",
         );
         return allTrialsTerminal && allAnalysesComplete && !verdictInFlight;

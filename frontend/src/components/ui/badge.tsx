@@ -21,8 +21,6 @@ const badgeVariants = cva(
         warning:
           "border-transparent bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
         info: "border-transparent bg-blue-500/20 text-blue-400 border-blue-500/30",
-        pending:
-          "border-transparent bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
         queued:
           "border-transparent bg-purple-500/20 text-purple-400 border-purple-500/30",
         running:
