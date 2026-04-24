@@ -7,7 +7,7 @@ monitoring experiments, and pulling logs and artifacts back to disk. If you
 already use `harbor run`, Oddish adds persistent state, retries, queueing, and
 better operational tooling around the same task format.
 
-Python `3.12+` is required.
+Python `3.14+` is required.
 
 ## Quick Start
 
