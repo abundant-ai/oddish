@@ -130,7 +130,7 @@ importers:
         specifier: 7.1.1
         version: 7.1.1(eslint@9.39.2(jiti@2.6.1))
       knip:
-        specifier: ^6.6.3
+        specifier: 6.6.3
         version: 6.6.3(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)
       postcss:
         specifier: 8.5.10
