@@ -425,6 +425,7 @@ export function ExperimentTrialsTable({
   const TASK_COLUMN_MIN = 140;
   const AGENT_COLUMN_MIN = 140;
   const DEFAULT_AGENT_WIDTH = 180;
+  const DEFAULT_TASK_WIDTH = 240;
   const [taskSearch, setTaskSearch] = useState("");
   const deferredTaskSearch = useDeferredValue(taskSearch);
   const [taskSort, setTaskSort] = useState<
@@ -458,7 +459,7 @@ export function ExperimentTrialsTable({
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isRunningVerdict, setIsRunningVerdict] = useState(false);
   const [verdictError, setVerdictError] = useState<string | null>(null);
-  const [taskColumnWidth, setTaskColumnWidth] = useState(DEFAULT_AGENT_WIDTH);
+  const [taskColumnWidth, setTaskColumnWidth] = useState(DEFAULT_TASK_WIDTH);
   const [agentColumnWidths, setAgentColumnWidths] = useState<
     Record<string, number>
   >({});
@@ -1880,7 +1881,7 @@ export function ExperimentTrialsTable({
               <TableHeader className="sticky top-0 z-20 bg-[color:var(--paper-surface-2)]">
                 <TableRow className="border-b border-[color:var(--paper-line)] hover:bg-transparent">
                   <TableHead
-                    className="relative sticky left-0 z-30 border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] font-mono font-bold text-[color:var(--paper-ink)]"
+                    className="relative sticky left-0 z-30 h-auto border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] py-3 font-mono font-bold text-[color:var(--paper-ink)]"
                     style={{ width: getDisplayedWidth("task") }}
                   >
                     <div className="flex items-center gap-2">
@@ -1944,7 +1945,7 @@ export function ExperimentTrialsTable({
                   {renderedAgents.map((agent, agentIndex) => (
                     <TableHead
                       key={agent.key}
-                      className="relative border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-1 text-center font-mono last:border-r-0 sm:px-2"
+                      className="relative h-auto border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-1 py-3 text-center font-mono last:border-r-0 sm:px-2"
                       style={{
                         width: getDisplayedWidth(agent.key),
                       }}
