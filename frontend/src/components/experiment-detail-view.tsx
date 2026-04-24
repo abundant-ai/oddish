@@ -2,16 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { TrialDetailPanel } from "@/components/trial-detail-panel";
 import { TaskFilesPanel } from "@/components/task-files-panel";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import type { Task, Trial } from "@/lib/types";
 import { Loader2 } from "lucide-react";
-import { StatusIcon } from "@/components/status-icon";
 import {
   buildExperimentAgentSummaries,
   getExperimentAgentKey,
@@ -182,7 +179,6 @@ function formatCostUsd(value: number): string {
 function ExperimentHeaderMeta({
   isLoading,
   isInitialLoading,
-  summary,
   headerStatus,
   showPassAtK,
   onToggleShowPassAtK,
@@ -190,32 +186,133 @@ function ExperimentHeaderMeta({
 }: {
   isLoading: boolean;
   isInitialLoading: boolean;
-  summary?: React.ReactNode;
   headerStatus?: React.ReactNode;
   showPassAtK: boolean;
   onToggleShowPassAtK: () => void;
   headerRight?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-end gap-3">
+    <div className="flex flex-wrap items-center justify-end gap-2">
       {isLoading && (
-        <div className="inline-flex items-center gap-1.5 rounded-md border border-border/70 bg-muted/50 px-2 py-1 text-xs text-muted-foreground">
+        <div className="inline-flex items-center gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-2 py-1 text-xs text-[color:var(--paper-ink-3)]">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
           <span>{isInitialLoading ? "Loading tasks..." : "Refreshing..."}</span>
         </div>
       )}
       {headerStatus}
-      {summary}
-      <Button
+      <button
         type="button"
-        variant="outline"
-        size="sm"
         onClick={onToggleShowPassAtK}
-        className="h-8 text-xs font-medium"
+        aria-pressed={showPassAtK}
+        className={`inline-flex h-8 select-none items-center gap-[7px] rounded-[7px] border px-3 text-[12px] font-medium leading-none transition-colors ${
+          showPassAtK
+            ? "border-[color:var(--paper-ink)] bg-[color:var(--paper-ink)] text-[color:var(--paper-bg)] hover:bg-[color:color-mix(in_oklch,var(--paper-ink),white_12%)]"
+            : "border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] text-[color:var(--paper-ink)] hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
+        }`}
       >
-        {showPassAtK ? "Hide graph" : "Show graph"}
-      </Button>
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M3 3v18h18" />
+          <path d="M7 14l4-4 4 4 5-5" />
+        </svg>
+        Pass@k graph
+      </button>
       {headerRight}
+    </div>
+  );
+}
+
+function MetaDot() {
+  return (
+    <span
+      aria-hidden="true"
+      className="h-[3px] w-[3px] rounded-full bg-[color:var(--paper-ink-4)]"
+    />
+  );
+}
+
+function formatRelativeTime(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "";
+  const diffSec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (diffSec < 45) return "just now";
+  if (diffSec < 60 * 60) return `${Math.round(diffSec / 60)}m ago`;
+  if (diffSec < 60 * 60 * 24) return `${Math.round(diffSec / 3600)}h ago`;
+  if (diffSec < 60 * 60 * 24 * 30)
+    return `${Math.round(diffSec / (3600 * 24))}d ago`;
+  return new Date(iso).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function pickExperimentCreationMeta(tasks: Task[]): {
+  createdAt: string | null;
+  author: string | null;
+} {
+  if (tasks.length === 0) return { createdAt: null, author: null };
+  let earliest: Task = tasks[0];
+  for (const task of tasks) {
+    if (new Date(task.created_at).getTime() < new Date(earliest.created_at).getTime()) {
+      earliest = task;
+    }
+  }
+  return {
+    createdAt: earliest.created_at,
+    author: earliest.github_username || earliest.user || null,
+  };
+}
+
+function ExperimentMetaStrip({
+  tasks,
+  isInitialLoading,
+}: {
+  tasks: Task[];
+  isInitialLoading: boolean;
+}) {
+  if (isInitialLoading) return null;
+  const { createdAt, author } = pickExperimentCreationMeta(tasks);
+  if (!createdAt && !author) return null;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
+      {createdAt && (
+        <span title={new Date(createdAt).toLocaleString()}>
+          created {formatRelativeTime(createdAt)}
+        </span>
+      )}
+      {createdAt && author && <MetaDot />}
+      {author && <span>by {author}</span>}
+    </div>
+  );
+}
+
+function KpiTile({
+  label,
+  children,
+  className = "",
+}: {
+  label: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`flex flex-col gap-1.5 border-r border-[color:var(--paper-line-2)] px-4 py-3 last:border-r-0 ${className}`}
+    >
+      <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.09em] text-[color:var(--paper-ink-3)]">
+        {label}
+      </span>
+      {children}
     </div>
   );
 }
@@ -231,36 +328,69 @@ function ExperimentSummaryBar({
 }) {
   if (isInitialLoading) {
     return (
-      <Card className="bg-card/70">
-        <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          Loading experiment summary...
-        </div>
-      </Card>
+      <div className="flex items-center gap-2 rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3 text-xs text-[color:var(--paper-ink-3)]">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Loading experiment summary...
+      </div>
     );
   }
 
+  const scorePct =
+    summary.rewardTotal > 0
+      ? (summary.rewardSum / summary.rewardTotal) * 100
+      : null;
+  const completionPct =
+    summary.totalTrials > 0
+      ? (summary.completedTrials / summary.totalTrials) * 100
+      : 0;
+  const outcomeTotal =
+    summary.passCount +
+    summary.partialCount +
+    summary.failCount +
+    summary.harnessErrorCount;
+  const passPct = outcomeTotal ? (summary.passCount / outcomeTotal) * 100 : 0;
+  const partialPct = outcomeTotal
+    ? (summary.partialCount / outcomeTotal) * 100
+    : 0;
+  const failPct = outcomeTotal ? (summary.failCount / outcomeTotal) * 100 : 0;
+  const errPct = outcomeTotal
+    ? (summary.harnessErrorCount / outcomeTotal) * 100
+    : 0;
+
   return (
-    <Card className="bg-card/70">
-      <div className="flex flex-wrap items-center gap-3 px-3 py-1.5 text-xs">
-        <div className="text-muted-foreground">{taskCount} tasks</div>
-        <div className="text-muted-foreground">•</div>
-        <div className="font-mono text-muted-foreground">
-          {summary.completedTrials}/{summary.totalTrials} trials
+    <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]">
+      <KpiTile label="Avg score">
+        <span className="flex items-baseline gap-2 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
+          {scorePct != null ? `${scorePct.toFixed(1)}%` : "—"}
+        </span>
+      </KpiTile>
+      <KpiTile label="Completion">
+        <span className="flex items-baseline gap-2 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
+          {summary.completedTrials}
+          <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
+            / {summary.totalTrials} trials
+          </span>
+        </span>
+        <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
+          {completionPct.toFixed(0)}%
           {summary.failedTrials > 0 && (
-            <span className="text-red-400"> ({summary.failedTrials}F)</span>
+            <span className="ml-1.5 text-[color:var(--paper-fail)]">
+              · {summary.failedTrials} failing
+            </span>
           )}
-        </div>
-        <div className="text-muted-foreground">•</div>
-        <div className="font-mono text-muted-foreground">
-          Avg score{" "}
-          {summary.rewardTotal > 0
-            ? `${Math.round((summary.rewardSum / summary.rewardTotal) * 100)}%`
-            : "—"}
-        </div>
-        <div className="text-muted-foreground">•</div>
-        <div
-          className="font-mono text-muted-foreground"
+        </span>
+      </KpiTile>
+      <KpiTile label="Tasks">
+        <span className="flex items-baseline gap-2 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
+          {taskCount}
+          <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
+            tasks
+          </span>
+        </span>
+      </KpiTile>
+      <KpiTile label="Cost">
+        <span
+          className="flex items-baseline gap-1 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]"
           title={
             summary.costTrialCount > 0
               ? `Summed across ${summary.costTrialCount} trial${
@@ -275,48 +405,74 @@ function ExperimentSummaryBar({
               : "No cost data reported yet"
           }
         >
-          Cost{" "}
           {summary.costTrialCount > 0 ? (
             <>
-              {summary.costHasEstimated && !summary.costHasNative ? "~" : ""}
+              {summary.costHasEstimated && !summary.costHasNative && (
+                <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
+                  ~
+                </span>
+              )}
               {formatCostUsd(summary.costUsd)}
-              {summary.costHasEstimated && summary.costHasNative ? "*" : ""}
+              {summary.costHasEstimated && summary.costHasNative && (
+                <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
+                  *
+                </span>
+              )}
             </>
           ) : (
-            "—"
+            <span className="text-[color:var(--paper-ink-3)]">—</span>
           )}
+        </span>
+      </KpiTile>
+      <KpiTile
+        label="Outcome distribution"
+        className="col-span-2 md:col-span-1"
+      >
+        <div className="flex h-1.5 overflow-hidden rounded-[3px] bg-[color:var(--paper-bg-2)]">
+          <span
+            style={{ width: `${passPct}%`, background: "var(--paper-pass)" }}
+          />
+          <span
+            style={{
+              width: `${partialPct}%`,
+              background: "var(--paper-partial)",
+            }}
+          />
+          <span
+            style={{ width: `${failPct}%`, background: "var(--paper-fail)" }}
+          />
+          <span
+            style={{ width: `${errPct}%`, background: "var(--paper-error)" }}
+          />
         </div>
-        <div className="text-muted-foreground">•</div>
-        <div className="flex items-center gap-2 font-mono text-muted-foreground">
-          <span className="inline-flex items-center gap-0.5 text-emerald-400">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]">
+          <span className="inline-flex items-center gap-1.5">
+            <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-pass)]" />
             {summary.passCount}
-            <StatusIcon status="pass" className="h-3 w-3" />
+            <span className="text-[color:var(--paper-ink-3)]">pass</span>
           </span>
           {summary.partialCount > 0 && (
-            <span className="inline-flex items-center gap-0.5 text-amber-400">
+            <span className="inline-flex items-center gap-1.5">
+              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-partial)]" />
               {summary.partialCount}
-              <StatusIcon status="partial" className="h-3 w-3" />
+              <span className="text-[color:var(--paper-ink-3)]">partial</span>
             </span>
           )}
-          <span className="inline-flex items-center gap-0.5 text-red-400">
+          <span className="inline-flex items-center gap-1.5">
+            <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-fail)]" />
             {summary.failCount}
-            <StatusIcon status="fail" className="h-3 w-3" />
+            <span className="text-[color:var(--paper-ink-3)]">fail</span>
           </span>
           {summary.harnessErrorCount > 0 && (
-            <span className="inline-flex items-center gap-0.5 text-yellow-400">
+            <span className="inline-flex items-center gap-1.5">
+              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-error)]" />
               {summary.harnessErrorCount}
-              <StatusIcon status="harness-error" className="h-3 w-3" />
-            </span>
-          )}
-          {summary.pendingCount > 0 && (
-            <span className="inline-flex items-center gap-0.5 text-muted-foreground">
-              {summary.pendingCount}
-              <StatusIcon status="pending" className="h-3 w-3" />
+              <span className="text-[color:var(--paper-ink-3)]">error</span>
             </span>
           )}
         </div>
-      </div>
-    </Card>
+      </KpiTile>
+    </div>
   );
 }
 
@@ -592,96 +748,101 @@ export function ExperimentDetailView({
   return (
     <>
       {isInitialLoading ? (
-        <Card>
-          <CardContent className="flex min-h-[240px] items-center justify-center py-10">
-            <div className="inline-flex items-center gap-2 rounded-md border border-border/70 bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span>Loading experiment...</span>
-            </div>
-          </CardContent>
-        </Card>
+        <div className="flex min-h-[240px] items-center justify-center rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] py-10">
+          <div className="inline-flex items-center gap-2 rounded-md border border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-3 py-2 text-sm text-[color:var(--paper-ink-3)]">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>Loading experiment...</span>
+          </div>
+        </div>
       ) : (
-        <Card>
-          <CardHeader className="py-3">
-            <div className="flex flex-col gap-3">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
-                  {headerLeft}
-                </div>
-                <ExperimentHeaderMeta
-                  isLoading={isLoading}
-                  isInitialLoading={isInitialLoading}
-                  headerStatus={headerStatus}
-                  summary={
-                    <ExperimentSummaryBar
-                      taskCount={tasksForExperiment.length}
-                      summary={summary}
-                      isInitialLoading={isInitialLoading}
-                    />
-                  }
-                  showPassAtK={showPassAtK}
-                  onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
-                  headerRight={headerRight}
-                />
+        <div className="space-y-4">
+          {/*
+           * Experiment page header — editorial layout, no surrounding box.
+           * Mirrors the design reference: mono "experiments /" eyebrow, a
+           * Fraunces display title, a dot-separated meta strip, with the
+           * Show-graph + Publish actions parked top-right.
+           */}
+          <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <div className="font-mono text-[12px] text-[color:var(--paper-ink-3)]">
+                experiments /
               </div>
+              <div className="min-w-0">{headerLeft}</div>
+              <ExperimentMetaStrip
+                tasks={tasksForExperiment}
+                isInitialLoading={isInitialLoading}
+              />
             </div>
-          </CardHeader>
-          <CardContent>
-            {hasError ? (
-              <Alert variant="destructive">
-                <AlertTitle>{errorTitle}</AlertTitle>
-                <AlertDescription>{errorDescription}</AlertDescription>
-              </Alert>
-            ) : (
-              <div className="space-y-3">
-                {inlineAlert}
-                <ExperimentTrialsTable
-                  tasks={tasksForExperiment}
-                  agentSummaries={displayAgentSummaries}
-                  modelScopedAgents={displayModelScopedAgents}
-                  isLoading={isLoading}
-                  isLoadingTrials={isLoadingTrials}
-                  showPassAtK={showPassAtK}
-                  onTaskDelete={onTaskDelete}
-                  onRerun={onRerun}
-                  allowRerun={allowRetry}
-                  readOnly={readOnly}
-                  onTrialSelect={(trial, task, context) => {
-                    const taskIndex = tasksForExperiment.findIndex(
-                      (t) => t.id === task.id,
-                    );
-                    setDrawerState({
-                      isOpen: true,
-                      mode: "trial",
-                      task,
-                      taskIndex: taskIndex >= 0 ? taskIndex : 0,
-                      orderedTasks: tasksForExperiment,
-                      trial,
-                      trialIndex: context.trialIndex,
-                      orderedTrials: context.orderedTrials,
-                      trialGroups: context.trialGroups,
-                    });
-                  }}
-                  onTaskSelect={(task, context) => {
-                    const { trialGroups, orderedTrials } =
-                      buildTrialGroups(task);
-                    setDrawerState({
-                      isOpen: true,
-                      mode: "task",
-                      task,
-                      taskIndex: context.taskIndex,
-                      orderedTasks: context.orderedTasks,
-                      trial: null,
-                      trialIndex: null,
-                      orderedTrials,
-                      trialGroups,
-                    });
-                  }}
-                />
-              </div>
-            )}
-          </CardContent>
-        </Card>
+            <ExperimentHeaderMeta
+              isLoading={isLoading}
+              isInitialLoading={isInitialLoading}
+              headerStatus={headerStatus}
+              showPassAtK={showPassAtK}
+              onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
+              headerRight={headerRight}
+            />
+          </div>
+
+          <ExperimentSummaryBar
+            taskCount={tasksForExperiment.length}
+            summary={summary}
+            isInitialLoading={isInitialLoading}
+          />
+
+          {hasError ? (
+            <Alert variant="destructive">
+              <AlertTitle>{errorTitle}</AlertTitle>
+              <AlertDescription>{errorDescription}</AlertDescription>
+            </Alert>
+          ) : (
+            <div className="space-y-3">
+              {inlineAlert}
+              <ExperimentTrialsTable
+                tasks={tasksForExperiment}
+                agentSummaries={displayAgentSummaries}
+                modelScopedAgents={displayModelScopedAgents}
+                isLoading={isLoading}
+                isLoadingTrials={isLoadingTrials}
+                showPassAtK={showPassAtK}
+                onTaskDelete={onTaskDelete}
+                onRerun={onRerun}
+                allowRerun={allowRetry}
+                readOnly={readOnly}
+                onTrialSelect={(trial, task, context) => {
+                  const taskIndex = tasksForExperiment.findIndex(
+                    (t) => t.id === task.id,
+                  );
+                  setDrawerState({
+                    isOpen: true,
+                    mode: "trial",
+                    task,
+                    taskIndex: taskIndex >= 0 ? taskIndex : 0,
+                    orderedTasks: tasksForExperiment,
+                    trial,
+                    trialIndex: context.trialIndex,
+                    orderedTrials: context.orderedTrials,
+                    trialGroups: context.trialGroups,
+                  });
+                }}
+                onTaskSelect={(task, context) => {
+                  const { trialGroups, orderedTrials } =
+                    buildTrialGroups(task);
+                  setDrawerState({
+                    isOpen: true,
+                    mode: "task",
+                    task,
+                    taskIndex: context.taskIndex,
+                    orderedTasks: context.orderedTasks,
+                    trial: null,
+                    trialIndex: null,
+                    orderedTrials,
+                    trialGroups,
+                  });
+                }}
+              />
+            </div>
+          )}
+        </div>
       )}
 
       {drawerState && (

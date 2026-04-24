@@ -12,7 +12,7 @@ import { ExperimentShareButton } from "@/components/experiment-share-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import type { Task, Trial } from "@/lib/types";
 import { fetcher } from "@/lib/api";
-import { Beaker, Check, Copy, Loader2, Pencil } from "lucide-react";
+import { Check, Copy, Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 
 const TRIALS_BATCH_SIZE = 100;
@@ -356,67 +356,64 @@ export function ExperimentClientPage({
           isLoadingTrials={isLoadingTrials}
           hasError={Boolean(lightweightError)}
           headerLeft={
-            <div className="flex items-center gap-2">
-              <Beaker className="h-4 w-4 text-muted-foreground" />
-              {isEditingName ? (
-                <div className="flex items-center gap-2">
-                  <Input
-                    value={nameDraft}
-                    onChange={(event) => setNameDraft(event.target.value)}
-                    className="h-8 w-[220px]"
-                    placeholder="Experiment name"
-                  />
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="h-8"
-                    onClick={handleRename}
-                    disabled={isSavingName}
-                  >
-                    {isSavingName ? "Saving..." : "Save"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-8"
-                    onClick={() => setIsEditingName(false)}
-                    disabled={isSavingName}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleCopyExperimentName}
-                    className="inline-flex items-center gap-1 rounded-sm px-1 py-0.5 text-sm font-medium transition hover:bg-muted hover:text-blue-400"
-                    aria-label={`Copy experiment name ${displayName}`}
-                    title="Copy experiment name"
-                  >
-                    <span>{displayName}</span>
-                    {copiedExperimentName ? (
-                      <Check className="h-3.5 w-3.5 text-emerald-500" />
-                    ) : (
-                      <Copy className="h-3.5 w-3.5 text-muted-foreground" />
-                    )}
-                  </button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    onClick={() => setIsEditingName(true)}
-                    disabled={!experimentId}
-                    aria-label="Rename experiment"
-                    title="Rename experiment"
-                  >
-                    <Pencil className="h-4 w-4" />
-                  </Button>
-                </div>
-              )}
-            </div>
+            isEditingName ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  value={nameDraft}
+                  onChange={(event) => setNameDraft(event.target.value)}
+                  className="h-10 w-[320px] border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] font-mono text-[22px] font-semibold tracking-[-0.02em]"
+                  placeholder="Experiment name"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-8"
+                  onClick={handleRename}
+                  disabled={isSavingName}
+                >
+                  {isSavingName ? "Saving..." : "Save"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8"
+                  onClick={() => setIsEditingName(false)}
+                  disabled={isSavingName}
+                >
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <div className="flex min-w-0 items-center gap-2">
+                <h1 className="truncate pb-1 font-mono text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)]">
+                  {displayName}
+                </h1>
+                <button
+                  type="button"
+                  onClick={handleCopyExperimentName}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+                  aria-label={`Copy experiment name ${displayName}`}
+                  title="Copy experiment name"
+                >
+                  {copiedExperimentName ? (
+                    <Check className="h-3.5 w-3.5 text-[color:var(--paper-pass)]" />
+                  ) : (
+                    <Copy className="h-3.5 w-3.5" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingName(true)}
+                  disabled={!experimentId}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] disabled:opacity-50"
+                  aria-label="Rename experiment"
+                  title="Rename experiment"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )
           }
           headerStatus={
             isLoadingTrials ? (

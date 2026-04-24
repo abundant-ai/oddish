@@ -1,24 +1,14 @@
 "use client";
 
-import { memo, useMemo, useCallback } from "react";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
-import type { TooltipContentProps } from "recharts";
+import { memo, useMemo } from "react";
 import type { Task, Trial } from "@/lib/types";
 import { calculatePassAtKCurve, type AgentPassAtKStats } from "@/lib/pass-at-k";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import type { AgentSummary } from "./experiment-trials-table";
-import { Card, CardContent } from "@/components/ui/card";
 import { AgentLegend } from "@/components/agent-legend";
 
-// Color palette for different agents
+// Color palette for different agents — kept stable between chart and
+// leaderboard so the cross-highlight feels coherent.
 export const AGENT_COLORS = [
   "#10b981", // emerald
   "#3b82f6", // blue
@@ -37,6 +27,8 @@ interface PassAtKGraphProps {
   agentSummaries: AgentSummary[];
   hiddenAgents: Set<string>;
   onToggleAgent: (agent: string) => void;
+  hoverAgent?: string | null;
+  onHoverAgent?: (key: string | null) => void;
 }
 
 /**
@@ -52,10 +44,7 @@ function buildAgentStats(
       .map((summary) => summary.agent),
   );
 
-  // First, determine the max number of trials per task-agent combination
   let maxN = 1;
-
-  // Group trials by task and agent
   const taskAgentTrials: Record<string, Record<string, Trial[]>> = {};
 
   for (const task of tasks) {
@@ -70,27 +59,20 @@ function buildAgentStats(
       taskAgentTrials[task.id][key].push(trial);
     }
 
-    // Update maxN based on this task's trials per agent
     for (const agentTrials of Object.values(taskAgentTrials[task.id])) {
       maxN = Math.max(maxN, agentTrials.length);
     }
   }
 
-  // Build agent stats
   const agentStats: Record<string, AgentPassAtKStats> = {};
-
   for (const summary of agentSummaries) {
     const taskResults: { task: string; c: number }[] = [];
-
     for (const task of tasks) {
       const trials = taskAgentTrials[task.id]?.[summary.key] ?? [];
       if (trials.length === 0) continue;
-
-      // Count passing trials (reward === 1)
       const c = trials.filter((t) => t.reward === 1).length;
       taskResults.push({ task: task.id, c });
     }
-
     agentStats[summary.key] = { n: maxN, taskResults };
   }
 
@@ -102,185 +84,221 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   agentSummaries,
   hiddenAgents,
   onToggleAgent,
+  hoverAgent,
+  onHoverAgent,
 }: PassAtKGraphProps) {
-  const visibleAgentSummaries = useMemo(
-    () => agentSummaries.filter((summary) => !hiddenAgents.has(summary.key)),
-    [agentSummaries, hiddenAgents],
-  );
+  const { series, maxK, hasMultipleAttempts, agentColorByKey, agentLabelByKey } =
+    useMemo(() => {
+      const { agentStats, maxN } = buildAgentStats(tasks, agentSummaries);
+      const curveData =
+        maxN > 1 ? calculatePassAtKCurve(agentStats, maxN) : [];
 
-  const { data, maxK, hasMultipleAttempts } = useMemo(() => {
-    const { agentStats, maxN } = buildAgentStats(tasks, agentSummaries);
+      const colorMap: Record<string, string> = {};
+      const labelMap: Record<string, string> = {};
+      for (let i = 0; i < agentSummaries.length; i++) {
+        colorMap[agentSummaries[i].key] = AGENT_COLORS[i % AGENT_COLORS.length];
+        labelMap[agentSummaries[i].key] = agentSummaries[i].label;
+      }
 
-    // Check if we have any multi-attempt data
-    if (maxN <= 1) {
-      return { data: [], maxK: 0, hasMultipleAttempts: false };
-    }
+      const s = agentSummaries
+        .filter((summary) => !hiddenAgents.has(summary.key))
+        .map((summary) => ({
+          key: summary.key,
+          label: summary.label,
+          color: colorMap[summary.key],
+          points: curveData.map((row) => {
+            const raw = (row as Record<string, unknown>)[summary.key];
+            return typeof raw === "number" && Number.isFinite(raw)
+              ? Math.max(0, Math.min(1, raw))
+              : 0;
+          }),
+        }));
 
-    const curveData = calculatePassAtKCurve(agentStats, maxN);
+      return {
+        series: s,
+        maxK: maxN,
+        hasMultipleAttempts: maxN > 1 && curveData.length > 0,
+        agentColorByKey: colorMap,
+        agentLabelByKey: labelMap,
+      };
+    }, [tasks, agentSummaries, hiddenAgents]);
 
-    return { data: curveData, maxK: maxN, hasMultipleAttempts: true };
-  }, [tasks, agentSummaries]);
-
-  // Build agent color map for tooltip
-  const agentColorMap = useMemo(() => {
-    const map: Record<string, string> = {};
-    for (let i = 0; i < agentSummaries.length; i++) {
-      map[agentSummaries[i].key] = AGENT_COLORS[i % AGENT_COLORS.length];
-    }
-    return map;
-  }, [agentSummaries]);
-
-  // Build agent label map for tooltip
-  const agentLabelMap = useMemo(() => {
-    const map: Record<string, string> = {};
-    for (const summary of agentSummaries) {
-      map[summary.key] = summary.label;
-    }
-    return map;
-  }, [agentSummaries]);
-
-  // Custom tooltip that sorts entries by value (descending) to match visual
-  // line order.  We avoid pinning generics on ``TooltipContentProps`` so that
-  // recharts' default ``ContentType<ValueType, NameType>`` matches what
-  // ``<Tooltip content={renderTooltip}>`` expects; the narrower
-  // ``<number, string>`` form recharts 3.7 accepted broke in 3.8.
-  const renderTooltip = useCallback(
-    (props: TooltipContentProps) => {
-      const { active, payload, label } = props;
-      if (!active || !payload || payload.length === 0) return null;
-
-      const sorted = [...payload]
-        .filter((entry) => typeof entry.value === "number")
-        .sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0));
-
-      return (
-        <div
-          style={{
-            backgroundColor: "hsl(var(--card))",
-            border: "1px solid hsl(var(--border))",
-            borderRadius: "6px",
-            padding: "8px 12px",
-            fontSize: "12px",
-            fontFamily: "monospace",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-            maxHeight: "300px",
-            overflowY: "auto",
-          }}
-        >
-          <div style={{ marginBottom: "4px", fontWeight: 600 }}>
-            k = {label}
-          </div>
-          {sorted.map((entry) => (
-            <div
-              key={String(entry.dataKey)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                padding: "1px 0",
-                whiteSpace: "nowrap",
-              }}
-            >
-              <span
-                style={{
-                  width: "8px",
-                  height: "8px",
-                  borderRadius: "2px",
-                  backgroundColor:
-                    agentColorMap[entry.dataKey as string] ?? entry.color,
-                  flexShrink: 0,
-                }}
-              />
-              <span style={{ color: "hsl(var(--muted-foreground))" }}>
-                {agentLabelMap[entry.dataKey as string] ?? entry.dataKey}
-              </span>
-              <span
-                style={{
-                  marginLeft: "auto",
-                  paddingLeft: "12px",
-                  fontWeight: 500,
-                }}
-              >
-                {`${((Number(entry.value) || 0) * 100).toFixed(1)}%`}
-              </span>
-            </div>
-          ))}
-        </div>
-      );
-    },
-    [agentColorMap, agentLabelMap],
-  );
-
-  // Don't render if no multi-attempt data
-  if (!hasMultipleAttempts || data.length === 0) {
+  if (!hasMultipleAttempts) {
     return null;
   }
 
+  // SVG chart geometry (matches design reference viewBox 400x180)
+  const W = 400;
+  const H = 180;
+  const padL = 34;
+  const padR = 12;
+  const padT = 10;
+  const padB = 28;
+  const cw = W - padL - padR;
+  const ch = H - padT - padB;
+  const xAt = (k: number) => padL + ((k - 1) / Math.max(1, maxK - 1)) * cw;
+  const yAt = (v: number) => padT + (1 - v) * ch;
+  const gridVals = [0, 0.25, 0.5, 0.75, 1.0];
+
   return (
-    <Card className="h-full bg-card/80 shadow-xs">
-      <CardContent className="flex h-full flex-col p-6">
-        <h3 className="font-mono text-sm font-bold text-foreground">
-          Pass@k{" "}
-          <span className="font-normal text-muted-foreground">
-            (n = {maxK})
-          </span>
+    <div className="flex h-full min-w-0 flex-col rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3">
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <h3 className="font-display text-[15px] font-medium tracking-[-0.01em] text-[color:var(--paper-ink)]">
+          Pass@k
         </h3>
+        <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
+          n = {maxK} · {tasks.length} tasks · {agentSummaries.length} agents
+        </span>
+      </div>
 
-        <div className="mt-4 h-52">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart
-              data={data}
-              margin={{ top: 5, right: 30, left: 0, bottom: 5 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-              <XAxis
-                dataKey="k"
-                tick={{ fontSize: 11 }}
-                className="font-mono"
-                label={{
-                  value: "k",
-                  position: "insideBottomRight",
-                  offset: -5,
-                  fontSize: 11,
+      <div className="relative w-full" style={{ aspectRatio: "16 / 5.5" }}>
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          preserveAspectRatio="none"
+          className="block h-full w-full overflow-visible"
+          role="img"
+          aria-label="Pass@k line chart"
+        >
+          {/* Grid lines + y labels */}
+          {gridVals.map((v) => (
+            <g key={v}>
+              <line
+                x1={padL}
+                x2={W - padR}
+                y1={yAt(v)}
+                y2={yAt(v)}
+                stroke="var(--paper-line-2)"
+                strokeWidth={1}
+                strokeDasharray="2 4"
+              />
+              <text
+                x={padL - 6}
+                y={yAt(v) + 3.5}
+                textAnchor="end"
+                style={{
+                  fontFamily:
+                    "var(--font-geist-mono), ui-monospace, monospace",
+                  fontSize: 9.5,
+                  fill: "var(--paper-ink-3)",
                 }}
-              />
-              <YAxis
-                domain={[0, 1]}
-                tickFormatter={(v) => `${Math.round(v * 100)}%`}
-                tick={{ fontSize: 11 }}
-                className="font-mono"
-              />
-              <Tooltip content={renderTooltip} wrapperStyle={{ zIndex: 10 }} />
-              {visibleAgentSummaries.map((summary) => {
-                const originalIdx = agentSummaries.findIndex(
-                  (agent) => agent.key === summary.key,
-                );
-                return (
-                  <Line
-                    key={summary.key}
-                    type="monotone"
-                    dataKey={summary.key}
-                    stroke={AGENT_COLORS[originalIdx % AGENT_COLORS.length]}
-                    strokeWidth={2}
-                    dot={{ r: 3 }}
-                    activeDot={{ r: 5 }}
-                  />
-                );
-              })}
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
+              >
+                {Math.round(v * 100)}%
+              </text>
+            </g>
+          ))}
+          {/* X axis */}
+          <line
+            x1={padL}
+            x2={W - padR}
+            y1={padT + ch}
+            y2={padT + ch}
+            stroke="var(--paper-line)"
+            strokeWidth={1}
+          />
+          {Array.from({ length: maxK }, (_, i) => i + 1).map((k) => (
+            <text
+              key={k}
+              x={xAt(k)}
+              y={padT + ch + 15}
+              textAnchor="middle"
+              style={{
+                fontFamily:
+                  "var(--font-geist-mono), ui-monospace, monospace",
+                fontSize: 10.5,
+                fill: "var(--paper-ink-2)",
+              }}
+            >
+              {k}
+            </text>
+          ))}
+          <text
+            x={W - padR}
+            y={padT + ch + 24}
+            textAnchor="end"
+            style={{
+              fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
+              fontSize: 10,
+              fontStyle: "italic",
+              fill: "var(--paper-ink-3)",
+            }}
+          >
+            k
+          </text>
 
-        <AgentLegend
-          items={agentSummaries.map((summary, idx) => ({
-            key: summary.key,
-            label: summary.label,
-            color: AGENT_COLORS[idx % AGENT_COLORS.length],
-          }))}
-          hiddenKeys={hiddenAgents}
-          onToggle={onToggleAgent}
-        />
-      </CardContent>
-    </Card>
+          {/* Series paths */}
+          {series.map((s) => {
+            const dim = hoverAgent != null && hoverAgent !== s.key;
+            const hi = hoverAgent === s.key;
+            const d = s.points
+              .map(
+                (v, i) =>
+                  `${i === 0 ? "M" : "L"} ${xAt(i + 1).toFixed(2)} ${yAt(
+                    v,
+                  ).toFixed(2)}`,
+              )
+              .join(" ");
+            return (
+              <path
+                key={s.key}
+                d={d}
+                fill="none"
+                stroke={s.color}
+                strokeWidth={hi ? 2.6 : 2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                opacity={dim ? 0.18 : 1}
+                onMouseEnter={() => onHoverAgent?.(s.key)}
+                onMouseLeave={() => onHoverAgent?.(null)}
+                style={{ cursor: "pointer", transition: "stroke-width .15s, opacity .15s" }}
+              />
+            );
+          })}
+          {/* Series dots (on top of paths so they remain interactive) */}
+          {series.map((s) => {
+            const dim = hoverAgent != null && hoverAgent !== s.key;
+            const hi = hoverAgent === s.key;
+            return (
+              <g
+                key={`${s.key}-dots`}
+                onMouseEnter={() => onHoverAgent?.(s.key)}
+                onMouseLeave={() => onHoverAgent?.(null)}
+              >
+                {s.points.map((v, i) => (
+                  <circle
+                    key={i}
+                    cx={xAt(i + 1)}
+                    cy={yAt(v)}
+                    r={hi ? 4.5 : 3.2}
+                    fill="var(--paper-surface)"
+                    stroke={s.color}
+                    strokeWidth={2}
+                    opacity={dim ? 0.22 : 1}
+                  >
+                    <title>
+                      {agentLabelByKey[s.key] ?? s.key} · k={i + 1} ·{" "}
+                      {(v * 100).toFixed(0)}%
+                    </title>
+                  </circle>
+                ))}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+
+      <AgentLegend
+        items={agentSummaries.map((summary, idx) => ({
+          key: summary.key,
+          label: summary.label,
+          color:
+            agentColorByKey[summary.key] ??
+            AGENT_COLORS[idx % AGENT_COLORS.length],
+        }))}
+        hiddenKeys={hiddenAgents}
+        onToggle={onToggleAgent}
+        hoverKey={hoverAgent ?? null}
+        onHover={onHoverAgent}
+      />
+    </div>
   );
 });

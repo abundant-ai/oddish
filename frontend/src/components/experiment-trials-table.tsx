@@ -7,7 +7,6 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -60,14 +59,14 @@ import {
 } from "@/lib/status-config";
 import {
   Loader2,
-  Microscope,
   Check,
-  AlertTriangle,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  ChevronDown,
   Copy,
   OctagonX,
+  Search,
   Trash2,
 } from "lucide-react";
 import { QueueKeyIcon } from "./queue-key-icon";
@@ -222,6 +221,43 @@ function agentRowFilterStatus(
   return hasTerminal ? "failed" : null;
 }
 
+/**
+ * Reference-style inline action button: transparent by default, subtle
+ * hover, disabled in ink-4. Used across the toolbar's "selected"
+ * action row (Clear / Rerun / Cancel / Run analysis / Run verdict / Delete).
+ */
+function InlineBtn({
+  onClick,
+  disabled,
+  children,
+  style,
+}: {
+  onClick?: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      style={style}
+      className="inline-flex items-center gap-1.5 rounded-[5px] bg-transparent px-2 py-1 text-[11.5px] font-medium text-paper-ink-2 transition hover:bg-paper-surface-2 hover:text-paper-ink disabled:cursor-not-allowed disabled:text-paper-ink-4 disabled:hover:bg-transparent disabled:hover:text-paper-ink-4"
+    >
+      {children}
+    </button>
+  );
+}
+
+function InlineCount({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="rounded-[3px] bg-paper-bg-2 px-1.5 py-[1px] font-mono text-[10px] text-paper-ink-2">
+      {children}
+    </span>
+  );
+}
+
 // Analysis classification badge styling
 const ANALYSIS_CONFIG: Record<
   AnalysisClassification,
@@ -248,12 +284,12 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
   },
   {
     key: "good",
-    label: "Good success or failure",
+    label: "Pass",
     dotClass: ANALYSIS_CONFIG.GOOD_SUCCESS.dotClass,
   },
   {
     key: "bad",
-    label: "Bad success or failure",
+    label: "Fail",
     dotClass: ANALYSIS_CONFIG.BAD_SUCCESS.dotClass,
   },
   {
@@ -334,47 +370,6 @@ function getAnalysisIndicator(trial: Trial): {
   return null;
 }
 
-function VerdictIndicator({ task }: { task: Task }) {
-  if (!task.run_analysis) return null;
-
-  const status = task.verdict_status;
-  const verdict = task.verdict;
-
-  if (status === "pending" || status === "queued" || status === "running") {
-    return (
-      <span className="ml-1 inline-flex items-center">
-        <Microscope className="h-3 w-3 animate-pulse text-muted-foreground" />
-      </span>
-    );
-  }
-
-  if (status === "success" && verdict) {
-    return (
-      <span className="ml-1 inline-flex items-center">
-        {verdict.is_good ? (
-          <Check className="h-3 w-3 text-emerald-500" />
-        ) : (
-          <AlertTriangle className="h-3 w-3 text-amber-500" />
-        )}
-      </span>
-    );
-  }
-
-  if (status === "failed") {
-    return (
-      <span className="ml-1 inline-flex items-center">
-        <Microscope className="h-3 w-3 text-red-400" />
-      </span>
-    );
-  }
-
-  return (
-    <span className="ml-1 inline-flex items-center">
-      <Microscope className="h-3 w-3 text-muted-foreground/50" />
-    </span>
-  );
-}
-
 function groupTrialsByAgent(
   trials: Trial[] | null | undefined,
   modelScopedAgents: ReadonlySet<string>,
@@ -437,6 +432,7 @@ export function ExperimentTrialsTable({
     "default" | "name-asc" | "name-desc"
   >("default");
   const [hiddenAgents, setHiddenAgents] = useState<Set<string>>(new Set());
+  const [hoverAgent, setHoverAgent] = useState<string | null>(null);
   const [dimmedStatuses, setDimmedStatuses] = useState<Set<MatrixStatus>>(
     new Set(),
   );
@@ -1421,55 +1417,112 @@ export function ExperimentTrialsTable({
     );
   }
 
-  const renderStatusFilters = () => (
-    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-      {STATUS_FILTER_ORDER.map((status) => {
-        const config = STATUS_CONFIG[status];
-        const isDimmed = dimmedStatuses.has(status);
-        return (
-          <Tooltip key={status}>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                onClick={() => toggleStatus(status)}
-                variant="ghost"
-                size="sm"
-                className={`flex h-auto items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition ${
-                  isDimmed
-                    ? "border-border text-muted-foreground line-through"
-                    : "border-transparent hover:border-border"
-                }`}
-              >
-                <span
-                  className={`inline-flex h-4 w-4 items-center justify-center rounded-sm text-[10px] ${config.matrixClass}`}
-                >
-                  <StatusIcon status={status} className="h-3 w-3" />
-                </span>
-                <span className="uppercase tracking-wide">
-                  {config.shortLabel}
-                </span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {config.shortLabel} ({isDimmed ? "dimmed" : "visible"})
-            </TooltipContent>
-          </Tooltip>
-        );
-      })}
-    </div>
+  // Partial outcomes are rendered as numeric colored tiles (not a single color
+  // chip), so we don't expose them in the trial-outcome legend filter.
+  const LEGEND_STATUS_ORDER = STATUS_FILTER_ORDER.filter((s) => s !== "partial");
+
+  const renderStatusChip = (status: MatrixStatus) => {
+    const config = STATUS_CONFIG[status];
+    const isDimmed = dimmedStatuses.has(status);
+    return (
+      <Tooltip key={status}>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => toggleStatus(status)}
+            className={`inline-flex select-none items-center gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+              isDimmed ? "line-through opacity-[0.38]" : ""
+            }`}
+          >
+            <span
+              className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-[3px] ${config.matrixClass}`}
+            >
+              <StatusIcon status={status} className="h-2 w-2" />
+            </span>
+            <span>{config.shortLabel}</span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>
+          {config.shortLabel} ({isDimmed ? "dimmed" : "visible"})
+        </TooltipContent>
+      </Tooltip>
+    );
+  };
+
+  // Paper-palette analyzer dot color for the legend chip, keyed by
+  // AnalysisLegendKey.
+  const ANALYZER_CHIP_COLOR: Record<AnalysisLegendKey, string> = {
+    analyzing: "var(--paper-a-analyzing)",
+    good: "var(--paper-a-good)",
+    bad: "var(--paper-a-bad)",
+    "analysis-failed": "var(--paper-a-failed)",
+  };
+
+  const renderAnalyzerChip = (item: (typeof ANALYSIS_LEGEND_ITEMS)[number]) => {
+    const isDimmed = dimmedAnalysisKeys.has(item.key);
+    return (
+      <Tooltip key={item.key}>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => toggleAnalysisKey(item.key)}
+            className={`inline-flex select-none items-center gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+              isDimmed ? "line-through opacity-[0.38]" : ""
+            }`}
+          >
+            <span
+              className={`inline-block h-2 w-2 rounded-full ${item.animate ? "animate-pulse" : ""}`}
+              style={{ background: ANALYZER_CHIP_COLOR[item.key] }}
+            />
+            <span>{item.label}</span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>
+          {item.label} ({isDimmed ? "dimmed" : "visible"})
+        </TooltipContent>
+      </Tooltip>
+    );
+  };
+
+  const renderLegendAnatomy = () => (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="flex items-center gap-2.5 border-r border-dashed border-[color:var(--paper-line)] pl-1.5 pr-2.5 font-mono text-[9.5px] leading-tight text-[color:var(--paper-ink-3)]">
+          <span className="relative inline-flex">
+            <span className="flex h-[18px] w-[22px] items-center justify-center rounded-[4px] border border-transparent bg-[color:var(--paper-pass)] text-white">
+              <StatusIcon status="pass" className="h-2.5 w-2.5" />
+            </span>
+            <span className="absolute -right-[2px] -top-[2px] h-[7px] w-[7px] rounded-full bg-[color:var(--paper-a-good)] ring-[1.5px] ring-[color:var(--paper-surface)]" />
+          </span>
+          <span className="flex flex-col gap-0.5">
+            <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+              <span className="inline-block h-2.5 w-2.5 rounded-[2px] bg-[color:var(--paper-pass)]" />
+              trial outcome
+            </span>
+            <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+              <span className="mx-[1px] inline-block h-2 w-2 rounded-full bg-[color:var(--paper-a-good)]" />
+              QA verdict
+            </span>
+          </span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent>How to read a cell</TooltipContent>
+    </Tooltip>
   );
 
   const renderAgentFilterMenu = () => (
     <Popover>
       <PopoverTrigger asChild>
-        <Button
+        <button
           type="button"
-          variant="outline"
-          size="sm"
-          className="h-auto select-none px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
+          className="inline-flex h-auto select-none items-center gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
         >
-          Filter agents ({visibleAgents.length}/{sortedAgentSummaries.length})
-        </Button>
+          Agents
+          <InlineCount>
+            {visibleAgents.length}/{sortedAgentSummaries.length}
+          </InlineCount>
+          <ChevronDown className="h-3 w-3" />
+        </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="max-h-64 w-64 overflow-auto p-2">
         <div className="flex items-center justify-between px-1 pb-2 text-[10px] text-muted-foreground">
@@ -1562,43 +1615,35 @@ export function ExperimentTrialsTable({
   };
 
   const renderLegendBlock = () => (
-    <div className="grid w-full min-w-0 grid-cols-[56px_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-[10px] text-muted-foreground sm:ml-auto sm:w-fit">
-      <div className="flex items-center font-semibold uppercase tracking-wide text-foreground/80">
-        Trial
+    <div className="flex min-w-0 flex-wrap items-center gap-y-1 rounded-[8px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-1 sm:ml-auto sm:w-fit sm:flex-nowrap">
+      {renderLegendAnatomy()}
+      <div className="flex items-center gap-0.5 px-1">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="cursor-help whitespace-nowrap pr-2 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] text-[color:var(--paper-ink-3)]">
+              Trial outcome
+            </span>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-xs">
+            Did the agent&apos;s trial run succeed? Produced by the harness when
+            the agent finishes or errors.
+          </TooltipContent>
+        </Tooltip>
+        {LEGEND_STATUS_ORDER.map((status) => renderStatusChip(status))}
       </div>
-      <div className="min-w-0">{renderStatusFilters()}</div>
-      <div className="flex items-center font-semibold uppercase tracking-wide text-foreground/80">
-        Analyzer
-      </div>
-      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 sm:justify-end">
-        {ANALYSIS_LEGEND_ITEMS.map((item) => (
-          <Tooltip key={item.key}>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                onClick={() => toggleAnalysisKey(item.key)}
-                variant="ghost"
-                size="sm"
-                className={`flex h-auto items-center gap-1 rounded border px-2 py-1 text-[10px] font-semibold transition ${
-                  dimmedAnalysisKeys.has(item.key)
-                    ? "border-border text-muted-foreground line-through"
-                    : "border-transparent hover:border-border"
-                }`}
-              >
-                <span
-                  className={`inline-flex h-2.5 w-2.5 rounded-full ${item.dotClass} ${
-                    item.animate ? "animate-pulse" : ""
-                  }`}
-                />
-                <span>{item.label}</span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {item.label} (
-              {dimmedAnalysisKeys.has(item.key) ? "dimmed" : "visible"})
-            </TooltipContent>
-          </Tooltip>
-        ))}
+      <div className="flex items-center gap-0.5 border-l border-dashed border-[color:var(--paper-line)] pl-2 ml-1">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="cursor-help whitespace-nowrap pr-2 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] text-[color:var(--paper-ink-3)]">
+              QA verdict
+            </span>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-xs">
+            A second pass — an LLM grades the trial output. Only present for
+            trials that were sent for analysis.
+          </TooltipContent>
+        </Tooltip>
+        {ANALYSIS_LEGEND_ITEMS.map((item) => renderAnalyzerChip(item))}
       </div>
     </div>
   );
@@ -1623,6 +1668,8 @@ export function ExperimentTrialsTable({
                 agentSummaries={sortedAgentSummaries}
                 hiddenAgents={hiddenAgents}
                 onToggleAgent={toggleAgent}
+                hoverAgent={hoverAgent}
+                onHoverAgent={setHoverAgent}
               />
             </div>
             <div className="h-full min-w-0">
@@ -1631,174 +1678,168 @@ export function ExperimentTrialsTable({
                 agentSummaries={sortedAgentSummaries}
                 hiddenAgents={hiddenAgents}
                 onToggleAgent={toggleAgent}
+                hoverAgent={hoverAgent}
+                onHoverAgent={setHoverAgent}
               />
             </div>
           </div>
         ) : null}
 
-        <div className="max-w-full overflow-hidden rounded-lg border border-border bg-card shadow-xs">
-          <div className="relative z-30 space-y-2 border-b border-border bg-card/70 px-3 py-2">
+        <div className="max-w-full overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
+          <div className="relative z-30 flex flex-col gap-3 border-b border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] px-4 pb-3 pt-3.5">
             <div className="flex flex-wrap items-start gap-3">
-              <div className="w-full sm:w-[320px]">
-                <Input
-                  type="search"
-                  value={taskSearch}
-                  onChange={(event) =>
-                    handleTaskSearchChange(event.target.value)
-                  }
-                  placeholder="Search tasks (comma-separated)"
-                  className="h-9 text-xs"
-                />
+              <div className="w-full sm:w-[280px]">
+                <div className="flex h-8 items-center gap-2 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] px-2.5 text-[color:var(--paper-ink-2)] focus-within:border-[color:var(--paper-ink-4)]">
+                  <Search className="h-3.5 w-3.5 shrink-0 text-[color:var(--paper-ink-3)]" />
+                  <input
+                    type="search"
+                    value={taskSearch}
+                    onChange={(event) =>
+                      handleTaskSearchChange(event.target.value)
+                    }
+                    placeholder="Search tasks (comma-separated)"
+                    className="min-w-0 flex-1 border-0 bg-transparent text-[12.5px] text-[color:var(--paper-ink)] placeholder:text-[color:var(--paper-ink-3)] focus:outline-none"
+                  />
+                </div>
               </div>
               <div className="min-w-0 flex-1">{renderLegendBlock()}</div>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-1.5 text-[11.5px] text-[color:var(--paper-ink-3)]">
               {!readOnly && (
                 <>
                   <span>{selectedTasks.size} selected</span>
-                  <Button
-                    type="button"
-                    variant="link"
-                    size="sm"
+                  <InlineBtn
                     onClick={clearSelection}
                     disabled={selectedTasks.size === 0}
-                    className="h-auto p-0 text-[10px] disabled:text-muted-foreground"
                   >
                     Clear
-                  </Button>
+                  </InlineBtn>
+                  <span className="select-none text-[color:var(--paper-line)]">
+                    │
+                  </span>
                   {canRerun && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
+                    <InlineBtn
                       onClick={handleRerunSelectedTasks}
                       disabled={
                         isRerunning || selectedRetryableTrials.length === 0
                       }
-                      className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:border-muted disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
                     >
-                      {isRerunning
-                        ? "Rerunning..."
-                        : `Rerun trials (${selectedRetryableTrials.length})`}
-                    </Button>
+                      {isRerunning ? "Rerunning" : "Rerun trials"}
+                      <InlineCount>{selectedRetryableTrials.length}</InlineCount>
+                    </InlineBtn>
                   )}
                   {canRerun && (
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      size="sm"
+                    <InlineBtn
                       onClick={handleCancelSelectedTasks}
                       disabled={
                         isCancellingSelected ||
                         selectedCancellableTasks.length === 0
                       }
-                      className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
                     >
                       {isCancellingSelected ? (
-                        <>
-                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                          Cancelling...
-                        </>
+                        <Loader2 className="h-3 w-3 animate-spin" />
                       ) : (
-                        <>
-                          <OctagonX className="mr-1 h-3 w-3" />
-                          {`Cancel (${selectedCancellableTasks.length})`}
-                        </>
+                        <OctagonX className="h-3 w-3" />
                       )}
-                    </Button>
+                      {isCancellingSelected ? "Cancelling" : "Cancel"}
+                      <InlineCount>{selectedCancellableTasks.length}</InlineCount>
+                    </InlineBtn>
                   )}
+                  <span className="select-none text-[color:var(--paper-line)]">
+                    │
+                  </span>
                   {canRerun && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
+                    <InlineBtn
                       onClick={handleRunAnalysisForSelectedTasks}
                       disabled={
                         isRunningAnalysis ||
                         selectedAnalysisRunnableTasks.length === 0
                       }
-                      className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:border-muted disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
                     >
-                      {isRunningAnalysis
-                        ? "Queueing..."
-                        : `Run analysis (${selectedAnalysisRunnableTasks.length})`}
-                    </Button>
+                      {isRunningAnalysis ? "Queueing" : "Run analysis"}
+                      <InlineCount>{selectedAnalysisRunnableTasks.length}</InlineCount>
+                    </InlineBtn>
                   )}
                   {canRerun && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
+                    <InlineBtn
                       onClick={handleRunVerdictForSelectedTasks}
                       disabled={
                         isRunningVerdict ||
                         selectedVerdictRunnableTasks.length === 0
                       }
-                      className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:border-muted disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
                     >
-                      {isRunningVerdict
-                        ? "Queueing..."
-                        : `Run verdict (${selectedVerdictRunnableTasks.length})`}
-                    </Button>
+                      {isRunningVerdict ? "Queueing" : "Run verdict"}
+                      <InlineCount>{selectedVerdictRunnableTasks.length}</InlineCount>
+                    </InlineBtn>
                   )}
                   {canDeleteTasks && (
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => {
-                        setDeleteTargets(selectedTaskList);
-                        setDeleteError(null);
-                      }}
-                      disabled={isDeleting || selectedTaskList.length === 0}
-                      className="h-auto px-2 py-1 text-[10px] font-semibold uppercase tracking-wide disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
-                    >
-                      <Trash2 className="mr-1 h-3 w-3" />
-                      Delete
-                    </Button>
+                    <>
+                      <span className="select-none text-[color:var(--paper-line)]">
+                        │
+                      </span>
+                      <InlineBtn
+                        onClick={() => {
+                          setDeleteTargets(selectedTaskList);
+                          setDeleteError(null);
+                        }}
+                        disabled={isDeleting || selectedTaskList.length === 0}
+                        style={
+                          selectedTaskList.length > 0 && !isDeleting
+                            ? { color: "var(--paper-fail)" }
+                            : undefined
+                        }
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        Delete
+                      </InlineBtn>
+                    </>
                   )}
                 </>
               )}
               {cancelError && (
-                <span className="text-[10px] text-red-500">{cancelError}</span>
+                <span className="text-[10px] text-[color:var(--paper-fail)]">
+                  {cancelError}
+                </span>
               )}
               {rerunError && (
-                <span className="text-[10px] text-red-500">{rerunError}</span>
+                <span className="text-[10px] text-[color:var(--paper-fail)]">
+                  {rerunError}
+                </span>
               )}
               {analysisError && (
-                <span className="text-[10px] text-red-500">
+                <span className="text-[10px] text-[color:var(--paper-fail)]">
                   {analysisError}
                 </span>
               )}
               {verdictError && (
-                <span className="text-[10px] text-red-500">{verdictError}</span>
+                <span className="text-[10px] text-[color:var(--paper-fail)]">
+                  {verdictError}
+                </span>
               )}
               <div
-                className={`flex flex-wrap items-center gap-2 ${readOnly ? "" : "ml-auto"}`}
+                className={`flex flex-wrap items-center gap-1.5 ${readOnly ? "" : "ml-auto"}`}
               >
                 {renderRowFilterControl()}
                 {renderAgentFilterMenu()}
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button
+                    <button
                       type="button"
-                      variant="outline"
-                      size="sm"
                       onClick={handleCopyTableAsTSV}
-                      className="h-auto select-none px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                      className="inline-flex h-auto select-none items-center gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
                     >
                       {copiedTable ? (
                         <>
-                          <Check className="mr-1 h-3 w-3 text-emerald-500" />
+                          <Check className="h-3 w-3 text-[color:var(--paper-pass)]" />
                           Copied
                         </>
                       ) : (
                         <>
-                          <Copy className="mr-1 h-3 w-3" />
+                          <Copy className="h-3 w-3" />
                           Copy TSV
                         </>
                       )}
-                    </Button>
+                    </button>
                   </TooltipTrigger>
                   <TooltipContent>Copy table as TSV</TooltipContent>
                 </Tooltip>
@@ -1828,10 +1869,10 @@ export function ExperimentTrialsTable({
                   />
                 ))}
               </colgroup>
-              <TableHeader className="sticky top-0 z-20 bg-muted">
-                <TableRow className="border-b-2 border-border hover:bg-transparent">
+              <TableHeader className="sticky top-0 z-20 bg-[color:var(--paper-surface-2)]">
+                <TableRow className="border-b border-[color:var(--paper-line)] hover:bg-transparent">
                   <TableHead
-                    className="relative sticky left-0 z-30 border-r border-border bg-muted font-mono font-bold text-foreground shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]"
+                    className="relative sticky left-0 z-30 bg-[color:var(--paper-surface-2)] font-mono font-bold text-[color:var(--paper-ink)]"
                     style={{ width: getDisplayedWidth("task") }}
                   >
                     <div className="flex items-center gap-2">
@@ -1895,7 +1936,7 @@ export function ExperimentTrialsTable({
                   {renderedAgents.map((agent, agentIndex) => (
                     <TableHead
                       key={agent.key}
-                      className="relative border-r border-border bg-muted px-1 text-center font-mono last:border-r-0 sm:px-2"
+                      className="relative bg-[color:var(--paper-surface-2)] px-1 text-center font-mono sm:px-2"
                       style={{
                         width: getDisplayedWidth(agent.key),
                       }}
@@ -1944,16 +1985,8 @@ export function ExperimentTrialsTable({
                                   aria-label={`Copy model id ${agent.model}`}
                                   title="Copy model id"
                                 >
-                                  {copiedAgentModelKey === agent.key ? (
+                                  {copiedAgentModelKey === agent.key && (
                                     <Check className="h-3 w-3 shrink-0 text-emerald-500" />
-                                  ) : (
-                                    <QueueKeyIcon
-                                      queueKey={agent.queueKey}
-                                      model={agent.model}
-                                      agent={agent.agent}
-                                      size={11}
-                                      className="shrink-0"
-                                    />
                                   )}
                                   <span className="min-w-0 truncate">
                                     {agent.model}
@@ -1961,13 +1994,6 @@ export function ExperimentTrialsTable({
                                 </button>
                               ) : (
                                 <div className="flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal text-muted-foreground sm:text-[10px]">
-                                  <QueueKeyIcon
-                                    queueKey={agent.queueKey}
-                                    model={agent.model}
-                                    agent={agent.agent}
-                                    size={11}
-                                    className="shrink-0"
-                                  />
                                   <span className="min-w-0 truncate">—</span>
                                 </div>
                               )}
@@ -2033,20 +2059,12 @@ export function ExperimentTrialsTable({
                           rowVirtualizer.measureElement(node);
                         }
                       }}
-                      className={
-                        index % 2 === 0
-                          ? "bg-background hover:bg-muted/30"
-                          : "bg-muted/20 hover:bg-muted/40"
-                      }
+                      className="group bg-[color:var(--paper-surface)] hover:bg-[color:var(--paper-surface-2)] [&_td]:hover:!bg-[color:var(--paper-surface-2)]"
                     >
                       <TableCell
-                        className={`sticky left-0 z-10 border-r border-border font-mono text-xs shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] ${index % 2 === 0 ? "bg-background" : ""}`}
+                        className="sticky left-0 z-10 border-b border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] px-3.5 py-2.5 font-mono text-xs text-[color:var(--paper-ink)]"
                         style={{
                           width: getDisplayedWidth("task"),
-                          ...(index % 2 !== 0 && {
-                            backgroundColor:
-                              "color-mix(in srgb, hsl(var(--muted)) 20%, hsl(var(--background)))",
-                          }),
                         }}
                       >
                         <div className="flex min-w-0 items-center gap-2">
@@ -2070,33 +2088,29 @@ export function ExperimentTrialsTable({
                               className="h-4 w-4"
                             />
                           )}
-                          <div className="flex min-w-0 flex-1 flex-col">
-                            <div className="flex min-w-0 items-center gap-1">
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    onClick={() =>
-                                      onTaskSelect?.(task, {
-                                        orderedTasks: filteredTasks,
-                                        taskIndex: index,
-                                      })
-                                    }
-                                    className="h-auto min-w-0 flex-1 cursor-pointer justify-start overflow-hidden truncate px-0 py-0 text-left font-medium text-foreground hover:bg-transparent hover:text-blue-400"
-                                  >
-                                    {task.name}
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>View task files</TooltipContent>
-                              </Tooltip>
-                              {task.current_version != null && (
-                                <span className="inline-flex shrink-0 items-center rounded border border-border bg-muted/50 px-1 py-px font-mono text-[10px] font-medium leading-none text-muted-foreground">
-                                  v{task.current_version}
-                                </span>
-                              )}
-                              <VerdictIndicator task={task} />
-                            </div>
+                          <div className="flex min-w-0 flex-1 items-center gap-2">
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onTaskSelect?.(task, {
+                                      orderedTasks: filteredTasks,
+                                      taskIndex: index,
+                                    })
+                                  }
+                                  className="min-w-0 flex-1 cursor-pointer truncate bg-transparent p-0 text-left font-mono text-[11.5px] font-normal text-[color:var(--paper-ink)] transition-colors hover:text-[color:oklch(40%_0.1_240)]"
+                                >
+                                  {task.name}
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent>View task files</TooltipContent>
+                            </Tooltip>
+                            {task.current_version != null && (
+                              <span className="inline-flex shrink-0 items-center rounded-[3px] bg-[color:var(--paper-bg-2)] px-1 py-px font-mono text-[9.5px] font-medium leading-none text-[color:var(--paper-ink-3)]">
+                                v{task.current_version}
+                              </span>
+                            )}
                           </div>
                         </div>
                       </TableCell>
@@ -2105,7 +2119,7 @@ export function ExperimentTrialsTable({
                         return (
                           <TableCell
                             key={`${task.id}-${agent.key}`}
-                            className="border-r border-border text-center last:border-r-0"
+                            className="border-b border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] px-3.5 py-2 text-center"
                             style={{
                               width: getDisplayedWidth(agent.key),
                             }}
@@ -2122,7 +2136,7 @@ export function ExperimentTrialsTable({
                                 </span>
                               )
                             ) : (
-                              <div className="flex flex-wrap justify-center gap-1">
+                              <div className="flex flex-wrap justify-center gap-[3px]">
                                 {trials.map((trial, trialIndex) => {
                                   const status = getMatrixStatus(
                                     trial.status,
@@ -2131,7 +2145,6 @@ export function ExperimentTrialsTable({
                                   );
                                   const config = STATUS_CONFIG[status];
                                   const isDimmed = dimmedStatuses.has(status);
-                                  // Keep harness errors visually prominent even when dim-filtered.
                                   const dimClass =
                                     isDimmed && status !== "harness-error"
                                       ? "opacity-25"
@@ -2145,7 +2158,6 @@ export function ExperimentTrialsTable({
                                     dimmedAnalysisKeys.has(analysisLegendKey)
                                       ? "opacity-25"
                                       : "";
-                                  // Build enhanced title with analysis info
                                   const baseTitle = getTrialTitle(
                                     trial,
                                     status,
@@ -2157,28 +2169,26 @@ export function ExperimentTrialsTable({
                                       )
                                     : null;
                                   const analysisTitle = analysisIndicator
-                                    ? ` • ${analysisIndicator.title}`
+                                    ? ` · ${analysisIndicator.title}`
                                     : "";
                                   const fullTitle = `${baseTitle}${analysisTitle}`;
                                   return (
-                                    <div
+                                    <span
                                       key={trial.id}
-                                      className={`relative ${dimClass || analysisDimClass ? "opacity-25" : ""}`}
+                                      className={`relative inline-flex ${dimClass || analysisDimClass ? "opacity-25" : ""}`}
                                     >
-                                      <Button
+                                      <button
                                         type="button"
-                                        variant="ghost"
-                                        size="icon"
                                         onClick={() => {
-                                          const trialIndex =
+                                          const trialIndexInGroup =
                                             trialIndexById.get(trial.id) ?? 0;
                                           onTrialSelect?.(trial, task, {
                                             orderedTrials,
-                                            trialIndex,
+                                            trialIndex: trialIndexInGroup,
                                             trialGroups,
                                           });
                                         }}
-                                        className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border p-0 leading-none transition hover:opacity-90 ${config.matrixClass} ${isPartial ? "font-mono text-[8px] font-semibold tracking-[-0.03em]" : ""}`}
+                                        className={`relative grid h-[18px] w-[22px] shrink-0 place-items-center rounded-[4px] border leading-none transition-transform hover:-translate-y-px ${config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tabular-nums tracking-[-0.02em]" : ""}`}
                                         style={getRewardStyle(trial.reward)}
                                         aria-label={`Trial ${trialIndex + 1} ${config.shortLabel}`}
                                         title={fullTitle}
@@ -2188,16 +2198,17 @@ export function ExperimentTrialsTable({
                                         ) : (
                                           <StatusIcon
                                             status={status}
-                                            className="h-3.5 w-3.5"
+                                            className="h-2.5 w-2.5"
                                           />
                                         )}
-                                      </Button>
+                                      </button>
                                       {analysisIndicator && (
                                         <span
-                                          className={`absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full ring-1 ring-background ${analysisIndicator.dotClass} ${analysisIndicator.animate ? "animate-pulse" : ""}`}
+                                          aria-hidden="true"
+                                          className={`pointer-events-none absolute -right-[1px] -top-[1px] h-[4px] w-[4px] rounded-full ring-[1px] ring-[color:var(--paper-surface)] ${analysisIndicator.dotClass} ${analysisIndicator.animate ? "animate-pulse" : ""}`}
                                         />
                                       )}
-                                    </div>
+                                    </span>
                                   );
                                 })}
                               </div>
