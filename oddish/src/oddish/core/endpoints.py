@@ -34,6 +34,7 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
     VerdictStatus,
+    utcnow,
 )
 from oddish.schemas import (
     TaskBrowseExperiment,
@@ -758,6 +759,44 @@ def _reset_task_verdict(task: TaskModel) -> None:
     task.verdict_finished_at = None
 
 
+def _task_has_active_analysis(task: TaskModel) -> bool:
+    return any(
+        trial.analysis_status
+        in (AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
+        for trial in task.trials or []
+    )
+
+
+def _task_has_active_trials(task: TaskModel) -> bool:
+    return any(
+        trial.status
+        in (
+            TrialStatus.PENDING,
+            TrialStatus.QUEUED,
+            TrialStatus.RUNNING,
+            TrialStatus.RETRYING,
+        )
+        for trial in task.trials or []
+    )
+
+
+def _clear_stale_task_pipeline_status(task: TaskModel) -> None:
+    """Move a surviving task out of pipeline-only states after scoped deletion."""
+    if task.status not in (TaskStatus.ANALYZING, TaskStatus.VERDICT_PENDING):
+        return
+    if _task_has_active_trials(task) or _task_has_active_analysis(task):
+        return
+    if task.verdict_status in (
+        VerdictStatus.PENDING,
+        VerdictStatus.QUEUED,
+        VerdictStatus.RUNNING,
+    ):
+        return
+
+    task.status = TaskStatus.COMPLETED if task.trials else TaskStatus.FAILED
+    task.finished_at = task.finished_at or utcnow()
+
+
 def _reset_trial_analysis(trial: TrialModel) -> None:
     """Clear cached analysis state before re-running analysis."""
     trial.analysis = None
@@ -1311,6 +1350,25 @@ async def delete_experiment_core(
     linked_task_ids = [row[0] for row in linked_task_rows]
     linked_task_s3 = {row[0]: (row[1], row[2]) for row in linked_task_rows}
 
+    if linked_task_ids:
+        await session.execute(
+            text(
+                """
+                UPDATE worker_jobs
+                SET    status = 'CANCELLED',
+                       finished_at = NOW(),
+                       error_message = 'Experiment deleted by user',
+                       current_worker_id = NULL,
+                       current_queue_slot = NULL,
+                       modal_function_call_id = NULL
+                WHERE  subject_table = 'tasks'
+                  AND  subject_id = ANY(:task_ids)
+                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                """
+            ),
+            {"task_ids": linked_task_ids},
+        )
+
     # Trials scoped to this experiment.
     trial_where = [TrialModel.experiment_id == experiment_id]
     if org_id is not None:
@@ -1412,9 +1470,15 @@ async def delete_experiment_core(
             deleted_tasks += int(task_del_result.rowcount or 0)  # type: ignore[attr-defined]
             task_s3_to_delete.append(linked_task_s3[tid])
         else:
-            task = await session.get(TaskModel, tid)
+            task_result = await session.execute(
+                select(TaskModel)
+                .options(selectinload(TaskModel.trials))
+                .where(TaskModel.id == tid)
+            )
+            task = task_result.scalar_one_or_none()
             if task is not None:
                 _reset_task_verdict(task)
+                _clear_stale_task_pipeline_status(task)
 
     s3_prefixes = collect_s3_prefixes_for_deletion(
         tasks=task_s3_to_delete,

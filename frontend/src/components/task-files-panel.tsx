@@ -101,6 +101,39 @@ function getNodeName(path: string): string {
 
 // Truncate files larger than 100KB initially
 const TRUNCATE_THRESHOLD = 100 * 1024;
+const ACTIVE_TRIAL_STATUSES = [
+  "running",
+  "queued",
+  "retrying",
+  "pending",
+] as const;
+const ACTIVE_PIPELINE_STATUSES = ["pending", "queued", "running"] as const;
+
+function isActiveTrialStatus(status: string | null | undefined): boolean {
+  return ACTIVE_TRIAL_STATUSES.includes(
+    status as (typeof ACTIVE_TRIAL_STATUSES)[number],
+  );
+}
+
+function isActivePipelineStatus(status: string | null | undefined): boolean {
+  return ACTIVE_PIPELINE_STATUSES.includes(
+    status as (typeof ACTIVE_PIPELINE_STATUSES)[number],
+  );
+}
+
+function taskHasCancellableWork(task: Task | null | undefined): boolean {
+  if (!task) return false;
+  return (
+    task.status === "analyzing" ||
+    task.status === "verdict_pending" ||
+    isActivePipelineStatus(task.verdict_status) ||
+    (task.trials ?? []).some(
+      (trial) =>
+        isActiveTrialStatus(trial.status) ||
+        isActivePipelineStatus(trial.analysis_status),
+    )
+  );
+}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -412,18 +445,23 @@ export function TaskFilesPanel({
   const canRetryTask = allowRetry && retryableTrials.length > 0;
   const activeTrials = useMemo(() => {
     if (!task?.trials) return [];
-    return task.trials.filter((trial) =>
-      ["running", "queued", "retrying", "pending"].includes(trial.status),
-    );
+    return task.trials.filter((trial) => isActiveTrialStatus(trial.status));
   }, [task]);
-  const canCancelTask = allowRetry && activeTrials.length > 0;
+  const canCancelTask = allowRetry && taskHasCancellableWork(task);
+  const cancelActionLabel =
+    activeTrials.length > 0
+      ? `Cancel (${activeTrials.length})`
+      : task?.status === "verdict_pending" ||
+          isActivePipelineStatus(task?.verdict_status)
+        ? "Cancel verdict"
+        : "Cancel analysis";
   const allTrialsTerminal =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(
       (trial) => trial.status === "failed" || trial.status === "success",
     );
   const hasAnalysisInFlight = (task?.trials ?? []).some((trial) =>
-    ["pending", "queued", "running"].includes(trial.analysis_status ?? ""),
+    isActivePipelineStatus(trial.analysis_status),
   );
   const allAnalysesComplete =
     Boolean(task?.trials?.length) &&
@@ -432,9 +470,7 @@ export function TaskFilesPanel({
         trial.analysis_status === "success" ||
         trial.analysis_status === "failed",
     );
-  const verdictInFlight = ["pending", "queued", "running"].includes(
-    verdictSource?.verdict_status ?? "",
-  );
+  const verdictInFlight = isActivePipelineStatus(verdictSource?.verdict_status);
   const canRunTaskAnalysis =
     allowRetry &&
     Boolean(task) &&
@@ -1356,9 +1392,7 @@ export function TaskFilesPanel({
                     ) : (
                       <OctagonX className="mr-1 h-3.5 w-3.5" />
                     )}
-                    {isCancelling
-                      ? "Cancelling..."
-                      : `Cancel (${activeTrials.length})`}
+                    {isCancelling ? "Cancelling..." : cancelActionLabel}
                   </Button>
                 )}
                 {allowRetry && (

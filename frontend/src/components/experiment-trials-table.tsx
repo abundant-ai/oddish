@@ -88,6 +88,39 @@ const PassAtOneLeaderboard = dynamic(
   },
 );
 
+const ACTIVE_TRIAL_STATUSES = [
+  "running",
+  "queued",
+  "retrying",
+  "pending",
+] as const;
+const ACTIVE_PIPELINE_STATUSES = ["pending", "queued", "running"] as const;
+
+function isActiveTrialStatus(status: string | null | undefined): boolean {
+  return ACTIVE_TRIAL_STATUSES.includes(
+    status as (typeof ACTIVE_TRIAL_STATUSES)[number],
+  );
+}
+
+function isActivePipelineStatus(status: string | null | undefined): boolean {
+  return ACTIVE_PIPELINE_STATUSES.includes(
+    status as (typeof ACTIVE_PIPELINE_STATUSES)[number],
+  );
+}
+
+function taskHasCancellableWork(task: Task): boolean {
+  return (
+    task.status === "analyzing" ||
+    task.status === "verdict_pending" ||
+    isActivePipelineStatus(task.verdict_status) ||
+    (task.trials ?? []).some(
+      (trial) =>
+        isActiveTrialStatus(trial.status) ||
+        isActivePipelineStatus(trial.analysis_status),
+    )
+  );
+}
+
 export type AgentSummary = ExperimentAgentSummary;
 
 type ExperimentTrialsTableProps = {
@@ -847,12 +880,7 @@ export function ExperimentTrialsTable({
   }, [selectedTaskList]);
 
   const selectedCancellableTasks = useMemo(
-    () =>
-      selectedTaskList.filter((task) =>
-        (task.trials ?? []).some((trial) =>
-          ["running", "queued", "retrying", "pending"].includes(trial.status),
-        ),
-      ),
+    () => selectedTaskList.filter((task) => taskHasCancellableWork(task)),
     [selectedTaskList],
   );
 
@@ -865,13 +893,9 @@ export function ExperimentTrialsTable({
           (trial) => trial.status === "failed" || trial.status === "success",
         );
         const hasAnalysisInFlight = trials.some((trial) =>
-          ["pending", "queued", "running"].includes(
-            trial.analysis_status ?? "",
-          ),
+          isActivePipelineStatus(trial.analysis_status),
         );
-        const verdictInFlight = ["pending", "queued", "running"].includes(
-          task.verdict_status ?? "",
-        );
+        const verdictInFlight = isActivePipelineStatus(task.verdict_status);
         return allTrialsTerminal && !hasAnalysisInFlight && !verdictInFlight;
       }),
     [selectedTaskList],
@@ -890,9 +914,7 @@ export function ExperimentTrialsTable({
             trial.analysis_status === "success" ||
             trial.analysis_status === "failed",
         );
-        const verdictInFlight = ["pending", "queued", "running"].includes(
-          task.verdict_status ?? "",
-        );
+        const verdictInFlight = isActivePipelineStatus(task.verdict_status);
         return allTrialsTerminal && allAnalysesComplete && !verdictInFlight;
       }),
     [selectedTaskList],
