@@ -213,7 +213,7 @@
     --secondary: 30 6% 22%;
     --secondary-foreground: 40 10% 92%;
     --muted: 30 6% 22%;
-    --muted-foreground: 30 6% 62%;
+    --muted-foreground: 30 8% 74%;
     --accent: 30 6% 22%;
     --accent-foreground: 40 10% 92%;
     --destructive: 15 65% 45%;
@@ -286,4 +286,40 @@
 .dark .shiki span {
   color: var(--shiki-dark) !important;
   background-color: var(--shiki-dark-bg) !important;
+}
+
+/*
+ * Clerk dark-mode readability. Element keys verified against
+ * @clerk/javascript packages/ui/src/customizables/elementDescriptors.ts —
+ * each `.cl-<key>` corresponds to a real Clerk DOM class. The headings
+ * fallback (h1/h2/h3 inside cl-cardBox/cl-rootBox) catches any title
+ * elements whose specific key isn't worth threading through
+ * `appearance.elements`. Without these overrides the default Clerk
+ * styles leave several headings, the active-device metadata, and the
+ * org/user preview rows nearly invisible against the dark surface.
+ */
+.dark .cl-cardBox h1,
+.dark .cl-cardBox h2,
+.dark .cl-cardBox h3,
+.dark .cl-rootBox h1,
+.dark .cl-rootBox h2,
+.dark .cl-rootBox h3,
+.dark .cl-headerTitle,
+.dark .cl-profileSectionTitleText,
+.dark .cl-profileSection,
+.dark .cl-profileSectionContent,
+.dark .cl-profileSectionItem,
+.dark .cl-activeDevice,
+.dark .cl-activeDeviceListItem,
+.dark .cl-userPreviewMainIdentifier,
+.dark .cl-organizationPreviewMainIdentifier {
+  color: hsl(var(--foreground));
+}
+
+.dark .cl-headerSubtitle,
+.dark .cl-profileSectionSubtitleText,
+.dark .cl-userPreviewSecondaryIdentifier,
+.dark .cl-organizationPreviewSecondaryIdentifier,
+.dark .cl-formFieldHintText {
+  color: hsl(var(--muted-foreground));
 }
