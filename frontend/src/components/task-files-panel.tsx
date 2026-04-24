@@ -450,12 +450,12 @@ export function TaskFilesPanel({
   const analysisActionLabel = (task?.trials ?? []).some(
     (trial) => trial.analysis_status || trial.analysis,
   )
-    ? "Rerun QA"
-    : "Run QA";
+    ? "Rerun analyses"
+    : "Run analyses";
   const verdictActionLabel =
     verdictSource?.verdict_status || verdictSource?.verdict
-      ? "Rerun QA verdict"
-      : "Run QA verdict";
+      ? "Rerun verdict"
+      : "Run verdict";
 
   const navigateTo = useCallback(
     (nextIndex: number) => {

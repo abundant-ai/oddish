@@ -233,8 +233,8 @@ export function TrialDetailPanel({
       trial?.analysis != null);
   const analysisLabel =
     trial?.analysis_status || trial?.analysis
-      ? "Rerun QA"
-      : "Run QA";
+      ? "Rerun analysis"
+      : "Run analysis";
 
   const handleRetry = async () => {
     if (!trial || retrying || !allowRetry) return;
