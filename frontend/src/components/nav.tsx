@@ -80,7 +80,7 @@ export function Nav() {
                 variant="ghost"
                 size="sm"
                 asChild
-                className="gap-2 text-[#5d77a5] hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
+                className="gap-2 text-foreground hover:text-foreground"
               >
                 <a
                   href="https://github.com/abundant-ai/oddish/blob/main/DOCS.md"

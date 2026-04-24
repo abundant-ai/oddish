@@ -3,6 +3,7 @@ import { Fraunces, Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Providers } from "./providers";
+import { Footer } from "@/components/footer";
 
 const geistSans = Geist({
   subsets: ["latin"],
@@ -74,8 +75,11 @@ export default function RootLayout({
         lang="en"
         className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable}`}
       >
-        <body className="min-h-screen bg-background font-sans text-foreground antialiased">
-          <Providers>{children}</Providers>
+        <body className="flex min-h-screen flex-col bg-background font-sans text-foreground antialiased">
+          <Providers>
+            <div className="flex flex-1 flex-col">{children}</div>
+            <Footer />
+          </Providers>
         </body>
       </html>
     </ClerkProvider>

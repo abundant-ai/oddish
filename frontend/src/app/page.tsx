@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { Show, SignUpButton } from "@clerk/nextjs";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { GithubIcon } from "@/components/icons/github";
 import { ThemeToggle } from "@/components/theme-toggle";
 import Image from "next/image";
 
@@ -17,7 +16,7 @@ function RedirectToDashboard() {
   }, [router]);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
+    <div className="flex flex-1 items-center justify-center bg-background">
       <p className="text-muted-foreground">Redirecting to dashboard...</p>
     </div>
   );
@@ -87,7 +86,7 @@ export default function LandingPage() {
       </Show>
 
       <Show when="signed-out">
-        <div className="flex min-h-screen flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(133,184,92,0.16),transparent_34%),radial-gradient(circle_at_80%_20%,rgba(111,136,180,0.12),transparent_28%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--background)))] text-foreground">
+        <div className="flex flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(133,184,92,0.16),transparent_34%),radial-gradient(circle_at_80%_20%,rgba(111,136,180,0.12),transparent_28%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--background)))] text-foreground">
           {/* Header */}
           <header className="w-full border-b border-emerald-700/15 px-6 py-3 dark:border-emerald-400/10">
             <div className="mx-auto flex max-w-5xl items-center justify-between">
@@ -112,21 +111,6 @@ export default function LandingPage() {
                     Sign Up
                   </Button>
                 </SignUpButton>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  asChild
-                  className="rounded-full border border-[#6f88b4]/30 bg-background/60 text-[#5c7096] hover:border-emerald-600/35 hover:bg-emerald-500/10 hover:text-foreground dark:text-[#9db0cf]"
-                >
-                  <a
-                    href="https://github.com/abundant-ai/oddish"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label="Oddish GitHub"
-                  >
-                    <GithubIcon className="h-4 w-4" />
-                  </a>
-                </Button>
               </div>
             </div>
           </header>
@@ -222,21 +206,6 @@ export default function LandingPage() {
               </div>
             </div>
           </main>
-
-          {/* Footer */}
-          <footer className="w-full border-t border-[#6f88b4]/15 px-6 py-3 dark:border-[#85b85c]/10">
-            <div className="mx-auto max-w-5xl text-center text-sm text-muted-foreground">
-              by{" "}
-              <a
-                href="https://abundantdata.com/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="transition-colors hover:text-foreground"
-              >
-                Abundant AI
-              </a>
-            </div>
-          </footer>
         </div>
       </Show>
     </>
