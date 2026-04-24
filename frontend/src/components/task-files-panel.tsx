@@ -34,6 +34,11 @@ import {
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
 import type { Task, Trial } from "@/lib/types";
+import {
+  getCancelActionLabel,
+  isActivePipelineStatus,
+  taskHasCancellableWork,
+} from "@/lib/job-status";
 
 interface TaskFile {
   path: string;
@@ -101,39 +106,6 @@ function getNodeName(path: string): string {
 
 // Truncate files larger than 100KB initially
 const TRUNCATE_THRESHOLD = 100 * 1024;
-const ACTIVE_TRIAL_STATUSES = [
-  "running",
-  "queued",
-  "retrying",
-  "pending",
-] as const;
-const ACTIVE_PIPELINE_STATUSES = ["pending", "queued", "running"] as const;
-
-function isActiveTrialStatus(status: string | null | undefined): boolean {
-  return ACTIVE_TRIAL_STATUSES.includes(
-    status as (typeof ACTIVE_TRIAL_STATUSES)[number],
-  );
-}
-
-function isActivePipelineStatus(status: string | null | undefined): boolean {
-  return ACTIVE_PIPELINE_STATUSES.includes(
-    status as (typeof ACTIVE_PIPELINE_STATUSES)[number],
-  );
-}
-
-function taskHasCancellableWork(task: Task | null | undefined): boolean {
-  if (!task) return false;
-  return (
-    task.status === "analyzing" ||
-    task.status === "verdict_pending" ||
-    isActivePipelineStatus(task.verdict_status) ||
-    (task.trials ?? []).some(
-      (trial) =>
-        isActiveTrialStatus(trial.status) ||
-        isActivePipelineStatus(trial.analysis_status),
-    )
-  );
-}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -443,18 +415,8 @@ export function TaskFilesPanel({
   }, [task]);
 
   const canRetryTask = allowRetry && retryableTrials.length > 0;
-  const activeTrials = useMemo(() => {
-    if (!task?.trials) return [];
-    return task.trials.filter((trial) => isActiveTrialStatus(trial.status));
-  }, [task]);
   const canCancelTask = allowRetry && taskHasCancellableWork(task);
-  const cancelActionLabel =
-    activeTrials.length > 0
-      ? `Cancel (${activeTrials.length})`
-      : task?.status === "verdict_pending" ||
-          isActivePipelineStatus(task?.verdict_status)
-        ? "Cancel verdict"
-        : "Cancel analysis";
+  const cancelActionLabel = getCancelActionLabel(task);
   const allTrialsTerminal =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(

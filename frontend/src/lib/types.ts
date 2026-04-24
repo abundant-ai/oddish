@@ -1,5 +1,5 @@
 // Task status (simplified - just tracks trial execution)
-type TaskStatus =
+export type TaskStatus =
   | "pending"
   | "running"
   | "analyzing"
@@ -11,7 +11,7 @@ type TaskStatus =
 // - "success": Trial executed to completion (regardless of test result)
 // - "failed": Trial encountered an execution error (harness/infrastructure failure)
 // - Test results are stored separately in the `reward` field (0..1 score, null=no result)
-type TrialStatus =
+export type TrialStatus =
   | "pending"
   | "queued"
   | "running"
@@ -19,7 +19,35 @@ type TrialStatus =
   | "failed"
   | "retrying";
 
-type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
+export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
+
+export type VisibleJobKind = "trial" | "analysis" | "verdict";
+
+export type VisibleJobStatus =
+  | "queued"
+  | "running"
+  | "retrying"
+  | "success"
+  | "failed"
+  | "cancelled"
+  | "blocked";
+
+export interface VisibleWorkerJob {
+  id: string;
+  kind: VisibleJobKind | string;
+  status: VisibleJobStatus | string;
+  queue_key: string;
+  subject_table?: string | null;
+  subject_id?: string | null;
+  attempts: number;
+  max_attempts: number;
+  created_at: string;
+  started_at?: string | null;
+  claimed_at?: string | null;
+  heartbeat_at?: string | null;
+  finished_at?: string | null;
+  error_message?: string | null;
+}
 
 type Priority = "high" | "low";
 
@@ -68,6 +96,7 @@ export interface Trial {
   result?: Record<string, unknown> | null;
   analysis_status?: JobStatus | null;
   analysis?: TrialAnalysis | null;
+  jobs?: VisibleWorkerJob[];
   queue_info?: TrialQueueInfo | null;
   task_version?: number | null;
   task_version_id?: string | null;
@@ -141,6 +170,7 @@ export interface Task {
   verdict_status?: JobStatus | null;
   verdict?: TaskVerdict | null;
   verdict_error?: string | null;
+  jobs?: VisibleWorkerJob[];
   current_version?: number | null;
   current_version_id?: string | null;
   trials?: Trial[] | null;
@@ -222,6 +252,20 @@ export interface ModelUsage {
   avg_duration_s: number | null;
 }
 
+export interface JobUsage {
+  kind: string;
+  queue_key: string;
+  job_count: number;
+  queued: number;
+  running: number;
+  retrying: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  blocked: number;
+  avg_duration_s: number | null;
+}
+
 export interface DashboardExperimentAuthor {
   name: string;
   source: "github" | "api";
@@ -256,6 +300,7 @@ export interface DashboardResponse {
   queues: QueueStats;
   pipeline: PipelineStats;
   model_usage: ModelUsage[];
+  job_usage?: JobUsage[];
   tasks: Task[];
   experiments?: DashboardExperiment[];
   tasks_limit?: number;
@@ -369,12 +414,14 @@ export interface QueueSlotsResponse {
 }
 
 interface QueueStatusEntry {
+  kind?: string;
   queue_key: string;
   queued: number;
   running: number;
 }
 
 export interface QueueStatusResponse {
+  queues?: QueueStatusEntry[];
   trial_queues: QueueStatusEntry[];
   analysis_queued: number;
   analysis_running: number;

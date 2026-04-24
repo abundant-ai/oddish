@@ -133,7 +133,7 @@ function QueueSlotsCard() {
             <Input
               value={queueFilter}
               onChange={(event) => setQueueFilter(event.target.value)}
-              placeholder="Filter queue keys..."
+              placeholder="Filter queue keys or job kinds..."
               className="h-8 text-xs"
             />
             <Accordion type="multiple" className="space-y-2">
@@ -262,18 +262,20 @@ function QueueHealthCard() {
   });
   const [queueFilter, setQueueFilter] = useState("");
 
+  const queueStatusEntries =
+    qsData?.queues && qsData.queues.length > 0
+      ? qsData.queues
+      : (qsData?.trial_queues ?? []);
   const queueKeys = new Set<string>();
   slotsData?.queue_keys.forEach((p) => queueKeys.add(p.queue_key));
-  qsData?.trial_queues?.forEach((q) => queueKeys.add(q.queue_key));
+  queueStatusEntries.forEach((q) => queueKeys.add(q.queue_key));
 
-  const queueRows = Array.from(queueKeys).map((queueKey) => {
+  const queueRows = queueStatusEntries.map((entry) => {
+    const queueKey = entry.queue_key;
     const slotSummary =
       slotsData?.queue_keys.find((p) => p.queue_key === queueKey) ?? null;
-    const trialEntry = qsData?.trial_queues?.find(
-      (q) => q.queue_key === queueKey,
-    );
-    const queued = trialEntry?.queued ?? 0;
-    const running = trialEntry?.running ?? 0;
+    const queued = entry.queued ?? 0;
+    const running = entry.running ?? 0;
     const totalSlots = slotSummary?.total_slots ?? 0;
     const activeSlots = slotSummary?.active_slots ?? 0;
     const staleLocks =
@@ -295,6 +297,7 @@ function QueueHealthCard() {
     }
 
     return {
+      kind: entry.kind ?? "TRIAL",
       queueKey,
       queued,
       running,
@@ -303,11 +306,39 @@ function QueueHealthCard() {
       notes,
     };
   });
+  for (const queueKey of queueKeys) {
+    if (queueRows.some((row) => row.queueKey === queueKey)) continue;
+    const slotSummary =
+      slotsData?.queue_keys.find((p) => p.queue_key === queueKey) ?? null;
+    if (!slotSummary) continue;
+    const staleLocks =
+      slotSummary.slots.filter((slot) => slot.locked_by && !slot.is_active)
+        .length ?? 0;
+    queueRows.push({
+      kind: "SLOT",
+      queueKey,
+      queued: 0,
+      running: 0,
+      totalSlots: slotSummary.total_slots,
+      activeSlots: slotSummary.active_slots,
+      notes:
+        staleLocks > 0
+          ? [`${staleLocks} stale lock${staleLocks > 1 ? "s" : ""}`]
+          : [],
+    });
+  }
   const filteredRows = queueRows
     .filter((row) =>
-      row.queueKey.toLowerCase().includes(queueFilter.toLowerCase().trim()),
+      `${row.kind} ${row.queueKey}`
+        .toLowerCase()
+        .includes(queueFilter.toLowerCase().trim()),
     )
-    .sort((a, b) => b.queued + b.running - (a.queued + a.running))
+    .sort(
+      (a, b) =>
+        b.queued + b.running - (a.queued + a.running) ||
+        a.kind.localeCompare(b.kind) ||
+        a.queueKey.localeCompare(b.queueKey),
+    )
     .slice(0, 30);
 
   const totalQueued = queueRows.reduce((sum, row) => sum + row.queued, 0);
@@ -376,6 +407,7 @@ function QueueHealthCard() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead>Kind</TableHead>
                   <TableHead>Queue Key</TableHead>
                   <TableHead className="text-right">Queued</TableHead>
                   <TableHead className="text-right">Running</TableHead>
@@ -385,7 +417,15 @@ function QueueHealthCard() {
               </TableHeader>
               <TableBody>
                 {filteredRows.map((row) => (
-                  <TableRow key={row.queueKey}>
+                  <TableRow key={`${row.kind}-${row.queueKey}`}>
+                    <TableCell>
+                      <Badge
+                        variant="outline"
+                        className="font-mono text-[10px]"
+                      >
+                        {row.kind}
+                      </Badge>
+                    </TableCell>
                     <TableCell>
                       <span className="inline-flex items-center gap-2">
                         <QueueKeyIcon queueKey={row.queueKey} size={13} />

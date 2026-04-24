@@ -50,6 +50,10 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import {
+  isActivePipelineStatus,
+  taskHasCancellableWork,
+} from "@/lib/job-status";
+import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
   formatRewardValue,
@@ -87,39 +91,6 @@ const PassAtOneLeaderboard = dynamic(
     ssr: false,
   },
 );
-
-const ACTIVE_TRIAL_STATUSES = [
-  "running",
-  "queued",
-  "retrying",
-  "pending",
-] as const;
-const ACTIVE_PIPELINE_STATUSES = ["pending", "queued", "running"] as const;
-
-function isActiveTrialStatus(status: string | null | undefined): boolean {
-  return ACTIVE_TRIAL_STATUSES.includes(
-    status as (typeof ACTIVE_TRIAL_STATUSES)[number],
-  );
-}
-
-function isActivePipelineStatus(status: string | null | undefined): boolean {
-  return ACTIVE_PIPELINE_STATUSES.includes(
-    status as (typeof ACTIVE_PIPELINE_STATUSES)[number],
-  );
-}
-
-function taskHasCancellableWork(task: Task): boolean {
-  return (
-    task.status === "analyzing" ||
-    task.status === "verdict_pending" ||
-    isActivePipelineStatus(task.verdict_status) ||
-    (task.trials ?? []).some(
-      (trial) =>
-        isActiveTrialStatus(trial.status) ||
-        isActivePipelineStatus(trial.analysis_status),
-    )
-  );
-}
 
 export type AgentSummary = ExperimentAgentSummary;
 
@@ -1532,7 +1503,7 @@ export function ExperimentTrialsTable({
             </span>
             <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
               <span className="mx-[1px] inline-block h-2 w-2 rounded-full bg-[color:var(--paper-a-good)]" />
-              QA verdict
+              trial analysis
             </span>
           </span>
         </div>
@@ -1667,7 +1638,7 @@ export function ExperimentTrialsTable({
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="cursor-help whitespace-nowrap pr-2 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] text-[color:var(--paper-ink-3)]">
-              QA verdict
+              Trial analysis
             </span>
           </TooltipTrigger>
           <TooltipContent className="max-w-xs">

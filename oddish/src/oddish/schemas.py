@@ -410,6 +410,23 @@ class TaskVersionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class VisibleWorkerJob(BaseModel):
+    id: str
+    kind: str
+    status: str
+    queue_key: str
+    subject_table: str | None = None
+    subject_id: str | None = None
+    attempts: int
+    max_attempts: int
+    created_at: datetime
+    started_at: datetime | None = None
+    claimed_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    finished_at: datetime | None = None
+    error_message: str | None = None
+
+
 class TrialResponse(BaseModel):
     id: str
     name: str
@@ -490,6 +507,10 @@ class TrialResponse(BaseModel):
     analysis_error: str | None = Field(
         None,
         description="Error message if analysis failed",
+    )
+    jobs: list[VisibleWorkerJob] = Field(
+        default_factory=list,
+        description="Active/recent worker_jobs rows for this trial",
     )
     queue_info: TrialQueueInfo | None = Field(
         None,
@@ -600,6 +621,10 @@ class TaskStatusResponse(BaseModel):
     verdict_error: str | None = Field(
         None,
         description="Error message if verdict computation failed",
+    )
+    jobs: list[VisibleWorkerJob] = Field(
+        default_factory=list,
+        description="Active/recent worker_jobs rows for this task and its trials",
     )
     trials: list[TrialResponse] | None = None
     created_at: datetime

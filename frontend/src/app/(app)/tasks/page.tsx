@@ -41,7 +41,18 @@ async function getInitialTaskBrowseData(): Promise<TaskBrowseResponse | null> {
   }
 }
 
-export default async function TasksPage() {
+export default async function TasksPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ query?: string | string[] }>;
+}) {
   const initialData = await getInitialTaskBrowseData();
-  return <TasksPageClient initialData={initialData} />;
+  const params = await searchParams;
+  const queryParam = params?.query;
+  const initialQuery = Array.isArray(queryParam)
+    ? (queryParam[0] ?? "")
+    : (queryParam ?? "");
+  return (
+    <TasksPageClient initialData={initialData} initialQuery={initialQuery} />
+  );
 }

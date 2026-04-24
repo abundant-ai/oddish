@@ -14,6 +14,7 @@ from oddish.core.helpers import (
     fetch_experiment_effective_version_ids,
     fetch_trial_queue_info,
     fetch_trial_analysis_summaries,
+    fetch_visible_worker_jobs,
     get_task_status_trials,
     resolve_effective_version_id,
 )
@@ -213,6 +214,19 @@ async def list_tasks_core(
                 set_committed_value(task, "trials", get_task_status_trials(task))
 
     if include_trials:
+        visible_jobs_started_at = now()
+        trial_ids = [trial.id for task in tasks for trial in task.trials]
+        jobs_by_subject = await fetch_visible_worker_jobs(
+            session,
+            task_ids=[task.id for task in tasks],
+            trial_ids=trial_ids,
+        )
+        if record_timing is not None:
+            record_timing(
+                "tasks_worker_jobs",
+                elapsed_ms(visible_jobs_started_at),
+                "Visible worker jobs",
+            )
         queue_info_started_at = now()
         queue_info_by_trial_id = await fetch_trial_queue_info(
             session,
@@ -242,6 +256,7 @@ async def list_tasks_core(
                     include_empty_rewards=include_empty_rewards,
                     analysis_summaries=analysis_summaries,
                     queue_info_by_trial_id=queue_info_by_trial_id,
+                    jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
                 )
                 for task in tasks
@@ -259,6 +274,7 @@ async def list_tasks_core(
                 task,
                 include_empty_rewards=include_empty_rewards,
                 queue_info_by_trial_id=queue_info_by_trial_id,
+                jobs_by_subject=jobs_by_subject,
                 experiment_context_id=experiment_id,
             )
             for task in tasks
@@ -285,6 +301,11 @@ async def list_tasks_core(
         include_empty_rewards=include_empty_rewards,
         experiment_context_id=experiment_id,
         effective_version_id_by_task_id=effective_version_id_by_task_id or None,
+        jobs_by_subject=await fetch_visible_worker_jobs(
+            session,
+            task_ids=[task.id for task in tasks],
+            trial_ids=[],
+        ),
     )
     if record_timing is not None:
         record_timing(
@@ -587,6 +608,11 @@ async def get_task_status_core(
         from sqlalchemy.orm.attributes import set_committed_value
 
         set_committed_value(task, "trials", get_task_status_trials(task))
+        jobs_by_subject = await fetch_visible_worker_jobs(
+            session,
+            task_ids=[task.id],
+            trial_ids=[trial.id for trial in task.trials],
+        )
         queue_info_by_trial_id = await fetch_trial_queue_info(
             session, trials=task.trials
         )
@@ -594,11 +620,16 @@ async def get_task_status_core(
             task,
             include_empty_rewards=include_empty_rewards,
             queue_info_by_trial_id=queue_info_by_trial_id,
+            jobs_by_subject=jobs_by_subject,
         )
 
+    jobs_by_subject = await fetch_visible_worker_jobs(session, task_ids=[task.id])
     return (
         await build_task_status_responses_from_counts(
-            session, tasks=[task], include_empty_rewards=include_empty_rewards
+            session,
+            tasks=[task],
+            include_empty_rewards=include_empty_rewards,
+            jobs_by_subject=jobs_by_subject,
         )
     )[0]
 
@@ -626,10 +657,12 @@ async def get_trial_by_index_core(
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=[trial])
+    jobs_by_subject = await fetch_visible_worker_jobs(session, trial_ids=[trial.id])
     return build_trial_response(
         trial,
         task_path,
         queue_info=queue_info_by_trial_id.get(trial.id),
+        jobs=jobs_by_subject.get(("trials", trial.id), []),
     )
 
 

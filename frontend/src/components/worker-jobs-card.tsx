@@ -1,6 +1,7 @@
 "use client";
 
 import useSWR from "swr";
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -68,13 +69,13 @@ const KIND_DISPLAY: Record<
     accent: "text-blue-400",
   },
   ANALYSIS: {
-    label: "Trajectory Analysis",
+    label: "Trial Analysis",
     description: "LLM classification of individual trial trajectories",
     Icon: Microscope,
     accent: "text-purple-400",
   },
   VERDICT: {
-    label: "QA Verdict",
+    label: "Task Verdict",
     description: "Cross-trial synthesis once analyses complete",
     Icon: Gavel,
     accent: "text-amber-400",
@@ -255,13 +256,18 @@ function SubjectCell({ sample }: { sample: WorkerJobSample }) {
   if (!sample.subject_id) {
     return <span className="text-muted-foreground">—</span>;
   }
+  const href = `/tasks?query=${encodeURIComponent(sample.subject_id)}`;
   return (
-    <span className="font-mono text-[11px]">
+    <Link
+      href={href}
+      className="font-mono text-[11px] text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
+      title="Open matching task search"
+    >
       <span className="text-muted-foreground">
         {sample.subject_table ?? "?"}/
       </span>
       {sample.subject_id}
-    </span>
+    </Link>
   );
 }
 

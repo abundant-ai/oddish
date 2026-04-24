@@ -18,9 +18,16 @@ from oddish.db import (
     TaskStatus,
     TrialModel,
     TrialStatus,
+    WorkerJobModel,
+    WorkerJobStatus,
 )
 from oddish.model_pricing import estimate_cost_usd
-from oddish.schemas import TaskStatusResponse, TrialQueueInfo, TrialResponse
+from oddish.schemas import (
+    TaskStatusResponse,
+    TrialQueueInfo,
+    TrialResponse,
+    VisibleWorkerJob,
+)
 
 
 def _resolve_trial_cost(
@@ -46,10 +53,17 @@ def _resolve_trial_cost(
         return None, None
     return estimated, True
 
+
 _ANALYSIS_SUMMARY_UNSET = object()
 _VERSION_ID_UNSET: object = object()
 _QUEUE_PENDING_STATUSES = {TrialStatus.QUEUED, TrialStatus.RETRYING}
 _QUEUE_ACTIVE_STATUSES = _QUEUE_PENDING_STATUSES | {TrialStatus.RUNNING}
+_VISIBLE_ACTIVE_WORKER_JOB_STATUSES = {
+    WorkerJobStatus.QUEUED,
+    WorkerJobStatus.RUNNING,
+    WorkerJobStatus.RETRYING,
+    WorkerJobStatus.BLOCKED,
+}
 
 
 @dataclass(frozen=True)
@@ -220,11 +234,102 @@ def _resolve_trial_version_fields(
     return version_number, version_id
 
 
+def _normalize_worker_job_kind(kind: object) -> str:
+    value = getattr(kind, "value", kind)
+    return str(value).lower()
+
+
+def _normalize_worker_job_status(status: object) -> str:
+    value = getattr(status, "value", status)
+    return str(value).lower()
+
+
+def build_visible_worker_job(job: WorkerJobModel) -> VisibleWorkerJob:
+    return VisibleWorkerJob(
+        id=job.id,
+        kind=_normalize_worker_job_kind(job.kind),
+        status=_normalize_worker_job_status(job.status),
+        queue_key=settings.normalize_queue_key(job.queue_key),
+        subject_table=job.subject_table,
+        subject_id=job.subject_id,
+        attempts=job.attempts,
+        max_attempts=job.max_attempts,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        claimed_at=job.claimed_at,
+        heartbeat_at=job.heartbeat_at,
+        finished_at=job.finished_at,
+        error_message=job.error_message,
+    )
+
+
+async def fetch_visible_worker_jobs(
+    session: AsyncSession,
+    *,
+    task_ids: Sequence[str] = (),
+    trial_ids: Sequence[str] = (),
+    include_recent_terminal: bool = True,
+    recent_limit: int = 250,
+) -> dict[tuple[str, str], list[VisibleWorkerJob]]:
+    """Fetch active/recent worker_jobs keyed by ``(subject_table, subject_id)``."""
+    subject_predicates = []
+    if task_ids:
+        subject_predicates.append(
+            (WorkerJobModel.subject_table == "tasks")
+            & (WorkerJobModel.subject_id.in_(list(task_ids)))
+        )
+    if trial_ids:
+        subject_predicates.append(
+            (WorkerJobModel.subject_table == "trials")
+            & (WorkerJobModel.subject_id.in_(list(trial_ids)))
+        )
+    if not subject_predicates:
+        return {}
+
+    status_predicate = WorkerJobModel.status.in_(
+        tuple(_VISIBLE_ACTIVE_WORKER_JOB_STATUSES)
+    )
+    if include_recent_terminal:
+        status_predicate = or_(
+            status_predicate, WorkerJobModel.finished_at.is_not(None)
+        )
+
+    query = (
+        select(WorkerJobModel)
+        .where(or_(*subject_predicates), status_predicate)
+        .order_by(
+            case(
+                (
+                    WorkerJobModel.status.in_(
+                        tuple(_VISIBLE_ACTIVE_WORKER_JOB_STATUSES)
+                    ),
+                    0,
+                ),
+                else_=1,
+            ),
+            WorkerJobModel.finished_at.desc().nulls_last(),
+            WorkerJobModel.created_at.desc(),
+        )
+        .limit(recent_limit)
+    )
+
+    result = await session.execute(query)
+    jobs_by_subject: dict[tuple[str, str], list[VisibleWorkerJob]] = defaultdict(list)
+    for job in result.scalars().all():
+        if not job.subject_table or not job.subject_id:
+            continue
+        jobs_by_subject[(job.subject_table, job.subject_id)].append(
+            build_visible_worker_job(job)
+        )
+    return jobs_by_subject
+
+
 def build_trial_response(
     trial: TrialModel,
     task_path: str,
     *,
     queue_info: TrialQueueInfo | None = None,
+    jobs: Sequence[VisibleWorkerJob] | None = None,
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
@@ -260,6 +365,7 @@ def build_trial_response(
         analysis_status=trial.analysis_status,
         analysis=trial.analysis,
         analysis_error=trial.analysis_error,
+        jobs=list(jobs or []),
         queue_info=queue_info,
         created_at=trial.created_at,
         started_at=trial.started_at,
@@ -273,6 +379,7 @@ def build_compact_trial_response(
     *,
     analysis_summary: dict[str, str | None] | None | object = _ANALYSIS_SUMMARY_UNSET,
     queue_info: TrialQueueInfo | None = None,
+    jobs: Sequence[VisibleWorkerJob] | None = None,
 ) -> TrialResponse:
     """Build a compact TrialResponse for table views.
 
@@ -324,6 +431,7 @@ def build_compact_trial_response(
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
         analysis_error=None,
+        jobs=list(jobs or []),
         queue_info=queue_info,
         created_at=trial.created_at,
         started_at=trial.started_at,
@@ -524,6 +632,7 @@ def _build_task_status_response(
     reward_total: int,
     include_empty_rewards: bool,
     trials: list[TrialResponse] | None,
+    jobs: Sequence[VisibleWorkerJob] | None = None,
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
 ) -> TaskStatusResponse:
@@ -572,6 +681,7 @@ def _build_task_status_response(
         verdict_status=task.verdict_status,
         verdict=task.verdict,
         verdict_error=task.verdict_error,
+        jobs=list(jobs or []),
         created_at=task.created_at,
         started_at=task.started_at,
         finished_at=task.finished_at,
@@ -583,6 +693,7 @@ def build_task_status_response(
     *,
     include_empty_rewards: bool = True,
     queue_info_by_trial_id: dict[str, TrialQueueInfo] | None = None,
+    jobs_by_subject: dict[tuple[str, str], list[VisibleWorkerJob]] | None = None,
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
 ) -> TaskStatusResponse:
@@ -615,9 +726,19 @@ def build_task_status_response(
                 if queue_info_by_trial_id is not None
                 else None
             ),
+            jobs=(
+                jobs_by_subject.get(("trials", t.id), [])
+                if jobs_by_subject is not None
+                else None
+            ),
         )
         for t in task_trials
     ]
+    task_jobs = []
+    if jobs_by_subject is not None:
+        task_jobs.extend(jobs_by_subject.get(("tasks", task.id), []))
+        for trial in task_trials:
+            task_jobs.extend(jobs_by_subject.get(("trials", trial.id), []))
 
     return _build_task_status_response(
         task,
@@ -629,6 +750,7 @@ def build_task_status_response(
         reward_total=reward_total,
         include_empty_rewards=include_empty_rewards,
         trials=trials,
+        jobs=task_jobs,
         experiment_context_id=experiment_context_id,
         effective_version_id=effective_version_id,
     )
@@ -640,6 +762,7 @@ def build_task_status_response_compact(
     include_empty_rewards: bool = True,
     analysis_summaries: dict[str, dict[str, str | None]] | None = None,
     queue_info_by_trial_id: dict[str, TrialQueueInfo] | None = None,
+    jobs_by_subject: dict[tuple[str, str], list[VisibleWorkerJob]] | None = None,
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
 ) -> TaskStatusResponse:
@@ -672,9 +795,19 @@ def build_task_status_response_compact(
                 if queue_info_by_trial_id is not None
                 else None
             ),
+            jobs=(
+                jobs_by_subject.get(("trials", t.id), [])
+                if jobs_by_subject is not None
+                else None
+            ),
         )
         for t in task_trials
     ]
+    task_jobs = []
+    if jobs_by_subject is not None:
+        task_jobs.extend(jobs_by_subject.get(("tasks", task.id), []))
+        for trial in task_trials:
+            task_jobs.extend(jobs_by_subject.get(("trials", trial.id), []))
 
     return _build_task_status_response(
         task,
@@ -686,6 +819,7 @@ def build_task_status_response_compact(
         reward_total=reward_total,
         include_empty_rewards=include_empty_rewards,
         trials=trials,
+        jobs=task_jobs,
         experiment_context_id=experiment_context_id,
         effective_version_id=effective_version_id,
     )
@@ -729,6 +863,7 @@ async def build_task_status_responses_from_counts(
     include_empty_rewards: bool = True,
     experiment_context_id: str | None = None,
     effective_version_id_by_task_id: dict[str, str] | None = None,
+    jobs_by_subject: dict[tuple[str, str], list[VisibleWorkerJob]] | None = None,
 ) -> list[TaskStatusResponse]:
     """Build TaskStatusResponse objects with aggregated trial counts.
 
@@ -803,6 +938,11 @@ async def build_task_status_responses_from_counts(
             ),
             include_empty_rewards=include_empty_rewards,
             trials=None,
+            jobs=(
+                jobs_by_subject.get(("tasks", task.id), [])
+                if jobs_by_subject is not None
+                else None
+            ),
             experiment_context_id=experiment_context_id,
             effective_version_id=_effective(task),
         )
