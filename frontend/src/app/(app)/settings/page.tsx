@@ -73,7 +73,11 @@ const clerkEmbeddedAppearance = {
   variables: {
     colorBackground: "hsl(var(--card))",
     colorText: "hsl(var(--foreground))",
-    colorTextSecondary: "hsl(var(--muted-foreground))",
+    // Use alpha-on-foreground rather than --muted-foreground so the
+    // active-device row metadata and other secondary text stay legible
+    // in dark mode. (Verified against
+    // @clerk/javascript packages/ui/src/customizables/elementDescriptors.ts.)
+    colorTextSecondary: "hsl(var(--foreground) / 0.78)",
     colorPrimary: "hsl(var(--primary))",
     colorDanger: "hsl(var(--destructive))",
     colorInputBackground: "hsl(var(--background))",
@@ -98,13 +102,17 @@ const clerkEmbeddedAppearance = {
     profileSection: "border-b border-border py-6 first:pt-0 last:border-b-0",
     profileSectionHeader: "mb-2",
     profileSectionTitle: "text-foreground text-sm font-semibold",
+    profileSectionTitleText: "text-foreground font-medium",
     profileSectionSubtitle: "text-muted-foreground text-sm",
-    profileSectionContent: "gap-3",
+    profileSectionSubtitleText: "text-muted-foreground",
+    profileSectionContent: "gap-3 text-foreground",
+    profileSectionItem: "text-foreground",
     profileSectionPrimaryButton:
       "bg-primary text-primary-foreground hover:bg-primary/90 h-8 px-3 text-xs font-medium",
     profileSectionSecondaryButton:
       "border border-border text-foreground hover:bg-muted h-8 px-3 text-xs font-medium",
-    accordionTriggerButton: "hover:bg-muted rounded-md px-2",
+    activeDevice: "text-foreground",
+    activeDeviceListItem: "text-foreground",
     menuButton: "hover:bg-muted rounded-md",
     formButtonPrimary:
       "bg-primary text-primary-foreground hover:bg-primary/90 h-9 text-sm font-medium",
@@ -122,6 +130,8 @@ const clerkEmbeddedAppearance = {
     userButtonBox: "flex-row-reverse",
     userPreviewMainIdentifier: "text-foreground text-sm font-medium",
     userPreviewSecondaryIdentifier: "text-muted-foreground text-xs",
+    organizationPreviewMainIdentifier: "text-foreground text-sm font-medium",
+    organizationPreviewSecondaryIdentifier: "text-muted-foreground text-xs",
   },
 };
 
@@ -262,6 +272,39 @@ function SectionHeading({
           {description}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Renders its children but keeps inactive sections in the DOM (mounted)
+ * so heavy Clerk components don't re-mount on every section switch.
+ * Inactive panels are positioned absolute + opacity-0 so they don't
+ * affect layout but stay reachable for ARIA / focus restoration.
+ */
+function SectionContainer({
+  active,
+  children,
+}: {
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      role="tabpanel"
+      aria-hidden={!active}
+      // `inert` keeps inactive panels out of the tab order and disables
+      // pointer events without unmounting them — supported as a real
+      // boolean prop in React 19 / modern Chromium, Safari, and Firefox.
+      inert={!active}
+      className={cn(
+        "transition-opacity duration-200 ease-out",
+        active
+          ? "relative opacity-100"
+          : "absolute inset-0 opacity-0",
+      )}
+    >
+      {children}
     </div>
   );
 }
@@ -912,9 +955,26 @@ export default function SettingsPage() {
             description={currentMeta.description}
           />
 
-          {section === "profile" ? <ProfilePanel /> : null}
-          {section === "workspace" ? <WorkspaceSection /> : null}
-          {section === "api-keys" ? <APIKeysPanel /> : null}
+          {/*
+            All three panels stay mounted so switching sections doesn't
+            tear down and re-spin Clerk's <UserProfile> /
+            <OrganizationProfile>. We toggle visibility with `hidden`
+            (rather than display:none on the parent) so screen readers
+            still see the active panel as the live region. The min-h
+            keeps the layout from jumping between Account (short) and
+            Workspace (tall) on first paint.
+          */}
+          <div className="relative min-h-[640px]">
+            <SectionContainer active={section === "profile"}>
+              <ProfilePanel />
+            </SectionContainer>
+            <SectionContainer active={section === "workspace"}>
+              <WorkspaceSection />
+            </SectionContainer>
+            <SectionContainer active={section === "api-keys"}>
+              <APIKeysPanel />
+            </SectionContainer>
+          </div>
         </section>
       </div>
     </div>
