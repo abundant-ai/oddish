@@ -66,6 +66,7 @@ worker = [
     "anthropic==0.76.0",
     "openai==2.15.0",
     "google-generativeai==0.8.6",
+    "modal==1.4.2",
 ]
 dev = [
     "pytest==9.0.2",
