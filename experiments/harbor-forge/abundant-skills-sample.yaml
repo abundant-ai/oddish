@@ -1,0 +1,31 @@
+agents:
+  - name: nop
+    model_name: default
+    n_trials: 4
+  - name: oracle
+    model_name: default
+    n_trials: 4
+  - name: claude-code
+    model_name: bedrock/global.anthropic.claude-opus-4-7
+    n_trials: 4
+  - name: gemini-cli
+    model_name: gemini/gemini-3.1-pro-preview
+    n_trials: 4
+
+task_names:
+  - swift-sepa-reconciliation
+  - network-threat-forensics
+  - college-application-shortlist-no-skill
+  - ab-test-analysis-no-skill
+  - election-results-reconciler-no-skill
+  - attendance-tracker-extract
+  - restaurant-weekly-cost-control-audit
+  - restaurant-weekly-cost-control-audit-no-skill
+  - network-threat-forensics-no-skill
+  - swift-sepa-reconciliation-no-skill
+  - attendance-tracker-extract-no-skill
+  - ab-test-analysis
+  - election-results-reconciler
+  - college-application-shortlist
+
+run_analysis: true
