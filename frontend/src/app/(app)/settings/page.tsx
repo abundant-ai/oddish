@@ -727,19 +727,18 @@ function WorkspaceSwitcherPanel() {
       <div className="space-y-4 pt-4">
         <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 space-y-1">
-            <div className="flex items-center gap-2">
-              <p className="truncate font-display text-lg font-medium tracking-tight text-[color:var(--paper-ink)]">
-                {organization?.name ?? "No workspace selected"}
-              </p>
-              {organization ? (
-                <Badge
-                  variant="outline"
-                  className="rounded-md border-[color:var(--paper-pass)]/30 bg-[color:var(--paper-pass-bg)] text-[10px] font-medium uppercase tracking-wide text-[color:var(--paper-pass)]"
-                >
-                  Active
-                </Badge>
-              ) : null}
-            </div>
+            {organization ? (
+              <div className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
+                <span
+                  className="inline-block h-1.5 w-1.5 rounded-full bg-[color:var(--paper-pass)]"
+                  aria-hidden
+                />
+                Active workspace
+              </div>
+            ) : null}
+            <p className="truncate font-display text-lg font-medium tracking-tight text-[color:var(--paper-ink)]">
+              {organization?.name ?? "No workspace selected"}
+            </p>
             {role ? (
               <p className="text-xs capitalize text-muted-foreground">
                 Your role:{" "}
