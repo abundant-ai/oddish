@@ -1,9 +1,13 @@
 import { Button } from "@/components/ui/button";
+import { QueueKeyIcon } from "@/components/queue-key-icon";
 
 interface AgentLegendItem {
   key: string;
   label: string;
   color: string;
+  queueKey?: string | null;
+  model?: string | null;
+  agent?: string | null;
 }
 
 interface AgentLegendProps {
@@ -46,6 +50,13 @@ export function AgentLegend({
                 backgroundColor: isHidden ? "transparent" : item.color,
                 border: `2px solid ${item.color}`,
               }}
+            />
+            <QueueKeyIcon
+              queueKey={item.queueKey}
+              model={item.model}
+              agent={item.agent ?? item.label}
+              size={12}
+              className="shrink-0"
             />
             <span
               className={isHidden ? "text-muted-foreground line-through" : ""}

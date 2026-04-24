@@ -263,7 +263,10 @@ function pickExperimentCreationMeta(tasks: Task[]): {
   if (tasks.length === 0) return { createdAt: null, author: null };
   let earliest: Task = tasks[0];
   for (const task of tasks) {
-    if (new Date(task.created_at).getTime() < new Date(earliest.created_at).getTime()) {
+    if (
+      new Date(task.created_at).getTime() <
+      new Date(earliest.created_at).getTime()
+    ) {
       earliest = task;
     }
   }
@@ -276,13 +279,29 @@ function pickExperimentCreationMeta(tasks: Task[]): {
 function ExperimentMetaStrip({
   tasks,
   isInitialLoading,
+  experimentId,
 }: {
   tasks: Task[];
   isInitialLoading: boolean;
+  experimentId?: string;
 }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyExperimentId = useCallback(async () => {
+    if (!experimentId) return;
+    try {
+      await navigator.clipboard.writeText(experimentId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (error) {
+      console.error("Failed to copy experiment id", error);
+    }
+  }, [experimentId]);
+
   if (isInitialLoading) return null;
   const { createdAt, author } = pickExperimentCreationMeta(tasks);
-  if (!createdAt && !author) return null;
+  if (!createdAt && !author && !experimentId) return null;
+
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
       {createdAt && (
@@ -292,6 +311,22 @@ function ExperimentMetaStrip({
       )}
       {createdAt && author && <MetaDot />}
       {author && <span>by {author}</span>}
+      {(createdAt || author) && experimentId && <MetaDot />}
+      {experimentId && (
+        <span className="inline-flex items-center gap-1">
+          <span>id</span>
+          <button
+            type="button"
+            onClick={handleCopyExperimentId}
+            className="cursor-pointer rounded-sm text-[color:var(--paper-ink-2)] transition hover:text-[color:var(--paper-ink)]"
+            aria-label={`Copy experiment id ${experimentId}`}
+            title={copied ? "Copied" : "Click to copy experiment id"}
+          >
+            <span className="select-all">{experimentId}</span>
+          </button>
+          {copied && <span aria-live="polite">copied</span>}
+        </span>
+      )}
     </div>
   );
 }
@@ -758,19 +793,16 @@ export function ExperimentDetailView({
         <div className="space-y-4">
           {/*
            * Experiment page header — editorial layout, no surrounding box.
-           * Mirrors the design reference: mono "experiments /" eyebrow, a
            * Fraunces display title, a dot-separated meta strip, with the
            * Show-graph + Publish actions parked top-right.
            */}
           <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
             <div className="flex min-w-0 flex-1 flex-col gap-1">
-              <div className="font-mono text-[12px] text-[color:var(--paper-ink-3)]">
-                experiments /
-              </div>
               <div className="min-w-0">{headerLeft}</div>
               <ExperimentMetaStrip
                 tasks={tasksForExperiment}
                 isInitialLoading={isInitialLoading}
+                experimentId={experimentId}
               />
             </div>
             <ExperimentHeaderMeta
@@ -825,8 +857,7 @@ export function ExperimentDetailView({
                   });
                 }}
                 onTaskSelect={(task, context) => {
-                  const { trialGroups, orderedTrials } =
-                    buildTrialGroups(task);
+                  const { trialGroups, orderedTrials } = buildTrialGroups(task);
                   setDrawerState({
                     isOpen: true,
                     mode: "task",

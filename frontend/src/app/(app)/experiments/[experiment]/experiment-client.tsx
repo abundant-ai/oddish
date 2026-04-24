@@ -12,7 +12,7 @@ import { ExperimentShareButton } from "@/components/experiment-share-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import type { Task, Trial } from "@/lib/types";
 import { fetcher } from "@/lib/api";
-import { Check, Copy, Loader2, Pencil } from "lucide-react";
+import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 
 const TRIALS_BATCH_SIZE = 100;
@@ -386,22 +386,27 @@ export function ExperimentClientPage({
               </div>
             ) : (
               <div className="flex min-w-0 items-center gap-2">
-                <h1 className="truncate pb-1 font-mono text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)]">
-                  {displayName}
-                </h1>
                 <button
                   type="button"
                   onClick={handleCopyExperimentName}
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+                  className="min-w-0 max-w-full cursor-pointer truncate rounded-sm pb-1 text-left font-mono text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)] transition hover:text-[color:var(--paper-ink-2)]"
                   aria-label={`Copy experiment name ${displayName}`}
-                  title="Copy experiment name"
+                  title={
+                    copiedExperimentName
+                      ? "Copied"
+                      : "Click to copy experiment name"
+                  }
                 >
-                  {copiedExperimentName ? (
-                    <Check className="h-3.5 w-3.5 text-[color:var(--paper-pass)]" />
-                  ) : (
-                    <Copy className="h-3.5 w-3.5" />
-                  )}
+                  <h1 className="truncate">{displayName}</h1>
                 </button>
+                {copiedExperimentName && (
+                  <span
+                    aria-live="polite"
+                    className="font-mono text-[11px] text-[color:var(--paper-ink-3)]"
+                  >
+                    copied
+                  </span>
+                )}
                 <button
                   type="button"
                   onClick={() => setIsEditingName(true)}

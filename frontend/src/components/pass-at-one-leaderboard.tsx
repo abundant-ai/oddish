@@ -5,6 +5,7 @@ import type { Task, Trial } from "@/lib/types";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import type { AgentSummary } from "./experiment-trials-table";
 import { AGENT_COLORS } from "./pass-at-k-graph";
+import { QueueKeyIcon } from "./queue-key-icon";
 
 interface PassAtOneLeaderboardProps {
   tasks: Task[];
@@ -122,7 +123,6 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
           const color = colorByAgent.get(row.key) ?? AGENT_COLORS[0];
           const width = (row.mean / domain) * 100;
           const isDim = hoverAgent != null && hoverAgent !== row.key;
-          const mark = (row.label || "A").charAt(0).toUpperCase();
           const isLast = index === visibleRows.length - 1;
 
           return (
@@ -138,13 +138,13 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
               onMouseLeave={() => onHoverAgent?.(null)}
             >
               <div className="flex min-w-0 items-center gap-2">
-                <span
-                  className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] font-mono text-[10px] font-bold text-white"
-                  style={{ backgroundColor: color }}
-                  aria-hidden="true"
-                >
-                  {mark}
-                </span>
+                <QueueKeyIcon
+                  queueKey={row.queueKey}
+                  model={row.model}
+                  agent={row.agent}
+                  size={13}
+                  className="shrink-0"
+                />
                 <span className="truncate font-mono text-[11.5px] text-[color:var(--paper-ink)]">
                   {row.label}
                 </span>

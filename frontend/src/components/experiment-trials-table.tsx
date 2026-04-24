@@ -1419,7 +1419,9 @@ export function ExperimentTrialsTable({
 
   // Partial outcomes are rendered as numeric colored tiles (not a single color
   // chip), so we don't expose them in the trial-outcome legend filter.
-  const LEGEND_STATUS_ORDER = STATUS_FILTER_ORDER.filter((s) => s !== "partial");
+  const LEGEND_STATUS_ORDER = STATUS_FILTER_ORDER.filter(
+    (s) => s !== "partial",
+  );
 
   const renderStatusChip = (status: MatrixStatus) => {
     const config = STATUS_CONFIG[status];
@@ -1725,7 +1727,9 @@ export function ExperimentTrialsTable({
                       }
                     >
                       {isRerunning ? "Rerunning" : "Rerun trials"}
-                      <InlineCount>{selectedRetryableTrials.length}</InlineCount>
+                      <InlineCount>
+                        {selectedRetryableTrials.length}
+                      </InlineCount>
                     </InlineBtn>
                   )}
                   {canRerun && (
@@ -1742,7 +1746,9 @@ export function ExperimentTrialsTable({
                         <OctagonX className="h-3 w-3" />
                       )}
                       {isCancellingSelected ? "Cancelling" : "Cancel"}
-                      <InlineCount>{selectedCancellableTasks.length}</InlineCount>
+                      <InlineCount>
+                        {selectedCancellableTasks.length}
+                      </InlineCount>
                     </InlineBtn>
                   )}
                   <span className="select-none text-[color:var(--paper-line)]">
@@ -1757,7 +1763,9 @@ export function ExperimentTrialsTable({
                       }
                     >
                       {isRunningAnalysis ? "Queueing" : "Run analysis"}
-                      <InlineCount>{selectedAnalysisRunnableTasks.length}</InlineCount>
+                      <InlineCount>
+                        {selectedAnalysisRunnableTasks.length}
+                      </InlineCount>
                     </InlineBtn>
                   )}
                   {canRerun && (
@@ -1769,7 +1777,9 @@ export function ExperimentTrialsTable({
                       }
                     >
                       {isRunningVerdict ? "Queueing" : "Run verdict"}
-                      <InlineCount>{selectedVerdictRunnableTasks.length}</InlineCount>
+                      <InlineCount>
+                        {selectedVerdictRunnableTasks.length}
+                      </InlineCount>
                     </InlineBtn>
                   )}
                   {canDeleteTasks && (
@@ -1872,7 +1882,7 @@ export function ExperimentTrialsTable({
               <TableHeader className="sticky top-0 z-20 bg-[color:var(--paper-surface-2)]">
                 <TableRow className="border-b border-[color:var(--paper-line)] hover:bg-transparent">
                   <TableHead
-                    className="relative sticky left-0 z-30 bg-[color:var(--paper-surface-2)] font-mono font-bold text-[color:var(--paper-ink)]"
+                    className="relative sticky left-0 z-30 border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] font-mono font-bold text-[color:var(--paper-ink)]"
                     style={{ width: getDisplayedWidth("task") }}
                   >
                     <div className="flex items-center gap-2">
@@ -1936,7 +1946,7 @@ export function ExperimentTrialsTable({
                   {renderedAgents.map((agent, agentIndex) => (
                     <TableHead
                       key={agent.key}
-                      className="relative bg-[color:var(--paper-surface-2)] px-1 text-center font-mono sm:px-2"
+                      className="relative border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-1 text-center font-mono last:border-r-0 sm:px-2"
                       style={{
                         width: getDisplayedWidth(agent.key),
                       }}
@@ -1955,13 +1965,22 @@ export function ExperimentTrialsTable({
                                 onClick={() =>
                                   handleCopyAgentName(agent.key, agent.agent)
                                 }
-                                className="max-w-[70px] truncate rounded-sm px-1 text-[10px] font-bold text-foreground transition hover:bg-background/70 hover:text-blue-400 sm:max-w-[110px] sm:text-xs md:max-w-none"
+                                className="flex max-w-[70px] items-center gap-1 rounded-sm px-1 text-[10px] font-bold text-foreground transition hover:bg-background/70 hover:text-blue-400 sm:max-w-[110px] sm:text-xs md:max-w-none"
                                 aria-label={`Copy agent name ${agent.agent}`}
                                 title="Copy agent name"
                               >
-                                {copiedAgentNameKey === agent.key
-                                  ? "Copied"
-                                  : agent.agent}
+                                <QueueKeyIcon
+                                  queueKey={agent.queueKey}
+                                  model={agent.model}
+                                  agent={agent.agent}
+                                  size={12}
+                                  className="shrink-0"
+                                />
+                                <span className="min-w-0 truncate">
+                                  {copiedAgentNameKey === agent.key
+                                    ? "Copied"
+                                    : agent.agent}
+                                </span>
                               </button>
                             </TooltipTrigger>
                             <TooltipContent side="bottom">
@@ -2062,7 +2081,7 @@ export function ExperimentTrialsTable({
                       className="group bg-[color:var(--paper-surface)] hover:bg-[color:var(--paper-surface-2)] [&_td]:hover:!bg-[color:var(--paper-surface-2)]"
                     >
                       <TableCell
-                        className="sticky left-0 z-10 border-b border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] px-3.5 py-2.5 font-mono text-xs text-[color:var(--paper-ink)]"
+                        className="sticky left-0 z-10 border-b border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3.5 py-2.5 font-mono text-xs text-[color:var(--paper-ink)]"
                         style={{
                           width: getDisplayedWidth("task"),
                         }}
@@ -2119,7 +2138,7 @@ export function ExperimentTrialsTable({
                         return (
                           <TableCell
                             key={`${task.id}-${agent.key}`}
-                            className="border-b border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] px-3.5 py-2 text-center"
+                            className="border-b border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3.5 py-2 text-center last:border-r-0"
                             style={{
                               width: getDisplayedWidth(agent.key),
                             }}

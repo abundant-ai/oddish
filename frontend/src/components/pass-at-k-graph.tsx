@@ -87,41 +87,45 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   hoverAgent,
   onHoverAgent,
 }: PassAtKGraphProps) {
-  const { series, maxK, hasMultipleAttempts, agentColorByKey, agentLabelByKey } =
-    useMemo(() => {
-      const { agentStats, maxN } = buildAgentStats(tasks, agentSummaries);
-      const curveData =
-        maxN > 1 ? calculatePassAtKCurve(agentStats, maxN) : [];
+  const {
+    series,
+    maxK,
+    hasMultipleAttempts,
+    agentColorByKey,
+    agentLabelByKey,
+  } = useMemo(() => {
+    const { agentStats, maxN } = buildAgentStats(tasks, agentSummaries);
+    const curveData = maxN > 1 ? calculatePassAtKCurve(agentStats, maxN) : [];
 
-      const colorMap: Record<string, string> = {};
-      const labelMap: Record<string, string> = {};
-      for (let i = 0; i < agentSummaries.length; i++) {
-        colorMap[agentSummaries[i].key] = AGENT_COLORS[i % AGENT_COLORS.length];
-        labelMap[agentSummaries[i].key] = agentSummaries[i].label;
-      }
+    const colorMap: Record<string, string> = {};
+    const labelMap: Record<string, string> = {};
+    for (let i = 0; i < agentSummaries.length; i++) {
+      colorMap[agentSummaries[i].key] = AGENT_COLORS[i % AGENT_COLORS.length];
+      labelMap[agentSummaries[i].key] = agentSummaries[i].label;
+    }
 
-      const s = agentSummaries
-        .filter((summary) => !hiddenAgents.has(summary.key))
-        .map((summary) => ({
-          key: summary.key,
-          label: summary.label,
-          color: colorMap[summary.key],
-          points: curveData.map((row) => {
-            const raw = (row as Record<string, unknown>)[summary.key];
-            return typeof raw === "number" && Number.isFinite(raw)
-              ? Math.max(0, Math.min(1, raw))
-              : 0;
-          }),
-        }));
+    const s = agentSummaries
+      .filter((summary) => !hiddenAgents.has(summary.key))
+      .map((summary) => ({
+        key: summary.key,
+        label: summary.label,
+        color: colorMap[summary.key],
+        points: curveData.map((row) => {
+          const raw = (row as Record<string, unknown>)[summary.key];
+          return typeof raw === "number" && Number.isFinite(raw)
+            ? Math.max(0, Math.min(1, raw))
+            : 0;
+        }),
+      }));
 
-      return {
-        series: s,
-        maxK: maxN,
-        hasMultipleAttempts: maxN > 1 && curveData.length > 0,
-        agentColorByKey: colorMap,
-        agentLabelByKey: labelMap,
-      };
-    }, [tasks, agentSummaries, hiddenAgents]);
+    return {
+      series: s,
+      maxK: maxN,
+      hasMultipleAttempts: maxN > 1 && curveData.length > 0,
+      agentColorByKey: colorMap,
+      agentLabelByKey: labelMap,
+    };
+  }, [tasks, agentSummaries, hiddenAgents]);
 
   if (!hasMultipleAttempts) {
     return null;
@@ -176,8 +180,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
                 y={yAt(v) + 3.5}
                 textAnchor="end"
                 style={{
-                  fontFamily:
-                    "var(--font-geist-mono), ui-monospace, monospace",
+                  fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
                   fontSize: 9.5,
                   fill: "var(--paper-ink-3)",
                 }}
@@ -202,8 +205,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
               y={padT + ch + 15}
               textAnchor="middle"
               style={{
-                fontFamily:
-                  "var(--font-geist-mono), ui-monospace, monospace",
+                fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
                 fontSize: 10.5,
                 fill: "var(--paper-ink-2)",
               }}
@@ -249,7 +251,10 @@ export const PassAtKGraph = memo(function PassAtKGraph({
                 opacity={dim ? 0.18 : 1}
                 onMouseEnter={() => onHoverAgent?.(s.key)}
                 onMouseLeave={() => onHoverAgent?.(null)}
-                style={{ cursor: "pointer", transition: "stroke-width .15s, opacity .15s" }}
+                style={{
+                  cursor: "pointer",
+                  transition: "stroke-width .15s, opacity .15s",
+                }}
               />
             );
           })}
@@ -293,6 +298,9 @@ export const PassAtKGraph = memo(function PassAtKGraph({
           color:
             agentColorByKey[summary.key] ??
             AGENT_COLORS[idx % AGENT_COLORS.length],
+          queueKey: summary.queueKey,
+          model: summary.model,
+          agent: summary.agent,
         }))}
         hiddenKeys={hiddenAgents}
         onToggle={onToggleAgent}
