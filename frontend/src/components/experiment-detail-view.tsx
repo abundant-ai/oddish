@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { TrialDetailPanel } from "@/components/trial-detail-panel";
 import { TaskFilesPanel } from "@/components/task-files-panel";
@@ -200,11 +201,12 @@ function ExperimentHeaderMeta({
         </div>
       )}
       {headerStatus}
-      <button
+      <Button
         type="button"
+        variant="ghost"
         onClick={onToggleShowPassAtK}
         aria-pressed={showPassAtK}
-        className={`inline-flex h-8 select-none items-center gap-[7px] rounded-[7px] border px-3 text-[12px] font-medium leading-none transition-colors ${
+        className={`h-8 select-none gap-[7px] rounded-[7px] border px-3 text-[12px] leading-none transition-colors ${
           showPassAtK
             ? "border-[color:var(--paper-ink)] bg-[color:var(--paper-ink)] text-[color:var(--paper-bg)] hover:bg-[color:color-mix(in_oklch,var(--paper-ink),white_12%)]"
             : "border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] text-[color:var(--paper-ink)] hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
@@ -225,7 +227,7 @@ function ExperimentHeaderMeta({
           <path d="M7 14l4-4 4 4 5-5" />
         </svg>
         Pass@k graph
-      </button>
+      </Button>
       {headerRight}
     </div>
   );
@@ -315,15 +317,16 @@ function ExperimentMetaStrip({
       {experimentId && (
         <span className="inline-flex items-center gap-1">
           <span>id</span>
-          <button
+          <Button
             type="button"
+            variant="ghost"
             onClick={handleCopyExperimentId}
-            className="cursor-pointer rounded-sm text-[color:var(--paper-ink-2)] transition hover:text-[color:var(--paper-ink)]"
+            className="h-auto cursor-pointer rounded-sm bg-transparent p-0 font-mono text-[11.5px] font-normal text-[color:var(--paper-ink-2)] transition hover:bg-transparent hover:text-[color:var(--paper-ink)]"
             aria-label={`Copy experiment id ${experimentId}`}
             title={copied ? "Copied" : "Click to copy experiment id"}
           >
             <span className="select-all">{experimentId}</span>
-          </button>
+          </Button>
           {copied && <span aria-live="polite">copied</span>}
         </span>
       )}

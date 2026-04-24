@@ -135,9 +135,7 @@ export const STATUS_CONFIG: Record<
   },
 };
 
-export function hasRewardValue(
-  reward: number | null | undefined,
-): reward is number {
+function hasRewardValue(reward: number | null | undefined): reward is number {
   return typeof reward === "number" && Number.isFinite(reward);
 }
 
@@ -167,7 +165,7 @@ export function formatPartialRewardBadgeValue(
   return fixed;
 }
 
-export function getRewardMatrixStatus(reward: number): MatrixStatus {
+function getRewardMatrixStatus(reward: number): MatrixStatus {
   if (reward === 1) return "pass";
   if (reward === 0) return "fail";
   return "partial";

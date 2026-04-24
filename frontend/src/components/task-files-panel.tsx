@@ -1241,15 +1241,16 @@ export function TaskFilesPanel({
         <div className="mb-2 flex flex-wrap items-start justify-between gap-3 pr-20">
           <div className="min-w-0 flex-1">
             <DrawerTitle className="flex items-center gap-2 font-mono text-base font-semibold">
-              <button
+              <Button
                 type="button"
+                variant="ghost"
                 onClick={handleCopyTaskName}
-                className="block min-w-0 max-w-full truncate text-left transition hover:text-blue-400"
+                className="h-auto min-w-0 max-w-full justify-start truncate bg-transparent p-0 text-left font-mono text-base font-semibold hover:bg-transparent hover:text-blue-400"
                 title="Copy task name"
                 aria-label={`Copy task name ${taskName}`}
               >
                 {taskName}
-              </button>
+              </Button>
               {currentVersion != null && (
                 <span className="inline-flex shrink-0 items-center rounded-md border border-border bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-foreground">
                   v{currentVersion}

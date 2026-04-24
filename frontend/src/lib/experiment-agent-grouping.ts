@@ -1,6 +1,6 @@
 import type { Task, Trial } from "@/lib/types";
 
-export const DEFAULT_EXPERIMENT_MODEL_KEY = "default";
+const DEFAULT_EXPERIMENT_MODEL_KEY = "default";
 
 export type ExperimentAgentSummary = {
   key: string;
@@ -16,7 +16,7 @@ function getModelKey(model: string | null | undefined): string {
   return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_EXPERIMENT_MODEL_KEY;
 }
 
-export function getModelScopedAgents(tasks: Task[]): Set<string> {
+function getModelScopedAgents(tasks: Task[]): Set<string> {
   const modelsByAgent = new Map<string, Set<string>>();
 
   for (const task of tasks) {

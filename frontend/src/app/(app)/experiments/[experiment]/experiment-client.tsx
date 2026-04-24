@@ -386,10 +386,11 @@ export function ExperimentClientPage({
               </div>
             ) : (
               <div className="flex min-w-0 items-center gap-2">
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
                   onClick={handleCopyExperimentName}
-                  className="min-w-0 max-w-full cursor-pointer truncate rounded-sm pb-1 text-left font-mono text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)] transition hover:text-[color:var(--paper-ink-2)]"
+                  className="h-auto min-w-0 max-w-full cursor-pointer justify-start truncate rounded-sm bg-transparent p-0 pb-1 text-left font-mono text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)] transition hover:bg-transparent hover:text-[color:var(--paper-ink-2)]"
                   aria-label={`Copy experiment name ${displayName}`}
                   title={
                     copiedExperimentName
@@ -398,7 +399,7 @@ export function ExperimentClientPage({
                   }
                 >
                   <h1 className="truncate">{displayName}</h1>
-                </button>
+                </Button>
                 {copiedExperimentName && (
                   <span
                     aria-live="polite"
@@ -407,16 +408,18 @@ export function ExperimentClientPage({
                     copied
                   </span>
                 )}
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="icon"
                   onClick={() => setIsEditingName(true)}
                   disabled={!experimentId}
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-sm text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] disabled:opacity-50"
+                  className="h-6 w-6 rounded-sm text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] disabled:opacity-50"
                   aria-label="Rename experiment"
                   title="Rename experiment"
                 >
                   <Pencil className="h-3.5 w-3.5" />
-                </button>
+                </Button>
               </div>
             )
           }

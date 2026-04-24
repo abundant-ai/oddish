@@ -1,9 +1,3 @@
-// Shared API utilities
-export const API_URL = "/api";
-
-// Shared SWR key for dashboard data.
-export const DASHBOARD_SWR_KEY = "/api/dashboard";
-
 export const fetcher = async <T>(url: string): Promise<T> => {
   const res = await fetch(url, { credentials: "include" });
   let data: unknown = null;

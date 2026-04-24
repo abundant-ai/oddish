@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -237,15 +238,16 @@ function InlineBtn({
   style?: React.CSSProperties;
 }) {
   return (
-    <button
+    <Button
       type="button"
+      variant="ghost"
       onClick={onClick}
       disabled={disabled}
       style={style}
-      className="inline-flex items-center gap-1.5 rounded-[5px] bg-transparent px-2 py-1 text-[11.5px] font-medium text-paper-ink-2 transition hover:bg-paper-surface-2 hover:text-paper-ink disabled:cursor-not-allowed disabled:text-paper-ink-4 disabled:hover:bg-transparent disabled:hover:text-paper-ink-4"
+      className="h-auto gap-1.5 rounded-[5px] bg-transparent px-2 py-1 text-[11.5px] font-medium text-paper-ink-2 transition hover:bg-paper-surface-2 hover:text-paper-ink disabled:cursor-not-allowed disabled:text-paper-ink-4 disabled:hover:bg-transparent disabled:hover:text-paper-ink-4"
     >
       {children}
-    </button>
+    </Button>
   );
 }
 
@@ -1432,10 +1434,11 @@ export function ExperimentTrialsTable({
     return (
       <Tooltip key={status}>
         <TooltipTrigger asChild>
-          <button
+          <Button
             type="button"
+            variant="ghost"
             onClick={() => toggleStatus(status)}
-            className={`inline-flex select-none items-center gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+            className={`h-auto select-none gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
               isDimmed ? "line-through opacity-[0.38]" : ""
             }`}
           >
@@ -1445,7 +1448,7 @@ export function ExperimentTrialsTable({
               <StatusIcon status={status} className="h-2 w-2" />
             </span>
             <span>{config.shortLabel}</span>
-          </button>
+          </Button>
         </TooltipTrigger>
         <TooltipContent>
           {config.shortLabel} ({isDimmed ? "dimmed" : "visible"})
@@ -1468,10 +1471,11 @@ export function ExperimentTrialsTable({
     return (
       <Tooltip key={item.key}>
         <TooltipTrigger asChild>
-          <button
+          <Button
             type="button"
+            variant="ghost"
             onClick={() => toggleAnalysisKey(item.key)}
-            className={`inline-flex select-none items-center gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+            className={`h-auto select-none gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
               isDimmed ? "line-through opacity-[0.38]" : ""
             }`}
           >
@@ -1480,7 +1484,7 @@ export function ExperimentTrialsTable({
               style={{ background: ANALYZER_CHIP_COLOR[item.key] }}
             />
             <span>{item.label}</span>
-          </button>
+          </Button>
         </TooltipTrigger>
         <TooltipContent>
           {item.label} ({isDimmed ? "dimmed" : "visible"})
@@ -1518,16 +1522,17 @@ export function ExperimentTrialsTable({
   const renderAgentFilterMenu = () => (
     <Popover>
       <PopoverTrigger asChild>
-        <button
+        <Button
           type="button"
-          className="inline-flex h-auto select-none items-center gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+          variant="ghost"
+          className="h-auto select-none gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
         >
           Agents
           <InlineCount>
             {visibleAgents.length}/{sortedAgentSummaries.length}
           </InlineCount>
           <ChevronDown className="h-3 w-3" />
-        </button>
+        </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="max-h-64 w-64 overflow-auto p-2">
         <div className="flex items-center justify-between px-1 pb-2 text-[10px] text-muted-foreground">
@@ -1696,14 +1701,14 @@ export function ExperimentTrialsTable({
               <div className="w-full sm:w-[280px]">
                 <div className="flex h-8 items-center gap-2 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] px-2.5 text-[color:var(--paper-ink-2)] focus-within:border-[color:var(--paper-ink-4)]">
                   <Search className="h-3.5 w-3.5 shrink-0 text-[color:var(--paper-ink-3)]" />
-                  <input
+                  <Input
                     type="search"
                     value={taskSearch}
                     onChange={(event) =>
                       handleTaskSearchChange(event.target.value)
                     }
                     placeholder="Search tasks (comma-separated)"
-                    className="min-w-0 flex-1 border-0 bg-transparent text-[12.5px] text-[color:var(--paper-ink)] placeholder:text-[color:var(--paper-ink-3)] focus:outline-none"
+                    className="h-auto min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-[12.5px] text-[color:var(--paper-ink)] placeholder:text-[color:var(--paper-ink-3)] focus-visible:ring-0 focus-visible:ring-offset-0"
                   />
                 </div>
               </div>
@@ -1836,10 +1841,11 @@ export function ExperimentTrialsTable({
                 {renderAgentFilterMenu()}
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
                       onClick={handleCopyTableAsTSV}
-                      className="inline-flex h-auto select-none items-center gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+                      className="h-auto select-none gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
                     >
                       {copiedTable ? (
                         <>
@@ -1852,7 +1858,7 @@ export function ExperimentTrialsTable({
                           Copy TSV
                         </>
                       )}
-                    </button>
+                    </Button>
                   </TooltipTrigger>
                   <TooltipContent>Copy table as TSV</TooltipContent>
                 </Tooltip>
@@ -1908,8 +1914,9 @@ export function ExperimentTrialsTable({
                           className="h-4 w-4"
                         />
                       )}
-                      <button
+                      <Button
                         type="button"
+                        variant="ghost"
                         onClick={() =>
                           setTaskSort((prev) =>
                             prev === "default"
@@ -1919,7 +1926,6 @@ export function ExperimentTrialsTable({
                                 : "default",
                           )
                         }
-                        className="flex items-center gap-1 rounded-sm px-1 text-xs transition hover:bg-background/70 hover:text-blue-400 sm:text-sm"
                         title={
                           taskSort === "default"
                             ? "Sort by task name (A→Z)"
@@ -1928,6 +1934,7 @@ export function ExperimentTrialsTable({
                               : "Clear sort (default order)"
                         }
                         aria-label="Toggle task sort"
+                        className="h-auto gap-1 rounded-sm bg-transparent px-1 py-0 text-xs font-normal transition hover:bg-background/70 hover:text-blue-400 sm:text-sm"
                       >
                         <span>Task</span>
                         {taskSort === "name-asc" ? (
@@ -1937,7 +1944,7 @@ export function ExperimentTrialsTable({
                         ) : (
                           <ArrowUpDown className="h-3 w-3 text-muted-foreground/60" />
                         )}
-                      </button>
+                      </Button>
                     </div>
                     <div
                       className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize"
@@ -1963,12 +1970,13 @@ export function ExperimentTrialsTable({
                         <div className="flex min-w-[60px] flex-col items-center gap-0.5 sm:min-w-[80px] md:min-w-[100px]">
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <button
+                              <Button
                                 type="button"
+                                variant="ghost"
                                 onClick={() =>
                                   handleCopyAgentName(agent.key, agent.agent)
                                 }
-                                className="flex max-w-[70px] items-center gap-1 rounded-sm px-1 text-[10px] font-bold text-foreground transition hover:bg-background/70 hover:text-blue-400 sm:max-w-[110px] sm:text-xs md:max-w-none"
+                                className="h-auto max-w-[70px] gap-1 rounded-sm bg-transparent px-1 py-0 text-[10px] font-bold text-foreground transition hover:bg-background/70 hover:text-blue-400 sm:max-w-[110px] sm:text-xs md:max-w-none"
                                 aria-label={`Copy agent name ${agent.agent}`}
                                 title="Copy agent name"
                               >
@@ -1984,7 +1992,7 @@ export function ExperimentTrialsTable({
                                     ? "Copied"
                                     : agent.agent}
                                 </span>
-                              </button>
+                              </Button>
                             </TooltipTrigger>
                             <TooltipContent side="bottom">
                               {copiedAgentNameKey === agent.key
@@ -1995,15 +2003,16 @@ export function ExperimentTrialsTable({
                           <Tooltip>
                             <TooltipTrigger asChild>
                               {agent.model ? (
-                                <button
+                                <Button
                                   type="button"
+                                  variant="ghost"
                                   onClick={() =>
                                     handleCopyAgentModel(
                                       agent.key,
                                       agent.model!,
                                     )
                                   }
-                                  className="flex w-full min-w-0 items-center justify-center gap-1 rounded-sm px-1 font-mono text-[9px] font-normal text-muted-foreground transition hover:bg-background/70 hover:text-foreground sm:text-[10px]"
+                                  className="h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal text-muted-foreground transition hover:bg-background/70 hover:text-foreground sm:text-[10px]"
                                   aria-label={`Copy model id ${agent.model}`}
                                   title="Copy model id"
                                 >
@@ -2013,7 +2022,7 @@ export function ExperimentTrialsTable({
                                   <span className="min-w-0 truncate">
                                     {agent.model}
                                   </span>
-                                </button>
+                                </Button>
                               ) : (
                                 <div className="flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal text-muted-foreground sm:text-[10px]">
                                   <span className="min-w-0 truncate">—</span>
@@ -2113,18 +2122,19 @@ export function ExperimentTrialsTable({
                           <div className="flex min-w-0 flex-1 items-center gap-2">
                             <Tooltip>
                               <TooltipTrigger asChild>
-                                <button
+                                <Button
                                   type="button"
+                                  variant="ghost"
                                   onClick={() =>
                                     onTaskSelect?.(task, {
                                       orderedTasks: filteredTasks,
                                       taskIndex: index,
                                     })
                                   }
-                                  className="min-w-0 flex-1 cursor-pointer truncate bg-transparent p-0 text-left font-mono text-[11.5px] font-normal text-[color:var(--paper-ink)] transition-colors hover:text-[color:oklch(40%_0.1_240)]"
+                                  className="h-auto min-w-0 flex-1 cursor-pointer justify-start truncate bg-transparent p-0 text-left font-mono text-[11.5px] font-normal text-[color:var(--paper-ink)] transition-colors hover:bg-transparent hover:text-[color:oklch(40%_0.1_240)]"
                                 >
                                   {task.name}
-                                </button>
+                                </Button>
                               </TooltipTrigger>
                               <TooltipContent>View task files</TooltipContent>
                             </Tooltip>
@@ -2199,8 +2209,9 @@ export function ExperimentTrialsTable({
                                       key={trial.id}
                                       className={`relative inline-flex ${dimClass || analysisDimClass ? "opacity-25" : ""}`}
                                     >
-                                      <button
+                                      <Button
                                         type="button"
+                                        variant="unstyled"
                                         onClick={() => {
                                           const trialIndexInGroup =
                                             trialIndexById.get(trial.id) ?? 0;
@@ -2210,7 +2221,7 @@ export function ExperimentTrialsTable({
                                             trialGroups,
                                           });
                                         }}
-                                        className={`relative grid h-[18px] w-[22px] shrink-0 place-items-center rounded-[4px] border leading-none transition-transform hover:-translate-y-px ${config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tabular-nums tracking-[-0.02em]" : ""}`}
+                                        className={`relative grid h-[18px] w-[22px] shrink-0 place-items-center gap-0 rounded-[4px] border p-0 leading-none transition-transform hover:-translate-y-px [&_svg]:size-2.5 ${config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tabular-nums tracking-[-0.02em]" : ""}`}
                                         style={getRewardStyle(trial.reward)}
                                         aria-label={`Trial ${trialIndex + 1} ${config.shortLabel}`}
                                         title={fullTitle}
@@ -2223,7 +2234,7 @@ export function ExperimentTrialsTable({
                                             className="h-2.5 w-2.5"
                                           />
                                         )}
-                                      </button>
+                                      </Button>
                                       {analysisIndicator && (
                                         <span
                                           aria-hidden="true"
