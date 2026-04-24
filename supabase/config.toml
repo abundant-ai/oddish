@@ -1,0 +1,12 @@
+# Marker file for the Supabase GitHub integration. Its presence (plus the
+# `project_id` below) is what lets Supabase recognize this repository and
+# provision a preview branch per pull request.
+#
+# Alembic — split across `oddish/alembic/` (core) and `backend/alembic/`
+# (cloud) — remains the single source of truth for schema changes. The
+# `supabase/migrations/` directory is intentionally kept empty so Supabase's
+# own migration runner is a no-op on every branch; Alembic is applied from
+# `.github/workflows/modal-preview.yml` (previews) and
+# `.github/workflows/supabase-db-migrations.yml` (production).
+
+project_id = "lmmlhiospelnvmtjljnn"
