@@ -35,11 +35,13 @@ logger = logging.getLogger(__name__)
 USER_CANCELLED_MESSAGE = "Cancelled by user"
 CANCELLED_HARBOR_STAGE = "cancelled"
 ACTIVE_TRIAL_STATUSES = (
+    TrialStatus.PENDING,
     TrialStatus.QUEUED,
     TrialStatus.RUNNING,
     TrialStatus.RETRYING,
 )
 ACTIVE_PIPELINE_STATUSES = (
+    AnalysisStatus.PENDING,
     AnalysisStatus.QUEUED,
     AnalysisStatus.RUNNING,
 )
@@ -783,6 +785,7 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
                 TrialModel.task_id == task_id,
                 TrialModel.status.in_(
                     [
+                        TrialStatus.PENDING,
                         TrialStatus.QUEUED,
                         TrialStatus.RUNNING,
                         TrialStatus.RETRYING,
@@ -807,6 +810,7 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
                         TrialModel.analysis_status.is_(None),
                         TrialModel.analysis_status.in_(
                             [
+                                AnalysisStatus.PENDING,
                                 AnalysisStatus.QUEUED,
                                 AnalysisStatus.RUNNING,
                             ]
@@ -859,6 +863,7 @@ async def maybe_start_verdict_stage(session: AsyncSession, trial_id: str) -> boo
                     TrialModel.analysis_status.is_(None),
                     TrialModel.analysis_status.in_(
                         [
+                            AnalysisStatus.PENDING,
                             AnalysisStatus.QUEUED,
                             AnalysisStatus.RUNNING,
                         ]
@@ -897,13 +902,14 @@ async def get_task_with_trials(session: AsyncSession, task_id: str) -> TaskModel
 async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> dict:
     """Get queue statistics by queue_key across trial/analysis/verdict jobs."""
     stats: dict[str, dict[str, int]] = {}
-    valid_statuses = {"queued", "running", "success", "failed", "retrying"}
+    valid_statuses = {"pending", "queued", "running", "success", "failed", "retrying"}
     analysis_queue_key = settings.get_analysis_queue_key()
     verdict_queue_key = settings.get_verdict_queue_key()
 
     def _ensure_queue(queue_key: str) -> None:
         if queue_key not in stats:
             stats[queue_key] = {
+                "pending": 0,
                 "queued": 0,
                 "running": 0,
                 "success": 0,
@@ -981,6 +987,7 @@ async def get_queue_and_pipeline_stats_with_concurrency(
         provider_stats = stats.get(
             queue_key,
             {
+                "pending": 0,
                 "queued": 0,
                 "running": 0,
                 "success": 0,
@@ -1032,6 +1039,7 @@ async def get_queue_stats_with_concurrency(
         provider_stats = stats.get(
             queue_key,
             {
+                "pending": 0,
                 "queued": 0,
                 "running": 0,
                 "success": 0,

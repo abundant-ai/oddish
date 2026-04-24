@@ -310,7 +310,7 @@ async def cleanup_orphaned_queue_state(
                     WHERE t.status = 'RUNNING'
                     GROUP BY t.id
                     HAVING COUNT(*) FILTER (
-                        WHERE tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
+                        WHERE tr.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
                     ) = 0
                     """
                 )
@@ -335,7 +335,7 @@ async def cleanup_orphaned_queue_state(
                     GROUP BY t.id
                     HAVING COUNT(*) FILTER (
                         WHERE tr.analysis_status IS NULL
-                           OR tr.analysis_status IN ('QUEUED', 'RUNNING')
+                           OR tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
                     ) = 0
                     """
                 )

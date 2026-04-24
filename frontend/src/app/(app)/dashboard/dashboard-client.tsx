@@ -365,12 +365,13 @@ function inferProviderFromQueueKey(queueKey: string): string {
 
 function getQueueQueuedJobs(stats?: QueueStats[string]): number {
   if (!stats) return 0;
-  return Number(stats.queued) || 0;
+  return (Number(stats.pending) || 0) + (Number(stats.queued) || 0);
 }
 
 function getQueueTotalJobs(stats?: QueueStats[string]): number {
   if (!stats) return 0;
   return (
+    (Number(stats.pending) || 0) +
     (Number(stats.queued) || 0) +
     (Number(stats.running) || 0) +
     (Number(stats.retrying) || 0) +

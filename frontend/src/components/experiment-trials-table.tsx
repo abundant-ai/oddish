@@ -304,7 +304,7 @@ function getAnalysisLegendKey(trial: Trial): AnalysisLegendKey | null {
   const status = trial.analysis_status;
   const classification = trial.analysis?.classification;
 
-  if (status === "queued" || status === "running") {
+  if (status === "pending" || status === "queued" || status === "running") {
     return "analyzing";
   }
 
@@ -339,7 +339,7 @@ function getAnalysisIndicator(trial: Trial): {
   const analysis = trial.analysis;
 
   // Analysis in progress - show pulsing indicator
-  if (status === "queued" || status === "running") {
+  if (status === "pending" || status === "queued" || status === "running") {
     return {
       dotClass: "bg-blue-400",
       animate: true,
@@ -843,7 +843,7 @@ export function ExperimentTrialsTable({
     () =>
       selectedTaskList.filter((task) =>
         (task.trials ?? []).some((trial) =>
-          ["running", "queued", "retrying"].includes(trial.status),
+          ["running", "queued", "retrying", "pending"].includes(trial.status),
         ),
       ),
     [selectedTaskList],
@@ -858,9 +858,11 @@ export function ExperimentTrialsTable({
           (trial) => trial.status === "failed" || trial.status === "success",
         );
         const hasAnalysisInFlight = trials.some((trial) =>
-          ["queued", "running"].includes(trial.analysis_status ?? ""),
+          ["pending", "queued", "running"].includes(
+            trial.analysis_status ?? "",
+          ),
         );
-        const verdictInFlight = ["queued", "running"].includes(
+        const verdictInFlight = ["pending", "queued", "running"].includes(
           task.verdict_status ?? "",
         );
         return allTrialsTerminal && !hasAnalysisInFlight && !verdictInFlight;
@@ -881,7 +883,7 @@ export function ExperimentTrialsTable({
             trial.analysis_status === "success" ||
             trial.analysis_status === "failed",
         );
-        const verdictInFlight = ["queued", "running"].includes(
+        const verdictInFlight = ["pending", "queued", "running"].includes(
           task.verdict_status ?? "",
         );
         return allTrialsTerminal && allAnalysesComplete && !verdictInFlight;

@@ -776,6 +776,7 @@ export function TrialDetailPanel({
                 <Card
                   className={
                     trial.analysis_status === "running" ||
+                    trial.analysis_status === "pending" ||
                     trial.analysis_status === "queued"
                       ? "border-blue-500/30 bg-blue-500/5"
                       : trial.analysis?.classification?.startsWith("GOOD")
@@ -788,6 +789,7 @@ export function TrialDetailPanel({
                   <CardContent className="px-4 py-3">
                     <div className="flex items-start gap-3">
                       {trial.analysis_status === "running" ||
+                      trial.analysis_status === "pending" ||
                       trial.analysis_status === "queued" ? (
                         <Microscope className="mt-0.5 h-5 w-5 animate-pulse text-blue-500" />
                       ) : trial.analysis?.classification?.startsWith("GOOD") ? (
@@ -801,6 +803,7 @@ export function TrialDetailPanel({
                         <div className="flex flex-col gap-1">
                           <span className="font-mono text-sm font-bold">
                             {trial.analysis_status === "running" ||
+                            trial.analysis_status === "pending" ||
                             trial.analysis_status === "queued"
                               ? "Analyzing..."
                               : trial.analysis?.classification?.replace(

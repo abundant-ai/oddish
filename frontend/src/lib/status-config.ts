@@ -259,8 +259,12 @@ export function getMatrixStatus(
     return "pending";
   }
 
-  // Queued = waiting in queue
-  if (trialStatus === "queued") {
+  // Queued = waiting in queue. Backend still emits "pending" (it's the
+  // default JobStatus for freshly-created trials that haven't been
+  // claimed yet); UI-side we fold it into "queued" since the distinction
+  // isn't meaningful to users. The backend enum is slated for deprecation
+  // -- see oddish/db/models.py.
+  if (trialStatus === "queued" || trialStatus === "pending") {
     return "queued";
   }
 
@@ -269,6 +273,6 @@ export function getMatrixStatus(
     return "running";
   }
 
-  // Any other status (pending, retrying) = pending
+  // Any other status (retrying) = pending
   return "pending";
 }

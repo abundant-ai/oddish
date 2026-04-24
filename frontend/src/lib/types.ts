@@ -12,13 +12,14 @@ export type TaskStatus =
 // - "failed": Trial encountered an execution error (harness/infrastructure failure)
 // - Test results are stored separately in the `reward` field (0..1 score, null=no result)
 export type TrialStatus =
+  | "pending"
   | "queued"
   | "running"
   | "success"
   | "failed"
   | "retrying";
 
-type JobStatus = "queued" | "running" | "success" | "failed";
+type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
 type Priority = "high" | "low";
 
@@ -200,6 +201,7 @@ export interface TaskVersion {
 // Queue statistics keyed by queue key
 export interface QueueStats {
   [queueKey: string]: {
+    pending: number;
     queued: number;
     running: number;
     success: number;

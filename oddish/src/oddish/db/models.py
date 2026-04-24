@@ -81,6 +81,18 @@ class JobStatus(str, Enum):
     - reward=None: No test result available (error occurred before/during verification)
     """
 
+    # TODO(deprecate-pending): PENDING is a vestigial state -- no code path
+    # ever assigns it at runtime (trials are created as QUEUED; analyses
+    # and verdicts start NULL and jump straight to QUEUED). It only
+    # survives as the default on ``trials.status`` and as defensive
+    # membership in ``.in_([PENDING, QUEUED, ...])`` checks. The FE now
+    # folds PENDING into "queued" visually (see
+    # ``frontend/src/lib/status-config.ts:getMatrixStatus``). Follow-up:
+    # stop writing PENDING entirely, backfill any legacy rows to QUEUED,
+    # drop the enum value from this class, and then ``ALTER TYPE
+    # jobstatus DROP VALUE 'PENDING'`` (Postgres 17+) or swap to a fresh
+    # enum type on older servers.
+    PENDING = "pending"
     QUEUED = "queued"
     RUNNING = "running"
     SUCCESS = "success"  # Execution completed (regardless of test result)
@@ -406,7 +418,7 @@ class TrialModel(Base):
 
     # Status
     status: Mapped[TrialStatus] = mapped_column(
-        SQLEnum(TrialStatus), default=TrialStatus.QUEUED, nullable=False
+        SQLEnum(TrialStatus), default=TrialStatus.PENDING, nullable=False
     )
     # Whether this trial ran on Oddish's worker runtime or was uploaded
     # from an external Harbor invocation via ``oddish import``.

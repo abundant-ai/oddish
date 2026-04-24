@@ -309,7 +309,7 @@ async def get_orphaned_state_core(
                             AND NOT EXISTS (
                                 SELECT 1 FROM trials tr
                                 WHERE tr.task_id = t.id
-                                  AND tr.analysis_status IN ('QUEUED', 'RUNNING')
+                                  AND tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
                             )
                         ) OR (
                             t.status = 'VERDICT_PENDING'
@@ -382,7 +382,7 @@ async def get_orphaned_state_core(
                     AND NOT EXISTS (
                         SELECT 1 FROM trials tr
                         WHERE tr.task_id = t.id
-                          AND tr.analysis_status IN ('QUEUED', 'RUNNING')
+                          AND tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
                     )
                 ) OR (
                     t.status = 'VERDICT_PENDING'

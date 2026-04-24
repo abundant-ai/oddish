@@ -136,6 +136,7 @@ async def load_dashboard_experiments(
                             TaskModel.verdict_status.is_(None),
                             TaskModel.verdict_status.in_(
                                 [
+                                    VerdictStatus.PENDING,
                                     VerdictStatus.QUEUED,
                                     VerdictStatus.RUNNING,
                                 ]
@@ -177,6 +178,7 @@ async def load_dashboard_experiments(
                 (
                     TrialModel.status.in_(
                         [
+                            TrialStatus.PENDING,
                             TrialStatus.QUEUED,
                             TrialStatus.RUNNING,
                             TrialStatus.RETRYING,
@@ -424,7 +426,14 @@ async def get_model_usage_core(
         func.count(case((TrialModel.status == TrialStatus.RETRYING, 1))).label(
             "retrying"
         ),
-        func.count(case((TrialModel.status == TrialStatus.QUEUED, 1))).label("queued"),
+        func.count(
+            case(
+                (
+                    TrialModel.status.in_([TrialStatus.PENDING, TrialStatus.QUEUED]),
+                    1,
+                )
+            )
+        ).label("queued"),
         func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
             "succeeded"
         ),

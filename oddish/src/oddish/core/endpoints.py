@@ -770,6 +770,7 @@ def _reset_trial_analysis(trial: TrialModel) -> None:
 async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
     """Count non-terminal trials for a task."""
     active_statuses = [
+        TrialStatus.PENDING,
         TrialStatus.QUEUED,
         TrialStatus.RUNNING,
         TrialStatus.RETRYING,
@@ -805,6 +806,7 @@ async def rerun_trial_analysis_core(
         )
 
     if trial.analysis_status in (
+        AnalysisStatus.PENDING,
         AnalysisStatus.QUEUED,
         AnalysisStatus.RUNNING,
     ):
@@ -824,6 +826,7 @@ async def rerun_trial_analysis_core(
         )
 
     if task.verdict_status in (
+        VerdictStatus.PENDING,
         VerdictStatus.QUEUED,
         VerdictStatus.RUNNING,
     ):
@@ -876,7 +879,8 @@ async def rerun_task_analysis_core(
         )
 
     if any(
-        trial.analysis_status in (AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
+        trial.analysis_status
+        in (AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
         for trial in task.trials
     ):
         raise HTTPException(
@@ -885,6 +889,7 @@ async def rerun_task_analysis_core(
         )
 
     if task.verdict_status in (
+        VerdictStatus.PENDING,
         VerdictStatus.QUEUED,
         VerdictStatus.RUNNING,
     ):
@@ -945,7 +950,7 @@ async def rerun_task_verdict_core(
 
     if any(
         trial.analysis_status
-        in (None, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
+        in (None, AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
         for trial in task.trials
     ):
         raise HTTPException(
@@ -954,6 +959,7 @@ async def rerun_task_verdict_core(
         )
 
     if task.verdict_status in (
+        VerdictStatus.PENDING,
         VerdictStatus.QUEUED,
         VerdictStatus.RUNNING,
     ):
