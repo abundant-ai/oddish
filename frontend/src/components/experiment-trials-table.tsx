@@ -384,13 +384,17 @@ function groupTrialsByAgent(
   return grouped;
 }
 
+function hasLiveQueueSnapshot(trial: Trial): boolean {
+  return ["queued", "retrying", "running", "pending"].includes(trial.status);
+}
+
 function getTrialTitle(trial: Trial, status: MatrixStatus) {
   const reward =
     trial.reward === null
       ? "reward pending"
       : `reward ${formatRewardValue(trial.reward)} (${formatRewardPercent(trial.reward)})`;
   const error = trial.error_message ? ` • ${trial.error_message}` : "";
-  const queueInfo = trial.queue_info;
+  const queueInfo = hasLiveQueueSnapshot(trial) ? trial.queue_info : null;
   const queueSnapshot = queueInfo
     ? [
         queueInfo.position != null

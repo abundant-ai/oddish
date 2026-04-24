@@ -140,6 +140,10 @@ function getQueueSnapshotItems(trial: Trial): string[] {
   ].filter((value): value is string => Boolean(value));
 }
 
+function hasLiveQueueSnapshot(trial: Trial): boolean {
+  return ["queued", "retrying", "running", "pending"].includes(trial.status);
+}
+
 export function TrialDetailPanel({
   isOpen,
   onClose,
@@ -420,6 +424,8 @@ export function TrialDetailPanel({
   );
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
   const TrialStatusIcon = trialStatusConfig.icon;
+  const showQueueSnapshot =
+    hasLiveQueueSnapshot(trial) && getQueueSnapshotItems(trial).length > 0;
 
   const resolvedGroups =
     trialGroups && trialGroups.length > 0
@@ -746,7 +752,7 @@ export function TrialDetailPanel({
         <div className="flex-1 overflow-auto">
           <TabsContent value="summary" className="m-0 p-4 sm:p-6">
             <div className="space-y-4 pb-4">
-              {trial.queue_info && (
+              {showQueueSnapshot && (
                 <Card className="border-purple-500/30 bg-purple-500/5">
                   <CardHeader className="px-4 pb-1 pt-2">
                     <CardTitle className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">

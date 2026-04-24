@@ -157,6 +157,18 @@ def test_check_local_storage_preflight_skips_temp_root_when_not_requested(
     assert seen_paths == [jobs_dir.resolve()]
 
 
+def test_format_exception_message_includes_exception_group_children():
+    exc = ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [RuntimeError("modal image build failed")],
+    )
+
+    message = harbor_runner._format_exception_message(exc)
+
+    assert "ExceptionGroup: unhandled errors in a TaskGroup" in message
+    assert "RuntimeError: modal image build failed" in message
+
+
 def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
     monkeypatch, tmp_path
 ):

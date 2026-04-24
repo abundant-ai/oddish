@@ -294,6 +294,20 @@ def _maybe_add_modal_debug_hint(error_message: str, debug_log_path: Path | None)
     )
 
 
+def _format_exception_message(exc: BaseException) -> str:
+    """Return a concise exception summary, including ExceptionGroup children."""
+    base = f"{type(exc).__name__}: {exc}"
+    if not isinstance(exc, BaseExceptionGroup) or not exc.exceptions:
+        return base
+
+    child_summaries = [
+        f"{type(child).__name__}: {child}" for child in exc.exceptions[:3]
+    ]
+    if len(exc.exceptions) > 3:
+        child_summaries.append(f"+{len(exc.exceptions) - 3} more")
+    return f"{base} ({'; '.join(child_summaries)})"
+
+
 def _storage_probe_paths(jobs_dir: Path, *, include_temp_root: bool) -> list[Path]:
     """Return the local scratch roots Oddish should verify before Harbor runs."""
     candidates: list[Path] = []
@@ -793,7 +807,7 @@ async def run_harbor_trial_async(
         )
     except Exception as e:
         duration = time.time() - start
-        error_message = f"Harbor job execution failed: {type(e).__name__}: {e}"
+        error_message = f"Harbor job execution failed: {_format_exception_message(e)}"
         error_message = _maybe_add_modal_debug_hint(error_message, modal_debug_log_path)
         debug_result_path = _write_debug_result_json(
             job_dir=actual_job_dir,
