@@ -10,23 +10,34 @@ interface AgentLegendProps {
   items: AgentLegendItem[];
   hiddenKeys: Set<string>;
   onToggle: (key: string) => void;
+  hoverKey?: string | null;
+  onHover?: (key: string | null) => void;
 }
 
-export function AgentLegend({ items, hiddenKeys, onToggle }: AgentLegendProps) {
+export function AgentLegend({
+  items,
+  hiddenKeys,
+  onToggle,
+  hoverKey,
+  onHover,
+}: AgentLegendProps) {
   return (
-    <div className="mt-3 flex flex-wrap gap-2">
+    <div className="mt-2 flex flex-wrap gap-2">
       {items.map((item) => {
         const isHidden = hiddenKeys.has(item.key);
+        const isDim = hoverKey != null && hoverKey !== item.key;
         return (
           <Button
             key={item.key}
             type="button"
             onClick={() => onToggle(item.key)}
+            onMouseEnter={() => onHover?.(item.key)}
+            onMouseLeave={() => onHover?.(null)}
             variant="ghost"
             size="sm"
             className={`flex h-auto items-center gap-2 rounded px-2 py-1 font-mono text-xs transition-all ${
               isHidden ? "opacity-40 hover:opacity-60" : "hover:bg-muted"
-            }`}
+            } ${isDim ? "opacity-40" : ""}`}
             title={isHidden ? "Click to show" : "Click to hide"}
           >
             <span

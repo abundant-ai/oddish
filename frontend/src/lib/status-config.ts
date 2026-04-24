@@ -23,7 +23,16 @@ export type MatrixStatus =
 
 /**
  * Status configuration for consistent styling across the UI.
- * Inspired by sauron's status-config.ts but simplified for oddish.
+ *
+ * `matrixClass` uses the Paper palette tokens registered in globals.css
+ * (`--paper-pass`, `--paper-fail`, etc.) so tiles stay in sync with the
+ * rest of the experiment results page. Terminal outcomes (pass/fail/
+ * partial) get saturated fills; error/queued/running/pending use a
+ * light tinted background with a colored hairline border.
+ *
+ * The other class variants (`badgeClass`, `bracketClass`,
+ * `panelBadgeClass`) stay on Tailwind semantic colors so the rest of
+ * the app (dashboard, task browser, drawers) is unchanged.
  */
 export const STATUS_CONFIG: Record<
   MatrixStatus,
@@ -48,7 +57,7 @@ export const STATUS_CONFIG: Record<
     badgeClass:
       "bg-emerald-500/90 text-white border-emerald-400 hover:bg-emerald-600",
     matrixClass:
-      "bg-emerald-500 text-white border-emerald-500 hover:bg-emerald-500/90!",
+      "bg-paper-pass text-white border-paper-pass hover:opacity-90",
     bracketClass: "bg-emerald-600 text-white",
     panelBadgeClass: "bg-emerald-500/20 text-emerald-400 border-emerald-500/50",
   },
@@ -61,7 +70,7 @@ export const STATUS_CONFIG: Record<
     badgeClass:
       "bg-amber-500/90 text-slate-950 border-amber-400 hover:bg-amber-600",
     matrixClass:
-      "bg-amber-500 text-slate-950 border-amber-500 hover:bg-amber-500/90!",
+      "bg-paper-partial text-slate-950 border-paper-partial hover:opacity-90",
     bracketClass: "bg-amber-500 text-slate-950",
     panelBadgeClass: "bg-amber-500/20 text-amber-400 border-amber-500/50",
   },
@@ -72,20 +81,21 @@ export const STATUS_CONFIG: Record<
     symbol: "✗",
     description: "Task did not pass",
     badgeClass: "bg-red-600/90 text-white border-red-500 hover:bg-red-700",
-    matrixClass: "bg-red-500 text-white border-red-500 hover:bg-red-500/90!",
+    matrixClass:
+      "bg-paper-fail text-white border-paper-fail hover:opacity-90",
     bracketClass: "bg-red-600 text-white",
     panelBadgeClass: "bg-red-500/20 text-red-400 border-red-500/50",
   },
   "harness-error": {
     icon: Ban,
     label: "ERROR",
-    shortLabel: "Harness error",
+    shortLabel: "Error",
     symbol: "⊘",
     description: "Harness or infrastructure error",
     badgeClass:
       "bg-yellow-500/90 text-gray-900 border-yellow-400 hover:bg-yellow-600",
     matrixClass:
-      "bg-yellow-500 text-slate-900 border-yellow-500 hover:bg-yellow-500/90!",
+      "bg-[color:var(--paper-error-bg)] text-paper-error border-[color:color-mix(in_oklch,var(--paper-error),transparent_60%)] hover:opacity-90",
     bracketClass: "bg-yellow-500 text-gray-900",
     panelBadgeClass: "bg-yellow-500/20 text-yellow-400 border-yellow-500/50",
   },
@@ -96,7 +106,8 @@ export const STATUS_CONFIG: Record<
     symbol: "◌",
     description: "Waiting to be queued",
     badgeClass: "bg-gray-500/50 text-gray-300 border-gray-400 animate-pulse",
-    matrixClass: "bg-gray-500 text-white border-gray-500 hover:bg-gray-500/90!",
+    matrixClass:
+      "bg-paper-bg-2 text-paper-ink-3 border-paper-line hover:opacity-90",
     bracketClass: "bg-gray-500/50 text-gray-300 animate-pulse",
     panelBadgeClass: "bg-gray-500/20 text-gray-400 border-gray-500/50",
   },
@@ -108,7 +119,7 @@ export const STATUS_CONFIG: Record<
     description: "Queued for execution",
     badgeClass: "bg-purple-500/90 text-white border-purple-400",
     matrixClass:
-      "bg-purple-500 text-white border-purple-500 hover:bg-purple-500/90!",
+      "bg-[color:var(--paper-queued-bg)] text-paper-queued border-[color:color-mix(in_oklch,var(--paper-queued),transparent_70%)] hover:opacity-90",
     bracketClass: "bg-purple-500 text-white",
     panelBadgeClass: "bg-purple-500/20 text-purple-400 border-purple-500/50",
   },
@@ -120,7 +131,7 @@ export const STATUS_CONFIG: Record<
     description: "Currently executing",
     badgeClass: "bg-blue-500/90 text-white border-blue-400 animate-pulse",
     matrixClass:
-      "bg-blue-500 text-white border-blue-500 animate-pulse hover:bg-blue-500/90!",
+      "bg-[color:var(--paper-running-bg)] text-paper-running border-[color:color-mix(in_oklch,var(--paper-running),transparent_70%)] animate-pulse hover:opacity-90",
     bracketClass: "bg-blue-500 text-white animate-pulse",
     panelBadgeClass: "bg-blue-500/20 text-blue-400 border-blue-500/50",
   },
@@ -168,52 +179,24 @@ function isPartialReward(reward: number | null | undefined): reward is number {
   return hasRewardValue(reward) && reward > 0 && reward < 1;
 }
 
-type RgbColor = {
-  r: number;
-  g: number;
-  b: number;
-};
-
-const FAIL_BG: RgbColor = { r: 239, g: 68, b: 68 }; // red-500
-const PASS_BG: RgbColor = { r: 16, g: 185, b: 129 }; // emerald-500
-const FAIL_BORDER: RgbColor = { r: 220, g: 38, b: 38 }; // red-600
-const PASS_BORDER: RgbColor = { r: 5, g: 150, b: 105 }; // emerald-600
-
-function clampChannel(value: number): number {
-  return Math.max(0, Math.min(255, Math.round(value)));
-}
-
-function interpolateRgb(
-  from: RgbColor,
-  to: RgbColor,
-  weight: number,
-): RgbColor {
-  const clamped = Math.max(0, Math.min(1, weight));
-  return {
-    r: clampChannel(from.r + (to.r - from.r) * clamped),
-    g: clampChannel(from.g + (to.g - from.g) * clamped),
-    b: clampChannel(from.b + (to.b - from.b) * clamped),
-  };
-}
-
-function rgbCss(color: RgbColor, alpha?: number): string {
-  if (alpha == null) {
-    return `rgb(${color.r} ${color.g} ${color.b})`;
-  }
-  return `rgb(${color.r} ${color.g} ${color.b} / ${alpha})`;
-}
-
-function getPartialRewardColors(reward: number): {
-  background: RgbColor;
-  border: RgbColor;
+/**
+ * Warm partial-reward ramp.
+ *
+ * Saturated red (0) → orange → olive → forest green (1), with white text.
+ * Matches the reference design — high-saturation oklch fills so the score
+ * number reads at a glance in the matrix.
+ */
+function partialWarmRamp(reward: number): {
+  bg: string;
+  fg: string;
+  border: string;
 } {
-  return {
-    // Interpolate directly between the existing fail/pass palette so
-    // partials feel like "between fail and pass" rather than a brighter
-    // independent spectrum.
-    background: interpolateRgb(FAIL_BG, PASS_BG, reward),
-    border: interpolateRgb(FAIL_BORDER, PASS_BORDER, reward),
-  };
+  const s = Math.max(0, Math.min(1, reward));
+  const hue = 25 + s * 115;
+  const chroma = 0.16 + Math.abs(s - 0.5) * -0.02 + 0.02;
+  const light = s < 0.5 ? 62 - s * 8 : 54 + (s - 0.5) * 4;
+  const bg = `oklch(${light.toFixed(2)}% ${chroma.toFixed(3)} ${hue.toFixed(1)})`;
+  return { bg, fg: "#fff", border: bg };
 }
 
 export function getRewardStyle(
@@ -221,24 +204,25 @@ export function getRewardStyle(
   variant: "matrix" | "badge" | "panel" = "matrix",
 ): CSSProperties | undefined {
   if (!isPartialReward(reward)) return undefined;
-  const { background, border } = getPartialRewardColors(reward);
+  const { bg, fg, border } = partialWarmRamp(reward);
   if (variant === "matrix") {
     return {
-      backgroundColor: rgbCss(background),
-      borderColor: rgbCss(border),
-      color: "white",
+      backgroundColor: bg,
+      borderColor: border,
+      color: fg,
+      boxShadow: "inset 0 -1px 0 rgba(0,0,0,0.12)",
     };
   }
   if (variant === "badge") {
     return {
-      backgroundColor: rgbCss(background, 0.18),
-      borderColor: rgbCss(border, 0.45),
-      color: rgbCss(background),
+      backgroundColor: `color-mix(in oklch, ${bg}, transparent 75%)`,
+      borderColor: `color-mix(in oklch, ${bg}, transparent 45%)`,
+      color: bg,
     };
   }
   return {
-    backgroundColor: rgbCss(background, 0.12),
-    borderColor: rgbCss(border, 0.3),
+    backgroundColor: `color-mix(in oklch, ${bg}, transparent 85%)`,
+    borderColor: `color-mix(in oklch, ${bg}, transparent 65%)`,
   };
 }
 

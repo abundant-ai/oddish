@@ -2,18 +2,17 @@
 
 import { memo, useMemo } from "react";
 import type { Task, Trial } from "@/lib/types";
-import { Card, CardContent } from "@/components/ui/card";
-import { AgentLegend } from "@/components/agent-legend";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
 import type { AgentSummary } from "./experiment-trials-table";
-import { QueueKeyIcon } from "./queue-key-icon";
 import { AGENT_COLORS } from "./pass-at-k-graph";
 
 interface PassAtOneLeaderboardProps {
   tasks: Task[];
   agentSummaries: AgentSummary[];
   hiddenAgents: Set<string>;
-  onToggleAgent: (agent: string) => void;
+  onToggleAgent?: (agent: string) => void;
+  hoverAgent?: string | null;
+  onHoverAgent?: (key: string | null) => void;
 }
 
 type LeaderboardRow = {
@@ -24,15 +23,6 @@ type LeaderboardRow = {
   queueKey: string | null;
   mean: number;
 };
-
-const GRADIENTS: Array<[string, string]> = [
-  ["#f59e0b", "#facc15"],
-  ["#3b82f6", "#ec4899"],
-  ["#93c5fd", "#fef08a"],
-  ["#fde047", "#f59e0b"],
-  ["#2563eb", "#a855f7"],
-  ["#22d3ee", "#a3e635"],
-];
 
 function getPassAtOneValue(trials: Trial[]): number | null {
   if (trials.length === 0) return null;
@@ -85,7 +75,8 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
   tasks,
   agentSummaries,
   hiddenAgents,
-  onToggleAgent,
+  hoverAgent,
+  onHoverAgent,
 }: PassAtOneLeaderboardProps) {
   const rows = useMemo(
     () => calculateRows(tasks, agentSummaries),
@@ -108,82 +99,83 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
   }
 
   const domain = 1;
-  const ticks = [0, 0.2, 0.4, 0.6, 0.8, 1];
+  const scaleTicks = [0, 0.25, 0.5, 0.75, 1];
 
   return (
-    <Card className="h-full bg-card/80 shadow-xs">
-      <CardContent className="flex h-full flex-col p-6">
-        <div className="flex items-center justify-between gap-4">
-          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Leaderboard
-          </div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Score
-          </div>
-        </div>
+    <div className="flex h-full min-w-0 flex-col rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3">
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <h3 className="font-display text-[15px] font-medium tracking-[-0.01em] text-[color:var(--paper-ink)]">
+          Leaderboard
+        </h3>
+        <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
+          score = (pass + ½·partial) / completed
+        </span>
+      </div>
 
-        <div className="mt-4 space-y-3">
-          {visibleRows.map((row, index) => {
-            const [start, end] = GRADIENTS[index % GRADIENTS.length];
-            const width = (row.mean / domain) * 100;
+      <div className="grid grid-cols-[1fr_60px] border-b border-[color:var(--paper-line-2)] pb-1.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.12em] text-[color:var(--paper-ink-3)]">
+        <span>Agent</span>
+        <span className="text-right">Score</span>
+      </div>
 
-            return (
-              <div key={row.key} className="min-w-0 space-y-1.5">
-                <div className="flex items-center justify-between gap-4 text-sm text-foreground">
-                  <div className="flex min-w-0 items-center justify-start gap-1.5">
-                    <QueueKeyIcon
-                      queueKey={row.queueKey}
-                      model={row.model}
-                      agent={row.agent}
-                      size={14}
-                      className="shrink-0 text-muted-foreground"
-                    />
-                    <span className="truncate">
-                      <span className="font-semibold">{row.label}</span>
-                    </span>
-                  </div>
-                  <div className="text-right font-mono text-sm text-foreground">
-                    {(row.mean * 100).toFixed(1)}%
-                  </div>
-                </div>
-                <div className="relative h-3 rounded-full bg-muted/70">
-                  <div
-                    className="h-full rounded-full"
-                    style={{
-                      width: `${width}%`,
-                      background: `linear-gradient(90deg, ${start} 0%, ${end} 100%)`,
-                    }}
-                  />
-                </div>
+      <div className="flex flex-col">
+        {visibleRows.map((row, index) => {
+          const color = colorByAgent.get(row.key) ?? AGENT_COLORS[0];
+          const width = (row.mean / domain) * 100;
+          const isDim = hoverAgent != null && hoverAgent !== row.key;
+          const mark = (row.label || "A").charAt(0).toUpperCase();
+          const isLast = index === visibleRows.length - 1;
+
+          return (
+            <div
+              key={row.key}
+              className={`grid grid-cols-[1fr_60px] items-center pb-1.5 pt-2 transition-opacity ${
+                isLast
+                  ? ""
+                  : "border-b border-dashed border-[color:var(--paper-line-2)]"
+              }`}
+              style={{ opacity: isDim ? 0.32 : 1 }}
+              onMouseEnter={() => onHoverAgent?.(row.key)}
+              onMouseLeave={() => onHoverAgent?.(null)}
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <span
+                  className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] font-mono text-[10px] font-bold text-white"
+                  style={{ backgroundColor: color }}
+                  aria-hidden="true"
+                >
+                  {mark}
+                </span>
+                <span className="truncate font-mono text-[11.5px] text-[color:var(--paper-ink)]">
+                  {row.label}
+                </span>
               </div>
-            );
-          })}
-          {visibleRows.length === 0 && (
-            <div className="py-6 text-center text-xs text-muted-foreground">
-              All agents are hidden.
+              <div className="text-right font-mono text-xs font-semibold tracking-[-0.01em] text-[color:var(--paper-ink)]">
+                {(row.mean * 100).toFixed(1)}%
+              </div>
+              <div className="col-span-2 mt-1.5 h-1.5 overflow-hidden rounded-full bg-[color:var(--paper-bg-2)]">
+                <div
+                  className="h-full rounded-full transition-[width] duration-200"
+                  style={{
+                    width: `${width}%`,
+                    background: `linear-gradient(90deg, color-mix(in oklch, ${color}, white 18%) 0%, ${color} 100%)`,
+                  }}
+                />
+              </div>
             </div>
-          )}
-        </div>
-
-        <div className="relative mt-auto pt-4">
-          <div className="absolute inset-x-0 top-0 border-t border-border" />
-          <div className="flex justify-between pt-4 font-mono text-xs text-muted-foreground">
-            {ticks.map((tick) => (
-              <span key={tick}>{Math.round(tick * 100)}%</span>
-            ))}
+          );
+        })}
+        {visibleRows.length === 0 && (
+          <div className="py-6 text-center text-xs text-[color:var(--paper-ink-3)]">
+            All agents are hidden.
           </div>
-        </div>
+        )}
+      </div>
 
-        <AgentLegend
-          items={rows.map((row) => ({
-            key: row.key,
-            label: row.label,
-            color: colorByAgent.get(row.key) ?? AGENT_COLORS[0],
-          }))}
-          hiddenKeys={hiddenAgents}
-          onToggle={onToggleAgent}
-        />
-      </CardContent>
-    </Card>
+      <div className="mt-auto flex justify-between border-t border-[color:var(--paper-line-2)] pt-2 font-mono text-[9.5px] text-[color:var(--paper-ink-3)]">
+        {scaleTicks.map((tick) => (
+          <span key={tick}>{Math.round(tick * 100)}%</span>
+        ))}
+      </div>
+    </div>
   );
 });

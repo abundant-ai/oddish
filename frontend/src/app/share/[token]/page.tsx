@@ -3,7 +3,6 @@
 import { useMemo } from "react";
 import { useParams } from "next/navigation";
 import useSWR from "swr";
-import { Beaker } from "lucide-react";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { Nav } from "@/components/nav";
 import type { Task, PublicExperimentInfo } from "@/lib/types";
@@ -80,10 +79,9 @@ export default function PublicExperimentPage() {
             errorTitle="Failed to load experiment"
             errorDescription="The share link may be invalid or no longer public."
             headerLeft={
-              <div className="flex items-center gap-2">
-                <Beaker className="h-4 w-4 text-muted-foreground" />
-                <div className="text-sm font-medium">{experimentName}</div>
-              </div>
+              <h1 className="truncate pb-1 font-mono text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)]">
+                {experimentName}
+              </h1>
             }
             readOnly
             allowRetry={false}

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import useSWR from "swr";
-import { Globe, Copy, Eye, EyeOff, Loader2 } from "lucide-react";
+import { Copy, Eye, EyeOff, Loader2 } from "lucide-react";
 import { fetcher } from "@/lib/api";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -126,20 +126,33 @@ export function ExperimentShareButton({
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen} modal={false}>
       <DialogTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-8 gap-2 text-xs font-medium"
+        <button
+          type="button"
           title={
             canManageShare
               ? "Publish experiment"
               : "Only org admins can publish experiments"
           }
           disabled={!canManageShare}
+          className="inline-flex h-8 select-none items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] font-medium leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-[color:var(--paper-line)] disabled:hover:bg-[color:var(--paper-surface)]"
         >
-          <Globe className="h-4 w-4" />
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+            <polyline points="16 6 12 2 8 6" />
+            <line x1="12" x2="12" y1="2" y2="15" />
+          </svg>
           {data?.is_public ? "Public" : "Publish"}
-        </Button>
+        </button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>

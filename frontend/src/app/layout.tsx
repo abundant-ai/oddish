@@ -1,7 +1,30 @@
 import type { Metadata } from "next";
+import { Fraunces, Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Providers } from "./providers";
+
+const geistSans = Geist({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-geist-sans",
+  display: "swap",
+});
+
+const geistMono = Geist_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-geist-mono",
+  display: "swap",
+});
+
+const fraunces = Fraunces({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  style: ["normal", "italic"],
+  variable: "--font-fraunces",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "Oddish - Eval Scheduler",
@@ -47,8 +70,11 @@ export default function RootLayout({
       signInFallbackRedirectUrl={toAbsoluteUrl(afterSignInUrl)}
       signUpFallbackRedirectUrl={toAbsoluteUrl(afterSignUpUrl)}
     >
-      <html lang="en">
-        <body className="min-h-screen antialiased">
+      <html
+        lang="en"
+        className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable}`}
+      >
+        <body className="min-h-screen bg-background font-sans text-foreground antialiased">
           <Providers>{children}</Providers>
         </body>
       </html>
