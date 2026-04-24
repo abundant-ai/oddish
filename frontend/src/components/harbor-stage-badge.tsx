@@ -21,7 +21,7 @@ export function HarborStageBadge({ stage, className }: HarborStageBadgeProps) {
   if (!stage) {
     return (
       <Badge variant="harborStarting" className={className}>
-        Pending
+        Queued
       </Badge>
     );
   }

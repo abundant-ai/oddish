@@ -17,7 +17,6 @@ export type MatrixStatus =
   | "partial"
   | "fail"
   | "harness-error"
-  | "pending"
   | "queued"
   | "running";
 
@@ -27,7 +26,7 @@ export type MatrixStatus =
  * `matrixClass` uses the Paper palette tokens registered in globals.css
  * (`--paper-pass`, `--paper-fail`, etc.) so tiles stay in sync with the
  * rest of the experiment results page. Terminal outcomes (pass/fail/
- * partial) get saturated fills; error/queued/running/pending use a
+ * partial) get saturated fills; error/queued/running use a
  * light tinted background with a colored hairline border.
  *
  * The other class variants (`badgeClass`, `bracketClass`,
@@ -97,18 +96,6 @@ export const STATUS_CONFIG: Record<
     bracketClass: "bg-yellow-500 text-gray-900",
     panelBadgeClass: "bg-yellow-500/20 text-yellow-400 border-yellow-500/50",
   },
-  pending: {
-    icon: Loader2,
-    label: "PENDING",
-    shortLabel: "Pending",
-    symbol: "◌",
-    description: "Waiting to be queued",
-    badgeClass: "bg-gray-500/50 text-gray-300 border-gray-400 animate-pulse",
-    matrixClass:
-      "bg-paper-bg-2 text-paper-ink-3 border-paper-line hover:opacity-90",
-    bracketClass: "bg-gray-500/50 text-gray-300 animate-pulse",
-    panelBadgeClass: "bg-gray-500/20 text-gray-400 border-gray-500/50",
-  },
   queued: {
     icon: Loader2,
     label: "QUEUED",
@@ -173,7 +160,15 @@ export function getRewardMatrixStatus(reward: number): MatrixStatus {
   return "partial";
 }
 
-function isPartialReward(reward: number | null | undefined): reward is number {
+export function normalizeUiJobStatus(
+  status: string | null | undefined,
+): string | null | undefined {
+  return status === "pending" ? "queued" : status;
+}
+
+function isPartialReward(
+  reward: number | null | undefined,
+): reward is number {
   return hasRewardValue(reward) && reward > 0 && reward < 1;
 }
 
@@ -255,16 +250,15 @@ export function getMatrixStatus(
   // Success execution - check reward
   if (trialStatus === "success") {
     if (hasReward) return getRewardMatrixStatus(reward);
-    // No reward yet (null/undefined) - still pending result
-    return "pending";
+    return "queued";
   }
 
-  // Queued = waiting in queue. Backend still emits "pending" (it's the
-  // default JobStatus for freshly-created trials that haven't been
-  // claimed yet); UI-side we fold it into "queued" since the distinction
-  // isn't meaningful to users. The backend enum is slated for deprecation
-  // -- see oddish/db/models.py.
-  if (trialStatus === "queued" || trialStatus === "pending") {
+  // Backend "pending" is rendered as queued in the UI.
+  if (
+    trialStatus === "queued" ||
+    trialStatus === "pending" ||
+    trialStatus === "retrying"
+  ) {
     return "queued";
   }
 
@@ -273,6 +267,5 @@ export function getMatrixStatus(
     return "running";
   }
 
-  // Any other status (retrying) = pending
-  return "pending";
+  return "queued";
 }

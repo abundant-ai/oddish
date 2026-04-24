@@ -89,7 +89,6 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   partial: "border-amber-500/30 bg-amber-500/10",
   fail: "border-red-500/30 bg-red-500/10",
   "harness-error": "border-yellow-500/30 bg-yellow-500/10",
-  pending: "border-gray-500/30 bg-gray-500/10",
   queued: "border-purple-500/30 bg-purple-500/10",
   running: "border-blue-500/30 bg-blue-500/10",
 };
@@ -600,9 +599,7 @@ export function TrialDetailPanel({
                                 : trialStatus === "running"
                                   ? "text-blue-500"
                                   : "text-gray-500",
-                      (trialStatus === "pending" ||
-                        trialStatus === "queued" ||
-                        trialStatus === "running") &&
+                      (trialStatus === "queued" || trialStatus === "running") &&
                         "animate-spin",
                     )}
                   />

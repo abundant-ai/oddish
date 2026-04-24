@@ -116,7 +116,6 @@ function getLatestTrialStatusCounts(task: TaskBrowseItem) {
       partial: 0,
       fail: 0,
       "harness-error": 0,
-      pending: 0,
       queued: 0,
       running: 0,
     } as Record<ReturnType<typeof getMatrixStatus>, number>,
@@ -148,9 +147,14 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
       count: statusCounts["harness-error"],
     },
     {
-      key: "pending",
-      label: "Pending",
-      count: statusCounts.pending + statusCounts.queued + statusCounts.running,
+      key: "queued",
+      label: "Queued",
+      count: statusCounts.queued,
+    },
+    {
+      key: "running",
+      label: "Running",
+      count: statusCounts.running,
     },
   ] as const;
 
