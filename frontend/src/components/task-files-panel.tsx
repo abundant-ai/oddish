@@ -454,8 +454,8 @@ export function TaskFilesPanel({
     : "Run QA";
   const verdictActionLabel =
     verdictSource?.verdict_status || verdictSource?.verdict
-      ? "Rerun verdict"
-      : "Run verdict";
+      ? "Rerun QA verdict"
+      : "Run QA verdict";
 
   const navigateTo = useCallback(
     (nextIndex: number) => {

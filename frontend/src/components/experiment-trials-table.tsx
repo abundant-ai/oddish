@@ -223,7 +223,7 @@ function agentRowFilterStatus(
 /**
  * Reference-style inline action button: transparent by default, subtle
  * hover, disabled in ink-4. Used across the toolbar's "selected"
- * action row (Clear / Rerun / Cancel / Run QA / Run verdict / Delete).
+ * action row (Clear / Rerun / Cancel / Run QA / Run QA verdict / Delete).
  */
 function InlineBtn({
   onClick,
@@ -1774,7 +1774,7 @@ export function ExperimentTrialsTable({
                         selectedVerdictRunnableTasks.length === 0
                       }
                     >
-                      {isRunningVerdict ? "Queueing" : "Run verdict"}
+                      {isRunningVerdict ? "Queueing" : "Run QA verdict"}
                       <InlineCount>
                         {selectedVerdictRunnableTasks.length}
                       </InlineCount>
