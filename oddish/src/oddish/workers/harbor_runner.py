@@ -645,7 +645,7 @@ async def run_harbor_trial_async(
 
     # Create Harbor Job
     actual_job_dir = unique_parent
-    job = Job(config)
+    job = await Job.create(config)
     actual_job_dir = job.job_dir
 
     # Register hooks if callback provided
