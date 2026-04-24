@@ -33,6 +33,10 @@ import urllib.parse
 import urllib.request
 
 API_BASE = "https://api.supabase.com/v1"
+# Cloudflare in front of api.supabase.com returns HTTP 1010 ("browser signature
+# banned") for the default `Python-urllib/...` User-Agent, so every outbound
+# request must carry an explicit one.
+USER_AGENT = "oddish-ci-modal-preview/1.0 (+https://github.com/abundant-ai/oddish)"
 BRANCH_TIMEOUT_SECONDS = 600
 POLL_INTERVAL_SECONDS = 10
 TERMINAL_FAILURE_STATUSES = {"MIGRATIONS_FAILED", "FUNCTIONS_FAILED"}
@@ -45,6 +49,7 @@ def _request(path: str, token: str):
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
+            "User-Agent": USER_AGENT,
         },
     )
     with urllib.request.urlopen(req, timeout=30) as response:
