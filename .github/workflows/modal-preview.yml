@@ -63,24 +63,11 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: python .github/scripts/preview/wait_for_supabase_branch.py
 
-      - name: Sync oddish dependencies
-        working-directory: oddish
-        # alembic lives in the `server` optional extra.
-        run: uv sync --frozen --extra server
-
-      - name: Bootstrap and stamp oddish schema
-        working-directory: oddish
-        run: |
-          uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_oddish_schema.py"
-          uv run alembic stamp head
-
       - name: Sync backend dependencies
         run: uv sync --frozen
 
-      - name: Bootstrap and stamp backend schema
-        run: |
-          uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_backend_schema.py"
-          uv run alembic stamp head
+      - name: Bootstrap preview database
+        run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_preview_db.py"
 
       - name: Create per-PR Modal database secret
         run: |
