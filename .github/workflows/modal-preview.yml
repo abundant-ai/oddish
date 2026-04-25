@@ -102,7 +102,7 @@ jobs:
         run: |
           uv run python - <<'PY'
           import asyncio
-          import backend.models  # noqa: F401  # register cloud-auth tables on Base.metadata
+          import models  # noqa: F401  # register cloud-auth tables on Base.metadata (flat layout, imported as `models`)
           from oddish.db import init_db
           asyncio.run(init_db())
           PY
