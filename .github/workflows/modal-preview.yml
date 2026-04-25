@@ -227,8 +227,10 @@ jobs:
           # NEXT_PUBLIC_MODAL_* / NEXT_PUBLIC_BACKEND_TYPE vars are dead
           # code from an older revision; we still `rm || true` them so
           # any stale per-branch overrides don't bleed into the build.
-          vercel env rm NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          printf '%s' "$MODAL_API_URL" | vercel env add NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
+          # `--no-sensitive` keeps the value visible in the Vercel
+          # dashboard for debugging (the CLI default is sensitive,
+          # which makes the value unreadable after creation).
+          printf '%s' "$MODAL_API_URL" | vercel env add NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --force --no-sensitive --token="$VERCEL_TOKEN"
           vercel env rm NEXT_PUBLIC_BACKEND_TYPE preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
           vercel env rm NEXT_PUBLIC_MODAL_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
           vercel env rm NEXT_PUBLIC_MODAL_BASE_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
