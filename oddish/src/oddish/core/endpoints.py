@@ -90,6 +90,8 @@ async def list_tasks_core(
     experiment_id: str | None = None,
     include_trials: bool = True,
     compact_trials: bool = False,
+    include_queue_info: bool = True,
+    include_worker_jobs: bool = True,
     limit: int = 100,
     offset: int = 0,
     org_id: str | None = None,
@@ -216,10 +218,14 @@ async def list_tasks_core(
     if include_trials:
         visible_jobs_started_at = now()
         trial_ids = [trial.id for task in tasks for trial in task.trials]
-        jobs_by_subject = await fetch_visible_worker_jobs(
-            session,
-            task_ids=[task.id for task in tasks],
-            trial_ids=trial_ids,
+        jobs_by_subject = (
+            await fetch_visible_worker_jobs(
+                session,
+                task_ids=[task.id for task in tasks],
+                trial_ids=trial_ids,
+            )
+            if include_worker_jobs
+            else {}
         )
         if record_timing is not None:
             record_timing(
@@ -228,9 +234,13 @@ async def list_tasks_core(
                 "Visible worker jobs",
             )
         queue_info_started_at = now()
-        queue_info_by_trial_id = await fetch_trial_queue_info(
-            session,
-            trials=[trial for task in tasks for trial in task.trials],
+        queue_info_by_trial_id = (
+            await fetch_trial_queue_info(
+                session,
+                trials=[trial for task in tasks for trial in task.trials],
+            )
+            if include_queue_info
+            else {}
         )
         if record_timing is not None:
             record_timing(
@@ -241,7 +251,9 @@ async def list_tasks_core(
         if compact_trials:
             analysis_started_at = now()
             analysis_summaries = await fetch_trial_analysis_summaries(
-                session, task_ids=[task.id for task in tasks]
+                session,
+                task_ids=[task.id for task in tasks],
+                trial_ids=trial_ids,
             )
             if record_timing is not None:
                 record_timing(
@@ -301,10 +313,14 @@ async def list_tasks_core(
         include_empty_rewards=include_empty_rewards,
         experiment_context_id=experiment_id,
         effective_version_id_by_task_id=effective_version_id_by_task_id or None,
-        jobs_by_subject=await fetch_visible_worker_jobs(
-            session,
-            task_ids=[task.id for task in tasks],
-            trial_ids=[],
+        jobs_by_subject=(
+            await fetch_visible_worker_jobs(
+                session,
+                task_ids=[task.id for task in tasks],
+                trial_ids=[],
+            )
+            if include_worker_jobs
+            else {}
         ),
     )
     if record_timing is not None:

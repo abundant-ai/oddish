@@ -826,11 +826,22 @@ def build_task_status_response_compact(
 
 
 async def fetch_trial_analysis_summaries(
-    session: AsyncSession, *, task_ids: Sequence[str]
+    session: AsyncSession,
+    *,
+    task_ids: Sequence[str] = (),
+    trial_ids: Sequence[str] | None = None,
 ) -> dict[str, dict[str, str | None]]:
     """Fetch only compact analysis fields needed by matrix views."""
-    if not task_ids:
+    if trial_ids is not None and not trial_ids:
         return {}
+    if trial_ids is None and not task_ids:
+        return {}
+
+    filters = [TrialModel.analysis.isnot(None)]
+    if trial_ids is not None:
+        filters.append(TrialModel.id.in_(list(trial_ids)))
+    else:
+        filters.append(TrialModel.task_id.in_(list(task_ids)))
 
     result = await session.execute(
         select(
@@ -838,10 +849,7 @@ async def fetch_trial_analysis_summaries(
             TrialModel.analysis["classification"].astext.label("classification"),
             TrialModel.analysis["subtype"].astext.label("subtype"),
             TrialModel.analysis["evidence"].astext.label("evidence"),
-        ).where(
-            TrialModel.task_id.in_(task_ids),
-            TrialModel.analysis.isnot(None),
-        )
+        ).where(*filters)
     )
 
     summaries: dict[str, dict[str, str | None]] = {}

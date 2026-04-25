@@ -268,6 +268,8 @@ async def list_tasks(
     experiment_id: str | None = None,
     include_trials: bool = False,
     compact_trials: bool = False,
+    include_queue_info: bool = True,
+    include_worker_jobs: bool = True,
     limit: int = 100,
     offset: int = 0,
 ) -> list[TaskStatusResponse]:
@@ -290,6 +292,8 @@ async def list_tasks(
             experiment_id=experiment_id,
             include_trials=include_trials,
             compact_trials=compact_trials,
+            include_queue_info=include_queue_info,
+            include_worker_jobs=include_worker_jobs,
             limit=limit,
             offset=offset,
             org_id=auth.org_id,

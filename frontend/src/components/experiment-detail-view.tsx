@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useSearchParams } from "next/navigation";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -135,10 +142,13 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
         } else {
           pendingCount++;
         }
+        if (trial.status === "success") {
+          completedTrials++;
+        } else if (trial.status === "failed") {
+          failedTrials++;
+        }
       }
       totalTrials += trials.length;
-      completedTrials += trials.filter((t) => t.status === "success").length;
-      failedTrials += trials.filter((t) => t.status === "failed").length;
     } else {
       // Trials not loaded yet — fall back to server-provided aggregates
       rewardSuccess += task.reward_success ?? 0;
@@ -541,13 +551,14 @@ export function ExperimentDetailView({
   >([]);
   const hydratedFromUrl = useRef(false);
   const isInitialLoading = isLoading && tasksForExperiment.length === 0;
+  const deferredTasksForDerivedData = useDeferredValue(tasksForExperiment);
 
   const agentSummaryStorageKey = experimentId
     ? `${AGENT_SUMMARY_STORAGE_PREFIX}${experimentId}`
     : null;
   const { agentSummaries, modelScopedAgents } = useMemo(
-    () => buildExperimentAgentSummaries(tasksForExperiment),
-    [tasksForExperiment],
+    () => buildExperimentAgentSummaries(deferredTasksForDerivedData),
+    [deferredTasksForDerivedData],
   );
   const displayAgentSummaries =
     agentSummaries.length > 0 ? agentSummaries : cachedAgentSummaries;
@@ -741,8 +752,8 @@ export function ExperimentDetailView({
   }, [tasksForExperiment, drawerState, buildTrialGroups]);
 
   const summary = useMemo(
-    () => buildExperimentSummary(tasksForExperiment),
-    [tasksForExperiment],
+    () => buildExperimentSummary(deferredTasksForDerivedData),
+    [deferredTasksForDerivedData],
   );
 
   const closeDrawer = () => {

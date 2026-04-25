@@ -133,7 +133,7 @@ const EMPTY_TRIAL_INDEX: ReadonlyMap<string, number> = new Map<
   string,
   number
 >();
-const VIRTUALIZATION_THRESHOLD = 50;
+const VIRTUALIZATION_THRESHOLD = 20;
 const INITIAL_LOADING_COLUMN_COUNT = 4;
 const INITIAL_LOADING_ROW_COUNT = 8;
 const LOADING_AGENT_COLUMNS: AgentSummary[] = Array.from(
@@ -772,8 +772,8 @@ export function ExperimentTrialsTable({
   ]);
 
   const getTaskContext = useMemo(() => {
-    const contextCache = new Map<
-      string,
+    const contextCache = new WeakMap<
+      Task,
       {
         groupedTrialsByAgent: Map<string, Trial[]>;
         orderedTrials: Trial[];
@@ -787,7 +787,7 @@ export function ExperimentTrialsTable({
     >();
 
     return (task: Task) => {
-      const cached = contextCache.get(task.id);
+      const cached = contextCache.get(task);
       if (cached) return cached;
 
       const groupedTrialsByAgent = groupTrialsByAgent(
@@ -823,7 +823,7 @@ export function ExperimentTrialsTable({
         trialIndexById,
         trialGroups,
       };
-      contextCache.set(task.id, context);
+      contextCache.set(task, context);
       return context;
     };
   }, [visibleAgents, modelScopedAgents]);

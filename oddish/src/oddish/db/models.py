@@ -193,6 +193,7 @@ task_experiments = Table(
         nullable=False,
     ),
     Index("idx_task_experiments_experiment_id", "experiment_id"),
+    Index("idx_task_experiments_experiment_task", "experiment_id", "task_id"),
 )
 
 
@@ -554,6 +555,12 @@ class TrialModel(Base):
             "org_id",
             "experiment_id",
             "created_at",
+        ),
+        Index(
+            "idx_trials_experiment_task_version",
+            "experiment_id",
+            "task_id",
+            "task_version_id",
         ),
         Index(
             "idx_trials_dashboard_usage",

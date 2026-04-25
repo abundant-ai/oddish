@@ -11,11 +11,12 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ExperimentShareButton } from "@/components/experiment-share-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import type { Task, Trial } from "@/lib/types";
-import { fetcher } from "@/lib/api";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 
-const TRIALS_BATCH_SIZE = 100;
+const TRIALS_BATCH_SIZE = 250;
+const TRIALS_PREFETCH_PAGES = 2;
+const EXPERIMENT_TIMING_STORAGE_KEY = "oddish:experiment-table-timing";
 const ACTIVE_TASK_STATUSES = new Set([
   "pending",
   "queued",
@@ -23,6 +24,55 @@ const ACTIVE_TASK_STATUSES = new Set([
   "analyzing",
   "verdict_pending",
 ]);
+
+function isExperimentTimingEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  const params = new URLSearchParams(window.location.search);
+  return (
+    params.get("debug_timing") === "1" ||
+    window.localStorage.getItem(EXPERIMENT_TIMING_STORAGE_KEY) === "1"
+  );
+}
+
+async function fetchExperimentTasksPage(url: string): Promise<Task[]> {
+  const startedAt = performance.now();
+  const res = await fetch(url, { credentials: "include" });
+  const responseAt = performance.now();
+  const serverTiming = res.headers.get("server-timing");
+  let data: unknown = null;
+
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+
+  const finishedAt = performance.now();
+  if (isExperimentTimingEnabled()) {
+    console.info("[oddish timing] experiment tasks fetch", {
+      url,
+      status: res.status,
+      networkMs: Math.round(responseAt - startedAt),
+      jsonMs: Math.round(finishedAt - responseAt),
+      totalMs: Math.round(finishedAt - startedAt),
+      rows: Array.isArray(data) ? data.length : null,
+      serverTiming,
+    });
+  }
+
+  if (!res.ok) {
+    const message =
+      typeof data === "object" && data && "error" in data
+        ? String((data as { error?: string }).error)
+        : res.statusText || "Request failed";
+    const err = new Error(message);
+    (err as Error & { status?: number; info?: unknown }).status = res.status;
+    (err as Error & { status?: number; info?: unknown }).info = data;
+    throw err;
+  }
+
+  return data as Task[];
+}
 
 type ExperimentClientPageProps = {
   experimentId: string;
@@ -58,7 +108,7 @@ export function ExperimentClientPage({
     error: lightweightError,
     isLoading: isLoadingTasks,
     mutate: mutateLightweight,
-  } = useSWR<Task[]>(allTasksUrl, fetcher, {
+  } = useSWR<Task[]>(allTasksUrl, fetchExperimentTasksPage, {
     refreshInterval: 0,
     revalidateOnFocus: false,
     revalidateOnMount: initialTasks == null,
@@ -82,9 +132,10 @@ export function ExperimentClientPage({
     data: trialPages,
     isLoading: isLoadingTrialPages,
     isValidating: isValidatingTrials,
+    size: trialsPageSize,
     setSize: setTrialsSize,
     mutate: mutateTrials,
-  } = useSWRInfinite<Task[]>(getTrialsPageKey, fetcher, {
+  } = useSWRInfinite<Task[]>(getTrialsPageKey, fetchExperimentTasksPage, {
     refreshInterval: 0,
     revalidateOnFocus: false,
     revalidateFirstPage: false,
@@ -100,6 +151,7 @@ export function ExperimentClientPage({
   // to the experiment-relevant version, so no extra client-side filtering is
   // required here.
   const tasksForExperiment = useMemo(() => {
+    const startedAt = isExperimentTimingEnabled() ? performance.now() : 0;
     const trialDataById = new Map<string, Task>();
     for (const page of trialPages ?? []) {
       for (const task of page ?? []) {
@@ -122,10 +174,15 @@ export function ExperimentClientPage({
       }
     }
 
-    return merged.sort(
-      (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-    );
+    if (isExperimentTimingEnabled()) {
+      console.info("[oddish timing] experiment task merge", {
+        baseRows: base.length,
+        enrichedRows: trialDataById.size,
+        mergedRows: merged.length,
+        mergeMs: Math.round(performance.now() - startedAt),
+      });
+    }
+    return merged;
   }, [lightweightTasks, trialPages]);
 
   const isLoading = isLoadingTasks;
@@ -183,6 +240,31 @@ export function ExperimentClientPage({
     if (!canLoadAllTrials || totalTaskCount === 0) return;
     void setTrialsSize(Math.ceil(totalTaskCount / TRIALS_BATCH_SIZE));
   }, [canLoadAllTrials, setTrialsSize, totalTaskCount]);
+
+  useEffect(() => {
+    if (!canLoadMoreTrials || isLoadingTrialPages || isValidatingTrials) return;
+    if (trialsPageSize >= TRIALS_PREFETCH_PAGES) return;
+    void setTrialsSize((size) => Math.min(size + 1, TRIALS_PREFETCH_PAGES));
+  }, [
+    canLoadMoreTrials,
+    isLoadingTrialPages,
+    isValidatingTrials,
+    trialsPageSize,
+    setTrialsSize,
+  ]);
+
+  useEffect(() => {
+    if (!isExperimentTimingEnabled() || tasksForExperiment.length === 0) return;
+    const frame = window.requestAnimationFrame(() => {
+      console.info("[oddish timing] experiment table first paint candidate", {
+        tasks: tasksForExperiment.length,
+        trialPages: trialPages?.length ?? 0,
+        trialsLoadedCount,
+        sinceNavigationMs: Math.round(performance.now()),
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [tasksForExperiment.length, trialPages?.length, trialsLoadedCount]);
 
   useEffect(() => {
     if (!isEditingName) {
