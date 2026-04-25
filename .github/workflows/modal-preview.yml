@@ -66,7 +66,9 @@ jobs:
 
       - name: Sync oddish dependencies
         working-directory: oddish
-        run: uv sync --frozen
+        # `alembic` lives in the `server` optional-dependency extra, not in
+        # the default deps; the extra has to be requested explicitly.
+        run: uv sync --frozen --extra server
 
       - name: Run oddish migrations against preview branch
         working-directory: oddish
