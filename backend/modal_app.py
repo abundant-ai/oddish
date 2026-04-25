@@ -104,6 +104,16 @@ ENV_VARS = {
     # Claude CLI refuses --dangerously-skip-permissions when running as root (Modal default).
     # Setting IS_SANDBOX=1 tells it we're in a sandboxed environment and bypasses this check.
     "IS_SANDBOX": "1",
+    # Bake the deploy-time identity into the image so the container's
+    # re-evaluation of this module sees the same MODAL_APP_NAME /
+    # MODAL_ENVIRONMENT the deploy host did. Modal containers don't
+    # inherit deploy-host env, and without these the
+    # `MODAL_APP_NAME.startswith("oddish-pr-")` gate above evaluates True
+    # at deploy and False at container init, producing the
+    # "Function has N dependencies but container got M object ids" error
+    # when Modal compares the resolved object graphs.
+    "MODAL_APP_NAME": MODAL_APP_NAME,
+    "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
