@@ -70,9 +70,21 @@ jobs:
         # the default deps; the extra has to be requested explicitly.
         run: uv sync --frozen --extra server
 
-      - name: Run oddish migrations against preview branch
+      - name: Bootstrap oddish core schema on the preview branch
         working-directory: oddish
-        run: uv run alembic upgrade head
+        # oddish's baseline migration is a no-op; the core tables (tasks,
+        # trials, experiments, etc.) are created from `Base.metadata` via
+        # `init_db()`. Production was bootstrapped once long ago; preview
+        # branches start empty so we have to run it here before stamping.
+        run: uv run python -c "import asyncio; from oddish.db import init_db; asyncio.run(init_db())"
+
+      - name: Stamp oddish migrations as applied
+        working-directory: oddish
+        # Schema now matches the head of the model definitions, which
+        # equals the head of the migration chain. Stamping (rather than
+        # upgrading) skips re-applying ALTERs that would target already-
+        # current columns.
+        run: uv run alembic stamp head
 
       - name: Sync backend dependencies
         run: uv sync --frozen
