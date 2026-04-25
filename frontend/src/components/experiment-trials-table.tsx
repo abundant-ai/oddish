@@ -1438,7 +1438,7 @@ export function ExperimentTrialsTable({
             <span
               className={`inline-flex h-[18px] w-[22px] items-center justify-center rounded-[4px] border border-transparent ${config.matrixClass}`}
             >
-              <StatusIcon status={status} className="h-2.5 w-2.5" />
+              <StatusIcon status={status} className="h-2 w-2" />
             </span>
             <span>{config.shortLabel}</span>
           </Button>
