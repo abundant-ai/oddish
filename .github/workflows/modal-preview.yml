@@ -9,7 +9,6 @@ on:
       - closed
 
 concurrency:
-  # Shared preview environment with one Modal app per PR.
   group: modal-preview-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
@@ -62,50 +61,31 @@ jobs:
         env:
           GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          if [ -z "${SUPABASE_ACCESS_TOKEN}" ] || [ -z "${SUPABASE_PROJECT_REF}" ]; then
-            echo "SUPABASE_ACCESS_TOKEN secret and SUPABASE_PROJECT_REF variable must be configured" >&2
-            exit 1
-          fi
-          python .github/scripts/preview/wait_for_supabase_branch.py
+        run: python .github/scripts/preview/wait_for_supabase_branch.py
 
       - name: Sync oddish dependencies
         working-directory: oddish
-        # `alembic` lives in the `server` optional-dependency extra, not in
-        # the default deps; the extra has to be requested explicitly.
+        # alembic lives in the `server` optional extra.
         run: uv sync --frozen --extra server
 
-      - name: Bootstrap oddish core schema on the preview branch
+      - name: Bootstrap and stamp oddish schema
         working-directory: oddish
-        run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_oddish_schema.py"
-
-      - name: Stamp oddish migrations as applied
-        working-directory: oddish
-        # Schema now matches the head of the model definitions, which
-        # equals the head of the migration chain. Stamping (rather than
-        # upgrading) skips re-applying ALTERs that would target already-
-        # current columns.
-        run: uv run alembic stamp head
+        run: |
+          uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_oddish_schema.py"
+          uv run alembic stamp head
 
       - name: Sync backend dependencies
         run: uv sync --frozen
 
-      - name: Bootstrap backend cloud schema on the preview branch
-        run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_backend_schema.py"
-
-      - name: Stamp backend migrations as applied
-        run: uv run alembic stamp head
+      - name: Bootstrap and stamp backend schema
+        run: |
+          uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_backend_schema.py"
+          uv run alembic stamp head
 
       - name: Create per-PR Modal database secret
-        # Named secret consumed by `backend/modal_app.py`. Must exist *before*
-        # `modal deploy` resolves the app's secret list, otherwise the
-        # preview app's container fails on cold start with a
-        # "secret not found" error. `--force` makes this idempotent across
-        # synchronize events on the same PR.
         run: |
           uv run modal secret create \
-            --env "$MODAL_ENVIRONMENT" \
-            --force \
+            --env "$MODAL_ENVIRONMENT" --force \
             "$MODAL_APP_NAME-db" \
             "ODDISH_DATABASE_URL=$ODDISH_DATABASE_URL"
 
@@ -178,14 +158,9 @@ jobs:
       - name: Dump Modal preview logs on readiness failure
         if: ${{ failure() && steps.readiness.conclusion == 'failure' }}
         continue-on-error: true
-        run: |
-          echo "::group::modal app logs $MODAL_APP_NAME (env=$MODAL_ENVIRONMENT)"
-          # `modal app logs` streams indefinitely with no flag to disable; let
-          # it run for 45s (long enough to flush startup logs) and then SIGTERM.
-          # `--env` is required because the CLI does not honor MODAL_ENVIRONMENT
-          # for this subcommand the way `modal deploy` does.
-          timeout --preserve-status 45s uv run modal app logs --env "$MODAL_ENVIRONMENT" --timestamps "$MODAL_APP_NAME" 2>&1 | tail -300 || true
-          echo "::endgroup::"
+        # `modal app logs` streams forever; bound it. `--env` is needed
+        # because the CLI ignores MODAL_ENVIRONMENT for this subcommand.
+        run: timeout --preserve-status 45s uv run modal app logs --env "$MODAL_ENVIRONMENT" --timestamps "$MODAL_APP_NAME" 2>&1 | tail -300 || true
 
       - name: Install Node
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
@@ -207,20 +182,10 @@ jobs:
         working-directory: frontend
         env:
           MODAL_API_URL: ${{ steps.deploy_modal.outputs.modal_api_url }}
-        run: |
-          # `NEXT_PUBLIC_API_URL` is the *only* backend URL the frontend
-          # reads (frontend/src/lib/backend-config.ts). The other
-          # NEXT_PUBLIC_MODAL_* / NEXT_PUBLIC_BACKEND_TYPE vars are dead
-          # code from an older revision; we still `rm || true` them so
-          # any stale per-branch overrides don't bleed into the build.
-          # `--no-sensitive` keeps the value visible in the Vercel
-          # dashboard for debugging (the CLI default is sensitive,
-          # which makes the value unreadable after creation).
-          printf '%s' "$MODAL_API_URL" | vercel env add NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --force --no-sensitive --token="$VERCEL_TOKEN"
-          vercel env rm NEXT_PUBLIC_BACKEND_TYPE preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          vercel env rm NEXT_PUBLIC_MODAL_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          vercel env rm NEXT_PUBLIC_MODAL_BASE_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          vercel env rm NEXT_PUBLIC_MODAL_ENV preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+        # NEXT_PUBLIC_API_URL is the only backend URL the frontend reads
+        # (frontend/src/lib/backend-config.ts). --no-sensitive keeps it
+        # visible in the dashboard for debugging.
+        run: printf '%s' "$MODAL_API_URL" | vercel env add NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --force --no-sensitive --token="$VERCEL_TOKEN"
 
       - name: Redeploy Vercel preview with updated env
         id: redeploy_vercel
@@ -350,7 +315,7 @@ jobs:
         continue-on-error: true
         run: modal secret delete --env "$MODAL_ENVIRONMENT" oddish-pr-${{ github.event.pull_request.number }}-db
 
-      - name: Delete Supabase preview branch (belt-and-suspenders)
+      - name: Delete Supabase preview branch
         if: ${{ env.SUPABASE_ACCESS_TOKEN != '' && env.SUPABASE_PROJECT_REF != '' }}
         continue-on-error: true
         env:
@@ -376,9 +341,4 @@ jobs:
       - name: Remove Vercel preview overrides
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         working-directory: frontend
-        run: |
-          vercel env rm NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          vercel env rm NEXT_PUBLIC_BACKEND_TYPE preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          vercel env rm NEXT_PUBLIC_MODAL_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          vercel env rm NEXT_PUBLIC_MODAL_BASE_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          vercel env rm NEXT_PUBLIC_MODAL_ENV preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+        run: vercel env rm NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
