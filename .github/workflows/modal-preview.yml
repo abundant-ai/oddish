@@ -144,6 +144,7 @@ jobs:
           echo "modal_api_url=$modal_api_url" >> "$GITHUB_OUTPUT"
 
       - name: Wait for preview backend readiness
+        id: readiness
         run: |
           python - "${{ steps.deploy_modal.outputs.modal_api_url }}" <<'PY'
           import sys
@@ -174,6 +175,14 @@ jobs:
                   f"Modal preview never became ready at {readiness_url}: {last_error}"
               )
           PY
+
+      - name: Dump Modal preview logs on readiness failure
+        if: ${{ failure() && steps.readiness.conclusion == 'failure' }}
+        continue-on-error: true
+        run: |
+          echo "::group::modal app logs $MODAL_APP_NAME (last ~5 minutes)"
+          uv run modal app logs --stream=false "$MODAL_APP_NAME" 2>&1 | tail -200 || true
+          echo "::endgroup::"
 
       - name: Install Node
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
