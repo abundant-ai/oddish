@@ -132,21 +132,37 @@ def _wait_for_branch(token: str, project_ref: str, git_branch: str, pr_number: i
     )
 
 
-def _build_database_url(detail: dict) -> str:
-    missing = [
-        key for key in ("db_host", "db_port", "db_user", "db_pass")
-        if not detail.get(key)
-    ]
-    if missing:
+def _build_database_url(detail: dict, pooler_entries: list[dict]) -> str:
+    if not detail.get("db_pass"):
         raise SystemExit(
-            "Supabase branch detail is missing required database credentials: "
-            f"{missing}. Regenerate SUPABASE_ACCESS_TOKEN with branch read scope."
+            "Supabase branch detail is missing db_pass. Regenerate "
+            "SUPABASE_ACCESS_TOKEN with branch read scope."
         )
+
+    # Direct hostnames (`db.<ref>.supabase.co`) are IPv6-only on Supabase's
+    # current hosted plan, and GitHub Actions runners don't have IPv6
+    # outbound — connections hit "Network is unreachable". The Supavisor
+    # pooler is dual-stack, so we connect through it instead. Transaction
+    # mode (port 6543) is fine for Alembic and matches the runtime config
+    # (statement_cache_size=0 is already set in alembic/env.py).
+    primary = next(
+        (entry for entry in pooler_entries if entry.get("database_type") == "PRIMARY"),
+        None,
+    )
+    if primary is None:
+        raise SystemExit(
+            "Supabase pooler config did not include a PRIMARY entry; cannot "
+            f"construct a database URL. Got: {pooler_entries!r}"
+        )
+
+    missing = [k for k in ("db_host", "db_port", "db_user", "db_name") if not primary.get(k)]
+    if missing:
+        raise SystemExit(f"Supabase pooler entry is missing fields: {missing}")
 
     password = urllib.parse.quote(detail["db_pass"], safe="")
     return (
-        f"postgresql+asyncpg://{detail['db_user']}:{password}"
-        f"@{detail['db_host']}:{detail['db_port']}/postgres"
+        f"postgresql+asyncpg://{primary['db_user']}:{password}"
+        f"@{primary['db_host']}:{primary['db_port']}/{primary['db_name']}"
     )
 
 
@@ -170,7 +186,8 @@ def main() -> int:
 
     branch = _wait_for_branch(token, project_ref, git_branch, pr_number)
     detail = _request(f"/branches/{branch['id']}", token)
-    database_url = _build_database_url(detail)
+    pooler = _request(f"/projects/{detail['ref']}/config/database/pooler", token)
+    database_url = _build_database_url(detail, pooler)
 
     _append(
         github_env,
@@ -179,18 +196,20 @@ def main() -> int:
             f"PREVIEW_DATABASE_URL={database_url}",
         ],
     )
+    primary = next(entry for entry in pooler if entry.get("database_type") == "PRIMARY")
     _append(
         github_output,
         [
             f"branch_id={branch['id']}",
             f"branch_ref={detail['ref']}",
-            f"db_host={detail['db_host']}",
+            f"db_host={primary['db_host']}",
         ],
     )
 
     print(
         f"Supabase preview branch ready: ref={detail['ref']} "
-        f"host={detail['db_host']} port={detail['db_port']}"
+        f"pooler={primary['db_host']}:{primary['db_port']} "
+        f"(direct {detail.get('db_host')} skipped — IPv6-only)"
     )
     return 0
 
