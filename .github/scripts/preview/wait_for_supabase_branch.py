@@ -1,29 +1,4 @@
-"""Wait for the Supabase preview branch matching this PR and emit its DB URL.
-
-Uses the Supabase CLI (the officially supported client for the
-Management API; there is no first-party Python SDK as of writing).
-Polls `supabase branches list` until the integration-provisioned branch
-shows up and the underlying Postgres project is healthy, then calls
-`supabase branches get` to read the pooler connection string with
-credentials already embedded — no separate pooler-config or branch-detail
-API calls needed.
-
-Required env:
-    SUPABASE_ACCESS_TOKEN   read by the Supabase CLI for auth
-    SUPABASE_PROJECT_REF    parent project ref
-    GIT_BRANCH              PR head ref
-    PR_NUMBER               PR number
-    GITHUB_ENV              path provided by GitHub Actions
-    GITHUB_OUTPUT           path provided by GitHub Actions
-
-Outputs (GITHUB_OUTPUT):
-    branch_id, branch_ref
-
-Exports (GITHUB_ENV):
-    ODDISH_DATABASE_URL     drives Alembic on the runner; consumed by the
-                            `modal secret create` step that injects it
-                            into the per-PR Modal secret.
-"""
+"""Wait for the PR's Supabase preview branch and emit its DB URL."""
 
 from __future__ import annotations
 
@@ -34,151 +9,68 @@ import sys
 import time
 import urllib.parse
 
-BRANCH_TIMEOUT_SECONDS = 600
-POLL_INTERVAL_SECONDS = 10
-TERMINAL_FAILURE_STATUSES = {"MIGRATIONS_FAILED", "FUNCTIONS_FAILED"}
-READY_BRANCH_STATUSES = {"MIGRATIONS_PASSED", "FUNCTIONS_DEPLOYED"}
+TIMEOUT_SECONDS = 600
+POLL_SECONDS = 10
+TERMINAL = {"MIGRATIONS_FAILED", "FUNCTIONS_FAILED"}
+READY = {"MIGRATIONS_PASSED", "FUNCTIONS_DEPLOYED"}
 
 
-def _supabase_json(*args: str) -> object:
-    result = subprocess.run(
+def supabase(*args: str):
+    out = subprocess.run(
         ["supabase", *args, "-o", "json"],
-        check=True,
-        text=True,
-        capture_output=True,
+        check=True, text=True, capture_output=True,
+    ).stdout
+    return json.loads(out)
+
+
+def matches(branch, git_branch, pr_number):
+    return not branch.get("persistent") and (
+        branch.get("git_branch") == git_branch
+        or branch.get("pr_number") == pr_number
     )
-    return json.loads(result.stdout)
 
 
-def _find_branch(
-    branches: list[dict], git_branch: str, pr_number: int
-) -> dict | None:
-    for candidate in branches:
-        if candidate.get("persistent"):
-            continue
-        if (
-            candidate.get("git_branch") == git_branch
-            or candidate.get("pr_number") == pr_number
-        ):
-            return candidate
-    return None
+def main() -> None:
+    project_ref = os.environ["SUPABASE_PROJECT_REF"]
+    git_branch = os.environ["GIT_BRANCH"]
+    pr_number = int(os.environ["PR_NUMBER"])
 
-
-def _wait_for_branch(project_ref: str, git_branch: str, pr_number: int) -> dict:
-    deadline = time.time() + BRANCH_TIMEOUT_SECONDS
-    last_status: tuple[str | None, str | None] | None = None
-
+    deadline = time.time() + TIMEOUT_SECONDS
+    branch = None
     while time.time() < deadline:
-        try:
-            branches = _supabase_json(
-                "branches", "list", "--project-ref", project_ref
-            )
-        except subprocess.CalledProcessError as exc:
-            print(f"branches list failed: {exc.stderr}", file=sys.stderr)
-            time.sleep(POLL_INTERVAL_SECONDS)
-            continue
-
-        branch = _find_branch(branches, git_branch, pr_number)
-        if branch is None:
-            print(
-                f"No Supabase preview branch yet for git_branch={git_branch!r} "
-                f"pr_number={pr_number}. Waiting..."
-            )
-            time.sleep(POLL_INTERVAL_SECONDS)
-            continue
-
-        branch_status = branch.get("status")
-        preview_status = branch.get("preview_project_status")
-        last_status = (branch_status, preview_status)
-        print(
-            f"Supabase branch {branch['id']} status={branch_status!r} "
-            f"preview_project_status={preview_status!r}"
+        branches = supabase("branches", "list", "--project-ref", project_ref)
+        branch = next(
+            (b for b in branches if matches(b, git_branch, pr_number)), None
         )
+        if branch:
+            status = branch.get("status")
+            preview = branch.get("preview_project_status")
+            print(f"branch {branch['id']} status={status} preview={preview}")
+            if status in TERMINAL:
+                sys.exit(f"branch entered terminal status {status}")
+            if preview == "ACTIVE_HEALTHY" and status in READY:
+                break
+        else:
+            print(f"no branch yet for {git_branch!r}")
+        time.sleep(POLL_SECONDS)
+    else:
+        sys.exit(f"timed out waiting for branch (last={branch})")
 
-        if branch_status in TERMINAL_FAILURE_STATUSES:
-            raise SystemExit(
-                f"Supabase branch {branch['id']} entered terminal status "
-                f"{branch_status!r}. Check the Supabase dashboard for details."
-            )
-
-        if (
-            preview_status == "ACTIVE_HEALTHY"
-            and branch_status in READY_BRANCH_STATUSES
-        ):
-            return branch
-
-        time.sleep(POLL_INTERVAL_SECONDS)
-
-    raise SystemExit(
-        "Timed out waiting for the Supabase preview branch to become healthy "
-        f"(git_branch={git_branch!r}, last status={last_status!r}). Confirm "
-        "the Supabase GitHub integration is installed on the repo and that "
-        "branching is enabled for the project."
+    creds = supabase("branches", "get", branch["id"], "--project-ref", project_ref)
+    parsed = urllib.parse.urlparse(creds["POSTGRES_URL"])
+    # Strip query string — Supabase passes libpq params (connect_timeout=)
+    # that asyncpg rejects.
+    db_url = urllib.parse.urlunparse(
+        ("postgresql+asyncpg", parsed.netloc, parsed.path, "", "", "")
     )
 
-
-def _to_asyncpg(url: str) -> str:
-    """Turn `postgresql://` into `postgresql+asyncpg://` for SQLAlchemy.
-
-    Also strips the query string. Supabase's `POSTGRES_URL` carries
-    libpq-style params like `connect_timeout=` that asyncpg rejects with
-    `TypeError: connect() got an unexpected keyword argument
-    'connect_timeout'`. We don't need any of those defaults; the
-    statement_cache_size=0 and other Supavisor-specific tweaks live in
-    `oddish.db.connection`.
-    """
-    parsed = urllib.parse.urlparse(url)
-    scheme = parsed.scheme
-    if scheme == "postgresql":
-        scheme = "postgresql+asyncpg"
-    return urllib.parse.urlunparse(
-        (scheme, parsed.netloc, parsed.path, "", "", "")
-    )
-
-
-def _append(path: str, lines: list[str]) -> None:
-    with open(path, "a", encoding="utf-8") as fh:
-        for line in lines:
-            fh.write(f"{line}\n")
-
-
-def main() -> int:
-    try:
-        project_ref = os.environ["SUPABASE_PROJECT_REF"]
-        git_branch = os.environ["GIT_BRANCH"]
-        pr_number = int(os.environ["PR_NUMBER"])
-        github_env = os.environ["GITHUB_ENV"]
-        github_output = os.environ["GITHUB_OUTPUT"]
-    except KeyError as exc:
-        print(f"Missing required env var: {exc.args[0]}", file=sys.stderr)
-        return 2
-
-    branch = _wait_for_branch(project_ref, git_branch, pr_number)
-    creds = _supabase_json(
-        "branches", "get", branch["id"], "--project-ref", project_ref
-    )
-    pg_url = creds.get("POSTGRES_URL")
-    if not pg_url:
-        raise SystemExit(
-            "supabase branches get did not return POSTGRES_URL "
-            f"(keys: {sorted(creds.keys())})."
-        )
-
-    database_url = _to_asyncpg(pg_url)
-    _append(github_env, [f"ODDISH_DATABASE_URL={database_url}"])
-    _append(
-        github_output,
-        [
-            f"branch_id={branch['id']}",
-            f"branch_ref={branch.get('project_ref', '')}",
-        ],
-    )
-    print(
-        f"Supabase preview branch ready: ref={branch.get('project_ref')} "
-        f"id={branch['id']}"
-    )
-    return 0
+    with open(os.environ["GITHUB_ENV"], "a") as fh:
+        fh.write(f"ODDISH_DATABASE_URL={db_url}\n")
+    with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+        fh.write(f"branch_id={branch['id']}\n")
+        fh.write(f"branch_ref={branch.get('project_ref', '')}\n")
+    print(f"ready: {branch.get('project_ref')}")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

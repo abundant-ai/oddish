@@ -71,21 +71,15 @@ WORKER_MAX_CONTAINERS = _env_int(
 # Max number of workers spawned per poll cycle (rate limiter, global across all queue_keys)
 MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 24)
 
-# Always attach the production Modal secret. Local deploys can layer a backend
-# `.env` file on top for developer-specific overrides, and PR preview deploys
-# layer a per-PR named secret (`oddish-pr-<N>-db`) created by
-# `.github/workflows/modal-preview.yml` before `modal deploy` runs. The
-# decision is gated on MODAL_APP_NAME (set on both the deploy host and inside
-# the container) — earlier we tried gating on PREVIEW_DATABASE_URL but Modal
-# rejected the resulting deployment with "Function has N dependencies but
-# container got M object ids" because the conditional evaluated differently
-# at deploy time vs container init.
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
 )
 runtime_secrets = [runtime_secret]
 if LOCAL_DOTENV_VARS:
     runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
+# Per-PR DB override created by the modal-preview workflow. Gating on
+# MODAL_APP_NAME (baked into the image) keeps the secret list identical
+# at deploy and container init.
 if MODAL_APP_NAME.startswith("oddish-pr-"):
     runtime_secrets.append(
         modal.Secret.from_name(
@@ -104,14 +98,8 @@ ENV_VARS = {
     # Claude CLI refuses --dangerously-skip-permissions when running as root (Modal default).
     # Setting IS_SANDBOX=1 tells it we're in a sandboxed environment and bypasses this check.
     "IS_SANDBOX": "1",
-    # Bake the deploy-time identity into the image so the container's
-    # re-evaluation of this module sees the same MODAL_APP_NAME /
-    # MODAL_ENVIRONMENT the deploy host did. Modal containers don't
-    # inherit deploy-host env, and without these the
-    # `MODAL_APP_NAME.startswith("oddish-pr-")` gate above evaluates True
-    # at deploy and False at container init, producing the
-    # "Function has N dependencies but container got M object ids" error
-    # when Modal compares the resolved object graphs.
+    # Baked into the image so the container sees the same identity the
+    # deploy host did (the per-PR secret gate above depends on it).
     "MODAL_APP_NAME": MODAL_APP_NAME,
     "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
     # Oddish cloud settings — configures pydantic-settings fields in
