@@ -156,6 +156,12 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "harness-error",
 ];
 
+// Shared size for the colored "glyph" box that wraps a StatusIcon. Used by
+// both the matrix-cell buttons and the toolbar legend chips so the two
+// stay visually identical — changing one place changes both.
+const STATUS_GLYPH_BOX =
+  "h-[18px] w-[22px] shrink-0 rounded-[4px] border [&_svg]:size-2.5";
+
 // Row-level filter modes. Inspired by sauron's "any/all pass@k=0" toggle:
 // hide tasks where all / any selected agents failed to pass on any trial.
 type RowFilterMode = "none" | "allFail" | "anyFail";
@@ -1436,9 +1442,9 @@ export function ExperimentTrialsTable({
             }`}
           >
             <span
-              className={`inline-flex h-[18px] w-[22px] items-center justify-center rounded-[4px] border border-transparent ${config.matrixClass}`}
+              className={`inline-flex items-center justify-center border-transparent ${STATUS_GLYPH_BOX} ${config.matrixClass}`}
             >
-              <StatusIcon status={status} className="h-2 w-2" />
+              <StatusIcon status={status} />
             </span>
             <span>{config.shortLabel}</span>
           </Button>
@@ -1491,8 +1497,10 @@ export function ExperimentTrialsTable({
       <TooltipTrigger asChild>
         <div className="flex items-center gap-2.5 border-r border-dashed border-[color:var(--paper-line)] pl-1.5 pr-2.5 font-mono text-[9.5px] leading-tight text-[color:var(--paper-ink-3)]">
           <span className="relative inline-flex">
-            <span className="flex h-[18px] w-[22px] items-center justify-center rounded-[4px] border border-transparent bg-[color:var(--paper-pass)] text-white">
-              <StatusIcon status="pass" className="h-2.5 w-2.5" />
+            <span
+              className={`flex items-center justify-center border-transparent bg-[color:var(--paper-pass)] text-white ${STATUS_GLYPH_BOX}`}
+            >
+              <StatusIcon status="pass" />
             </span>
             <span className="absolute -right-[2px] -top-[2px] h-[7px] w-[7px] rounded-full bg-[color:var(--paper-a-good)] ring-[1.5px] ring-[color:var(--paper-surface)]" />
           </span>
@@ -2214,7 +2222,7 @@ export function ExperimentTrialsTable({
                                             trialGroups,
                                           });
                                         }}
-                                        className={`relative grid h-[18px] w-[22px] shrink-0 place-items-center gap-0 rounded-[4px] border p-0 leading-none transition-transform hover:-translate-y-px [&_svg]:size-2.5 ${config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tabular-nums tracking-[-0.02em]" : ""}`}
+                                        className={`relative grid place-items-center gap-0 p-0 leading-none transition-transform hover:-translate-y-px ${STATUS_GLYPH_BOX} ${config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tabular-nums tracking-[-0.02em]" : ""}`}
                                         style={getRewardStyle(trial.reward)}
                                         aria-label={`Trial ${trialIndex + 1} ${config.shortLabel}`}
                                         title={fullTitle}
@@ -2222,10 +2230,7 @@ export function ExperimentTrialsTable({
                                         {isPartial ? (
                                           partialLabel
                                         ) : (
-                                          <StatusIcon
-                                            status={status}
-                                            className="h-2.5 w-2.5"
-                                          />
+                                          <StatusIcon status={status} />
                                         )}
                                       </Button>
                                       {analysisIndicator && (
