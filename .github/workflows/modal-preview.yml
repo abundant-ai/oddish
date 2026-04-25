@@ -51,6 +51,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
       - name: Wait for Supabase preview branch
         id: supabase_branch
         working-directory: ${{ github.workspace }}
@@ -330,6 +335,12 @@ jobs:
 
       - name: Install Modal
         run: python -m pip install modal
+
+      - name: Install Supabase CLI
+        if: ${{ env.SUPABASE_ACCESS_TOKEN != '' && env.SUPABASE_PROJECT_REF != '' }}
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
 
       - name: Stop preview backend
         continue-on-error: true
