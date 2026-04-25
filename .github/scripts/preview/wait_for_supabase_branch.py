@@ -32,6 +32,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.parse
 
 BRANCH_TIMEOUT_SECONDS = 600
 POLL_INTERVAL_SECONDS = 10
@@ -117,10 +118,22 @@ def _wait_for_branch(project_ref: str, git_branch: str, pr_number: int) -> dict:
 
 
 def _to_asyncpg(url: str) -> str:
-    """Turn `postgresql://` into `postgresql+asyncpg://` for SQLAlchemy."""
-    if url.startswith("postgresql://") and "+asyncpg" not in url:
-        return "postgresql+asyncpg://" + url[len("postgresql://") :]
-    return url
+    """Turn `postgresql://` into `postgresql+asyncpg://` for SQLAlchemy.
+
+    Also strips the query string. Supabase's `POSTGRES_URL` carries
+    libpq-style params like `connect_timeout=` that asyncpg rejects with
+    `TypeError: connect() got an unexpected keyword argument
+    'connect_timeout'`. We don't need any of those defaults; the
+    statement_cache_size=0 and other Supavisor-specific tweaks live in
+    `oddish.db.connection`.
+    """
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme
+    if scheme == "postgresql":
+        scheme = "postgresql+asyncpg"
+    return urllib.parse.urlunparse(
+        (scheme, parsed.netloc, parsed.path, "", "", "")
+    )
 
 
 def _append(path: str, lines: list[str]) -> None:
