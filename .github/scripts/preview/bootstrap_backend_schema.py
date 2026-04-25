@@ -20,9 +20,16 @@ Run with `uv run` from `backend/` so the venv resolves correctly.
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 
-import models  # noqa: F401  # register cloud-auth tables on Base.metadata
-from oddish.db import init_db
+# `uv run python <absolute-path>` puts the *script's* directory on
+# sys.path, not the cwd, so the flat-layout `models.py` in backend/
+# becomes unimportable. Re-add the working directory.
+sys.path.insert(0, os.getcwd())
+
+import models  # noqa: E402, F401  # register cloud-auth tables on Base.metadata
+from oddish.db import init_db  # noqa: E402
 
 
 def main() -> int:
