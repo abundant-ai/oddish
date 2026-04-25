@@ -15,6 +15,7 @@ import { CsvRenderer } from "./csv-renderer";
 import { CodeRenderer } from "./code-renderer";
 import { TextRenderer } from "./text-renderer";
 import { ConfigJsonRenderer } from "./config-json-renderer";
+import { RawRenderer } from "./raw-renderer";
 
 // Heavy renderers are code-split so they don't inflate the main bundle.
 const MarkdownRenderer = dynamic(
@@ -138,6 +139,21 @@ export function isBinaryRendererFile(fileName: string): boolean {
   return BINARY_RENDERER_EXTS.has(ext);
 }
 
+/**
+ * Whether this file kind has a meaningful "rendered" view distinct from raw
+ * text. Used to decide whether the Rendered/Raw toggle is shown.
+ */
+export function hasRenderedView(fileName: string): boolean {
+  const kind = getFileRendererKind(fileName);
+  return (
+    kind === "markdown" ||
+    kind === "notebook" ||
+    kind === "json" ||
+    kind === "config-json" ||
+    kind === "csv"
+  );
+}
+
 interface FileRendererProps {
   fileName: string;
   /** URL for media/binary fetches (images, video, audio, pdf, xlsx, docx). */
@@ -148,6 +164,11 @@ interface FileRendererProps {
   fileSize?: number;
   /** Force a specific renderer regardless of extension. */
   kind?: FileRendererKind;
+  /**
+   * When "raw", text-based files render as a plain `<pre>`. URL-based binary
+   * types ignore this and always render normally.
+   */
+  viewMode?: "rendered" | "raw";
 }
 
 /**
@@ -161,8 +182,22 @@ export function FileRenderer({
   content,
   fileSize,
   kind,
+  viewMode = "rendered",
 }: FileRendererProps) {
   const resolvedKind = kind ?? getFileRendererKind(fileName);
+
+  if (
+    viewMode === "raw" &&
+    resolvedKind !== "image" &&
+    resolvedKind !== "video" &&
+    resolvedKind !== "audio" &&
+    resolvedKind !== "pdf" &&
+    resolvedKind !== "xlsx" &&
+    resolvedKind !== "docx" &&
+    resolvedKind !== "binary"
+  ) {
+    return <RawRenderer content={content ?? ""} />;
+  }
 
   switch (resolvedKind) {
     case "image":
