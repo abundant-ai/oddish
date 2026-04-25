@@ -5,7 +5,6 @@ import os
 
 import httpx
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import OrganizationModel, UserModel, UserRole, generate_id
@@ -83,50 +82,6 @@ async def get_org_from_clerk_id(
         .where(OrganizationModel.is_active == True)  # noqa: E712
     )
     return org_result.scalar_one_or_none()
-
-
-async def fetch_clerk_organization(clerk_org_id: str) -> dict | None:
-    if not CLERK_SECRET_KEY:
-        return None
-
-    url = f"https://api.clerk.com/v1/organizations/{clerk_org_id}"
-    headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()
-    except httpx.HTTPError as exc:
-        logger.warning("Failed to fetch Clerk org %s: %s", clerk_org_id, exc)
-        return None
-
-
-async def create_org_from_clerk_id(
-    session: AsyncSession, clerk_org_id: str
-) -> OrganizationModel | None:
-    """Materialize an org from Clerk when the local row is missing.
-
-    Lets fresh preview-branch DBs (and prod with a missed
-    `organization.created` webhook) succeed instead of 403'ing.
-    """
-    clerk_org = await fetch_clerk_organization(clerk_org_id)
-    if not clerk_org:
-        return None
-
-    org = OrganizationModel(
-        id=generate_id(),
-        name=clerk_org.get("name") or clerk_org_id,
-        slug=clerk_org.get("slug") or f"org-{clerk_org_id.lower()}",
-        clerk_org_id=clerk_org_id,
-        is_active=True,
-    )
-    session.add(org)
-    try:
-        await session.flush()
-    except IntegrityError:
-        await session.rollback()
-        return await get_org_from_clerk_id(session, clerk_org_id)
-    return org
 
 
 async def get_or_create_personal_org(
@@ -243,8 +198,6 @@ async def get_or_create_user_from_clerk(
     """
     if clerk_org_id:
         org = await get_org_from_clerk_id(session, clerk_org_id)
-        if not org:
-            org = await create_org_from_clerk_id(session, clerk_org_id)
         if not org:
             return None
         user = await get_or_create_user_in_org(
