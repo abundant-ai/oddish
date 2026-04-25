@@ -60,6 +60,7 @@ import {
   getMatrixStatus,
   getRewardStyle,
   STATUS_CONFIG,
+  STATUS_GLYPH_BOX,
   type MatrixStatus,
 } from "@/lib/status-config";
 import {
@@ -155,12 +156,6 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "fail",
   "harness-error",
 ];
-
-// Shared size for the colored "glyph" box that wraps a StatusIcon. Used by
-// both the matrix-cell buttons and the toolbar legend chips so the two
-// stay visually identical — changing one place changes both.
-const STATUS_GLYPH_BOX =
-  "h-[18px] w-[22px] shrink-0 rounded-[4px] border [&_svg]:size-2.5";
 
 // Row-level filter modes. Inspired by sauron's "any/all pass@k=0" toggle:
 // hide tasks where all / any selected agents failed to pass on any trial.

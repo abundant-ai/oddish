@@ -54,6 +54,7 @@ import {
   getMatrixStatus,
   getRewardStyle,
   STATUS_CONFIG,
+  STATUS_GLYPH_BOX,
   type MatrixStatus,
 } from "@/lib/status-config";
 import { HarborStageTimeline } from "@/components/harbor-stage-timeline";
@@ -541,10 +542,11 @@ export function TrialDetailPanel({
                       size="icon"
                       onClick={() => navigateToGroupTrial(index)}
                       className={cn(
-                        "flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border p-0 leading-none transition hover:opacity-90",
+                        "flex items-center justify-center p-0 leading-none transition hover:opacity-90",
+                        STATUS_GLYPH_BOX,
                         groupConfig.matrixClass,
                         isPartial
-                          ? "font-mono text-[8px] font-semibold tracking-[-0.03em]"
+                          ? "font-mono text-[9.5px] font-semibold tabular-nums tracking-[-0.02em]"
                           : "",
                         isActive
                           ? "ring-2 ring-primary/60 ring-offset-1 ring-offset-background"
@@ -557,10 +559,7 @@ export function TrialDetailPanel({
                       {isPartial ? (
                         partialLabel
                       ) : (
-                        <StatusIcon
-                          status={groupStatus}
-                          className="h-3.5 w-3.5"
-                        />
+                        <StatusIcon status={groupStatus} />
                       )}
                     </Button>
                   );
