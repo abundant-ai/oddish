@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 from datetime import datetime
 from enum import Enum
@@ -30,9 +31,17 @@ def generate_id() -> str:
 
 
 def generate_api_key() -> str:
-    """Generate a secure API key with prefix for easy identification."""
-    # Format: ok_<32 random hex chars> (64 bits of entropy)
-    return f"ok_{secrets.token_hex(16)}"
+    """Generate a secure API key with prefix for easy identification.
+
+    Prod keys: ``ok_<32 hex>``. Preview keys: ``ok_pr-<N>_<32 hex>`` —
+    the env marker is harmless in prod (won't match anything) and makes
+    a stray preview key visually obvious.
+    """
+    app_name = os.environ.get("MODAL_APP_NAME", "")
+    env_marker = ""
+    if app_name.startswith("oddish-pr-"):
+        env_marker = f"{app_name[len('oddish-'):]}_"
+    return f"ok_{env_marker}{secrets.token_hex(16)}"
 
 
 # =============================================================================
