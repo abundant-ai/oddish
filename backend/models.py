@@ -22,7 +22,7 @@ from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column as mapped_column  # type: ignore[attr-defined]
 
 # Import shared base from OSS oddish
-from oddish.db.models import Base
+from oddish.db.models import Base, TimestampedMixin
 
 
 def generate_id() -> str:
@@ -70,7 +70,7 @@ class APIKeyScope(str, Enum):
 # =============================================================================
 
 
-class OrganizationModel(Base):
+class OrganizationModel(TimestampedMixin, Base):
     """Organization (tenant) for multi-tenancy."""
 
     __tablename__ = "organizations"
@@ -100,7 +100,7 @@ class OrganizationModel(Base):
     )
 
 
-class UserModel(Base):
+class UserModel(TimestampedMixin, Base):
     """User within an organization.
 
     Users are authenticated via Clerk (external), and this model
@@ -160,7 +160,7 @@ class UserModel(Base):
     )
 
 
-class APIKeyModel(Base):
+class APIKeyModel(TimestampedMixin, Base):
     """API key for programmatic access.
 
     API keys are scoped to an organization and have specific permissions.
