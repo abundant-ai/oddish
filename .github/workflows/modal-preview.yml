@@ -89,8 +89,26 @@ jobs:
       - name: Sync backend dependencies
         run: uv sync --frozen
 
-      - name: Run backend migrations against preview branch
-        run: uv run alembic upgrade head
+      - name: Bootstrap backend cloud schema on the preview branch
+        # Backend migrations also assume an evolving oddish baseline
+        # (e.g. e2f3a4b5c6d7 backfills `experiments.org_id` from
+        # `tasks.experiment_id`, a column oddish later replaced with a
+        # task_experiments M2M table). Materialize the cloud-auth tables
+        # via Base.metadata.create_all and stamp the chain at head.
+        # backend.models registers organizations / users / api_keys on
+        # the shared Base; `init_db()` then creates both oddish and
+        # backend tables (oddish ones are already present from the
+        # earlier step, so the IF NOT EXISTS path is taken).
+        run: |
+          uv run python - <<'PY'
+          import asyncio
+          import backend.models  # noqa: F401  # register cloud-auth tables on Base.metadata
+          from oddish.db import init_db
+          asyncio.run(init_db())
+          PY
+
+      - name: Stamp backend migrations as applied
+        run: uv run alembic stamp head
 
       - name: Deploy preview backend
         id: deploy_modal
