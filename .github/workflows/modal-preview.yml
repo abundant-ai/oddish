@@ -222,10 +222,15 @@ jobs:
         env:
           MODAL_API_URL: ${{ steps.deploy_modal.outputs.modal_api_url }}
         run: |
+          # `NEXT_PUBLIC_API_URL` is the *only* backend URL the frontend
+          # reads (frontend/src/lib/backend-config.ts). The other
+          # NEXT_PUBLIC_MODAL_* / NEXT_PUBLIC_BACKEND_TYPE vars are dead
+          # code from an older revision; we still `rm || true` them so
+          # any stale per-branch overrides don't bleed into the build.
+          vercel env rm NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+          printf '%s' "$MODAL_API_URL" | vercel env add NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
           vercel env rm NEXT_PUBLIC_BACKEND_TYPE preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          printf '%s' "modal" | vercel env add NEXT_PUBLIC_BACKEND_TYPE preview "$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
           vercel env rm NEXT_PUBLIC_MODAL_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          printf '%s' "$MODAL_API_URL" | vercel env add NEXT_PUBLIC_MODAL_API_URL preview "$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
           vercel env rm NEXT_PUBLIC_MODAL_BASE_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
           vercel env rm NEXT_PUBLIC_MODAL_ENV preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
 
@@ -368,6 +373,7 @@ jobs:
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         working-directory: frontend
         run: |
+          vercel env rm NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
           vercel env rm NEXT_PUBLIC_BACKEND_TYPE preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
           vercel env rm NEXT_PUBLIC_MODAL_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
           vercel env rm NEXT_PUBLIC_MODAL_BASE_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
