@@ -156,8 +156,8 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "harness-error",
 ];
 
-// Row-level filter modes. Inspired by sauron's "any/all pass@k=0" toggle:
-// hide tasks where all / any selected agents failed to pass on any trial.
+// Row-level filter modes: hide tasks where all / any selected agents failed
+// to pass on any trial (an "any/all pass@k=0" toggle).
 type RowFilterMode = "none" | "allFail" | "anyFail";
 
 const ROW_FILTER_MODES: Array<{

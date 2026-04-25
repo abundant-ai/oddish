@@ -2,7 +2,7 @@
 Format PR comments for Oddish validation results.
 
 Generates markdown comments showing a trajectory analyses matrix
-with real-time trial/analysis/verdict progress (sauron-style).
+with real-time trial/analysis/verdict progress.
 """
 
 from __future__ import annotations
