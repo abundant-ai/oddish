@@ -5,6 +5,7 @@ import os
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import OrganizationModel, UserModel, UserRole, generate_id
@@ -82,6 +83,61 @@ async def get_org_from_clerk_id(
         .where(OrganizationModel.is_active == True)  # noqa: E712
     )
     return org_result.scalar_one_or_none()
+
+
+async def fetch_clerk_organization(clerk_org_id: str) -> dict | None:
+    """Fetch a single organization's details from Clerk's Backend API."""
+    if not CLERK_SECRET_KEY:
+        return None
+
+    url = f"https://api.clerk.com/v1/organizations/{clerk_org_id}"
+    headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as exc:
+        logger.warning("Failed to fetch Clerk org %s: %s", clerk_org_id, exc)
+        return None
+
+
+async def create_org_from_clerk_id(
+    session: AsyncSession, clerk_org_id: str
+) -> OrganizationModel | None:
+    """Self-heal a missing org by reading its details from Clerk and inserting.
+
+    Production normally provisions orgs via the `organization.created`
+    Clerk webhook handler, but a Supabase preview branch DB starts empty
+    and never received those events. Rather than hard-failing with 403
+    on every preview sign-in, treat the JWT-validated `clerk_org_id` as
+    authoritative and ask Clerk for the org's name/slug to materialize
+    a local row. Idempotent under concurrent first-requests via the
+    unique constraint on `clerk_org_id` (a second writer hits the
+    constraint and re-reads).
+    """
+    clerk_org = await fetch_clerk_organization(clerk_org_id)
+    if not clerk_org:
+        return None
+
+    name = clerk_org.get("name") or clerk_org_id
+    slug = clerk_org.get("slug") or f"org-{clerk_org_id.lower()}"
+
+    org = OrganizationModel(
+        id=generate_id(),
+        name=name,
+        slug=slug,
+        clerk_org_id=clerk_org_id,
+        is_active=True,
+    )
+    session.add(org)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        return await get_org_from_clerk_id(session, clerk_org_id)
+    return org
 
 
 async def get_or_create_personal_org(
@@ -196,9 +252,16 @@ async def get_or_create_user_from_clerk(
     If the user doesn't exist and belongs to a Clerk org, we create the user.
     If no org is found locally, returns None (org must be provisioned first).
     """
-    # If Clerk org is present, use that org context
+    # If Clerk org is present, use that org context. The local row is
+    # normally created by the Clerk `organization.created` webhook, but
+    # ephemeral Supabase preview branches start empty. Self-heal by
+    # asking the Clerk Backend API for the org's name/slug and inserting
+    # — the JWT was already validated, so trusting Clerk for the org's
+    # canonical details is no weaker than trusting the webhook.
     if clerk_org_id:
         org = await get_org_from_clerk_id(session, clerk_org_id)
+        if not org:
+            org = await create_org_from_clerk_id(session, clerk_org_id)
         if not org:
             return None
         user = await get_or_create_user_in_org(
