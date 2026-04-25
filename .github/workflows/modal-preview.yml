@@ -72,11 +72,7 @@ jobs:
 
       - name: Bootstrap oddish core schema on the preview branch
         working-directory: oddish
-        # oddish's baseline migration is a no-op; the core tables (tasks,
-        # trials, experiments, etc.) are created from `Base.metadata` via
-        # `init_db()`. Production was bootstrapped once long ago; preview
-        # branches start empty so we have to run it here before stamping.
-        run: uv run python -c "import asyncio; from oddish.db import init_db; asyncio.run(init_db())"
+        run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_oddish_schema.py"
 
       - name: Stamp oddish migrations as applied
         working-directory: oddish
@@ -90,22 +86,7 @@ jobs:
         run: uv sync --frozen
 
       - name: Bootstrap backend cloud schema on the preview branch
-        # Backend migrations also assume an evolving oddish baseline
-        # (e.g. e2f3a4b5c6d7 backfills `experiments.org_id` from
-        # `tasks.experiment_id`, a column oddish later replaced with a
-        # task_experiments M2M table). Materialize the cloud-auth tables
-        # via Base.metadata.create_all and stamp the chain at head.
-        # backend.models registers organizations / users / api_keys on
-        # the shared Base; `init_db()` then creates both oddish and
-        # backend tables (oddish ones are already present from the
-        # earlier step, so the IF NOT EXISTS path is taken).
-        run: |
-          uv run python - <<'PY'
-          import asyncio
-          import models  # noqa: F401  # register cloud-auth tables on Base.metadata (flat layout, imported as `models`)
-          from oddish.db import init_db
-          asyncio.run(init_db())
-          PY
+        run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_backend_schema.py"
 
       - name: Stamp backend migrations as applied
         run: uv run alembic stamp head
@@ -332,6 +313,8 @@ jobs:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       MODAL_ENVIRONMENT: preview
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
@@ -355,6 +338,14 @@ jobs:
       - name: Delete per-PR Modal database secret
         continue-on-error: true
         run: modal secret delete --env "$MODAL_ENVIRONMENT" oddish-pr-${{ github.event.pull_request.number }}-db
+
+      - name: Delete Supabase preview branch (belt-and-suspenders)
+        if: ${{ env.SUPABASE_ACCESS_TOKEN != '' && env.SUPABASE_PROJECT_REF != '' }}
+        continue-on-error: true
+        env:
+          GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/delete_supabase_branch.py"
 
       - name: Install Node
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
