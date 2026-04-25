@@ -61,7 +61,7 @@ jobs:
         env:
           GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: python .github/scripts/preview/wait_for_supabase_branch.py
+        run: .github/scripts/preview/wait_for_supabase_branch.sh
 
       - name: Sync backend dependencies
         run: uv sync --frozen
