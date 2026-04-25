@@ -180,10 +180,12 @@ jobs:
         if: ${{ failure() && steps.readiness.conclusion == 'failure' }}
         continue-on-error: true
         run: |
-          echo "::group::modal app logs $MODAL_APP_NAME"
+          echo "::group::modal app logs $MODAL_APP_NAME (env=$MODAL_ENVIRONMENT)"
           # `modal app logs` streams indefinitely with no flag to disable; let
           # it run for 45s (long enough to flush startup logs) and then SIGTERM.
-          timeout --preserve-status 45s uv run modal app logs --timestamps "$MODAL_APP_NAME" 2>&1 | tail -300 || true
+          # `--env` is required because the CLI does not honor MODAL_ENVIRONMENT
+          # for this subcommand the way `modal deploy` does.
+          timeout --preserve-status 45s uv run modal app logs --env "$MODAL_ENVIRONMENT" --timestamps "$MODAL_APP_NAME" 2>&1 | tail -300 || true
           echo "::endgroup::"
 
       - name: Install Node
