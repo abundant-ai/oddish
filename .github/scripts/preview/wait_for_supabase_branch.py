@@ -33,10 +33,13 @@ import urllib.parse
 import urllib.request
 
 API_BASE = "https://api.supabase.com/v1"
-# Cloudflare in front of api.supabase.com returns HTTP 1010 ("browser signature
-# banned") for the default `Python-urllib/...` User-Agent, so every outbound
-# request must carry an explicit one.
-USER_AGENT = "oddish-ci-modal-preview/1.0 (+https://github.com/abundant-ai/oddish)"
+# Cloudflare in front of api.supabase.com returns HTTP 403 with error 1010
+# ("browser signature banned") for the default `Python-urllib/...` User-Agent.
+# Use the conventional "well-behaved bot" format so requests pass the WAF.
+USER_AGENT = (
+    "Mozilla/5.0 (compatible; oddish-ci-modal-preview/1.0; "
+    "+https://github.com/abundant-ai/oddish)"
+)
 BRANCH_TIMEOUT_SECONDS = 600
 POLL_INTERVAL_SECONDS = 10
 TERMINAL_FAILURE_STATUSES = {"MIGRATIONS_FAILED", "FUNCTIONS_FAILED"}
@@ -78,6 +81,15 @@ def _wait_for_branch(token: str, project_ref: str, git_branch: str, pr_number: i
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", "replace")
             print(f"List branches failed: {exc.code} {body}", file=sys.stderr)
+            # 401/403 are auth/WAF rejections that won't recover from retries;
+            # fail fast so the workflow surfaces the real reason instead of
+            # spinning until the 10-minute timeout.
+            if exc.code in (401, 403):
+                raise SystemExit(
+                    f"Supabase Management API rejected the request with HTTP {exc.code}. "
+                    "If the body shows Cloudflare error 1010, the User-Agent is being "
+                    "blocked. If it shows an auth error, regenerate SUPABASE_ACCESS_TOKEN."
+                )
             time.sleep(POLL_INTERVAL_SECONDS)
             continue
 
