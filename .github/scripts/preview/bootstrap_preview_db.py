@@ -21,18 +21,35 @@ from oddish.db.connection import engine  # noqa: E402
 SEED_CLERK_ORG_ID = "org_39ufkEqie8rLlVhoK4YMm4IMx0L"
 
 
-async def setup() -> None:
-    # Supabase branches inherit the parent project's `public` schema,
-    # which may have drifted from the current model (e.g., an `id`
-    # column on `queue_slots` left over from an earlier revision).
-    # `init_db()` uses CREATE TABLE IF NOT EXISTS, so it would skip
-    # those tables and we'd insert into a stale schema. Wipe `public`
-    # first — branch data is throwaway.
+async def _is_initialized() -> bool:
     async with engine.begin() as conn:
-        await conn.execute(text("DROP SCHEMA public CASCADE"))
-        await conn.execute(text("CREATE SCHEMA public"))
+        result = await conn.execute(text(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name = 'alembic_version_oddish'"
+        ))
+        return result.first() is not None
 
-    await init_db()
+
+async def setup() -> None:
+    # First deploy on a fresh branch (or first deploy after a manual
+    # reset): wipe `public` (Supabase branches inherit the parent's
+    # drifted schema), then `create_all` from the current models and
+    # `alembic stamp head` so subsequent runs can apply incremental
+    # migrations on top.
+    if not await _is_initialized():
+        async with engine.begin() as conn:
+            await conn.execute(text("DROP SCHEMA public CASCADE"))
+            await conn.execute(text("CREATE SCHEMA public"))
+        await init_db()
+        for project in (Path.cwd().parent / "oddish", Path.cwd()):
+            subprocess.run(["alembic", "stamp", "head"], cwd=project, check=True)
+    else:
+        # Subsequent deploys on the same branch: apply any new
+        # migrations the PR has added since the last bootstrap.
+        for project in (Path.cwd().parent / "oddish", Path.cwd()):
+            subprocess.run(["alembic", "upgrade", "head"], cwd=project, check=True)
+
+    # Idempotent — only inserts if the org isn't already there.
     async with get_session() as session:
         existing = await session.execute(
             select(models.OrganizationModel)
@@ -50,6 +67,3 @@ async def setup() -> None:
 
 
 asyncio.run(setup())
-
-for project in (Path.cwd().parent / "oddish", Path.cwd()):
-    subprocess.run(["alembic", "stamp", "head"], cwd=project, check=True)
