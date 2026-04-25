@@ -64,6 +64,17 @@ type FileRendererKind =
   | "text"
   | "binary";
 
+/** Kinds that render straight from a URL — no text content, no Raw mode. */
+const URL_BASED_KINDS = new Set<FileRendererKind>([
+  "image",
+  "video",
+  "audio",
+  "pdf",
+  "xlsx",
+  "docx",
+  "binary",
+]);
+
 const IMAGE_EXTS = new Set([
   "png",
   "jpg",
@@ -139,21 +150,6 @@ export function isBinaryRendererFile(fileName: string): boolean {
   return BINARY_RENDERER_EXTS.has(ext);
 }
 
-/**
- * Whether this file kind has a meaningful "rendered" view distinct from raw
- * text. Used to decide whether the Rendered/Raw toggle is shown.
- */
-export function hasRenderedView(fileName: string): boolean {
-  const kind = getFileRendererKind(fileName);
-  return (
-    kind === "markdown" ||
-    kind === "notebook" ||
-    kind === "json" ||
-    kind === "config-json" ||
-    kind === "csv"
-  );
-}
-
 interface FileRendererProps {
   fileName: string;
   /** URL for media/binary fetches (images, video, audio, pdf, xlsx, docx). */
@@ -186,16 +182,7 @@ export function FileRenderer({
 }: FileRendererProps) {
   const resolvedKind = kind ?? getFileRendererKind(fileName);
 
-  if (
-    viewMode === "raw" &&
-    resolvedKind !== "image" &&
-    resolvedKind !== "video" &&
-    resolvedKind !== "audio" &&
-    resolvedKind !== "pdf" &&
-    resolvedKind !== "xlsx" &&
-    resolvedKind !== "docx" &&
-    resolvedKind !== "binary"
-  ) {
+  if (viewMode === "raw" && !URL_BASED_KINDS.has(resolvedKind)) {
     return <RawRenderer content={content ?? ""} />;
   }
 

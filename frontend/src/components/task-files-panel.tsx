@@ -35,7 +35,6 @@ import { fetcher } from "@/lib/api";
 import {
   FileRenderer,
   isBinaryRendererFile,
-  hasRenderedView,
 } from "@/components/renderers/file-renderer";
 import type { Task, Trial } from "@/lib/types";
 import {
@@ -1139,32 +1138,31 @@ export function TaskFilesPanel({
                 <div className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground sm:text-xs">
                   {selectedFile.path}
                 </div>
-                {hasRenderedView(selectedFile.name) &&
-                  !isBinaryRendererFile(selectedFile.name) && (
-                    <Tabs
-                      value={viewMode}
-                      onValueChange={(v) =>
-                        setViewMode(v as "rendered" | "raw")
-                      }
-                    >
-                      <TabsList className="h-7">
-                        <TabsTrigger
-                          value="rendered"
-                          className="h-6 px-2 text-[10px]"
-                        >
-                          <Eye className="mr-1 h-3 w-3" />
-                          Rendered
-                        </TabsTrigger>
-                        <TabsTrigger
-                          value="raw"
-                          className="h-6 px-2 text-[10px]"
-                        >
-                          <Code className="mr-1 h-3 w-3" />
-                          Raw
-                        </TabsTrigger>
-                      </TabsList>
-                    </Tabs>
-                  )}
+                {!isBinaryRendererFile(selectedFile.name) && (
+                  <Tabs
+                    value={viewMode}
+                    onValueChange={(v) =>
+                      setViewMode(v as "rendered" | "raw")
+                    }
+                  >
+                    <TabsList className="h-7">
+                      <TabsTrigger
+                        value="rendered"
+                        className="h-6 px-2 text-[10px]"
+                      >
+                        <Eye className="mr-1 h-3 w-3" />
+                        Rendered
+                      </TabsTrigger>
+                      <TabsTrigger
+                        value="raw"
+                        className="h-6 px-2 text-[10px]"
+                      >
+                        <Code className="mr-1 h-3 w-3" />
+                        Raw
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                )}
               </div>
             )}
             <div ref={contentRef} className="flex-1 overflow-auto bg-card">
