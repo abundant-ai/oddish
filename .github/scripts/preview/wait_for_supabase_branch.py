@@ -192,8 +192,10 @@ def main() -> int:
     _append(
         github_env,
         [
+            # Drives Alembic on the runner and is also picked up by the
+            # `modal secret create` step, which then injects it into the
+            # per-PR Modal secret that the deployed app loads.
             f"ODDISH_DATABASE_URL={database_url}",
-            f"PREVIEW_DATABASE_URL={database_url}",
         ],
     )
     primary = next(entry for entry in pooler if entry.get("database_type") == "PRIMARY")

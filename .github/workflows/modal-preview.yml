@@ -110,6 +110,19 @@ jobs:
       - name: Stamp backend migrations as applied
         run: uv run alembic stamp head
 
+      - name: Create per-PR Modal database secret
+        # Named secret consumed by `backend/modal_app.py`. Must exist *before*
+        # `modal deploy` resolves the app's secret list, otherwise the
+        # preview app's container fails on cold start with a
+        # "secret not found" error. `--force` makes this idempotent across
+        # synchronize events on the same PR.
+        run: |
+          uv run modal secret create \
+            --env "$MODAL_ENVIRONMENT" \
+            --force \
+            "$MODAL_APP_NAME-db" \
+            "ODDISH_DATABASE_URL=$ODDISH_DATABASE_URL"
+
       - name: Deploy preview backend
         id: deploy_modal
         run: |
@@ -331,6 +344,10 @@ jobs:
       - name: Stop preview backend
         continue-on-error: true
         run: modal app stop oddish-pr-${{ github.event.pull_request.number }}
+
+      - name: Delete per-PR Modal database secret
+        continue-on-error: true
+        run: modal secret delete --env "$MODAL_ENVIRONMENT" oddish-pr-${{ github.event.pull_request.number }}-db
 
       - name: Install Node
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}

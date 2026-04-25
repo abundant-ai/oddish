@@ -73,20 +73,25 @@ MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 24)
 
 # Always attach the production Modal secret. Local deploys can layer a backend
 # `.env` file on top for developer-specific overrides, and PR preview deploys
-# can layer a per-branch Supabase database URL on top via PREVIEW_DATABASE_URL
-# (set by `.github/workflows/modal-preview.yml`). Later secrets win, so the
-# preview override replaces the production database URL without touching the
-# `oddish-prod` secret.
+# layer a per-PR named secret (`oddish-pr-<N>-db`) created by
+# `.github/workflows/modal-preview.yml` before `modal deploy` runs. The
+# decision is gated on MODAL_APP_NAME (set on both the deploy host and inside
+# the container) — earlier we tried gating on PREVIEW_DATABASE_URL but Modal
+# rejected the resulting deployment with "Function has N dependencies but
+# container got M object ids" because the conditional evaluated differently
+# at deploy time vs container init.
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
 )
 runtime_secrets = [runtime_secret]
 if LOCAL_DOTENV_VARS:
     runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
-PREVIEW_DATABASE_URL = os.environ.get("PREVIEW_DATABASE_URL")
-if PREVIEW_DATABASE_URL:
+if MODAL_APP_NAME.startswith("oddish-pr-"):
     runtime_secrets.append(
-        modal.Secret.from_dict({"ODDISH_DATABASE_URL": PREVIEW_DATABASE_URL})
+        modal.Secret.from_name(
+            f"{MODAL_APP_NAME}-db",
+            environment_name=os.environ.get("MODAL_ENVIRONMENT", "preview"),
+        )
     )
 
 # Queue-key concurrency default for Modal runtime.
