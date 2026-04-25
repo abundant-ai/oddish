@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Wait for the PR's Supabase preview branch and emit its DB URL.
-set -euo pipefail
+set -uo pipefail
 
 deadline=$(($(date +%s) + 600))
 ready=0
