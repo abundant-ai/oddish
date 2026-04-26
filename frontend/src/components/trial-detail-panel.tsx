@@ -54,6 +54,7 @@ import {
   getMatrixStatus,
   getRewardStyle,
   STATUS_CONFIG,
+  STATUS_GLYPH_BOX,
   type MatrixStatus,
 } from "@/lib/status-config";
 import { HarborStageTimeline } from "@/components/harbor-stage-timeline";
@@ -138,6 +139,10 @@ function getQueueSnapshotItems(trial: Trial): string[] {
     `${queueInfo.running_count} running`,
     `${queueInfo.concurrency_limit} slots`,
   ].filter((value): value is string => Boolean(value));
+}
+
+function hasLiveQueueSnapshot(trial: Trial): boolean {
+  return ["queued", "retrying", "running", "pending"].includes(trial.status);
 }
 
 export function TrialDetailPanel({
@@ -420,6 +425,8 @@ export function TrialDetailPanel({
   );
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
   const TrialStatusIcon = trialStatusConfig.icon;
+  const showQueueSnapshot =
+    hasLiveQueueSnapshot(trial) && getQueueSnapshotItems(trial).length > 0;
 
   const resolvedGroups =
     trialGroups && trialGroups.length > 0
@@ -535,10 +542,11 @@ export function TrialDetailPanel({
                       size="icon"
                       onClick={() => navigateToGroupTrial(index)}
                       className={cn(
-                        "flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border p-0 leading-none transition hover:opacity-90",
+                        "flex items-center justify-center p-0 leading-none transition hover:opacity-90",
+                        STATUS_GLYPH_BOX,
                         groupConfig.matrixClass,
                         isPartial
-                          ? "font-mono text-[8px] font-semibold tracking-[-0.03em]"
+                          ? "font-mono text-[9.5px] font-semibold tabular-nums tracking-[-0.02em]"
                           : "",
                         isActive
                           ? "ring-2 ring-primary/60 ring-offset-1 ring-offset-background"
@@ -551,10 +559,7 @@ export function TrialDetailPanel({
                       {isPartial ? (
                         partialLabel
                       ) : (
-                        <StatusIcon
-                          status={groupStatus}
-                          className="h-3.5 w-3.5"
-                        />
+                        <StatusIcon status={groupStatus} />
                       )}
                     </Button>
                   );
@@ -746,7 +751,7 @@ export function TrialDetailPanel({
         <div className="flex-1 overflow-auto">
           <TabsContent value="summary" className="m-0 p-4 sm:p-6">
             <div className="space-y-4 pb-4">
-              {trial.queue_info && (
+              {showQueueSnapshot && (
                 <Card className="border-purple-500/30 bg-purple-500/5">
                   <CardHeader className="px-4 pb-1 pt-2">
                     <CardTitle className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">

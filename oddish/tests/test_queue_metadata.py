@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.api.helpers import (  # noqa: E402
+from oddish.core.helpers import (  # noqa: E402
     _QueueSnapshotTrial,
     _build_trial_queue_info_snapshot,
 )

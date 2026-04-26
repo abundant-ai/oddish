@@ -24,13 +24,12 @@ jump to whichever workflow you need.
 
 ## Prerequisites
 
-- Python `3.12+` and [`uv`](https://docs.astral.sh/uv/)
+- Python `3.14+` and [`uv`](https://docs.astral.sh/uv/)
 - Node.js `20+` and `pnpm`
 - [Modal](https://modal.com) account + CLI (`modal`)
 - A Postgres connection string
 - An S3-compatible bucket + access key pair
 - A [Clerk](https://clerk.com) application (for dashboard auth)
-- macOS: `mkcert` for the local HTTPS flow (`brew install mkcert`)
 
 Install and authenticate the Modal CLI:
 

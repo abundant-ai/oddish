@@ -126,15 +126,16 @@ export function ExperimentShareButton({
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen} modal={false}>
       <DialogTrigger asChild>
-        <button
+        <Button
           type="button"
+          variant="ghost"
           title={
             canManageShare
               ? "Publish experiment"
               : "Only org admins can publish experiments"
           }
           disabled={!canManageShare}
-          className="inline-flex h-8 select-none items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] font-medium leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-[color:var(--paper-line)] disabled:hover:bg-[color:var(--paper-surface)]"
+          className="h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-[color:var(--paper-line)] disabled:hover:bg-[color:var(--paper-surface)]"
         >
           <svg
             width="13"
@@ -152,7 +153,7 @@ export function ExperimentShareButton({
             <line x1="12" x2="12" y1="2" y2="15" />
           </svg>
           {data?.is_public ? "Public" : "Publish"}
-        </button>
+        </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>

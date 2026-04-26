@@ -13,7 +13,7 @@ function quoteDescription(description: string): string {
   return description.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-export function formatServerTiming(metrics: ServerTimingMetric[]): string {
+function formatServerTiming(metrics: ServerTimingMetric[]): string {
   return metrics
     .filter((metric) => Number.isFinite(metric.durationMs))
     .map((metric) => {

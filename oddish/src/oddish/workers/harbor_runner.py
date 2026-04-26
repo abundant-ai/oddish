@@ -294,6 +294,20 @@ def _maybe_add_modal_debug_hint(error_message: str, debug_log_path: Path | None)
     )
 
 
+def _format_exception_message(exc: BaseException) -> str:
+    """Return a concise exception summary, including ExceptionGroup children."""
+    base = f"{type(exc).__name__}: {exc}"
+    if not isinstance(exc, BaseExceptionGroup) or not exc.exceptions:
+        return base
+
+    child_summaries = [
+        f"{type(child).__name__}: {child}" for child in exc.exceptions[:3]
+    ]
+    if len(exc.exceptions) > 3:
+        child_summaries.append(f"+{len(exc.exceptions) - 3} more")
+    return f"{base} ({'; '.join(child_summaries)})"
+
+
 def _storage_probe_paths(jobs_dir: Path, *, include_temp_root: bool) -> list[Path]:
     """Return the local scratch roots Oddish should verify before Harbor runs."""
     candidates: list[Path] = []
@@ -328,14 +342,20 @@ def _probe_storage_root(
         )
 
     statvfs = os.statvfs(path)
-    free_inodes = getattr(statvfs, "f_favail", None)
-    if free_inodes is None or free_inodes < 0:
-        free_inodes = getattr(statvfs, "f_ffree", None)
-    if free_inodes is not None and free_inodes < min_required_inodes:
-        return (
-            f"Insufficient local storage inodes at {path}: {free_inodes} free "
-            f"(minimum {min_required_inodes} required)"
-        )
+    # Filesystems that don't expose an inode table (overlayfs, btrfs, many
+    # tmpfs mounts, Modal's ephemeral "/tmp") report f_files == 0, which forces
+    # f_ffree == f_favail == 0 too. That is the "unlimited inodes" signal, not
+    # "0 free", so skip the inode check entirely when there is no table.
+    total_inodes = getattr(statvfs, "f_files", None)
+    if total_inodes:
+        free_inodes = getattr(statvfs, "f_favail", None)
+        if free_inodes is None or free_inodes < 0:
+            free_inodes = getattr(statvfs, "f_ffree", None)
+        if free_inodes is not None and free_inodes < min_required_inodes:
+            return (
+                f"Insufficient local storage inodes at {path}: {free_inodes} free "
+                f"(minimum {min_required_inodes} required)"
+            )
 
     probe_dir = path / f".oddish-preflight-{uuid.uuid4().hex}"
     probe_file = probe_dir / "probe.txt"
@@ -348,6 +368,44 @@ def _probe_storage_root(
         shutil.rmtree(probe_dir, ignore_errors=True)
         return f"Local storage probe failed at {path}: {type(exc).__name__}: {exc}"
     return None
+
+
+def log_local_storage_snapshot(path: str | Path) -> None:
+    """Log a one-line disk + inode snapshot for *path* on startup.
+
+    Captured once per process start (API server, standalone worker, Modal
+    container) so operators can tell at a glance whether a given container
+    is on an inode-tracking filesystem (ext4 shows ``N/M inodes free``)
+    versus one that doesn't (overlayfs/tmpfs on Modal shows
+    ``inode table unlimited``). Never raises — a startup log line should
+    not block the process from coming up.
+    """
+    try:
+        probe_path = Path(path)
+        probe_path.mkdir(parents=True, exist_ok=True)
+        disk_usage = shutil.disk_usage(probe_path)
+        statvfs = os.statvfs(probe_path)
+        free_gb = disk_usage.free / (1024**3)
+        total_gb = disk_usage.total / (1024**3)
+        total_inodes = getattr(statvfs, "f_files", 0) or 0
+        free_inodes = getattr(statvfs, "f_favail", None)
+        if free_inodes is None or free_inodes < 0:
+            free_inodes = getattr(statvfs, "f_ffree", 0) or 0
+        if total_inodes:
+            inode_desc = f"{free_inodes}/{total_inodes} inodes free"
+        else:
+            inode_desc = "inode table unlimited (no tracking)"
+        print(
+            f"[oddish] storage snapshot at {probe_path}: "
+            f"{free_gb:.1f}GB/{total_gb:.1f}GB bytes free, {inode_desc}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(
+            f"[oddish] storage snapshot at {path} failed: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
 
 
 def _check_local_storage_preflight(
@@ -749,7 +807,7 @@ async def run_harbor_trial_async(
         )
     except Exception as e:
         duration = time.time() - start
-        error_message = f"Harbor job execution failed: {type(e).__name__}: {e}"
+        error_message = f"Harbor job execution failed: {_format_exception_message(e)}"
         error_message = _maybe_add_modal_debug_hint(error_message, modal_debug_log_path)
         debug_result_path = _write_debug_result_json(
             job_dir=actual_job_dir,

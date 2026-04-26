@@ -113,31 +113,6 @@ def _apply_github_attribution(submission: TaskSweepSubmission) -> None:
         submission.tags.setdefault("github_username", submission.github_username)
 
 
-def _compact_trial_payloads(
-    tasks: list[TaskStatusResponse],
-) -> list[TaskStatusResponse]:
-    """Trim heavy per-trial fields for list/table views."""
-    for task in tasks:
-        if not task.trials:
-            continue
-        for trial in task.trials:
-            # These fields can be large and are not required for matrix rendering.
-            trial.result = None
-            trial.input_tokens = None
-            trial.cache_tokens = None
-            trial.output_tokens = None
-            trial.cost_usd = None
-            trial.phase_timing = None
-
-            # Keep only lightweight analysis summary used by the UI.
-            if isinstance(trial.analysis, dict):
-                trial.analysis = {
-                    "classification": trial.analysis.get("classification"),
-                    "subtype": trial.analysis.get("subtype"),
-                }
-    return tasks
-
-
 async def _resolve_created_by_user_id(
     session: AsyncSession,
     submission: TaskSweepSubmission,
@@ -293,6 +268,8 @@ async def list_tasks(
     experiment_id: str | None = None,
     include_trials: bool = False,
     compact_trials: bool = False,
+    include_queue_info: bool = True,
+    include_worker_jobs: bool = True,
     limit: int = 100,
     offset: int = 0,
 ) -> list[TaskStatusResponse]:
@@ -315,6 +292,8 @@ async def list_tasks(
             experiment_id=experiment_id,
             include_trials=include_trials,
             compact_trials=compact_trials,
+            include_queue_info=include_queue_info,
+            include_worker_jobs=include_worker_jobs,
             limit=limit,
             offset=offset,
             org_id=auth.org_id,

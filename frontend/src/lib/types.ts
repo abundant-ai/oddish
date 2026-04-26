@@ -19,7 +19,35 @@ export type TrialStatus =
   | "failed"
   | "retrying";
 
-type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
+export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
+
+export type VisibleJobKind = "trial" | "analysis" | "verdict";
+
+export type VisibleJobStatus =
+  | "queued"
+  | "running"
+  | "retrying"
+  | "success"
+  | "failed"
+  | "cancelled"
+  | "blocked";
+
+export interface VisibleWorkerJob {
+  id: string;
+  kind: VisibleJobKind | string;
+  status: VisibleJobStatus | string;
+  queue_key: string;
+  subject_table?: string | null;
+  subject_id?: string | null;
+  attempts: number;
+  max_attempts: number;
+  created_at: string;
+  started_at?: string | null;
+  claimed_at?: string | null;
+  heartbeat_at?: string | null;
+  finished_at?: string | null;
+  error_message?: string | null;
+}
 
 type Priority = "high" | "low";
 
@@ -68,6 +96,7 @@ export interface Trial {
   result?: Record<string, unknown> | null;
   analysis_status?: JobStatus | null;
   analysis?: TrialAnalysis | null;
+  jobs?: VisibleWorkerJob[];
   queue_info?: TrialQueueInfo | null;
   task_version?: number | null;
   task_version_id?: string | null;
@@ -141,6 +170,7 @@ export interface Task {
   verdict_status?: JobStatus | null;
   verdict?: TaskVerdict | null;
   verdict_error?: string | null;
+  jobs?: VisibleWorkerJob[];
   current_version?: number | null;
   current_version_id?: string | null;
   trials?: Trial[] | null;
@@ -149,12 +179,12 @@ export interface Task {
   finished_at?: string | null;
 }
 
-export interface TaskBrowseExperiment {
+interface TaskBrowseExperiment {
   id: string;
   name: string;
 }
 
-export interface TaskBrowseTrial {
+interface TaskBrowseTrial {
   id: string;
   name: string;
   status: TrialStatus;
@@ -186,18 +216,6 @@ export interface TaskBrowseResponse {
   has_more: boolean;
 }
 
-// Task version snapshot
-export interface TaskVersion {
-  id: string;
-  task_id: string;
-  version: number;
-  task_path: string;
-  content_hash?: string | null;
-  message?: string | null;
-  created_by_user_id?: string | null;
-  created_at: string;
-}
-
 // Queue statistics keyed by queue key
 export interface QueueStats {
   [queueKey: string]: {
@@ -212,7 +230,7 @@ export interface QueueStats {
 }
 
 // Pipeline statistics (analysis/verdict progress)
-export interface PipelineStats {
+interface PipelineStats {
   trials: Record<string, number>;
   analyses: Record<string, number>;
   verdicts: Record<string, number>;
@@ -231,6 +249,20 @@ export interface ModelUsage {
   queued: number;
   succeeded: number;
   failed: number;
+  avg_duration_s: number | null;
+}
+
+export interface JobUsage {
+  kind: string;
+  queue_key: string;
+  job_count: number;
+  queued: number;
+  running: number;
+  retrying: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  blocked: number;
   avg_duration_s: number | null;
 }
 
@@ -268,6 +300,7 @@ export interface DashboardResponse {
   queues: QueueStats;
   pipeline: PipelineStats;
   model_usage: ModelUsage[];
+  job_usage?: JobUsage[];
   tasks: Task[];
   experiments?: DashboardExperiment[];
   tasks_limit?: number;
@@ -289,7 +322,7 @@ interface ToolCall {
   arguments: Record<string, unknown>;
 }
 
-export interface ImageSource {
+interface ImageSource {
   media_type: string;
   path: string;
 }
@@ -358,7 +391,7 @@ export interface Trajectory {
 // Admin Dashboard Types
 // =============================================================================
 
-export interface QueueSlot {
+interface QueueSlot {
   queue_key: string;
   slot: number;
   locked_by: string | null;
@@ -380,13 +413,15 @@ export interface QueueSlotsResponse {
   timestamp: string;
 }
 
-export interface QueueStatusEntry {
+interface QueueStatusEntry {
+  kind?: string;
   queue_key: string;
   queued: number;
   running: number;
 }
 
 export interface QueueStatusResponse {
+  queues?: QueueStatusEntry[];
   trial_queues: QueueStatusEntry[];
   analysis_queued: number;
   analysis_running: number;
@@ -395,7 +430,7 @@ export interface QueueStatusResponse {
   timestamp: string;
 }
 
-export interface OrphanedTrialSample {
+interface OrphanedTrialSample {
   trial_id: string;
   task_id: string;
   queue_key: string;
@@ -409,7 +444,7 @@ export interface OrphanedTrialSample {
   updated_at: string | null;
 }
 
-export interface OrphanedTaskSample {
+interface OrphanedTaskSample {
   task_id: string;
   status: string;
   run_analysis: boolean;
@@ -418,7 +453,7 @@ export interface OrphanedTaskSample {
   updated_at: string | null;
 }
 
-export interface OrphanedStateCounts {
+interface OrphanedStateCounts {
   running_stale_heartbeat: number;
   active_tasks_without_active_trials: number;
 }
@@ -475,7 +510,7 @@ export interface WorkerJobSample {
   org_id: string | null;
 }
 
-export interface WorkerJobDurationStat {
+interface WorkerJobDurationStat {
   kind: WorkerJobKind;
   queue_key: string;
   sample_count: number;

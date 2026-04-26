@@ -4,7 +4,9 @@ import asyncio
 from functools import partial
 import signal
 
+from oddish.config import settings
 from oddish.db import close_pool
+from oddish.workers.harbor_runner import log_local_storage_snapshot
 from oddish.workers.queue.queue_manager import run_polling_worker
 from oddish.workers.queue.shared import console
 
@@ -12,6 +14,7 @@ from oddish.workers.queue.shared import console
 async def run_worker() -> None:
     """Run the queue worker."""
     console.print("[green]Starting Oddish queue worker...[/green]")
+    log_local_storage_snapshot(settings.harbor_jobs_dir)
 
     def _announce_shutdown(received_sig: signal.Signals) -> None:
         console.print(

@@ -12,8 +12,6 @@ the queue execution code.
 
 from __future__ import annotations
 
-from typing import Any
-
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -30,6 +28,16 @@ from oddish.workers.queue.trial_handler import run_trial_job
 from oddish.workers.queue.verdict_handler import run_verdict_job
 
 
+class WorkerJobLike:
+    id: str
+    queue_key: str
+    subject_id: str | None
+    payload: dict
+    worker_id: str | None
+    queue_slot: int | None
+    modal_function_call_id: str | None
+
+
 def _fail_retryable(message: str) -> JobOutcome:
     return JobOutcome.fail(message, retryable=True)
 
@@ -41,24 +49,24 @@ def _fail_permanent(message: str) -> JobOutcome:
 class TrialJobHandler:
     kind = WorkerJobKind.TRIAL
 
-    def default_queue_key(self, job: Any) -> str:
-        return getattr(job, "queue_key", "default") or "default"
+    def default_queue_key(self, job: WorkerJobLike) -> str:
+        return job.queue_key or "default"
 
-    def validate_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def validate_payload(self, payload: dict) -> dict:
         return payload
 
-    async def run(self, job: Any) -> JobOutcome:
-        trial_id = getattr(job, "subject_id", None)
+    async def run(self, job: WorkerJobLike) -> JobOutcome:
+        trial_id = job.subject_id
         if not trial_id:
             raise ValueError("TRIAL worker_job missing subject_id")
 
         await run_trial_job(
             trial_id,
             queue_key=job.queue_key,
-            worker_id=getattr(job, "worker_id", None),
-            queue_slot=getattr(job, "queue_slot", None),
-            modal_function_call_id=getattr(job, "modal_function_call_id", None),
-            worker_job_id=getattr(job, "id", None),
+            worker_id=job.worker_id,
+            queue_slot=job.queue_slot,
+            modal_function_call_id=job.modal_function_call_id,
+            worker_job_id=job.id,
         )
 
         async with get_session() as session:
@@ -83,16 +91,14 @@ class TrialJobHandler:
 class AnalysisJobHandler:
     kind = WorkerJobKind.ANALYSIS
 
-    def default_queue_key(self, job: Any) -> str:
-        return getattr(job, "queue_key", "analysis") or "analysis"
+    def default_queue_key(self, job: WorkerJobLike) -> str:
+        return job.queue_key or "analysis"
 
-    def validate_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def validate_payload(self, payload: dict) -> dict:
         return payload
 
-    async def run(self, job: Any) -> JobOutcome:
-        trial_id = getattr(job, "subject_id", None) or (
-            (getattr(job, "payload", {}) or {}).get("trial_id")
-        )
+    async def run(self, job: WorkerJobLike) -> JobOutcome:
+        trial_id = job.subject_id or (job.payload or {}).get("trial_id")
         if not trial_id:
             raise ValueError(
                 "ANALYSIS worker_job missing subject_id / payload.trial_id"
@@ -110,8 +116,8 @@ class AnalysisJobHandler:
         await run_analysis_job(
             trial_id,
             queue_key=job.queue_key,
-            modal_function_call_id=getattr(job, "modal_function_call_id", None),
-            worker_job_id=getattr(job, "id", None),
+            modal_function_call_id=job.modal_function_call_id,
+            worker_job_id=job.id,
         )
 
         async with get_session() as session:
@@ -133,16 +139,14 @@ class AnalysisJobHandler:
 class VerdictJobHandler:
     kind = WorkerJobKind.VERDICT
 
-    def default_queue_key(self, job: Any) -> str:
-        return getattr(job, "queue_key", "verdict") or "verdict"
+    def default_queue_key(self, job: WorkerJobLike) -> str:
+        return job.queue_key or "verdict"
 
-    def validate_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def validate_payload(self, payload: dict) -> dict:
         return payload
 
-    async def run(self, job: Any) -> JobOutcome:
-        task_id = getattr(job, "subject_id", None) or (
-            (getattr(job, "payload", {}) or {}).get("task_id")
-        )
+    async def run(self, job: WorkerJobLike) -> JobOutcome:
+        task_id = job.subject_id or (job.payload or {}).get("task_id")
         if not task_id:
             raise ValueError("VERDICT worker_job missing subject_id / payload.task_id")
 
@@ -158,7 +162,8 @@ class VerdictJobHandler:
         await run_verdict_job(
             task_id,
             queue_key=job.queue_key,
-            modal_function_call_id=getattr(job, "modal_function_call_id", None),
+            modal_function_call_id=job.modal_function_call_id,
+            worker_job_id=job.id,
         )
 
         async with get_session() as session:
@@ -188,12 +193,12 @@ class TaskExpandJobHandler:
 
     kind = WorkerJobKind.TASK_EXPAND
 
-    def default_queue_key(self, job: Any) -> str:
+    def default_queue_key(self, job: WorkerJobLike) -> str:
         from oddish.config import settings
 
-        return getattr(job, "queue_key", None) or settings.get_task_expand_queue_key()
+        return job.queue_key or settings.get_task_expand_queue_key()
 
-    def validate_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def validate_payload(self, payload: dict) -> dict:
         payload = dict(payload or {})
         if "task_id" not in payload:
             raise ValueError("TASK_EXPAND payload missing task_id")
@@ -202,9 +207,9 @@ class TaskExpandJobHandler:
         payload["version"] = int(payload["version"])
         return payload
 
-    async def run(self, job: Any) -> JobOutcome:
-        payload = getattr(job, "payload", {}) or {}
-        task_id = payload.get("task_id") or getattr(job, "subject_id", None)
+    async def run(self, job: WorkerJobLike) -> JobOutcome:
+        payload = job.payload or {}
+        task_id = payload.get("task_id") or job.subject_id
         version = payload.get("version")
         if version is None and job.subject_id and "-v" in job.subject_id:
             try:
@@ -217,7 +222,7 @@ class TaskExpandJobHandler:
         summary = await run_task_expand_job(
             task_id=task_id,
             version=int(version),
-            worker_job_id=getattr(job, "id", None),
+            worker_job_id=job.id,
         )
         return JobOutcome.ok(summary if isinstance(summary, dict) else None)
 

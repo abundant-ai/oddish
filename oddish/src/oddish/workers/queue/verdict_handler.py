@@ -13,12 +13,57 @@ from oddish.db import (
     utcnow,
 )
 from oddish.workers.queue.shared import console
+from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
+
+VERDICT_HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+async def _heartbeat_verdict_worker_job(
+    *,
+    worker_job_id: str,
+    stop_event: asyncio.Event,
+) -> None:
+    """Keep ``worker_jobs.heartbeat_at`` fresh during verdict synthesis."""
+    consecutive_failures = 0
+    pending_failure_count = 0
+    pending_last_error: str | None = None
+
+    while True:
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(), timeout=VERDICT_HEARTBEAT_INTERVAL_SECONDS
+            )
+        except TimeoutError:
+            pass
+
+        if stop_event.is_set():
+            return
+
+        try:
+            await heartbeat_worker_job(
+                worker_job_id,
+                pending_failure_count=pending_failure_count,
+                pending_last_error=pending_last_error,
+            )
+            if consecutive_failures > 0:
+                console.print(
+                    f"[green]Verdict worker_job {worker_job_id} heartbeat "
+                    f"recovered after {consecutive_failures} failure(s)[/green]"
+                )
+            consecutive_failures = 0
+            pending_failure_count = 0
+            pending_last_error = None
+        except Exception as exc:
+            consecutive_failures += 1
+            pending_failure_count += 1
+            pending_last_error = f"{type(exc).__name__}: {exc}"
 
 
 async def run_verdict_job(
     task_id: str,
     queue_key: str,
     modal_function_call_id: str | None = None,
+    worker_job_id: str | None = None,
 ) -> None:
     """
     Execute verdict synthesis for a claimed task.
@@ -90,6 +135,15 @@ async def run_verdict_job(
     # Run verdict synthesis
     verdict_result = None
     verdict_error = None
+    heartbeat_stop = asyncio.Event()
+    heartbeat_task: asyncio.Task | None = None
+    if worker_job_id:
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_verdict_worker_job(
+                worker_job_id=worker_job_id,
+                stop_event=heartbeat_stop,
+            )
+        )
 
     try:
         if not classifications:
@@ -133,6 +187,10 @@ async def run_verdict_job(
     except Exception as e:
         verdict_error = f"{type(e).__name__}: {e}"
         console.print(f"[red]Verdict error for {task_id}: {verdict_error}[/red]")
+    finally:
+        heartbeat_stop.set()
+        if heartbeat_task is not None:
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
 
     async def _store_results() -> None:
         async with get_session() as session:

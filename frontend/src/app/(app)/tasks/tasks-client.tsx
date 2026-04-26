@@ -308,10 +308,12 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
 
 export function TasksPageClient({
   initialData,
+  initialQuery = "",
 }: {
   initialData?: TaskBrowseResponse | null;
+  initialQuery?: string;
 }) {
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [offset, setOffset] = useState(0);
   const debouncedQuery = useDebouncedValue(searchQuery.trim(), 300);
 

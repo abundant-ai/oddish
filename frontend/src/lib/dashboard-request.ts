@@ -1,4 +1,4 @@
-export type DashboardRequestParams = {
+type DashboardRequestParams = {
   tasks_limit?: number;
   tasks_offset?: number;
   experiments_limit?: number;
@@ -33,7 +33,7 @@ function setBooleanParam(
   }
 }
 
-export function buildDashboardSearchParams(
+function buildDashboardSearchParams(
   input: DashboardRequestParams,
 ): URLSearchParams {
   const params = new URLSearchParams();

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { Copy, Check } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 let shikiPromise: Promise<typeof import("shiki")> | null = null;
 const HIGHLIGHT_MAX_CHARS = 20_000;
@@ -147,10 +148,12 @@ export function CodeBlock({
   return (
     <div className={`group relative ${className || ""}`}>
       {showCopyButton && (
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="icon"
           onClick={handleCopy}
-          className="absolute right-1.5 top-1.5 z-10 inline-flex h-6 w-6 items-center justify-center rounded bg-muted/80 opacity-0 transition-opacity hover:bg-muted group-hover:opacity-100"
+          className="absolute right-1.5 top-1.5 z-10 h-6 w-6 rounded bg-muted/80 opacity-0 transition-opacity hover:bg-muted group-hover:opacity-100"
           title="Copy to clipboard"
           aria-label="Copy to clipboard"
         >
@@ -159,7 +162,7 @@ export function CodeBlock({
           ) : (
             <Copy className="h-3 w-3 text-muted-foreground" />
           )}
-        </button>
+        </Button>
       )}
       {highlightedHtml ? (
         <div

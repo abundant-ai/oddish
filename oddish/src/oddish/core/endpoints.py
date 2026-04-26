@@ -14,6 +14,7 @@ from oddish.core.helpers import (
     fetch_experiment_effective_version_ids,
     fetch_trial_queue_info,
     fetch_trial_analysis_summaries,
+    fetch_visible_worker_jobs,
     get_task_status_trials,
     resolve_effective_version_id,
 )
@@ -34,6 +35,7 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
     VerdictStatus,
+    utcnow,
 )
 from oddish.schemas import (
     TaskBrowseExperiment,
@@ -88,6 +90,8 @@ async def list_tasks_core(
     experiment_id: str | None = None,
     include_trials: bool = True,
     compact_trials: bool = False,
+    include_queue_info: bool = True,
+    include_worker_jobs: bool = True,
     limit: int = 100,
     offset: int = 0,
     org_id: str | None = None,
@@ -212,10 +216,31 @@ async def list_tasks_core(
                 set_committed_value(task, "trials", get_task_status_trials(task))
 
     if include_trials:
+        visible_jobs_started_at = now()
+        trial_ids = [trial.id for task in tasks for trial in task.trials]
+        jobs_by_subject = (
+            await fetch_visible_worker_jobs(
+                session,
+                task_ids=[task.id for task in tasks],
+                trial_ids=trial_ids,
+            )
+            if include_worker_jobs
+            else {}
+        )
+        if record_timing is not None:
+            record_timing(
+                "tasks_worker_jobs",
+                elapsed_ms(visible_jobs_started_at),
+                "Visible worker jobs",
+            )
         queue_info_started_at = now()
-        queue_info_by_trial_id = await fetch_trial_queue_info(
-            session,
-            trials=[trial for task in tasks for trial in task.trials],
+        queue_info_by_trial_id = (
+            await fetch_trial_queue_info(
+                session,
+                trials=[trial for task in tasks for trial in task.trials],
+            )
+            if include_queue_info
+            else {}
         )
         if record_timing is not None:
             record_timing(
@@ -226,7 +251,9 @@ async def list_tasks_core(
         if compact_trials:
             analysis_started_at = now()
             analysis_summaries = await fetch_trial_analysis_summaries(
-                session, task_ids=[task.id for task in tasks]
+                session,
+                task_ids=[task.id for task in tasks],
+                trial_ids=trial_ids,
             )
             if record_timing is not None:
                 record_timing(
@@ -241,6 +268,7 @@ async def list_tasks_core(
                     include_empty_rewards=include_empty_rewards,
                     analysis_summaries=analysis_summaries,
                     queue_info_by_trial_id=queue_info_by_trial_id,
+                    jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
                 )
                 for task in tasks
@@ -258,6 +286,7 @@ async def list_tasks_core(
                 task,
                 include_empty_rewards=include_empty_rewards,
                 queue_info_by_trial_id=queue_info_by_trial_id,
+                jobs_by_subject=jobs_by_subject,
                 experiment_context_id=experiment_id,
             )
             for task in tasks
@@ -284,6 +313,15 @@ async def list_tasks_core(
         include_empty_rewards=include_empty_rewards,
         experiment_context_id=experiment_id,
         effective_version_id_by_task_id=effective_version_id_by_task_id or None,
+        jobs_by_subject=(
+            await fetch_visible_worker_jobs(
+                session,
+                task_ids=[task.id for task in tasks],
+                trial_ids=[],
+            )
+            if include_worker_jobs
+            else {}
+        ),
     )
     if record_timing is not None:
         record_timing(
@@ -586,6 +624,11 @@ async def get_task_status_core(
         from sqlalchemy.orm.attributes import set_committed_value
 
         set_committed_value(task, "trials", get_task_status_trials(task))
+        jobs_by_subject = await fetch_visible_worker_jobs(
+            session,
+            task_ids=[task.id],
+            trial_ids=[trial.id for trial in task.trials],
+        )
         queue_info_by_trial_id = await fetch_trial_queue_info(
             session, trials=task.trials
         )
@@ -593,11 +636,16 @@ async def get_task_status_core(
             task,
             include_empty_rewards=include_empty_rewards,
             queue_info_by_trial_id=queue_info_by_trial_id,
+            jobs_by_subject=jobs_by_subject,
         )
 
+    jobs_by_subject = await fetch_visible_worker_jobs(session, task_ids=[task.id])
     return (
         await build_task_status_responses_from_counts(
-            session, tasks=[task], include_empty_rewards=include_empty_rewards
+            session,
+            tasks=[task],
+            include_empty_rewards=include_empty_rewards,
+            jobs_by_subject=jobs_by_subject,
         )
     )[0]
 
@@ -625,10 +673,12 @@ async def get_trial_by_index_core(
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=[trial])
+    jobs_by_subject = await fetch_visible_worker_jobs(session, trial_ids=[trial.id])
     return build_trial_response(
         trial,
         task_path,
         queue_info=queue_info_by_trial_id.get(trial.id),
+        jobs=jobs_by_subject.get(("trials", trial.id), []),
     )
 
 
@@ -756,6 +806,44 @@ def _reset_task_verdict(task: TaskModel) -> None:
     task.verdict_error = None
     task.verdict_started_at = None
     task.verdict_finished_at = None
+
+
+def _task_has_active_analysis(task: TaskModel) -> bool:
+    return any(
+        trial.analysis_status
+        in (AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
+        for trial in task.trials or []
+    )
+
+
+def _task_has_active_trials(task: TaskModel) -> bool:
+    return any(
+        trial.status
+        in (
+            TrialStatus.PENDING,
+            TrialStatus.QUEUED,
+            TrialStatus.RUNNING,
+            TrialStatus.RETRYING,
+        )
+        for trial in task.trials or []
+    )
+
+
+def _clear_stale_task_pipeline_status(task: TaskModel) -> None:
+    """Move a surviving task out of pipeline-only states after scoped deletion."""
+    if task.status not in (TaskStatus.ANALYZING, TaskStatus.VERDICT_PENDING):
+        return
+    if _task_has_active_trials(task) or _task_has_active_analysis(task):
+        return
+    if task.verdict_status in (
+        VerdictStatus.PENDING,
+        VerdictStatus.QUEUED,
+        VerdictStatus.RUNNING,
+    ):
+        return
+
+    task.status = TaskStatus.COMPLETED if task.trials else TaskStatus.FAILED
+    task.finished_at = task.finished_at or utcnow()
 
 
 def _reset_trial_analysis(trial: TrialModel) -> None:
@@ -1311,6 +1399,25 @@ async def delete_experiment_core(
     linked_task_ids = [row[0] for row in linked_task_rows]
     linked_task_s3 = {row[0]: (row[1], row[2]) for row in linked_task_rows}
 
+    if linked_task_ids:
+        await session.execute(
+            text(
+                """
+                UPDATE worker_jobs
+                SET    status = 'CANCELLED',
+                       finished_at = NOW(),
+                       error_message = 'Experiment deleted by user',
+                       current_worker_id = NULL,
+                       current_queue_slot = NULL,
+                       modal_function_call_id = NULL
+                WHERE  subject_table = 'tasks'
+                  AND  subject_id = ANY(:task_ids)
+                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                """
+            ),
+            {"task_ids": linked_task_ids},
+        )
+
     # Trials scoped to this experiment.
     trial_where = [TrialModel.experiment_id == experiment_id]
     if org_id is not None:
@@ -1412,9 +1519,15 @@ async def delete_experiment_core(
             deleted_tasks += int(task_del_result.rowcount or 0)  # type: ignore[attr-defined]
             task_s3_to_delete.append(linked_task_s3[tid])
         else:
-            task = await session.get(TaskModel, tid)
+            task_result = await session.execute(
+                select(TaskModel)
+                .options(selectinload(TaskModel.trials))
+                .where(TaskModel.id == tid)
+            )
+            task = task_result.scalar_one_or_none()
             if task is not None:
                 _reset_task_verdict(task)
+                _clear_stale_task_pipeline_status(task)
 
     s3_prefixes = collect_s3_prefixes_for_deletion(
         tasks=task_s3_to_delete,

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import hashlib
 import uuid
 from pathlib import Path
 
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,37 +11,6 @@ from oddish.config import settings
 from oddish.db import Priority, TaskModel, TaskVersionModel, get_session
 from oddish.db.storage import StorageClient, get_storage_client
 from oddish.schemas import TaskUploadInitResponse, UploadResponse
-
-
-def _compute_file_hash(path: Path) -> str:
-    """Return the SHA-256 hex digest of a file."""
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-async def _write_upload_to_file(
-    file: UploadFile, destination: Path, *, max_bytes: int
-) -> int:
-    total = 0
-    chunk_size = 1024 * 1024
-    with destination.open("wb") as handle:
-        while True:
-            chunk = await file.read(chunk_size)
-            if not chunk:
-                break
-            total += len(chunk)
-            if max_bytes and total > max_bytes:
-                raise HTTPException(
-                    status_code=413,
-                    detail=(
-                        f"Task upload too large. Max size is {settings.max_task_upload_mb}MB."
-                    ),
-                )
-            handle.write(chunk)
-    return total
 
 
 async def _next_version_number(session: AsyncSession, task_id: str) -> int:
@@ -322,99 +290,6 @@ async def complete_task_upload(
     return UploadResponse(
         task_id=task_id,
         name=normalized_name,
-        s3_key=s3_key,
-        version=version,
-        version_id=version_id,
-        existing_task=True,
-        content_hash=content_hash,
-    )
-
-
-async def _handle_existing_task_upload(
-    existing_task: TaskModel,
-    *,
-    task_name: str,
-    tarball_path: Path,
-    content_hash: str,
-    message: str | None,
-    created_by_user_id: str | None,
-) -> UploadResponse:
-    """Handle an upload for a task name that already exists.
-
-    Compares *content_hash* with the latest version's hash.  If identical the
-    current version is returned without creating a new one.  Otherwise a new
-    version row + storage artefact is created.
-    """
-    task_id = existing_task.id
-
-    async with get_session() as session:
-        latest = await _latest_version(session, task_id)
-
-        # Content unchanged -- reuse existing version
-        if (
-            latest is not None
-            and latest.content_hash
-            and latest.content_hash == content_hash
-        ):
-            return UploadResponse(
-                task_id=task_id,
-                name=task_name,
-                s3_key=latest.task_s3_key,
-                version=latest.version,
-                version_id=latest.id,
-                existing_task=True,
-                content_unchanged=True,
-                content_hash=content_hash,
-            )
-
-        # Content changed -- create new version
-        version = await _next_version_number(session, task_id)
-        version_id = f"{task_id}-v{version}"
-        storage = get_storage_client()
-        try:
-            s3_key = await storage.upload_task_archive_versioned(
-                task_id, version, tarball_path
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=500, detail=f"Failed to upload to S3: {str(e)}"
-            )
-        task_path = f"s3://{s3_key}"
-
-        version_row = TaskVersionModel(
-            id=version_id,
-            task_id=task_id,
-            version=version,
-            task_path=task_path,
-            task_s3_key=s3_key,
-            content_hash=content_hash,
-            message=message,
-            created_by_user_id=created_by_user_id,
-        )
-        session.add(version_row)
-
-        # Refresh the task within this session to update mutable fields
-        task = await session.get(TaskModel, task_id)
-        if task is not None:
-            task.task_path = task_path
-            task.task_s3_key = s3_key
-            task.current_version_id = version_id
-
-        if settings.tasks_expand_archive:
-            from oddish.queue import enqueue_task_expand_worker_job
-
-            await enqueue_task_expand_worker_job(
-                session,
-                task_id=task_id,
-                version=version,
-                org_id=existing_task.org_id,
-            )
-
-        await session.commit()
-
-    return UploadResponse(
-        task_id=task_id,
-        name=task_name,
         s3_key=s3_key,
         version=version,
         version_id=version_id,
