@@ -51,9 +51,8 @@ WORKER_TASK_MOUNT_KEY_PREFIX = "tasks/"
 
 # Worker configuration
 POLL_INTERVAL_SECONDS = 180  # How often to check for new jobs (3 minutes)
-# Allow ~12 hour trials with small shutdown buffer.
+# Allow ~12 hour trials.
 WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 43200)
-SHUTDOWN_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_SHUTDOWN_TIMEOUT_SECONDS", 10)
 WORKER_MIN_CONTAINERS = _env_int(
     "ODDISH_MODAL_WORKER_MIN_CONTAINERS", 1
 )  # Keep one job worker warm to reduce cold starts

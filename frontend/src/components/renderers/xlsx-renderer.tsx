@@ -1,6 +1,15 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { Button } from "@/components/ui/button";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 const MAX_RENDERED_ROWS = 5_000;
 
@@ -82,55 +91,61 @@ export function XlsxRenderer({ data, fileName }: XlsxRendererProps) {
       {sheetNames.length > 1 && (
         <div className="flex flex-wrap gap-1 px-4 pt-3">
           {sheetNames.map((name, i) => (
-            <button
+            <Button
               key={name}
+              type="button"
+              variant="outline"
+              size="sm"
               onClick={() => setActiveSheet(i)}
-              className={`rounded-md border px-3 py-1 text-xs transition-colors ${
+              className={`h-auto rounded-md px-3 py-1 text-xs transition-colors ${
                 i === activeSheet
                   ? "border-primary bg-primary text-primary-foreground"
                   : "border-border bg-muted text-muted-foreground hover:bg-accent"
               }`}
             >
               {name}
-            </button>
+            </Button>
           ))}
         </div>
       )}
       <div className="max-h-[600px] overflow-auto">
-        <table className="w-full border-collapse text-xs">
-          <thead className="sticky top-0 z-10">
-            <tr className="bg-muted/80 backdrop-blur-xs">
-              <th className="w-10 border-b border-r border-border px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+        <Table className="border-collapse text-xs">
+          <TableHeader className="sticky top-0 z-10">
+            <TableRow className="bg-muted/80 backdrop-blur-xs">
+              <TableHead className="w-10 border-b border-r border-border px-3 py-2 text-left text-xs font-medium text-muted-foreground">
                 #
-              </th>
+              </TableHead>
               {headers.map((header, i) => (
-                <th
+                <TableHead
                   key={i}
                   className="whitespace-nowrap border-b border-r border-border px-3 py-2 text-left text-xs font-medium text-foreground"
                 >
                   {String(header ?? "")}
-                </th>
+                </TableHead>
               ))}
-            </tr>
-          </thead>
-          <tbody>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {rows.map((row, rowIdx) => (
-              <tr key={rowIdx} className="transition-colors hover:bg-muted/50">
-                <td className="border-b border-r border-border px-3 py-1.5 text-xs tabular-nums text-muted-foreground">
+              <TableRow
+                key={rowIdx}
+                className="transition-colors hover:bg-muted/50"
+              >
+                <TableCell className="border-b border-r border-border px-3 py-1.5 text-xs tabular-nums text-muted-foreground">
                   {rowIdx + 1}
-                </td>
+                </TableCell>
                 {headers.map((_, colIdx) => (
-                  <td
+                  <TableCell
                     key={colIdx}
                     className="max-w-[300px] truncate whitespace-nowrap border-b border-r border-border px-3 py-1.5 text-xs text-foreground"
                   >
                     {String(row[colIdx] ?? "")}
-                  </td>
+                  </TableCell>
                 ))}
-              </tr>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       </div>
       <div className="px-4 pb-3 text-xs text-muted-foreground">
         {truncated

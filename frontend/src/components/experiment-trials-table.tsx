@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -49,12 +50,17 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import {
+  isActivePipelineStatus,
+  taskHasCancellableWork,
+} from "@/lib/job-status";
+import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
   formatRewardValue,
   getMatrixStatus,
   getRewardStyle,
   STATUS_CONFIG,
+  STATUS_GLYPH_BOX,
   type MatrixStatus,
 } from "@/lib/status-config";
 import {
@@ -128,7 +134,7 @@ const EMPTY_TRIAL_INDEX: ReadonlyMap<string, number> = new Map<
   string,
   number
 >();
-const VIRTUALIZATION_THRESHOLD = 50;
+const VIRTUALIZATION_THRESHOLD = 20;
 const INITIAL_LOADING_COLUMN_COUNT = 4;
 const INITIAL_LOADING_ROW_COUNT = 8;
 const LOADING_AGENT_COLUMNS: AgentSummary[] = Array.from(
@@ -237,15 +243,16 @@ function InlineBtn({
   style?: React.CSSProperties;
 }) {
   return (
-    <button
+    <Button
       type="button"
+      variant="ghost"
       onClick={onClick}
       disabled={disabled}
       style={style}
-      className="inline-flex items-center gap-1.5 rounded-[5px] bg-transparent px-2 py-1 text-[11.5px] font-medium text-paper-ink-2 transition hover:bg-paper-surface-2 hover:text-paper-ink disabled:cursor-not-allowed disabled:text-paper-ink-4 disabled:hover:bg-transparent disabled:hover:text-paper-ink-4"
+      className="h-auto gap-1.5 rounded-[5px] bg-transparent px-2 py-1 text-[11.5px] font-medium text-paper-ink-2 transition hover:bg-paper-surface-2 hover:text-paper-ink disabled:cursor-not-allowed disabled:text-paper-ink-4 disabled:hover:bg-transparent disabled:hover:text-paper-ink-4"
     >
       {children}
-    </button>
+    </Button>
   );
 }
 
@@ -384,13 +391,17 @@ function groupTrialsByAgent(
   return grouped;
 }
 
+function hasLiveQueueSnapshot(trial: Trial): boolean {
+  return ["queued", "retrying", "running", "pending"].includes(trial.status);
+}
+
 function getTrialTitle(trial: Trial, status: MatrixStatus) {
   const reward =
     trial.reward === null
       ? "reward pending"
       : `reward ${formatRewardValue(trial.reward)} (${formatRewardPercent(trial.reward)})`;
   const error = trial.error_message ? ` • ${trial.error_message}` : "";
-  const queueInfo = trial.queue_info;
+  const queueInfo = hasLiveQueueSnapshot(trial) ? trial.queue_info : null;
   const queueSnapshot = queueInfo
     ? [
         queueInfo.position != null
@@ -762,8 +773,8 @@ export function ExperimentTrialsTable({
   ]);
 
   const getTaskContext = useMemo(() => {
-    const contextCache = new Map<
-      string,
+    const contextCache = new WeakMap<
+      Task,
       {
         groupedTrialsByAgent: Map<string, Trial[]>;
         orderedTrials: Trial[];
@@ -777,7 +788,7 @@ export function ExperimentTrialsTable({
     >();
 
     return (task: Task) => {
-      const cached = contextCache.get(task.id);
+      const cached = contextCache.get(task);
       if (cached) return cached;
 
       const groupedTrialsByAgent = groupTrialsByAgent(
@@ -813,7 +824,7 @@ export function ExperimentTrialsTable({
         trialIndexById,
         trialGroups,
       };
-      contextCache.set(task.id, context);
+      contextCache.set(task, context);
       return context;
     };
   }, [visibleAgents, modelScopedAgents]);
@@ -841,12 +852,7 @@ export function ExperimentTrialsTable({
   }, [selectedTaskList]);
 
   const selectedCancellableTasks = useMemo(
-    () =>
-      selectedTaskList.filter((task) =>
-        (task.trials ?? []).some((trial) =>
-          ["running", "queued", "retrying", "pending"].includes(trial.status),
-        ),
-      ),
+    () => selectedTaskList.filter((task) => taskHasCancellableWork(task)),
     [selectedTaskList],
   );
 
@@ -859,13 +865,9 @@ export function ExperimentTrialsTable({
           (trial) => trial.status === "failed" || trial.status === "success",
         );
         const hasAnalysisInFlight = trials.some((trial) =>
-          ["pending", "queued", "running"].includes(
-            trial.analysis_status ?? "",
-          ),
+          isActivePipelineStatus(trial.analysis_status),
         );
-        const verdictInFlight = ["pending", "queued", "running"].includes(
-          task.verdict_status ?? "",
-        );
+        const verdictInFlight = isActivePipelineStatus(task.verdict_status);
         return allTrialsTerminal && !hasAnalysisInFlight && !verdictInFlight;
       }),
     [selectedTaskList],
@@ -884,9 +886,7 @@ export function ExperimentTrialsTable({
             trial.analysis_status === "success" ||
             trial.analysis_status === "failed",
         );
-        const verdictInFlight = ["pending", "queued", "running"].includes(
-          task.verdict_status ?? "",
-        );
+        const verdictInFlight = isActivePipelineStatus(task.verdict_status);
         return allTrialsTerminal && allAnalysesComplete && !verdictInFlight;
       }),
     [selectedTaskList],
@@ -1428,20 +1428,21 @@ export function ExperimentTrialsTable({
     return (
       <Tooltip key={status}>
         <TooltipTrigger asChild>
-          <button
+          <Button
             type="button"
+            variant="ghost"
             onClick={() => toggleStatus(status)}
-            className={`inline-flex select-none items-center gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+            className={`h-auto select-none gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
               isDimmed ? "line-through opacity-[0.38]" : ""
             }`}
           >
             <span
-              className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-[3px] ${config.matrixClass}`}
+              className={`inline-flex items-center justify-center border-transparent ${STATUS_GLYPH_BOX} ${config.matrixClass}`}
             >
-              <StatusIcon status={status} className="h-2 w-2" />
+              <StatusIcon status={status} />
             </span>
             <span>{config.shortLabel}</span>
-          </button>
+          </Button>
         </TooltipTrigger>
         <TooltipContent>
           {config.shortLabel} ({isDimmed ? "dimmed" : "visible"})
@@ -1464,10 +1465,11 @@ export function ExperimentTrialsTable({
     return (
       <Tooltip key={item.key}>
         <TooltipTrigger asChild>
-          <button
+          <Button
             type="button"
+            variant="ghost"
             onClick={() => toggleAnalysisKey(item.key)}
-            className={`inline-flex select-none items-center gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+            className={`h-auto select-none gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
               isDimmed ? "line-through opacity-[0.38]" : ""
             }`}
           >
@@ -1476,7 +1478,7 @@ export function ExperimentTrialsTable({
               style={{ background: ANALYZER_CHIP_COLOR[item.key] }}
             />
             <span>{item.label}</span>
-          </button>
+          </Button>
         </TooltipTrigger>
         <TooltipContent>
           {item.label} ({isDimmed ? "dimmed" : "visible"})
@@ -1490,8 +1492,10 @@ export function ExperimentTrialsTable({
       <TooltipTrigger asChild>
         <div className="flex items-center gap-2.5 border-r border-dashed border-[color:var(--paper-line)] pl-1.5 pr-2.5 font-mono text-[9.5px] leading-tight text-[color:var(--paper-ink-3)]">
           <span className="relative inline-flex">
-            <span className="flex h-[18px] w-[22px] items-center justify-center rounded-[4px] border border-transparent bg-[color:var(--paper-pass)] text-white">
-              <StatusIcon status="pass" className="h-2.5 w-2.5" />
+            <span
+              className={`flex items-center justify-center border-transparent bg-[color:var(--paper-pass)] text-white ${STATUS_GLYPH_BOX}`}
+            >
+              <StatusIcon status="pass" />
             </span>
             <span className="absolute -right-[2px] -top-[2px] h-[7px] w-[7px] rounded-full bg-[color:var(--paper-a-good)] ring-[1.5px] ring-[color:var(--paper-surface)]" />
           </span>
@@ -1502,7 +1506,7 @@ export function ExperimentTrialsTable({
             </span>
             <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
               <span className="mx-[1px] inline-block h-2 w-2 rounded-full bg-[color:var(--paper-a-good)]" />
-              QA verdict
+              trial analysis
             </span>
           </span>
         </div>
@@ -1514,16 +1518,17 @@ export function ExperimentTrialsTable({
   const renderAgentFilterMenu = () => (
     <Popover>
       <PopoverTrigger asChild>
-        <button
+        <Button
           type="button"
-          className="inline-flex h-auto select-none items-center gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+          variant="ghost"
+          className="h-auto select-none gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
         >
           Agents
           <InlineCount>
             {visibleAgents.length}/{sortedAgentSummaries.length}
           </InlineCount>
           <ChevronDown className="h-3 w-3" />
-        </button>
+        </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="max-h-64 w-64 overflow-auto p-2">
         <div className="flex items-center justify-between px-1 pb-2 text-[10px] text-muted-foreground">
@@ -1636,7 +1641,7 @@ export function ExperimentTrialsTable({
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="cursor-help whitespace-nowrap pr-2 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] text-[color:var(--paper-ink-3)]">
-              QA verdict
+              Trial analysis
             </span>
           </TooltipTrigger>
           <TooltipContent className="max-w-xs">
@@ -1692,14 +1697,14 @@ export function ExperimentTrialsTable({
               <div className="w-full sm:w-[280px]">
                 <div className="flex h-8 items-center gap-2 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] px-2.5 text-[color:var(--paper-ink-2)] focus-within:border-[color:var(--paper-ink-4)]">
                   <Search className="h-3.5 w-3.5 shrink-0 text-[color:var(--paper-ink-3)]" />
-                  <input
+                  <Input
                     type="search"
                     value={taskSearch}
                     onChange={(event) =>
                       handleTaskSearchChange(event.target.value)
                     }
                     placeholder="Search tasks (comma-separated)"
-                    className="min-w-0 flex-1 border-0 bg-transparent text-[12.5px] text-[color:var(--paper-ink)] placeholder:text-[color:var(--paper-ink-3)] focus:outline-none"
+                    className="h-auto min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-[12.5px] text-[color:var(--paper-ink)] placeholder:text-[color:var(--paper-ink-3)] focus-visible:ring-0 focus-visible:ring-offset-0"
                   />
                 </div>
               </div>
@@ -1832,10 +1837,11 @@ export function ExperimentTrialsTable({
                 {renderAgentFilterMenu()}
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button
+                    <Button
                       type="button"
+                      variant="ghost"
                       onClick={handleCopyTableAsTSV}
-                      className="inline-flex h-auto select-none items-center gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+                      className="h-auto select-none gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
                     >
                       {copiedTable ? (
                         <>
@@ -1848,7 +1854,7 @@ export function ExperimentTrialsTable({
                           Copy TSV
                         </>
                       )}
-                    </button>
+                    </Button>
                   </TooltipTrigger>
                   <TooltipContent>Copy table as TSV</TooltipContent>
                 </Tooltip>
@@ -1904,8 +1910,9 @@ export function ExperimentTrialsTable({
                           className="h-4 w-4"
                         />
                       )}
-                      <button
+                      <Button
                         type="button"
+                        variant="ghost"
                         onClick={() =>
                           setTaskSort((prev) =>
                             prev === "default"
@@ -1915,7 +1922,6 @@ export function ExperimentTrialsTable({
                                 : "default",
                           )
                         }
-                        className="flex items-center gap-1 rounded-sm px-1 text-xs transition hover:bg-background/70 hover:text-blue-400 sm:text-sm"
                         title={
                           taskSort === "default"
                             ? "Sort by task name (A→Z)"
@@ -1924,6 +1930,7 @@ export function ExperimentTrialsTable({
                               : "Clear sort (default order)"
                         }
                         aria-label="Toggle task sort"
+                        className="h-auto gap-1 rounded-sm bg-transparent px-1 py-0 text-xs font-normal transition hover:bg-background/70 hover:text-blue-400 sm:text-sm"
                       >
                         <span>Task</span>
                         {taskSort === "name-asc" ? (
@@ -1933,7 +1940,7 @@ export function ExperimentTrialsTable({
                         ) : (
                           <ArrowUpDown className="h-3 w-3 text-muted-foreground/60" />
                         )}
-                      </button>
+                      </Button>
                     </div>
                     <div
                       className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize"
@@ -1959,12 +1966,13 @@ export function ExperimentTrialsTable({
                         <div className="flex min-w-[60px] flex-col items-center gap-0.5 sm:min-w-[80px] md:min-w-[100px]">
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <button
+                              <Button
                                 type="button"
+                                variant="ghost"
                                 onClick={() =>
                                   handleCopyAgentName(agent.key, agent.agent)
                                 }
-                                className="flex max-w-[70px] items-center gap-1 rounded-sm px-1 text-[10px] font-bold text-foreground transition hover:bg-background/70 hover:text-blue-400 sm:max-w-[110px] sm:text-xs md:max-w-none"
+                                className="h-auto max-w-[70px] gap-1 rounded-sm bg-transparent px-1 py-0 text-[10px] font-bold text-foreground transition hover:bg-background/70 hover:text-blue-400 sm:max-w-[110px] sm:text-xs md:max-w-none"
                                 aria-label={`Copy agent name ${agent.agent}`}
                                 title="Copy agent name"
                               >
@@ -1980,7 +1988,7 @@ export function ExperimentTrialsTable({
                                     ? "Copied"
                                     : agent.agent}
                                 </span>
-                              </button>
+                              </Button>
                             </TooltipTrigger>
                             <TooltipContent side="bottom">
                               {copiedAgentNameKey === agent.key
@@ -1991,15 +1999,16 @@ export function ExperimentTrialsTable({
                           <Tooltip>
                             <TooltipTrigger asChild>
                               {agent.model ? (
-                                <button
+                                <Button
                                   type="button"
+                                  variant="ghost"
                                   onClick={() =>
                                     handleCopyAgentModel(
                                       agent.key,
                                       agent.model!,
                                     )
                                   }
-                                  className="flex w-full min-w-0 items-center justify-center gap-1 rounded-sm px-1 font-mono text-[9px] font-normal text-muted-foreground transition hover:bg-background/70 hover:text-foreground sm:text-[10px]"
+                                  className="h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal text-muted-foreground transition hover:bg-background/70 hover:text-foreground sm:text-[10px]"
                                   aria-label={`Copy model id ${agent.model}`}
                                   title="Copy model id"
                                 >
@@ -2009,7 +2018,7 @@ export function ExperimentTrialsTable({
                                   <span className="min-w-0 truncate">
                                     {agent.model}
                                   </span>
-                                </button>
+                                </Button>
                               ) : (
                                 <div className="flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal text-muted-foreground sm:text-[10px]">
                                   <span className="min-w-0 truncate">—</span>
@@ -2109,18 +2118,19 @@ export function ExperimentTrialsTable({
                           <div className="flex min-w-0 flex-1 items-center gap-2">
                             <Tooltip>
                               <TooltipTrigger asChild>
-                                <button
+                                <Button
                                   type="button"
+                                  variant="ghost"
                                   onClick={() =>
                                     onTaskSelect?.(task, {
                                       orderedTasks: filteredTasks,
                                       taskIndex: index,
                                     })
                                   }
-                                  className="min-w-0 flex-1 cursor-pointer truncate bg-transparent p-0 text-left font-mono text-[11.5px] font-normal text-[color:var(--paper-ink)] transition-colors hover:text-[color:oklch(40%_0.1_240)]"
+                                  className="h-auto min-w-0 flex-1 cursor-pointer justify-start truncate bg-transparent p-0 text-left font-mono text-[11.5px] font-normal text-[color:var(--paper-ink)] transition-colors hover:bg-transparent hover:text-[color:oklch(40%_0.1_240)]"
                                 >
                                   {task.name}
-                                </button>
+                                </Button>
                               </TooltipTrigger>
                               <TooltipContent>View task files</TooltipContent>
                             </Tooltip>
@@ -2195,8 +2205,9 @@ export function ExperimentTrialsTable({
                                       key={trial.id}
                                       className={`relative inline-flex ${dimClass || analysisDimClass ? "opacity-25" : ""}`}
                                     >
-                                      <button
+                                      <Button
                                         type="button"
+                                        variant="unstyled"
                                         onClick={() => {
                                           const trialIndexInGroup =
                                             trialIndexById.get(trial.id) ?? 0;
@@ -2206,7 +2217,7 @@ export function ExperimentTrialsTable({
                                             trialGroups,
                                           });
                                         }}
-                                        className={`relative grid h-[18px] w-[22px] shrink-0 place-items-center rounded-[4px] border leading-none transition-transform hover:-translate-y-px ${config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tabular-nums tracking-[-0.02em]" : ""}`}
+                                        className={`relative grid place-items-center gap-0 p-0 leading-none transition-transform hover:-translate-y-px ${STATUS_GLYPH_BOX} ${config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tabular-nums tracking-[-0.02em]" : ""}`}
                                         style={getRewardStyle(trial.reward)}
                                         aria-label={`Trial ${trialIndex + 1} ${config.shortLabel}`}
                                         title={fullTitle}
@@ -2214,12 +2225,9 @@ export function ExperimentTrialsTable({
                                         {isPartial ? (
                                           partialLabel
                                         ) : (
-                                          <StatusIcon
-                                            status={status}
-                                            className="h-2.5 w-2.5"
-                                          />
+                                          <StatusIcon status={status} />
                                         )}
-                                      </button>
+                                      </Button>
                                       {analysisIndicator && (
                                         <span
                                           aria-hidden="true"

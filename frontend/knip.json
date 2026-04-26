@@ -1,0 +1,5 @@
+{
+  "ignoreIssues": {
+    "src/components/ui/**": ["exports", "types"]
+  }
+}

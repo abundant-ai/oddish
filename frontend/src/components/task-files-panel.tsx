@@ -34,6 +34,11 @@ import {
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
 import type { Task, Trial } from "@/lib/types";
+import {
+  getCancelActionLabel,
+  isActivePipelineStatus,
+  taskHasCancellableWork,
+} from "@/lib/job-status";
 
 interface TaskFile {
   path: string;
@@ -410,20 +415,15 @@ export function TaskFilesPanel({
   }, [task]);
 
   const canRetryTask = allowRetry && retryableTrials.length > 0;
-  const activeTrials = useMemo(() => {
-    if (!task?.trials) return [];
-    return task.trials.filter((trial) =>
-      ["running", "queued", "retrying", "pending"].includes(trial.status),
-    );
-  }, [task]);
-  const canCancelTask = allowRetry && activeTrials.length > 0;
+  const canCancelTask = allowRetry && taskHasCancellableWork(task);
+  const cancelActionLabel = getCancelActionLabel(task);
   const allTrialsTerminal =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(
       (trial) => trial.status === "failed" || trial.status === "success",
     );
   const hasAnalysisInFlight = (task?.trials ?? []).some((trial) =>
-    ["pending", "queued", "running"].includes(trial.analysis_status ?? ""),
+    isActivePipelineStatus(trial.analysis_status),
   );
   const allAnalysesComplete =
     Boolean(task?.trials?.length) &&
@@ -432,9 +432,7 @@ export function TaskFilesPanel({
         trial.analysis_status === "success" ||
         trial.analysis_status === "failed",
     );
-  const verdictInFlight = ["pending", "queued", "running"].includes(
-    verdictSource?.verdict_status ?? "",
-  );
+  const verdictInFlight = isActivePipelineStatus(verdictSource?.verdict_status);
   const canRunTaskAnalysis =
     allowRetry &&
     Boolean(task) &&
@@ -1241,15 +1239,16 @@ export function TaskFilesPanel({
         <div className="mb-2 flex flex-wrap items-start justify-between gap-3 pr-20">
           <div className="min-w-0 flex-1">
             <DrawerTitle className="flex items-center gap-2 font-mono text-base font-semibold">
-              <button
+              <Button
                 type="button"
+                variant="ghost"
                 onClick={handleCopyTaskName}
-                className="block min-w-0 max-w-full truncate text-left transition hover:text-blue-400"
+                className="h-auto min-w-0 max-w-full justify-start truncate bg-transparent p-0 text-left font-mono text-base font-semibold hover:bg-transparent hover:text-blue-400"
                 title="Copy task name"
                 aria-label={`Copy task name ${taskName}`}
               >
                 {taskName}
-              </button>
+              </Button>
               {currentVersion != null && (
                 <span className="inline-flex shrink-0 items-center rounded-md border border-border bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-foreground">
                   v{currentVersion}
@@ -1355,9 +1354,7 @@ export function TaskFilesPanel({
                     ) : (
                       <OctagonX className="mr-1 h-3.5 w-3.5" />
                     )}
-                    {isCancelling
-                      ? "Cancelling..."
-                      : `Cancel (${activeTrials.length})`}
+                    {isCancelling ? "Cancelling..." : cancelActionLabel}
                   </Button>
                 )}
                 {allowRetry && (

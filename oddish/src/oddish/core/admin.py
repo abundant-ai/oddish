@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,12 +40,14 @@ class QueueSlotsResponse(BaseModel):
 
 
 class QueueStatusEntry(BaseModel):
+    kind: str = "TRIAL"
     queue_key: str
     queued: int
     running: int
 
 
 class QueueStatusResponse(BaseModel):
+    queues: list[QueueStatusEntry] = Field(default_factory=list)
     trial_queues: list[QueueStatusEntry]
     analysis_queued: int
     analysis_running: int
@@ -201,13 +203,14 @@ async def get_queue_slots_core(session: AsyncSession) -> QueueSlotsResponse:
 
 
 async def get_queue_status_core(session: AsyncSession) -> QueueStatusResponse:
-    """Get queue status from the trials/tasks tables."""
+    """Get queue status grouped by worker-job kind and queue key."""
     now = utcnow()
 
     # One grouped query against ``worker_jobs`` replaces three separate
-    # scans on trials/analysis_status/verdict_status. The legacy
-    # ``QueueStatusResponse`` shape is kept so the admin "Queue Status"
-    # card keeps rendering without a frontend change.
+    # scans on trials/analysis_status/verdict_status. The legacy aggregate
+    # fields are preserved for older clients; new clients should read
+    # ``queues`` so ANALYSIS and VERDICT get the same queue-key treatment
+    # as TRIAL rows.
     rows = (
         await session.execute(
             text(
@@ -226,6 +229,7 @@ async def get_queue_status_core(session: AsyncSession) -> QueueStatusResponse:
         )
     ).all()
 
+    queues: list[QueueStatusEntry] = []
     trial_queues: list[QueueStatusEntry] = []
     analysis_queued = analysis_running = 0
     verdict_queued = verdict_running = 0
@@ -233,14 +237,15 @@ async def get_queue_status_core(session: AsyncSession) -> QueueStatusResponse:
         kind = row.kind
         queued = int(row.queued or 0)
         running = int(row.running or 0)
+        entry = QueueStatusEntry(
+            kind=kind,
+            queue_key=settings.normalize_queue_key(row.queue_key),
+            queued=queued,
+            running=running,
+        )
+        queues.append(entry)
         if kind == "TRIAL":
-            trial_queues.append(
-                QueueStatusEntry(
-                    queue_key=settings.normalize_queue_key(row.queue_key),
-                    queued=queued,
-                    running=running,
-                )
-            )
+            trial_queues.append(entry)
         elif kind == "ANALYSIS":
             analysis_queued += queued
             analysis_running += running
@@ -252,6 +257,7 @@ async def get_queue_status_core(session: AsyncSession) -> QueueStatusResponse:
         # them in the kind-agnostic matrix instead.
 
     return QueueStatusResponse(
+        queues=queues,
         trial_queues=trial_queues,
         analysis_queued=analysis_queued,
         analysis_running=analysis_running,

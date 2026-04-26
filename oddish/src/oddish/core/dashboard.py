@@ -18,6 +18,8 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
     VerdictStatus,
+    WorkerJobModel,
+    WorkerJobStatus,
     get_session,
     task_experiments,
 )
@@ -523,6 +525,87 @@ async def get_model_usage_core(
     return model_usage
 
 
+async def get_worker_job_usage_core(
+    session: AsyncSession,
+    *,
+    org_id: str | None = None,
+    usage_minutes: int | None = None,
+) -> list[dict[str, Any]]:
+    """Aggregate job lifecycle usage directly from worker_jobs."""
+    filters = []
+    if org_id is not None:
+        filters.append(WorkerJobModel.org_id == org_id)
+    if usage_minutes is not None:
+        since = datetime.now(timezone.utc) - timedelta(minutes=usage_minutes)
+        filters.append(WorkerJobModel.created_at >= since)
+
+    query = (
+        select(
+            WorkerJobModel.kind,
+            WorkerJobModel.queue_key,
+            func.count(WorkerJobModel.id).label("job_count"),
+            func.count(
+                case((WorkerJobModel.status == WorkerJobStatus.QUEUED, 1))
+            ).label("queued"),
+            func.count(
+                case((WorkerJobModel.status == WorkerJobStatus.RUNNING, 1))
+            ).label("running"),
+            func.count(
+                case((WorkerJobModel.status == WorkerJobStatus.RETRYING, 1))
+            ).label("retrying"),
+            func.count(
+                case((WorkerJobModel.status == WorkerJobStatus.SUCCESS, 1))
+            ).label("succeeded"),
+            func.count(
+                case((WorkerJobModel.status == WorkerJobStatus.FAILED, 1))
+            ).label("failed"),
+            func.count(
+                case((WorkerJobModel.status == WorkerJobStatus.CANCELLED, 1))
+            ).label("cancelled"),
+            func.count(
+                case((WorkerJobModel.status == WorkerJobStatus.BLOCKED, 1))
+            ).label("blocked"),
+            func.avg(
+                case(
+                    (
+                        WorkerJobModel.finished_at.isnot(None),
+                        func.extract(
+                            "epoch",
+                            WorkerJobModel.finished_at - WorkerJobModel.started_at,
+                        ),
+                    )
+                )
+            ).label("avg_duration_s"),
+        )
+        .group_by(WorkerJobModel.kind, WorkerJobModel.queue_key)
+        .order_by(WorkerJobModel.kind, WorkerJobModel.queue_key)
+    )
+    if filters:
+        query = query.where(*filters)
+
+    result = await session.execute(query)
+    return [
+        {
+            "kind": str(row.kind.value),
+            "queue_key": str(row.queue_key),
+            "job_count": int(row.job_count or 0),
+            "queued": int(row.queued or 0),
+            "running": int(row.running or 0),
+            "retrying": int(row.retrying or 0),
+            "succeeded": int(row.succeeded or 0),
+            "failed": int(row.failed or 0),
+            "cancelled": int(row.cancelled or 0),
+            "blocked": int(row.blocked or 0),
+            "avg_duration_s": (
+                round(float(row.avg_duration_s), 1)
+                if row.avg_duration_s is not None
+                else None
+            ),
+        }
+        for row in result.all()
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Full dashboard core
 # ---------------------------------------------------------------------------
@@ -562,9 +645,7 @@ async def get_dashboard_core(
         include_usage and not include_tasks and not include_experiments
     )
 
-    async def _fetch_primary() -> (
-        tuple[dict, dict[str, dict[str, int]], list[dict[str, Any]], list[dict], bool]
-    ):
+    async def _fetch_primary():
         """Queue stats, pipeline stats, usage, and tasks on the caller's session."""
         if is_usage_only_request:
             qs: dict = {}
@@ -586,10 +667,16 @@ async def get_dashboard_core(
                 )
 
         mu: list[dict[str, Any]] = []
+        ju: list[dict[str, Any]] = []
         if include_usage:
             usage_started_at = now()
-            mu = await get_model_usage_core(
-                session, org_id=org_id, usage_minutes=usage_minutes
+            mu, ju = await asyncio.gather(
+                get_model_usage_core(
+                    session, org_id=org_id, usage_minutes=usage_minutes
+                ),
+                get_worker_job_usage_core(
+                    session, org_id=org_id, usage_minutes=usage_minutes
+                ),
             )
             if record_timing is not None:
                 record_timing(
@@ -638,7 +725,7 @@ async def get_dashboard_core(
                         "Dashboard tasks response build",
                     )
 
-        return qs, ps, mu, tr, hm
+        return qs, ps, mu, ju, tr, hm
 
     async def _fetch_experiments_parallel() -> tuple[list[dict[str, Any]], bool]:
         """Experiments on a separate session so they run concurrently with primary."""
@@ -665,7 +752,14 @@ async def get_dashboard_core(
     if include_experiments:
         # Run the heavy experiments aggregation in parallel with primary stats.
         (
-            (queue_stats, pipeline_stats, model_usage, tasks_response, has_more),
+            (
+                queue_stats,
+                pipeline_stats,
+                model_usage,
+                job_usage,
+                tasks_response,
+                has_more,
+            ),
             (
                 experiments_response,
                 experiments_has_more,
@@ -676,6 +770,7 @@ async def get_dashboard_core(
             queue_stats,
             pipeline_stats,
             model_usage,
+            job_usage,
             tasks_response,
             has_more,
         ) = await _fetch_primary()
@@ -686,6 +781,7 @@ async def get_dashboard_core(
         "queues": queue_stats,
         "pipeline": pipeline_stats,
         "model_usage": model_usage,
+        "job_usage": job_usage,
         "tasks": tasks_response,
         "tasks_limit": tasks_limit,
         "tasks_offset": tasks_offset,

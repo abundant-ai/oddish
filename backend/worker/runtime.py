@@ -4,6 +4,7 @@ from rich.console import Console
 
 from oddish.config import settings
 from oddish.db import reconfigure_database_connections
+from oddish.workers.harbor_runner import log_local_storage_snapshot
 
 console = Console()
 
@@ -24,3 +25,4 @@ async def configure_storage_paths() -> None:
 
     console.print(f"[dim]Harbor jobs: {settings.harbor_jobs_dir}[/dim]")
     console.print(f"[dim]Default environment: {settings.harbor_environment}[/dim]")
+    log_local_storage_snapshot(settings.harbor_jobs_dir)

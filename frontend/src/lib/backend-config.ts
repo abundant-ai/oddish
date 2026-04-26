@@ -44,9 +44,16 @@ export async function getClerkToken(
 ): Promise<string | null> {
   const template = process.env.CLERK_JWT_TEMPLATE;
   if (template) {
-    const templatedToken = await getToken({ template });
-    if (templatedToken) {
-      return templatedToken;
+    try {
+      const templatedToken = await getToken({ template });
+      if (templatedToken) {
+        return templatedToken;
+      }
+    } catch (error) {
+      console.warn(
+        `Failed to get Clerk token for template "${template}", falling back to the default session token.`,
+        error,
+      );
     }
   }
 

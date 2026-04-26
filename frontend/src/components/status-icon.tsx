@@ -1,15 +1,4 @@
-import { Ban, Check, Loader2, Minus, X, type LucideIcon } from "lucide-react";
 import type { MatrixStatus } from "@/lib/status-config";
-
-const STATUS_ICON_MAP: Record<MatrixStatus, LucideIcon> = {
-  pass: Check,
-  fail: X,
-  partial: Minus,
-  "harness-error": Ban,
-  pending: Loader2,
-  queued: Loader2,
-  running: Loader2,
-};
 
 export function StatusIcon({
   status,
@@ -126,8 +115,4 @@ export function StatusIcon({
       <circle cx="12" cy="12" r="3" />
     </svg>
   );
-}
-
-export function getStatusIconComponent(status: MatrixStatus): LucideIcon {
-  return STATUS_ICON_MAP[status];
 }

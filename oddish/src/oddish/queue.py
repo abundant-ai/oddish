@@ -224,29 +224,6 @@ async def cancel_tasks_runs(
     }
 
 
-async def cancel_task_runs(
-    session: AsyncSession,
-    task_id: str,
-    org_id: str | None = None,
-) -> dict:
-    """Cancel all in-flight runs for a task without deleting data.
-
-    1. Mark running/queued/retrying trials as FAILED
-    2. Return Modal function call IDs so callers can cancel them remotely
-
-    Returns a summary dict with counts and modal_function_call_ids to cancel.
-    """
-    result = await cancel_tasks_runs(session, [task_id], org_id=org_id)
-    if result.get("error") == "not_found":
-        return {"error": "not_found"}
-
-    return {
-        "task_id": task_id,
-        "trials_cancelled": result.get("trials_cancelled", 0),
-        "modal_function_call_ids": result.get("modal_function_call_ids", []),
-    }
-
-
 # =============================================================================
 # Task/Trial Creation
 # =============================================================================
@@ -1026,32 +1003,6 @@ async def get_queue_and_pipeline_stats_with_concurrency(
         "analyses": analysis_pipeline,
         "verdicts": verdict_pipeline,
     }
-
-
-async def get_queue_stats_with_concurrency(
-    session: AsyncSession, org_id: str | None = None
-) -> dict[str, dict]:
-    """Get queue stats with recommended concurrency per queue key."""
-    stats = await get_queue_stats(session, org_id)
-    queue_stats: dict[str, dict] = {}
-    queue_keys = set(stats.keys()) | settings.get_known_queue_keys()
-    for queue_key in sorted(queue_keys):
-        provider_stats = stats.get(
-            queue_key,
-            {
-                "pending": 0,
-                "queued": 0,
-                "running": 0,
-                "success": 0,
-                "failed": 0,
-                "retrying": 0,
-            },
-        )
-        queue_stats[queue_key] = {
-            **provider_stats,
-            "recommended_concurrency": settings.get_model_concurrency(queue_key),
-        }
-    return queue_stats
 
 
 async def get_pipeline_stats(session: AsyncSession, org_id: str | None = None) -> dict:

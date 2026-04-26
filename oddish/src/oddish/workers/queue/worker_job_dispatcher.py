@@ -32,7 +32,6 @@ __all__ = [
     "build_spawn_plan",
     "discover_active_worker_job_queue_keys",
     "get_worker_job_org_queue_counts",
-    "get_worker_job_queue_counts",
 ]
 
 
@@ -61,47 +60,6 @@ async def discover_active_worker_job_queue_keys() -> tuple[str, ...]:
         discovered.add(settings.normalize_queue_key(raw_key))
 
     return tuple(sorted(discovered))
-
-
-async def get_worker_job_queue_counts(
-    queue_keys: tuple[str, ...],
-) -> dict[str, dict[str, int]]:
-    """Per-queue-key queued/running counts from ``worker_jobs``.
-
-    Returns ``{"queued": int, "picked": int}`` per queue key (the
-    "picked" naming is preserved from the legacy planner shape that
-    callers already consume). Still exported because admin tooling and
-    logging consume this aggregate shape; the dispatcher itself now
-    uses :func:`get_worker_job_org_queue_counts`.
-    """
-    if not queue_keys:
-        return {}
-
-    pool = await get_pool()
-    counts = {queue_key: {"queued": 0, "picked": 0} for queue_key in queue_keys}
-
-    rows = await pool.fetch(
-        """
-        SELECT
-            queue_key,
-            COUNT(*) FILTER (
-                WHERE status::text IN ('QUEUED', 'RETRYING')
-                  AND available_after <= NOW()
-            ) AS queued,
-            COUNT(*) FILTER (WHERE status::text = 'RUNNING') AS running
-        FROM   worker_jobs
-        WHERE  queue_key = ANY($1)
-        GROUP BY queue_key
-        """,
-        list(queue_keys),
-    )
-    for row in rows:
-        qk = row["queue_key"]
-        if qk in counts:
-            counts[qk]["queued"] = int(row["queued"] or 0)
-            counts[qk]["picked"] = int(row["running"] or 0)
-
-    return counts
 
 
 async def get_worker_job_org_queue_counts(

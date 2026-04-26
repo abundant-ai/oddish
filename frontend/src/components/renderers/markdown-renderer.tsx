@@ -6,6 +6,17 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { Highlight, themes } from "prism-react-renderer";
 import { Check, Copy } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { useIsDark } from "./use-is-dark";
 
 interface MarkdownRendererProps {
@@ -94,9 +105,11 @@ function CodeBlock({
         <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
           {displayLang}
         </span>
-        <button
+        <Button
+          type="button"
+          variant="ghost"
           onClick={handleCopy}
-          className="flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+          className="h-auto gap-1 bg-transparent p-0 text-[11px] font-normal text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground"
         >
           {copied ? (
             <>
@@ -109,7 +122,7 @@ function CodeBlock({
               <span>Copy</span>
             </>
           )}
-        </button>
+        </Button>
       </div>
       <Highlight
         theme={isDark ? themes.nightOwl : themes.github}
@@ -211,16 +224,21 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           input: ({ type, checked, disabled }) => {
             if (type === "checkbox") {
               return (
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={checked}
                   disabled={disabled}
-                  className="mt-1 h-3.5 w-3.5 rounded border-border accent-primary"
-                  readOnly
+                  className="mt-1 h-3.5 w-3.5 border-border"
                 />
               );
             }
-            return <input type={type} checked={checked} disabled={disabled} />;
+            return (
+              <Input
+                type={type}
+                checked={checked}
+                disabled={disabled}
+                readOnly
+              />
+            );
           },
           blockquote: ({ children }) => (
             <blockquote className="my-3 rounded-r border-l-2 border-primary/50 bg-muted/20 py-0.5 pl-3 italic text-muted-foreground">
@@ -251,28 +269,32 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
           },
           pre: ({ children }) => <>{children}</>,
           table: ({ children }) => (
-            <div className="my-3 overflow-x-auto rounded border border-border">
-              <table className="w-full text-xs">{children}</table>
-            </div>
+            <Table className="my-3 rounded border border-border text-xs">
+              {children}
+            </Table>
           ),
           thead: ({ children }) => (
-            <thead className="border-b border-border bg-muted/50">
+            <TableHeader className="border-b border-border bg-muted/50">
               {children}
-            </thead>
+            </TableHeader>
           ),
           tbody: ({ children }) => (
-            <tbody className="divide-y divide-border">{children}</tbody>
+            <TableBody className="divide-y divide-border">{children}</TableBody>
           ),
           tr: ({ children }) => (
-            <tr className="transition-colors hover:bg-muted/30">{children}</tr>
+            <TableRow className="transition-colors hover:bg-muted/30">
+              {children}
+            </TableRow>
           ),
           th: ({ children }) => (
-            <th className="px-3 py-2 text-left font-semibold text-foreground">
+            <TableHead className="px-3 py-2 text-left font-semibold text-foreground">
               {children}
-            </th>
+            </TableHead>
           ),
           td: ({ children }) => (
-            <td className="px-3 py-2 text-foreground/90">{children}</td>
+            <TableCell className="px-3 py-2 text-foreground/90">
+              {children}
+            </TableCell>
           ),
           img: ({ src, alt }) => (
             <span className="my-3 block">

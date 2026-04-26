@@ -46,7 +46,7 @@ function LoadingStub({ label }: { label: string }) {
   );
 }
 
-export type FileRendererKind =
+type FileRendererKind =
   | "image"
   | "video"
   | "audio"
@@ -106,7 +106,7 @@ const BINARY_RENDERER_EXTS = new Set<string>([
   ...BINARY_EXTS,
 ]);
 
-export function getFileRendererKind(fileName: string): FileRendererKind {
+function getFileRendererKind(fileName: string): FileRendererKind {
   const lower = fileName.toLowerCase();
   const ext = lower.split(".").pop() ?? "";
 
@@ -138,7 +138,7 @@ export function isBinaryRendererFile(fileName: string): boolean {
   return BINARY_RENDERER_EXTS.has(ext);
 }
 
-export interface FileRendererProps {
+interface FileRendererProps {
   fileName: string;
   /** URL for media/binary fetches (images, video, audio, pdf, xlsx, docx). */
   url?: string | null;

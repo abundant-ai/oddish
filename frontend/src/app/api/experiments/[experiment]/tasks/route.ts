@@ -59,6 +59,13 @@ export async function GET(
     if (queryParams.include_trials === "true" && !queryParams.compact_trials) {
       queryParams.compact_trials = "true";
     }
+    if (
+      queryParams.include_trials === "true" &&
+      queryParams.compact_trials === "true" &&
+      !queryParams.include_queue_info
+    ) {
+      queryParams.include_queue_info = "false";
+    }
     const url = getBackendUrl("tasks", "", {
       ...queryParams,
       experiment_id: experimentId,

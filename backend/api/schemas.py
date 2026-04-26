@@ -116,9 +116,3 @@ class ExperimentUpdateResponse(BaseModel):
 
     id: str
     name: str
-
-
-from oddish.schemas import (  # noqa: F401
-    PublicExperimentListItem,
-    PublicExperimentResponse,
-)

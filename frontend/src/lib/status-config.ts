@@ -135,9 +135,23 @@ export const STATUS_CONFIG: Record<
   },
 };
 
-export function hasRewardValue(
-  reward: number | null | undefined,
-): reward is number {
+/**
+ * Shared size for the colored "glyph" box that wraps a StatusIcon. Used by
+ * the matrix-cell trial buttons, the toolbar legend filter chips, the
+ * anatomy demo sample cell, and the trial-page per-trial navigator so
+ * every place that shows a single trial outcome renders as the same
+ * visual primitive — change this in one place and they all move together.
+ *
+ * The `!` on `size-2.5` is load-bearing: when the glyph box is nested
+ * inside a `<Button>` (legend filter chips, trial navigator), the
+ * button's cva base applies `[&_svg]:size-4` to every descendant svg
+ * with equal specificity, and cascade order is unpredictable. The
+ * `!important` pins the svg to 10px wherever the box is rendered.
+ */
+export const STATUS_GLYPH_BOX =
+  "h-[18px] w-[22px] shrink-0 rounded-[4px] border [&_svg]:size-2.5!";
+
+function hasRewardValue(reward: number | null | undefined): reward is number {
   return typeof reward === "number" && Number.isFinite(reward);
 }
 
@@ -167,7 +181,7 @@ export function formatPartialRewardBadgeValue(
   return fixed;
 }
 
-export function getRewardMatrixStatus(reward: number): MatrixStatus {
+function getRewardMatrixStatus(reward: number): MatrixStatus {
   if (reward === 1) return "pass";
   if (reward === 0) return "fail";
   return "partial";

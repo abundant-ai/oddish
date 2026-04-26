@@ -42,17 +42,6 @@ class TaskSummary:
     verdict: dict | None
 
 
-def _status_emoji(status: str | None) -> str:
-    return {
-        "pending": "\u23f3",
-        "queued": "\u23f3",
-        "running": "\U0001f504",
-        "success": "\u2705",
-        "failed": "\u274c",
-        "retrying": "\U0001f501",
-    }.get(status or "", "\u2753")
-
-
 def _format_duration(seconds: float | None) -> str:
     if seconds is None:
         return "-"

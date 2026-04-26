@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { JSX } from "react";
+import { Button } from "@/components/ui/button";
 
 interface JsonRendererProps {
   content: string;
@@ -60,12 +61,14 @@ export function JsonRenderer({ content }: JsonRendererProps) {
       const isExpanded = expanded.has(path);
       return (
         <div>
-          <button
+          <Button
+            type="button"
+            variant="ghost"
             onClick={() => toggleExpand(path)}
-            className="text-muted-foreground hover:text-foreground"
+            className="h-auto justify-start bg-transparent p-0 font-mono text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-foreground"
           >
             {isExpanded ? "▼" : "▶"} Array[{value.length}]
-          </button>
+          </Button>
           {isExpanded && (
             <div className="ml-2 border-l border-border pl-4">
               {value.map((item, i) => (
@@ -86,14 +89,16 @@ export function JsonRenderer({ content }: JsonRendererProps) {
       const isExpanded = expanded.has(path);
       return (
         <div>
-          <button
+          <Button
+            type="button"
+            variant="ghost"
             onClick={() => toggleExpand(path)}
-            className="text-muted-foreground hover:text-foreground"
+            className="h-auto justify-start bg-transparent p-0 font-mono text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-foreground"
           >
             {isExpanded ? "▼" : "▶"} Object{"{"}
             {keys.length}
             {"}"}
-          </button>
+          </Button>
           {isExpanded && (
             <div className="ml-2 border-l border-border pl-4">
               {keys.map((key) => (

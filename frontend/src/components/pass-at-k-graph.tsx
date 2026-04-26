@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CartesianGrid,
   Line,
@@ -94,10 +94,30 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   hoverAgent,
   onHoverAgent,
 }: PassAtKGraphProps) {
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const [chartSize, setChartSize] = useState({ width: 0, height: 0 });
   const visibleAgentSummaries = useMemo(
     () => agentSummaries.filter((summary) => !hiddenAgents.has(summary.key)),
     [agentSummaries, hiddenAgents],
   );
+
+  useEffect(() => {
+    const element = chartContainerRef.current;
+    if (!element) return;
+
+    const updateSize = () => {
+      const rect = element.getBoundingClientRect();
+      setChartSize({
+        width: Math.max(0, Math.floor(rect.width)),
+        height: Math.max(0, Math.floor(rect.height)),
+      });
+    };
+
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   const { data, maxK, hasMultipleAttempts, agentColorByKey, agentLabelByKey } =
     useMemo(() => {
@@ -218,88 +238,94 @@ export const PassAtKGraph = memo(function PassAtKGraph({
         </span>
       </div>
 
-      <div className="h-52 min-w-0">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart
-            data={data}
-            margin={{ top: 5, right: 16, left: 0, bottom: 5 }}
+      <div ref={chartContainerRef} className="h-52 min-w-0">
+        {chartSize.width > 0 && chartSize.height > 0 ? (
+          <ResponsiveContainer
+            width={chartSize.width}
+            height={chartSize.height}
           >
-            <CartesianGrid
-              strokeDasharray="2 4"
-              stroke="var(--paper-line-2)"
-              vertical={false}
-            />
-            <XAxis
-              dataKey="k"
-              tick={{
-                fontSize: 10.5,
-                fill: "var(--paper-ink-2)",
-                fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
-              }}
-              stroke="var(--paper-line)"
-              label={{
-                value: "k",
-                position: "insideBottomRight",
-                offset: -5,
-                fontSize: 10,
-                fontStyle: "italic",
-                fill: "var(--paper-ink-3)",
-              }}
-            />
-            <YAxis
-              domain={[0, 1]}
-              tickFormatter={(v) => `${Math.round(v * 100)}%`}
-              tick={{
-                fontSize: 9.5,
-                fill: "var(--paper-ink-3)",
-                fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
-              }}
-              stroke="var(--paper-line)"
-              width={40}
-            />
-            <Tooltip
-              content={renderTooltip}
-              wrapperStyle={{ zIndex: 10, outline: "none" }}
-              cursor={{
-                stroke: "var(--paper-ink-4)",
-                strokeWidth: 1,
-                strokeDasharray: "3 3",
-              }}
-            />
-            {visibleAgentSummaries.map((summary) => {
-              const color = agentColorByKey[summary.key] ?? AGENT_COLORS[0];
-              const isHovered = hoverAgent === summary.key;
-              const isDimmed = hoverAgent != null && hoverAgent !== summary.key;
-              return (
-                <Line
-                  key={summary.key}
-                  type="monotone"
-                  dataKey={summary.key}
-                  stroke={color}
-                  strokeWidth={isHovered ? 2.6 : 2}
-                  strokeOpacity={isDimmed ? 0.2 : 1}
-                  dot={{
-                    r: isHovered ? 4 : 3,
-                    fill: "var(--paper-surface)",
-                    stroke: color,
-                    strokeWidth: 2,
-                    strokeOpacity: isDimmed ? 0.25 : 1,
-                  }}
-                  activeDot={{
-                    r: 5,
-                    fill: "var(--paper-surface)",
-                    stroke: color,
-                    strokeWidth: 2,
-                  }}
-                  isAnimationActive={false}
-                  onMouseEnter={() => onHoverAgent?.(summary.key)}
-                  onMouseLeave={() => onHoverAgent?.(null)}
-                  style={{ cursor: "pointer" }}
-                />
-              );
-            })}
-          </LineChart>
-        </ResponsiveContainer>
+            <LineChart
+              data={data}
+              margin={{ top: 5, right: 16, left: 0, bottom: 5 }}
+            >
+              <CartesianGrid
+                strokeDasharray="2 4"
+                stroke="var(--paper-line-2)"
+                vertical={false}
+              />
+              <XAxis
+                dataKey="k"
+                tick={{
+                  fontSize: 10.5,
+                  fill: "var(--paper-ink-2)",
+                  fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
+                }}
+                stroke="var(--paper-line)"
+                label={{
+                  value: "k",
+                  position: "insideBottomRight",
+                  offset: -5,
+                  fontSize: 10,
+                  fontStyle: "italic",
+                  fill: "var(--paper-ink-3)",
+                }}
+              />
+              <YAxis
+                domain={[0, 1]}
+                tickFormatter={(v) => `${Math.round(v * 100)}%`}
+                tick={{
+                  fontSize: 9.5,
+                  fill: "var(--paper-ink-3)",
+                  fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
+                }}
+                stroke="var(--paper-line)"
+                width={40}
+              />
+              <Tooltip
+                content={renderTooltip}
+                wrapperStyle={{ zIndex: 10, outline: "none" }}
+                cursor={{
+                  stroke: "var(--paper-ink-4)",
+                  strokeWidth: 1,
+                  strokeDasharray: "3 3",
+                }}
+              />
+              {visibleAgentSummaries.map((summary) => {
+                const color = agentColorByKey[summary.key] ?? AGENT_COLORS[0];
+                const isHovered = hoverAgent === summary.key;
+                const isDimmed =
+                  hoverAgent != null && hoverAgent !== summary.key;
+                return (
+                  <Line
+                    key={summary.key}
+                    type="monotone"
+                    dataKey={summary.key}
+                    stroke={color}
+                    strokeWidth={isHovered ? 2.6 : 2}
+                    strokeOpacity={isDimmed ? 0.2 : 1}
+                    dot={{
+                      r: isHovered ? 4 : 3,
+                      fill: "var(--paper-surface)",
+                      stroke: color,
+                      strokeWidth: 2,
+                      strokeOpacity: isDimmed ? 0.25 : 1,
+                    }}
+                    activeDot={{
+                      r: 5,
+                      fill: "var(--paper-surface)",
+                      stroke: color,
+                      strokeWidth: 2,
+                    }}
+                    isAnimationActive={false}
+                    onMouseEnter={() => onHoverAgent?.(summary.key)}
+                    onMouseLeave={() => onHoverAgent?.(null)}
+                    style={{ cursor: "pointer" }}
+                  />
+                );
+              })}
+            </LineChart>
+          </ResponsiveContainer>
+        ) : null}
       </div>
 
       <AgentLegend
