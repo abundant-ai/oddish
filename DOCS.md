@@ -26,6 +26,17 @@ export ODDISH_API_KEY="ok_..."
 - `oddish pull` - download logs and artifacts
 - `oddish delete` - delete task data
 
+### Lifecycle
+
+A typical run flows through these commands:
+
+1. `oddish run` (or `oddish upload`) — submit a task, dataset, or sweep and get back a task ID and experiment ID.
+2. `oddish status` — discover what's in flight, then drill into a specific task or experiment to see trial-level progress and rewards.
+3. `oddish pull` — once you have a trial, task, or experiment ID, download its logs, results, trajectories, and artifact files to disk.
+4. `oddish cancel` / `oddish delete` — stop in-flight work or remove data when you're done.
+
+Both read commands accept a trial, task, or experiment ID and auto-detect which kind it is. The CLI does not yet support listing or filtering trials/tasks/experiments by status, name, or date — IDs are typically discovered through the dashboard or `oddish status`.
+
 ## Submit a Job
 
 Use `oddish run` to launch a task, dataset, or multi-agent sweep.
@@ -97,51 +108,29 @@ agents:
     n_trials: 3
 ```
 
-## Reading data from Oddish
-
-Two commands cover all read access from the CLI:
-
-- `oddish status` - inspect what is in flight and look up live state for a task or experiment.
-- `oddish pull` - download logs, results, trajectories, and artifact files for a trial, task, or experiment.
-
-If you have...                          | Use
-----------------------------------------|----------------------------------------------
-Nothing yet, want recent activity       | `oddish status`
-A task ID *or* an experiment ID         | `oddish status <id>` (auto-detects either)
-A specific trial ID and want its files  | `oddish pull <trial_id>`
-A task ID and want every trial's output | `oddish pull <task_id>`
-An experiment and want everything       | `oddish pull <experiment_id> --include-task-files`
-
-The CLI does not currently support listing, filtering, or searching trials/tasks/experiments by status, name, or date. You generally discover IDs through the dashboard or `oddish status`, and then act on them with the commands below.
-
 ## Check Progress
 
 Use `oddish status` to inspect the system, a task, or an experiment.
 
 ```bash
-# System overview (most recent 8 experiments)
+# System overview
 oddish status
 
-# Task status — trials, rewards, stages, attempts
+# Task status
 oddish status <task_id>
 
-# Experiment status — all tasks in the experiment
+# Experiment status
 oddish status --experiment <experiment_id> --watch
 ```
 
-If a positional ID isn't found as a task, `status` automatically retries it as an experiment ID, so you can mostly forget which kind of ID you're holding.
-
-`--watch` polls until the task or experiment reaches a terminal state (`completed` or `failed`).
-
-The bare `oddish status` view groups the 200 most recent tasks into experiments and shows the eight most recently active. Older experiments are not paginated — pass `--experiment <id>` to inspect a specific one directly.
+If a positional ID isn't found as a task, `status` automatically retries it as an experiment ID.
 
 <details>
 <summary>Options</summary>
 
-- `TASK_ID` - Task ID to inspect when not using `--experiment`. If the ID is not a known task, it is retried as an experiment ID.
+- `TASK_ID` - Task ID to inspect when not using `--experiment`; falls back to experiment lookup if no matching task exists
 - `--experiment`, `-e TEXT` - Inspect an experiment instead of a task
-- `--watch`, `-w` - Poll until the task or experiment reaches a terminal state
-- `--verbose`, `-v` - Reserved; pipeline statistics are no longer reported by the CLI
+- `--watch`, `-w` - Poll until the task or experiment finishes
 - `--api TEXT` - Override the API URL
 
 </details>
@@ -167,70 +156,33 @@ oddish cancel <task_id>
 
 ## Download Outputs
 
-Use `oddish pull` to download trial logs, structured logs, results, trajectories, and artifact files from Oddish to local disk. The same command works for a single trial, every trial in a task, or every trial in an experiment — the target type is auto-detected.
+Use `oddish pull` to download logs and artifacts from Oddish to local files.
 
 ```bash
-# Pull a single trial's logs, result, trajectory, and artifacts
+# Pull a single trial
 oddish pull <trial_id>
 
-# Pull every trial in a task, plus the task's own files
-oddish pull <task_id> --include-task-files
-
-# Pull every trial across an experiment into a custom directory
+# Pull an experiment into a custom directory
 oddish pull <experiment_id> --include-task-files --out ./downloads
-
-# Watch a running task and incrementally pull new artifacts as they appear
-oddish pull <task_id> --watch --interval 10
 ```
 
-By default, files are written to `./.oddish/<target>` with this layout:
-
-- `manifest.json` - source, target, watch iteration, and a per-trial summary
-- `trials/<trial_id>/logs.txt` - trial execution logs (when `--logs`, on by default)
-- `trials/<trial_id>/logs_structured.json` - structured logs (when `--structured`)
-- `trials/<trial_id>/result.json` - trial result
-- `trials/<trial_id>/trajectory.json` - trial trajectory
-- `trials/<trial_id>/<harbor paths...>` - trial artifact files (when `--files`, on by default), preserving Harbor's relative layout
-- `tasks/<task_id>/task.json` - task metadata (for task and experiment targets)
-- `tasks/<task_id>/files/<paths...>` - task-level files (when `--include-task-files` *and* `--files`)
-
-Trial IDs follow the convention `<task_id>-<index>` (e.g. `t_abc123-0`). `oddish pull` uses this to auto-detect that a target is a trial; pass `--type` to skip detection if needed.
-
-Re-pulling is idempotent: files already on disk whose size matches the remote are skipped. This makes `--watch` safe to leave running — each iteration only downloads new or changed artifacts, and watch stops automatically when the target reaches a terminal state.
-
-Published (shared) experiments are reachable via the public read endpoints, so a pull will fall back to the public path automatically when private access isn't available.
+By default, files are written to `./.oddish/<target>`. Re-pulling is idempotent — files already on disk that match the remote size are skipped, so `--watch` only downloads new or changed artifacts on each iteration and stops when the target reaches a terminal state.
 
 <details>
 <summary>Options</summary>
 
 - `TARGET` - Trial ID, task ID, or experiment ID
 - `--type [trial|task|experiment]` - Force target type instead of auto-resolving
-- `--out`, `-o PATH` - Output directory (default `./.oddish/<target>`)
-- `--logs/--no-logs` - Include trial logs (default: on)
-- `--files/--no-files` - Include trial or task artifacts (default: on)
-- `--structured` - Also save structured trial logs alongside `logs.txt`
-- `--include-task-files` - Include task-level files for task or experiment targets (also requires `--files`)
-- `--watch`, `-w` - Keep pulling while the run is in progress; stops on terminal state
-- `--interval INTEGER` - Polling interval in seconds for `--watch` (default 5, minimum 1)
+- `--out`, `-o PATH` - Output directory
+- `--logs/--no-logs` - Include trial logs
+- `--files/--no-files` - Include trial or task artifacts
+- `--structured` - Save structured trial logs in addition to normal logs
+- `--include-task-files` - Include task-level files for task or experiment targets
+- `--watch`, `-w` - Keep pulling while the run is in progress
+- `--interval INTEGER` - Poll interval in seconds for `--watch`
 - `--api TEXT` - Override the API URL
 
 </details>
-
-### From a fresh experiment to local artifacts
-
-```bash
-# 1. See what's running
-oddish status
-
-# 2. Drill into one experiment and watch until it finishes
-oddish status --experiment exp_abc --watch
-
-# 3. Pick a trial of interest from the table (e.g. t_xyz-3) and pull just that one
-oddish pull t_xyz-3
-
-# 4. Or pull everything for the experiment in one shot
-oddish pull exp_abc --include-task-files --out ./runs/exp_abc
-```
 
 ## Delete Data
 
