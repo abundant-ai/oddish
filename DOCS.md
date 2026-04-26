@@ -26,6 +26,17 @@ export ODDISH_API_KEY="ok_..."
 - `oddish pull` - download logs and artifacts
 - `oddish delete` - delete task data
 
+### Lifecycle
+
+A typical run flows through these commands:
+
+1. `oddish run` (or `oddish upload`) — submit a task, dataset, or sweep and get back a task ID and experiment ID.
+2. `oddish status` — discover what's in flight, then drill into a specific task or experiment to see trial-level progress and rewards.
+3. `oddish pull` — once you have a trial, task, or experiment ID, download its logs, results, trajectories, and artifact files to disk.
+4. `oddish cancel` / `oddish delete` — stop in-flight work or remove data when you're done.
+
+Both read commands accept a trial, task, or experiment ID and auto-detect which kind it is. The CLI does not yet support listing or filtering trials/tasks/experiments by status, name, or date — IDs are typically discovered through the dashboard or `oddish status`.
+
 ## Submit a Job
 
 Use `oddish run` to launch a task, dataset, or multi-agent sweep.
@@ -112,13 +123,14 @@ oddish status <task_id>
 oddish status --experiment <experiment_id> --watch
 ```
 
+If a positional ID isn't found as a task, `status` automatically retries it as an experiment ID.
+
 <details>
 <summary>Options</summary>
 
-- `TASK_ID` - Task ID to inspect when not using `--experiment`
+- `TASK_ID` - Task ID to inspect when not using `--experiment`; falls back to experiment lookup if no matching task exists
 - `--experiment`, `-e TEXT` - Inspect an experiment instead of a task
 - `--watch`, `-w` - Poll until the task or experiment finishes
-- `--verbose`, `-v` - Request extra system output
 - `--api TEXT` - Override the API URL
 
 </details>
@@ -154,7 +166,7 @@ oddish pull <trial_id>
 oddish pull <experiment_id> --include-task-files --out ./downloads
 ```
 
-By default, files are written to `./.oddish/<target>`.
+By default, files are written to `./.oddish/<target>`. Re-pulling is idempotent — files already on disk that match the remote size are skipped, so `--watch` only downloads new or changed artifacts on each iteration and stops when the target reaches a terminal state.
 
 <details>
 <summary>Options</summary>
