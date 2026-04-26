@@ -27,7 +27,10 @@ import {
   XCircle,
   Loader2,
   OctagonX,
+  Eye,
+  Code,
 } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { fetcher } from "@/lib/api";
 import {
   FileRenderer,
@@ -244,76 +247,6 @@ function getFileIcon(name: string) {
 
 // Language detection is handled by getLanguageFromFilename from code-block
 
-function isTextContent(contentType: string): boolean {
-  const normalized = contentType.toLowerCase();
-  return (
-    normalized.startsWith("text/") ||
-    normalized.includes("json") ||
-    normalized.includes("yaml") ||
-    normalized.includes("toml") ||
-    normalized.includes("xml") ||
-    normalized.includes("javascript") ||
-    normalized.includes("typescript")
-  );
-}
-
-function shouldSniffTextContent(contentType: string): boolean {
-  const normalized = contentType.toLowerCase();
-  return (
-    normalized === "" ||
-    normalized === "application/octet-stream" ||
-    normalized.startsWith("application/octet-stream;")
-  );
-}
-
-function looksLikeTextBytes(bytes: Uint8Array): boolean {
-  const sample = bytes.subarray(0, Math.min(bytes.length, 8 * 1024));
-  if (sample.length === 0) {
-    return true;
-  }
-
-  let suspiciousBytes = 0;
-
-  for (const byte of sample) {
-    if (byte === 0) {
-      return false;
-    }
-
-    const isAllowedControl =
-      byte === 9 || byte === 10 || byte === 12 || byte === 13;
-    if (byte < 32 && !isAllowedControl) {
-      suspiciousBytes += 1;
-    }
-  }
-
-  return suspiciousBytes / sample.length < 0.1;
-}
-
-async function readResponseTextContent(
-  response: Response,
-): Promise<string | null> {
-  const contentType = response.headers.get("content-type") || "";
-
-  if (isTextContent(contentType)) {
-    return response.text();
-  }
-
-  if (!shouldSniffTextContent(contentType)) {
-    return null;
-  }
-
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (!looksLikeTextBytes(bytes)) {
-    return null;
-  }
-
-  return new TextDecoder().decode(bytes);
-}
-
-function getBinaryFileMessage(contentType: string): string {
-  return `Binary file (content-type: ${contentType || "unknown"})`;
-}
-
 export function TaskFilesPanel({
   isOpen,
   onClose,
@@ -355,6 +288,7 @@ export function TaskFilesPanel({
   const [isTruncated, setIsTruncated] = useState(false);
   const [fullFileSize, setFullFileSize] = useState<number | null>(null);
   const [loadingFullFile, setLoadingFullFile] = useState(false);
+  const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
   const [copiedTaskName, setCopiedTaskName] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const copiedTaskNameTimeoutRef = useRef<number | null>(null);
@@ -744,17 +678,11 @@ export function TaskFilesPanel({
             // 206 = Partial Content (Range request succeeded)
             // 200 = Full content (Range not supported or file smaller than range)
             if (s3Res.ok || s3Res.status === 206) {
-              const contentType = s3Res.headers.get("content-type") || "";
-              const textContent = await readResponseTextContent(s3Res);
-              if (textContent !== null) {
-                content = textContent;
-                // Check if we got partial content
-                truncated =
-                  s3Res.status === 206 ||
-                  (!!shouldTruncate && content.length >= TRUNCATE_THRESHOLD);
-              } else {
-                content = getBinaryFileMessage(contentType);
-              }
+              content = await s3Res.text();
+              // Check if we got partial content
+              truncated =
+                s3Res.status === 206 ||
+                (!!shouldTruncate && content.length >= TRUNCATE_THRESHOLD);
             }
           } catch {
             content = null;
@@ -775,12 +703,7 @@ export function TaskFilesPanel({
             throw new Error("Failed to fetch file content");
           }
           if (filesUrl) {
-            const contentType = res.headers.get("content-type") || "";
-            const textContent = await readResponseTextContent(res);
-            content =
-              textContent !== null
-                ? textContent
-                : getBinaryFileMessage(contentType);
+            content = await res.text();
           } else {
             const data = await res.json();
             content = data.content || "";
@@ -821,17 +744,12 @@ export function TaskFilesPanel({
       if (selectedFile.url) {
         const s3Res = await fetch(selectedFile.url);
         if (s3Res.ok) {
-          const contentType = s3Res.headers.get("content-type") || "";
-          const content = await readResponseTextContent(s3Res);
-          if (content !== null) {
-            setFileContent(content);
-            setIsTruncated(false);
-            // Update cache
-            selectedFile.content = content;
-            selectedFile.isTruncated = false;
-          } else {
-            setFileContent(getBinaryFileMessage(contentType));
-          }
+          const content = await s3Res.text();
+          setFileContent(content);
+          setIsTruncated(false);
+          // Update cache
+          selectedFile.content = content;
+          selectedFile.isTruncated = false;
         }
         return;
       }
@@ -848,11 +766,8 @@ export function TaskFilesPanel({
         return;
       }
       if (filesUrl) {
-        const contentType = res.headers.get("content-type") || "";
-        const content = await readResponseTextContent(res);
-        setFileContent(
-          content !== null ? content : getBinaryFileMessage(contentType),
-        );
+        const content = await res.text();
+        setFileContent(content);
       } else {
         const data = await res.json();
         setFileContent(data.content || "");
@@ -1092,6 +1007,7 @@ export function TaskFilesPanel({
             url={fileUrl}
             content={isBinary ? null : fileContent}
             fileSize={fullFileSize ?? selectedFile.size}
+            viewMode={viewMode}
           />
         </div>
         {!isBinary && isTruncated && (
@@ -1218,10 +1134,35 @@ export function TaskFilesPanel({
           </div>
           <div className="flex flex-1 flex-col overflow-hidden">
             {selectedFile && (
-              <div className="border-b border-border bg-muted/30 px-3 py-2 sm:px-4">
-                <div className="truncate font-mono text-[10px] text-muted-foreground sm:text-xs">
+              <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2 sm:px-4">
+                <div className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground sm:text-xs">
                   {selectedFile.path}
                 </div>
+                {!isBinaryRendererFile(selectedFile.name) && (
+                  <Tabs
+                    value={viewMode}
+                    onValueChange={(v) =>
+                      setViewMode(v as "rendered" | "raw")
+                    }
+                  >
+                    <TabsList className="h-7">
+                      <TabsTrigger
+                        value="rendered"
+                        className="h-6 px-2 text-[10px]"
+                      >
+                        <Eye className="mr-1 h-3 w-3" />
+                        Rendered
+                      </TabsTrigger>
+                      <TabsTrigger
+                        value="raw"
+                        className="h-6 px-2 text-[10px]"
+                      >
+                        <Code className="mr-1 h-3 w-3" />
+                        Raw
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                )}
               </div>
             )}
             <div ref={contentRef} className="flex-1 overflow-auto bg-card">

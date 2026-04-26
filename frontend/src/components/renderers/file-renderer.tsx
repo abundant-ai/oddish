@@ -15,6 +15,7 @@ import { CsvRenderer } from "./csv-renderer";
 import { CodeRenderer } from "./code-renderer";
 import { TextRenderer } from "./text-renderer";
 import { ConfigJsonRenderer } from "./config-json-renderer";
+import { RawRenderer } from "./raw-renderer";
 
 // Heavy renderers are code-split so they don't inflate the main bundle.
 const MarkdownRenderer = dynamic(
@@ -62,6 +63,17 @@ type FileRendererKind =
   | "code"
   | "text"
   | "binary";
+
+/** Kinds that render straight from a URL — no text content, no Raw mode. */
+const URL_BASED_KINDS = new Set<FileRendererKind>([
+  "image",
+  "video",
+  "audio",
+  "pdf",
+  "xlsx",
+  "docx",
+  "binary",
+]);
 
 const IMAGE_EXTS = new Set([
   "png",
@@ -148,6 +160,11 @@ interface FileRendererProps {
   fileSize?: number;
   /** Force a specific renderer regardless of extension. */
   kind?: FileRendererKind;
+  /**
+   * When "raw", text-based files render as a plain `<pre>`. URL-based binary
+   * types ignore this and always render normally.
+   */
+  viewMode?: "rendered" | "raw";
 }
 
 /**
@@ -161,8 +178,13 @@ export function FileRenderer({
   content,
   fileSize,
   kind,
+  viewMode = "rendered",
 }: FileRendererProps) {
   const resolvedKind = kind ?? getFileRendererKind(fileName);
+
+  if (viewMode === "raw" && !URL_BASED_KINDS.has(resolvedKind)) {
+    return <RawRenderer content={content ?? ""} />;
+  }
 
   switch (resolvedKind) {
     case "image":
