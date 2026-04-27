@@ -31,9 +31,18 @@ def utcnow() -> datetime:
 
 
 class Base(AsyncAttrs, DeclarativeBase):
-    """SQLAlchemy declarative base with common fields for all models."""
+    """Bare declarative base. Use :class:`TimestampedMixin` to opt into
+    the standard ``id`` / ``created_at`` / ``updated_at`` / ``deleted_at``
+    fields.
 
-    # All models inherit these fields
+    Tables that don't fit that shape (e.g. ``QueueSlotModel`` with a
+    composite PK) subclass ``Base`` directly without the mixin.
+    """
+
+
+class TimestampedMixin:
+    """Common fields most domain tables share."""
+
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
@@ -197,7 +206,7 @@ task_experiments = Table(
 )
 
 
-class ExperimentModel(Base):
+class ExperimentModel(TimestampedMixin, Base):
     """Experiment database model (grouping for tasks)."""
 
     __tablename__ = "experiments"
@@ -227,7 +236,7 @@ class ExperimentModel(Base):
     )
 
 
-class TaskModel(Base):
+class TaskModel(TimestampedMixin, Base):
     """Task database model (one Harbor task submission)."""
 
     __tablename__ = "tasks"
@@ -326,7 +335,7 @@ class TaskModel(Base):
     )
 
 
-class TaskVersionModel(Base):
+class TaskVersionModel(TimestampedMixin, Base):
     """Immutable snapshot of a task's content at a point in time.
 
     Each re-upload of a task bundle creates a new row.  Trials reference the
@@ -374,7 +383,7 @@ class TaskVersionModel(Base):
     )
 
 
-class TrialModel(Base):
+class TrialModel(TimestampedMixin, Base):
     """Trial database model."""
 
     __tablename__ = "trials"
@@ -593,7 +602,7 @@ class QueueSlotModel(Base):
     )
 
 
-class WorkerJobModel(Base):
+class WorkerJobModel(TimestampedMixin, Base):
     """Unified queue row for every kind of compute work.
 
     Phase A of the `worker_jobs` migration introduces the table with no

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 from datetime import datetime
 from enum import Enum
@@ -21,7 +22,7 @@ from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column as mapped_column  # type: ignore[attr-defined]
 
 # Import shared base from OSS oddish
-from oddish.db.models import Base
+from oddish.db.models import Base, TimestampedMixin
 
 
 def generate_id() -> str:
@@ -30,9 +31,17 @@ def generate_id() -> str:
 
 
 def generate_api_key() -> str:
-    """Generate a secure API key with prefix for easy identification."""
-    # Format: ok_<32 random hex chars> (64 bits of entropy)
-    return f"ok_{secrets.token_hex(16)}"
+    """Generate a secure API key with prefix for easy identification.
+
+    Prod keys: ``ok_<32 hex>``. Preview keys: ``ok_pr-<N>_<32 hex>`` —
+    the env marker is harmless in prod (won't match anything) and makes
+    a stray preview key visually obvious.
+    """
+    app_name = os.environ.get("MODAL_APP_NAME", "")
+    env_marker = ""
+    if app_name.startswith("oddish-pr-"):
+        env_marker = f"{app_name[len('oddish-'):]}_"
+    return f"ok_{env_marker}{secrets.token_hex(16)}"
 
 
 # =============================================================================
@@ -61,7 +70,7 @@ class APIKeyScope(str, Enum):
 # =============================================================================
 
 
-class OrganizationModel(Base):
+class OrganizationModel(TimestampedMixin, Base):
     """Organization (tenant) for multi-tenancy."""
 
     __tablename__ = "organizations"
@@ -91,7 +100,7 @@ class OrganizationModel(Base):
     )
 
 
-class UserModel(Base):
+class UserModel(TimestampedMixin, Base):
     """User within an organization.
 
     Users are authenticated via Clerk (external), and this model
@@ -151,7 +160,7 @@ class UserModel(Base):
     )
 
 
-class APIKeyModel(Base):
+class APIKeyModel(TimestampedMixin, Base):
     """API key for programmatic access.
 
     API keys are scoped to an organization and have specific permissions.

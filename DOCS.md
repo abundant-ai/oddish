@@ -184,6 +184,34 @@ By default, files are written to `./.oddish/<target>`. Re-pulling is idempotent 
 
 </details>
 
+## Targeting a PR Preview
+
+Every open PR gets its own isolated preview stack: a Modal app
+(`oddish-pr-<N>`), a Supabase Postgres branch, and a Vercel preview build —
+provisioned automatically by `.github/workflows/modal-preview.yml`. To point
+the CLI at a preview from your laptop:
+
+```bash
+# 1. Point at the preview backend by PR number.
+export ODDISH_PREVIEW_PR=35
+
+# 2. Sign in at the preview Vercel URL (printed in the PR's
+#    Actions step summary), create an API key in the dashboard,
+#    and export it. Preview keys are formatted `ok_pr-<N>_<hex>`
+#    so a stray paste into a prod context is visually obvious.
+export ODDISH_API_KEY=ok_pr-35_…
+
+# 3. Run as usual — every command now hits the preview Modal +
+#    Supabase branch DB.
+oddish run /path/to/task --agent gemini-cli --model google/gemini-3.1-pro-preview
+oddish status
+```
+
+API URL resolution order is `ODDISH_API_URL` (explicit) >
+`ODDISH_PREVIEW_PR` (derived) > prod default. Forks change the URL
+pattern by setting `ODDISH_PREVIEW_URL_TEMPLATE` (with `{n}` for the
+PR number).
+
 ## Delete Data
 
 Use `oddish delete` to delete task data.

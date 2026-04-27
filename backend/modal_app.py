@@ -70,14 +70,22 @@ WORKER_MAX_CONTAINERS = _env_int(
 # Max number of workers spawned per poll cycle (rate limiter, global across all queue_keys)
 MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 24)
 
-# Always attach the production Modal secret. Local deploys can layer a backend
-# `.env` file on top for developer-specific overrides.
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
 )
 runtime_secrets = [runtime_secret]
 if LOCAL_DOTENV_VARS:
     runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
+# Per-PR DB override created by the modal-preview workflow. Gating on
+# MODAL_APP_NAME (baked into the image) keeps the secret list identical
+# at deploy and container init.
+if MODAL_APP_NAME.startswith("oddish-pr-"):
+    runtime_secrets.append(
+        modal.Secret.from_name(
+            f"{MODAL_APP_NAME}-db",
+            environment_name=os.environ.get("MODAL_ENVIRONMENT", "preview"),
+        )
+    )
 
 # Queue-key concurrency default for Modal runtime.
 # Example:
@@ -89,6 +97,10 @@ ENV_VARS = {
     # Claude CLI refuses --dangerously-skip-permissions when running as root (Modal default).
     # Setting IS_SANDBOX=1 tells it we're in a sandboxed environment and bypasses this check.
     "IS_SANDBOX": "1",
+    # Baked into the image so the container sees the same identity the
+    # deploy host did (the per-PR secret gate above depends on it).
+    "MODAL_APP_NAME": MODAL_APP_NAME,
+    "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).

@@ -14,6 +14,14 @@ logger = logging.getLogger(__name__)
 # Clerk secret key for API access
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
 
+# In preview Modal apps the seeded org is throwaway — let JIT-provisioned
+# users land as OWNER so they can create API keys etc. Prod stays MEMBER.
+_DEFAULT_JIT_ROLE = (
+    UserRole.OWNER
+    if os.environ.get("MODAL_APP_NAME", "").startswith("oddish-pr-")
+    else UserRole.MEMBER
+)
+
 
 async def fetch_github_username_from_clerk(clerk_user_id: str) -> str | None:
     if not CLERK_SECRET_KEY:
@@ -196,13 +204,12 @@ async def get_or_create_user_from_clerk(
     If the user doesn't exist and belongs to a Clerk org, we create the user.
     If no org is found locally, returns None (org must be provisioned first).
     """
-    # If Clerk org is present, use that org context
     if clerk_org_id:
         org = await get_org_from_clerk_id(session, clerk_org_id)
         if not org:
             return None
         user = await get_or_create_user_in_org(
-            session, clerk_user_id, org, email, org_role, UserRole.MEMBER
+            session, clerk_user_id, org, email, org_role, _DEFAULT_JIT_ROLE
         )
         return user, org
 
@@ -256,6 +263,6 @@ async def get_or_create_user_from_clerk(
     if not org:
         return None
     user = await get_or_create_user_in_org(
-        session, clerk_user_id, org, email, org_role, UserRole.MEMBER
+        session, clerk_user_id, org, email, org_role, _DEFAULT_JIT_ROLE
     )
     return user, org

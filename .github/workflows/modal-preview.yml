@@ -9,7 +9,6 @@ on:
       - closed
 
 concurrency:
-  # Shared preview environment with one Modal app per PR.
   group: modal-preview-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
@@ -25,15 +24,19 @@ jobs:
       MODAL_ENVIRONMENT: preview
       MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
       MODAL_SECRET_ENVIRONMENT: main
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
       VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
-      ODDISH_ENABLE_MODAL_WORKERS: "0"
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_API_MAX_CONTAINERS: "2"
+      ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
+      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
     defaults:
       run:
         working-directory: backend
@@ -49,8 +52,31 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Wait for Supabase preview branch
+        id: supabase_branch
+        working-directory: ${{ github.workspace }}
+        env:
+          GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: .github/scripts/preview/wait_for_supabase_branch.sh
+
       - name: Sync backend dependencies
         run: uv sync --frozen
+
+      - name: Bootstrap preview database
+        run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_preview_db.py"
+
+      - name: Create per-PR Modal database secret
+        run: |
+          uv run modal secret create \
+            --env "$MODAL_ENVIRONMENT" --force \
+            "$MODAL_APP_NAME-db" \
+            "ODDISH_DATABASE_URL=$ODDISH_DATABASE_URL"
 
       - name: Deploy preview backend
         id: deploy_modal
@@ -86,6 +112,7 @@ jobs:
           echo "modal_api_url=$modal_api_url" >> "$GITHUB_OUTPUT"
 
       - name: Wait for preview backend readiness
+        id: readiness
         run: |
           python - "${{ steps.deploy_modal.outputs.modal_api_url }}" <<'PY'
           import sys
@@ -117,6 +144,13 @@ jobs:
               )
           PY
 
+      - name: Dump Modal preview logs on readiness failure
+        if: ${{ failure() && steps.readiness.conclusion == 'failure' }}
+        continue-on-error: true
+        # `modal app logs` streams forever; bound it. `--env` is needed
+        # because the CLI ignores MODAL_ENVIRONMENT for this subcommand.
+        run: timeout --preserve-status 45s uv run modal app logs --env "$MODAL_ENVIRONMENT" --timestamps "$MODAL_APP_NAME" 2>&1 | tail -300 || true
+
       - name: Install Node
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         uses: actions/setup-node@v4
@@ -137,13 +171,10 @@ jobs:
         working-directory: frontend
         env:
           MODAL_API_URL: ${{ steps.deploy_modal.outputs.modal_api_url }}
-        run: |
-          vercel env rm NEXT_PUBLIC_BACKEND_TYPE preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          printf '%s' "modal" | vercel env add NEXT_PUBLIC_BACKEND_TYPE preview "$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
-          vercel env rm NEXT_PUBLIC_MODAL_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          printf '%s' "$MODAL_API_URL" | vercel env add NEXT_PUBLIC_MODAL_API_URL preview "$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
-          vercel env rm NEXT_PUBLIC_MODAL_BASE_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          vercel env rm NEXT_PUBLIC_MODAL_ENV preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+        # NEXT_PUBLIC_API_URL is the only backend URL the frontend reads
+        # (frontend/src/lib/backend-config.ts). --no-sensitive keeps it
+        # visible in the dashboard for debugging.
+        run: printf '%s' "$MODAL_API_URL" | vercel env add NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --force --no-sensitive --token="$VERCEL_TOKEN"
 
       - name: Redeploy Vercel preview with updated env
         id: redeploy_vercel
@@ -226,6 +257,9 @@ jobs:
             if [ -n "${{ steps.redeploy_vercel.outputs.preview_url }}" ]; then
               echo "- Vercel preview: ${{ steps.redeploy_vercel.outputs.preview_url }}"
             fi
+            if [ -n "${{ steps.supabase_branch.outputs.branch_ref }}" ]; then
+              echo "- Supabase branch: \`${{ steps.supabase_branch.outputs.branch_ref }}\` (host: ${{ steps.supabase_branch.outputs.db_host }})"
+            fi
             echo "- PR head SHA: ${{ github.event.pull_request.head.sha }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -258,6 +292,10 @@ jobs:
         continue-on-error: true
         run: modal app stop oddish-pr-${{ github.event.pull_request.number }}
 
+      - name: Delete per-PR Modal database secret
+        continue-on-error: true
+        run: modal secret delete --env "$MODAL_ENVIRONMENT" oddish-pr-${{ github.event.pull_request.number }}-db
+
       - name: Install Node
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         uses: actions/setup-node@v4
@@ -276,8 +314,4 @@ jobs:
       - name: Remove Vercel preview overrides
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         working-directory: frontend
-        run: |
-          vercel env rm NEXT_PUBLIC_BACKEND_TYPE preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          vercel env rm NEXT_PUBLIC_MODAL_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          vercel env rm NEXT_PUBLIC_MODAL_BASE_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          vercel env rm NEXT_PUBLIC_MODAL_ENV preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+        run: vercel env rm NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
