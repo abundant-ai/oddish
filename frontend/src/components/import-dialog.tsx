@@ -45,8 +45,16 @@ type ImportResponse = {
   trials_failed: number;
 };
 
-// Native drag-drop slot. Picks a single .zip file; clicking opens a
-// file picker as a keyboard-accessible fallback.
+// Browsers expose a dropped folder as a 0-byte File with no extension.
+// Catch that case (and any other obvious non-zip) before the upload so
+// the user sees a clear "zip the folder first" message instead of a
+// generic backend rejection at the end of a megabyte-scale upload.
+function looksLikeZip(file: File): boolean {
+  if (file.size === 0) return false;
+  const name = file.name.toLowerCase();
+  return name.endsWith(".zip") || file.type === "application/zip";
+}
+
 function DropSlot({
   label,
   hint,
@@ -70,6 +78,8 @@ function DropSlot({
     if (dropped) onChange(dropped);
   }
 
+  const invalid = file !== null && !looksLikeZip(file);
+
   return (
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between">
@@ -89,9 +99,11 @@ function DropSlot({
       </div>
       <label
         className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-md border border-dashed px-4 py-6 text-center text-xs transition-colors ${
-          hover
-            ? "border-[#6f88b4] bg-[#6f88b4]/5"
-            : "border-border/70 bg-muted/30 hover:border-border"
+          invalid
+            ? "border-rose-500/60 bg-rose-500/5"
+            : hover
+              ? "border-[#6f88b4] bg-[#6f88b4]/5"
+              : "border-border/70 bg-muted/30 hover:border-border"
         } ${disabled ? "pointer-events-none opacity-60" : ""}`}
         onDragOver={(event) => {
           event.preventDefault();
@@ -116,8 +128,14 @@ function DropSlot({
           <>
             <span className="font-medium text-foreground">{file.name}</span>
             <span className="text-muted-foreground">
-              {(file.size / (1024 * 1024)).toFixed(1)} MiB
+              {(file.size / (1024 * 1024)).toFixed(2)} MiB
             </span>
+            {invalid ? (
+              <span className="text-rose-500">
+                That looks like a folder, not a .zip — run{" "}
+                <code className="font-mono">zip -r my.zip my/</code> first.
+              </span>
+            ) : null}
           </>
         ) : (
           <>
@@ -136,7 +154,6 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
   const [runZip, setRunZip] = useState<File | null>(null);
   const [taskId, setTaskId] = useState("");
   const [experiment, setExperiment] = useState("");
-  const [skipArtifacts, setSkipArtifacts] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ImportResponse | null>(null);
@@ -146,7 +163,6 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
     setRunZip(null);
     setTaskId("");
     setExperiment("");
-    setSkipArtifacts(false);
     setSubmitting(false);
     setError(null);
     setResult(null);
@@ -161,12 +177,14 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
     }
   }
 
+  const taskZipValid = taskZip === null || looksLikeZip(taskZip);
+  const runZipValid = runZip === null || looksLikeZip(runZip);
+  const hasZip = taskZip !== null || runZip !== null;
+  const runOnlyNeedsTask =
+    runZip !== null && taskZip === null && taskId.trim().length === 0;
+
   const canSubmit =
-    !submitting &&
-    (taskZip !== null || runZip !== null) &&
-    // Run-only imports must have a target task ID; otherwise the
-    // server returns 400 and we'd waste the upload.
-    (taskZip !== null || runZip === null || taskId.trim().length > 0);
+    !submitting && hasZip && taskZipValid && runZipValid && !runOnlyNeedsTask;
 
   async function handleSubmit() {
     if (!canSubmit) return;
@@ -179,7 +197,6 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
     if (runZip) form.append("run_zip", runZip);
     if (taskId.trim()) form.append("task_id", taskId.trim());
     if (experiment.trim()) form.append("experiment", experiment.trim());
-    if (skipArtifacts) form.append("skip_artifacts", "true");
 
     try {
       const res = await fetch("/api/imports/zip", {
@@ -221,11 +238,10 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
       </DialogTrigger>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>Import task or trials</DialogTitle>
+          <DialogTitle>Import from .zip</DialogTitle>
           <DialogDescription>
-            Drop a Harbor task zip, a Harbor run/jobs zip, or both. Same
-            outcome as <code className="font-mono">oddish upload</code> —
-            see DOCS for the CLI equivalents.
+            Drop a Harbor task zip, a Harbor run zip, or both. Same outcome
+            as <code className="font-mono">oddish upload</code>.
           </DialogDescription>
         </DialogHeader>
 
@@ -234,63 +250,65 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
         ) : (
           <div className="space-y-4">
             <DropSlot
-              label="Task files (optional)"
-              hint="A Harbor task dir: task.toml, instruction.md, environment/, tests/"
-              file={taskZip}
-              onChange={setTaskZip}
-              disabled={submitting}
-            />
-            <DropSlot
-              label="Harbor run / jobs (optional)"
-              hint="A job dir with result.json, or a parent dir of job dirs"
+              label="Run / jobs zip"
+              hint="A Harbor job dir (with result.json), zipped"
               file={runZip}
               onChange={setRunZip}
               disabled={submitting}
             />
 
-            {runZip && !taskZip ? (
+            {runZip ? (
               <div className="space-y-1.5">
                 <Label htmlFor="import-task-id" className="text-xs">
                   Target task ID
+                  {taskZip ? (
+                    <span className="text-muted-foreground">
+                      {" "}
+                      (filled in from task zip)
+                    </span>
+                  ) : (
+                    <span className="text-rose-500"> *</span>
+                  )}
                 </Label>
                 <Input
                   id="import-task-id"
-                  value={taskId}
+                  value={taskZip ? `(uploads as ${taskZip.name})` : taskId}
                   onChange={(event) => setTaskId(event.target.value)}
-                  placeholder="task_abcdef12 (run-only imports require an existing task)"
-                  disabled={submitting}
+                  placeholder="task_abcdef12"
+                  disabled={submitting || taskZip !== null}
                   className="h-8"
                 />
-              </div>
-            ) : null}
-
-            {runZip ? (
-              <>
-                <div className="space-y-1.5">
+                <div className="space-y-1.5 pt-2">
                   <Label htmlFor="import-experiment" className="text-xs">
-                    Experiment name (optional)
+                    Experiment name{" "}
+                    <span className="text-muted-foreground">(optional)</span>
                   </Label>
                   <Input
                     id="import-experiment"
                     value={experiment}
                     onChange={(event) => setExperiment(event.target.value)}
-                    placeholder="Leave blank to auto-generate"
+                    placeholder="Auto-generated if blank"
                     disabled={submitting}
                     className="h-8"
                   />
                 </div>
-                <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={skipArtifacts}
-                    onChange={(event) => setSkipArtifacts(event.target.checked)}
-                    disabled={submitting}
-                  />
-                  Skip artifacts (register metadata only — same as{" "}
-                  <code className="font-mono">--skip-artifacts</code>)
-                </label>
-              </>
+              </div>
             ) : null}
+
+            <details className="text-xs">
+              <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                Don&apos;t have the task in oddish yet? Upload task files too.
+              </summary>
+              <div className="mt-2">
+                <DropSlot
+                  label="Task zip"
+                  hint="A Harbor task dir (task.toml + environment/ + tests/), zipped"
+                  file={taskZip}
+                  onChange={setTaskZip}
+                  disabled={submitting}
+                />
+              </div>
+            </details>
 
             {error ? (
               <Alert variant="destructive">
