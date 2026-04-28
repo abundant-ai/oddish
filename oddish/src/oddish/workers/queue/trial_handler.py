@@ -835,6 +835,17 @@ async def run_trial_job(
                 sauron = get_sauron_uploader()
                 if sauron.is_enabled():
                     github_meta = GitHubMeta.from_tags(prepared_trial.task_tags)
+
+                    # Ensure experiment-manifest.yaml exists (idempotent).
+                    await sauron.ensure_experiment_manifest(
+                        experiment_id=prepared_trial.experiment_id,
+                        experiment_name=prepared_trial.experiment_name,
+                        github_meta=github_meta,
+                        tasks=[prepared_trial.task_name or prepared_trial.task_id],
+                        agents=[{"name": prepared_trial.trial_agent, "model": prepared_trial.trial_model}],
+                        n_trials=prepared_trial.attempt_number,
+                    )
+
                     sauron_ctx = SauronUploadContext(
                         trial_id=trial_id,
                         harbor_job_dir=execution.outcome.job_dir,
