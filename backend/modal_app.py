@@ -1,4 +1,5 @@
 import os
+import shlex
 from pathlib import Path
 
 import modal
@@ -22,6 +23,13 @@ def _env_int(name: str, default: int) -> int:
 MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
 MODAL_SECRET_ENVIRONMENT = os.environ.get("MODAL_SECRET_ENVIRONMENT", "main")
 RUNTIME_SECRET_NAME = "oddish-prod"
+# Optional override for the Harbor package installed into the worker image.
+# Empty / "harbor" => use the version pinned by oddish/pyproject.toml. Otherwise
+# accepts the same shapes as task-workflows' metadata.harbor_source:
+#   "harbor==0.6.0"                                         (PyPI)
+#   "git+https://github.com/abundant-ai/harbor.git@branch"  (git URL)
+#   "abundant-ai/harbor@branch"                             (org/repo shorthand)
+HARBOR_SOURCE_OVERRIDE = (os.environ.get("ODDISH_HARBOR_SOURCE") or "").strip()
 # Per-app webhook label so PR previews don't collide on the shared
 # `{workspace}-{environment}--{label}.modal.run` subdomain. Production keeps
 # the historical "api" label; previews derive a unique one from the app name.
@@ -110,6 +118,29 @@ ENV_VARS = {
     "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
     "ODDISH_DEFAULT_MODEL_CONCURRENCY": str(MODEL_CONCURRENCY_DEFAULT),
 }
+if HARBOR_SOURCE_OVERRIDE:
+    # Surfaces the override in container env so workers can log which Harbor
+    # actually shipped (provenance for ad-hoc harbor-PR previews).
+    ENV_VARS["ODDISH_HARBOR_SOURCE"] = HARBOR_SOURCE_OVERRIDE
+
+
+def _normalize_harbor_source(spec: str) -> str:
+    """Convert a task-workflows-style harbor_source into a pip-installable spec.
+
+    Mirrors the parsing in task-workflows' harbor-modal-experiment.yaml so
+    manifests are portable: bare PyPI names pass through, ``org/repo@branch``
+    shorthand expands to ``git+https://github.com/...@branch``, and explicit
+    git URLs are left alone.
+    """
+    if "@" in spec and not spec.startswith(("http://", "https://", "git+")):
+        # Could be ``org/repo@branch`` or ``pkg==version``. Treat slashes as
+        # the disambiguator.
+        source, _, branch = spec.rpartition("@")
+        if "/" in source and "==" not in source:
+            return f"git+https://github.com/{source}.git@{branch}"
+    if spec.startswith(("http://", "https://")) and "github.com" in spec:
+        return f"git+{spec}"
+    return spec
 
 
 def _lookup_env(name: str) -> str | None:
@@ -212,6 +243,21 @@ image = (
     )
     # Install all dependencies (oddish from /oddish, others from PyPI)
     .uv_sync()
+)
+
+if HARBOR_SOURCE_OVERRIDE:
+    # Reinstall Harbor from the override spec on top of the synced env. This
+    # supersedes the version pinned in oddish/pyproject.toml without editing
+    # the lockfile, which is exactly what we want for ad-hoc harbor-PR
+    # previews. Cache is keyed on the spec, so repeated deploys with the same
+    # override hit the Modal layer cache.
+    _normalized_harbor_source = _normalize_harbor_source(HARBOR_SOURCE_OVERRIDE)
+    image = image.run_commands(
+        f"uv pip install --system --reinstall {shlex.quote(_normalized_harbor_source)}",
+    )
+
+image = (
+    image
     # Add backend-specific Python modules
     .add_local_python_source(
         "api",

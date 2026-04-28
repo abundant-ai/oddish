@@ -1,0 +1,175 @@
+name: Modal Harbor Preview
+
+# Deploys a Modal preview app of the oddish backend with a custom Harbor
+# version installed on top of the synced env. Targeted at testing an open
+# Harbor PR end-to-end through oddish without bumping the version pinned in
+# oddish/pyproject.toml or redeploying production.
+#
+# Trigger manually (Actions tab → Run workflow) or via repository_dispatch
+# from harbor's CI.
+#
+# Prerequisites:
+#   - A Modal secret named ``oddish-pr-harbor-<label>-db`` must already exist
+#     in the ``preview`` Modal environment, containing ODDISH_DATABASE_URL.
+#     Reuse the same secret across runs with the same label so the deploy
+#     stays pointed at one preview database.
+
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: 'Short label for this harbor preview (used in the Modal app name; lowercase, alphanumerics + dashes).'
+        type: string
+        required: true
+      harbor_source:
+        description: 'Harbor source spec. Examples: "harbor==0.6.0", "abundant-ai/harbor@my-branch", "git+https://github.com/abundant-ai/harbor.git@my-branch".'
+        type: string
+        required: true
+      ref:
+        description: 'Oddish ref to deploy from (defaults to the workflow ref).'
+        type: string
+        required: false
+        default: ''
+  repository_dispatch:
+    types: [harbor-preview]
+
+concurrency:
+  group: modal-harbor-preview-${{ inputs.label || github.event.client_payload.label }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-harbor-preview:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: preview
+      MODAL_SECRET_ENVIRONMENT: main
+      LABEL: ${{ inputs.label || github.event.client_payload.label }}
+      HARBOR_SOURCE: ${{ inputs.harbor_source || github.event.client_payload.harbor_source }}
+      ODDISH_MODAL_API_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
+      ODDISH_MODAL_API_MAX_CONTAINERS: "2"
+      ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
+      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Validate label
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [[ ! "$LABEL" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]]; then
+            echo "::error::label must be 1-31 chars of [a-z0-9-] starting with [a-z0-9]; got '$LABEL'"
+            exit 1
+          fi
+          if [[ -z "$HARBOR_SOURCE" ]]; then
+            echo "::error::harbor_source is required"
+            exit 1
+          fi
+          echo "MODAL_APP_NAME=oddish-pr-harbor-$LABEL" >> "$GITHUB_ENV"
+          echo "ODDISH_HARBOR_SOURCE=$HARBOR_SOURCE" >> "$GITHUB_ENV"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.event.client_payload.ref || github.ref }}
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Sync backend dependencies
+        run: uv sync --frozen
+
+      - name: Verify per-app DB secret exists
+        run: |
+          if ! uv run modal secret list --env "$MODAL_ENVIRONMENT" 2>/dev/null | grep -qE "(^|[[:space:]])$MODAL_APP_NAME-db([[:space:]]|$)"; then
+            echo "::error::Modal secret '$MODAL_APP_NAME-db' not found in env '$MODAL_ENVIRONMENT'."
+            echo "Create it once with:"
+            echo "  modal secret create --env $MODAL_ENVIRONMENT $MODAL_APP_NAME-db ODDISH_DATABASE_URL=<url>"
+            exit 1
+          fi
+
+      - name: Deploy harbor preview backend
+        id: deploy_modal
+        run: |
+          deploy_log="$(mktemp)"
+          uv run modal deploy deploy.py 2>&1 | tee "$deploy_log"
+          modal_api_url="$(python - "$deploy_log" "$MODAL_APP_NAME" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          log_path = pathlib.Path(sys.argv[1])
+          app_name = sys.argv[2]
+          text = log_path.read_text()
+
+          candidates = []
+          for line in text.splitlines():
+              if "modal.run" not in line:
+                  continue
+              if "api" not in line.lower():
+                  continue
+              match = re.search(r"https://[^\s]+\.modal\.run", line)
+              if match:
+                  candidates.append(match.group(0))
+
+          if not candidates:
+              raise SystemExit(
+                  f"Could not determine Modal API URL for {app_name} from deploy output"
+              )
+          print(candidates[-1])
+          PY
+          )"
+          echo "modal_api_url=$modal_api_url" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for preview backend readiness
+        run: |
+          python - "${{ steps.deploy_modal.outputs.modal_api_url }}" <<'PY'
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          base_url = sys.argv[1].rstrip("/")
+          readiness_url = f"{base_url}/openapi.json"
+          deadline = time.time() + 180
+          last_error = "no readiness response yet"
+
+          while time.time() < deadline:
+              try:
+                  with urllib.request.urlopen(readiness_url, timeout=10) as response:
+                      payload = response.read(64)
+                  if response.status == 200 and payload:
+                      print(f"Modal preview ready at {readiness_url}")
+                      break
+                  last_error = f"unexpected response: {payload!r}"
+              except urllib.error.HTTPError as exc:
+                  last_error = f"http {exc.code}"
+              except Exception as exc:  # noqa: BLE001
+                  last_error = str(exc)
+              time.sleep(5)
+          else:
+              raise SystemExit(
+                  f"Modal preview never became ready at {readiness_url}: {last_error}"
+              )
+          PY
+
+      - name: Summarize harbor preview
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## Harbor preview deployment"
+            echo
+            echo "- Modal app: \`$MODAL_APP_NAME\`"
+            echo "- Harbor source: \`$HARBOR_SOURCE\`"
+            echo "- Modal API: ${{ steps.deploy_modal.outputs.modal_api_url }}"
+          } >> "$GITHUB_STEP_SUMMARY"
