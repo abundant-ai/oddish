@@ -36,6 +36,12 @@ Just replace `harbor run` with `oddish run`.
 uv pip install oddish
 ```
 
+#### Install latest development version
+
+```bash
+uv pip install "oddish @ git+https://github.com/abundant-ai/oddish.git#subdirectory=oddish"
+```
+
 ### 2. Generate an API key [here](https://oddish.app/)
 
 - API key generation is restricted during the beta. To request access, contact the [maintainer](https://github.com/RishiDesai).
