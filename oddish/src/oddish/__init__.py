@@ -39,7 +39,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     # Validation
     "validate_configs": ("oddish.validation", "validate_configs"),
     "validate_and_report": ("oddish.validation", "validate_and_report"),
-    "smoke_test_models": ("oddish.validation", "smoke_test_models"),
+    "ping_models": ("oddish.validation", "ping_models"),
     "render_report": ("oddish.validation", "render_report"),
     "ValidationReport": ("oddish.validation", "ValidationReport"),
     "ValidationIssue": ("oddish.validation", "ValidationIssue"),

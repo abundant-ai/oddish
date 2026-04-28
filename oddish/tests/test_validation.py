@@ -85,17 +85,17 @@ def test_notify_called_only_on_failure():
     assert not calls[0].ok
 
 
-def test_smoke_test_skips_already_failing_entries():
+def test_ping_skips_already_failing_entries():
     # An entry that fails the local check shouldn't even hit the network
     with mock.patch.object(validation, "_probe_anthropic") as probe:
         report = validation.validate_and_report(
-            [{"agent": "bogus", "model": "anthropic/x"}], smoke_test=True
+            [{"agent": "bogus", "model": "anthropic/x"}], ping=True
         )
         assert not report.ok
         probe.assert_not_called()
 
 
-def test_smoke_test_dedupes_unique_provider_model_pairs():
+def test_ping_dedupes_unique_provider_model_pairs():
     with mock.patch.object(
         validation, "_probe_anthropic", return_value=(True, "ok")
     ) as probe:
@@ -104,9 +104,9 @@ def test_smoke_test_dedupes_unique_provider_model_pairs():
                 {"agent": "claude-code", "model": "anthropic/claude-sonnet-4-5"},
                 {"agent": "claude-code", "model": "anthropic/claude-sonnet-4-5"},
             ],
-            smoke_test=True,
+            ping=True,
         )
-        assert report.smoke_tested
+        assert report.pinged
         # one probe call despite two entries
         probe.assert_called_once_with("claude-sonnet-4-5")
 

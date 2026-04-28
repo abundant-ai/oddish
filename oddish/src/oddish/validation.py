@@ -4,14 +4,14 @@ Catches common configuration mistakes (typo'd agent names, missing
 provider prefix, bad model IDs, missing API keys) *before* a job is
 submitted to the queue and starts burning compute budget on every trial.
 
-Two layers, opt-in independently:
+Two layers:
 
-* ``validate_configs`` (cheap, always-on by default) — pure local checks:
+* ``validate_configs`` (always cheap, no network) — pure local checks:
   - agent name resolves against ``harbor.models.agent.name.AgentName``
   - model is present for any agent except ``nop`` / ``oracle``
   - model normalizes (no whitespace-only / placeholder strings)
 
-* ``smoke_test_models`` (opt-in, network) — for each unique
+* ``ping_models`` (opt-in, network) — for each unique
   ``(provider, model)`` pair, makes a 1-token API call to verify that
   credentials and model identifiers are valid.
 
@@ -66,7 +66,7 @@ class ValidationReport:
     """Aggregate validation result. Truthy iff no errors."""
 
     issues: list[ValidationIssue] = field(default_factory=list)
-    smoke_tested: bool = False
+    pinged: bool = False
 
     @property
     def errors(self) -> list[ValidationIssue]:
@@ -86,7 +86,7 @@ class ValidationReport:
     def to_dict(self) -> dict[str, Any]:
         return {
             "ok": self.ok,
-            "smoke_tested": self.smoke_tested,
+            "pinged": self.pinged,
             "errors": [_issue_dict(i) for i in self.errors],
             "warnings": [_issue_dict(i) for i in self.warnings],
             "issues": [_issue_dict(i) for i in self.issues],
@@ -284,14 +284,14 @@ def _did_you_mean(target: str, candidates: Iterable[str]) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# API smoke-test (opt-in, network)
+# Live model ping (opt-in, network)
 # ---------------------------------------------------------------------------
 
 
 def _resolve_provider(model: str) -> tuple[str, str]:
     """Map a normalized model string to (provider, model_id).
 
-    Provider keys match the smoke-test validators below. Bedrock model
+    Provider keys match the per-provider probes below. Bedrock model
     IDs (``us.anthropic.claude-*``) are mapped to ``anthropic`` because
     we validate the Anthropic API key (the routing happens at runtime).
     """
@@ -421,8 +421,8 @@ _PROBES: dict[str, Callable[[str], tuple[bool, str]]] = {
 }
 
 
-def smoke_test_models(report: ValidationReport) -> ValidationReport:
-    """Augment ``report`` with live API probes for each unique model.
+def ping_models(report: ValidationReport) -> ValidationReport:
+    """Augment ``report`` with a 1-token live API call per unique model.
 
     Skips entries that already have errors locally — no point asking
     OpenAI to confirm a typo we already caught. Mutates and returns
@@ -447,15 +447,15 @@ def smoke_test_models(report: ValidationReport) -> ValidationReport:
                         agent="?",
                         model=f"{provider}/{model_id}",
                         severity="warning",
-                        code="probe_unknown_provider",
-                        message=f"no smoke-test probe for provider '{provider}'",
+                        code="ping_unknown_provider",
+                        message=f"no live ping available for provider '{provider}'",
                     )
                 )
             continue
 
         success, msg = probe(model_id)
         severity = "ok" if success else "error"
-        code = "smoke_ok" if success else "smoke_failed"
+        code = "ping_ok" if success else "ping_failed"
         for idx in indices:
             report.issues.append(
                 ValidationIssue(
@@ -468,7 +468,7 @@ def smoke_test_models(report: ValidationReport) -> ValidationReport:
                 )
             )
 
-    report.smoke_tested = True
+    report.pinged = True
     return report
 
 
@@ -504,17 +504,17 @@ def render_report(report: ValidationReport) -> str:
 def validate_and_report(
     configs: Iterable[Mapping[str, Any] | Any],
     *,
-    smoke_test: bool = False,
+    ping: bool = False,
     notify: Callable[[ValidationReport], None] | None = None,
 ) -> ValidationReport:
-    """One-shot helper: run validation, optionally smoke-test, fire ``notify``.
+    """One-shot helper: run validation, optionally ping models, fire ``notify``.
 
     Returns the report; raises nothing. Callers (CLI / experiment
     driver) decide what to do with a non-OK report.
     """
     report = validate_configs(configs)
-    if smoke_test:
-        smoke_test_models(report)
+    if ping:
+        ping_models(report)
     if notify is not None and not report.ok:
         try:
             notify(report)

@@ -303,25 +303,13 @@ def run(
             "--validate/--no-validate",
             help=(
                 "Pre-flight check that each agent name resolves to a Harbor "
-                "built-in and each model is set. Catches typos before trials "
-                "are submitted. Disable to skip if you know what you're doing."
+                "built-in and each model is set. For batch-shaped runs (sweep "
+                "configs, --n-trials > 1, or datasets) also pings each unique "
+                "provider/model with a 1-token API call to catch credential "
+                "and model-ID errors before any trials are submitted."
             ),
         ),
     ] = True,
-    smoke_test: Annotated[
-        Optional[bool],
-        typer.Option(
-            "--smoke-test/--no-smoke-test",
-            help=(
-                "Make a 1-token API call to each unique provider/model to "
-                "verify credentials and model IDs. Auto-enabled for batch-"
-                "shaped runs (sweep configs, --n-trials > 1, or datasets) "
-                "since a model typo there blows up many trials. Pass "
-                "--no-smoke-test to skip, --smoke-test to force-enable for "
-                "single-trial runs."
-            ),
-        ),
-    ] = None,
 ):
     """Run Harbor tasks with queues, retries, and monitoring.
 
@@ -447,24 +435,15 @@ def run(
             }
         ]
 
-    # Pre-flight validation (cheap by default; smoke-test auto-enabled
-    # for batch-shaped runs). Runs before upload so a typo'd model name
-    # doesn't burn an upload + queue cycle. Off-switch is --no-validate.
+    # Pre-flight validation. Runs before upload so a typo'd model name
+    # doesn't burn an upload + queue cycle. The live model ping kicks
+    # in automatically for batch-shaped runs (sweep, multi-trial, or
+    # dataset) where a bad model would waste many trials. Single-task
+    # single-trial CLI runs skip the ping to stay fast.
     if validate:
-        # Auto-enable smoke testing when the run looks "batch-shaped":
-        # a sweep config, multi-trial, or dataset/multi-task input. A
-        # bad model in any of these wastes many trials, so the ~1-2s
-        # per provider is well worth it. Single-task single-trial CLI
-        # runs stay fast unless the user explicitly opts in.
-        if smoke_test is None:
-            total_trials = sum(int(c.get("n_trials", 1) or 1) for c in configs)
-            smoke_test_effective = bool(
-                config or dataset or len(configs) > 1 or total_trials > 1
-            )
-        else:
-            smoke_test_effective = smoke_test
-
-        report = validate_and_report(configs, smoke_test=smoke_test_effective)
+        total_trials = sum(int(c.get("n_trials", 1) or 1) for c in configs)
+        ping = bool(config or dataset or len(configs) > 1 or total_trials > 1)
+        report = validate_and_report(configs, ping=ping)
         if not report.ok or report.warnings:
             stream = error_console if not report.ok else console
             stream.print(render_report(report))
