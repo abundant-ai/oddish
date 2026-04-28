@@ -309,16 +309,19 @@ def run(
         ),
     ] = True,
     smoke_test: Annotated[
-        bool,
+        Optional[bool],
         typer.Option(
             "--smoke-test/--no-smoke-test",
             help=(
-                "Additionally make a 1-token API call to each unique "
-                "provider/model to verify credentials and model IDs are "
-                "valid. Off by default (network call, ~1s per provider)."
+                "Make a 1-token API call to each unique provider/model to "
+                "verify credentials and model IDs. Auto-enabled for batch-"
+                "shaped runs (sweep configs, --n-trials > 1, or datasets) "
+                "since a model typo there blows up many trials. Pass "
+                "--no-smoke-test to skip, --smoke-test to force-enable for "
+                "single-trial runs."
             ),
         ),
-    ] = False,
+    ] = None,
 ):
     """Run Harbor tasks with queues, retries, and monitoring.
 
@@ -444,11 +447,24 @@ def run(
             }
         ]
 
-    # Pre-flight validation (cheap by default; --smoke-test adds API
-    # probes). Runs before upload so a typo'd model name doesn't burn
-    # an upload + queue cycle. Off-switch is --no-validate.
+    # Pre-flight validation (cheap by default; smoke-test auto-enabled
+    # for batch-shaped runs). Runs before upload so a typo'd model name
+    # doesn't burn an upload + queue cycle. Off-switch is --no-validate.
     if validate:
-        report = validate_and_report(configs, smoke_test=smoke_test)
+        # Auto-enable smoke testing when the run looks "batch-shaped":
+        # a sweep config, multi-trial, or dataset/multi-task input. A
+        # bad model in any of these wastes many trials, so the ~1-2s
+        # per provider is well worth it. Single-task single-trial CLI
+        # runs stay fast unless the user explicitly opts in.
+        if smoke_test is None:
+            total_trials = sum(int(c.get("n_trials", 1) or 1) for c in configs)
+            smoke_test_effective = bool(
+                config or dataset or len(configs) > 1 or total_trials > 1
+            )
+        else:
+            smoke_test_effective = smoke_test
+
+        report = validate_and_report(configs, smoke_test=smoke_test_effective)
         if not report.ok or report.warnings:
             stream = error_console if not report.ok else console
             stream.print(render_report(report))
