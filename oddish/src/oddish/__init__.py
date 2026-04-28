@@ -36,6 +36,13 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "HarborOutcome": ("oddish.workers", "HarborOutcome"),
     # Workers
     "run_queue_worker": ("oddish.workers", "run_queue_worker"),
+    # Validation
+    "validate_configs": ("oddish.validation", "validate_configs"),
+    "validate_and_report": ("oddish.validation", "validate_and_report"),
+    "smoke_test_models": ("oddish.validation", "smoke_test_models"),
+    "render_report": ("oddish.validation", "render_report"),
+    "ValidationReport": ("oddish.validation", "ValidationReport"),
+    "ValidationIssue": ("oddish.validation", "ValidationIssue"),
 }
 
 __all__ = ["__version__", *_EXPORTS.keys()]

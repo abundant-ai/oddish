@@ -38,6 +38,7 @@ from oddish.cli.config import (
     require_api_key,
 )
 from oddish.experiment import generate_experiment_name
+from oddish.validation import render_report, validate_and_report
 
 console = Console()
 
@@ -296,6 +297,28 @@ def run(
             help="Output JSON (for CI/scripts). Implies --background.",
         ),
     ] = False,
+    validate: Annotated[
+        bool,
+        typer.Option(
+            "--validate/--no-validate",
+            help=(
+                "Pre-flight check that each agent name resolves to a Harbor "
+                "built-in and each model is set. Catches typos before trials "
+                "are submitted. Disable to skip if you know what you're doing."
+            ),
+        ),
+    ] = True,
+    smoke_test: Annotated[
+        bool,
+        typer.Option(
+            "--smoke-test/--no-smoke-test",
+            help=(
+                "Additionally make a 1-token API call to each unique "
+                "provider/model to verify credentials and model IDs are "
+                "valid. Off by default (network call, ~1s per provider)."
+            ),
+        ),
+    ] = False,
 ):
     """Run Harbor tasks with queues, retries, and monitoring.
 
@@ -420,6 +443,17 @@ def run(
                 "n_trials": n_trials,
             }
         ]
+
+    # Pre-flight validation (cheap by default; --smoke-test adds API
+    # probes). Runs before upload so a typo'd model name doesn't burn
+    # an upload + queue cycle. Off-switch is --no-validate.
+    if validate:
+        report = validate_and_report(configs, smoke_test=smoke_test)
+        if not report.ok or report.warnings:
+            stream = error_console if not report.ok else console
+            stream.print(render_report(report))
+        if not report.ok:
+            raise typer.Exit(1)
 
     # Determine task sources using Harbor's dataset models
     task_paths: list[Path] = []
