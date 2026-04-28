@@ -180,11 +180,12 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
   const taskZipValid = taskZip === null || looksLikeZip(taskZip);
   const runZipValid = runZip === null || looksLikeZip(runZip);
   const hasZip = taskZip !== null || runZip !== null;
-  const runOnlyNeedsTask =
-    runZip !== null && taskZip === null && taskId.trim().length === 0;
 
-  const canSubmit =
-    !submitting && hasZip && taskZipValid && runZipValid && !runOnlyNeedsTask;
+  // The backend infers the target task from the run zip's job-dir
+  // name and accepts task ID *or* name, so we no longer require the
+  // user to fill the field. We surface the backend's error message
+  // when inference doesn't find a match.
+  const canSubmit = !submitting && hasZip && taskZipValid && runZipValid;
 
   async function handleSubmit() {
     if (!canSubmit) return;
@@ -240,8 +241,9 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
         <DialogHeader>
           <DialogTitle>Import from .zip</DialogTitle>
           <DialogDescription>
-            Drop a Harbor task zip, a Harbor run zip, or both. Same outcome
-            as <code className="font-mono">oddish upload</code>.
+            Drop a Harbor run zip; the target task is inferred from the
+            job-dir name. Same outcome as{" "}
+            <code className="font-mono">oddish upload</code>.
           </DialogDescription>
         </DialogHeader>
 
@@ -258,27 +260,31 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
             />
 
             {runZip ? (
-              <div className="space-y-1.5">
-                <Label htmlFor="import-task-id" className="text-xs">
-                  Target task ID
-                  {taskZip ? (
-                    <span className="text-muted-foreground">
-                      {" "}
-                      (filled in from task zip)
-                    </span>
-                  ) : (
-                    <span className="text-rose-500"> *</span>
-                  )}
-                </Label>
-                <Input
-                  id="import-task-id"
-                  value={taskZip ? `(uploads as ${taskZip.name})` : taskId}
-                  onChange={(event) => setTaskId(event.target.value)}
-                  placeholder="task_abcdef12"
-                  disabled={submitting || taskZip !== null}
-                  className="h-8"
-                />
-                <div className="space-y-1.5 pt-2">
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor="import-task-id" className="text-xs">
+                    Target task{" "}
+                    {taskZip ? (
+                      <span className="text-muted-foreground">
+                        (uploaded from task zip)
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">
+                        (ID or name; auto-detected if blank)
+                      </span>
+                    )}
+                  </Label>
+                  <Input
+                    id="import-task-id"
+                    value={taskZip ? `→ ${taskZip.name}` : taskId}
+                    onChange={(event) => setTaskId(event.target.value)}
+                    placeholder="Leave blank to use the run zip's task name"
+                    disabled={submitting || taskZip !== null}
+                    className="h-8"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
                   <Label htmlFor="import-experiment" className="text-xs">
                     Experiment name{" "}
                     <span className="text-muted-foreground">(optional)</span>
@@ -292,7 +298,7 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
                     className="h-8"
                   />
                 </div>
-              </div>
+              </>
             ) : null}
 
             <details className="text-xs">
