@@ -29,6 +29,7 @@ from typing import Any
 
 import httpx
 from fastapi import HTTPException
+from sqlalchemy import and_, select
 
 from oddish.cli.api import (
     _tar_trial_dir,
@@ -47,7 +48,7 @@ from oddish.core.trial_imports import (
     complete_trial_import,
     initialize_trial_import,
 )
-from oddish.db import Priority
+from oddish.db import Priority, TaskModel, get_session
 from oddish.experiment import generate_experiment_name
 from oddish.schemas import ImportedTrialSpec
 
@@ -136,6 +137,21 @@ class ZipInspection:
     task_name: str | None
 
 
+def _harbor_task_name_from_job_dir(job_dir_name: str) -> str | None:
+    """Extract the task name from a Harbor job dir like ``<task>.<agent>.<id>``.
+
+    Harbor's convention is ``<task_name>.<agent>.<short_id>``; the task
+    name itself can contain dots and dashes, so we slice off the last
+    two ``.``-separated segments rather than splitting from the left.
+    Returns None when the dir name has fewer than two dots (and so
+    can't possibly match the convention).
+    """
+    parts = job_dir_name.rsplit(".", 2)
+    if len(parts) < 3:
+        return None
+    return parts[0] or None
+
+
 def inspect_extracted(root: Path) -> ZipInspection:
     """Classify *root* (the extracted zip contents) into one of the four shapes."""
     is_task = is_task_dir(root)
@@ -144,10 +160,30 @@ def inspect_extracted(root: Path) -> ZipInspection:
 
     trial_count = 0
     job_count = 0
-    if is_job or is_jobs:
+    task_name: str | None = None
+
+    if is_task:
+        task_name = root.name
+    elif is_job:
         entries = discover_trial_entries(root)
         trial_count = len(entries)
-        job_count = len({entry[0] for entry in entries})
+        job_count = 1
+        task_name = _harbor_task_name_from_job_dir(root.name)
+    elif is_jobs:
+        entries = discover_trial_entries(root)
+        trial_count = len(entries)
+        # ``entries`` is (job_name, trial_name, trial_dir) tuples.
+        job_names = {entry[0] for entry in entries}
+        job_count = len(job_names)
+        # When every job dir resolves to the same task name, surface
+        # it; otherwise leave None so the caller can prompt.
+        candidates = {
+            _harbor_task_name_from_job_dir(name)
+            for name in job_names
+            if _harbor_task_name_from_job_dir(name)
+        }
+        if len(candidates) == 1:
+            task_name = candidates.pop()
 
     return ZipInspection(
         is_task=is_task,
@@ -155,7 +191,7 @@ def inspect_extracted(root: Path) -> ZipInspection:
         is_jobs=is_jobs,
         trial_count=trial_count,
         job_count=job_count,
-        task_name=root.name if is_task else None,
+        task_name=task_name,
     )
 
 
@@ -255,6 +291,39 @@ async def _upload_task_dir(
         existing_task=bool(complete.existing_task),
         content_unchanged=False,
     )
+
+
+# =============================================================================
+# Target task resolution (ID or name)
+# =============================================================================
+
+
+async def _resolve_task_id_or_name(
+    identifier: str, org_id: str | None
+) -> str | None:
+    """Resolve a target task identifier to its canonical ``task_id``.
+
+    Tries the literal as a task ID first (cheap PK lookup), falls back
+    to a ``(org_id, name)`` match. Returns None when neither hits.
+
+    Lets the import dialog accept either form: the task name is what
+    users see in the tasks browser, while task IDs are the suffixed
+    form (e.g. ``mytask-abc12345``) that the CLI deals in.
+    """
+    async with get_session() as session:
+        by_id = await session.get(TaskModel, identifier)
+        if by_id is not None and (org_id is None or by_id.org_id == org_id):
+            return by_id.id
+
+        if org_id is None:
+            clause = and_(TaskModel.name == identifier, TaskModel.org_id.is_(None))
+        else:
+            clause = and_(TaskModel.name == identifier, TaskModel.org_id == org_id)
+        by_name = await session.scalar(select(TaskModel).where(clause))
+        if by_name is not None:
+            return by_name.id
+
+    return None
 
 
 # =============================================================================
@@ -422,10 +491,15 @@ async def import_zip(
     Resolution rules (mirror ``oddish upload`` semantics):
 
     - ``task_zip`` alone -> task upload only.
-    - ``run_zip`` alone -> trial import. ``target_task_id`` is required
-      or the function fails with 400.
+    - ``run_zip`` alone -> trial import. ``target_task_id`` accepts
+      either a task ID or a task name within the caller's org.
     - ``task_zip`` + ``run_zip`` -> upload the task first, then import
       the trials against it (CLI ``--path`` flow).
+
+    Run-only imports auto-fall back to the run zip's embedded task
+    name (``<task>.<agent>.<id>`` job-dir convention) when
+    ``target_task_id`` is empty -- so a Harbor run zip whose task
+    already lives in oddish can be imported with just one drop.
     """
     if task_zip_path is None and run_zip_path is None:
         raise HTTPException(
@@ -436,7 +510,7 @@ async def import_zip(
     workspace = Path(tempfile.mkdtemp(prefix="oddish-zip-import-"))
     try:
         task_result: ZipImportTaskResult | None = None
-        resolved_task_id = target_task_id
+        resolved_task_id: str | None = None
 
         if task_zip_path is not None:
             task_extract_dir = workspace / "task"
@@ -458,21 +532,25 @@ async def import_zip(
                 message=message,
             )
             resolved_task_id = task_result.task_id
+        elif target_task_id:
+            resolved_task_id = await _resolve_task_id_or_name(
+                target_task_id, org_id
+            )
+            if resolved_task_id is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"No task matching {target_task_id!r} (by ID or "
+                        "name) in this org. Either drop the task files "
+                        "alongside the run zip, or pick an existing task."
+                    ),
+                )
 
         trial_results: list[ZipImportTrialResult] = []
         experiment_id: str | None = None
         experiment_name: str | None = None
 
         if run_zip_path is not None:
-            if not resolved_task_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Importing trials requires a target task. Drop the "
-                        "task files alongside the run zip, or pick an "
-                        "existing task."
-                    ),
-                )
             run_extract_dir = workspace / "run"
             run_root = extract_zip_to_dir(run_zip_path, run_extract_dir)
             if not (is_harbor_job_dir(run_root) or is_harbor_jobs_dir(run_root)):
@@ -484,6 +562,35 @@ async def import_zip(
                         "parent directory of such job subdirs."
                     ),
                 )
+
+            # If neither a task zip nor a target was given, try the
+            # task name baked into the harbor job-dir name. This makes
+            # "drop run zip, hit Import" work for tasks that are
+            # already in oddish.
+            if resolved_task_id is None:
+                inferred = inspect_extracted(run_root).task_name
+                if inferred:
+                    resolved_task_id = await _resolve_task_id_or_name(
+                        inferred, org_id
+                    )
+                if resolved_task_id is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Importing trials requires a target task. The "
+                            "run zip's task name "
+                            f"{inferred!r} did not match any task in this "
+                            "org -- drop the task files alongside the run "
+                            "zip, or paste the task ID/name explicitly."
+                            if inferred
+                            else (
+                                "Importing trials requires a target task. "
+                                "Drop the task files alongside the run "
+                                "zip, or paste an existing task ID/name."
+                            )
+                        ),
+                    )
+
             trial_results, experiment_id, experiment_name = await _import_trials(
                 job_root=run_root,
                 task_id=resolved_task_id,
