@@ -256,3 +256,32 @@ oddish delete --experiment <experiment_id>
 - `--api-url`, `-u TEXT` - Override the API URL
 
 </details>
+
+
+## Drag-and-drop import (UI)
+
+The dashboard's **Tasks** page has an **Import** button next to the
+search input that opens the same flow as `oddish upload`, but driven
+from the browser. Drop one or both of:
+
+- a Harbor task zip (e.g. `zip -r my-task.zip my-task`)
+- a Harbor run zip — either a single job dir (with `result.json`) or a
+  parent dir of job dirs
+
+The dialog accepts:
+
+- **Task only** → registers a new task version (or no-op when content
+  is unchanged).
+- **Run only** → imports every Harbor trial in the zip into the target
+  task ID you provide.
+- **Task + run** → uploads the task first, then imports the trials
+  against it (the UI equivalent of `oddish upload ./jobs --path
+  ./my-task`).
+
+The optional **Experiment name** field maps to `--experiment`; leaving
+it blank auto-generates a fresh experiment, matching the CLI default.
+**Skip artifacts** maps to `--skip-artifacts`. Re-uploading the same
+task content is idempotent — content-hash unchanged → no new version.
+
+For very large archives or scripted/CI flows, prefer the CLI: the UI
+caps each uploaded zip at 1 GiB.
