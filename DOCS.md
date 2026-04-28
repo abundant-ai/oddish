@@ -21,6 +21,7 @@ export ODDISH_API_KEY="ok_..."
 
 - `oddish run` - submit a job
 - `oddish upload` - register a task or upload existing trials
+- `oddish ls` - list uploaded tasks
 - `oddish status` - view progress
 - `oddish cancel` - stop in-flight trials for a task
 - `oddish pull` - download logs and artifacts
@@ -107,6 +108,29 @@ agents:
   - name: oracle
     n_trials: 3
 ```
+
+## List Tasks
+
+Use `oddish ls` to browse uploaded tasks with their latest version, trial
+counts, reward summary, last run time, and linked experiments.
+
+```bash
+oddish ls
+oddish ls --query django
+oddish ls --limit 50
+oddish ls --json
+```
+
+<details>
+<summary>Options</summary>
+
+- `--query`, `-q TEXT` - Filter tasks by name
+- `--limit`, `-n INTEGER` - Maximum number of tasks to show
+- `--offset INTEGER` - Number of tasks to skip
+- `--json` - Emit the raw task browser JSON response
+- `--api TEXT` - Override the API URL
+
+</details>
 
 ## Check Progress
 

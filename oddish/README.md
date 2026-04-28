@@ -19,7 +19,8 @@ export ODDISH_API_KEY="ok_..."
 # Submit a run
 oddish run -d swebench@1.0 -a codex -m openai/gpt-5.2 --n-trials 3
 
-# Watch progress
+# List and watch progress
+oddish ls
 oddish status
 oddish status <task_id> --watch
 
@@ -63,6 +64,7 @@ Available commands:
 
 - `oddish run` uploads a local task or dataset, downloads a registry dataset, or expands a sweep config into trials
 - `oddish upload` registers task bundles (no trials) or uploads off-oddish Harbor trial results (logs, rewards, tokens) onto an existing task
+- `oddish ls` lists uploaded tasks with version, trial, reward, and experiment summaries
 - `oddish status` shows system, task, or experiment status
 - `oddish cancel` stops all in-flight runs for a task
 - `oddish pull` downloads logs, results, trajectories, and artifact files for a trial, task, or experiment
@@ -249,6 +251,20 @@ Notes:
   feed the analysis pipeline.
 - Experiments can be heterogeneous — one experiment can mix trials
   that ran on Oddish with trials that were imported.
+
+### `oddish ls`
+
+List uploaded tasks using the same latest-version task browser API as the
+dashboard.
+
+Examples:
+
+```bash
+oddish ls
+oddish ls --query django
+oddish ls --limit 50
+oddish ls --json
+```
 
 ### `oddish status`
 
