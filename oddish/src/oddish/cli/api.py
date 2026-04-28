@@ -29,7 +29,6 @@ from rich.progress import (
 from rich.table import Table
 
 from harbor.models.environment_type import EnvironmentType
-from harbor.models.job.config import DatasetConfig
 from harbor.models.task.paths import TaskPaths
 from harbor.models.task.task import Task
 from harbor.models.trial.config import AgentConfig
@@ -126,14 +125,40 @@ def get_task_paths_from_local(
     n_tasks: int | None = None,
 ) -> list[Path]:
     """Get task paths from a local dataset directory using Harbor's DatasetConfig."""
-    config = DatasetConfig(
-        path=dataset_path,
-        task_names=task_names,
-        exclude_task_names=exclude_task_names,
-        n_tasks=n_tasks,
-    )
-    task_configs = asyncio.run(config.get_task_configs())
-    return [tc.path for tc in task_configs if tc.path is not None]
+    try:
+        from harbor.models.job.config import DatasetConfig
+    except ImportError:
+        task_paths = [
+            path
+            for path in dataset_path.iterdir()
+            if TaskPaths(path).is_valid(disable_verification=False)
+        ]
+        if task_names:
+            task_paths = [
+                path
+                for path in task_paths
+                if any(fnmatch(path.name, pattern) for pattern in task_names)
+            ]
+        if exclude_task_names:
+            task_paths = [
+                path
+                for path in task_paths
+                if not any(
+                    fnmatch(path.name, pattern) for pattern in exclude_task_names
+                )
+            ]
+        if n_tasks is not None:
+            task_paths = task_paths[:n_tasks]
+        return task_paths
+    else:
+        config = DatasetConfig(
+            path=dataset_path,
+            task_names=task_names,
+            exclude_task_names=exclude_task_names,
+            n_tasks=n_tasks,
+        )
+        task_configs = asyncio.run(config.get_task_configs())
+        return [tc.path for tc in task_configs if tc.path is not None]
 
 
 def get_task_paths_from_registry(
