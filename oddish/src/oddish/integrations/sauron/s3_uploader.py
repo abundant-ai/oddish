@@ -95,26 +95,22 @@ class SauronS3Uploader:
         self._client: aioboto3.Client | None = None
         self._session: aioboto3.Session | None = None
 
-    def _resolve_credentials(self) -> tuple[str, str]:
-        """Resolve AWS credentials, falling back to standard AWS env vars."""
-        access_key = settings.sauron_s3_access_key or os.environ.get("AWS_ACCESS_KEY_ID", "")
-        secret_key = settings.sauron_s3_secret_key or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-        return access_key, secret_key
-
     def is_enabled(self) -> bool:
-        access_key, secret_key = self._resolve_credentials()
-        return bool(settings.sauron_s3_bucket and access_key and secret_key)
+        return bool(
+            settings.sauron_s3_bucket
+            and os.environ.get("AWS_ACCESS_KEY_ID")
+            and os.environ.get("AWS_SECRET_ACCESS_KEY")
+        )
 
     async def _ensure_client(self) -> None:
         if self._client is not None:
             return
-        access_key, secret_key = self._resolve_credentials()
         self._session = aioboto3.Session()
         self._client = await self._session.client(
             "s3",
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-            region_name=settings.sauron_s3_region,
+            aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+            aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+            region_name=os.environ.get("AWS_REGION", "us-west-2"),
             config=Config(signature_version="s3v4"),
         ).__aenter__()
 

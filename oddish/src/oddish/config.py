@@ -272,10 +272,8 @@ class Settings(BaseSettings):
     # When configured, oddish workers also upload trial artifacts to sauron's
     # AWS S3 bucket in sauron's expected directory layout, allowing sauron's
     # frontend to render oddish-originated experiments natively.
+    # Uses AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY from environment for credentials.
     sauron_s3_bucket: str = ""
-    sauron_s3_region: str = "us-west-2"
-    sauron_s3_access_key: str = ""
-    sauron_s3_secret_key: str = ""
     # Fallback org/repo for non-PR (CLI-triggered) experiments.
     sauron_s3_org: str = "oddish"
     sauron_s3_repo: str = "cli-runs"
