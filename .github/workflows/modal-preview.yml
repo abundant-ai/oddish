@@ -61,15 +61,32 @@ jobs:
         id: supabase_branch
         working-directory: ${{ github.workspace }}
         env:
-          GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: .github/scripts/preview/wait_for_supabase_branch.sh
 
       - name: Sync backend dependencies
         run: uv sync --frozen
 
-      - name: Bootstrap preview database
+      - name: Apply Alembic migrations to preview branch
         run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_preview_db.py"
+
+      - name: Cancel cloned-prod in-flight work
+        # Only on a fresh branch — once the dev has interacted with the
+        # preview, their own pending work shouldn't get nuked on every
+        # subsequent push.
+        if: steps.supabase_branch.outputs.branch_was_created == 'true'
+        run: |
+          psql "${ODDISH_DATABASE_URL/+asyncpg/}" <<'SQL'
+          UPDATE worker_jobs
+             SET status = 'CANCELLED'
+           WHERE status IN ('QUEUED', 'RUNNING', 'RETRYING', 'BLOCKED');
+          UPDATE tasks
+             SET status = 'failed'
+           WHERE status IN ('pending', 'running', 'analyzing', 'verdict_pending');
+          UPDATE trials
+             SET status = 'failed'
+           WHERE status IN ('pending', 'queued', 'running', 'retrying');
+          SQL
 
       - name: Create per-PR Modal database secret
         run: |
@@ -307,13 +324,11 @@ jobs:
         continue-on-error: true
         env:
           BRANCH_NAME: pr-${{ github.event.pull_request.number }}
-          GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           ids=$(supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
-            | jq -r --arg gb "$GIT_BRANCH" --argjson pr "$PR_NUMBER" --arg name "$BRANCH_NAME" '
+            | jq -r --arg name "$BRANCH_NAME" '
                 .[] | select(.persistent != true)
-                    | select(.git_branch == $gb or .pr_number == $pr or .name == $name)
+                    | select(.name == $name)
                     | .id')
           for id in $ids; do
             echo "deleting Supabase branch $id"
