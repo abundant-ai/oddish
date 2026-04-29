@@ -11,19 +11,17 @@
 
 project_id = "lmmlhiospelnvmtjljnn"
 
-# Clone production data into every PR preview branch.
+# To get prod-data preview branches (the migration-safety mechanism),
+# `config.toml` is *not* the right place — Supabase's branching config
+# section here only controls seed re-runs on persistent branches, not
+# whether ephemeral PR branches clone prod. Two real options:
 #
-# This is the migration-safety lever: with prod data present, an unsafe
-# Alembic revision (NOT NULL on a column with nulls, dropped column with
-# rows referencing it, FK cycle, etc.) breaks the bootstrap step in CI
-# instead of breaking prod after merge.
+#   1. Flip the Supabase project's GitHub-integration setting that
+#      controls data cloning on auto-created branches (dashboard).
+#   2. Disable the integration's auto-create and have
+#      `.github/workflows/modal-preview.yml` run
+#      `supabase branches create "pr-$PR_NUMBER" --with-data --project-ref ...`
+#      itself. `wait_for_supabase_branch.sh` already polls by name.
 #
-# Equivalent to passing `--with-data` to `supabase branches create` (see
-# https://supabase.com/docs/reference/cli/supabase-branches-create).
-#
-# If the GitHub integration on the project hasn't picked up this flag
-# from `config.toml` yet, set the same flag in the Supabase dashboard
-# (Branching → Settings → "Clone production data") so existing/future
-# auto-created branches honor it.
-[experimental.branching]
-with_data = true
+# Pick one before the bootstrap step is meaningful as a migration-
+# safety check.
