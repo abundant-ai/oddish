@@ -11,17 +11,10 @@
 
 project_id = "lmmlhiospelnvmtjljnn"
 
-# To get prod-data preview branches (the migration-safety mechanism),
-# `config.toml` is *not* the right place — Supabase's branching config
-# section here only controls seed re-runs on persistent branches, not
-# whether ephemeral PR branches clone prod. Two real options:
-#
-#   1. Flip the Supabase project's GitHub-integration setting that
-#      controls data cloning on auto-created branches (dashboard).
-#   2. Disable the integration's auto-create and have
-#      `.github/workflows/modal-preview.yml` run
-#      `supabase branches create "pr-$PR_NUMBER" --with-data --project-ref ...`
-#      itself. `wait_for_supabase_branch.sh` already polls by name.
-#
-# Pick one before the bootstrap step is meaningful as a migration-
-# safety check.
+# Note on prod-data preview branches: data cloning isn't a config.toml
+# knob. `.github/workflows/modal-preview.yml` runs
+# `supabase branches create "pr-$PR_NUMBER" --with-data` itself
+# (see `.github/scripts/preview/wait_for_supabase_branch.sh`).
+# To stop the GitHub integration from also auto-creating a parallel
+# data-less branch each PR, disable auto-branching for this repo in
+# the Supabase project's GitHub integration settings.
