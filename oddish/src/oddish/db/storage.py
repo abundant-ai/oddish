@@ -5,7 +5,6 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 import io
 import json
-import logging
 import posixpath
 import shutil
 import tarfile
@@ -17,9 +16,6 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 from fastapi import HTTPException
 from oddish.config import settings
-from oddish.db import s3_keys
-
-logger = logging.getLogger(__name__)
 
 WORKER_TASK_MOUNT_PATH = Path("/mnt/oddish-tasks")
 WORKER_TASK_KEY_PREFIX = "tasks/"
@@ -137,12 +133,12 @@ class StorageClient:
         return self._client  # type: ignore[return-value]
 
     _MAX_CONCURRENT_UPLOADS = 8
-    # Object-name constants live in ``oddish.db.s3_keys``; aliased here so
-    # existing ``StorageClient._TASK_ARCHIVE_OBJECT_NAME`` references keep
-    # working without a separate sweep.
-    _TASK_ARCHIVE_OBJECT_NAME = s3_keys.TASK_ARCHIVE_OBJECT_NAME
-    _EXPANDED_MANIFEST_OBJECT_NAME = s3_keys.EXPANDED_MANIFEST_OBJECT_NAME
-    _TRIAL_IMPORT_ARCHIVE_OBJECT_NAME = s3_keys.TRIAL_IMPORT_ARCHIVE_OBJECT_NAME
+    _TASK_ARCHIVE_OBJECT_NAME = ".oddish-task.tar.gz"
+    _EXPANDED_MANIFEST_OBJECT_NAME = ".oddish-manifest.json"
+    # Staging archive written by ``oddish import`` clients via a presigned
+    # PUT; the complete endpoint extracts it into the trial prefix and
+    # deletes the staging object.
+    _TRIAL_IMPORT_ARCHIVE_OBJECT_NAME = ".oddish-trial-import.tar.gz"
 
     # Per-process archive cache: maps (archive_key, etag) -> (bytes, members)
     # where members is the list produced by ``_task_archive_members_from_bytes``.
@@ -310,7 +306,18 @@ class StorageClient:
 
     @staticmethod
     def _trial_prefix(trial_id: str) -> str:
-        return s3_keys.trial_prefix(trial_id)
+        """
+        Return an S3 prefix for trial artifacts.
+
+        Prefer nesting under the task prefix (tasks/<task_id>/trials/<trial_id>/)
+        because some S3 backends/policies only allow writes under "tasks/".
+        """
+        # trial_id is generated as f"{task_id}-{i}" where i is an integer index.
+        # task_id itself can contain dashes, so split from the right.
+        task_id, sep, maybe_index = trial_id.rpartition("-")
+        if sep and maybe_index.isdigit() and task_id:
+            return f"tasks/{task_id}/trials/{trial_id}/"
+        return f"trials/{trial_id}/"
 
     async def upload_task_directory(self, task_id: str, local_path: Path) -> str:
         """
@@ -324,7 +331,7 @@ class StorageClient:
             S3 key prefix for the uploaded task
         """
         await self._ensure_client()
-        s3_prefix = s3_keys.task_prefix(task_id)
+        s3_prefix = f"tasks/{task_id}/"
 
         if not local_path.exists() or not local_path.is_dir():
             raise ValueError(f"Task directory does not exist: {local_path}")
@@ -335,14 +342,14 @@ class StorageClient:
 
     @classmethod
     def _task_archive_key(cls, task_id: str) -> str:
-        return s3_keys.task_archive_key(task_id)
+        return f"tasks/{task_id}/{cls._TASK_ARCHIVE_OBJECT_NAME}"
 
     @classmethod
     def _task_archive_key_from_prefix(cls, s3_prefix: str) -> str:
         normalized_prefix = normalize_s3_prefix(s3_prefix)
         if not normalized_prefix:
             raise ValueError(f"Invalid task S3 prefix: {s3_prefix}")
-        return s3_keys.task_archive_key_from_prefix(normalized_prefix)
+        return f"{normalized_prefix}{cls._TASK_ARCHIVE_OBJECT_NAME}"
 
     async def _resolve_task_prefix(
         self, task_id: str, version: int | None
@@ -354,20 +361,20 @@ class StorageClient:
         unversioned ``tasks/{task_id}/`` path.
         """
         if version is not None:
-            vroot = s3_keys.task_version_prefix(task_id, version)
-            varchive = s3_keys.task_archive_key_for_version(task_id, version)
+            vroot = f"tasks/{task_id}/v{version}/"
+            varchive = f"{vroot}{self._TASK_ARCHIVE_OBJECT_NAME}"
             if await self.object_exists(varchive):
                 return vroot, varchive
             # Check if unversioned prefix has the archive instead (backfill)
-            fallback_root = s3_keys.task_prefix(task_id)
-            fallback_archive = s3_keys.task_archive_key(task_id)
+            fallback_root = f"tasks/{task_id}/"
+            fallback_archive = self._task_archive_key(task_id)
             if await self.object_exists(fallback_archive):
                 return fallback_root, fallback_archive
             # Neither exists; return the versioned one so callers get a
             # consistent "not found" behaviour for the S3-objects-based path.
             return vroot, varchive
 
-        return s3_keys.task_prefix(task_id), s3_keys.task_archive_key(task_id)
+        return f"tasks/{task_id}/", self._task_archive_key(task_id)
 
     async def download_task_directory(self, s3_prefix: str, local_path: Path) -> None:
         """
@@ -442,7 +449,8 @@ class StorageClient:
     @classmethod
     def _trial_import_archive_key(cls, trial_id: str) -> str:
         """Key for the staging tarball uploaded during ``oddish import``."""
-        return s3_keys.trial_import_archive_key(trial_id)
+        prefix = cls._trial_prefix(trial_id)
+        return f"{prefix}{cls._TRIAL_IMPORT_ARCHIVE_OBJECT_NAME}"
 
     async def extract_trial_import_archive(self, trial_id: str) -> int:
         """Extract a previously-uploaded trial import tarball into the trial prefix.
@@ -606,7 +614,7 @@ class StorageClient:
         # Prefer the per-file expanded layout when available. Sibling prefix
         # (``v{N}-files/``) isolates expansion artifacts from user files.
         if version is not None:
-            expanded_prefix = s3_keys.task_expanded_prefix(task_id, version)
+            expanded_prefix = f"tasks/{task_id}/v{version}-files/"
             manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
             if await self.object_exists(manifest_key):
                 return await self._list_expanded_task_files(
@@ -1019,7 +1027,7 @@ class StorageClient:
             raise HTTPException(status_code=400, detail="Invalid file path")
 
         if version is not None:
-            expanded_prefix = s3_keys.task_expanded_prefix(task_id, version)
+            expanded_prefix = f"tasks/{task_id}/v{version}-files/"
             manifest_key = f"{expanded_prefix}{self._EXPANDED_MANIFEST_OBJECT_NAME}"
             if await self.object_exists(manifest_key):
                 s3_key = f"{expanded_prefix}{normalized_path}"
@@ -1393,16 +1401,6 @@ def resolve_trial_s3_prefix(
 ) -> str:
     """Resolve a trial S3 prefix, falling back to the default trial layout."""
     resolved = resolve_s3_key(trial_s3_key, trial_result_path)
-    if not resolved:
-        # Legacy row with no path column populated. Rebuilding from
-        # ``trial_id`` will pick up ``settings.s3_write_prefix`` via
-        # ``s3_keys.trial_prefix``, which means in preview envs this
-        # rebuild may not match cloned-prod artifacts. Surfaced so we
-        # can spot legacy rows and decide whether to backfill.
-        logger.warning(
-            "trial %s has no trial_s3_key; reconstructing prefix from id",
-            trial_id,
-        )
     return normalize_s3_prefix(resolved or StorageClient._trial_prefix(trial_id)) or (
         StorageClient._trial_prefix(trial_id)
     )

@@ -16,9 +16,6 @@ from rich.console import Console
 from oddish.core.endpoints import (
     browse_tasks_core,
     create_task_sweep_core,
-    delete_experiment_core,
-    delete_task_core,
-    delete_trial_core,
     get_task_status_core,
     get_task_version_core,
     get_trial_by_index_core,
@@ -71,7 +68,6 @@ from oddish.db import (
     get_pool,
     utcnow,
 )
-from oddish.db.storage import delete_s3_prefixes
 from oddish.schemas import (
     TaskBatchCancelRequest,
     TaskBrowseResponse,
@@ -472,57 +468,13 @@ async def cancel_tasks(payload: TaskBatchCancelRequest):
     }
 
 
-@api.delete("/tasks/{task_id}")
-async def delete_task(task_id: str):
-    """Delete a task and its trials."""
-    async with get_session() as session:
-        result = await delete_task_core(session, task_id=task_id)
-        await session.commit()
+# Delete endpoints intentionally removed: previews now run against
+# clones of prod data, so any HTTP DELETE the frontend (or anything else
+# reachable on the network) could hit would target the same prod S3
+# bucket. ``delete_{task,experiment,trial}_core`` stays available for
+# admin/CLI use; expose it through a separate, auth-scoped surface if
+# the FE ever needs delete functionality back.
 
-    if result.get("s3_prefixes"):
-        try:
-            await delete_s3_prefixes(result["s3_prefixes"])
-        except Exception:
-            logger.exception("Failed to delete S3 artifacts for task %s", task_id)
-
-    return {"status": "success", "deleted": result["deleted"]}
-
-
-@api.delete("/experiments/{experiment_id}")
-async def delete_experiment(experiment_id: str):
-    """Delete an experiment and all associated tasks/trials."""
-    async with get_session() as session:
-        result = await delete_experiment_core(session, experiment_id=experiment_id)
-        await session.commit()
-
-    if result.get("s3_prefixes"):
-        try:
-            await delete_s3_prefixes(result["s3_prefixes"])
-        except Exception:
-            logger.exception(
-                "Failed to delete S3 artifacts for experiment %s", experiment_id
-            )
-
-    return {
-        "status": "success",
-        "deleted": result["deleted"],
-    }
-
-
-@api.delete("/trials/{trial_id}")
-async def delete_trial(trial_id: str) -> dict:
-    """Delete a single trial and its associated artifacts."""
-    async with get_session() as session:
-        result = await delete_trial_core(session, trial_id=trial_id)
-        await session.commit()
-
-    if result.get("s3_prefixes"):
-        try:
-            await delete_s3_prefixes(result["s3_prefixes"])
-        except Exception:
-            logger.exception("Failed to delete S3 artifacts for trial %s", trial_id)
-
-    return {"status": "success", "deleted": result["deleted"]}
 
 
 @api.patch("/experiments/{experiment_id}", response_model=ExperimentUpdateResponse)

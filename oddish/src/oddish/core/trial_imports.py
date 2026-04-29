@@ -49,8 +49,7 @@ from oddish.db import (
     get_session,
     utcnow,
 )
-from oddish.db import s3_keys
-from oddish.db.storage import get_storage_client
+from oddish.db.storage import StorageClient, get_storage_client
 from oddish.experiment import generate_experiment_name
 from oddish.schemas import (
     ImportedTrialSpec,
@@ -269,7 +268,7 @@ async def initialize_trial_import(
             cost_usd=trial_spec.cost_usd,
             phase_timing=trial_spec.phase_timing,
             has_trajectory=trial_spec.has_trajectory,
-            trial_s3_key=s3_keys.trial_prefix(trial_id),
+            trial_s3_key=StorageClient._trial_prefix(trial_id),
             started_at=started_at,
             finished_at=finished_at,
         )
@@ -315,7 +314,7 @@ async def initialize_trial_import(
 
     # Build the presign response *after* commit so the row is durable
     # before the client starts uploading artifacts.
-    trial_s3_key = s3_keys.trial_prefix(trial_id)
+    trial_s3_key = StorageClient._trial_prefix(trial_id)
     archive_s3_key: str | None = None
     upload_url: str | None = None
     upload_headers: dict[str, str] = {}
@@ -324,7 +323,7 @@ async def initialize_trial_import(
 
     if upload_artifacts:
         storage = get_storage_client()
-        archive_s3_key = s3_keys.trial_import_archive_key(trial_id)
+        archive_s3_key = StorageClient._trial_import_archive_key(trial_id)
         try:
             upload_url = await storage.get_presigned_upload_url(
                 archive_s3_key,
@@ -397,7 +396,7 @@ async def complete_trial_import(
         trial_s3_key = (
             trial_again.trial_s3_key
             if trial_again and trial_again.trial_s3_key
-            else s3_keys.trial_prefix(trial_id)
+            else StorageClient._trial_prefix(trial_id)
         )
 
     _ = task_id  # kept for future observability hooks

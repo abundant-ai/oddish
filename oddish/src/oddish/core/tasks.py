@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.db import Priority, TaskModel, TaskVersionModel, get_session
-from oddish.db import s3_keys
 from oddish.db.storage import StorageClient, get_storage_client
 from oddish.schemas import TaskUploadInitResponse, UploadResponse
 
@@ -58,11 +57,14 @@ def _normalize_task_name(name: str) -> str:
 
 
 def _task_s3_prefix_for_version(task_id: str, version: int) -> str:
-    return s3_keys.task_version_prefix(task_id, version)
+    return f"tasks/{task_id}/v{version}/"
 
 
 def _task_archive_key_for_version(task_id: str, version: int) -> str:
-    return s3_keys.task_archive_key_for_version(task_id, version)
+    return (
+        f"{_task_s3_prefix_for_version(task_id, version)}"
+        f"{StorageClient._TASK_ARCHIVE_OBJECT_NAME}"
+    )
 
 
 async def initialize_task_upload(
@@ -320,7 +322,7 @@ async def resolve_task_storage(
 
     # Try versioned prefix first
     if version is not None:
-        versioned_key = s3_keys.task_version_prefix(task_id, version)
+        versioned_key = f"tasks/{task_id}/v{version}/"
         try:
             if await storage.prefix_exists(versioned_key):
                 return f"s3://{versioned_key}", versioned_key
@@ -328,7 +330,7 @@ async def resolve_task_storage(
             raise HTTPException(status_code=500, detail=f"Failed to check S3: {str(e)}")
 
     # Check unversioned root archive
-    task_s3_key = s3_keys.task_prefix(task_id)
+    task_s3_key = f"tasks/{task_id}/"
     root_archive_key = f"{task_s3_key}{archive_name}"
     try:
         if await storage.object_exists(root_archive_key):
