@@ -209,6 +209,15 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://oddish:oddish@localhost:5432/oddish"
 
+    local_mode: bool = Field(
+        default=False,
+        description=(
+            "When true, freeform trial submissions execute in-process via the "
+            "harbor.trial.Trial Python API (local Docker), bypassing the Modal "
+            "queue. Set ODDISH_LOCAL_MODE=1 for solo dev."
+        ),
+    )
+
     # Asyncpg pool sizing
     # Defaults are intentionally small to avoid exhausting DB connections when
     # many worker processes are spawned.
