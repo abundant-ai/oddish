@@ -49,11 +49,10 @@ class PreparedTrialRun:
     trial_model: str
     trial_environment: str | None
     trial_harbor_config: dict | None
-    # Fields needed for sauron S3 mirror
+    # Fields for sauron S3 mirror
     task_name: str = ""
     experiment_id: str = ""
-    experiment_name: str = ""
-    attempt_number: int = 1  # 1-indexed
+    attempt_number: int = 1
     task_tags: dict | None = None
 
 
@@ -353,14 +352,7 @@ async def _prepare_trial_run(
         task_name = task.name if task else trial.task_id
         task_tags = dict(task.tags) if task and task.tags else None
 
-        # Capture experiment metadata for sauron S3 mirror.
         experiment_id = trial.experiment_id or ""
-        experiment_name = ""
-        if experiment_id:
-            from oddish.db.models import ExperimentModel
-            exp = await session.get(ExperimentModel, experiment_id)
-            if exp:
-                experiment_name = exp.name or ""
 
         # Prefer the version-specific path so the worker runs the exact
         # content the trial was created against.
@@ -402,7 +394,6 @@ async def _prepare_trial_run(
             trial_harbor_config=trial_harbor_config,
             task_name=task_name,
             experiment_id=experiment_id,
-            experiment_name=experiment_name,
             # Extract trial index from trial_id ("{task_id}-{index}") for the
             # sauron attempt number. This is the trial's position within its
             # task (0, 1, 2...), NOT the retry count (trial.attempts).
@@ -835,54 +826,27 @@ async def run_trial_job(
                     f"[yellow]Failed to upload trial results to S3: {e}[/yellow]"
                 )
 
-        # Mirror to sauron's AWS S3 (best-effort, non-blocking).
-        # Disabled when ODDISH_SAURON_S3_BUCKET is empty.
+        # Mirror to sauron's AWS S3 (best-effort).
         if execution.outcome and execution.outcome.job_dir:
             try:
-                from oddish.integrations.sauron.s3_uploader import (
-                    SauronUploadContext,
-                    get_sauron_uploader,
-                )
+                from oddish.integrations.sauron import get_sauron_uploader
                 from oddish.integrations.github.client import GitHubMeta
 
                 sauron = get_sauron_uploader()
                 if sauron.is_enabled():
-                    github_meta = GitHubMeta.from_tags(prepared_trial.task_tags)
-
-                    # Ensure experiment-manifest.yaml exists (idempotent).
-                    await sauron.ensure_experiment_manifest(
-                        experiment_id=prepared_trial.experiment_id,
-                        experiment_name=prepared_trial.experiment_name,
-                        github_meta=github_meta,
-                        tasks=[prepared_trial.task_name or prepared_trial.task_id],
-                        agents=[{"name": prepared_trial.trial_agent, "model": prepared_trial.trial_model}],
-                        n_trials=prepared_trial.attempt_number,
-                    )
-
-                    sauron_ctx = SauronUploadContext(
-                        trial_id=trial_id,
+                    sauron_prefix = await sauron.upload_trial(
                         harbor_job_dir=execution.outcome.job_dir,
-                        task_id=prepared_trial.task_id,
                         task_name=prepared_trial.task_name or prepared_trial.task_id,
                         agent=prepared_trial.trial_agent,
                         model=prepared_trial.trial_model,
                         experiment_id=prepared_trial.experiment_id,
-                        experiment_name=prepared_trial.experiment_name,
                         attempt_number=prepared_trial.attempt_number,
-                        n_trials=1,  # Will be enriched by ensure_experiment_manifest
-                        github_meta=github_meta,
-                        task_source_path=task_path_to_run,
+                        github_meta=GitHubMeta.from_tags(prepared_trial.task_tags),
                     )
-                    sauron_prefix = await sauron.upload_trial_to_sauron(sauron_ctx)
                     if sauron_prefix:
-                        console.print(
-                            f"[dim]Mirrored trial to sauron S3: {sauron_prefix}[/dim]"
-                        )
+                        console.print(f"[dim]Mirrored to sauron S3: {sauron_prefix}[/dim]")
             except Exception as e:
-                # Sauron mirror is best-effort — never let it break trial completion.
-                console.print(
-                    f"[yellow]Sauron S3 mirror failed (non-fatal): {e}[/yellow]"
-                )
+                console.print(f"[yellow]Sauron mirror failed (non-fatal): {e}[/yellow]")
 
         # Cleanup local Harbor artifacts AFTER both uploads complete.
         if oddish_uploaded and execution.outcome and execution.outcome.job_dir:
