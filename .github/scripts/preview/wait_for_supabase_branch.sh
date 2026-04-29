@@ -78,30 +78,34 @@ import json
 import os
 import re
 import sys
+from urllib.parse import urlsplit
 
 branch_ref = os.environ["BRANCH_REF"]
 data = json.loads(os.environ["BRANCHES_GET_JSON"])
 print("branches.get keys:", sorted(data.keys()), file=sys.stderr)
 
-raw_url = data.get("POSTGRES_URL") or ""
-host_match = re.search(r"@([^/?]+)", raw_url)
-print("POSTGRES_URL host:port:",
-      host_match.group(1) if host_match else "<none>", file=sys.stderr)
+def describe(label, raw):
+    if not raw:
+        print(f"{label}: <missing>", file=sys.stderr)
+        return
+    p = urlsplit(raw)
+    print(f"{label}: user={p.username!r} host={p.hostname!r} port={p.port!r} "
+          f"db={p.path.lstrip('/')!r} pwd_len={len(p.password or '')}",
+          file=sys.stderr)
 
-# Drop the query string — asyncpg doesn't grok pgbouncer-style params.
+describe("POSTGRES_URL", data.get("POSTGRES_URL"))
+describe("POSTGRES_URL_NON_POOLING", data.get("POSTGRES_URL_NON_POOLING"))
+print(f"branch_ref env: {branch_ref!r}", file=sys.stderr)
+
+# Prefer the direct (non-pooling) URL — bypasses Supavisor entirely so
+# we don't have to reason about pooler username routing.
+raw_url = data.get("POSTGRES_URL_NON_POOLING") or data.get("POSTGRES_URL") or ""
+if not raw_url:
+    print("no usable POSTGRES_URL", file=sys.stderr)
+    sys.exit(1)
+
+# Drop query string (pgbouncer / prisma flags asyncpg doesn't understand).
 url = raw_url.split("?", 1)[0]
-
-# Supabase pooler (port 6543) authenticates with "postgres.<branch_ref>"
-# so it can route. .POSTGRES_URL returns just "postgres". Patch only
-# when (a) we're hitting the pooler and (b) the user is the bare form.
-if ":6543/" in url and branch_ref:
-    new_url, n = re.subn(r"(://)postgres(:)",
-                         rf"\1postgres.{branch_ref}\2", url, count=1)
-    if n:
-        print(f"patched pooler user -> postgres.{branch_ref}", file=sys.stderr)
-    else:
-        print("pooler URL but user already non-bare; no patch", file=sys.stderr)
-    url = new_url
 
 # Force asyncpg driver.
 url = re.sub(r"^postgresql://", "postgresql+asyncpg://", url, count=1)
