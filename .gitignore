@@ -12,6 +12,7 @@ __pycache__/
 .env.local
 *.env.local
 .env.*.local
+backend/.env.local
 *.pem
 
 # Build artifacts
