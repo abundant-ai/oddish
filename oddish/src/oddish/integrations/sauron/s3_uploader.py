@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import re
 import tarfile
 from dataclasses import dataclass
@@ -94,21 +95,25 @@ class SauronS3Uploader:
         self._client: aioboto3.Client | None = None
         self._session: aioboto3.Session | None = None
 
+    def _resolve_credentials(self) -> tuple[str, str]:
+        """Resolve AWS credentials, falling back to standard AWS env vars."""
+        access_key = settings.sauron_s3_access_key or os.environ.get("AWS_ACCESS_KEY_ID", "")
+        secret_key = settings.sauron_s3_secret_key or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+        return access_key, secret_key
+
     def is_enabled(self) -> bool:
-        return bool(
-            settings.sauron_s3_bucket
-            and settings.sauron_s3_access_key
-            and settings.sauron_s3_secret_key
-        )
+        access_key, secret_key = self._resolve_credentials()
+        return bool(settings.sauron_s3_bucket and access_key and secret_key)
 
     async def _ensure_client(self) -> None:
         if self._client is not None:
             return
+        access_key, secret_key = self._resolve_credentials()
         self._session = aioboto3.Session()
         self._client = await self._session.client(
             "s3",
-            aws_access_key_id=settings.sauron_s3_access_key,
-            aws_secret_access_key=settings.sauron_s3_secret_key,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
             region_name=settings.sauron_s3_region,
             config=Config(signature_version="s3v4"),
         ).__aenter__()

@@ -32,6 +32,14 @@ from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
 
 
+def _extract_trial_index(trial_id: str, task_id: str) -> int:
+    """Extract the 0-based trial index from a trial ID like '{task_id}-{index}'."""
+    suffix = trial_id[len(task_id):]  # e.g., "-0", "-1", "-2"
+    if suffix.startswith("-") and suffix[1:].isdigit():
+        return int(suffix[1:])
+    return 0
+
+
 @dataclass(slots=True)
 class PreparedTrialRun:
     task_path: str | None
@@ -395,7 +403,12 @@ async def _prepare_trial_run(
             task_name=task_name,
             experiment_id=experiment_id,
             experiment_name=experiment_name,
-            attempt_number=trial.attempts,  # 1-indexed (already incremented above)
+            # Extract trial index from trial_id ("{task_id}-{index}") for the
+            # sauron attempt number. This is the trial's position within its
+            # task (0, 1, 2...), NOT the retry count (trial.attempts).
+            # Multiple trials of the same task must map to different attempt_N
+            # folders to avoid overwriting each other.
+            attempt_number=_extract_trial_index(trial_id, task_id) + 1,  # 1-indexed
             task_tags=task_tags,
         )
 
