@@ -66,17 +66,54 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
-pg_url=$(supabase branches get "$branch_id" --project-ref "$SUPABASE_PROJECT_REF" -o json \
-         | jq -r '.POSTGRES_URL')
-db_url="${pg_url%%\?*}"
-# The Supabase pooler (port 6543) authenticates with username
-# "postgres.<branch_project_ref>" so it can route to the right branch
-# DB. .POSTGRES_URL returns the URL with bare "postgres", which makes
-# the pooler reject the login. Inject the branch ref into the user.
-if [[ "$db_url" == *":6543/"* ]]; then
-  db_url=${db_url/:\/\/postgres:/:\/\/postgres.${branch_ref}:}
+export BRANCHES_GET_JSON
+BRANCHES_GET_JSON=$(supabase branches get "$branch_id" \
+  --project-ref "$SUPABASE_PROJECT_REF" -o json)
+export BRANCH_REF="$branch_ref"
+
+# Patch the URL via Python (simple string ops, no re-encoding) and emit
+# debug info so a future regression is diagnosable from the workflow log.
+db_url=$(python3 <<'PY'
+import json
+import os
+import re
+import sys
+
+branch_ref = os.environ["BRANCH_REF"]
+data = json.loads(os.environ["BRANCHES_GET_JSON"])
+print("branches.get keys:", sorted(data.keys()), file=sys.stderr)
+
+raw_url = data.get("POSTGRES_URL") or ""
+host_match = re.search(r"@([^/?]+)", raw_url)
+print("POSTGRES_URL host:port:",
+      host_match.group(1) if host_match else "<none>", file=sys.stderr)
+
+# Drop the query string — asyncpg doesn't grok pgbouncer-style params.
+url = raw_url.split("?", 1)[0]
+
+# Supabase pooler (port 6543) authenticates with "postgres.<branch_ref>"
+# so it can route. .POSTGRES_URL returns just "postgres". Patch only
+# when (a) we're hitting the pooler and (b) the user is the bare form.
+if ":6543/" in url and branch_ref:
+    new_url, n = re.subn(r"(://)postgres(:)",
+                         rf"\1postgres.{branch_ref}\2", url, count=1)
+    if n:
+        print(f"patched pooler user -> postgres.{branch_ref}", file=sys.stderr)
+    else:
+        print("pooler URL but user already non-bare; no patch", file=sys.stderr)
+    url = new_url
+
+# Force asyncpg driver.
+url = re.sub(r"^postgresql://", "postgresql+asyncpg://", url, count=1)
+
+print(url)
+PY
+)
+
+if [ -z "$db_url" ]; then
+  echo "failed to build db_url" >&2
+  exit 1
 fi
-db_url="postgresql+asyncpg://${db_url#postgresql://}"
 
 echo "ODDISH_DATABASE_URL=$db_url" >> "$GITHUB_ENV"
 {
