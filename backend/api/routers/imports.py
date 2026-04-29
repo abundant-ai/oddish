@@ -65,7 +65,9 @@ async def import_zip_endpoint(
 
     - ``task_zip`` only -> register/update a task version.
     - ``run_zip`` only -> import every Harbor trial inside it onto the
-      ``task_id`` provided in the form.
+      ``task_id`` provided in the form. ``task_id`` accepts a task
+      name as well; if blank, the task name is inferred from the run's
+      Harbor metadata + zip filename.
     - both -> upload the task first, then import the trials against the
       newly-created task (CLI ``--path`` flow).
     """
@@ -84,9 +86,14 @@ async def import_zip_endpoint(
             await _stash_upload(task_zip, task_zip_path)
 
         run_zip_path: Path | None = None
+        run_zip_filename: str | None = None
         if run_zip is not None:
             run_zip_path = workspace / "run.zip"
             await _stash_upload(run_zip, run_zip_path)
+            # Browsers send the filename even for streamed uploads; we
+            # use it as a last-resort task-name hint when the run's
+            # JSON doesn't have a task_path stamped in.
+            run_zip_filename = run_zip.filename
 
         priority_enum: Priority | None = None
         if priority:
@@ -101,6 +108,7 @@ async def import_zip_endpoint(
         result = await import_zip(
             task_zip_path=task_zip_path,
             run_zip_path=run_zip_path,
+            run_zip_filename=run_zip_filename,
             target_task_id=(task_id or None),
             experiment_id_or_name=(experiment or None),
             upload_artifacts=not skip_artifacts,
@@ -133,7 +141,7 @@ async def inspect_zip_endpoint(
     try:
         zip_path = workspace / "upload.zip"
         await _stash_upload(zip_file, zip_path)
-        inspection = inspect_zip(zip_path)
+        inspection = inspect_zip(zip_path, filename=zip_file.filename)
         return {
             "is_task": inspection.is_task,
             "is_job": inspection.is_job,
