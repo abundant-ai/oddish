@@ -37,7 +37,6 @@ from oddish.db import (
     get_storage_client,
     utcnow,
 )
-from oddish.db import s3_keys
 from oddish.db.storage import StorageClient, normalize_s3_relative_path
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
@@ -89,7 +88,9 @@ async def _heartbeat_task_expand_worker_job(
 
 
 def _expanded_prefix_for(task_id: str, version: int) -> str:
-    return s3_keys.task_expanded_prefix(task_id, version)
+    """Sibling-prefix layout (``v{N}-files/``) keeps expansion artifacts
+    from leaking into the archive branch's non-archive listing path."""
+    return f"tasks/{task_id}/v{version}-files/"
 
 
 async def _resolve_archive_key(
@@ -139,7 +140,7 @@ async def _list_loose_task_files(
     ``v{N}-files/``), and the archive sentinel itself so the result is
     exactly the task's source tree.
     """
-    root = s3_keys.task_prefix(task_id)
+    root = f"tasks/{task_id}/"
     objects = await storage.list_objects_all(root)
     out: list[dict[str, object]] = []
     for obj in objects:
@@ -231,7 +232,7 @@ async def _migrate_loose_task_files(
         "task_id": task_id,
         "version": version,
         "source": "loose_files",
-        "source_prefix": s3_keys.task_prefix(task_id),
+        "source_prefix": f"tasks/{task_id}/",
         "expanded_at": datetime.now(timezone.utc).isoformat(),
         "files_count": len(manifest_files),
         "files": manifest_files,
