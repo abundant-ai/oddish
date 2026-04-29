@@ -33,7 +33,11 @@ db_url = settings.database_url
 if db_url.startswith("postgresql://") and "+asyncpg" not in db_url:
     db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-config.set_main_option("sqlalchemy.url", db_url)
+# configparser (used internally by alembic) treats ``%`` as the start of
+# interpolation syntax. Supabase preview branches hand out auto-generated
+# passwords that frequently contain ``%``; double-escape so the URL
+# round-trips through configparser unchanged.
+config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
 # add your model's MetaData object here
 # for 'autogenerate' support
