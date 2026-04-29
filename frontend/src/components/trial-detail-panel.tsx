@@ -127,6 +127,26 @@ function buildOddishRunCommand(trial: Trial, task: Task): string {
   return parts.join(" ");
 }
 
+function buildOddishPullCommand(trial: Trial): string {
+  return `oddish pull ${trial.id}`;
+}
+
+// `oddish pull` writes to `.oddish/<trial_id>/trials/<trial_id>/` (see
+// `output_root` in oddish/cli/pull.py). We point Claude Code / Codex at that
+// directory so the chat starts with logs.txt, trajectory.json, and artifact
+// files already in scope.
+function buildClaudeChatCommand(trial: Trial): string {
+  const localPath = `.oddish/${trial.id}/trials/${trial.id}`;
+  const prompt = `Investigate oddish trial ${trial.id}. Logs and artifacts are in ${localPath}/. Start with logs.txt, then trajectory.json, then files under ${localPath}/.`;
+  return `oddish pull ${trial.id} && claude ${JSON.stringify(prompt)}`;
+}
+
+function buildCodexChatCommand(trial: Trial): string {
+  const localPath = `.oddish/${trial.id}/trials/${trial.id}`;
+  const prompt = `Investigate oddish trial ${trial.id}. Logs and artifacts are in ${localPath}/. Start with logs.txt, then trajectory.json, then files under ${localPath}/.`;
+  return `oddish pull ${trial.id} && codex ${JSON.stringify(prompt)}`;
+}
+
 function getQueueSnapshotItems(trial: Trial): string[] {
   const queueInfo = trial.queue_info;
   if (!queueInfo) return [];
@@ -921,13 +941,49 @@ export function TrialDetailPanel({
                 </Card>
               )}
 
-              {/* Discreet reproduction command */}
-              <CodeBlock
-                code={buildOddishRunCommand(trial, task)}
-                language="bash"
-                maxHeight="none"
-                className="opacity-60 transition-opacity hover:opacity-100"
-              />
+              {/* Discreet reproduction & local-investigation commands */}
+              <div className="space-y-2 opacity-60 transition-opacity hover:opacity-100">
+                <div>
+                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Reproduce
+                  </div>
+                  <CodeBlock
+                    code={buildOddishRunCommand(trial, task)}
+                    language="bash"
+                    maxHeight="none"
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Pull logs locally
+                  </div>
+                  <CodeBlock
+                    code={buildOddishPullCommand(trial)}
+                    language="bash"
+                    maxHeight="none"
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Investigate with Claude Code
+                  </div>
+                  <CodeBlock
+                    code={buildClaudeChatCommand(trial)}
+                    language="bash"
+                    maxHeight="none"
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Investigate with Codex
+                  </div>
+                  <CodeBlock
+                    code={buildCodexChatCommand(trial)}
+                    language="bash"
+                    maxHeight="none"
+                  />
+                </div>
+              </div>
             </div>
           </TabsContent>
 
