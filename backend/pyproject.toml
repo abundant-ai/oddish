@@ -36,6 +36,9 @@ dependencies = [
 
     # Environment loading
     "python-dotenv==1.2.1",
+
+    # Daytona sandbox SDK for the CC chat orchestrator
+    "daytona>=0.20",
 ]
 
 [project.optional-dependencies]
