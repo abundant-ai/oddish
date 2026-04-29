@@ -126,6 +126,7 @@ def create_app() -> FastAPI:
     from api.routers import (
         admin,
         api_keys,
+        cc_chat,
         clerk_webhooks,
         dashboard,
         github_webhooks,
@@ -145,4 +146,59 @@ def create_app() -> FastAPI:
     api.include_router(public.router)
     api.include_router(admin.router)
 
+    _init_cc_chat_orchestrator()
+    api.include_router(cc_chat.router)
+
     return api
+
+
+def _init_cc_chat_orchestrator() -> None:
+    from oddish.config import settings
+    from api.services.cc_chat.daytona_client import RealDaytonaClient
+    from api.services.cc_chat.file_store import LocalFileStore, S3FileStore
+    from api.services.cc_chat.orchestrator import CCChatOrchestrator
+    from api.routers.cc_chat import init_orchestrator
+
+    if not settings.daytona_api_key:
+        # Skip wiring; the endpoints will fail loudly with 500 when called.
+        # We don't want the entire app to refuse to boot in environments
+        # that don't use the chat feature.
+        return
+    if not settings.anthropic_api_key:
+        return
+
+    if settings.cc_chat_local_jobs_dir:
+        from pathlib import Path
+        file_store = LocalFileStore(
+            base_path=Path(settings.cc_chat_local_jobs_dir)
+        )
+    else:
+        # Adapt the real storage client to the _StorageLike protocol.
+        from oddish.db.storage import get_storage_client
+
+        class _OddishStorageAdapter:
+            def __init__(self) -> None:
+                self._client = get_storage_client()
+
+            async def list_keys_under(self, prefix: str) -> list[str]:
+                # The existing client exposes list_trial_files; use its
+                # underlying paginator. If a more general listing helper
+                # is added later, replace this body.
+                # Implementer: confirm exact method name; this stub may
+                # need updating against oddish/db/storage.py.
+                raise NotImplementedError(
+                    "Wire S3FileStore to oddish StorageClient; see comment."
+                )
+
+            async def get_object(self, key: str) -> bytes:
+                raise NotImplementedError
+
+        file_store = S3FileStore(storage=_OddishStorageAdapter())
+
+    orch = CCChatOrchestrator(
+        daytona=RealDaytonaClient(api_key=settings.daytona_api_key),
+        file_store=file_store,
+        anthropic_api_key=settings.anthropic_api_key,
+        auto_stop_minutes=30,
+    )
+    init_orchestrator(orch)
