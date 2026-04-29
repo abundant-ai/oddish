@@ -13,8 +13,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy-preview:
+  detect-changes:
     if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      db: ${{ steps.filter.outputs.db }}
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            db:
+              - 'backend/alembic/**'
+              - 'oddish/alembic/**'
+              - 'supabase/migrations/**'
+              - 'supabase/config.toml'
+            backend:
+              - 'backend/**'
+              - 'oddish/**'
+              - 'supabase/**'
+              - '.github/workflows/modal-preview.yml'
+              - '.github/scripts/preview/**'
+
+  deploy-preview:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,6 +61,8 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
       VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+      DB_CHANGED: ${{ needs.detect-changes.outputs.db }}
+      PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_API_MAX_CONTAINERS: "2"
@@ -53,22 +85,34 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Install Supabase CLI
+        if: env.DB_CHANGED == 'true'
         uses: supabase/setup-cli@v1
         with:
           version: latest
 
       - name: Wait for Supabase preview branch
         id: supabase_branch
+        if: env.DB_CHANGED == 'true'
         working-directory: ${{ github.workspace }}
         env:
           GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: .github/scripts/preview/wait_for_supabase_branch.sh
 
+      - name: Use production database (no schema changes in PR)
+        if: env.DB_CHANGED != 'true'
+        run: |
+          if [ -z "$PROD_DATABASE_URL" ]; then
+            echo "::error::secrets.PROD_DATABASE_URL is unset; required when no DB changes are in the PR" >&2
+            exit 1
+          fi
+          echo "ODDISH_DATABASE_URL=$PROD_DATABASE_URL" >> "$GITHUB_ENV"
+
       - name: Sync backend dependencies
         run: uv sync --frozen
 
       - name: Bootstrap preview database
+        if: env.DB_CHANGED == 'true'
         run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_preview_db.py"
 
       - name: Create per-PR Modal database secret
@@ -257,8 +301,164 @@ jobs:
             if [ -n "${{ steps.redeploy_vercel.outputs.preview_url }}" ]; then
               echo "- Vercel preview: ${{ steps.redeploy_vercel.outputs.preview_url }}"
             fi
-            if [ -n "${{ steps.supabase_branch.outputs.branch_ref }}" ]; then
+            if [ "${{ env.DB_CHANGED }}" = "true" ]; then
               echo "- Supabase branch: \`${{ steps.supabase_branch.outputs.branch_ref }}\` (host: ${{ steps.supabase_branch.outputs.db_host }})"
+            else
+              echo "- Database: production (no schema changes in PR)"
+            fi
+            echo "- PR head SHA: ${{ github.event.pull_request.head.sha }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  point-to-prod:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.backend != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: preview
+      MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
+      VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+      PROD_API_URL: ${{ vars.PROD_API_URL }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # An earlier push on this PR may have deployed a per-PR Modal
+      # app while backend changes were still in flight. Now that the
+      # PR's full diff no longer touches the backend, tear it down so
+      # we don't pay for an idle preview and don't leave the Vercel
+      # frontend pointing at a stale URL.
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install Modal
+        run: python -m pip install modal
+
+      - name: Stop stale per-PR Modal app
+        continue-on-error: true
+        run: modal app stop "$MODAL_APP_NAME" || true
+
+      - name: Delete stale per-PR Modal database secret
+        continue-on-error: true
+        run: modal secret delete --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME-db" || true
+
+      - name: Install Node
+        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Vercel CLI
+        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
+        run: npm install --global vercel@latest
+
+      - name: Link Vercel project
+        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
+        working-directory: frontend
+        run: vercel pull --yes --environment=preview --git-branch="$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
+
+      - name: Point Vercel preview at production API
+        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
+        working-directory: frontend
+        run: |
+          if [ -z "$PROD_API_URL" ]; then
+            echo "::error::vars.PROD_API_URL is unset; required when no backend changes are in the PR" >&2
+            exit 1
+          fi
+          # Replace any branch-scoped override from a prior push so we never
+          # ship a frontend pointing at a stopped Modal app.
+          vercel env rm NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+          printf '%s' "$PROD_API_URL" | vercel env add NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --force --no-sensitive --token="$VERCEL_TOKEN"
+
+      - name: Redeploy Vercel preview with updated env
+        id: redeploy_vercel
+        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
+        working-directory: frontend
+        run: |
+          deployment_json="$(python <<'PY'
+          import json
+          import os
+          import time
+          import urllib.parse
+          import urllib.request
+
+          token = os.environ["VERCEL_TOKEN"]
+          project_id = os.environ["VERCEL_PROJECT_ID"]
+          team_id = os.environ["VERCEL_ORG_ID"]
+          branch = os.environ["VERCEL_GIT_BRANCH"]
+          commit_sha = os.environ["VERCEL_GIT_COMMIT_SHA"]
+
+          params = urllib.parse.urlencode(
+              {
+                  "projectId": project_id,
+                  "teamId": team_id,
+                  "limit": 20,
+                  "target": "preview",
+                  "branch": branch,
+              }
+          )
+          url = f"https://api.vercel.com/v6/deployments?{params}"
+          headers = {"Authorization": f"Bearer {token}"}
+
+          def deployment_commit_sha(deployment):
+              meta = deployment.get("meta") or {}
+              git_source = deployment.get("gitSource") or {}
+              candidates = [
+                  meta.get("githubCommitSha"),
+                  meta.get("githubCommitSHA"),
+                  meta.get("gitCommitSha"),
+                  git_source.get("sha"),
+              ]
+              for candidate in candidates:
+                  if candidate:
+                      return candidate
+              return None
+
+          for _ in range(18):
+              request = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(request) as response:
+                  payload = json.load(response)
+              deployments = payload.get("deployments", [])
+              for deployment in deployments:
+                  if deployment_commit_sha(deployment) == commit_sha:
+                      print(json.dumps(deployment))
+                      raise SystemExit(0)
+              time.sleep(10)
+          raise SystemExit(
+              "No Vercel preview deployment found yet for "
+              f"branch {branch!r} at commit {commit_sha!r}"
+          )
+          PY
+          )"
+          deployment_id="$(printf '%s' "$deployment_json" | python -c 'import json,sys; print(json.load(sys.stdin)["uid"])')"
+          project_name="$(printf '%s' "$deployment_json" | python -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
+          redeploy_json="$(curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://api.vercel.com/v13/deployments?teamId=$VERCEL_ORG_ID&forceNew=1" \
+            -d "{\"name\":\"$project_name\",\"deploymentId\":\"$deployment_id\"}")"
+          preview_url="$(printf '%s' "$redeploy_json" | python -c 'import json,sys; print("https://" + json.load(sys.stdin)["url"])')"
+          echo "preview_url=$preview_url" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## Preview deployment"
+            echo
+            echo "- Backend unchanged → Vercel preview points at production API: ${{ env.PROD_API_URL }}"
+            if [ -n "${{ steps.redeploy_vercel.outputs.preview_url }}" ]; then
+              echo "- Vercel preview: ${{ steps.redeploy_vercel.outputs.preview_url }}"
             fi
             echo "- PR head SHA: ${{ github.event.pull_request.head.sha }}"
           } >> "$GITHUB_STEP_SUMMARY"
