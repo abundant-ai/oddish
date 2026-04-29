@@ -157,3 +157,22 @@ async def test_send_unknown_session_raises(fake_daytona):
     with pytest.raises(SessionNotFound):
         async for _ in orch.send(session_id="nope", content="hi"):
             pass
+
+
+@pytest.mark.asyncio
+async def test_close_deletes_sandbox_and_removes_state(fake_daytona):
+    orch = _make_orchestrator(fake_daytona)
+    sid = await orch.start(experiment_id=FIXTURE_EXPERIMENT_ID, org_id="org-1")
+    assert orch._sessions.get(sid) is not None
+
+    await orch.close(session_id=sid)
+
+    assert orch._sessions.get(sid) is None
+    assert fake_daytona.created[0].deleted is True
+
+
+@pytest.mark.asyncio
+async def test_close_unknown_session_is_idempotent(fake_daytona):
+    orch = _make_orchestrator(fake_daytona)
+    # No raise
+    await orch.close(session_id="never-existed")

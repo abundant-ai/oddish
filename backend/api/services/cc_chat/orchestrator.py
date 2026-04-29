@@ -193,3 +193,11 @@ class CCChatOrchestrator:
                     yield {"type": "_invalid_json", "raw": leftover.strip()}
         finally:
             await closer_task
+
+    async def close(self, *, session_id: str) -> None:
+        state = self._sessions.pop(session_id)
+        if state is None:
+            return
+        sandbox = self._sandbox_handles.pop(session_id, None)
+        if sandbox is not None:
+            await self._daytona.delete_sandbox(sandbox)
