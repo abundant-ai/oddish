@@ -46,3 +46,7 @@ dev = [
 
 [tool.uv.sources]
 oddish = { path = "../oddish", editable = true }
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
