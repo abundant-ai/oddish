@@ -20,9 +20,8 @@ BRANCH_NAME="pr-${PR_NUMBER}"
 
 find_branch_json() {
   supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
-    | jq -c --arg gb "$GIT_BRANCH" --argjson pr "$PR_NUMBER" --arg name "$BRANCH_NAME" '
-        first(.[] | select(.persistent != true)
-                  | select(.git_branch == $gb or .pr_number == $pr or .name == $name))'
+    | jq -c --arg name "$BRANCH_NAME" '
+        first(.[] | select(.persistent != true) | select(.name == $name))'
 }
 
 existing=$(find_branch_json)
@@ -31,8 +30,10 @@ if [ -z "$existing" ] || [ "$existing" = "null" ]; then
   supabase branches create "$BRANCH_NAME" \
     --with-data \
     --project-ref "$SUPABASE_PROJECT_REF"
+  branch_was_created=true
 else
   echo "reusing existing branch $(echo "$existing" | jq -r '.id')" >&2
+  branch_was_created=false
 fi
 
 # Wait until the branch is ready. First creation includes the prod
@@ -152,4 +153,5 @@ echo "ODDISH_DATABASE_URL=$db_url" >> "$GITHUB_ENV"
 {
   echo "branch_id=$branch_id"
   echo "branch_ref=$branch_ref"
+  echo "branch_was_created=$branch_was_created"
 } >> "$GITHUB_OUTPUT"
