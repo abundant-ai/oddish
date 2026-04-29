@@ -103,3 +103,57 @@ async def test_start_aborts_and_deletes_on_upload_failure(
     assert fake_daytona.created[0].deleted is True
     # No session lingers in the registry
     assert list(orch._sessions._sessions.keys()) == []
+
+
+@pytest.mark.asyncio
+async def test_send_first_turn_captures_claude_session_id(fake_daytona):
+    orch = _make_orchestrator(fake_daytona)
+    sid = await orch.start(experiment_id=FIXTURE_EXPERIMENT_ID, org_id="org-1")
+
+    fake_daytona.canned_stdout_chunks = [
+        json.dumps({"type": "system", "subtype": "init", "session_id": "cc-uuid-1"}) + "\n",
+        json.dumps({"type": "assistant", "delta": "Hello"}) + "\n",
+        json.dumps({"type": "result", "stop_reason": "end_turn"}) + "\n",
+    ]
+
+    events = [event async for event in orch.send(session_id=sid, content="hi")]
+    types = [e["type"] for e in events]
+    assert types == ["system", "assistant", "result"]
+    assert orch._sessions.get(sid).claude_session_id == "cc-uuid-1"
+
+
+@pytest.mark.asyncio
+async def test_send_second_turn_passes_resume(fake_daytona):
+    orch = _make_orchestrator(fake_daytona)
+    sid = await orch.start(experiment_id=FIXTURE_EXPERIMENT_ID, org_id="org-1")
+
+    # Turn 1
+    fake_daytona.canned_stdout_chunks = [
+        json.dumps({"type": "system", "subtype": "init", "session_id": "cc-uuid-1"}) + "\n",
+        json.dumps({"type": "result"}) + "\n",
+    ]
+    _ = [e async for e in orch.send(session_id=sid, content="first")]
+
+    # Turn 2
+    fake_daytona.execs.clear()
+    fake_daytona.canned_stdout_chunks = [
+        json.dumps({"type": "result"}) + "\n",
+    ]
+    _ = [e async for e in orch.send(session_id=sid, content="second")]
+
+    claude_execs = [
+        e for e in fake_daytona.execs
+        if e["command"] and e["command"][0] == "claude"
+    ]
+    assert claude_execs, "expected a claude exec on the second turn"
+    assert "--resume" in claude_execs[-1]["command"]
+    assert "cc-uuid-1" in claude_execs[-1]["command"]
+
+
+@pytest.mark.asyncio
+async def test_send_unknown_session_raises(fake_daytona):
+    from api.services.cc_chat.orchestrator import SessionNotFound
+    orch = _make_orchestrator(fake_daytona)
+    with pytest.raises(SessionNotFound):
+        async for _ in orch.send(session_id="nope", content="hi"):
+            pass
