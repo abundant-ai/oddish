@@ -10,11 +10,3 @@
 # `.github/workflows/supabase-db-migrations.yml` (production).
 
 project_id = "lmmlhiospelnvmtjljnn"
-
-# Note on prod-data preview branches: data cloning isn't a config.toml
-# knob. `.github/workflows/modal-preview.yml` runs
-# `supabase branches create "pr-$PR_NUMBER" --with-data` itself
-# (see `.github/scripts/preview/wait_for_supabase_branch.sh`).
-# To stop the GitHub integration from also auto-creating a parallel
-# data-less branch each PR, disable auto-branching for this repo in
-# the Supabase project's GitHub integration settings.
