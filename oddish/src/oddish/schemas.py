@@ -231,6 +231,13 @@ class TaskSweepSubmission(BaseModel):
     configs: list[AgentModelPair] = Field(
         ..., description="List of agent/model pairs with individual trial counts"
     )
+    extra_instructions: str | None = Field(
+        default=None,
+        description=(
+            "Operator-supplied prompt content to prepend to the task's instruction "
+            "for every trial in this submission. Used for freeform / adversarial probes."
+        ),
+    )
 
     # Common fields
     user: str = Field(..., description="Submitting user")
