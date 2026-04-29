@@ -69,6 +69,13 @@ fi
 pg_url=$(supabase branches get "$branch_id" --project-ref "$SUPABASE_PROJECT_REF" -o json \
          | jq -r '.POSTGRES_URL')
 db_url="${pg_url%%\?*}"
+# The Supabase pooler (port 6543) authenticates with username
+# "postgres.<branch_project_ref>" so it can route to the right branch
+# DB. .POSTGRES_URL returns the URL with bare "postgres", which makes
+# the pooler reject the login. Inject the branch ref into the user.
+if [[ "$db_url" == *":6543/"* ]]; then
+  db_url=${db_url/:\/\/postgres:/:\/\/postgres.${branch_ref}:}
+fi
 db_url="postgresql+asyncpg://${db_url#postgresql://}"
 
 echo "ODDISH_DATABASE_URL=$db_url" >> "$GITHUB_ENV"
