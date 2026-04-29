@@ -468,12 +468,14 @@ async def cancel_tasks(payload: TaskBatchCancelRequest):
     }
 
 
-# Delete endpoints intentionally removed: previews now run against
-# clones of prod data, so any HTTP DELETE the frontend (or anything else
-# reachable on the network) could hit would target the same prod S3
-# bucket. ``delete_{task,experiment,trial}_core`` stays available for
-# admin/CLI use; expose it through a separate, auth-scoped surface if
-# the FE ever needs delete functionality back.
+# No DELETE endpoints, by policy: user data (tasks, experiments,
+# trials, and their S3 artifacts) is append-only from the API surface.
+# Removing a row over the network — even gated behind admin auth — is
+# never the right answer; if something needs to go, an operator runs
+# ``delete_{task,experiment,trial}_core`` from the CLI / a one-off
+# script. Previews running against clones of prod data make this
+# especially load-bearing: a stray DELETE in preview would target
+# the same prod S3 bucket.
 
 
 
