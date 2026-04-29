@@ -71,42 +71,61 @@ BRANCHES_GET_JSON=$(supabase branches get "$branch_id" \
   --project-ref "$SUPABASE_PROJECT_REF" -o json)
 export BRANCH_REF="$branch_ref"
 
+# `branches get` returns a redacted password — last run's psql still
+# got "password authentication failed for user 'postgres'" with the
+# URL it gave us. Reset the branch DB password to a known value via
+# the Management API, then use that in the URL we construct below.
+DB_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+export DB_PASSWORD
+echo "resetting branch DB password..." >&2
+http_code=$(curl -sS -o /tmp/pwreset.json -w '%{http_code}' \
+  -X POST \
+  -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"password\": \"$DB_PASSWORD\"}" \
+  "https://api.supabase.com/v1/projects/${branch_ref}/database/password" \
+  || echo "curl_failed")
+if [ "$http_code" != "200" ] && [ "$http_code" != "204" ]; then
+  echo "password reset failed (HTTP $http_code):" >&2
+  cat /tmp/pwreset.json >&2 || true
+  exit 1
+fi
+echo "password reset OK" >&2
+
 # Patch the URL via Python (simple string ops, no re-encoding) and emit
 # debug info so a future regression is diagnosable from the workflow log.
 db_url=$(python3 <<'PY'
 import json
 import os
-import re
 import sys
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, quote, urlunsplit
 
 data = json.loads(os.environ["BRANCHES_GET_JSON"])
 print("branches.get keys:", sorted(data.keys()), file=sys.stderr)
 
-def describe(label, raw):
-    if not raw:
-        print(f"{label}: <missing>", file=sys.stderr)
-        return
-    p = urlsplit(raw)
-    print(f"{label}: user={p.username!r} host={p.hostname!r} port={p.port!r} "
-          f"db={p.path.lstrip('/')!r} pwd_len={len(p.password or '')}",
-          file=sys.stderr)
-
-describe("POSTGRES_URL", data.get("POSTGRES_URL"))
-describe("POSTGRES_URL_NON_POOLING", data.get("POSTGRES_URL_NON_POOLING"))
-
-# Use the pooler URL: GHA runners are IPv4-only and Supabase's direct
-# port is IPv6-only, so the non-pooling URL is unreachable from CI.
 raw_url = data.get("POSTGRES_URL") or ""
 if not raw_url:
     print("no POSTGRES_URL", file=sys.stderr)
     sys.exit(1)
 
-# Drop query string (pgbouncer / prisma flags asyncpg doesn't understand).
-url = raw_url.split("?", 1)[0]
-# Force asyncpg driver.
-url = re.sub(r"^postgresql://", "postgresql+asyncpg://", url, count=1)
+p = urlsplit(raw_url)
+user = p.username or ""
+host = p.hostname or ""
+port = p.port
+print(f"POSTGRES_URL: user={user!r} host={host!r} port={port!r}", file=sys.stderr)
 
+# We just reset the DB password via the Management API; substitute it
+# in (URL-encoded). The user (postgres.<branch_ref>) and host stay as
+# Supabase returned them.
+password = os.environ["DB_PASSWORD"]
+
+# Use the pooler URL: GHA is IPv4-only and the direct port is
+# IPv6-only on Supabase.
+netloc = f"{quote(user, safe='')}:{quote(password, safe='')}@{host}"
+if port:
+    netloc += f":{port}"
+
+url = urlunsplit(("postgresql+asyncpg", netloc, p.path, "", ""))
 print(url)
 PY
 )
