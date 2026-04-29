@@ -427,6 +427,10 @@ def _build_harbor_config_for_trial(
     if agent_config_payload:
         base["agent_config"] = agent_config_payload
 
+    if submission.extra_instructions:
+        base["mode"] = "freeform"
+        base["extra_instructions"] = submission.extra_instructions
+
     return base or None
 
 

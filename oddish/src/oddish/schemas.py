@@ -181,6 +181,13 @@ class TaskSubmission(BaseModel):
         None,
         description="Deterministic hash of task directory contents (set by CLI during upload)",
     )
+    extra_instructions: str | None = Field(
+        default=None,
+        description=(
+            "Operator-supplied prompt content to prepend to the task's instruction "
+            "for every trial in this submission. Used for freeform / adversarial probes."
+        ),
+    )
 
     @model_validator(mode="after")
     def require_models(self):
