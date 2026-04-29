@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ExperimentShareButton } from "@/components/experiment-share-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
+import { CCChatModal } from "@/components/cc-chat-modal";
 import type { Task, Trial } from "@/lib/types";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
@@ -91,6 +92,7 @@ export function ExperimentClientPage({
   const [nameError, setNameError] = useState<string | null>(null);
   const [isSavingName, setIsSavingName] = useState(false);
   const [copiedExperimentName, setCopiedExperimentName] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(false);
   const copiedExperimentNameTimeoutRef = useRef<number | null>(null);
 
   const encodedId = experimentId
@@ -521,10 +523,20 @@ export function ExperimentClientPage({
           }
           headerRight={
             experimentId ? (
-              <ExperimentShareButton
-                experimentId={experimentId}
-                canManageShare={canManageExperimentShare}
-              />
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => setIsChatOpen(true)}>
+                  Chat with logs
+                </Button>
+                <ExperimentShareButton
+                  experimentId={experimentId}
+                  canManageShare={canManageExperimentShare}
+                />
+                <CCChatModal
+                  experimentId={experimentId}
+                  open={isChatOpen}
+                  onOpenChange={setIsChatOpen}
+                />
+              </div>
             ) : null
           }
           inlineAlert={
