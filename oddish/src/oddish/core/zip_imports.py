@@ -15,11 +15,20 @@ Mirrors the ``oddish upload`` CLI:
 The actual API surface lives in ``backend.api.routers.imports``; this
 module is the framework-agnostic core so the CLI and a future
 self-hosted bundle can share it.
+
+Harbor run dirs do not embed the task source -- ``harbor view`` runs
+on top of result.json/config.json/trajectory files alone -- so the
+import flow has to extract the task *name* from the run and look up an
+existing oddish task by that name. We chain three sources (job-dir
+naming convention, JSON config/result blobs, zip filename) so common
+shapes Just Work without the user having to type anything.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import shutil
 import tempfile
 import zipfile
@@ -127,14 +136,9 @@ def extract_zip_to_dir(zip_path: Path, dest_dir: Path) -> Path:
     return dest_dir
 
 
-@dataclass
-class ZipInspection:
-    is_task: bool
-    is_job: bool
-    is_jobs: bool
-    trial_count: int
-    job_count: int
-    task_name: str | None
+# =============================================================================
+# Task-name inference (no task files needed)
+# =============================================================================
 
 
 def _harbor_task_name_from_job_dir(job_dir_name: str) -> str | None:
@@ -152,7 +156,163 @@ def _harbor_task_name_from_job_dir(job_dir_name: str) -> str | None:
     return parts[0] or None
 
 
-def inspect_extracted(root: Path) -> ZipInspection:
+def _walk_for_task_name(obj: Any, depth: int = 0) -> str | None:
+    """Best-effort task-name extraction from a Harbor JSON blob.
+
+    Harbor stamps ``task_path`` on every JobConfig (the path the user
+    pointed ``harbor run`` at); the basename of that path is the task
+    name. Other shapes (``task.name``, ``task_name``) appear in
+    different harbor versions, so we accept those too. Recurses through
+    nested dicts/lists with a small depth cap.
+    """
+    if depth > 6:
+        return None
+    if not isinstance(obj, dict):
+        return None
+
+    for key in ("task_name", "taskName"):
+        value = obj.get(key)
+        if isinstance(value, str) and value:
+            return value
+
+    path_value = obj.get("task_path")
+    if isinstance(path_value, str):
+        tail = Path(path_value).name
+        if tail:
+            return tail
+
+    task = obj.get("task")
+    if isinstance(task, dict):
+        for key in ("name", "task_name"):
+            value = task.get(key)
+            if isinstance(value, str) and value:
+                return value
+        for key in ("path", "task_path"):
+            value = task.get(key)
+            if isinstance(value, str):
+                tail = Path(value).name
+                if tail:
+                    return tail
+
+    for child in obj.values():
+        if isinstance(child, dict):
+            found = _walk_for_task_name(child, depth + 1)
+            if found:
+                return found
+        elif isinstance(child, list):
+            for item in child:
+                if isinstance(item, dict):
+                    found = _walk_for_task_name(item, depth + 1)
+                    if found:
+                        return found
+    return None
+
+
+def _read_json_safely(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _task_name_from_run_artifacts(run_root: Path) -> str | None:
+    """Read result/config JSON files inside the run for an embedded task name.
+
+    Order: job-level JSON first (one per run), then trial-level JSON
+    (one per trial). Job-level config is the canonical place Harbor
+    stores ``task_path``; trials are a backup for cases where the
+    job-level file was excluded from the zip.
+    """
+    candidates: list[Path] = []
+    for fname in ("config.json", "result.json"):
+        candidate = run_root / fname
+        if candidate.is_file():
+            candidates.append(candidate)
+
+    try:
+        children = list(run_root.iterdir())
+    except OSError:
+        children = []
+    for child in children:
+        if not child.is_dir():
+            continue
+        for fname in ("config.json", "result.json"):
+            candidate = child / fname
+            if candidate.is_file():
+                candidates.append(candidate)
+
+    for path in candidates:
+        data = _read_json_safely(path)
+        name = _walk_for_task_name(data)
+        if name:
+            return name
+    return None
+
+
+def _task_name_from_filename(filename: str | None) -> str | None:
+    """Strip a browser-uploaded zip filename to its task-name stem.
+
+    ``milestone-based-task (3).zip`` -> ``milestone-based-task``.
+    Browsers add `` (N)`` for repeat-name downloads; that suffix is
+    stripped. Single-name zips with no special chars roundtrip cleanly.
+    """
+    if not filename:
+        return None
+    stem = filename
+    if stem.lower().endswith(".zip"):
+        stem = stem[:-4]
+    stem = re.sub(r"\s*\(\d+\)\s*$", "", stem).strip()
+    return stem or None
+
+
+def _infer_task_name_candidates(
+    run_root: Path, *, run_zip_filename: str | None
+) -> list[str]:
+    """Return distinct task-name candidates ordered by source confidence."""
+    sources: list[str | None] = []
+
+    if is_harbor_job_dir(run_root):
+        sources.append(_harbor_task_name_from_job_dir(run_root.name))
+    elif is_harbor_jobs_dir(run_root):
+        # Look at the child job dirs' names; pick a common prefix
+        # only when every job dir agrees on it.
+        try:
+            child_candidates = {
+                _harbor_task_name_from_job_dir(child.name)
+                for child in run_root.iterdir()
+                if child.is_dir() and is_harbor_job_dir(child)
+            }
+        except OSError:
+            child_candidates = set()
+        child_candidates.discard(None)
+        if len(child_candidates) == 1:
+            sources.append(child_candidates.pop())
+
+    sources.append(_task_name_from_run_artifacts(run_root))
+    sources.append(_task_name_from_filename(run_zip_filename))
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for candidate in sources:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            ordered.append(candidate)
+    return ordered
+
+
+@dataclass
+class ZipInspection:
+    is_task: bool
+    is_job: bool
+    is_jobs: bool
+    trial_count: int
+    job_count: int
+    task_name: str | None
+
+
+def inspect_extracted(
+    root: Path, *, run_zip_filename: str | None = None
+) -> ZipInspection:
     """Classify *root* (the extracted zip contents) into one of the four shapes."""
     is_task = is_task_dir(root)
     is_job = is_harbor_job_dir(root)
@@ -164,26 +324,18 @@ def inspect_extracted(root: Path) -> ZipInspection:
 
     if is_task:
         task_name = root.name
-    elif is_job:
+    elif is_job or is_jobs:
         entries = discover_trial_entries(root)
         trial_count = len(entries)
-        job_count = 1
-        task_name = _harbor_task_name_from_job_dir(root.name)
-    elif is_jobs:
-        entries = discover_trial_entries(root)
-        trial_count = len(entries)
-        # ``entries`` is (job_name, trial_name, trial_dir) tuples.
-        job_names = {entry[0] for entry in entries}
-        job_count = len(job_names)
-        # When every job dir resolves to the same task name, surface
-        # it; otherwise leave None so the caller can prompt.
-        candidates = {
-            _harbor_task_name_from_job_dir(name)
-            for name in job_names
-            if _harbor_task_name_from_job_dir(name)
-        }
-        if len(candidates) == 1:
-            task_name = candidates.pop()
+        if is_jobs:
+            job_count = len({entry[0] for entry in entries})
+        else:
+            job_count = 1
+        candidates = _infer_task_name_candidates(
+            root, run_zip_filename=run_zip_filename
+        )
+        if candidates:
+            task_name = candidates[0]
 
     return ZipInspection(
         is_task=is_task,
@@ -477,6 +629,7 @@ async def import_zip(
     *,
     task_zip_path: Path | None,
     run_zip_path: Path | None,
+    run_zip_filename: str | None = None,
     target_task_id: str | None,
     experiment_id_or_name: str | None,
     upload_artifacts: bool,
@@ -492,14 +645,17 @@ async def import_zip(
 
     - ``task_zip`` alone -> task upload only.
     - ``run_zip`` alone -> trial import. ``target_task_id`` accepts
-      either a task ID or a task name within the caller's org.
+      either a task ID or a task name within the caller's org. When
+      blank, the task name is inferred from the run (job-dir
+      convention, then config.json/result.json contents, then the zip
+      filename).
     - ``task_zip`` + ``run_zip`` -> upload the task first, then import
       the trials against it (CLI ``--path`` flow).
 
-    Run-only imports auto-fall back to the run zip's embedded task
-    name (``<task>.<agent>.<id>`` job-dir convention) when
-    ``target_task_id`` is empty -- so a Harbor run zip whose task
-    already lives in oddish can be imported with just one drop.
+    Harbor runs do not bundle the task source, which is why all three
+    inference sources are tried before giving up: a user can drop just
+    the run zip and have it land on the existing oddish task without
+    having to type or look up an ID.
     """
     if task_zip_path is None and run_zip_path is None:
         raise HTTPException(
@@ -563,33 +719,40 @@ async def import_zip(
                     ),
                 )
 
-            # If neither a task zip nor a target was given, try the
-            # task name baked into the harbor job-dir name. This makes
-            # "drop run zip, hit Import" work for tasks that are
-            # already in oddish.
+            # Run-only flow: try every plausible task-name source in
+            # order until one matches an oddish task. Harbor runs have
+            # no embedded task source but they do stamp the task
+            # name/path into config.json, so we don't normally need
+            # the user to type anything.
             if resolved_task_id is None:
-                inferred = inspect_extracted(run_root).task_name
-                if inferred:
-                    resolved_task_id = await _resolve_task_id_or_name(
-                        inferred, org_id
-                    )
+                candidates = _infer_task_name_candidates(
+                    run_root, run_zip_filename=run_zip_filename
+                )
+                for candidate in candidates:
+                    match = await _resolve_task_id_or_name(candidate, org_id)
+                    if match is not None:
+                        resolved_task_id = match
+                        break
+
                 if resolved_task_id is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "Importing trials requires a target task. The "
-                            "run zip's task name "
-                            f"{inferred!r} did not match any task in this "
-                            "org -- drop the task files alongside the run "
-                            "zip, or paste the task ID/name explicitly."
-                            if inferred
-                            else (
-                                "Importing trials requires a target task. "
-                                "Drop the task files alongside the run "
-                                "zip, or paste an existing task ID/name."
-                            )
-                        ),
-                    )
+                    if candidates:
+                        candidates_str = ", ".join(repr(c) for c in candidates)
+                        detail = (
+                            "Importing trials requires a target task. Tried "
+                            f"these names from the run zip: {candidates_str} "
+                            "-- none matched a task in this org. Either "
+                            "type the existing task's ID or name in the "
+                            "field, or expand 'Upload task files too' and "
+                            "drop the task zip alongside the run."
+                        )
+                    else:
+                        detail = (
+                            "Importing trials requires a target task and we "
+                            "couldn't infer one from the run zip. Type the "
+                            "task ID/name in the field, or upload the task "
+                            "files alongside the run."
+                        )
+                    raise HTTPException(status_code=404, detail=detail)
 
             trial_results, experiment_id, experiment_name = await _import_trials(
                 job_root=run_root,
@@ -614,12 +777,12 @@ async def import_zip(
 # =============================================================================
 
 
-def inspect_zip(zip_path: Path) -> ZipInspection:
+def inspect_zip(zip_path: Path, *, filename: str | None = None) -> ZipInspection:
     """Peek into *zip_path* without touching the database or S3."""
     workspace = Path(tempfile.mkdtemp(prefix="oddish-zip-inspect-"))
     try:
         root = extract_zip_to_dir(zip_path, workspace)
-        return inspect_extracted(root)
+        return inspect_extracted(root, run_zip_filename=filename)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 
