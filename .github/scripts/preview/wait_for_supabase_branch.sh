@@ -79,7 +79,7 @@ DB_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
 export DB_PASSWORD
 echo "resetting branch DB password..." >&2
 http_code=$(curl -sS -o /tmp/pwreset.json -w '%{http_code}' \
-  -X POST \
+  -X PATCH \
   -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"password\": \"$DB_PASSWORD\"}" \
