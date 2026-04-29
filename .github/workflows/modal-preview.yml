@@ -13,7 +13,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  gate:
+    # Block previews from non-org PRs. Previews now run against a clone
+    # of prod data, so the eligibility bar is "PR author is an
+    # abundant-ai org member", not just "not a fork". The same-repo
+    # check stays as belt-and-braces in the deploy job's ``if``.
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify PR author is an abundant-ai org member
+        env:
+          # The default GITHUB_TOKEN typically can't read private org
+          # membership; ORG_READ_TOKEN (a PAT or fine-grained token with
+          # ``read:org``) overrides it when configured. Falls back to
+          # GITHUB_TOKEN for repos where the default scope is enough.
+          GH_TOKEN: ${{ secrets.ORG_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          if ! gh api "/orgs/abundant-ai/members/$PR_AUTHOR" --silent; then
+            echo "::error::PR author '$PR_AUTHOR' is not an abundant-ai org member; preview blocked." >&2
+            exit 1
+          fi
+          echo "PR author '$PR_AUTHOR' is an org member."
+
   deploy-preview:
+    needs: gate
     if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
@@ -72,11 +98,19 @@ jobs:
         run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_preview_db.py"
 
       - name: Create per-PR Modal database secret
+        # ODDISH_S3_WRITE_PREFIX namespaces every newly-written S3 key
+        # under this PR's preview to ``previews/pr-N/...``. Pydantic
+        # auto-binds the env var to ``Settings.s3_write_prefix``; reads
+        # of cloned-prod rows go through DB-stored path columns and
+        # resolve to prod-shaped keys, so they're unaffected.
+        env:
+          ODDISH_S3_WRITE_PREFIX: previews/pr-${{ github.event.pull_request.number }}/
         run: |
           uv run modal secret create \
             --env "$MODAL_ENVIRONMENT" --force \
             "$MODAL_APP_NAME-db" \
-            "ODDISH_DATABASE_URL=$ODDISH_DATABASE_URL"
+            "ODDISH_DATABASE_URL=$ODDISH_DATABASE_URL" \
+            "ODDISH_S3_WRITE_PREFIX=$ODDISH_S3_WRITE_PREFIX"
 
       - name: Deploy preview backend
         id: deploy_modal

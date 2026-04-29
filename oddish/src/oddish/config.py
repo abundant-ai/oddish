@@ -267,6 +267,14 @@ class Settings(BaseSettings):
     s3_secret_key: str = ""
     s3_bucket: str = "data"
     s3_region: str = "us-east-1"
+    # Per-environment write prefix prepended to every key produced by
+    # ``oddish.db.s3_keys.*``. Empty in prod (the default) means objects
+    # land at ``tasks/...`` / ``trials/...`` exactly as before. Preview
+    # deployments set this to ``previews/pr-<N>/`` so any object a
+    # preview *creates* is identifiable. Reads always go through DB-stored
+    # path columns, so cloned prod rows resolve correctly without
+    # double-prefixing.
+    s3_write_prefix: str = ""
 
     # Task upload limits (MB)
     max_task_upload_mb: int = 50
@@ -295,6 +303,26 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Helper methods
     # ==========================================================================
+
+    @model_validator(mode="after")
+    def validate_s3_write_prefix(self) -> "Settings":
+        """Reject malformed prefixes: must be empty, or end with ``/`` and
+        not start with ``/``. Lets ``s3_keys.*`` blindly prepend without
+        emitting double slashes or anchoring keys at the bucket root."""
+        prefix = self.s3_write_prefix
+        if prefix == "":
+            return self
+        if prefix.startswith("/"):
+            raise ValueError(
+                "ODDISH_S3_WRITE_PREFIX must not start with '/'; "
+                f"got {prefix!r}"
+            )
+        if not prefix.endswith("/"):
+            raise ValueError(
+                "ODDISH_S3_WRITE_PREFIX must end with '/'; "
+                f"got {prefix!r}"
+            )
+        return self
 
     @model_validator(mode="after")
     def normalize_model_overrides(self) -> "Settings":
