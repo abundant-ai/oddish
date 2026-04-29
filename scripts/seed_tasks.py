@@ -161,11 +161,16 @@ def build_tags(toml_data: dict[str, Any]) -> dict[str, Any]:
 async def resolve_org_id(explicit: str | None) -> str | None:
     if explicit is not None:
         return explicit or None
+    # The `organizations` table only exists in the cloud schema, not OSS.
+    # Fall back to NULL when it isn't present (local-dev case).
     async with get_session() as session:
-        row = (
-            await session.execute(text("SELECT id FROM organizations LIMIT 1"))
-        ).first()
-        return row[0] if row else None
+        try:
+            row = (
+                await session.execute(text("SELECT id FROM organizations LIMIT 1"))
+            ).first()
+            return row[0] if row else None
+        except Exception:
+            return None
 
 
 async def seed(task_sources: list[Path], org_id: str | None) -> None:
