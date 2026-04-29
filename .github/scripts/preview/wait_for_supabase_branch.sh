@@ -80,7 +80,6 @@ import re
 import sys
 from urllib.parse import urlsplit
 
-branch_ref = os.environ["BRANCH_REF"]
 data = json.loads(os.environ["BRANCHES_GET_JSON"])
 print("branches.get keys:", sorted(data.keys()), file=sys.stderr)
 
@@ -95,18 +94,16 @@ def describe(label, raw):
 
 describe("POSTGRES_URL", data.get("POSTGRES_URL"))
 describe("POSTGRES_URL_NON_POOLING", data.get("POSTGRES_URL_NON_POOLING"))
-print(f"branch_ref env: {branch_ref!r}", file=sys.stderr)
 
-# Prefer the direct (non-pooling) URL — bypasses Supavisor entirely so
-# we don't have to reason about pooler username routing.
-raw_url = data.get("POSTGRES_URL_NON_POOLING") or data.get("POSTGRES_URL") or ""
+# Use the pooler URL: GHA runners are IPv4-only and Supabase's direct
+# port is IPv6-only, so the non-pooling URL is unreachable from CI.
+raw_url = data.get("POSTGRES_URL") or ""
 if not raw_url:
-    print("no usable POSTGRES_URL", file=sys.stderr)
+    print("no POSTGRES_URL", file=sys.stderr)
     sys.exit(1)
 
 # Drop query string (pgbouncer / prisma flags asyncpg doesn't understand).
 url = raw_url.split("?", 1)[0]
-
 # Force asyncpg driver.
 url = re.sub(r"^postgresql://", "postgresql+asyncpg://", url, count=1)
 
@@ -118,6 +115,19 @@ if [ -z "$db_url" ]; then
   echo "failed to build db_url" >&2
   exit 1
 fi
+
+# Smoke-test the URL with libpq's psql so a credential issue surfaces
+# here, before alembic — pg's own error message is more diagnostic
+# than asyncpg's generic InvalidPasswordError. Strip the asyncpg
+# driver prefix because psql doesn't understand it.
+echo "smoke-testing connection to branch DB..." >&2
+psql_url="postgresql://${db_url#postgresql+asyncpg://}"
+if ! PGCONNECT_TIMEOUT=15 psql "$psql_url" -c 'select 1' >/dev/null 2>/tmp/psql.err; then
+  echo "psql connect failed:" >&2
+  cat /tmp/psql.err >&2
+  exit 1
+fi
+echo "smoke test OK" >&2
 
 echo "ODDISH_DATABASE_URL=$db_url" >> "$GITHUB_ENV"
 {
