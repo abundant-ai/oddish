@@ -57,7 +57,7 @@ jobs:
         with:
           version: latest
 
-      - name: Recreate Supabase preview branch with prod data
+      - name: Ensure Supabase preview branch with prod data
         id: supabase_branch
         working-directory: ${{ github.workspace }}
         env:
