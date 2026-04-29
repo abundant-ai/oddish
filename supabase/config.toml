@@ -10,3 +10,20 @@
 # `.github/workflows/supabase-db-migrations.yml` (production).
 
 project_id = "lmmlhiospelnvmtjljnn"
+
+# Clone production data into every PR preview branch.
+#
+# This is the migration-safety lever: with prod data present, an unsafe
+# Alembic revision (NOT NULL on a column with nulls, dropped column with
+# rows referencing it, FK cycle, etc.) breaks the bootstrap step in CI
+# instead of breaking prod after merge.
+#
+# Equivalent to passing `--with-data` to `supabase branches create` (see
+# https://supabase.com/docs/reference/cli/supabase-branches-create).
+#
+# If the GitHub integration on the project hasn't picked up this flag
+# from `config.toml` yet, set the same flag in the Supabase dashboard
+# (Branching → Settings → "Clone production data") so existing/future
+# auto-created branches honor it.
+[experimental.branching]
+with_data = true
