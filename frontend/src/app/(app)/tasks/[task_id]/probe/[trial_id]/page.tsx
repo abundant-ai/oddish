@@ -118,6 +118,11 @@ export default function ProbeResultPage({
     },
   );
 
+  const { data: taskInfo } = useSWR<{ name?: string; task_path?: string }>(
+    `${API_URL}/tasks/${task_id}`,
+    fetcher,
+  );
+
   // After ~30s of polling without finding the trial, treat it as truly missing.
   // Until then, keep showing a loading state — covers the race where the trial
   // row was just created and SWR's first fetch was served from stale cache.
@@ -182,9 +187,22 @@ export default function ProbeResultPage({
         >
           ← Back to workbench
         </Link>
-        <h1 className="mt-2 text-2xl font-semibold">Probe run</h1>
+        <h1 className="mt-2 text-2xl font-semibold">
+          Probe run
+          {taskInfo?.name ? (
+            <>
+              <span className="text-muted-foreground"> · </span>
+              <Link
+                href={`/tasks/${task_id}/probe`}
+                className="font-mono text-xl text-foreground hover:underline"
+              >
+                {taskInfo.name}
+              </Link>
+            </>
+          ) : null}
+        </h1>
         <p className="mt-1 font-mono text-xs text-muted-foreground">
-          {trial.id}
+          trial {trial.id}
         </p>
       </div>
 
