@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from api.services.summarize_trajectory import (
     MAX_TEXT_CHARS,
@@ -161,12 +165,6 @@ def test_preprocess_does_not_mutate_input():
     assert trajectory == snapshot
 
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
-
 def _trajectory_with_steps(step_ids: list[int]) -> dict:
     return {
         "schema_version": "0.1",
@@ -255,6 +253,19 @@ async def test_generate_raises_on_malformed_json():
     )
 
     fake = _fake_client_returning("not json at all")
+    with patch("anthropic.AsyncAnthropic", return_value=fake):
+        with pytest.raises(SummaryGenerationError):
+            await generate(_trajectory_with_steps([1]))
+
+
+@pytest.mark.asyncio
+async def test_generate_raises_when_model_returns_non_object_json():
+    from api.services.summarize_trajectory import (
+        SummaryGenerationError,
+        generate,
+    )
+
+    fake = _fake_client_returning("[1, 2, 3]")
     with patch("anthropic.AsyncAnthropic", return_value=fake):
         with pytest.raises(SummaryGenerationError):
             await generate(_trajectory_with_steps([1]))
