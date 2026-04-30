@@ -54,3 +54,35 @@ def test_harbor_config_carries_evaluation_metric():
     )
     cfg = _build_harbor_config_for_trial(submission, _make_spec())
     assert cfg["evaluation_metric"] == "cheat_ratio"
+
+
+def test_harbor_config_carries_ratio_metric_with_labels():
+    submission = TaskSubmission(
+        task_path="some/task",
+        trials=[],
+        user="alice",
+        harbor=HarborConfig(),
+        extra_instructions="probe",
+        evaluation_metric="ratio",
+        ratio_unit="bug",
+        ratio_verb="exploitable",
+    )
+    cfg = _build_harbor_config_for_trial(submission, _make_spec())
+    assert cfg["evaluation_metric"] == "ratio"
+    assert cfg["ratio_unit"] == "bug"
+    assert cfg["ratio_verb"] == "exploitable"
+
+
+def test_harbor_config_omits_ratio_labels_when_unset():
+    submission = TaskSubmission(
+        task_path="some/task",
+        trials=[],
+        user="alice",
+        harbor=HarborConfig(),
+        extra_instructions="probe",
+        evaluation_metric="ratio",
+    )
+    cfg = _build_harbor_config_for_trial(submission, _make_spec())
+    assert cfg["evaluation_metric"] == "ratio"
+    assert "ratio_unit" not in cfg
+    assert "ratio_verb" not in cfg

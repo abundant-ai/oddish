@@ -202,6 +202,14 @@ class TaskSubmission(BaseModel):
             "'result_focus', 'none'. Default null = no specific metric."
         ),
     )
+    ratio_unit: str | None = Field(
+        default=None,
+        description="Noun (singular) for what's counted in a ratio metric, e.g. 'cheat', 'bug'.",
+    )
+    ratio_verb: str | None = Field(
+        default=None,
+        description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
+    )
 
     @model_validator(mode="after")
     def require_models(self):
@@ -272,6 +280,14 @@ class TaskSweepSubmission(BaseModel):
             "How to render the trial's result. One of 'cheat_ratio', "
             "'result_focus', 'none'. Default null = no specific metric."
         ),
+    )
+    ratio_unit: str | None = Field(
+        default=None,
+        description="Noun (singular) for what's counted in a ratio metric, e.g. 'cheat', 'bug'.",
+    )
+    ratio_verb: str | None = Field(
+        default=None,
+        description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
     )
 
     # Common fields
