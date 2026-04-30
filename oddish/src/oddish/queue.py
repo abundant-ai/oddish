@@ -492,7 +492,7 @@ async def create_task(
         id=task_id,
         name=task_name,
         org_id=org_id,
-        user=submission.user,
+        user=submission.user or "unknown",
         priority=submission.priority,
         task_path=submission.task_path,
         task_s3_key=task_s3_key,
