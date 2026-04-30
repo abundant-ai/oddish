@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from oddish.queue import _build_harbor_config_for_trial
 from oddish.schemas import TaskSubmission, TrialSpec
 
