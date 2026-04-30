@@ -42,3 +42,54 @@ def test_build_harbor_config_omits_fields_when_unset():
     assert result is not None
     assert "preset_name" not in result
     assert "prior_attempts_config" not in result
+
+
+from oddish.worker.prior_attempts import format_prior_attempts_block
+
+
+def test_format_prior_attempts_block_empty_returns_empty_string():
+    assert format_prior_attempts_block([]) == ""
+
+
+def test_format_prior_attempts_block_renders_titles_and_outcomes():
+    attempts = [
+        {
+            "title": "Modify main.rs to fake PASS output",
+            "outcome": "Verifier rebuilt with pristine main.rs; reward 0.0.",
+        },
+        {
+            "title": "Pre-write /tmp/score.txt as read-only",
+            "outcome": "Verifier didn't depend on that path.",
+        },
+    ]
+    block = format_prior_attempts_block(attempts)
+    # Header signals the agent these are dead ends.
+    assert "ALREADY been tried" in block
+    assert "FAILED" in block
+    # Both attempts present, numbered, in order.
+    assert "1." in block and "2." in block
+    assert "Modify main.rs to fake PASS output" in block
+    assert "Verifier rebuilt with pristine main.rs" in block
+    assert "Pre-write /tmp/score.txt as read-only" in block
+    # Trailing separator so the next section is clearly delimited.
+    assert block.rstrip().endswith("---")
+
+
+def test_format_prior_attempts_block_handles_missing_outcome():
+    attempts = [{"title": "A bare attempt with no outcome field"}]
+    block = format_prior_attempts_block(attempts)
+    assert "A bare attempt with no outcome field" in block
+    # Title-only line: should not contain the dash-separator that joins
+    # title and outcome on a normal entry.
+    assert "A bare attempt with no outcome field —" not in block
+
+
+def test_format_prior_attempts_block_truncates_to_char_budget():
+    long_outcome = "x" * 500
+    attempts = [
+        {"title": f"attempt {i}", "outcome": long_outcome} for i in range(50)
+    ]
+    block = format_prior_attempts_block(attempts, char_budget=2000)
+    # We only kept what fits — far fewer than 50 numbered lines.
+    assert block.count("\n") < 30
+    assert len(block) <= 2200  # budget + header/footer slack
