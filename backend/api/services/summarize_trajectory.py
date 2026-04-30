@@ -13,13 +13,8 @@ so the test patterns and prompt-shape conventions match the rest of the repo.
 
 from __future__ import annotations
 
-import json
-import logging
 from copy import deepcopy
-from datetime import datetime, timezone
 from typing import Any
-
-logger = logging.getLogger(__name__)
 
 MAX_TEXT_CHARS = 2000
 TRUNCATE_HEAD = 800
