@@ -19,9 +19,12 @@ self-hosted bundle can share it.
 Harbor run dirs do not embed the task source -- ``harbor view`` runs
 on top of result.json/config.json/trajectory files alone -- so the
 import flow has to extract the task *name* from the run and look up an
-existing oddish task by that name. We chain three sources (job-dir
-naming convention, JSON config/result blobs, zip filename) so common
-shapes Just Work without the user having to type anything.
+existing oddish task by that name. We chain four sources (job-dir
+dotted convention, JSON config/result blobs, trial-dir
+``<task>__<random>`` convention, zip filename) so common shapes Just
+Work without the user having to type anything. When no oddish task
+matches we auto-create a metadata-only stub task so the imported
+trials still render even though there are no source files to attach.
 """
 
 from __future__ import annotations
@@ -60,6 +63,12 @@ from oddish.core.trial_imports import (
 from oddish.db import Priority, TaskModel, get_session
 from oddish.experiment import generate_experiment_name
 from oddish.schemas import ImportedTrialSpec
+
+# Sentinel ``task_path`` value for stub task rows created when a run zip
+# references a task we don't have source for. Marks the row as
+# metadata-only so anything downstream that tries to resolve the path
+# (e.g. ``resolve_task_directory``) can detect the lack of files.
+_IMPORTED_TASK_PATH_SCHEME = "imported://"
 
 
 # Concurrency for the per-trial fan-out. Same default as the CLI's
@@ -154,6 +163,59 @@ def _harbor_task_name_from_job_dir(job_dir_name: str) -> str | None:
     if len(parts) < 3:
         return None
     return parts[0] or None
+
+
+def _harbor_task_name_from_trial_dir(trial_dir_name: str) -> str | None:
+    """Extract the task name from a Harbor trial dir like ``<task>__<random>``.
+
+    Harbor stamps trial subdirs as ``<task_name>__<random_suffix>`` (double
+    underscore separator). Task names themselves can contain single
+    underscores, so we split on the *last* ``__`` only. Returns None
+    when the name doesn't contain the double-underscore marker.
+    """
+    marker = "__"
+    idx = trial_dir_name.rfind(marker)
+    if idx <= 0:
+        return None
+    return trial_dir_name[:idx] or None
+
+
+def _task_name_from_trial_dirs(run_root: Path) -> str | None:
+    """Walk trial subdirs under *run_root* for a ``<task>__<random>`` name.
+
+    Used as a fallback when the dotted job-dir convention isn't in play
+    (e.g. Harbor variants that only stamp the trial subdirs). Only
+    returns a name when every trial subdir agrees, to avoid silently
+    importing onto the wrong task when a run mixes shapes.
+    """
+    candidates: set[str] = set()
+
+    job_dirs: list[Path] = []
+    if is_harbor_job_dir(run_root):
+        job_dirs.append(run_root)
+    elif is_harbor_jobs_dir(run_root):
+        try:
+            for child in run_root.iterdir():
+                if child.is_dir() and is_harbor_job_dir(child):
+                    job_dirs.append(child)
+        except OSError:
+            return None
+
+    for job_dir in job_dirs:
+        try:
+            children = list(job_dir.iterdir())
+        except OSError:
+            continue
+        for trial_dir in children:
+            if not trial_dir.is_dir():
+                continue
+            name = _harbor_task_name_from_trial_dir(trial_dir.name)
+            if name:
+                candidates.add(name)
+
+    if len(candidates) == 1:
+        return candidates.pop()
+    return None
 
 
 def _walk_for_task_name(obj: Any, depth: int = 0) -> str | None:
@@ -289,6 +351,7 @@ def _infer_task_name_candidates(
             sources.append(child_candidates.pop())
 
     sources.append(_task_name_from_run_artifacts(run_root))
+    sources.append(_task_name_from_trial_dirs(run_root))
     sources.append(_task_name_from_filename(run_zip_filename))
 
     seen: set[str] = set()
@@ -478,6 +541,69 @@ async def _resolve_task_id_or_name(
     return None
 
 
+async def _create_stub_task(
+    *,
+    task_name: str,
+    org_id: str | None,
+    user_id: str | None,
+    user_name: str | None,
+) -> ZipImportTaskResult:
+    """Create a metadata-only ``TaskModel`` row when no source is available.
+
+    Used when a run zip references a task we don't have in oddish (the
+    user is importing run JSON only, with no task files to upload).
+    The row has no ``TaskVersionModel`` and no ``task_s3_key`` -- just
+    enough scaffolding for the imported trials to attach to a task
+    that renders in the dashboard. ``task_path`` gets an
+    ``imported://<name>`` sentinel so anything trying to resolve the
+    on-disk path can detect the missing source.
+
+    Re-checks the unique ``(org_id, name)`` index after a race in case
+    a concurrent import created the row first.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from oddish.db import generate_id
+
+    task_id = f"{task_name}-{generate_id()}"
+    task_path = f"{_IMPORTED_TASK_PATH_SCHEME}{task_name}"
+
+    async with get_session() as session:
+        stub = TaskModel(
+            id=task_id,
+            name=task_name,
+            org_id=org_id,
+            created_by_user_id=user_id,
+            user=user_name or user_id or "imported",
+            priority=Priority.LOW,
+            task_path=task_path,
+            task_s3_key=None,
+        )
+        session.add(stub)
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            existing_id = await _resolve_task_id_or_name(task_name, org_id)
+            if existing_id is None:
+                raise
+            return ZipImportTaskResult(
+                task_id=existing_id,
+                name=task_name,
+                version=None,
+                existing_task=True,
+                content_unchanged=False,
+            )
+
+    return ZipImportTaskResult(
+        task_id=task_id,
+        name=task_name,
+        version=None,
+        existing_task=False,
+        content_unchanged=False,
+    )
+
+
 # =============================================================================
 # Trial import (server-side equivalent of ``oddish.cli.api.import_trial``)
 # =============================================================================
@@ -652,10 +778,13 @@ async def import_zip(
     - ``task_zip`` + ``run_zip`` -> upload the task first, then import
       the trials against it (CLI ``--path`` flow).
 
-    Harbor runs do not bundle the task source, which is why all three
-    inference sources are tried before giving up: a user can drop just
-    the run zip and have it land on the existing oddish task without
-    having to type or look up an ID.
+    Harbor runs do not bundle the task source, which is why all four
+    inference sources are tried in turn: a user can drop just the run
+    zip and have it land on the existing oddish task without having
+    to type or look up an ID. When none of the inferred names match a
+    real task we auto-create a metadata-only stub task so the trials
+    still render -- the dialog surfaces this as "Created placeholder
+    task X" so the user knows the source files weren't attached.
     """
     if task_zip_path is None and run_zip_path is None:
         raise HTTPException(
@@ -672,6 +801,21 @@ async def import_zip(
             task_extract_dir = workspace / "task"
             task_root = extract_zip_to_dir(task_zip_path, task_extract_dir)
             if not is_task_dir(task_root):
+                # Common misclick: the user dropped the run zip into the
+                # task slot too. Detect that shape and steer them to the
+                # right slot instead of complaining about missing task
+                # source files.
+                if is_harbor_job_dir(task_root) or is_harbor_jobs_dir(task_root):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "That zip looks like a Harbor run, not a task. "
+                            "For a run-only import, leave the task zip slot "
+                            "empty and drop the run zip in the run slot. "
+                            "The task zip slot is only for task source "
+                            "files (task.toml + environment/ + tests/)."
+                        ),
+                    )
                 raise HTTPException(
                     status_code=400,
                     detail=(
@@ -734,25 +878,30 @@ async def import_zip(
                         resolved_task_id = match
                         break
 
+                # No matching task -- auto-create a metadata-only stub
+                # under the highest-confidence inferred name so the
+                # trials still render. Without this the user is stuck
+                # whenever they have run JSON but no task source (a
+                # common Harbor "view someone else's run" case).
+                if resolved_task_id is None and candidates:
+                    task_result = await _create_stub_task(
+                        task_name=candidates[0],
+                        org_id=org_id,
+                        user_id=user_id,
+                        user_name=user_name,
+                    )
+                    resolved_task_id = task_result.task_id
+
                 if resolved_task_id is None:
-                    if candidates:
-                        candidates_str = ", ".join(repr(c) for c in candidates)
-                        detail = (
-                            "Importing trials requires a target task. Tried "
-                            f"these names from the run zip: {candidates_str} "
-                            "-- none matched a task in this org. Either "
-                            "type the existing task's ID or name in the "
-                            "field, or expand 'Upload task files too' and "
-                            "drop the task zip alongside the run."
-                        )
-                    else:
-                        detail = (
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
                             "Importing trials requires a target task and we "
                             "couldn't infer one from the run zip. Type the "
                             "task ID/name in the field, or upload the task "
                             "files alongside the run."
-                        )
-                    raise HTTPException(status_code=404, detail=detail)
+                        ),
+                    )
 
             trial_results, experiment_id, experiment_name = await _import_trials(
                 job_root=run_root,

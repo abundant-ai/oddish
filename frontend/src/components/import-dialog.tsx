@@ -363,12 +363,21 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
 }
 
 function ResultPanel({ result }: { result: ImportResponse }) {
+  // ``version === null`` means the backend created a metadata-only
+  // stub task: the run referenced a task we don't have source for, so
+  // there's no TaskVersionModel row to point at. Surface that
+  // explicitly so the user understands why the task page won't show
+  // any source files.
   const taskLine = result.task
-    ? result.task.content_unchanged
-      ? `Task ${result.task.name} unchanged (version ${result.task.version}).`
-      : result.task.existing_task
-        ? `Task ${result.task.name} updated to version ${result.task.version}.`
-        : `Task ${result.task.name} uploaded as version ${result.task.version}.`
+    ? result.task.version === null
+      ? result.task.existing_task
+        ? `Linked to existing task ${result.task.name} (no source files in oddish).`
+        : `Created placeholder task ${result.task.name} (no source files — upload the task zip later to attach them).`
+      : result.task.content_unchanged
+        ? `Task ${result.task.name} unchanged (version ${result.task.version}).`
+        : result.task.existing_task
+          ? `Task ${result.task.name} updated to version ${result.task.version}.`
+          : `Task ${result.task.name} uploaded as version ${result.task.version}.`
     : null;
 
   return (
