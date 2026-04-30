@@ -225,6 +225,15 @@ async def test_probe_overlay_prepends_extra_instructions_to_instruction_md(
     assert captured["task_path"] != original_task_dir
     assert "be adversarial" in captured["instruction"]
     assert "solve the task" in captured["instruction"]
+    # System framing must be prepended so the agent treats the operator
+    # directive as the goal (not the original task).
+    assert "Probe runtime" in captured["instruction"]
+    assert "OPERATOR DIRECTIVE" in captured["instruction"]
+    # Framing must appear BEFORE the operator directive.
+    framing_idx = captured["instruction"].index("Probe runtime")
+    op_idx = captured["instruction"].index("be adversarial")
+    task_idx = captured["instruction"].index("solve the task")
+    assert framing_idx < op_idx < task_idx
 
     # Original task dir on disk is untouched.
     assert (
