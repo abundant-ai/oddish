@@ -180,6 +180,11 @@ async def generate(trajectory: dict) -> dict:
     except json.JSONDecodeError as e:
         raise SummaryGenerationError(f"Model returned non-JSON: {e}") from e
 
+    if not isinstance(parsed, dict):
+        raise SummaryGenerationError(
+            f"Model returned {type(parsed).__name__}, expected object"
+        )
+
     summary = str(parsed.get("summary") or "").strip()
     raw_highlights = parsed.get("highlights") or []
     highlights: list[dict] = []
