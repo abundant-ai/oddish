@@ -43,3 +43,4 @@ jobs/
 probe-presets.json
 
 **/pnpm-lock.yaml
+.vscode/
