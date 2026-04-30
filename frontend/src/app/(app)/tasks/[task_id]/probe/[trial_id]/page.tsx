@@ -261,23 +261,38 @@ export default function ProbeResultPage({
             </div>
           ) : null}
           {(() => {
-            const cheatAttempts = (summary.attempts ?? []).filter(
-              (a) => a.success === true || a.success === false,
-            );
-            const cheatSucceeded = cheatAttempts.filter(
-              (a) => a.success === true,
-            ).length;
-            const cheatTotal = cheatAttempts.length;
-            return cheatTotal > 0 ? (
-              <div className="flex items-center gap-2 text-xs">
-                <span className="rounded bg-muted px-2 py-1">
-                  Cheat ratio: <strong>{cheatSucceeded}</strong> / {cheatTotal}
-                </span>
-                <span className="text-muted-foreground">
-                  attempts that bypassed the verifier
-                </span>
+            const all = summary.attempts ?? [];
+            const succeeded = all.filter((a) => a.success === true).length;
+            const blocked = all.filter((a) => a.success === false).length;
+            const investigation = all.length - succeeded - blocked;
+            const cheatTotal = succeeded + blocked;
+            if (cheatTotal === 0 && investigation === 0) return null;
+            return (
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                {succeeded > 0 ? (
+                  <span className="rounded bg-red-500/15 px-2 py-1 font-medium text-red-600">
+                    {succeeded} cheat{succeeded === 1 ? "" : "s"} succeeded
+                  </span>
+                ) : null}
+                {blocked > 0 ? (
+                  <span className="rounded bg-emerald-500/15 px-2 py-1 font-medium text-emerald-700">
+                    {blocked} blocked by verifier
+                  </span>
+                ) : null}
+                {investigation > 0 ? (
+                  <span className="rounded bg-muted px-2 py-1 font-medium text-muted-foreground">
+                    {investigation} investigation step{investigation === 1 ? "" : "s"}
+                  </span>
+                ) : null}
+                {cheatTotal > 0 ? (
+                  <span className="text-muted-foreground">
+                    {succeeded > 0
+                      ? "task is gameable"
+                      : "task is robust to attempted cheats"}
+                  </span>
+                ) : null}
               </div>
-            ) : null;
+            );
           })()}
           {summary.evidence ? (
             <p className="text-xs text-muted-foreground italic">
@@ -354,7 +369,14 @@ export default function ProbeResultPage({
                           <span className="ml-2 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
                             blocked
                           </span>
-                        ) : null}
+                        ) : (
+                          <span
+                            className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+                            title="Not a cheat attempt — investigation/setup steps"
+                          >
+                            investigation
+                          </span>
+                        )}
                         <span className="ml-2 text-xs text-muted-foreground">
                           ({indices.length} step
                           {indices.length === 1 ? "" : "s"})
