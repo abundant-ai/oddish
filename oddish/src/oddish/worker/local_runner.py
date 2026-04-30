@@ -17,6 +17,7 @@ before submitting.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import shutil
@@ -35,6 +36,151 @@ from oddish.db import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# CPU watchdog: a bash script that runs inside the trial container and kills
+# runaway non-claude processes before they consume the trial's wall-clock
+# budget. Invoked via ``docker exec -d`` from ``_watchdog_task`` once the
+# container is up.
+#
+# Safe-pattern list is conservative -- better to miss a kill than to kill the
+# agent itself (claude / tee / the watchdog). Any process whose argv contains
+# one of these substrings is skipped.
+# ---------------------------------------------------------------------------
+_WATCHDOG_SAFE_PATTERNS = (
+    "claude",       # the agent itself
+    "tee /logs",    # Harbor's stdout redirect for the agent log
+    "watchdog",     # this script (don't kill yourself)
+    "sleep",        # benign
+    "ps ",          # this poll's own ps invocation
+)
+
+_WATCHDOG_SCRIPT = r"""
+LOG=/logs/watchdog.log
+mkdir -p /logs
+echo "[watchdog] started pid=$$ at $(date -Is)" >> "$LOG"
+
+# Process state: pid -> seconds_above_threshold (tracked in /tmp/watchdog_state)
+STATE_DIR=/tmp/watchdog_state
+rm -rf "$STATE_DIR"
+mkdir -p "$STATE_DIR"
+
+CPU_THRESHOLD=90
+TIME_THRESHOLD=300
+POLL_INTERVAL=30
+
+while true; do
+    NOW=$(date +%s)
+    # ps: output pid, %cpu (current), elapsed seconds, command
+    ps -eo pid=,pcpu=,etimes=,args= 2>/dev/null | while read pid cpu etime args; do
+        # Skip kernel threads (no args) and our own watchdog
+        [ -z "$args" ] && continue
+        # Skip safe patterns
+        skip=0
+        for pat in claude "tee /logs" watchdog "ps -eo" sleep; do
+            case "$args" in *"$pat"*) skip=1; break ;; esac
+        done
+        [ "$skip" -eq 1 ] && continue
+
+        # Strip decimal from cpu
+        cpu_int=${cpu%.*}
+        [ -z "$cpu_int" ] && continue
+
+        if [ "$cpu_int" -gt "$CPU_THRESHOLD" ] 2>/dev/null && \
+           [ "$etime" -gt "$TIME_THRESHOLD" ] 2>/dev/null; then
+            # Avoid double-killing
+            if [ -f "$STATE_DIR/$pid" ]; then continue; fi
+            touch "$STATE_DIR/$pid"
+            echo "[watchdog] killing pid=$pid cpu=$cpu etime=$etime args=$(echo "$args" | head -c 200)" >> "$LOG"
+            kill -TERM "$pid" 2>/dev/null
+            sleep 2
+            # If still alive, SIGKILL
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "[watchdog] SIGKILL pid=$pid (didn't respond to TERM)" >> "$LOG"
+                kill -KILL "$pid" 2>/dev/null
+            fi
+        fi
+    done
+    sleep "$POLL_INTERVAL"
+done
+"""
+
+
+async def _find_trial_container(
+    trial_name: str, *, timeout: float = 60.0
+) -> str | None:
+    """Poll ``docker ps`` until a container matching the trial name appears.
+
+    Harbor's docker-compose project naming produces a container named
+    ``<trial_name_lowercased>-main-1``. We match by suffix (case-insensitive)
+    so any compose-project prefix Harbor adds in the future still works.
+
+    Returns the container name, or None if not found within the timeout.
+    """
+    expected_suffix = f"{trial_name.lower()}-main-1"
+    deadline = asyncio.get_event_loop().time() + timeout
+
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "ps",
+                "--format",
+                "{{.Names}}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+        except Exception as exc:
+            logger.warning("watchdog: docker ps failed: %s", exc)
+            await asyncio.sleep(2)
+            continue
+
+        names = stdout.decode().strip().splitlines()
+        for name in names:
+            if name.lower().endswith(expected_suffix):
+                return name
+        await asyncio.sleep(2)
+    return None
+
+
+async def _start_watchdog(container_name: str) -> bool:
+    """Exec the watchdog script into the container as a detached process.
+
+    Uses ``docker exec -d`` so the bash process keeps running after this
+    helper returns. The watchdog terminates naturally when the container is
+    torn down. Returns True if the exec call succeeded.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            "-d",
+            container_name,
+            "bash",
+            "-c",
+            _WATCHDOG_SCRIPT,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()  # ``-d`` returns quickly
+        logger.info("watchdog started in container %s", container_name)
+        return True
+    except Exception as exc:
+        logger.warning("watchdog: failed to start in %s: %s", container_name, exc)
+        return False
+
+
+async def _watchdog_task(trial_name: str) -> None:
+    """Background task: wait for the container, then start the watchdog."""
+    container_name = await _find_trial_container(trial_name)
+    if container_name is None:
+        logger.warning(
+            "watchdog: container for trial '%s' never appeared", trial_name
+        )
+        return
+    await _start_watchdog(container_name)
 
 
 async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
@@ -157,11 +303,27 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # exposes a matching ``create`` classmethod so the call shape stays
     # identical between the real Harbor Trial and the test double.
     harbor_trial = await Trial.create(cfg)
+
+    # Start the CPU watchdog in parallel -- it polls for the container by
+    # name, then docker-execs a polling script inside that kills runaway
+    # non-claude processes pegged >90% CPU for >300s. Detached inside the
+    # container, so it dies naturally when the container is torn down.
+    watchdog_bg = asyncio.create_task(_watchdog_task(cfg.trial_name))
+
     try:
         await harbor_trial.run()
     finally:
         if work_root is not None:
             shutil.rmtree(work_root, ignore_errors=True)
+        # Watchdog is detached inside the container; nothing to clean up
+        # there. We only need to cancel our launcher task in case the
+        # container never came up (so it isn't left polling forever).
+        if not watchdog_bg.done():
+            watchdog_bg.cancel()
+            try:
+                await watchdog_bg
+            except (asyncio.CancelledError, Exception):
+                pass
 
     # ---------------------------------------------------------------
     # Read structured artifacts off disk + run the probe analyzer,
@@ -245,10 +407,25 @@ async def _run_harbor_trial(trial_id: str) -> None:
             result_payload = result.model_dump()
     if not isinstance(result_payload, dict):
         result_payload = {}
+    # Surface the watchdog log if Harbor exposed /logs to the host. The exact
+    # mount path varies by Harbor version, so we just rglob under the trial
+    # output dir. None when no kills happened or the mount isn't exposed.
+    watchdog_log: str | None = None
+    try:
+        for candidate in trial_artifacts_dir.rglob("watchdog.log"):
+            try:
+                watchdog_log = candidate.read_text()[:20_000]
+                break
+            except Exception:
+                continue
+    except Exception:
+        watchdog_log = None
+
     result_payload["_artifacts"] = {
         "trajectory": trajectory,
         "verifier_stdout": verifier_stdout,
         "agent_messages": agent_messages,
+        "watchdog_log": watchdog_log,
     }
 
     # Compute reward up-front (we need it both for the analyzer and to persist).
