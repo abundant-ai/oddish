@@ -18,6 +18,7 @@ from oddish.timing import (
     join_server_timing_headers,
     now,
 )
+from oddish.worker.orphan_reaper import reap_orphan_trials
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,13 @@ async def lifespan(_api: FastAPI):
     Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
 
     role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
+
+    try:
+        n = await reap_orphan_trials()
+        if n > 0:
+            logger.info("orphan reaper: reaped %d stuck trial(s) at startup", n)
+    except Exception as exc:
+        logger.warning("orphan reaper failed at startup: %s", exc)
 
     yield
 
