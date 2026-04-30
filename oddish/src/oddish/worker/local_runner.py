@@ -6,7 +6,7 @@ the same Postgres rows the Modal worker would update, so the rest of
 the stack (FE, analysis pipeline) sees a normal trial.
 
 Task 8 wires ``_run_harbor_trial`` to actually invoke Harbor and adds
-the freeform task-mutation overlay: when ``harbor_config.extra_instructions``
+the probe task-mutation overlay: when ``harbor_config.extra_instructions``
 is set, the runner copies the task dir to a temp work dir, prepends the
 operator's prompt to ``instruction.md``, and points Harbor at the temp
 copy. Harbor itself stays unpatched -- it just sees a normal task with a
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
-    """Execute a freeform trial in-process and mirror status to the DB.
+    """Execute a probe trial in-process and mirror status to the DB.
 
     Status transitions: ``QUEUED`` -> ``RUNNING`` -> ``SUCCESS``
     (or ``FAILED`` on exception, with ``error_message`` populated).
@@ -123,13 +123,13 @@ async def _run_harbor_trial(trial_id: str) -> None:
         )
 
     # ---------------------------------------------------------------
-    # Freeform overlay: copy the task dir to a temp work dir and
+    # Probe overlay: copy the task dir to a temp work dir and
     # prepend the operator prompt to ``instruction.md``. Harbor reads
     # the modified file from the copy without any patch.
     # ---------------------------------------------------------------
     work_root: Path | None = None
     if extra_instructions:
-        work_root = Path(tempfile.mkdtemp(prefix=f"freeform-{trial_id}-"))
+        work_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
         work_task_dir = work_root / task_path.name
         shutil.copytree(task_path, work_task_dir, symlinks=True)
         instr_path = work_task_dir / "instruction.md"
@@ -164,7 +164,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
             shutil.rmtree(work_root, ignore_errors=True)
 
     # ---------------------------------------------------------------
-    # Read structured artifacts off disk + run the freeform analyzer,
+    # Read structured artifacts off disk + run the probe analyzer,
     # then persist reward + result + analysis back to the trial row.
     # ---------------------------------------------------------------
     result = harbor_trial.result
@@ -270,7 +270,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
     analyzer_error: str | None = None
     analysis_started_at = datetime.now(timezone.utc)
     try:
-        analyzer_summary = await _run_freeform_analyzer(
+        analyzer_summary = await _run_probe_analyzer(
             extra_instructions=extra_instructions,
             agent_messages=agent_messages,
             verifier_stdout=verifier_stdout or "",
@@ -279,7 +279,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         analyzer_status = AnalysisStatus.SUCCESS
     except Exception as exc:
         analyzer_error = str(exc)
-        logger.exception("Freeform analyzer failed for trial %s", trial_id)
+        logger.exception("Probe analyzer failed for trial %s", trial_id)
     analysis_finished_at = datetime.now(timezone.utc)
 
     async with get_session() as session:
@@ -298,7 +298,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         trial.analysis_finished_at = analysis_finished_at
 
 
-async def _run_freeform_analyzer(
+async def _run_probe_analyzer(
     *,
     extra_instructions: str,
     agent_messages: list[dict],
@@ -310,7 +310,7 @@ async def _run_freeform_analyzer(
     Returns a dict with shape::
 
         {
-          "kind": "freeform_summary",
+          "kind": "probe_summary",
           "headline": str,
           "summary": str,
           "key_actions": [str, ...],
@@ -433,7 +433,7 @@ async def _run_freeform_analyzer(
             )
 
     return {
-        "kind": "freeform_summary",
+        "kind": "probe_summary",
         "headline": str(parsed.get("headline", "")),
         "summary": str(parsed.get("summary", "")),
         "key_actions": list(parsed.get("key_actions") or []),

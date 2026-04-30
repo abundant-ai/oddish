@@ -107,11 +107,11 @@ async def test_run_trial_locally_missing_trial_raises():
 
 
 @pytest_asyncio.fixture
-async def seeded_freeform_trial_with_task_dir(tmp_path):
+async def seeded_probe_trial_with_task_dir(tmp_path):
     """Insert Experiment + Task + Trial backed by a real on-disk task dir.
 
-    The Trial's ``harbor_config`` carries the freeform task-mutation overlay
-    payload (``mode=freeform`` + ``extra_instructions``) so the runner takes
+    The Trial's ``harbor_config`` carries the probe task-mutation overlay
+    payload (``mode=probe`` + ``extra_instructions``) so the runner takes
     the overlay code path. Yields ``(trial_id, original_task_dir)`` so the
     test can assert that the original on-disk instruction.md was *not*
     mutated by the runner.
@@ -154,7 +154,7 @@ async def seeded_freeform_trial_with_task_dir(tmp_path):
                 status=TrialStatus.RUNNING,
                 origin=TrialOrigin.ODDISH,
                 harbor_config={
-                    "mode": "freeform",
+                    "mode": "probe",
                     "extra_instructions": "be adversarial",
                 },
             )
@@ -177,8 +177,8 @@ async def seeded_freeform_trial_with_task_dir(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_freeform_overlay_prepends_extra_instructions_to_instruction_md(
-    monkeypatch, seeded_freeform_trial_with_task_dir
+async def test_probe_overlay_prepends_extra_instructions_to_instruction_md(
+    monkeypatch, seeded_probe_trial_with_task_dir
 ):
     """Overlay path: copy task to temp dir + prepend operator prompt to instruction.md.
 
@@ -190,7 +190,7 @@ async def test_freeform_overlay_prepends_extra_instructions_to_instruction_md(
       - The original on-disk instruction.md is unchanged after the run.
       - The temp work dir is cleaned up after Harbor exits.
     """
-    trial_id, original_task_dir = seeded_freeform_trial_with_task_dir
+    trial_id, original_task_dir = seeded_probe_trial_with_task_dir
     captured: dict[str, object] = {}
 
     class FakeTrial:

@@ -14,7 +14,7 @@ type Trial = {
   reward: number | null;
   // harbor_config is not currently exposed on TrialResponse; the optional
   // chain below is defensive — once Task 15 surfaces this field the filter
-  // will start narrowing the table to freeform-only runs.
+  // will start narrowing the table to probe-only runs.
   harbor_config?: { mode?: string } | null;
 };
 
@@ -33,7 +33,7 @@ function resultLabel(t: Trial): string {
     : `Clean (reward=${t.reward.toFixed(2)})`;
 }
 
-export function FreeformHistoryTable({ taskId }: { taskId: string }) {
+export function ProbeHistoryTable({ taskId }: { taskId: string }) {
   const { getToken } = useAuth();
 
   const fetcher = async (url: string) => {
@@ -68,21 +68,21 @@ export function FreeformHistoryTable({ taskId }: { taskId: string }) {
   if (!data)
     return <p className="text-sm text-muted-foreground">Loading history…</p>;
 
-  // If harbor_config is exposed (Task 15+), narrow to freeform runs only.
+  // If harbor_config is exposed (Task 15+), narrow to probe runs only.
   // Otherwise show every trial for the task — better than hiding the whole
   // history if the field hasn't been wired through yet.
   const anyHaveHarborConfig = data.some(
     (t) => t.harbor_config !== undefined && t.harbor_config !== null,
   );
-  const freeform = anyHaveHarborConfig
-    ? data.filter((t) => t.harbor_config?.mode === "freeform")
+  const probes = anyHaveHarborConfig
+    ? data.filter((t) => t.harbor_config?.mode === "probe")
     : data;
 
   return (
     <div>
       <h2 className="mb-3 text-lg font-medium">History</h2>
-      {freeform.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No freeform runs yet.</p>
+      {probes.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No probe runs yet.</p>
       ) : (
         <table className="w-full text-sm">
           <thead className="text-left text-muted-foreground">
@@ -95,7 +95,7 @@ export function FreeformHistoryTable({ taskId }: { taskId: string }) {
             </tr>
           </thead>
           <tbody>
-            {freeform.map((t) => (
+            {probes.map((t) => (
               <tr key={t.id} className="border-t">
                 <td className="py-2 pr-4 font-mono text-xs">
                   {t.started_at ? new Date(t.started_at).toLocaleString() : "—"}
@@ -105,7 +105,7 @@ export function FreeformHistoryTable({ taskId }: { taskId: string }) {
                 <td className="py-2 pr-4">{resultLabel(t)}</td>
                 <td className="py-2">
                   <Link
-                    href={`/tasks/${taskId}/freeform-agent/${t.id}`}
+                    href={`/tasks/${taskId}/probe/${t.id}`}
                     className="text-xs underline"
                   >
                     View →

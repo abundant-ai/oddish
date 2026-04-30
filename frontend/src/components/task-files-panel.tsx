@@ -1360,7 +1360,7 @@ export function TaskFilesPanel({
                     className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
                   >
                     <Link
-                      href={`/tasks/${task.id}/freeform-agent`}
+                      href={`/tasks/${task.id}/probe`}
                       target="_blank"
                       rel="noopener noreferrer"
                       title="Run an adversarial probe against this task"

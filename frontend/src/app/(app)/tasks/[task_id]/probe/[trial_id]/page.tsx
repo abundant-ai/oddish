@@ -20,7 +20,7 @@ type Attempt = {
   step_indices?: number[];
 };
 
-type FreeformSummary = {
+type ProbeSummary = {
   kind?: string;
   headline?: string;
   summary?: string;
@@ -49,13 +49,13 @@ type Trial = {
       agent_messages?: AgentMessage[];
     };
   } | null;
-  analysis: FreeformSummary | null;
+  analysis: ProbeSummary | null;
   analysis_status: string | null;
   analysis_error: string | null;
   error_message: string | null;
 };
 
-export default function FreeformResultPage({
+export default function ProbeResultPage({
   params,
 }: {
   params: Promise<{ task_id: string; trial_id: string }>;
@@ -121,7 +121,7 @@ export default function FreeformResultPage({
         <div className="container mx-auto max-w-3xl py-8">
           <p className="text-sm text-red-500">Trial not found.</p>
           <Link
-            href={`/tasks/${task_id}/freeform-agent`}
+            href={`/tasks/${task_id}/probe`}
             className="text-xs underline text-muted-foreground hover:text-foreground"
           >
             ← Back to workbench
@@ -150,12 +150,12 @@ export default function FreeformResultPage({
     <div className="container mx-auto max-w-4xl py-8 space-y-6">
       <div>
         <Link
-          href={`/tasks/${task_id}/freeform-agent`}
+          href={`/tasks/${task_id}/probe`}
           className="text-xs underline text-muted-foreground hover:text-foreground"
         >
           ← Back to workbench
         </Link>
-        <h1 className="mt-2 text-2xl font-semibold">Freeform run</h1>
+        <h1 className="mt-2 text-2xl font-semibold">Probe run</h1>
         <p className="mt-1 font-mono text-xs text-muted-foreground">
           {trial.id}
         </p>

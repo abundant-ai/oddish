@@ -1,7 +1,7 @@
-import { FreeformSubmitForm } from "@/components/freeform-submit-form";
-import { FreeformHistoryTable } from "@/components/freeform-history-table";
+import { ProbeSubmitForm } from "@/components/probe-submit-form";
+import { ProbeHistoryTable } from "@/components/probe-history-table";
 
-export default async function FreeformAgentPage({
+export default async function ProbePage({
   params,
 }: {
   params: Promise<{ task_id: string }>;
@@ -10,7 +10,7 @@ export default async function FreeformAgentPage({
   return (
     <div className="container mx-auto max-w-3xl py-8 space-y-8">
       <div>
-        <h1 className="text-2xl font-semibold">Freeform run</h1>
+        <h1 className="text-2xl font-semibold">Probe run</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Submit a custom prompt prepended to this task&apos;s instruction. The
           agent runs in local Docker via Harbor.
@@ -19,8 +19,8 @@ export default async function FreeformAgentPage({
           Task: <span className="font-mono">{task_id}</span>
         </p>
       </div>
-      <FreeformSubmitForm taskId={task_id} />
-      <FreeformHistoryTable taskId={task_id} />
+      <ProbeSubmitForm taskId={task_id} />
+      <ProbeHistoryTable taskId={task_id} />
     </div>
   );
 }

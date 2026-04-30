@@ -1,6 +1,6 @@
 """Test that create_task_sweep_core dispatches to the local runner when LOCAL_MODE=1.
 
-When ``ODDISH_LOCAL_MODE=1``, freeform trials submitted via the sweep endpoint
+When ``ODDISH_LOCAL_MODE=1``, probe trials submitted via the sweep endpoint
 should fire ``run_trial_locally(trial.id, dry_run=False)`` as a background
 asyncio task instead of going through the Modal queue. This test sets the env
 var, monkeypatches the runner, submits a sweep, and asserts the runner was

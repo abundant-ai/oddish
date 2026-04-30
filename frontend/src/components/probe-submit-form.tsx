@@ -23,7 +23,7 @@ const MODELS_BY_AGENT: Record<string, { value: string; label: string }[]> = {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800";
 
-export function FreeformSubmitForm({ taskId }: { taskId: string }) {
+export function ProbeSubmitForm({ taskId }: { taskId: string }) {
   const router = useRouter();
   const { getToken } = useAuth();
   const [agent, setAgent] = useState("claude-code");
@@ -63,7 +63,7 @@ export function FreeformSubmitForm({ taskId }: { taskId: string }) {
           task_id: taskId,
           append_to_task: true,
           configs: [{ agent, model, n_trials: 1 }],
-          user: "freeform-ui",
+          user: "probe-ui",
           extra_instructions: extraInstructions,
         }),
       });
@@ -73,7 +73,7 @@ export function FreeformSubmitForm({ taskId }: { taskId: string }) {
       }
       const data = await res.json();
       const trialId = data.new_trial_ids?.[0];
-      if (trialId) router.push(`/tasks/${taskId}/freeform-agent/${trialId}`);
+      if (trialId) router.push(`/tasks/${taskId}/probe/${trialId}`);
       else router.refresh();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));

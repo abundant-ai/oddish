@@ -428,7 +428,7 @@ def _build_harbor_config_for_trial(
         base["agent_config"] = agent_config_payload
 
     if submission.extra_instructions:
-        base["mode"] = "freeform"
+        base["mode"] = "probe"
         base["extra_instructions"] = submission.extra_instructions
 
     return base or None

@@ -212,7 +212,7 @@ class Settings(BaseSettings):
     local_mode: bool = Field(
         default=False,
         description=(
-            "When true, freeform trial submissions execute in-process via the "
+            "When true, probe trial submissions execute in-process via the "
             "harbor.trial.Trial Python API (local Docker), bypassing the Modal "
             "queue. Set ODDISH_LOCAL_MODE=1 for solo dev."
         ),
