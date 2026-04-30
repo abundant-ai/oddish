@@ -41,3 +41,5 @@ jobs/
 
 # Local dev-only state
 probe-presets.json
+
+**/pnpm-lock.yaml

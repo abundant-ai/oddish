@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
   Sheet,
@@ -227,29 +227,64 @@ export function CCChatModal({
                   <div className="text-xs font-medium uppercase opacity-60">
                     claude
                   </div>
-                  {turn.events.length === 0 ? (
-                    <div className="text-sm italic opacity-60">thinking…</div>
-                  ) : (
-                    <div className="space-y-1">
-                      {collapseSystemRuns(turn.events).map((item, j) =>
-                        item.kind === "system_run" ? (
-                          <div key={j} className="text-xs italic opacity-50">
+                  {(() => {
+                    if (turn.events.length === 0) {
+                      return (
+                        <div className="text-sm italic opacity-60">thinking…</div>
+                      );
+                    }
+                    const primary: ReactNode[] = [];
+                    const secondary: ReactNode[] = [];
+                    collapseSystemRuns(turn.events).forEach((item, j) => {
+                      if (item.kind === "system_run") {
+                        secondary.push(
+                          <div key={`s${j}`} className="text-xs italic opacity-50">
                             ↻ {item.count} system updates
-                          </div>
+                          </div>,
+                        );
+                        return;
+                      }
+                      const { primary: p, secondary: s } = renderStreamEvent(
+                        item.event,
+                      );
+                      if (p)
+                        primary.push(
+                          <div key={`p${j}`} className="text-sm">
+                            {p}
+                          </div>,
+                        );
+                      if (s)
+                        secondary.push(
+                          <div key={`q${j}`} className="text-sm">
+                            {s}
+                          </div>,
+                        );
+                    });
+                    return (
+                      <div className="space-y-2">
+                        {primary.length > 0 ? (
+                          <div className="space-y-1">{primary}</div>
                         ) : (
-                          (() => {
-                            const rendered = renderStreamEvent(item.event);
-                            if (rendered === null) return null;
-                            return (
-                              <div key={j} className="text-sm">
-                                {rendered}
-                              </div>
-                            );
-                          })()
-                        )
-                      )}
-                    </div>
-                  )}
+                          <div className="text-sm italic opacity-60">
+                            thinking…
+                          </div>
+                        )}
+                        {secondary.length > 0 ? (
+                          <details className="group">
+                            <summary className="cursor-pointer list-none text-xs opacity-60 hover:opacity-100">
+                              <span className="inline-block w-3 transition-transform group-open:rotate-90">
+                                ▸
+                              </span>{" "}
+                              Show tool activity ({secondary.length})
+                            </summary>
+                            <div className="border-muted-foreground/20 mt-2 space-y-1 border-l pl-3">
+                              {secondary}
+                            </div>
+                          </details>
+                        ) : null}
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>

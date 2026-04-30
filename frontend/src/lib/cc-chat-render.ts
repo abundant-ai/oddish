@@ -1,20 +1,30 @@
 import type { ReactNode } from "react";
 import { createElement as h } from "react";
 
+export type RenderedEvent = {
+  // The assistant's actual reply — shown inline in the transcript.
+  primary: ReactNode | null;
+  // Tool calls / results / system noise — tucked into a collapsed disclosure.
+  secondary: ReactNode | null;
+};
+
+const EMPTY: RenderedEvent = { primary: null, secondary: null };
+
 /**
- * Render a single Claude Code stream-json event as inline JSX.
- *
- * Returns null for events worth hiding (system init, ping). Falls back to a
- * compact one-line summary for unrecognized shapes so nothing is silently
- * swallowed if we have a bug.
+ * Render a single Claude Code stream-json event into two buckets: the
+ * `primary` reply text the user cares about, and `secondary` tool/system
+ * activity that should hide behind a toggle.
  */
-export function renderStreamEvent(event: unknown): ReactNode {
+export function renderStreamEvent(event: unknown): RenderedEvent {
   if (!event || typeof event !== "object") {
-    return h(
-      "code",
-      { className: "text-xs opacity-70" },
-      String(event),
-    );
+    return {
+      primary: null,
+      secondary: h(
+        "code",
+        { className: "text-xs opacity-70" },
+        String(event),
+      ),
+    };
   }
 
   const e = event as Record<string, unknown>;
@@ -22,18 +32,24 @@ export function renderStreamEvent(event: unknown): ReactNode {
 
   // Backend escape hatches first.
   if (type === "_stderr") {
-    return h(
-      "div",
-      { className: "rounded bg-destructive/10 px-2 py-1 font-mono text-xs whitespace-pre-wrap text-destructive" },
-      `stderr: ${String(e.text ?? "")}`,
-    );
+    return {
+      primary: null,
+      secondary: h(
+        "div",
+        { className: "rounded bg-destructive/10 px-2 py-1 font-mono text-xs whitespace-pre-wrap text-destructive" },
+        `stderr: ${String(e.text ?? "")}`,
+      ),
+    };
   }
   if (type === "_invalid_json") {
-    return h(
-      "div",
-      { className: "rounded bg-muted px-2 py-1 font-mono text-xs opacity-70" },
-      `invalid stream-json line: ${String(e.raw ?? "")}`,
-    );
+    return {
+      primary: null,
+      secondary: h(
+        "div",
+        { className: "rounded bg-muted px-2 py-1 font-mono text-xs opacity-70" },
+        `invalid stream-json line: ${String(e.raw ?? "")}`,
+      ),
+    };
   }
 
   // Claude Code stream-json shapes:
@@ -42,22 +58,26 @@ export function renderStreamEvent(event: unknown): ReactNode {
   //   {type:"user", message:{content:[{type:"tool_result",content,is_error}]}}
   //   {type:"result", ...}
   if (type === "system") {
-    if (e.subtype === "init") return null;
-    return h(
-      "div",
-      { className: "text-xs opacity-60" },
-      `system: ${String(e.subtype ?? "")}`,
-    );
+    if (e.subtype === "init") return EMPTY;
+    return {
+      primary: null,
+      secondary: h(
+        "div",
+        { className: "text-xs opacity-60" },
+        `system: ${String(e.subtype ?? "")}`,
+      ),
+    };
   }
 
   if (type === "assistant") {
     const message = e.message as Record<string, unknown> | undefined;
     const content = (message?.content ?? []) as Array<Record<string, unknown>>;
-    const blocks: ReactNode[] = [];
+    const textBlocks: ReactNode[] = [];
+    const toolBlocks: ReactNode[] = [];
     content.forEach((block, i) => {
       const btype = String(block.type ?? "");
       if (btype === "text") {
-        blocks.push(
+        textBlocks.push(
           h(
             "div",
             { key: `t${i}`, className: "whitespace-pre-wrap" },
@@ -67,7 +87,7 @@ export function renderStreamEvent(event: unknown): ReactNode {
       } else if (btype === "tool_use") {
         const name = String(block.name ?? "?");
         const input = block.input ?? {};
-        blocks.push(
+        toolBlocks.push(
           h(
             "div",
             {
@@ -78,7 +98,7 @@ export function renderStreamEvent(event: unknown): ReactNode {
           ),
         );
       } else {
-        blocks.push(
+        toolBlocks.push(
           h(
             "div",
             { key: `o${i}`, className: "text-xs opacity-60" },
@@ -87,7 +107,14 @@ export function renderStreamEvent(event: unknown): ReactNode {
         );
       }
     });
-    return h("div", { className: "space-y-1" }, ...blocks);
+    return {
+      primary: textBlocks.length
+        ? h("div", { className: "space-y-1" }, ...textBlocks)
+        : null,
+      secondary: toolBlocks.length
+        ? h("div", { className: "space-y-1" }, ...toolBlocks)
+        : null,
+    };
   }
 
   if (type === "user") {
@@ -126,24 +153,36 @@ export function renderStreamEvent(event: unknown): ReactNode {
         );
       }
     });
-    return h("div", { className: "space-y-1" }, ...blocks);
+    return {
+      primary: null,
+      secondary: blocks.length
+        ? h("div", { className: "space-y-1" }, ...blocks)
+        : null,
+    };
   }
 
   if (type === "result") {
     const result = String((e as Record<string, unknown>).result ?? "");
-    return h(
-      "div",
-      { className: "text-xs opacity-60 pt-1 border-t mt-2" },
-      result ? `done — ${result.slice(0, 200)}` : "done",
-    );
+    return {
+      primary: null,
+      secondary: h(
+        "div",
+        { className: "text-xs opacity-60" },
+        result ? `done — ${result.slice(0, 200)}` : "done",
+      ),
+    };
   }
 
-  // Unknown event — keep visible so we don't silently drop things.
-  return h(
-    "div",
-    { className: "text-xs opacity-50 font-mono" },
-    `${type}: ${JSON.stringify(e).slice(0, 200)}`,
-  );
+  // Unknown event — keep visible (in the secondary bucket) so we don't
+  // silently drop things if the wire format gains a new shape.
+  return {
+    primary: null,
+    secondary: h(
+      "div",
+      { className: "text-xs opacity-50 font-mono" },
+      `${type}: ${JSON.stringify(e).slice(0, 200)}`,
+    ),
+  };
 }
 
 function summarizeInput(input: unknown): string {
