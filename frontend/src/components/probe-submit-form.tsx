@@ -264,6 +264,12 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     useState<EvaluationMetric>("none");
   const [modalRatioUnit, setModalRatioUnit] = useState("");
   const [modalRatioVerb, setModalRatioVerb] = useState("");
+  const [modalPriorEnabled, setModalPriorEnabled] = useState(false);
+  const [modalPriorMode, setModalPriorMode] =
+    useState<"last_n" | "all" | "since_date">("last_n");
+  const [modalPriorLastN, setModalPriorLastN] = useState(5);
+  const [modalPriorSinceDate, setModalPriorSinceDate] = useState("");
+  const [modalPriorMaxAttempts, setModalPriorMaxAttempts] = useState(50);
 
   const selectedPreset =
     presets.find((p) => p.id === selectedPresetId) ?? null;
@@ -309,6 +315,11 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     setModalEvaluationMetric("none");
     setModalRatioUnit("attempt");
     setModalRatioVerb("succeeded");
+    setModalPriorEnabled(false);
+    setModalPriorMode("last_n");
+    setModalPriorLastN(5);
+    setModalPriorSinceDate("");
+    setModalPriorMaxAttempts(50);
     setModalOpen(true);
   }
 
@@ -323,6 +334,12 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     setModalEvaluationMetric(selectedPreset.evaluation_metric ?? "none");
     setModalRatioUnit(selectedPreset.ratio_unit ?? "");
     setModalRatioVerb(selectedPreset.ratio_verb ?? "");
+    const cfg = selectedPreset.include_prior_attempts ?? null;
+    setModalPriorEnabled(Boolean(cfg?.enabled));
+    setModalPriorMode(cfg?.mode ?? "last_n");
+    setModalPriorLastN(cfg?.last_n ?? 5);
+    setModalPriorSinceDate(cfg?.since_date ?? "");
+    setModalPriorMaxAttempts(cfg?.max_attempts ?? 50);
     setModalOpen(true);
   }
 
@@ -365,6 +382,16 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
         modalEvaluationMetric === "ratio"
           ? modalRatioVerb.trim() || null
           : null,
+      include_prior_attempts: modalPriorEnabled
+        ? {
+            enabled: true,
+            mode: modalPriorMode,
+            last_n: modalPriorMode === "last_n" ? modalPriorLastN : undefined,
+            since_date:
+              modalPriorMode === "since_date" ? modalPriorSinceDate : undefined,
+            max_attempts: modalPriorMaxAttempts,
+          }
+        : null,
       is_seed: false,
       created_at:
         existingForId && !existingForId.is_seed
@@ -635,6 +662,81 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
                 </label>
               </div>
             ) : null}
+            <div className="rounded border bg-muted/20 p-3 space-y-3">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={modalPriorEnabled}
+                  onChange={(e) => setModalPriorEnabled(e.target.checked)}
+                />
+                <span className="text-sm font-medium">
+                  Include prior failed attempts in agent context
+                </span>
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Pulls failed attempts from prior trials of THIS task using
+                THIS preset.
+              </p>
+              {modalPriorEnabled ? (
+                <div className="space-y-2">
+                  <label className="block">
+                    <span className="text-xs font-medium">Mode</span>
+                    <select
+                      value={modalPriorMode}
+                      onChange={(e) =>
+                        setModalPriorMode(
+                          e.target.value as "last_n" | "all" | "since_date",
+                        )
+                      }
+                      className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+                    >
+                      <option value="last_n">Last N runs</option>
+                      <option value="all">All runs</option>
+                      <option value="since_date">Since date</option>
+                    </select>
+                  </label>
+                  {modalPriorMode === "last_n" ? (
+                    <label className="block">
+                      <span className="text-xs font-medium">N (most recent runs)</span>
+                      <input
+                        type="number"
+                        min={1}
+                        value={modalPriorLastN}
+                        onChange={(e) =>
+                          setModalPriorLastN(Number(e.target.value) || 1)
+                        }
+                        className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+                      />
+                    </label>
+                  ) : null}
+                  {modalPriorMode === "since_date" ? (
+                    <label className="block">
+                      <span className="text-xs font-medium">Since (YYYY-MM-DD)</span>
+                      <input
+                        type="date"
+                        value={modalPriorSinceDate}
+                        onChange={(e) => setModalPriorSinceDate(e.target.value)}
+                        className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+                      />
+                    </label>
+                  ) : null}
+                  <label className="block">
+                    <span className="text-xs font-medium">
+                      Max attempts (hard cap)
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={modalPriorMaxAttempts}
+                      onChange={(e) =>
+                        setModalPriorMaxAttempts(Number(e.target.value) || 1)
+                      }
+                      className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+                    />
+                  </label>
+                </div>
+              ) : null}
+            </div>
           </div>
           <DialogFooter>
             <button
