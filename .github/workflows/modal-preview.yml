@@ -1,57 +1,84 @@
 name: Modal Preview
 
+# Previews are on-demand. Comment `/preview` on a PR (or run via
+# workflow_dispatch with the PR number) to spin up a per-PR Supabase
+# branch + Modal app and re-point the Vercel preview at it. The PR's
+# default Vercel preview otherwise just uses the project-wide prod
+# `NEXT_PUBLIC_API_URL`.
 on:
+  issue_comment:
+    types: [created]
   pull_request:
-    types:
-      - opened
-      - reopened
-      - synchronize
-      - closed
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to preview
+        required: true
 
 concurrency:
-  group: modal-preview-${{ github.event.pull_request.number }}
+  group: modal-preview-${{ github.event.issue.number || github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
-  changes:
-    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+  preflight:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment'
+        && github.event.issue.pull_request != null
+        && startsWith(github.event.comment.body, '/preview')
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
     outputs:
-      db: ${{ steps.f.outputs.db }}
-      backend: ${{ steps.f.outputs.backend }}
+      pr_number: ${{ steps.pr.outputs.pr_number }}
+      head_ref: ${{ steps.pr.outputs.head_ref }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      head_repo: ${{ steps.pr.outputs.head_repo }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: f
+      - uses: actions/github-script@v7
+        id: pr
         with:
-          filters: |
-            db: ['backend/alembic/**', 'oddish/alembic/**', 'supabase/migrations/**', 'supabase/config.toml']
-            backend: ['backend/**', 'oddish/**', 'supabase/**', '.github/workflows/modal-preview.yml', '.github/scripts/preview/**']
+          script: |
+            const num = context.eventName === 'workflow_dispatch'
+              ? Number(context.payload.inputs.pr_number)
+              : context.payload.issue.number;
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner, repo: context.repo.repo, pull_number: num,
+            });
+            core.setOutput('pr_number', num);
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('head_repo', pr.head.repo.full_name);
+            if (context.eventName === 'issue_comment') {
+              await github.rest.reactions.createForIssueComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: context.payload.comment.id, content: 'eyes',
+              });
+            }
 
   deploy-preview:
-    needs: changes
+    needs: preflight
+    if: needs.preflight.outputs.head_repo == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: write
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       MODAL_ENVIRONMENT: preview
-      MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
+      MODAL_APP_NAME: oddish-pr-${{ needs.preflight.outputs.pr_number }}
       MODAL_SECRET_ENVIRONMENT: main
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
-      VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
-      DB_CHANGED: ${{ needs.changes.outputs.db }}
-      BACKEND_CHANGED: ${{ needs.changes.outputs.backend }}
-      PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
-      PROD_API_URL: ${{ vars.PROD_API_URL }}
+      VERCEL_GIT_BRANCH: ${{ needs.preflight.outputs.head_ref }}
+      VERCEL_GIT_COMMIT_SHA: ${{ needs.preflight.outputs.head_sha }}
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_API_MAX_CONTAINERS: "2"
@@ -63,44 +90,33 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head_sha }}
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
 
-      - if: env.BACKEND_CHANGED == 'true'
-        uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v4
 
-      - if: env.DB_CHANGED == 'true'
-        uses: supabase/setup-cli@v1
+      - uses: supabase/setup-cli@v1
         with:
           version: latest
 
       - name: Wait for Supabase preview branch
         id: supabase_branch
-        if: env.DB_CHANGED == 'true'
         working-directory: ${{ github.workspace }}
         env:
-          GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GIT_BRANCH: ${{ needs.preflight.outputs.head_ref }}
+          PR_NUMBER: ${{ needs.preflight.outputs.pr_number }}
         run: .github/scripts/preview/wait_for_supabase_branch.sh
 
-      - name: Use production database (no schema changes in PR)
-        if: env.BACKEND_CHANGED == 'true' && env.DB_CHANGED != 'true'
-        run: |
-          [ -n "$PROD_DATABASE_URL" ] || { echo "::error::secrets.PROD_DATABASE_URL required when no DB changes are in the PR"; exit 1; }
-          echo "ODDISH_DATABASE_URL=$PROD_DATABASE_URL" >> "$GITHUB_ENV"
+      - run: uv sync --frozen
 
-      - if: env.BACKEND_CHANGED == 'true'
-        run: uv sync --frozen
-
-      - name: Bootstrap preview database
-        if: env.DB_CHANGED == 'true'
-        run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_preview_db.py"
+      - run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_preview_db.py"
 
       - name: Deploy preview backend
         id: deploy_modal
-        if: env.BACKEND_CHANGED == 'true'
         run: |
           uv run modal secret create --env "$MODAL_ENVIRONMENT" --force \
             "$MODAL_APP_NAME-db" "ODDISH_DATABASE_URL=$ODDISH_DATABASE_URL"
@@ -119,7 +135,6 @@ jobs:
 
       - name: Wait for preview backend readiness
         id: readiness
-        if: env.BACKEND_CHANGED == 'true'
         run: |
           python - "${{ steps.deploy_modal.outputs.modal_api_url }}" <<'PY'
           import sys, time, urllib.request
@@ -134,33 +149,11 @@ jobs:
           raise SystemExit(f"Modal preview never ready at {url}: {err}")
           PY
 
-      - name: Dump Modal preview logs on readiness failure
-        if: ${{ failure() && steps.readiness.conclusion == 'failure' }}
+      - if: ${{ failure() && steps.readiness.conclusion == 'failure' }}
         continue-on-error: true
         # `modal app logs` streams forever; bound it. `--env` is needed
         # because the CLI ignores MODAL_ENVIRONMENT for this subcommand.
         run: timeout --preserve-status 45s uv run modal app logs --env "$MODAL_ENVIRONMENT" --timestamps "$MODAL_APP_NAME" 2>&1 | tail -300 || true
-
-      # Backend untouched in this PR — tear down any per-PR Modal app left
-      # over from an earlier push so the Vercel preview can't point at a
-      # dead URL, and below we route Vercel back to prod.
-      - name: Tear down stale per-PR Modal app
-        if: env.BACKEND_CHANGED != 'true'
-        continue-on-error: true
-        run: |
-          python -m pip install --quiet modal
-          modal app stop "$MODAL_APP_NAME" || true
-          modal secret delete --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME-db" || true
-
-      - name: Resolve Vercel API target (preview vs prod)
-        id: api_url
-        run: |
-          if [ "$BACKEND_CHANGED" = "true" ]; then
-            echo "url=${{ steps.deploy_modal.outputs.modal_api_url }}" >> "$GITHUB_OUTPUT"
-          else
-            [ -n "$PROD_API_URL" ] || { echo "::error::vars.PROD_API_URL required when no backend changes are in the PR"; exit 1; }
-            echo "url=$PROD_API_URL" >> "$GITHUB_OUTPUT"
-          fi
 
       - if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         uses: actions/setup-node@v4
@@ -174,17 +167,14 @@ jobs:
         working-directory: frontend
         run: vercel pull --yes --environment=preview --git-branch="$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
 
-      - name: Set Vercel preview NEXT_PUBLIC_API_URL
+      - name: Point Vercel preview at Modal preview
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         working-directory: frontend
         env:
-          API_URL: ${{ steps.api_url.outputs.url }}
-        # NEXT_PUBLIC_API_URL is the only backend URL the frontend reads
-        # (frontend/src/lib/backend-config.ts). Always rewrite so we can't
-        # ship a frontend pointing at a stopped Modal app from a prior push.
+          MODAL_API_URL: ${{ steps.deploy_modal.outputs.modal_api_url }}
         run: |
           vercel env rm NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-          printf '%s' "$API_URL" | vercel env add NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --force --no-sensitive --token="$VERCEL_TOKEN"
+          printf '%s' "$MODAL_API_URL" | vercel env add NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --force --no-sensitive --token="$VERCEL_TOKEN"
 
       - name: Redeploy Vercel preview with updated env
         id: redeploy_vercel
@@ -219,24 +209,28 @@ jobs:
           preview_url="$(printf '%s' "$redeploy_json" | python -c 'import json,sys; print("https://" + json.load(sys.stdin)["url"])')"
           echo "preview_url=$preview_url" >> "$GITHUB_OUTPUT"
 
-      - name: Summarize preview URLs
+      - name: Comment preview URLs on PR
         if: ${{ always() }}
-        run: |
-          {
-            echo "## Preview deployment"
-            echo
-            echo "- Vercel API target: ${{ steps.api_url.outputs.url }} ($([ "$BACKEND_CHANGED" = "true" ] && echo "per-PR Modal" || echo "prod"))"
-            if [ -n "${{ steps.redeploy_vercel.outputs.preview_url }}" ]; then echo "- Vercel preview: ${{ steps.redeploy_vercel.outputs.preview_url }}"; fi
-            if [ "$DB_CHANGED" = "true" ]; then
-              echo "- Supabase branch: \`${{ steps.supabase_branch.outputs.branch_ref }}\`"
-            else
-              echo "- Database: production (no schema changes in PR)"
-            fi
-            echo "- PR head SHA: ${{ github.event.pull_request.head.sha }}"
-          } >> "$GITHUB_STEP_SUMMARY"
+        uses: actions/github-script@v7
+        env:
+          MODAL_URL: ${{ steps.deploy_modal.outputs.modal_api_url }}
+          VERCEL_URL: ${{ steps.redeploy_vercel.outputs.preview_url }}
+          BRANCH_REF: ${{ steps.supabase_branch.outputs.branch_ref }}
+          STATUS: ${{ job.status }}
+        with:
+          script: |
+            const lines = [`**Preview** (${process.env.STATUS}) for ${context.sha.slice(0, 7)}:`];
+            if (process.env.MODAL_URL) lines.push(`- Modal API: ${process.env.MODAL_URL}`);
+            if (process.env.VERCEL_URL) lines.push(`- Vercel: ${process.env.VERCEL_URL}`);
+            if (process.env.BRANCH_REF) lines.push(`- Supabase branch: \`${process.env.BRANCH_REF}\``);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: ${{ needs.preflight.outputs.pr_number }},
+              body: lines.join('\n'),
+            });
 
   stop-preview:
-    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
