@@ -13,6 +13,13 @@ type AgentMessage = {
   is_error?: boolean;
 };
 
+type Attempt = {
+  title?: string;
+  rationale?: string;
+  outcome?: string;
+  step_indices?: number[];
+};
+
 type FreeformSummary = {
   kind?: string;
   headline?: string;
@@ -21,6 +28,7 @@ type FreeformSummary = {
   cheating_attempted?: boolean | null;
   cheating_succeeded?: boolean | null;
   evidence?: string;
+  attempts?: Attempt[];
   model?: string;
   generated_at?: string;
 };
@@ -278,18 +286,142 @@ export default function FreeformResultPage({
         </h2>
         {messages.length === 0 ? (
           <p className="text-xs text-muted-foreground">(no messages yet)</p>
+        ) : summary?.attempts && summary.attempts.length > 0 ? (
+          (() => {
+            const claimed = new Set<number>();
+            for (const a of summary.attempts ?? []) {
+              for (const idx of a.step_indices ?? []) {
+                if (
+                  Number.isInteger(idx) &&
+                  idx >= 0 &&
+                  idx < messages.length
+                ) {
+                  claimed.add(idx);
+                }
+              }
+            }
+            const ungrouped = messages
+              .map((m, i) => ({ m, i }))
+              .filter(({ i }) => !claimed.has(i));
+            return (
+              <div className="space-y-3">
+                {(summary.attempts ?? []).map((attempt, attemptIdx) => {
+                  const indices = (attempt.step_indices ?? []).filter(
+                    (idx) =>
+                      Number.isInteger(idx) &&
+                      idx >= 0 &&
+                      idx < messages.length,
+                  );
+                  return (
+                    <details
+                      key={attemptIdx}
+                      className="rounded border-2 border-primary/20 bg-primary/5 p-3"
+                      open={attemptIdx === 0}
+                    >
+                      <summary className="cursor-pointer">
+                        <span className="text-sm font-medium">
+                          Attempt {attemptIdx + 1}:{" "}
+                          {attempt.title || "(untitled)"}
+                        </span>
+                        <span className="ml-2 text-xs text-muted-foreground">
+                          ({indices.length} step
+                          {indices.length === 1 ? "" : "s"})
+                        </span>
+                      </summary>
+                      <div className="mt-3 space-y-2">
+                        {attempt.rationale ? (
+                          <p className="text-xs">
+                            <strong>Rationale:</strong> {attempt.rationale}
+                          </p>
+                        ) : null}
+                        {attempt.outcome ? (
+                          <p className="text-xs">
+                            <strong>Outcome:</strong> {attempt.outcome}
+                          </p>
+                        ) : null}
+                        <div className="space-y-2">
+                          {indices.map((idx) => {
+                            const m = messages[idx];
+                            return (
+                              <details
+                                key={idx}
+                                className="rounded border bg-muted/30 p-2"
+                              >
+                                <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                                  Step {idx + 1} · {m.kind}
+                                  {m.text ? (
+                                    <span className="ml-2 font-normal text-muted-foreground/80">
+                                      {m.text.slice(0, 80)}
+                                      {m.text.length > 80 ? "…" : ""}
+                                    </span>
+                                  ) : null}
+                                </summary>
+                                <pre
+                                  className={`mt-2 whitespace-pre-wrap font-mono text-xs ${m.is_error ? "text-red-500" : ""}`}
+                                >
+                                  {m.text}
+                                </pre>
+                              </details>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </details>
+                  );
+                })}
+                {ungrouped.length > 0 ? (
+                  <div className="space-y-2">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Ungrouped steps
+                    </p>
+                    <div className="space-y-2">
+                      {ungrouped.map(({ m, i }) => (
+                        <details
+                          key={i}
+                          className="rounded border bg-muted/30 p-2"
+                        >
+                          <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                            Step {i + 1} · {m.kind}
+                            {m.text ? (
+                              <span className="ml-2 font-normal text-muted-foreground/80">
+                                {m.text.slice(0, 80)}
+                                {m.text.length > 80 ? "…" : ""}
+                              </span>
+                            ) : null}
+                          </summary>
+                          <pre
+                            className={`mt-2 whitespace-pre-wrap font-mono text-xs ${m.is_error ? "text-red-500" : ""}`}
+                          >
+                            {m.text}
+                          </pre>
+                        </details>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })()
         ) : (
-          <ol className="space-y-3 text-sm">
+          <ol className="space-y-2 text-sm">
             {messages.map((m, i) => (
-              <li key={i} className="border-l-2 border-muted pl-3">
-                <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
-                  Step {i + 1} · {m.kind}
-                </div>
-                <div
-                  className={`whitespace-pre-wrap font-mono text-xs ${m.is_error ? "text-red-500" : ""}`}
-                >
-                  {m.text}
-                </div>
+              <li key={i}>
+                <details className="rounded border bg-muted/30 p-2">
+                  <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                    Step {i + 1} · {m.kind}
+                    {m.text ? (
+                      <span className="ml-2 font-normal text-muted-foreground/80">
+                        {m.text.slice(0, 80)}
+                        {m.text.length > 80 ? "…" : ""}
+                      </span>
+                    ) : null}
+                  </summary>
+                  <pre
+                    className={`mt-2 whitespace-pre-wrap font-mono text-xs ${m.is_error ? "text-red-500" : ""}`}
+                  >
+                    {m.text}
+                  </pre>
+                </details>
               </li>
             ))}
           </ol>
