@@ -181,6 +181,35 @@ class TaskSubmission(BaseModel):
         None,
         description="Deterministic hash of task directory contents (set by CLI during upload)",
     )
+    extra_instructions: str | None = Field(
+        default=None,
+        description=(
+            "Operator-supplied prompt content to prepend to the task's instruction "
+            "for every trial in this submission. Used for probe / adversarial probes."
+        ),
+    )
+    result_focus: str | None = Field(
+        default=None,
+        description=(
+            "Optional question the operator wants answered about this trial. "
+            "The analyzer answers it in its result_focus_findings field."
+        ),
+    )
+    evaluation_metric: str | None = Field(
+        default=None,
+        description=(
+            "How to render the trial's result. One of 'cheat_ratio', "
+            "'result_focus', 'none'. Default null = no specific metric."
+        ),
+    )
+    ratio_unit: str | None = Field(
+        default=None,
+        description="Noun (singular) for what's counted in a ratio metric, e.g. 'cheat', 'bug'.",
+    )
+    ratio_verb: str | None = Field(
+        default=None,
+        description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
+    )
 
     @model_validator(mode="after")
     def require_models(self):
@@ -230,6 +259,35 @@ class TaskSweepSubmission(BaseModel):
 
     configs: list[AgentModelPair] = Field(
         ..., description="List of agent/model pairs with individual trial counts"
+    )
+    extra_instructions: str | None = Field(
+        default=None,
+        description=(
+            "Operator-supplied prompt content to prepend to the task's instruction "
+            "for every trial in this submission. Used for probe / adversarial probes."
+        ),
+    )
+    result_focus: str | None = Field(
+        default=None,
+        description=(
+            "Optional question the operator wants answered about this trial. "
+            "The analyzer answers it in its result_focus_findings field."
+        ),
+    )
+    evaluation_metric: str | None = Field(
+        default=None,
+        description=(
+            "How to render the trial's result. One of 'cheat_ratio', "
+            "'result_focus', 'none'. Default null = no specific metric."
+        ),
+    )
+    ratio_unit: str | None = Field(
+        default=None,
+        description="Noun (singular) for what's counted in a ratio metric, e.g. 'cheat', 'bug'.",
+    )
+    ratio_verb: str | None = Field(
+        default=None,
+        description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
     )
 
     # Common fields
@@ -463,6 +521,14 @@ class TrialResponse(BaseModel):
     )
     error_message: str | None
     result: dict | None
+    harbor_config: dict | None = Field(
+        None,
+        description=(
+            "Harbor passthrough config (agent env/kwargs, environment "
+            "resources, probe mode marker, extra_instructions, etc.). "
+            "Surfaced for clients that need to render mode-specific UI."
+        ),
+    )
 
     # Token usage & cost
     input_tokens: int | None = Field(
