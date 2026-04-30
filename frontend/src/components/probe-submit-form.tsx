@@ -457,6 +457,8 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
           evaluation_metric: selectedPreset?.evaluation_metric ?? null,
           ratio_unit: selectedPreset?.ratio_unit ?? null,
           ratio_verb: selectedPreset?.ratio_verb ?? null,
+          preset_name: selectedPreset?.name ?? null,
+          prior_attempts_config: selectedPreset?.include_prior_attempts ?? null,
         }),
       });
       if (!res.ok) {
