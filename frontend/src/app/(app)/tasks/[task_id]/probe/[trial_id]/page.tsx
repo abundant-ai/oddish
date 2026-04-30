@@ -234,17 +234,51 @@ export default function ProbeResultPage({
               </span>
             </div>
           </div>
-          {summary.result_focus_question && summary.result_focus_findings ? (
-            <div className="rounded border-2 border-amber-500/30 bg-amber-500/5 p-3 mb-2 space-y-2">
-              <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
-                Result focus
-              </p>
-              <p className="text-sm font-medium italic">
-                {summary.result_focus_question}
-              </p>
-              <p className="text-sm">{summary.result_focus_findings}</p>
-            </div>
-          ) : null}
+          {(() => {
+            const metric =
+              trial.harbor_config?.evaluation_metric ?? "none";
+            // Always render the result_focus block when metric is result_focus,
+            // even if findings are missing — show an "awaiting answer" placeholder.
+            if (metric === "result_focus") {
+              return (
+                <div className="rounded border-2 border-amber-500/30 bg-amber-500/5 p-3 mb-2 space-y-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
+                    Result focus
+                  </p>
+                  {summary.result_focus_question ? (
+                    <p className="text-sm font-medium italic">
+                      {summary.result_focus_question}
+                    </p>
+                  ) : null}
+                  {summary.result_focus_findings ? (
+                    <p className="text-sm">{summary.result_focus_findings}</p>
+                  ) : (
+                    <p className="text-sm text-muted-foreground italic">
+                      awaiting answer
+                    </p>
+                  )}
+                </div>
+              );
+            }
+            // Legacy path: show findings if both question and findings present
+            if (
+              summary.result_focus_question &&
+              summary.result_focus_findings
+            ) {
+              return (
+                <div className="rounded border-2 border-amber-500/30 bg-amber-500/5 p-3 mb-2 space-y-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
+                    Result focus
+                  </p>
+                  <p className="text-sm font-medium italic">
+                    {summary.result_focus_question}
+                  </p>
+                  <p className="text-sm">{summary.result_focus_findings}</p>
+                </div>
+              );
+            }
+            return null;
+          })()}
           {summary.headline ? (
             <p className="text-base font-medium leading-snug">
               {summary.headline}
@@ -282,11 +316,58 @@ export default function ProbeResultPage({
             </div>
           ) : null}
           {(() => {
+            const metric =
+              trial.harbor_config?.evaluation_metric ?? "none";
+            // For cheat_ratio probes, render the breakdown chips even when
+            // attempts is missing/empty so the column shape is consistent.
             const all = summary.attempts ?? [];
             const succeeded = all.filter((a) => a.success === true).length;
             const blocked = all.filter((a) => a.success === false).length;
             const investigation = all.length - succeeded - blocked;
             const cheatTotal = succeeded + blocked;
+
+            if (metric === "cheat_ratio") {
+              return (
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span
+                    className={`rounded px-2 py-1 font-medium ${
+                      succeeded > 0
+                        ? "bg-red-500/15 text-red-600"
+                        : "bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    {succeeded} cheat{succeeded === 1 ? "" : "s"} succeeded
+                  </span>
+                  <span
+                    className={`rounded px-2 py-1 font-medium ${
+                      blocked > 0
+                        ? "bg-emerald-500/15 text-emerald-700"
+                        : "bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    {blocked} blocked
+                  </span>
+                  {investigation > 0 ? (
+                    <span className="rounded bg-muted px-2 py-1 font-medium text-muted-foreground">
+                      {investigation} investigation step
+                      {investigation === 1 ? "" : "s"}
+                    </span>
+                  ) : null}
+                  {cheatTotal > 0 ? (
+                    <span className="text-muted-foreground">
+                      {succeeded > 0
+                        ? "task is gameable"
+                        : "task is robust to attempted cheats"}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground italic">
+                      no cheat attempts identified
+                    </span>
+                  )}
+                </div>
+              );
+            }
+
             if (cheatTotal === 0 && investigation === 0) return null;
             return (
               <div className="flex flex-wrap items-center gap-2 text-xs">
