@@ -138,6 +138,8 @@ class RealDaytonaClient:
         last_stderr_len = 0
         polls = 0
         last_progress_poll = 0
+        consecutive_errors = 0
+        max_consecutive_errors = 10  # ~5s of failures at 500ms poll
         logger.info(
             "stream_logs: cmd=%s polling started (interval=%ss)",
             cmd_id,
@@ -149,11 +151,21 @@ class RealDaytonaClient:
                 logs = await process.get_session_command_logs(
                     daytona_session_id, cmd_id
                 )
+                consecutive_errors = 0
             except Exception:
-                logger.exception(
-                    "stream_logs: log fetch failed cmd=%s; will retry",
+                consecutive_errors += 1
+                logger.warning(
+                    "stream_logs: log fetch failed cmd=%s (errors=%d/%d)",
                     cmd_id,
+                    consecutive_errors,
+                    max_consecutive_errors,
                 )
+                if consecutive_errors >= max_consecutive_errors:
+                    # Sandbox almost certainly gone (deleted on session
+                    # close, auto-stopped, or crashed). Stop polling so
+                    # the caller can finalize the SSE stream instead of
+                    # spamming Daytona forever.
+                    raise
                 await asyncio.sleep(poll_interval)
                 continue
 
@@ -170,11 +182,17 @@ class RealDaytonaClient:
                 cmd = await process.get_session_command(
                     daytona_session_id, cmd_id
                 )
+                consecutive_errors = 0
             except Exception:
-                logger.exception(
-                    "stream_logs: status fetch failed cmd=%s; will retry",
+                consecutive_errors += 1
+                logger.warning(
+                    "stream_logs: status fetch failed cmd=%s (errors=%d/%d)",
                     cmd_id,
+                    consecutive_errors,
+                    max_consecutive_errors,
                 )
+                if consecutive_errors >= max_consecutive_errors:
+                    raise
                 await asyncio.sleep(poll_interval)
                 continue
 
