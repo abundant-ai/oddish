@@ -4,7 +4,6 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from oddish.core.endpoints import (
-    delete_trial_core,
     get_trial_by_index_core,
     get_task_for_org_core,
     get_trial_for_org_core,
@@ -27,12 +26,11 @@ from oddish.core.public_helpers import (
     list_task_trials_for_task,
     list_trial_files_s3,
 )
-from auth import APIKeyScope, AuthContext, require_admin, require_auth
+from auth import APIKeyScope, AuthContext, require_auth
 from oddish.db import (
     TrialModel,
     get_session,
 )
-from oddish.db.storage import delete_s3_prefixes
 from oddish.schemas import (
     TrialImportCompleteRequest,
     TrialImportCompleteResponse,
@@ -119,26 +117,6 @@ async def finalize_trial_import(
         trial_id=payload.trial_id,
         org_id=auth.org_id,
     )
-
-
-@router.delete("/trials/{trial_id}")
-async def delete_trial(
-    trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_admin)],
-) -> dict:
-    """Delete a single trial and its associated S3 artifacts."""
-
-    async with get_session() as session:
-        result = await delete_trial_core(session, trial_id=trial_id, org_id=auth.org_id)
-        await session.commit()
-
-    if result.get("s3_prefixes"):
-        try:
-            await delete_s3_prefixes(result["s3_prefixes"])
-        except Exception:
-            logger.exception("Failed to delete S3 artifacts for trial %s", trial_id)
-
-    return {"status": "success", "deleted": result["deleted"]}
 
 
 @router.post("/trials/{trial_id}/retry")

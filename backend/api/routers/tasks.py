@@ -16,8 +16,6 @@ from cloud_policy import (
 from oddish.core.endpoints import (
     browse_tasks_core,
     create_task_sweep_core,
-    delete_experiment_core,
-    delete_task_core,
     get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
@@ -47,7 +45,6 @@ from oddish.db import (
     TaskModel,
     get_session,
 )
-from oddish.db.storage import delete_s3_prefixes
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
 from oddish.queue import (
     cancel_tasks_runs,
@@ -454,34 +451,6 @@ async def unpublish_experiment(
         )
 
 
-@router.delete("/experiments/{experiment_id}")
-async def delete_experiment(
-    experiment_id: str,
-    auth: Annotated[AuthContext, Depends(require_admin)],
-) -> dict:
-    """Delete an experiment and all associated tasks/trials."""
-
-    async with get_session() as session:
-        result = await delete_experiment_core(
-            session, experiment_id=experiment_id, org_id=auth.org_id
-        )
-        await session.commit()
-
-    if result.get("s3_prefixes"):
-        try:
-            await delete_s3_prefixes(result["s3_prefixes"])
-        except Exception:
-            logger.exception(
-                "Failed to delete S3 artifacts for experiment %s", experiment_id
-            )
-
-    return {
-        "status": "success",
-        "message": "Experiment deleted",
-        "deleted": result["deleted"],
-    }
-
-
 @router.post("/tasks/cancel")
 async def cancel_tasks(
     payload: TaskBatchCancelRequest,
@@ -511,26 +480,6 @@ async def cancel_tasks(
         "trials_cancelled": result.get("trials_cancelled", 0),
         "modal_calls_cancelled": modal_cancelled,
     }
-
-
-@router.delete("/tasks/{task_id}")
-async def delete_task(
-    task_id: str,
-    auth: Annotated[AuthContext, Depends(require_admin)],
-) -> dict:
-    """Delete a task and its trials."""
-
-    async with get_session() as session:
-        result = await delete_task_core(session, task_id=task_id, org_id=auth.org_id)
-        await session.commit()
-
-    if result.get("s3_prefixes"):
-        try:
-            await delete_s3_prefixes(result["s3_prefixes"])
-        except Exception:
-            logger.exception("Failed to delete S3 artifacts for task %s", task_id)
-
-    return {"status": "success", "deleted": result["deleted"]}
 
 
 @router.post("/tasks/{task_id}/analysis/retry")
