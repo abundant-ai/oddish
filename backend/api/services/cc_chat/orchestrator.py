@@ -9,7 +9,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import AsyncIterator
 
-from api.services.cc_chat.claude_md import render_claude_md
+from api.services.cc_chat.claude_md import (
+    render_claude_md,
+    render_probe_claude_md,
+)
 from api.services.cc_chat.daytona_client import CreatedSandbox, DaytonaClient
 from api.services.cc_chat.file_store import ExperimentFileStore
 from api.services.cc_chat.sessions import SessionRegistry, SessionState
@@ -77,6 +80,75 @@ class CCChatOrchestrator:
         self._sweeper_task: asyncio.Task[None] | None = None
 
     async def start(self, *, experiment_id: str, org_id: str) -> str:
+        """Start an experiment-scoped chat. Uploads `jobs/<exp>/<trial>/...`
+        from the configured file_store and renders the experiment CLAUDE.md."""
+        files: list[tuple[str, bytes]] = []
+        trial_ids: list[str] = []
+        async for rel, content in self._file_store.iter_files(experiment_id):
+            if _should_skip(rel):
+                continue
+            trial_id = PurePosixPath(rel).parts[0]
+            if trial_id not in trial_ids:
+                trial_ids.append(trial_id)
+            files.append((f"jobs/{experiment_id}/{rel}", content))
+
+        claude_md = render_claude_md(
+            experiment_id=experiment_id, trial_ids=trial_ids
+        )
+        return await self._provision_session(
+            scope_label=f"experiment {experiment_id}",
+            files=files,
+            claude_md_text=claude_md,
+            scope_id=experiment_id,
+            org_id=org_id,
+        )
+
+    async def start_task_probes(
+        self,
+        *,
+        task_id: str,
+        task_name: str,
+        org_id: str,
+        files: list[tuple[str, bytes]],
+        trial_ids: list[str],
+    ) -> str:
+        """Start a task-scoped chat across all probe runs of a single task.
+
+        The router is the source of truth for what's a probe trial (DB
+        query) and where the task definition lives on disk (TaskModel
+        .task_path), so it pre-builds the file list and we just provision.
+        Caller-supplied `files` are (workspace_relative_path, bytes) tuples;
+        we apply `_should_skip` here so the router doesn't have to.
+        """
+        kept = [(rel, content) for rel, content in files if not _should_skip(rel)]
+        claude_md = render_probe_claude_md(
+            task_name=task_name, trial_ids=trial_ids
+        )
+        return await self._provision_session(
+            scope_label=f"task probes {task_name} ({task_id})",
+            files=kept,
+            claude_md_text=claude_md,
+            scope_id=task_id,
+            org_id=org_id,
+        )
+
+    async def _provision_session(
+        self,
+        *,
+        scope_label: str,
+        files: list[tuple[str, bytes]],
+        claude_md_text: str,
+        scope_id: str,
+        org_id: str,
+    ) -> str:
+        """Create sandbox, install claude-code, upload files + CLAUDE.md +
+        skills, register the session. Shared by experiment and task-probe
+        entrypoints; the only thing that varies between them is which files
+        the caller passes in (and the rendered CLAUDE.md).
+
+        Files are tuples of (workspace_relative_path, bytes). E.g.
+        `("jobs/abc/result.json", b"...")` or `("task/task.toml", b"...")`.
+        """
         sandbox = await self._daytona.create_sandbox(
             env_vars={"ANTHROPIC_API_KEY": self._anthropic_api_key},
             auto_stop_minutes=self._auto_stop_minutes,
@@ -85,16 +157,20 @@ class CCChatOrchestrator:
             await self._daytona.create_session(
                 sandbox, session_id=_DAYTONA_SESSION_NAME
             )
-            # Install claude-code under a user-writable prefix. The Daytona
-            # sandbox runs as non-root, so plain `npm install -g` fails with
-            # EACCES on the system node_modules. We pin a per-user prefix and
-            # later invoke claude via its absolute path (no PATH plumbing
-            # needed across separate exec contexts).
+            # Install claude-code under a user-writable prefix. Daytona
+            # sandbox runs as non-root, so plain `npm install -g` fails
+            # EACCES on the system node_modules. Pin a per-user prefix
+            # and later invoke claude via its absolute path (no PATH
+            # plumbing needed across separate exec contexts).
             #
-            # Synchronous (top-level) exec so claude is guaranteed installed
-            # before any `claude --print` queues in the session — otherwise
-            # user messages look like 30s+ hangs.
-            logger.info("start: installing claude-code in sandbox %s", sandbox.id)
+            # Synchronous so claude is guaranteed installed before any
+            # `claude --print` queues — otherwise user messages look
+            # like 30s+ hangs.
+            logger.info(
+                "provision: %s — installing claude-code in sandbox %s",
+                scope_label,
+                sandbox.id,
+            )
             install_cmd = (
                 f"mkdir -p {_NPM_PREFIX} && "
                 f"npm config set prefix {_NPM_PREFIX} && "
@@ -104,7 +180,7 @@ class CCChatOrchestrator:
                 sandbox, command=install_cmd
             )
             logger.info(
-                "start: npm install exit=%s; tail=%s",
+                "provision: npm install exit=%s; tail=%s",
                 exit_code,
                 (output or "")[-300:],
             )
@@ -113,27 +189,12 @@ class CCChatOrchestrator:
                     f"claude-code install failed (exit={exit_code}): {output[-500:]}"
                 )
 
-            # Collect all files first so we know the total + can parallelize.
-            # Filter out artifacts that bloat upload time without helping the
-            # assistant: large binary state files and per-session noise.
-            files: list[tuple[str, bytes]] = []
-            trial_ids: list[str] = []
-            total_bytes = 0
-            async for rel, content in self._file_store.iter_files(
-                experiment_id
-            ):
-                if _should_skip(rel):
-                    continue
-                trial_id = PurePosixPath(rel).parts[0]
-                if trial_id not in trial_ids:
-                    trial_ids.append(trial_id)
-                files.append((rel, content))
-                total_bytes += len(content)
+            total_bytes = sum(len(c) for _, c in files)
             logger.info(
-                "start: uploading %d files (%.1f MB) across %d trials",
+                "provision: uploading %d files (%.1f MB) for %s",
                 len(files),
                 total_bytes / 1e6,
-                len(trial_ids),
+                scope_label,
             )
 
             # Parallelize uploads with a bounded worker pool — Daytona's
@@ -143,7 +204,7 @@ class CCChatOrchestrator:
             uploaded = [0]
 
             async def upload_one(rel: str, content: bytes) -> None:
-                dest = f"{_WORKSPACE_ROOT}/jobs/{experiment_id}/{rel}"
+                dest = f"{_WORKSPACE_ROOT}/{rel}"
                 async with sem:
                     await self._daytona.upload_file(
                         sandbox, dest_path=dest, content=content
@@ -151,22 +212,19 @@ class CCChatOrchestrator:
                 uploaded[0] += 1
                 if uploaded[0] % 25 == 0 or uploaded[0] == len(files):
                     logger.info(
-                        "start: uploaded %d/%d", uploaded[0], len(files)
+                        "provision: uploaded %d/%d", uploaded[0], len(files)
                     )
 
-            await asyncio.gather(
-                *(upload_one(rel, content) for rel, content in files)
-            )
+            if files:
+                await asyncio.gather(
+                    *(upload_one(rel, content) for rel, content in files)
+                )
 
-            claude_md = render_claude_md(
-                experiment_id=experiment_id, trial_ids=trial_ids
-            )
             await self._daytona.upload_file(
                 sandbox,
                 dest_path=f"{_WORKSPACE_ROOT}/CLAUDE.md",
-                content=claude_md.encode("utf-8"),
+                content=claude_md_text.encode("utf-8"),
             )
-
             await self._inject_skills(sandbox)
         except Exception:
             await self._daytona.delete_sandbox(sandbox)
@@ -177,7 +235,7 @@ class CCChatOrchestrator:
         self._sessions.put(
             SessionState(
                 session_id=session_id,
-                experiment_id=experiment_id,
+                experiment_id=scope_id,
                 org_id=org_id,
                 sandbox_id=sandbox.id,
                 daytona_session_id=_DAYTONA_SESSION_NAME,

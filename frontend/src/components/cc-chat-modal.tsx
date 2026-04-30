@@ -51,15 +51,35 @@ function collapseSystemRuns(events: unknown[]): RenderItem[] {
   return out;
 }
 
+export type CCChatScope =
+  | { kind: "experiment"; experimentId: string }
+  | { kind: "task"; taskId: string };
+
+function scopeBaseUrl(scope: CCChatScope): string {
+  return scope.kind === "experiment"
+    ? `/api/experiments/${encodeURIComponent(scope.experimentId)}/cc-session`
+    : `/api/tasks/${encodeURIComponent(scope.taskId)}/cc-session`;
+}
+
 export function CCChatModal({
   experimentId,
+  scope: scopeProp,
   open,
   onOpenChange,
 }: {
-  experimentId: string;
+  /** @deprecated pass `scope={{kind:"experiment",experimentId}}` instead. */
+  experimentId?: string;
+  scope?: CCChatScope;
   open: boolean;
   onOpenChange: (next: boolean) => void;
 }) {
+  const scope: CCChatScope =
+    scopeProp ??
+    (experimentId
+      ? { kind: "experiment", experimentId }
+      : { kind: "experiment", experimentId: "" });
+  const baseUrl = scopeBaseUrl(scope);
+
   const [phase, setPhase] = useState<Phase>("creating");
   const [error, setError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -71,10 +91,7 @@ export function CCChatModal({
     setPhase("creating");
     setError(null);
     try {
-      const res = await fetch(
-        `/api/experiments/${encodeURIComponent(experimentId)}/cc-session`,
-        { method: "POST" },
-      );
+      const res = await fetch(baseUrl, { method: "POST" });
       if (!res.ok) throw new Error(`start ${res.status}`);
       const data = (await res.json()) as { session_id: string };
       setSessionId(data.session_id);
@@ -83,7 +100,7 @@ export function CCChatModal({
       setError(e instanceof Error ? e.message : String(e));
       setPhase("error");
     }
-  }, [experimentId]);
+  }, [baseUrl]);
 
   useEffect(() => {
     if (!open) return;
@@ -96,9 +113,7 @@ export function CCChatModal({
   //   those don't run React unmount.
   useEffect(() => {
     if (!sessionId) return;
-    const url = `/api/experiments/${encodeURIComponent(
-      experimentId,
-    )}/cc-session/${encodeURIComponent(sessionId)}`;
+    const url = `${baseUrl}/${encodeURIComponent(sessionId)}`;
     const closeSession = () => {
       // sendBeacon is POST-only; fetch keepalive lets DELETE survive unload.
       void fetch(url, { method: "DELETE", keepalive: true });
@@ -108,7 +123,7 @@ export function CCChatModal({
       window.removeEventListener("pagehide", closeSession);
       closeSession();
     };
-  }, [experimentId, sessionId]);
+  }, [baseUrl, sessionId]);
 
   const send = useCallback(async () => {
     if (!sessionId || sendingRef.current || !draft.trim()) return;
@@ -122,9 +137,7 @@ export function CCChatModal({
     ]);
     setPhase("thinking");
 
-    const url = `/api/experiments/${encodeURIComponent(
-      experimentId,
-    )}/cc-session/${encodeURIComponent(sessionId)}/messages`;
+    const url = `${baseUrl}/${encodeURIComponent(sessionId)}/messages`;
 
     try {
       await streamCCChatMessage(url, { content }, (e) => {
@@ -150,7 +163,7 @@ export function CCChatModal({
       sendingRef.current = false;
       setPhase("idle");
     }
-  }, [draft, experimentId, sessionId]);
+  }, [baseUrl, draft, sessionId]);
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -257,9 +270,7 @@ export function CCChatModal({
             disabled={!sessionId || phase === "creating" || phase === "error"}
             onClick={() => {
               if (!sessionId) return;
-              const url = `/api/experiments/${encodeURIComponent(
-                experimentId,
-              )}/cc-session/${encodeURIComponent(sessionId)}/skills.tar.gz`;
+              const url = `${baseUrl}/${encodeURIComponent(sessionId)}/skills.tar.gz`;
               window.location.href = url;
             }}
           >

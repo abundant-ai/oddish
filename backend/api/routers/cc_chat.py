@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import and_, select
 
 from auth import APIKeyScope, AuthContext, require_auth
 
@@ -13,6 +16,10 @@ from api.services.cc_chat.orchestrator import (
     CCChatOrchestrator,
     SessionNotFound,
 )
+from oddish.db import TaskModel, TrialModel, get_session
+
+
+logger = logging.getLogger("cc_chat.router")
 
 
 router = APIRouter(tags=["CC Chat"])
@@ -134,3 +141,230 @@ async def close_session(
     orch = get_orchestrator()
     await orch.close(session_id=session_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Task-scoped cc-chat: chat across all probe runs of a single task, with the
+# task definition (task.toml, instruction.md, verifier/) uploaded alongside.
+# Useful for cheat investigations — the verifier source is the most important
+# input for judging whether a passing reward came from solving the task or
+# from gaming the verifier.
+#
+# Send / delete / skills routes mirror the experiment-scoped ones because
+# session_id is the only identifier the orchestrator needs; they're aliased
+# at the /tasks/... path so the frontend's URL space stays parallel.
+# ---------------------------------------------------------------------------
+
+# Files inside the task source dir we never want to upload (heavy, irrelevant
+# for cheat reasoning, or both).
+_TASK_DEF_SKIP_DIRS = {".git", "node_modules", "__pycache__", "dist", "build", "target"}
+
+
+def _iter_task_definition(
+    task_path: Path,
+) -> list[tuple[str, bytes]]:
+    """Walk the task source dir and return (workspace_rel_path, bytes).
+
+    Includes task.toml, instruction.md, anything under verifier/, plus
+    a small set of likely-useful root files. Skips dot-dirs and known
+    heavy build trees. Caps total payload at ~5 MB to keep upload time
+    bounded — full task source isn't needed for cheat reasoning, the
+    verifier is.
+    """
+    if not task_path.is_dir():
+        return []
+
+    out: list[tuple[str, bytes]] = []
+    total = 0
+    cap = 5 * 1024 * 1024
+    for path in sorted(task_path.rglob("*")):
+        if not path.is_file():
+            continue
+        rel_parts = path.relative_to(task_path).parts
+        if any(p in _TASK_DEF_SKIP_DIRS or p.startswith(".") for p in rel_parts):
+            continue
+        try:
+            content = path.read_bytes()
+        except OSError:
+            continue
+        if total + len(content) > cap:
+            logger.info(
+                "task definition cap %dMB hit; skipping rest of %s",
+                cap // (1024 * 1024),
+                task_path,
+            )
+            break
+        rel = "/".join(("task", *rel_parts))
+        out.append((rel, content))
+        total += len(content)
+    return out
+
+
+def _iter_trial_dir(
+    trial_root: Path, trial_id: str
+) -> list[tuple[str, bytes]]:
+    """Walk a trial result dir and return files keyed under jobs/<trial_id>/."""
+    if not trial_root.is_dir():
+        return []
+    out: list[tuple[str, bytes]] = []
+    for path in trial_root.rglob("*", recurse_symlinks=True):
+        if not path.is_file():
+            continue
+        rel_parts = path.relative_to(trial_root).parts
+        if any(p.startswith(".") for p in rel_parts):
+            continue
+        try:
+            content = path.read_bytes()
+        except OSError:
+            continue
+        rel = "/".join(("jobs", trial_id, *rel_parts))
+        out.append((rel, content))
+    return out
+
+
+@router.post(
+    "/api/tasks/{task_id}/cc-session",
+    response_model=StartResponse,
+)
+async def start_task_session(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> StartResponse:
+    auth.require_scope(APIKeyScope.READ)
+    orch = get_orchestrator()
+
+    async with get_session() as session:
+        task = (
+            await session.execute(
+                select(TaskModel).where(TaskModel.id == task_id)
+            )
+        ).scalar_one_or_none()
+        if task is None:
+            raise HTTPException(status_code=404, detail="task_not_found")
+        if task.org_id is not None and task.org_id != auth.org_id:
+            raise HTTPException(status_code=403, detail="org_mismatch")
+
+        trials_q = (
+            select(TrialModel)
+            .where(TrialModel.task_id == task_id)
+            .order_by(TrialModel.started_at.desc())
+        )
+        trials = (await session.execute(trials_q)).scalars().all()
+
+    # Filter to probe trials only (harbor_config.mode == "probe"). Skip
+    # trials with no harbor_result_path on disk — nothing to upload.
+    probe_trials = [
+        t for t in trials
+        if (t.harbor_config or {}).get("mode") == "probe"
+        and t.harbor_result_path
+    ]
+    if not probe_trials:
+        raise HTTPException(
+            status_code=400,
+            detail="no_probe_trials_with_artifacts",
+        )
+
+    files: list[tuple[str, bytes]] = []
+    trial_ids: list[str] = []
+    for trial in probe_trials:
+        trial_root = Path(trial.harbor_result_path)
+        per_trial = _iter_trial_dir(trial_root, trial.id)
+        if not per_trial:
+            continue
+        files.extend(per_trial)
+        trial_ids.append(trial.id)
+
+    # Resolve the task source directory and upload its definition.
+    if task.task_path:
+        task_path = Path(task.task_path)
+        if not task_path.is_absolute():
+            task_path = Path.home() / task.task_path
+        files.extend(_iter_task_definition(task_path))
+
+    sid = await orch.start_task_probes(
+        task_id=task_id,
+        task_name=task.name,
+        org_id=auth.org_id,
+        files=files,
+        trial_ids=trial_ids,
+    )
+    return StartResponse(session_id=sid)
+
+
+@router.post(
+    "/api/tasks/{task_id}/cc-session/{session_id}/messages",
+)
+async def send_task_message(
+    task_id: str,
+    session_id: str,
+    body: SendMessageRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> StreamingResponse:
+    # Same body as send_message — session_id is the only identifier the
+    # orchestrator needs; task_id is just for URL parity with the FE.
+    auth.require_scope(APIKeyScope.READ)
+    orch = get_orchestrator()
+
+    async def event_stream():
+        try:
+            async for event in orch.send(
+                session_id=session_id, content=body.content
+            ):
+                kind = "error" if event.get("type") == "_stderr" else "message"
+                yield f"event: {kind}\ndata: {json.dumps(event)}\n\n"
+        except SessionNotFound:
+            yield (
+                'event: error\n'
+                'data: {"type": "session_not_found"}\n\n'
+            )
+            return
+        yield "event: done\ndata: {}\n\n"
+
+    state = orch._sessions.get(session_id)  # type: ignore[attr-defined]
+    if state is None:
+        raise HTTPException(status_code=404, detail="session_not_found")
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.delete(
+    "/api/tasks/{task_id}/cc-session/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def close_task_session(
+    task_id: str,
+    session_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> Response:
+    auth.require_scope(APIKeyScope.READ)
+    orch = get_orchestrator()
+    await orch.close(session_id=session_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/api/tasks/{task_id}/cc-session/{session_id}/skills.tar.gz",
+)
+async def export_task_skills(
+    task_id: str,
+    session_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> Response:
+    auth.require_scope(APIKeyScope.READ)
+    orch = get_orchestrator()
+    state = orch._sessions.get(session_id)  # type: ignore[attr-defined]
+    if state is None:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    try:
+        blob = await orch.export_skills(session_id=session_id)
+    except SessionNotFound:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    return Response(
+        content=blob,
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="cc-skills-{session_id}.tar.gz"'
+            )
+        },
+    )
