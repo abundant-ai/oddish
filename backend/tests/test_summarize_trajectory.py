@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-import pytest
-
 from api.services.summarize_trajectory import (
     MAX_TEXT_CHARS,
     TRUNCATE_HEAD,
@@ -92,10 +90,10 @@ def test_preprocess_strips_image_content_parts():
     out = preprocess(trajectory)
     msg_parts = out["steps"][0]["message"]
     assert {p["type"] for p in msg_parts} == {"text"}
-    assert any("[image omitted]" in p["text"] for p in msg_parts)
+    assert any(p["text"] == "[image omitted] (x1)" for p in msg_parts)
     obs_parts = out["steps"][0]["observation"]["results"][0]["content"]
     assert obs_parts[0]["type"] == "text"
-    assert "[image omitted]" in obs_parts[0]["text"]
+    assert obs_parts[0]["text"] == "[image omitted] (x1)"
 
 
 def test_preprocess_truncates_tool_call_argument_values():
