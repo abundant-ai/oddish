@@ -188,6 +188,13 @@ class TaskSubmission(BaseModel):
             "for every trial in this submission. Used for probe / adversarial probes."
         ),
     )
+    result_focus: str | None = Field(
+        default=None,
+        description=(
+            "Optional question the operator wants answered about this trial. "
+            "The analyzer answers it in its result_focus_findings field."
+        ),
+    )
 
     @model_validator(mode="after")
     def require_models(self):
@@ -243,6 +250,13 @@ class TaskSweepSubmission(BaseModel):
         description=(
             "Operator-supplied prompt content to prepend to the task's instruction "
             "for every trial in this submission. Used for probe / adversarial probes."
+        ),
+    )
+    result_focus: str | None = Field(
+        default=None,
+        description=(
+            "Optional question the operator wants answered about this trial. "
+            "The analyzer answers it in its result_focus_findings field."
         ),
     )
 

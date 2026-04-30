@@ -28,3 +28,16 @@ def test_harbor_config_omits_probe_keys_when_no_extra_instructions():
     cfg = cfg or {}
     assert cfg.get("mode") != "probe"
     assert "extra_instructions" not in cfg
+
+
+def test_harbor_config_carries_result_focus():
+    submission = TaskSubmission(
+        task_path="some/task",
+        trials=[],
+        user="alice",
+        harbor=HarborConfig(),
+        extra_instructions="cheat",
+        result_focus="Did the agent find ambiguities?",
+    )
+    cfg = _build_harbor_config_for_trial(submission, _make_spec())
+    assert cfg["result_focus"] == "Did the agent find ambiguities?"

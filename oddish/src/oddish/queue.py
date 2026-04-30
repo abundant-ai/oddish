@@ -431,6 +431,9 @@ def _build_harbor_config_for_trial(
         base["mode"] = "probe"
         base["extra_instructions"] = submission.extra_instructions
 
+    if submission.result_focus:
+        base["result_focus"] = submission.result_focus
+
     return base or None
 
 

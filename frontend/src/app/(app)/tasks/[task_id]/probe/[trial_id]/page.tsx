@@ -32,6 +32,8 @@ type ProbeSummary = {
   attempts?: Attempt[];
   model?: string;
   generated_at?: string;
+  result_focus_question?: string | null;
+  result_focus_findings?: string | null;
 };
 
 type Trial = {
@@ -211,6 +213,17 @@ export default function ProbeResultPage({
               {summary.model ?? ""}
             </span>
           </div>
+          {summary.result_focus_question && summary.result_focus_findings ? (
+            <div className="rounded border-2 border-amber-500/30 bg-amber-500/5 p-3 mb-2 space-y-2">
+              <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
+                Result focus
+              </p>
+              <p className="text-sm font-medium italic">
+                {summary.result_focus_question}
+              </p>
+              <p className="text-sm">{summary.result_focus_findings}</p>
+            </div>
+          ) : null}
           {summary.headline ? (
             <p className="text-base font-medium leading-snug">
               {summary.headline}
