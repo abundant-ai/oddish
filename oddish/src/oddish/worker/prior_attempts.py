@@ -16,7 +16,7 @@ empty string output) so the runner can keep going if anything is off.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -66,3 +66,88 @@ def format_prior_attempts_block(
     if not lines:
         return ""
     return _BLOCK_HEADER + "\n".join(lines) + _BLOCK_FOOTER
+
+
+async def fetch_prior_attempts(
+    *,
+    session: AsyncSession,
+    task_id: str,
+    preset_name: str,
+    filter_config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return failed cheat attempts from prior trials of (task_id, preset_name).
+
+    Filters per ``filter_config['mode']``:
+      * ``last_n``     — newest N trials (``filter_config['last_n']``).
+      * ``all``        — all matching trials, capped by an internal sanity
+                         limit (200) so an unbounded preset can't blow up
+                         the prompt or query.
+      * ``since_date`` — only trials with ``finished_at >= since_date``
+                         (ISO date), capped at the same sanity limit.
+
+    Then flattens each trial's ``analysis.attempts``, keeps entries where
+    ``success is False`` (so investigations and successful cheats are
+    excluded), and truncates the result list to ``filter_config['max_attempts']``,
+    newest-first.
+
+    Each returned dict carries ``title``, ``outcome``, ``source_trial_id``,
+    and ``finished_at`` (ISO string).
+
+    Returns ``[]`` when no matches exist or the filter_config is malformed.
+    """
+    mode = filter_config.get("mode", "last_n")
+    max_attempts = int(filter_config.get("max_attempts") or 50)
+    sanity_run_cap = 200
+
+    stmt = (
+        select(TrialModel.id, TrialModel.finished_at, TrialModel.analysis)
+        .where(TrialModel.task_id == task_id)
+        .where(TrialModel.harbor_config["preset_name"].astext == preset_name)
+        .where(TrialModel.analysis_status == AnalysisStatus.SUCCESS)
+        .where(TrialModel.status == TrialStatus.SUCCESS)
+        .order_by(TrialModel.finished_at.desc())
+    )
+
+    if mode == "last_n":
+        run_cap = int(filter_config.get("last_n") or 5)
+        stmt = stmt.limit(run_cap)
+    elif mode == "since_date":
+        since_raw = filter_config.get("since_date")
+        if since_raw:
+            try:
+                since_str = str(since_raw)
+                if "T" in since_str:
+                    since_dt = datetime.fromisoformat(since_str)
+                else:
+                    since_dt = datetime.fromisoformat(since_str).replace(
+                        tzinfo=timezone.utc
+                    )
+            except ValueError:
+                return []
+            stmt = stmt.where(TrialModel.finished_at >= since_dt)
+        stmt = stmt.limit(sanity_run_cap)
+    else:  # "all" or unknown → fall back to all w/ sanity cap
+        stmt = stmt.limit(sanity_run_cap)
+
+    rows = (await session.execute(stmt)).all()
+
+    flattened: list[dict[str, Any]] = []
+    for trial_id, finished_at, analysis in rows:
+        if not isinstance(analysis, dict):
+            continue
+        for attempt in analysis.get("attempts") or []:
+            if not isinstance(attempt, dict):
+                continue
+            if attempt.get("success") is not False:
+                continue
+            flattened.append(
+                {
+                    "title": str(attempt.get("title", "")),
+                    "outcome": str(attempt.get("outcome", "")),
+                    "source_trial_id": trial_id,
+                    "finished_at": finished_at.isoformat() if finished_at else None,
+                }
+            )
+            if len(flattened) >= max_attempts:
+                return flattened
+    return flattened
