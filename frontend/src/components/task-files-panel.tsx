@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import Link from "next/link";
 import useSWR from "swr";
 import {
   ResizableDrawer,
@@ -29,6 +30,7 @@ import {
   OctagonX,
   Eye,
   Code,
+  FlaskConical,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { fetcher } from "@/lib/api";
@@ -1347,6 +1349,25 @@ export function TaskFilesPanel({
                       <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
                     )}
                     {isRunningVerdict ? "Queueing..." : verdictActionLabel}
+                  </Button>
+                )}
+                {task && (
+                  <Button
+                    asChild
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
+                  >
+                    <Link
+                      href={`/tasks/${task.id}/freeform-agent`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Run an adversarial probe against this task"
+                    >
+                      <FlaskConical className="mr-1 h-3.5 w-3.5" />
+                      Probe
+                    </Link>
                   </Button>
                 )}
               </div>
