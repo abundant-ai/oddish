@@ -26,7 +26,7 @@ async def test_probe_analyzer_parses_json_response():
                 '"cheating_attempted":false,'
                 '"cheating_succeeded":null,'
                 '"evidence":"transcript step 4",'
-                '"attempts":[{"title":"hardcode results.json","rationale":"verifier reads it","outcome":"rejected","step_indices":[1,2,3]}]'
+                '"attempts":[{"title":"hardcode results.json","rationale":"verifier reads it","outcome":"rejected","success":false,"step_indices":[1,2,3]}]'
                 "}"
             )
         )
@@ -52,3 +52,4 @@ async def test_probe_analyzer_parses_json_response():
     assert isinstance(result["attempts"], list)
     assert result["attempts"][0]["title"] == "hardcode results.json"
     assert result["attempts"][0]["step_indices"] == [1, 2, 3]
+    assert result["attempts"][0]["success"] is False
