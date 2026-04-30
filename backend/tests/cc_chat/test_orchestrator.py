@@ -215,3 +215,28 @@ async def test_start_skips_skills_when_no_dir(fake_daytona):
     sbx = fake_daytona.created[0]
     skill_paths = [p for p in sbx.files if "/.claude/skills/" in p]
     assert skill_paths == []
+
+
+@pytest.mark.asyncio
+async def test_export_skills_tars_and_downloads(fake_daytona):
+    orch = _make_orchestrator(fake_daytona)
+    sid = await orch.start(experiment_id=FIXTURE_EXPERIMENT_ID, org_id="org-1")
+    sbx = fake_daytona.created[0]
+    sbx.downloads = {"/tmp/cc-chat-skills.tar.gz": b"fake-tar-bytes"}
+
+    blob = await orch.export_skills(session_id=sid)
+    assert blob == b"fake-tar-bytes"
+
+    sync_execs = [e for e in fake_daytona.execs if e.get("sync")]
+    assert sync_execs, "expected an exec_sync call (the tar invocation)"
+    assert "tar -czf" in sync_execs[-1]["command"]
+    assert "/home/daytona/workspace/.claude/skills" in sync_execs[-1]["command"]
+
+
+@pytest.mark.asyncio
+async def test_export_skills_unknown_session_raises(fake_daytona):
+    from api.services.cc_chat.orchestrator import SessionNotFound
+
+    orch = _make_orchestrator(fake_daytona)
+    with pytest.raises(SessionNotFound):
+        await orch.export_skills(session_id="nope")

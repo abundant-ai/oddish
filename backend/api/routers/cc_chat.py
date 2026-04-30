@@ -93,6 +93,34 @@ async def send_message(
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+@router.get(
+    "/api/experiments/{experiment_id}/cc-session/{session_id}/skills.tar.gz",
+)
+async def export_skills(
+    experiment_id: str,
+    session_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> Response:
+    auth.require_scope(APIKeyScope.READ)
+    orch = get_orchestrator()
+    state = orch._sessions.get(session_id)  # type: ignore[attr-defined]
+    if state is None:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    try:
+        blob = await orch.export_skills(session_id=session_id)
+    except SessionNotFound:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    return Response(
+        content=blob,
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="cc-skills-{session_id}.tar.gz"'
+            )
+        },
+    )
+
+
 @router.delete(
     "/api/experiments/{experiment_id}/cc-session/{session_id}",
     status_code=status.HTTP_204_NO_CONTENT,

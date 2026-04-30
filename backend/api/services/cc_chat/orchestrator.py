@@ -198,6 +198,27 @@ class CCChatOrchestrator:
         finally:
             await closer_task
 
+    async def export_skills(self, *, session_id: str) -> bytes:
+        """Tar the sandbox's .claude/skills/ directory and return the archive bytes."""
+        state = self._sessions.get(session_id)
+        if state is None or state.broken:
+            raise SessionNotFound(session_id)
+        sandbox = self._sandbox_handles[session_id]
+        archive_path = "/tmp/cc-chat-skills.tar.gz"
+        skills_dir = f"{_WORKSPACE_ROOT}/.claude/skills"
+        # `|| true` so an empty/missing skills dir gives an empty archive
+        # rather than a non-zero exit.
+        await self._daytona.exec_sync(
+            sandbox,
+            command=(
+                f"mkdir -p {skills_dir} && "
+                f"tar -czf {archive_path} -C {skills_dir} . || true"
+            ),
+        )
+        return await self._daytona.download_file(
+            sandbox, src_path=archive_path
+        )
+
     async def _inject_skills(self, sandbox: CreatedSandbox) -> None:
         if self._skills_dir is None or not self._skills_dir.is_dir():
             return

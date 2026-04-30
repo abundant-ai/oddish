@@ -77,6 +77,26 @@ class FakeDaytonaClient:
         for chunk in self.canned_stderr_chunks:
             await on_stderr(chunk)
 
+    async def exec_sync(
+        self, sandbox: CreatedSandbox, *, command: str
+    ) -> tuple[int, str]:
+        self.execs.append(
+            {
+                "sandbox_id": sandbox.id,
+                "command": command,
+                "sync": True,
+            }
+        )
+        return 0, ""
+
+    async def download_file(
+        self, sandbox: CreatedSandbox, *, src_path: str
+    ) -> bytes:
+        # Tests can stash a synthetic blob keyed by path
+        return getattr(sandbox._sdk_handle, "downloads", {}).get(
+            src_path, b""
+        )
+
     async def delete_sandbox(self, sandbox: CreatedSandbox) -> None:
         sandbox._sdk_handle.deleted = True
 
