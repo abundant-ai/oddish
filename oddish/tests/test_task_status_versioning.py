@@ -97,7 +97,7 @@ def test_build_task_status_response_uses_current_version_trials(monkeypatch):
     monkeypatch.setattr(
         helpers,
         "build_trial_response",
-        lambda trial, task_path, queue_info=None: trial.id,
+        lambda trial, task_path, queue_info=None, **kwargs: trial.id,
     )
 
     def fake_build_task_status_response(task, **kwargs):
@@ -290,7 +290,7 @@ def test_build_task_status_response_scopes_trials_to_experiment_version(monkeypa
     monkeypatch.setattr(
         helpers,
         "build_trial_response",
-        lambda trial, task_path, queue_info=None: trial.id,
+        lambda trial, task_path, queue_info=None, **kwargs: trial.id,
     )
 
     def fake_build_task_status_response(task, **kwargs):
