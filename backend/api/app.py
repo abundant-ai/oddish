@@ -211,27 +211,11 @@ def _init_cc_chat_orchestrator() -> None:
             base_path=Path(settings.cc_chat_local_jobs_dir)
         )
     else:
-        # Adapt the real storage client to the _StorageLike protocol.
-        from oddish.db.storage import get_storage_client
+        from api.services.cc_chat.oddish_storage_adapter import (
+            OddishStorageAdapter,
+        )
 
-        class _OddishStorageAdapter:
-            def __init__(self) -> None:
-                self._client = get_storage_client()
-
-            async def list_keys_under(self, prefix: str) -> list[str]:
-                # The existing client exposes list_trial_files; use its
-                # underlying paginator. If a more general listing helper
-                # is added later, replace this body.
-                # Implementer: confirm exact method name; this stub may
-                # need updating against oddish/db/storage.py.
-                raise NotImplementedError(
-                    "Wire S3FileStore to oddish StorageClient; see comment."
-                )
-
-            async def get_object(self, key: str) -> bytes:
-                raise NotImplementedError
-
-        file_store = S3FileStore(storage=_OddishStorageAdapter())
+        file_store = S3FileStore(storage=OddishStorageAdapter())
 
     skills_dir = Path(__file__).parent / "services" / "cc_chat" / "skills"
 
