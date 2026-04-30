@@ -399,15 +399,39 @@ async def _run_harbor_trial(trial_id: str) -> None:
                     continue
                 if event.get("type") == "assistant":
                     content = event.get("message", {}).get("content", [])
-                    texts = [
-                        c.get("text", "")
-                        for c in content
-                        if c.get("type") == "text"
-                    ]
-                    if texts:
-                        agent_messages.append(
-                            {"kind": "assistant_text", "text": "\n".join(texts)}
-                        )
+                    # Walk content blocks IN ORDER so the timeline preserves
+                    # the agent's interleaved thinking + tool calls.
+                    for c in content:
+                        ctype = c.get("type")
+                        if ctype == "text":
+                            txt = c.get("text", "")
+                            if txt:
+                                agent_messages.append(
+                                    {"kind": "assistant_text", "text": txt}
+                                )
+                        elif ctype == "tool_use":
+                            name = c.get("name", "?")
+                            inp = c.get("input") or {}
+                            # Bash gets a clean rendering: command + optional
+                            # description. Other tools dump the input dict.
+                            if name == "Bash" and isinstance(inp, dict):
+                                cmd = str(inp.get("command", ""))
+                                desc = inp.get("description")
+                                pieces = [f"$ {cmd}"] if cmd else ["$ (no command)"]
+                                if desc:
+                                    pieces.append(f"# {desc}")
+                                if inp.get("timeout"):
+                                    pieces.append(f"# timeout: {inp['timeout']}ms")
+                                text = "\n".join(pieces)
+                            else:
+                                try:
+                                    payload = json.dumps(inp, indent=2)[:1500]
+                                except Exception:
+                                    payload = str(inp)[:1500]
+                                text = f"[{name}]\n{payload}"
+                            agent_messages.append(
+                                {"kind": "tool_use", "name": name, "text": text}
+                            )
                 elif event.get("type") == "user":
                     content = event.get("message", {}).get("content", [])
                     for c in content:

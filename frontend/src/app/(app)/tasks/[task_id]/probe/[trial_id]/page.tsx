@@ -8,10 +8,19 @@ import { useAuth } from "@clerk/nextjs";
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800";
 
 type AgentMessage = {
-  kind: "assistant_text" | "tool_result" | "result";
+  kind: "assistant_text" | "tool_use" | "tool_result" | "result";
   text: string;
+  name?: string;        // tool name when kind === "tool_use" (e.g. "Bash", "Read")
   is_error?: boolean;
 };
+
+function kindLabel(m: AgentMessage): string {
+  if (m.kind === "tool_use") return m.name ? `tool: ${m.name}` : "tool call";
+  if (m.kind === "tool_result") return "tool result";
+  if (m.kind === "assistant_text") return "agent text";
+  if (m.kind === "result") return "final result";
+  return m.kind;
+}
 
 type Attempt = {
   title?: string;
@@ -530,7 +539,7 @@ export default function ProbeResultPage({
                                 className="rounded border bg-muted/30 p-2"
                               >
                                 <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-                                  Step {idx + 1} · {m.kind}
+                                  Step {idx + 1} · {kindLabel(m)}
                                   {m.text ? (
                                     <span className="ml-2 font-normal text-muted-foreground/80">
                                       {m.text.slice(0, 80)}
@@ -563,7 +572,7 @@ export default function ProbeResultPage({
                           className="rounded border bg-muted/30 p-2"
                         >
                           <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-                            Step {i + 1} · {m.kind}
+                            Step {i + 1} · {kindLabel(m)}
                             {m.text ? (
                               <span className="ml-2 font-normal text-muted-foreground/80">
                                 {m.text.slice(0, 80)}
@@ -590,7 +599,7 @@ export default function ProbeResultPage({
               <li key={i}>
                 <details className="rounded border bg-muted/30 p-2">
                   <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-                    Step {i + 1} · {m.kind}
+                    Step {i + 1} · {kindLabel(m)}
                     {m.text ? (
                       <span className="ml-2 font-normal text-muted-foreground/80">
                         {m.text.slice(0, 80)}
