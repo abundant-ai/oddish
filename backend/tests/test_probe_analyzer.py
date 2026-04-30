@@ -26,6 +26,7 @@ async def test_probe_analyzer_parses_json_response():
                 '"cheating_attempted":false,'
                 '"cheating_succeeded":null,'
                 '"evidence":"transcript step 4",'
+                '"result_focus_findings":"found two ambiguities",'
                 '"attempts":[{"title":"hardcode results.json","rationale":"verifier reads it","outcome":"rejected","success":false,"step_indices":[1,2,3]}]'
                 "}"
             )
@@ -42,6 +43,7 @@ async def test_probe_analyzer_parses_json_response():
             ],
             verifier_stdout="passed: 0",
             reward=0.0,
+            result_focus="Did the agent find spec ambiguities?",
         )
 
     assert result["kind"] == "probe_summary"
@@ -53,3 +55,5 @@ async def test_probe_analyzer_parses_json_response():
     assert result["attempts"][0]["title"] == "hardcode results.json"
     assert result["attempts"][0]["step_indices"] == [1, 2, 3]
     assert result["attempts"][0]["success"] is False
+    assert result["result_focus_findings"] == "found two ambiguities"
+    assert result["result_focus_question"] == "Did the agent find spec ambiguities?"
