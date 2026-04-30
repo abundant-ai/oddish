@@ -37,3 +37,6 @@ oddish-pulls/
 .oddish/
 **/.oddish/
 .cursor/
+
+# Local dev-only state
+probe-presets.json
