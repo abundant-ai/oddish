@@ -20,6 +20,37 @@ type ChatTurn =
   | { role: "user"; text: string }
   | { role: "assistant"; events: unknown[] };
 
+type RenderItem =
+  | { kind: "event"; event: unknown }
+  | { kind: "system_run"; count: number };
+
+// Coalesce consecutive `system` events (excluding init, which the renderer
+// already drops) into a single "↻ N system updates" line so claude's
+// task_progress chatter doesn't flood the panel.
+function collapseSystemRuns(events: unknown[]): RenderItem[] {
+  const out: RenderItem[] = [];
+  let run = 0;
+  for (const e of events) {
+    const obj = e as { type?: unknown; subtype?: unknown } | null;
+    if (
+      obj &&
+      typeof obj === "object" &&
+      obj.type === "system" &&
+      obj.subtype !== "init"
+    ) {
+      run++;
+      continue;
+    }
+    if (run > 0) {
+      out.push({ kind: "system_run", count: run });
+      run = 0;
+    }
+    out.push({ kind: "event", event: e });
+  }
+  if (run > 0) out.push({ kind: "system_run", count: run });
+  return out;
+}
+
 export function CCChatModal({
   experimentId,
   open,
@@ -130,10 +161,23 @@ export function CCChatModal({
         <SheetHeader>
           <SheetTitle>Chat with experiment logs</SheetTitle>
           <SheetDescription>
-            Status: <span className="font-mono text-xs">{phase}</span>
-            {error ? (
-              <span className="text-destructive ml-2">— {error}</span>
-            ) : null}
+            <span className="inline-flex items-center gap-1.5">
+              {(phase === "creating" || phase === "thinking") && (
+                <span
+                  aria-hidden
+                  className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground"
+                />
+              )}
+              Status: <span className="font-mono text-xs">{phase}</span>
+              {phase === "creating" && (
+                <span className="text-xs opacity-60">
+                  (booting sandbox + uploading trial logs)
+                </span>
+              )}
+              {error ? (
+                <span className="text-destructive ml-2">— {error}</span>
+              ) : null}
+            </span>
           </SheetDescription>
         </SheetHeader>
 
@@ -156,15 +200,26 @@ export function CCChatModal({
                     <div className="text-sm italic opacity-60">thinking…</div>
                   ) : (
                     <div className="space-y-1">
-                      {turn.events.map((event, j) => {
-                        const rendered = renderStreamEvent(event);
-                        if (rendered === null) return null;
-                        return (
-                          <div key={j} className="text-sm">
-                            {rendered}
+                      {collapseSystemRuns(turn.events).map((item, j) =>
+                        item.kind === "system_run" ? (
+                          <div
+                            key={j}
+                            className="text-xs opacity-50 italic"
+                          >
+                            ↻ {item.count} system updates
                           </div>
-                        );
-                      })}
+                        ) : (
+                          (() => {
+                            const rendered = renderStreamEvent(item.event);
+                            if (rendered === null) return null;
+                            return (
+                              <div key={j} className="text-sm">
+                                {rendered}
+                              </div>
+                            );
+                          })()
+                        ),
+                      )}
                     </div>
                   )}
                 </div>
