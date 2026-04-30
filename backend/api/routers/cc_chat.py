@@ -160,43 +160,92 @@ async def close_session(
 _TASK_DEF_SKIP_DIRS = {".git", "node_modules", "__pycache__", "dist", "build", "target"}
 
 
+_PRIORITY_TASK_FILES = ("task.toml", "instruction.md")
+_PRIORITY_TASK_DIRS = ("verifier",)
+
+
 def _iter_task_definition(
     task_path: Path,
 ) -> list[tuple[str, bytes]]:
     """Walk the task source dir and return (workspace_rel_path, bytes).
 
-    Includes task.toml, instruction.md, anything under verifier/, plus
-    a small set of likely-useful root files. Skips dot-dirs and known
-    heavy build trees. Caps total payload at ~5 MB to keep upload time
-    bounded — full task source isn't needed for cheat reasoning, the
-    verifier is.
+    Always includes task.toml, instruction.md, and the entire verifier/
+    subtree regardless of size — those are the files claude needs for
+    cheat investigations. Then fills remaining quota with other files
+    under a per-file size limit. Skips dot-dirs and known heavy build
+    trees. Total cap ~10 MB for the discretionary tail.
+
+    Per-file cap is critical: long-horizon tasks ship multi-MB
+    `environment/golden.jsonl` test corpora that aren't useful for the
+    chat and previously caused the cumulative cap to bail on the very
+    first file (alphabetical sort), starving task.toml/instruction.md.
     """
     if not task_path.is_dir():
         return []
 
     out: list[tuple[str, bytes]] = []
-    total = 0
-    cap = 5 * 1024 * 1024
+    seen: set[Path] = set()
+
+    def add(path: Path) -> None:
+        if path in seen or not path.is_file():
+            return
+        rel_parts = path.relative_to(task_path).parts
+        if any(p in _TASK_DEF_SKIP_DIRS or p.startswith(".") for p in rel_parts):
+            return
+        try:
+            content = path.read_bytes()
+        except OSError:
+            return
+        rel = "/".join(("task", *rel_parts))
+        out.append((rel, content))
+        seen.add(path)
+
+    # Phase 1: priority files — always include.
+    for name in _PRIORITY_TASK_FILES:
+        add(task_path / name)
+    for sub in _PRIORITY_TASK_DIRS:
+        sub_path = task_path / sub
+        if sub_path.is_dir():
+            for path in sorted(sub_path.rglob("*")):
+                add(path)
+
+    # Phase 2: discretionary tail — capped per-file and overall.
+    per_file_cap = 1 * 1024 * 1024
+    total_cap = 10 * 1024 * 1024
+    discretionary_total = 0
     for path in sorted(task_path.rglob("*")):
-        if not path.is_file():
+        if path in seen or not path.is_file():
             continue
         rel_parts = path.relative_to(task_path).parts
         if any(p in _TASK_DEF_SKIP_DIRS or p.startswith(".") for p in rel_parts):
             continue
         try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > per_file_cap:
+            logger.info(
+                "skipping large task file %s (%.1f MB > %.1f MB per-file cap)",
+                path.relative_to(task_path),
+                size / 1e6,
+                per_file_cap / 1e6,
+            )
+            continue
+        if discretionary_total + size > total_cap:
+            logger.info(
+                "task definition discretionary cap %dMB hit; remainder skipped",
+                total_cap // (1024 * 1024),
+            )
+            break
+        try:
             content = path.read_bytes()
         except OSError:
             continue
-        if total + len(content) > cap:
-            logger.info(
-                "task definition cap %dMB hit; skipping rest of %s",
-                cap // (1024 * 1024),
-                task_path,
-            )
-            break
         rel = "/".join(("task", *rel_parts))
         out.append((rel, content))
-        total += len(content)
+        seen.add(path)
+        discretionary_total += len(content)
+
     return out
 
 
