@@ -195,6 +195,13 @@ class TaskSubmission(BaseModel):
             "The analyzer answers it in its result_focus_findings field."
         ),
     )
+    evaluation_metric: str | None = Field(
+        default=None,
+        description=(
+            "How to render the trial's result. One of 'cheat_ratio', "
+            "'result_focus', 'none'. Default null = no specific metric."
+        ),
+    )
 
     @model_validator(mode="after")
     def require_models(self):
@@ -257,6 +264,13 @@ class TaskSweepSubmission(BaseModel):
         description=(
             "Optional question the operator wants answered about this trial. "
             "The analyzer answers it in its result_focus_findings field."
+        ),
+    )
+    evaluation_metric: str | None = Field(
+        default=None,
+        description=(
+            "How to render the trial's result. One of 'cheat_ratio', "
+            "'result_focus', 'none'. Default null = no specific metric."
         ),
     )
 

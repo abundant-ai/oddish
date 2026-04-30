@@ -10,10 +10,13 @@ type Attempt = {
   success?: boolean | null;
 };
 
+type EvaluationMetric = "cheat_ratio" | "result_focus" | "none";
+
 type Analysis = {
   attempts?: Attempt[];
   cheating_attempted?: boolean | null;
   cheating_succeeded?: boolean | null;
+  result_focus_findings?: string | null;
 };
 
 type Trial = {
@@ -24,7 +27,7 @@ type Trial = {
   reward: number | null;
   error_message?: string | null;
   analysis?: Analysis | null;
-  harbor_config?: { mode?: string } | null;
+  harbor_config?: { mode?: string; evaluation_metric?: EvaluationMetric } | null;
 };
 
 function statusLabel(t: Trial): string {
@@ -58,7 +61,57 @@ function resultDisplay(t: Trial): ResultDisplay {
     };
   }
 
-  // Trial completed. Prefer the analyzer's per-attempt cheat ratio.
+  // Trial completed. If the preset declared an evaluation_metric, render
+  // that way; otherwise fall through to the legacy cheat-ratio / reward path.
+  const metric = t.harbor_config?.evaluation_metric ?? "none";
+
+  if (metric === "cheat_ratio") {
+    const all = t.analysis?.attempts ?? [];
+    const succeeded = all.filter((a) => a.success === true).length;
+    const blocked = all.filter((a) => a.success === false).length;
+    const total = succeeded + blocked;
+    if (total === 0) {
+      // No cheat attempts surfaced — analyzer didn't see any, OR analyzer hasn't run
+      if (t.analysis === null || t.analysis === undefined) {
+        return { text: "—", variant: "muted", title: "Waiting for analyzer" };
+      }
+      return {
+        text: "0/0 cheats",
+        variant: "neutral",
+        title: "No cheat attempts identified by the analyzer",
+      };
+    }
+    // Always render as ratio with red color when any succeeded.
+    return {
+      text: `${succeeded}/${total} cheats succeeded`,
+      variant: succeeded > 0 ? "cheat" : "blocked",
+      title:
+        succeeded > 0
+          ? `${succeeded} of ${total} cheat attempts bypassed the verifier — task is gameable`
+          : `All ${total} cheat attempts were blocked by the verifier — task is robust`,
+    };
+  }
+
+  if (metric === "result_focus") {
+    const findings = t.analysis?.result_focus_findings;
+    if (!findings) {
+      if (t.analysis === null || t.analysis === undefined) {
+        return { text: "—", variant: "muted", title: "Waiting for analyzer" };
+      }
+      return { text: "no findings", variant: "muted" };
+    }
+    // Truncate to ~60 chars for the table cell
+    const truncated =
+      findings.length > 60 ? `${findings.slice(0, 60)}…` : findings;
+    return {
+      text: truncated,
+      variant: "neutral",
+      title: findings,
+    };
+  }
+
+  // metric === "none" (or older trials without evaluation_metric).
+  // Prefer the analyzer's per-attempt cheat ratio.
   // Counts: succeeded=success===true, blocked=success===false,
   // investigation=success===null/undefined (not a cheat attempt at all).
   const attempts = t.analysis?.attempts ?? [];

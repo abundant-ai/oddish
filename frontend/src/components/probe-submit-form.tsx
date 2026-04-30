@@ -32,6 +32,8 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800";
 
 const PRESETS_KEY = "oddish:probe_presets:v1";
 
+type EvaluationMetric = "cheat_ratio" | "result_focus" | "none";
+
 type Preset = {
   id: string;
   name: string;
@@ -39,6 +41,7 @@ type Preset = {
   model: string;
   operator_prompt: string;
   result_focus: string | null;
+  evaluation_metric: EvaluationMetric;
   is_seed: boolean;
   created_at: string;
   updated_at: string;
@@ -63,6 +66,7 @@ IDENTIFY THE MOST PROMISING CHEAT, then EXECUTE IT. Iterate if your first attemp
 Final report: state which cheat you tried, whether the verifier accepted it, and what reward you got.`,
     result_focus:
       "Did any cheat attempt successfully bypass the verifier? Which one and why?",
+    evaluation_metric: "cheat_ratio",
     is_seed: true,
     created_at: "2026-04-30T00:00:00Z",
     updated_at: "2026-04-30T00:00:00Z",
@@ -81,6 +85,7 @@ Final report: state which cheat you tried, whether the verifier accepted it, and
 
 Cite specific file paths and line numbers in /app/tests/. Your goal is to produce a quality report on the verifier itself, not on the task.`,
     result_focus: "What bugs or weaknesses exist in the verifier's logic?",
+    evaluation_metric: "result_focus",
     is_seed: true,
     created_at: "2026-04-30T00:00:00Z",
     updated_at: "2026-04-30T00:00:00Z",
@@ -100,6 +105,7 @@ Cite specific file paths and line numbers in /app/tests/. Your goal is to produc
 Do NOT attempt to solve the task. Produce a list of specific ambiguities with citations from the instruction text.`,
     result_focus:
       "What ambiguities exist in the task spec that could lead two competent agents to disagree on what 'correct' means?",
+    evaluation_metric: "result_focus",
     is_seed: true,
     created_at: "2026-04-30T00:00:00Z",
     updated_at: "2026-04-30T00:00:00Z",
@@ -136,6 +142,7 @@ PICK ONE EXPLOIT, EXECUTE IT, ITERATE. Each attempt should set timeout=600 on Ba
 Final report: which anti-cheat layer did you target, what specific exploit you tried, what the verifier returned, and your reward.`,
     result_focus:
       "Did any cheat actually bypass an anti-cheat layer? Which layer, by what mechanism, and what was the resulting reward?",
+    evaluation_metric: "cheat_ratio",
     is_seed: true,
     created_at: "2026-04-30T00:00:00Z",
     updated_at: "2026-04-30T00:00:00Z",
@@ -148,9 +155,15 @@ function loadPresets(): Preset[] {
     const stored = window.localStorage.getItem(PRESETS_KEY);
     if (!stored) return SEED_PRESETS;
     const parsed: Preset[] = JSON.parse(stored);
-    const userPresetIds = new Set(parsed.map((p) => p.id));
+    // Backfill: stored presets from before evaluation_metric existed
+    // default to "none" so they keep working.
+    const normalized = parsed.map((p) => ({
+      ...p,
+      evaluation_metric: (p.evaluation_metric ?? "none") as EvaluationMetric,
+    }));
+    const userPresetIds = new Set(normalized.map((p) => p.id));
     // Merge: stored presets first, then any seeds not yet in storage
-    const merged = [...parsed];
+    const merged = [...normalized];
     for (const seed of SEED_PRESETS) {
       if (!userPresetIds.has(seed.id)) merged.push(seed);
     }
@@ -200,6 +213,8 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
   );
   const [modalOperatorPrompt, setModalOperatorPrompt] = useState("");
   const [modalResultFocus, setModalResultFocus] = useState("");
+  const [modalEvaluationMetric, setModalEvaluationMetric] =
+    useState<EvaluationMetric>("none");
 
   const selectedPreset =
     presets.find((p) => p.id === selectedPresetId) ?? null;
@@ -226,6 +241,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     setModalModel(MODELS_BY_AGENT["claude-code"][0].value);
     setModalOperatorPrompt("");
     setModalResultFocus("");
+    setModalEvaluationMetric("none");
     setModalOpen(true);
   }
 
@@ -237,6 +253,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     setModalModel(selectedPreset.model);
     setModalOperatorPrompt(selectedPreset.operator_prompt);
     setModalResultFocus(selectedPreset.result_focus ?? "");
+    setModalEvaluationMetric(selectedPreset.evaluation_metric ?? "none");
     setModalOpen(true);
   }
 
@@ -269,6 +286,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
       model: modalModel,
       operator_prompt: modalOperatorPrompt,
       result_focus: modalResultFocus.trim() || null,
+      evaluation_metric: modalEvaluationMetric,
       is_seed: false,
       created_at:
         existingForId && !existingForId.is_seed
@@ -331,6 +349,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
           user: "probe-ui",
           extra_instructions: extraInstructions,
           result_focus: result_focus.trim() || null,
+          evaluation_metric: selectedPreset?.evaluation_metric ?? null,
         }),
       });
       if (!res.ok) {
@@ -478,6 +497,29 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
                 className="mt-1 w-full rounded border bg-background px-2 py-1.5 font-mono text-sm"
                 placeholder="A specific question for the analyzer to answer"
               />
+            </label>
+            <label className="block">
+              <span className="text-sm font-medium">Evaluation metric</span>
+              <p className="text-xs text-muted-foreground">
+                How should this probe&apos;s results be summarized in the
+                history table?
+              </p>
+              <select
+                value={modalEvaluationMetric}
+                onChange={(e) =>
+                  setModalEvaluationMetric(e.target.value as EvaluationMetric)
+                }
+                className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+              >
+                <option value="none">None — show raw reward</option>
+                <option value="cheat_ratio">
+                  Cheat ratio — count attempts that bypassed verifier (X/Y
+                  cheats succeeded)
+                </option>
+                <option value="result_focus">
+                  Result focus — show the analyzer&apos;s answer to my question
+                </option>
+              </select>
             </label>
           </div>
           <DialogFooter>
