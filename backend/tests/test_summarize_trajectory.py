@@ -159,3 +159,102 @@ def test_preprocess_does_not_mutate_input():
     snapshot = deepcopy(trajectory)
     preprocess(trajectory)
     assert trajectory == snapshot
+
+
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+
+def _trajectory_with_steps(step_ids: list[int]) -> dict:
+    return {
+        "schema_version": "0.1",
+        "session_id": "s1",
+        "agent": {"name": "x", "version": "1", "model_name": None},
+        "steps": [_make_step(sid) for sid in step_ids],
+        "notes": None,
+        "final_metrics": None,
+    }
+
+
+def _fake_client_returning(text: str) -> MagicMock:
+    fake_response = MagicMock()
+    fake_response.content = [MagicMock(text=text)]
+    fake_client = MagicMock()
+    fake_client.messages.create = AsyncMock(return_value=fake_response)
+    return fake_client
+
+
+@pytest.mark.asyncio
+async def test_generate_returns_persistable_summary():
+    from api.services.summarize_trajectory import (
+        MODEL,
+        SCHEMA_VERSION,
+        generate,
+    )
+
+    payload = json.dumps(
+        {
+            "summary": "Agent reproduced and fixed a flaky test.",
+            "highlights": [
+                {"step_id": 1, "title": "Reproduces failure", "why": "First confirmation."},
+                {"step_id": 3, "title": "Lands the fix", "why": "Patch applied."},
+            ],
+        }
+    )
+    fake = _fake_client_returning(payload)
+    with patch("anthropic.AsyncAnthropic", return_value=fake):
+        result = await generate(_trajectory_with_steps([1, 2, 3]))
+
+    assert result["schema_version"] == SCHEMA_VERSION
+    assert result["model"] == MODEL
+    assert "generated_at" in result
+    assert result["summary"].startswith("Agent reproduced")
+    assert [h["step_id"] for h in result["highlights"]] == [1, 3]
+
+
+@pytest.mark.asyncio
+async def test_generate_drops_highlights_with_unknown_step_ids():
+    from api.services.summarize_trajectory import generate
+
+    payload = json.dumps(
+        {
+            "summary": "x",
+            "highlights": [
+                {"step_id": 1, "title": "ok", "why": "ok"},
+                {"step_id": 999, "title": "bogus", "why": "model hallucinated"},
+            ],
+        }
+    )
+    fake = _fake_client_returning(payload)
+    with patch("anthropic.AsyncAnthropic", return_value=fake):
+        result = await generate(_trajectory_with_steps([1, 2, 3]))
+
+    assert [h["step_id"] for h in result["highlights"]] == [1]
+
+
+@pytest.mark.asyncio
+async def test_generate_strips_code_fences_around_json():
+    from api.services.summarize_trajectory import generate
+
+    body = json.dumps({"summary": "ok", "highlights": []})
+    fenced = f"```json\n{body}\n```"
+    fake = _fake_client_returning(fenced)
+    with patch("anthropic.AsyncAnthropic", return_value=fake):
+        result = await generate(_trajectory_with_steps([1]))
+    assert result["summary"] == "ok"
+    assert result["highlights"] == []
+
+
+@pytest.mark.asyncio
+async def test_generate_raises_on_malformed_json():
+    from api.services.summarize_trajectory import (
+        SummaryGenerationError,
+        generate,
+    )
+
+    fake = _fake_client_returning("not json at all")
+    with patch("anthropic.AsyncAnthropic", return_value=fake):
+        with pytest.raises(SummaryGenerationError):
+            await generate(_trajectory_with_steps([1]))
