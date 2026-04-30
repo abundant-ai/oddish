@@ -92,4 +92,6 @@ def build_task_submission_from_sweep(
         evaluation_metric=submission.evaluation_metric,
         ratio_unit=submission.ratio_unit,
         ratio_verb=submission.ratio_verb,
+        preset_name=submission.preset_name,
+        prior_attempts_config=submission.prior_attempts_config,
     )
