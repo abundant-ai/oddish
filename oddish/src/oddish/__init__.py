@@ -36,6 +36,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "HarborOutcome": ("oddish.workers", "HarborOutcome"),
     # Workers
     "run_queue_worker": ("oddish.workers", "run_queue_worker"),
+    # Error classification
+    "is_harness_error": ("oddish.error_classification", "is_harness_error"),
+    "is_fatal_infra": ("oddish.error_classification", "is_fatal_infra"),
+    "classify_trial_error": ("oddish.error_classification", "classify"),
     # Validation
     "validate_configs": ("oddish.validation", "validate_configs"),
     "validate_and_report": ("oddish.validation", "validate_and_report"),

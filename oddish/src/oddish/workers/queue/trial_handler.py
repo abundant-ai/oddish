@@ -24,6 +24,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
+from oddish.error_classification import is_fatal_infra
 from oddish.workers.harbor_runner import HarborOutcome, run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
@@ -385,6 +386,11 @@ async def _store_trial_results(
     trial_s3_key: str | None,
     execution_error: str | None,
 ) -> None:
+    # Set inside the session block when the trial settles as fatal-infra.
+    # Acted on *after* the session commits so a downstream failure can't
+    # roll back this trial's BLOCKED state.
+    fatal_cohort: tuple[str | None, str, str | None, str] | None = None
+
     async with _trial_session(trial_id, allow_missing=True) as (session, trial):
         if not trial:
             return
@@ -444,16 +450,48 @@ async def _store_trial_results(
 
             # SUCCESS means "trial executed to completion" (regardless of reward)
             # FAILED means "trial encountered an execution error"
+            #
+            # Before falling into the retry loop: if the failure is
+            # something retrying can never fix (auth, model-not-found,
+            # OOM kill, agent-CLI launcher crash) skip retries and
+            # cascade-cancel the rest of the (experiment, agent, model)
+            # cohort so a typo'd API key doesn't burn an entire sweep.
+            fatal = (
+                derived_reward is None
+                and is_fatal_infra(
+                    outcome.error,
+                    exception_type=outcome.exception_type,
+                )
+            )
             if derived_reward is not None:
-                # Harbor produced a verifier score - trial executed successfully.
-                # Hook may have already set status to SUCCESS - that's OK, we're confirming it
                 trial.status = TrialStatus.SUCCESS
                 trial.finished_at = utcnow()
                 console.print(
                     f"[green]Trial {trial_id} SUCCESS[/green] reward={derived_reward}"
                 )
+            elif fatal:
+                # Pin attempts to max_attempts so the worker_job runner
+                # treats this as a terminal FAILED rather than enqueuing
+                # another retry (see worker_job_single_job.py:298).
+                trial.status = TrialStatus.FAILED
+                trial.max_attempts = trial.attempts
+                trial.finished_at = utcnow()
+                console.print(
+                    f"[red]Trial {trial_id} FAILED (fatal infra)[/red] "
+                    f"exception_type={outcome.exception_type}"
+                )
+                # Cancel siblings + notify is fired *outside* the
+                # _trial_session block so it owns its own transaction
+                # and a downstream failure can't corrupt this trial's
+                # write. Stash the data we need on locals.
+                fatal_cohort = (
+                    trial.experiment_id,
+                    trial.agent,
+                    trial.model,
+                    outcome.exception_type or "UnknownError",
+                )
             else:
-                # No reward - trial encountered an error or didn't complete verification.
+                # No reward - trial encountered a transient error.
                 if trial.attempts < trial.max_attempts:
                     trial.status = TrialStatus.RETRYING
                     console.print(
@@ -500,6 +538,179 @@ async def _store_trial_results(
                 console.print(
                     f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
                 )
+
+    # Outside the session: settle the cohort if this trial was fatal.
+    # Doing this in its own transaction means a problem here (e.g. the
+    # notify webhook is down) can't roll back the FAILED state we just
+    # committed for this trial.
+    if fatal_cohort is not None:
+        experiment_id, agent, model, exception_type = fatal_cohort
+        await _cancel_sibling_trials(
+            origin_trial_id=trial_id,
+            experiment_id=experiment_id,
+            agent=agent,
+            model=model,
+            exception_type=exception_type,
+        )
+
+
+async def _cancel_sibling_trials(
+    *,
+    origin_trial_id: str,
+    experiment_id: str | None,
+    agent: str,
+    model: str | None,
+    exception_type: str,
+) -> None:
+    """Mark every sibling trial in the same (experiment, agent, model)
+    cohort as FAILED so a single fatal-infra error doesn't burn the
+    rest of the sweep.
+
+    A "sibling" is any trial in PENDING / QUEUED / RETRYING for the
+    same experiment + agent + model triple. RUNNING trials are left
+    alone — they may already be deep in setup and will hit the same
+    fatal exception themselves; killing them mid-flight is messier
+    than letting them settle naturally.
+
+    Falls back gracefully: if the experiment_id is null (a bare task
+    submission with no experiment) or the worker session can't open,
+    we log and move on. The originating trial's FAILED state is
+    already committed.
+    """
+    from sqlalchemy import text
+
+    from oddish.db import get_session
+
+    if not experiment_id:
+        console.print(
+            f"[dim]Trial {origin_trial_id} fatal but has no experiment_id; "
+            "skipping sibling cancel[/dim]"
+        )
+        await _notify_blocked_cohort(
+            origin_trial_id=origin_trial_id,
+            experiment_id=None,
+            agent=agent,
+            model=model,
+            exception_type=exception_type,
+            cancelled_count=0,
+        )
+        return
+
+    reason = f"sibling fatal: {exception_type} (origin={origin_trial_id})"
+    try:
+        async with get_session() as session:
+            # Update both the trial row (visible status) and the
+            # worker_jobs row (so the dispatcher won't re-claim them).
+            # Two statements rather than a join — Postgres plans both
+            # cleanly and the SQL stays readable.
+            result = await session.execute(
+                text(
+                    """
+                    UPDATE trials
+                    SET    status = 'FAILED',
+                           max_attempts = attempts,
+                           finished_at = NOW(),
+                           error_message = :reason,
+                           current_worker_id = NULL,
+                           current_queue_slot = NULL,
+                           heartbeat_at = NOW()
+                    WHERE  experiment_id = :experiment_id
+                      AND  agent = :agent
+                      AND  (model = :model OR (model IS NULL AND :model IS NULL))
+                      AND  id != :origin_trial_id
+                      AND  status IN ('PENDING', 'QUEUED', 'RETRYING')
+                    RETURNING id
+                    """
+                ),
+                {
+                    "experiment_id": experiment_id,
+                    "agent": agent,
+                    "model": model,
+                    "origin_trial_id": origin_trial_id,
+                    "reason": reason,
+                },
+            )
+            cancelled_ids = [row[0] for row in result.fetchall()]
+
+            if cancelled_ids:
+                await session.execute(
+                    text(
+                        """
+                        UPDATE worker_jobs
+                        SET    status = 'CANCELLED',
+                               finished_at = NOW(),
+                               error_message = :reason,
+                               current_worker_id = NULL,
+                               current_queue_slot = NULL,
+                               modal_function_call_id = NULL
+                        WHERE  subject_table = 'trials'
+                          AND  subject_id = ANY(:trial_ids)
+                          AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
+                        """
+                    ),
+                    {"trial_ids": cancelled_ids, "reason": reason},
+                )
+
+            await session.commit()
+
+        console.print(
+            f"[red]Fatal-infra cascade: cancelled {len(cancelled_ids)} sibling "
+            f"trials of (experiment={experiment_id}, agent={agent}, model={model}) "
+            f"due to {exception_type}[/red]"
+        )
+        await _notify_blocked_cohort(
+            origin_trial_id=origin_trial_id,
+            experiment_id=experiment_id,
+            agent=agent,
+            model=model,
+            exception_type=exception_type,
+            cancelled_count=len(cancelled_ids),
+        )
+    except Exception as exc:
+        # Log and swallow: the origin trial is already settled. We'd
+        # rather lose a cascade than crash the worker mid-write.
+        console.print(
+            f"[yellow]Sibling cancel failed for trial={origin_trial_id}: "
+            f"{type(exc).__name__}: {exc}[/yellow]"
+        )
+
+
+async def _notify_blocked_cohort(
+    *,
+    origin_trial_id: str,
+    experiment_id: str | None,
+    agent: str,
+    model: str | None,
+    exception_type: str,
+    cancelled_count: int,
+) -> None:
+    """Notification hook for fatal-infra cascades.
+
+    Default implementation logs to stderr; production deployments
+    should override via ``settings.fatal_infra_notify_callback`` (a
+    coroutine) to fan out to Slack / SES / PagerDuty. Kept as a single
+    function so wiring an email later is one place to edit.
+    """
+    callback = getattr(settings, "fatal_infra_notify_callback", None)
+    payload = {
+        "origin_trial_id": origin_trial_id,
+        "experiment_id": experiment_id,
+        "agent": agent,
+        "model": model,
+        "exception_type": exception_type,
+        "cancelled_siblings": cancelled_count,
+        "at": utcnow().isoformat(),
+    }
+    console.print(f"[bold red]NOTIFY blocked cohort[/bold red] {payload}")
+    if callback is None:
+        return
+    try:
+        await callback(payload)
+    except Exception as exc:
+        console.print(
+            f"[yellow]fatal_infra_notify_callback raised: "
+            f"{type(exc).__name__}: {exc}[/yellow]"
+        )
 
 
 async def _handle_harbor_event(

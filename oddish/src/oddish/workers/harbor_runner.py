@@ -158,6 +158,14 @@ class HarborOutcome:
     # Whether an ATIF trajectory file exists
     has_trajectory: bool = False
 
+    # Leaf exception class name (e.g. "AuthenticationError",
+    # "NonZeroAgentExitCodeError"). Sourced from
+    # ``TrialResult.exception_info.exception_type`` when the trial
+    # produced one, or from ``type(e).__name__`` for exceptions that
+    # escape ``Job.create``. Used by ``oddish.error_classification`` to
+    # decide retry-vs-block and to drive sibling cascade-cancel.
+    exception_type: str | None = None
+
 
 def _extract_timing_info(trial_result: Any) -> dict[str, Any] | None:
     """Extract per-phase timing from a TrialResult's TimingInfo fields."""
@@ -441,12 +449,14 @@ def _extract_outcome_from_job_result(
     """Extract reward, error, token usage, timing, and trajectory from Harbor's JobResult."""
     # Extract error from trial results
     error: str | None = None
+    exception_type: str | None = None
     for trial_result in job_result.trial_results:
         if trial_result.exception_info:
             exc = trial_result.exception_info
             msg = exc.exception_message or exc.exception_type
             if msg:
                 error = str(msg)
+                exception_type = exc.exception_type or None
                 break
 
     # Extract token usage & cost from the first trial's AgentContext
@@ -496,6 +506,7 @@ def _extract_outcome_from_job_result(
             cost_usd=cost_usd,
             phase_timing=phase_timing,
             has_trajectory=has_trajectory,
+            exception_type=exception_type,
         )
 
     # Method 1: Check reward_stats in job stats.
@@ -804,15 +815,17 @@ async def run_harbor_trial_async(
             duration_sec=duration,
             job_result_path=debug_result_path,
             job_dir=actual_job_dir,
+            exception_type="CancelledError",
         )
     except Exception as e:
         duration = time.time() - start
+        outer_exception_type = type(e).__name__
         error_message = f"Harbor job execution failed: {_format_exception_message(e)}"
         error_message = _maybe_add_modal_debug_hint(error_message, modal_debug_log_path)
         debug_result_path = _write_debug_result_json(
             job_dir=actual_job_dir,
             duration_sec=duration,
-            exception_type=type(e).__name__,
+            exception_type=outer_exception_type,
             exception_message=error_message,
             debug_log_path=modal_debug_log_path,
         )
@@ -823,6 +836,7 @@ async def run_harbor_trial_async(
             duration_sec=duration,
             job_result_path=debug_result_path,
             job_dir=actual_job_dir,
+            exception_type=outer_exception_type,
         )
     finally:
         if task_tmpdir is not None:
