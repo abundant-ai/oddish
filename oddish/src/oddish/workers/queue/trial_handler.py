@@ -17,6 +17,7 @@ from harbor.viewer.scanner import JobScanner
 from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
+    ExperimentModel,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
@@ -52,6 +53,7 @@ class PreparedTrialRun:
     # Fields for sauron S3 mirror
     task_name: str = ""
     experiment_id: str = ""
+    experiment_name: str | None = None
     attempt_number: int = 1
     task_tags: dict | None = None
 
@@ -353,6 +355,11 @@ async def _prepare_trial_run(
         task_tags = dict(task.tags) if task and task.tags else None
 
         experiment_id = trial.experiment_id or ""
+        experiment_name: str | None = None
+        if experiment_id:
+            experiment = await session.get(ExperimentModel, experiment_id)
+            if experiment:
+                experiment_name = experiment.name
 
         # Prefer the version-specific path so the worker runs the exact
         # content the trial was created against.
@@ -394,6 +401,7 @@ async def _prepare_trial_run(
             trial_harbor_config=trial_harbor_config,
             task_name=task_name,
             experiment_id=experiment_id,
+            experiment_name=experiment_name,
             # Extract trial index from trial_id ("{task_id}-{index}") for the
             # sauron attempt number. This is the trial's position within its
             # task (0, 1, 2...), NOT the retry count (trial.attempts).
@@ -840,8 +848,10 @@ async def run_trial_job(
                         agent=prepared_trial.trial_agent,
                         model=prepared_trial.trial_model,
                         experiment_id=prepared_trial.experiment_id,
+                        experiment_name=prepared_trial.experiment_name,
                         attempt_number=prepared_trial.attempt_number,
                         github_meta=GitHubMeta.from_tags(prepared_trial.task_tags),
+                        task_tags=prepared_trial.task_tags,
                     )
                     if sauron_prefix:
                         console.print(f"[dim]Mirrored to sauron S3: {sauron_prefix}[/dim]")
