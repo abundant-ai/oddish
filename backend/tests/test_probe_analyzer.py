@@ -44,7 +44,9 @@ async def test_probe_analyzer_parses_json_response():
             verifier_stdout="passed: 0",
             reward=0.0,
             result_focus="Did the agent find spec ambiguities?",
-            evaluation_metric="cheat_ratio",
+            evaluation_metric="ratio",
+            ratio_unit="cheat",
+            ratio_verb="succeeded",
         )
 
     assert result["kind"] == "probe_summary"

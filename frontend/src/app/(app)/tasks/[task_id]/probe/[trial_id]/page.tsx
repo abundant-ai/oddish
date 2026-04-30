@@ -36,6 +36,14 @@ type ProbeSummary = {
   result_focus_findings?: string | null;
 };
 
+function pluralize(noun: string): string {
+  const n = noun.trim();
+  if (!n) return "";
+  if (/[sxz]$|[cs]h$/.test(n)) return n + "es";
+  if (/[^aeiou]y$/.test(n)) return n.slice(0, -1) + "ies";
+  return n + "s";
+}
+
 type Trial = {
   id: string;
   agent: string;
@@ -47,7 +55,10 @@ type Trial = {
   harbor_config: {
     mode?: string;
     extra_instructions?: string;
-    evaluation_metric?: "cheat_ratio" | "result_focus" | "none";
+    // "cheat_ratio" kept as legacy alias — read sites normalize it.
+    evaluation_metric?: "ratio" | "result_focus" | "none" | "cheat_ratio";
+    ratio_unit?: string | null;
+    ratio_verb?: string | null;
   } | null;
   result: {
     _artifacts?: {
@@ -215,11 +226,13 @@ export default function ProbeResultPage({
             </h2>
             <div className="flex items-center gap-2">
               {(() => {
-                const metric =
+                const rawMetric =
                   trial.harbor_config?.evaluation_metric ?? "none";
+                const metric =
+                  rawMetric === "cheat_ratio" ? "ratio" : rawMetric;
                 const label =
-                  metric === "cheat_ratio"
-                    ? "cheat ratio metric"
+                  metric === "ratio"
+                    ? "ratio metric"
                     : metric === "result_focus"
                       ? "result focus metric"
                       : "no specific metric";
@@ -235,8 +248,10 @@ export default function ProbeResultPage({
             </div>
           </div>
           {(() => {
-            const metric =
+            const rawMetric =
               trial.harbor_config?.evaluation_metric ?? "none";
+            const metric =
+              rawMetric === "cheat_ratio" ? "ratio" : rawMetric;
             // Always render the result_focus block when metric is result_focus,
             // even if findings are missing — show an "awaiting answer" placeholder.
             if (metric === "result_focus") {
@@ -316,9 +331,19 @@ export default function ProbeResultPage({
             </div>
           ) : null}
           {(() => {
-            const metric =
+            const rawMetric =
               trial.harbor_config?.evaluation_metric ?? "none";
-            // For cheat_ratio probes, render the breakdown chips even when
+            const metric =
+              rawMetric === "cheat_ratio" ? "ratio" : rawMetric;
+            const unit =
+              trial.harbor_config?.ratio_unit ??
+              (rawMetric === "cheat_ratio" ? "cheat" : "attempt");
+            const verb =
+              trial.harbor_config?.ratio_verb ??
+              (rawMetric === "cheat_ratio" ? "succeeded" : null);
+            const plural = pluralize(unit);
+            const verbStr = verb ? ` ${verb}` : "";
+            // For ratio probes, render the breakdown chips even when
             // attempts is missing/empty so the column shape is consistent.
             const all = summary.attempts ?? [];
             const succeeded = all.filter((a) => a.success === true).length;
@@ -326,7 +351,7 @@ export default function ProbeResultPage({
             const investigation = all.length - succeeded - blocked;
             const cheatTotal = succeeded + blocked;
 
-            if (metric === "cheat_ratio") {
+            if (metric === "ratio") {
               return (
                 <div className="flex flex-wrap items-center gap-2 text-xs">
                   <span
@@ -336,7 +361,8 @@ export default function ProbeResultPage({
                         : "bg-muted text-muted-foreground"
                     }`}
                   >
-                    {succeeded} cheat{succeeded === 1 ? "" : "s"} succeeded
+                    {succeeded} {succeeded === 1 ? unit : plural}
+                    {verbStr}
                   </span>
                   <span
                     className={`rounded px-2 py-1 font-medium ${
@@ -357,11 +383,11 @@ export default function ProbeResultPage({
                     <span className="text-muted-foreground">
                       {succeeded > 0
                         ? "task is gameable"
-                        : "task is robust to attempted cheats"}
+                        : "task is robust"}
                     </span>
                   ) : (
                     <span className="text-muted-foreground italic">
-                      no cheat attempts identified
+                      no {plural} identified
                     </span>
                   )}
                 </div>
@@ -373,12 +399,13 @@ export default function ProbeResultPage({
               <div className="flex flex-wrap items-center gap-2 text-xs">
                 {succeeded > 0 ? (
                   <span className="rounded bg-red-500/15 px-2 py-1 font-medium text-red-600">
-                    {succeeded} cheat{succeeded === 1 ? "" : "s"} succeeded
+                    {succeeded} {succeeded === 1 ? unit : plural}
+                    {verbStr}
                   </span>
                 ) : null}
                 {blocked > 0 ? (
                   <span className="rounded bg-emerald-500/15 px-2 py-1 font-medium text-emerald-700">
-                    {blocked} blocked by verifier
+                    {blocked} blocked
                   </span>
                 ) : null}
                 {investigation > 0 ? (
@@ -390,7 +417,7 @@ export default function ProbeResultPage({
                   <span className="text-muted-foreground">
                     {succeeded > 0
                       ? "task is gameable"
-                      : "task is robust to attempted cheats"}
+                      : "task is robust"}
                   </span>
                 ) : null}
               </div>
