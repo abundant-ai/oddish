@@ -210,6 +210,26 @@ class TaskSubmission(BaseModel):
         default=None,
         description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
     )
+    preset_name: str | None = Field(
+        default=None,
+        description=(
+            "Stable matching key for the prior-attempts query. Set when "
+            "the submitter ran with a probe preset selected. Persisted in "
+            "harbor_config so future trials can find prior runs of the "
+            "same (task_id, preset_name)."
+        ),
+    )
+    prior_attempts_config: dict | None = Field(
+        default=None,
+        description=(
+            "Optional config controlling whether prior failed attempts "
+            "from the same (task_id, preset_name) get prepended to "
+            "instruction.md. Shape: "
+            "{enabled: bool, mode: 'last_n'|'all'|'since_date', "
+            "last_n: int, since_date: str (ISO date), max_attempts: int}. "
+            "If null or enabled=false, no injection happens."
+        ),
+    )
 
     @model_validator(mode="after")
     def require_models(self):
@@ -288,6 +308,26 @@ class TaskSweepSubmission(BaseModel):
     ratio_verb: str | None = Field(
         default=None,
         description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
+    )
+    preset_name: str | None = Field(
+        default=None,
+        description=(
+            "Stable matching key for the prior-attempts query. Set when "
+            "the submitter ran with a probe preset selected. Persisted in "
+            "harbor_config so future trials can find prior runs of the "
+            "same (task_id, preset_name)."
+        ),
+    )
+    prior_attempts_config: dict | None = Field(
+        default=None,
+        description=(
+            "Optional config controlling whether prior failed attempts "
+            "from the same (task_id, preset_name) get prepended to "
+            "instruction.md. Shape: "
+            "{enabled: bool, mode: 'last_n'|'all'|'since_date', "
+            "last_n: int, since_date: str (ISO date), max_attempts: int}. "
+            "If null or enabled=false, no injection happens."
+        ),
     )
 
     # Common fields
