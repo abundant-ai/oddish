@@ -195,10 +195,13 @@ def _init_cc_chat_orchestrator() -> None:
 
         file_store = S3FileStore(storage=_OddishStorageAdapter())
 
+    skills_dir = Path(__file__).parent / "services" / "cc_chat" / "skills"
+
     orch = CCChatOrchestrator(
         daytona=RealDaytonaClient(api_key=settings.daytona_api_key),
         file_store=file_store,
         anthropic_api_key=settings.anthropic_api_key,
         auto_stop_minutes=30,
+        skills_dir=skills_dir,
     )
     init_orchestrator(orch)

@@ -35,15 +35,15 @@ async def test_start_creates_sandbox_and_uploads_files(fake_daytona):
     assert sbx.auto_stop_minutes == 30
 
     # CLAUDE.md was written
-    assert "/workspace/CLAUDE.md" in sbx.files
-    claude_md = sbx.files["/workspace/CLAUDE.md"].decode()
+    assert "/home/daytona/workspace/CLAUDE.md" in sbx.files
+    claude_md = sbx.files["/home/daytona/workspace/CLAUDE.md"].decode()
     assert FIXTURE_EXPERIMENT_ID in claude_md
     # At least one trial id appears
     assert "hello-world__eU7yQqg" in claude_md
 
-    # Experiment files are under /workspace/jobs/<experiment_id>/
+    # Experiment files are under <_WORKSPACE_ROOT>/jobs/<experiment_id>/
     expected_path = (
-        f"/workspace/jobs/{FIXTURE_EXPERIMENT_ID}/"
+        f"/home/daytona/workspace/jobs/{FIXTURE_EXPERIMENT_ID}/"
         "hello-world__eU7yQqg/result.json"
     )
     assert expected_path in sbx.files
@@ -176,3 +176,42 @@ async def test_close_unknown_session_is_idempotent(fake_daytona):
     orch = _make_orchestrator(fake_daytona)
     # No raise
     await orch.close(session_id="never-existed")
+
+
+@pytest.mark.asyncio
+async def test_start_injects_skills_when_skills_dir_set(fake_daytona, tmp_path):
+    skill_root = tmp_path / "skills"
+    (skill_root / "eval-task-analysis").mkdir(parents=True)
+    (skill_root / "eval-task-analysis" / "SKILL.md").write_text(
+        "---\nname: eval-task-analysis\ndescription: test\n---\nbody"
+    )
+    (skill_root / "eval-task-analysis" / "references").mkdir()
+    (skill_root / "eval-task-analysis" / "references" / "notes.md").write_text("hi")
+
+    orch = CCChatOrchestrator(
+        daytona=fake_daytona,
+        file_store=LocalFileStore(base_path=FIXTURE_BASE),
+        anthropic_api_key="sk-test",
+        auto_stop_minutes=30,
+        skills_dir=skill_root,
+    )
+    await orch.start(experiment_id=FIXTURE_EXPERIMENT_ID, org_id="org-1")
+    sbx = fake_daytona.created[0]
+
+    skill_md = "/home/daytona/workspace/.claude/skills/eval-task-analysis/SKILL.md"
+    nested = (
+        "/home/daytona/workspace/.claude/skills/"
+        "eval-task-analysis/references/notes.md"
+    )
+    assert skill_md in sbx.files
+    assert nested in sbx.files
+    assert b"eval-task-analysis" in sbx.files[skill_md]
+
+
+@pytest.mark.asyncio
+async def test_start_skips_skills_when_no_dir(fake_daytona):
+    orch = _make_orchestrator(fake_daytona)  # default skills_dir=None
+    await orch.start(experiment_id=FIXTURE_EXPERIMENT_ID, org_id="org-1")
+    sbx = fake_daytona.created[0]
+    skill_paths = [p for p in sbx.files if "/.claude/skills/" in p]
+    assert skill_paths == []
