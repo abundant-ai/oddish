@@ -13,7 +13,9 @@ so the test patterns and prompt-shape conventions match the rest of the repo.
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any
 
 MAX_TEXT_CHARS = 2000
@@ -106,3 +108,100 @@ def preprocess(trajectory: dict) -> dict:
         new_steps.append(new_step)
     out["steps"] = new_steps
     return out
+
+
+class SummaryGenerationError(RuntimeError):
+    """Raised when the LLM returned content we could not turn into a summary."""
+
+
+_PROMPT_HEADER = (
+    "You are summarizing a recorded agent trajectory for a developer who "
+    "wants a quick scan before diving into the per-step view. Produce a "
+    "2-3 sentence summary covering what the agent set out to do and how "
+    "it ended, then 3-6 pivotal 'key moments' with their step ids.\n\n"
+    "Each highlight must reference a real `step_id` from the trajectory below. "
+    "Pick steps where something genuinely shifted: a strategy was committed, "
+    "a key tool call landed, an error redirected the work, or the final "
+    "verdict was reached. Skip filler.\n\n"
+    "Respond with ONLY a JSON object (no preamble, no code fences) matching "
+    "this exact shape:\n"
+    "{\n"
+    '  "summary": "2-3 sentences",\n'
+    '  "highlights": [\n'
+    '    {"step_id": <int>, "title": "<short label>", "why": "<one sentence>"}\n'
+    "  ]\n"
+    "}\n"
+    "Highlights must be ordered by step_id ascending.\n\n"
+)
+
+
+def _strip_code_fences(text: str) -> str:
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```", 2)[1]
+        if raw.lstrip().startswith("json"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw
+        raw = raw.rsplit("```", 1)[0]
+    return raw.strip()
+
+
+async def generate(trajectory: dict) -> dict:
+    """Call Claude to produce a persistable summary dict for ``trajectory``.
+
+    Raises ``SummaryGenerationError`` if the model returns malformed JSON or
+    cannot be parsed. Highlights referencing step_ids that are not in the
+    source trajectory are dropped silently.
+    """
+    from anthropic import AsyncAnthropic
+
+    valid_step_ids = {
+        step.get("step_id")
+        for step in (trajectory.get("steps") or [])
+        if isinstance(step.get("step_id"), int)
+    }
+
+    compact = preprocess(trajectory)
+    prompt = _PROMPT_HEADER + "<trajectory>\n" + json.dumps(compact) + "\n</trajectory>"
+
+    client = AsyncAnthropic()
+    msg = await client.messages.create(
+        model=MODEL,
+        max_tokens=2048,
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    raw_text = ""
+    for block in msg.content:
+        if hasattr(block, "text"):
+            raw_text += block.text
+    raw_text = _strip_code_fences(raw_text)
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        raise SummaryGenerationError(f"Model returned non-JSON: {e}") from e
+
+    summary = str(parsed.get("summary") or "").strip()
+    raw_highlights = parsed.get("highlights") or []
+    highlights: list[dict] = []
+    if isinstance(raw_highlights, list):
+        for entry in raw_highlights:
+            if not isinstance(entry, dict):
+                continue
+            step_id = entry.get("step_id")
+            if not isinstance(step_id, int) or step_id not in valid_step_ids:
+                continue
+            highlights.append(
+                {
+                    "step_id": step_id,
+                    "title": str(entry.get("title") or "").strip(),
+                    "why": str(entry.get("why") or "").strip(),
+                }
+            )
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "model": MODEL,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "summary": summary,
+        "highlights": highlights,
+    }
