@@ -49,6 +49,14 @@ type Preset = {
   updated_at: string;
 };
 
+function pluralize(noun: string): string {
+  const n = noun.trim();
+  if (!n) return "";
+  if (/[sxz]$|[cs]h$/.test(n)) return n + "es";
+  if (/[^aeiou]y$/.test(n)) return n.slice(0, -1) + "ies";
+  return n + "s";
+}
+
 function normalizePreset(p: Preset): Preset {
   // Accept legacy "cheat_ratio" from older stored presets / seeds and
   // promote it to "ratio" with the cheat-flavored defaults.
@@ -642,6 +650,58 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
       </Dialog>
       {selectedPresetId ? (
         <>
+      {(() => {
+        if (!selectedPreset) return null;
+        const m = selectedPreset.evaluation_metric;
+        const metric = m === "cheat_ratio" ? "ratio" : m;
+        if (metric === "ratio") {
+          const unit =
+            selectedPreset.ratio_unit ??
+            (m === "cheat_ratio" ? "cheat" : "attempt");
+          const verb =
+            selectedPreset.ratio_verb ??
+            (m === "cheat_ratio" ? "succeeded" : null);
+          const plural = pluralize(unit);
+          const example = verb
+            ? `e.g. "2/5 ${plural} ${verb}"`
+            : `e.g. "2/5 ${plural}"`;
+          return (
+            <div className="rounded border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">
+                Result column will show:
+              </span>{" "}
+              ratio of {plural}
+              {verb ? ` ${verb}` : ""} ({example}).{" "}
+              <button
+                type="button"
+                onClick={openEditModal}
+                className="underline hover:text-foreground"
+              >
+                Edit
+              </button>{" "}
+              to change.
+            </div>
+          );
+        }
+        if (metric === "result_focus") {
+          return (
+            <div className="rounded border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">
+                Result column will show:
+              </span>{" "}
+              the analyzer's answer to your focus question.
+            </div>
+          );
+        }
+        return (
+          <div className="rounded border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">
+              Result column will show:
+            </span>{" "}
+            raw verifier reward (no specific evaluation metric).
+          </div>
+        );
+      })()}
       <div className="flex gap-4">
         <label className="flex-1">
           <span className="text-sm font-medium">Agent</span>
