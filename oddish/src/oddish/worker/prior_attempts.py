@@ -115,15 +115,11 @@ async def fetch_prior_attempts(
         since_raw = filter_config.get("since_date")
         if since_raw:
             try:
-                since_str = str(since_raw)
-                if "T" in since_str:
-                    since_dt = datetime.fromisoformat(since_str)
-                else:
-                    since_dt = datetime.fromisoformat(since_str).replace(
-                        tzinfo=timezone.utc
-                    )
+                since_dt = datetime.fromisoformat(str(since_raw))
             except ValueError:
                 return []
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
             stmt = stmt.where(TrialModel.finished_at >= since_dt)
         stmt = stmt.limit(sanity_run_cap)
     else:  # "all" or unknown → fall back to all w/ sanity cap
