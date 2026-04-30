@@ -477,6 +477,14 @@ class TrialResponse(BaseModel):
     )
     error_message: str | None
     result: dict | None
+    harbor_config: dict | None = Field(
+        None,
+        description=(
+            "Harbor passthrough config (agent env/kwargs, environment "
+            "resources, freeform mode marker, extra_instructions, etc.). "
+            "Surfaced for clients that need to render mode-specific UI."
+        ),
+    )
 
     # Token usage & cost
     input_tokens: int | None = Field(
