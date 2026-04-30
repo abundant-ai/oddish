@@ -274,9 +274,9 @@ class Settings(BaseSettings):
     # frontend to render oddish-originated experiments natively.
     # Uses AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY from environment for credentials.
     sauron_s3_bucket: str = ""
-    # Fallback org/repo for non-PR (CLI-triggered) experiments.
+    # Org slug used as the top-level path segment for non-PR (CLI-triggered)
+    # experiments. PR-triggered runs derive owner/repo from task.tags.github_meta.
     sauron_s3_org: str = "oddish"
-    sauron_s3_repo: str = "cli-runs"
 
     # Task upload limits (MB)
     max_task_upload_mb: int = 50

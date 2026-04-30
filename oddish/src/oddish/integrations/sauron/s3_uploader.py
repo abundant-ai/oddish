@@ -2,23 +2,33 @@
 Mirror trial artifacts to sauron's AWS S3 bucket.
 
 When ODDISH_SAURON_S3_BUCKET is set, trial results are uploaded to
-sauron's bucket in sauron's expected layout so sauron can render
-oddish experiments using its existing UI components.
+sauron's bucket so sauron can render oddish experiments using its
+existing UI components.
 
 Layout:
-    {org}/{repo}/pr-{n}/run-{experiment_id}/
-        agent-{name}:{model}/
-            {task_name}/
-                attempt_{n}/
-                    result.json, agent/trajectory.json, verifier/reward.txt, ...
+    PR-triggered:
+        {owner}/{repo}/pr-{n}/run-{experiment_id}/
+            run-meta.json
+            agent-{name}:{model}/{task_name}/attempt_{n}/...
+
+    CLI-triggered:
+        {org_slug}/runs/run-{experiment_id}/
+            run-meta.json
+            agent-{name}:{model}/{task_name}/attempt_{n}/...
+
+`run-meta.json` carries identity/metadata at the run root so sauron can
+render run headers without parsing the path or hitting GitHub. Aggregation
+(agents x tasks x attempts) is still derived from S3 listing.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import aioboto3
 from botocore.config import Config
@@ -27,6 +37,8 @@ from oddish.config import settings
 from oddish.integrations.github.client import GitHubMeta
 
 logger = logging.getLogger(__name__)
+
+MANIFEST_SCHEMA_VERSION = 1
 
 
 class SauronS3Uploader:
@@ -63,58 +75,87 @@ class SauronS3Uploader:
         agent: str,
         model: str | None,
         experiment_id: str,
+        experiment_name: str | None,
         attempt_number: int,
         github_meta: GitHubMeta | None,
+        task_tags: dict | None = None,
     ) -> str | None:
-        """Upload trial artifacts. Returns the S3 prefix or None on failure."""
+        """Upload trial artifacts. Returns the trial S3 prefix or None on failure."""
         if not self.is_enabled():
             return None
 
-        prefix = self._build_prefix(
-            github_meta=github_meta,
-            experiment_id=experiment_id,
-            agent=agent,
-            model=model,
-            task_name=task_name,
-            attempt_number=attempt_number,
+        run_prefix = self._build_run_prefix(github_meta=github_meta, experiment_id=experiment_id)
+        attempt_prefix = (
+            f"{run_prefix}agent-{agent}:{(model or 'default').replace('/', '-')}/"
+            f"{task_name}/attempt_{attempt_number}/"
         )
 
         # Harbor's job_dir contains a task-{name}__{hash}/ subdirectory with
-        # the actual trial output (agent/, verifier/, result.json). Sauron
-        # expects these at the attempt root, so we upload from the subdirectory.
+        # the actual trial output. Sauron expects these at the attempt root.
         source = self._find_trial_subdir(harbor_job_dir) or harbor_job_dir
 
         try:
-            await self._upload_directory(source, prefix)
-            return prefix
+            await self._upload_directory(source, attempt_prefix)
+            await self._write_manifest(
+                run_prefix=run_prefix,
+                experiment_id=experiment_id,
+                experiment_name=experiment_name,
+                github_meta=github_meta,
+                task_tags=task_tags,
+            )
+            return attempt_prefix
         except Exception as e:
-            logger.warning("Sauron mirror failed for %s: %s", prefix, e)
+            logger.warning("Sauron mirror failed for %s: %s", attempt_prefix, e)
             return None
 
     # -- Path construction ---------------------------------------------------
 
-    def _build_prefix(
+    @staticmethod
+    def _build_run_prefix(*, github_meta: GitHubMeta | None, experiment_id: str) -> str:
+        if github_meta:
+            return (
+                f"{github_meta.owner}/{github_meta.repo}/"
+                f"pr-{github_meta.pr_number}/run-{experiment_id}/"
+            )
+        org = settings.sauron_s3_org or "oddish"
+        return f"{org}/runs/run-{experiment_id}/"
+
+    # -- Manifest ------------------------------------------------------------
+
+    async def _write_manifest(
         self,
         *,
-        github_meta: GitHubMeta | None,
+        run_prefix: str,
         experiment_id: str,
-        agent: str,
-        model: str | None,
-        task_name: str,
-        attempt_number: int,
-    ) -> str:
-        if github_meta:
-            org, repo, pr = github_meta.owner, github_meta.repo, github_meta.pr_number
-        else:
-            org = settings.sauron_s3_org or "oddish"
-            repo = settings.sauron_s3_repo or "cli-runs"
-            pr = 0
+        experiment_name: str | None,
+        github_meta: GitHubMeta | None,
+        task_tags: dict | None,
+    ) -> None:
+        """Write run-meta.json at run root. Last-writer-wins for stable fields."""
+        manifest: dict[str, Any] = {
+            "schema_version": MANIFEST_SCHEMA_VERSION,
+            "kind": "pr" if github_meta else "experiment",
+            "experiment_id": experiment_id,
+            "experiment_name": experiment_name,
+            "github": (
+                {
+                    "owner": github_meta.owner,
+                    "repo": github_meta.repo,
+                    "pr_number": github_meta.pr_number,
+                }
+                if github_meta
+                else None
+            ),
+            "tags": {k: v for k, v in (task_tags or {}).items() if k != "github_meta"},
+        }
+        body = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
 
-        model_key = (model or "default").replace("/", "-")
-        return (
-            f"{org}/{repo}/pr-{pr}/run-{experiment_id}/"
-            f"agent-{agent}:{model_key}/{task_name}/"
-            f"attempt_{attempt_number}/"
+        await self._ensure_client()
+        await self._client.put_object(
+            Bucket=settings.sauron_s3_bucket,
+            Key=f"{run_prefix}run-meta.json",
+            Body=body,
+            ContentType="application/json",
         )
 
     # -- Harbor directory unwrapping -----------------------------------------
@@ -125,7 +166,6 @@ class SauronS3Uploader:
         if not harbor_job_dir.exists():
             return None
         subdirs = [d for d in harbor_job_dir.iterdir() if d.is_dir()]
-        # Prefer dirs matching Harbor's {name}__{hash} convention
         trial_dirs = [d for d in subdirs if "__" in d.name]
         if len(trial_dirs) == 1:
             return trial_dirs[0]
