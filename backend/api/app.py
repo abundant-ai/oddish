@@ -73,7 +73,28 @@ async def lifespan(_api: FastAPI):
 
     role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
 
+    cc_orch = _try_get_cc_chat_orchestrator()
+    if cc_orch is not None:
+        print("[cc_chat] lifespan startup: starting sweeper", flush=True)
+        cc_orch.start_sweeper()
+    else:
+        print(
+            "[cc_chat] lifespan startup: orchestrator NOT initialized; "
+            "sweeper + close_all hooks will not run",
+            flush=True,
+        )
+
     yield
+
+    if cc_orch is not None:
+        try:
+            await cc_orch.stop_sweeper()
+        except Exception:
+            logger.exception("cc_chat: stop_sweeper raised")
+        try:
+            await cc_orch.close_all()
+        except Exception:
+            logger.exception("cc_chat: close_all raised")
 
     role_defaults_task.cancel()
     try:
@@ -85,6 +106,16 @@ async def lifespan(_api: FastAPI):
         await close_database_connections()
     except Exception:
         pass
+
+
+def _try_get_cc_chat_orchestrator():
+    """Return the cc_chat orchestrator singleton, or None if not initialized."""
+    try:
+        from api.routers.cc_chat import get_orchestrator
+
+        return get_orchestrator()
+    except (ImportError, RuntimeError):
+        return None
 
 
 def create_app() -> FastAPI:
@@ -168,7 +199,6 @@ def _init_cc_chat_orchestrator() -> None:
         return
 
     if settings.cc_chat_local_jobs_dir:
-        from pathlib import Path
         file_store = LocalFileStore(
             base_path=Path(settings.cc_chat_local_jobs_dir)
         )

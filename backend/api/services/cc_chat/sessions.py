@@ -45,3 +45,7 @@ class SessionRegistry:
         for state in list(self._sessions.values()):
             if state.last_activity < cutoff:
                 yield state
+
+    def iter_all(self) -> Iterator[SessionState]:
+        """Snapshot iterator over all sessions; safe under concurrent mutation."""
+        yield from list(self._sessions.values())

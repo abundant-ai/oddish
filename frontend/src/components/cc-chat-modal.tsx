@@ -3,16 +3,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { CodeBlock } from "@/components/code-block";
 import { streamCCChatMessage } from "@/lib/cc-chat-stream";
+import { renderStreamEvent } from "@/lib/cc-chat-render";
 
 type Phase = "creating" | "ready" | "thinking" | "idle" | "closed" | "error";
 
@@ -59,19 +59,23 @@ export function CCChatModal({
     void start();
   }, [open, start]);
 
-  // Close on unmount / open=false
+  // Close on unmount, modal close, OR tab/window close.
+  // - useEffect cleanup handles in-app navigation and modal close.
+  // - pagehide handles tab close, window close, and iOS BFCache eviction —
+  //   those don't run React unmount.
   useEffect(() => {
+    if (!sessionId) return;
+    const url = `/api/experiments/${encodeURIComponent(
+      experimentId,
+    )}/cc-session/${encodeURIComponent(sessionId)}`;
+    const closeSession = () => {
+      // sendBeacon is POST-only; fetch keepalive lets DELETE survive unload.
+      void fetch(url, { method: "DELETE", keepalive: true });
+    };
+    window.addEventListener("pagehide", closeSession);
     return () => {
-      if (sessionId) {
-        const url = `/api/experiments/${encodeURIComponent(
-          experimentId,
-        )}/cc-session/${encodeURIComponent(sessionId)}`;
-        if (typeof navigator !== "undefined" && navigator.sendBeacon) {
-          navigator.sendBeacon(url);
-        } else {
-          void fetch(url, { method: "DELETE", keepalive: true });
-        }
-      }
+      window.removeEventListener("pagehide", closeSession);
+      closeSession();
     };
   }, [experimentId, sessionId]);
 
@@ -94,13 +98,17 @@ export function CCChatModal({
     try {
       await streamCCChatMessage(url, { content }, (e) => {
         if (e.kind === "message" || e.kind === "error") {
+          // Pure update: in React strict mode the updater runs twice, so
+          // mutating `last.events` would append the same event twice.
           setTurns((prev) => {
-            const next = [...prev];
-            const last = next[next.length - 1];
-            if (last && last.role === "assistant") {
-              last.events = [...last.events, e.data];
-            }
-            return next;
+            if (prev.length === 0) return prev;
+            const last = prev[prev.length - 1];
+            if (last.role !== "assistant") return prev;
+            const newLast = {
+              ...last,
+              events: [...last.events, e.data],
+            };
+            return [...prev.slice(0, -1), newLast];
           });
         }
       });
@@ -114,19 +122,22 @@ export function CCChatModal({
   }, [draft, experimentId, sessionId]);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Chat with experiment logs</DialogTitle>
-          <DialogDescription>
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent
+        side="right"
+        className="w-full sm:max-w-xl flex flex-col gap-4"
+      >
+        <SheetHeader>
+          <SheetTitle>Chat with experiment logs</SheetTitle>
+          <SheetDescription>
             Status: <span className="font-mono text-xs">{phase}</span>
             {error ? (
               <span className="text-destructive ml-2">— {error}</span>
             ) : null}
-          </DialogDescription>
-        </DialogHeader>
+          </SheetDescription>
+        </SheetHeader>
 
-        <div className="max-h-[60vh] overflow-y-auto space-y-4 py-2">
+        <div className="flex-1 overflow-y-auto space-y-4 py-2">
           {turns.map((turn, i) => (
             <div key={i}>
               {turn.role === "user" ? (
@@ -137,19 +148,24 @@ export function CCChatModal({
                   <div className="whitespace-pre-wrap text-sm">{turn.text}</div>
                 </div>
               ) : (
-                <div className="rounded-md border px-3 py-2">
+                <div className="rounded-md border px-3 py-2 space-y-2">
                   <div className="text-xs font-medium uppercase opacity-60">
                     claude
                   </div>
                   {turn.events.length === 0 ? (
                     <div className="text-sm italic opacity-60">thinking…</div>
                   ) : (
-                    <CodeBlock
-                      code={turn.events
-                        .map((e) => JSON.stringify(e, null, 2))
-                        .join("\n")}
-                      language="json"
-                    />
+                    <div className="space-y-1">
+                      {turn.events.map((event, j) => {
+                        const rendered = renderStreamEvent(event);
+                        if (rendered === null) return null;
+                        return (
+                          <div key={j} className="text-sm">
+                            {rendered}
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
               )}
@@ -195,7 +211,7 @@ export function CCChatModal({
             Download skills
           </Button>
         </div>
-      </DialogContent>
-    </Dialog>
+      </SheetContent>
+    </Sheet>
   );
 }

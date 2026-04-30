@@ -28,7 +28,12 @@ class LocalFileStore:
         root = self.base_path / experiment_id
         if not root.is_dir():
             return
-        for path in root.rglob("*"):
+        # `recurse_symlinks=True` (Python 3.13+) is required because the
+        # local seed script symlinks each trial dir into base_path; without
+        # it rglob skips symlinked subdirs and yields zero files, causing
+        # the cc-chat sandbox to start with an empty `jobs/<exp>/` tree and
+        # the assistant to (correctly) report "no trial data loaded yet".
+        for path in root.rglob("*", recurse_symlinks=True):
             if not path.is_file():
                 continue
             if any(part.startswith(".") for part in path.relative_to(root).parts):
