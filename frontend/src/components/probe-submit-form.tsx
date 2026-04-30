@@ -34,6 +34,14 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800";
 // and seeds may still carry it. We normalize to "ratio" at read time.
 type EvaluationMetric = "ratio" | "result_focus" | "none" | "cheat_ratio";
 
+type PriorAttemptsConfig = {
+  enabled: boolean;
+  mode: "last_n" | "all" | "since_date";
+  last_n?: number;        // used when mode === "last_n"
+  since_date?: string;    // ISO date (YYYY-MM-DD), used when mode === "since_date"
+  max_attempts: number;
+};
+
 type Preset = {
   id: string;
   name: string;
@@ -44,6 +52,7 @@ type Preset = {
   evaluation_metric: EvaluationMetric;
   ratio_unit?: string | null;
   ratio_verb?: string | null;
+  include_prior_attempts?: PriorAttemptsConfig | null;
   is_seed: boolean;
   created_at: string;
   updated_at: string;
@@ -60,15 +69,18 @@ function pluralize(noun: string): string {
 function normalizePreset(p: Preset): Preset {
   // Accept legacy "cheat_ratio" from older stored presets / seeds and
   // promote it to "ratio" with the cheat-flavored defaults.
-  if (p.evaluation_metric === "cheat_ratio") {
-    return {
-      ...p,
-      evaluation_metric: "ratio",
-      ratio_unit: p.ratio_unit ?? "cheat",
-      ratio_verb: p.ratio_verb ?? "succeeded",
-    };
-  }
-  return p;
+  const base =
+    p.evaluation_metric === "cheat_ratio"
+      ? {
+          ...p,
+          evaluation_metric: "ratio" as EvaluationMetric,
+          ratio_unit: p.ratio_unit ?? "cheat",
+          ratio_verb: p.ratio_verb ?? "succeeded",
+        }
+      : p;
+  // include_prior_attempts is optional. Stored presets from before this
+  // feature won't have it; leave undefined so the UI shows the toggle off.
+  return base;
 }
 
 const SEED_PRESETS: Preset[] = [
