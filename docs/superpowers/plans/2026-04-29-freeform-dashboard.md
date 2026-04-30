@@ -24,6 +24,7 @@ Before starting this plan:
 - The `oddish` repo at `~/Developer/os_repos/oddish`.
 
 After this plan ships, you'll be able to:
+
 1. Open `http://localhost:3000`, sign in with a Clerk test user.
 2. Navigate into any seeded task (the `scripts/seed_tasks.py` output gives you 8 tasks).
 3. Click "Freeform run" → land on `/tasks/<id>/freeform-agent`.
@@ -55,9 +56,9 @@ Backend tests live under `backend/tests/` and use pytest. Run with `cd backend &
 ## Task 1: Spin up local Postgres + MinIO
 
 **Files:**
-- Create: `~/Developer/os_repos/oddish/scripts/dev_up.sh`
 
-- [ ] **Step 1: Write the bring-up script**
+- Create: `~/Developer/os_repos/oddish/scripts/dev_up.sh`
+- **Step 1: Write the bring-up script**
 
 ```bash
 cat > ~/Developer/os_repos/oddish/scripts/dev_up.sh <<'EOF'
@@ -98,7 +99,7 @@ EOF
 chmod +x ~/Developer/os_repos/oddish/scripts/dev_up.sh
 ```
 
-- [ ] **Step 2: Run it**
+- **Step 2: Run it**
 
 ```bash
 ~/Developer/os_repos/oddish/scripts/dev_up.sh
@@ -106,7 +107,7 @@ chmod +x ~/Developer/os_repos/oddish/scripts/dev_up.sh
 
 Expected: containers start; final lines print connection info; `docker ps` shows `odd-pg` and `odd-s3`.
 
-- [ ] **Step 3: Commit**
+- **Step 3: Commit**
 
 ```bash
 cd ~/Developer/os_repos/oddish
@@ -119,18 +120,19 @@ git commit -m "Add dev_up.sh for local Postgres + MinIO bring-up"
 ## Task 2: Backend `.env.local` + Clerk test keys + ANTHROPIC_API_KEY
 
 **Files:**
-- Create: `~/Developer/os_repos/oddish/backend/.env.local`
 
-- [ ] **Step 1: Get Clerk test keys**
+- Create: `~/Developer/os_repos/oddish/backend/.env.local`
+- **Step 1: Get Clerk test keys**
 
 In your browser:
+
 1. Go to clerk.com, sign up if needed, create a new application.
 2. In the application's dashboard → "API Keys" → copy `Publishable key` and `Secret key` (test mode by default).
 3. In "Webhooks" → create an endpoint pointed at `http://localhost:8000/api/clerk-webhooks` (URL doesn't have to exist for local dev — Clerk just needs a webhook secret) → copy the webhook signing secret.
 4. In "JWT templates" → create a template called `oddish` → set "Audience" to `oddish` and any reasonable expiration (e.g. 60 minutes).
 5. Note the `Frontend API` URL (looks like `clerk.<your-app>.clerk.accounts.dev`); that's `CLERK_DOMAIN`.
 
-- [ ] **Step 2: Write the .env.local file**
+- **Step 2: Write the .env.local file**
 
 ```bash
 cat > ~/Developer/os_repos/oddish/backend/.env.local <<'EOF'
@@ -153,7 +155,7 @@ EOF
 
 Then edit the file and replace the `REPLACE_ME` placeholders with your actual values.
 
-- [ ] **Step 3: Verify the backend can read it**
+- **Step 3: Verify the backend can read it**
 
 ```bash
 cd ~/Developer/os_repos/oddish/backend
@@ -163,7 +165,7 @@ uv run python -c "from oddish.config import settings; print('DB URL:', settings.
 
 Expected: prints `DB URL: postgresql+asyncpg://oddish:odd@localhost:5432/oddish`. If it errors out about missing fields, check the Pydantic Settings class in `oddish/src/oddish/config.py:157` for which env vars it requires.
 
-- [ ] **Step 4: Add to .gitignore (do not commit secrets)**
+- **Step 4: Add to .gitignore (do not commit secrets)**
 
 ```bash
 cd ~/Developer/os_repos/oddish
@@ -178,7 +180,7 @@ git commit -m "Ignore backend/.env.local"
 
 This is a verification step — no new code.
 
-- [ ] **Step 1: Run migrations**
+- **Step 1: Run migrations**
 
 ```bash
 cd ~/Developer/os_repos/oddish/backend
@@ -188,7 +190,7 @@ uv run alembic upgrade head
 
 Expected: alembic runs all migrations, prints "INFO  [alembic.runtime.migration] Will assume transactional DDL." and a list of applied revisions.
 
-- [ ] **Step 2: Seed tasks**
+- **Step 2: Seed tasks**
 
 ```bash
 cd ~/Developer/os_repos/oddish
@@ -197,7 +199,7 @@ uv run --with oddish python scripts/seed_tasks.py
 
 Expected: prints `Seeding 8 task(s) into org_id=...` and 8 `[insert] ...` lines. If `oddish.db` import fails, run `uv pip install -e ./oddish` first.
 
-- [ ] **Step 3: Verify tasks landed in DB**
+- **Step 3: Verify tasks landed in DB**
 
 ```bash
 docker exec -i odd-pg psql -U oddish -d oddish -c "SELECT name, status, verdict_status FROM tasks ORDER BY name;"
@@ -205,7 +207,7 @@ docker exec -i odd-pg psql -U oddish -d oddish -c "SELECT name, status, verdict_
 
 Expected: 8 rows including `biofabric-rust-rewrite`, `find-network-alignments`, `mermaid-js__mermaid-5197`, `prettier__prettier-15487`, `rust-c-compiler`, `rust-java-lsp`, `sindresorhus__got-547`, `vercel__turborepo-6279`.
 
-- [ ] **Step 4: Verify backend starts**
+- **Step 4: Verify backend starts**
 
 ```bash
 cd ~/Developer/os_repos/oddish/backend
@@ -221,10 +223,10 @@ No commit — these are verification steps.
 ## Task 4: Add `extra_instructions` to `TaskSweepSubmission`
 
 **Files:**
+
 - Modify: `oddish/src/oddish/schemas.py:194` (`TaskSweepSubmission`)
 - Test: `oddish/tests/test_schemas.py` (create if missing)
-
-- [ ] **Step 1: Write the failing test**
+- **Step 1: Write the failing test**
 
 ```python
 # oddish/tests/test_schemas.py
@@ -250,7 +252,7 @@ def test_task_sweep_submission_extra_instructions_defaults_to_none():
     assert sub.extra_instructions is None
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- **Step 2: Run test to verify it fails**
 
 ```bash
 cd ~/Developer/os_repos/oddish/oddish
@@ -259,7 +261,7 @@ uv run pytest tests/test_schemas.py -v
 
 Expected: both tests fail.
 
-- [ ] **Step 3: Add the field**
+- **Step 3: Add the field**
 
 In `oddish/src/oddish/schemas.py`, find `class TaskSweepSubmission(BaseModel):` (around line 194). After the `configs` field, before the "Common fields" comment block, add:
 
@@ -273,7 +275,7 @@ In `oddish/src/oddish/schemas.py`, find `class TaskSweepSubmission(BaseModel):` 
     )
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 ```bash
 uv run pytest tests/test_schemas.py -v
@@ -281,7 +283,7 @@ uv run pytest tests/test_schemas.py -v
 
 Expected: both tests pass.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 cd ~/Developer/os_repos/oddish
@@ -294,6 +296,7 @@ git commit -m "Add extra_instructions field to TaskSweepSubmission"
 ## Task 5: Stamp `mode` and `extra_instructions` into `harbor_config`
 
 **Files:**
+
 - Modify: `oddish/src/oddish/queue.py:412` (`_build_harbor_config_for_trial`)
 - Test: `oddish/tests/test_queue_metadata.py` (extend) or create `oddish/tests/test_freeform_harbor_config.py`
 
@@ -301,7 +304,7 @@ The challenge: `_build_harbor_config_for_trial` takes `(submission, spec)` but o
 
 But wait — `_build_harbor_config_for_trial` takes a `TaskSubmission`, not a `TaskSweepSubmission`. Look at how the sweep submission is converted in `oddish/src/oddish/core/sweeps.py:build_task_submission_from_sweep`. We need to plumb `extra_instructions` through `TaskSubmission` as well.
 
-- [ ] **Step 1: Find TaskSubmission and add the field**
+- **Step 1: Find TaskSubmission and add the field**
 
 ```bash
 grep -n "class TaskSubmission" ~/Developer/os_repos/oddish/oddish/src/oddish/schemas.py
@@ -309,11 +312,11 @@ grep -n "class TaskSubmission" ~/Developer/os_repos/oddish/oddish/src/oddish/sch
 
 In `oddish/src/oddish/schemas.py`, find `class TaskSubmission(BaseModel):` and add `extra_instructions: str | None = Field(default=None)` to it (mirroring the field you added in Task 4).
 
-- [ ] **Step 2: Plumb the field through `build_task_submission_from_sweep`**
+- **Step 2: Plumb the field through `build_task_submission_from_sweep`**
 
 In `oddish/src/oddish/core/sweeps.py:build_task_submission_from_sweep` (around line 70), pass `extra_instructions=submission.extra_instructions` to `TaskSubmission(...)`.
 
-- [ ] **Step 3: Write the failing test**
+- **Step 3: Write the failing test**
 
 ```python
 # oddish/tests/test_freeform_harbor_config.py
@@ -354,7 +357,7 @@ def test_harbor_config_omits_freeform_keys_when_no_extra_instructions():
 
 If `HarborOverrides` import path is wrong, find it via `grep -n "class HarborOverrides" ~/Developer/os_repos/oddish/oddish/src/oddish/schemas.py` and adjust the import. The mechanism — submission carries `extra_instructions`, the harbor_config builder stamps two keys — is what matters.
 
-- [ ] **Step 4: Run the test to verify it fails**
+- **Step 4: Run the test to verify it fails**
 
 ```bash
 cd ~/Developer/os_repos/oddish/oddish
@@ -363,7 +366,7 @@ uv run pytest tests/test_freeform_harbor_config.py -v
 
 Expected: fails because `extra_instructions` isn't a field on `TaskSubmission` yet (if Step 1 wasn't run) or because the builder doesn't stamp the keys.
 
-- [ ] **Step 5: Patch `_build_harbor_config_for_trial`**
+- **Step 5: Patch `_build_harbor_config_for_trial`**
 
 In `oddish/src/oddish/queue.py:412`, modify the function:
 
@@ -393,7 +396,7 @@ def _build_harbor_config_for_trial(
     return base or None
 ```
 
-- [ ] **Step 6: Run the test to verify it passes**
+- **Step 6: Run the test to verify it passes**
 
 ```bash
 uv run pytest tests/test_freeform_harbor_config.py -v
@@ -401,7 +404,7 @@ uv run pytest tests/test_freeform_harbor_config.py -v
 
 Expected: both tests pass.
 
-- [ ] **Step 7: Commit**
+- **Step 7: Commit**
 
 ```bash
 cd ~/Developer/os_repos/oddish
@@ -414,9 +417,9 @@ git commit -m "Stamp freeform mode and extra_instructions into harbor_config"
 ## Task 6: Add `ODDISH_LOCAL_MODE` flag to Settings
 
 **Files:**
-- Modify: `oddish/src/oddish/config.py:157` (`class Settings`)
 
-- [ ] **Step 1: Write the failing test**
+- Modify: `oddish/src/oddish/config.py:157` (`class Settings`)
+- **Step 1: Write the failing test**
 
 ```python
 # oddish/tests/test_settings.py (create or extend)
@@ -436,7 +439,7 @@ def test_settings_local_mode_reads_env(monkeypatch):
     assert s.local_mode is True
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- **Step 2: Run test to verify it fails**
 
 ```bash
 cd ~/Developer/os_repos/oddish/oddish
@@ -445,7 +448,7 @@ uv run pytest tests/test_settings.py -v
 
 Expected: fails with `AttributeError: ... has no attribute 'local_mode'`.
 
-- [ ] **Step 3: Add the field to Settings**
+- **Step 3: Add the field to Settings**
 
 In `oddish/src/oddish/config.py`, find `class Settings(BaseSettings):` (line 157). Add:
 
@@ -462,7 +465,7 @@ In `oddish/src/oddish/config.py`, find `class Settings(BaseSettings):` (line 157
 
 If the `Settings` class uses `model_config = SettingsConfigDict(env_prefix="ODDISH_")` (likely yes — confirm by reading the class), the env var `ODDISH_LOCAL_MODE` maps automatically.
 
-- [ ] **Step 4: Run the test**
+- **Step 4: Run the test**
 
 ```bash
 uv run pytest tests/test_settings.py -v
@@ -470,7 +473,7 @@ uv run pytest tests/test_settings.py -v
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 cd ~/Developer/os_repos/oddish
@@ -483,12 +486,13 @@ git commit -m "Add ODDISH_LOCAL_MODE flag to Settings"
 ## Task 7: Build `local_runner.py` skeleton (stub trial execution + status updates)
 
 **Files:**
+
 - Create: `~/Developer/os_repos/oddish/backend/worker/local_runner.py`
 - Test: `~/Developer/os_repos/oddish/backend/tests/test_local_runner.py`
 
 This task lands a runner that updates `trials.status` from `QUEUED` → `RUNNING` → `SUCCESS` without actually running Harbor yet. Keeps the change small and testable. Task 8 adds Harbor execution.
 
-- [ ] **Step 1: Write the failing test**
+- **Step 1: Write the failing test**
 
 ```python
 # backend/tests/test_local_runner.py
@@ -515,7 +519,7 @@ async def test_run_trial_locally_marks_trial_as_running_then_success(seeded_tria
 
 If your backend's existing test fixtures define `seeded_trial_id` differently (`tests/conftest.py`), use the existing fixture name and pattern. The mechanism the test verifies: `run_trial_locally(trial_id, dry_run=True)` flips status QUEUED → RUNNING → SUCCESS and stamps timestamps. (`dry_run=True` means skip the actual Harbor execution — added in Task 8.)
 
-- [ ] **Step 2: Run test to verify it fails**
+- **Step 2: Run test to verify it fails**
 
 ```bash
 cd ~/Developer/os_repos/oddish/backend
@@ -524,7 +528,7 @@ uv run pytest tests/test_local_runner.py -v
 
 Expected: import error — `worker.local_runner` doesn't exist.
 
-- [ ] **Step 3: Write the runner skeleton**
+- **Step 3: Write the runner skeleton**
 
 ```python
 # backend/worker/local_runner.py
@@ -582,7 +586,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
     raise NotImplementedError("Implemented in Task 8")
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- **Step 4: Run the test to verify it passes**
 
 ```bash
 uv run pytest tests/test_local_runner.py -v
@@ -590,7 +594,7 @@ uv run pytest tests/test_local_runner.py -v
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 cd ~/Developer/os_repos/oddish
@@ -603,6 +607,7 @@ git commit -m "Add local_runner skeleton with status transitions (dry-run only)"
 ## Task 8: Make `local_runner` actually execute Harbor (with task-mutation overlay)
 
 **Files:**
+
 - Modify: `backend/worker/local_runner.py` (replace `_run_harbor_trial`)
 - Test: `backend/tests/test_local_runner.py` (extend)
 
@@ -612,7 +617,7 @@ This mirrors the `long-horizon` `/cheat` CI workflow — same mechanism, just in
 
 Read `oddish/src/oddish/runner.py` (or wherever the existing Modal worker invokes Harbor — search for `harbor.trial.Trial` in the codebase) for the canonical pattern of building a `TrialConfig` from a DB row.
 
-- [ ] **Step 1: Find the existing Harbor invocation pattern**
+- **Step 1: Find the existing Harbor invocation pattern**
 
 ```bash
 grep -rn "harbor.trial.Trial\|from harbor.trial" ~/Developer/os_repos/oddish/oddish/src/ ~/Developer/os_repos/oddish/backend/
@@ -620,7 +625,7 @@ grep -rn "harbor.trial.Trial\|from harbor.trial" ~/Developer/os_repos/oddish/odd
 
 The existing code that builds a TrialConfig from a `TrialModel` row + runs Harbor is the model to mirror. Read it.
 
-- [ ] **Step 2: Replace `_run_harbor_trial` with the real implementation**
+- **Step 2: Replace `_run_harbor_trial` with the real implementation**
 
 ```python
 async def _run_harbor_trial(trial_id: str) -> None:
@@ -686,7 +691,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
 
 The exact field names on `TrialResult` may differ — check `harbor.models.trial.result` and adjust accordingly. The contract: build `TrialConfig` from DB row, mutate task dir if freeform, run Harbor, write reward + result back, clean up work dir.
 
-- [ ] **Step 3: Add a unit test for the task-mutation overlay (no Docker required)**
+- **Step 3: Add a unit test for the task-mutation overlay (no Docker required)**
 
 Append to `backend/tests/test_local_runner.py`. This test verifies that the freeform overlay correctly copies the task and prepends extra_instructions, without actually spinning up a Harbor container:
 
@@ -760,6 +765,7 @@ async def test_normal_trial_uses_original_task_path(monkeypatch, seeded_normal_t
 ```
 
 The `seeded_freeform_trial_with_task_dir` and `seeded_normal_trial_with_task_dir` fixtures need to:
+
 - Create a temp task dir on disk with an `instruction.md` containing "solve the task"
 - Insert a `TaskModel` row pointing at that dir
 - Insert a `TrialModel` with the right `harbor_config` (with or without extra_instructions)
@@ -767,7 +773,7 @@ The `seeded_freeform_trial_with_task_dir` and `seeded_normal_trial_with_task_dir
 
 Write these as conftest fixtures in `backend/tests/conftest.py` (or extend if it exists).
 
-- [ ] **Step 4: Add an integration test (skip-if-no-docker, smoke test)**
+- **Step 4: Add an integration test (skip-if-no-docker, smoke test)**
 
 This optional test actually fires Harbor end-to-end against a tiny task. Skipped by default unless Docker is reachable:
 
@@ -791,7 +797,7 @@ async def test_run_trial_locally_executes_harbor(seeded_freeform_trial_id):
 
 `docker_is_available()` is a small helper — `subprocess.run(["docker", "info"], capture_output=True).returncode == 0`.
 
-- [ ] **Step 4: Run the test**
+- **Step 4: Run the test**
 
 ```bash
 cd ~/Developer/os_repos/oddish/backend
@@ -800,7 +806,7 @@ uv run pytest tests/test_local_runner.py -v
 
 Expected: dry-run test passes; integration test passes if Docker is available, otherwise is skipped.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 cd ~/Developer/os_repos/oddish
@@ -813,12 +819,13 @@ git commit -m "Wire local_runner to execute harbor.trial.Trial directly"
 ## Task 9: Branch `create_task_sweep_core` to dispatch local runner when LOCAL_MODE
 
 **Files:**
+
 - Modify: `oddish/src/oddish/core/endpoints.py:1610` (`create_task_sweep_core`)
 - Test: `oddish/tests/test_create_task_sweep_local.py`
 
 After this task, submitting `POST /api/tasks/sweep` with `extra_instructions` set will, when `ODDISH_LOCAL_MODE=1`, fire `run_trial_locally(trial.id)` for each new trial as an `asyncio.create_task` (background, non-blocking) instead of enqueueing to Modal.
 
-- [ ] **Step 1: Write the failing test**
+- **Step 1: Write the failing test**
 
 ```python
 # oddish/tests/test_create_task_sweep_local.py
@@ -862,7 +869,7 @@ async def test_local_mode_dispatches_local_runner(monkeypatch, db_session, seede
 
 `db_session` and `seeded_task_id` fixtures come from `oddish/tests/conftest.py` (or write them inline if not present).
 
-- [ ] **Step 2: Run test to verify it fails**
+- **Step 2: Run test to verify it fails**
 
 ```bash
 cd ~/Developer/os_repos/oddish/oddish
@@ -871,7 +878,7 @@ uv run pytest tests/test_create_task_sweep_local.py -v
 
 Expected: fail because the local-mode dispatch isn't implemented yet.
 
-- [ ] **Step 3: Patch `create_task_sweep_core`**
+- **Step 3: Patch `create_task_sweep_core`**
 
 In `oddish/src/oddish/core/endpoints.py`, find `create_task_sweep_core` (line 1610). After `await session.commit()` on the success path (where `task` and `new_trials` are returned), add:
 
@@ -885,12 +892,13 @@ In `oddish/src/oddish/core/endpoints.py`, find `create_task_sweep_core` (line 16
 ```
 
 If `worker` isn't on the import path from the `oddish` package, the import location may need to change. Two options:
+
 - **Move** `local_runner.py` from `backend/worker/` to `oddish/src/oddish/worker/local_runner.py` so it's importable from anywhere.
 - Or guard the import inside the function so it only fires under the `local_mode` branch (where the backend layer is the caller).
 
 Option 1 is cleaner. Move `backend/worker/local_runner.py` to `oddish/src/oddish/worker/local_runner.py` (creating the directory + `__init__.py`). Update Task 7+8 imports accordingly.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- **Step 4: Run the test to verify it passes**
 
 ```bash
 uv run pytest tests/test_create_task_sweep_local.py -v
@@ -898,7 +906,7 @@ uv run pytest tests/test_create_task_sweep_local.py -v
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 cd ~/Developer/os_repos/oddish
@@ -913,7 +921,7 @@ git commit -m "Dispatch freeform trials to local_runner when LOCAL_MODE=1"
 
 This is a manual verification — no automated test, no commit.
 
-- [ ] **Step 1: Bring up the local stack**
+- **Step 1: Bring up the local stack**
 
 ```bash
 ~/Developer/os_repos/oddish/scripts/dev_up.sh    # if not already running
@@ -925,7 +933,7 @@ uv run python serve.py
 
 Keep the server running in this terminal.
 
-- [ ] **Step 2: Get an API key**
+- **Step 2: Get an API key**
 
 For local dev the cleanest approach is to insert one directly:
 
@@ -943,7 +951,7 @@ SQL
 
 Or hit whichever endpoint creates an API key. Adjust according to whatever the existing key-issuance flow is — the mechanism doesn't matter as long as you have an `ODDISH_API_KEY` value the backend will accept.
 
-- [ ] **Step 3: Submit a freeform run via curl**
+- **Step 3: Submit a freeform run via curl**
 
 ```bash
 TASK_ID=$(docker exec -i odd-pg psql -U oddish -d oddish -t -c \
@@ -966,7 +974,7 @@ curl -X POST http://localhost:8000/api/tasks/sweep \
 
 Expected: returns JSON with `id` (task ID) and `new_trial_ids: ["..."]`.
 
-- [ ] **Step 4: Watch the trial progress in the DB**
+- **Step 4: Watch the trial progress in the DB**
 
 ```bash
 docker exec -i odd-pg psql -U oddish -d oddish -c \
@@ -975,7 +983,7 @@ docker exec -i odd-pg psql -U oddish -d oddish -c \
 
 Expected: the new trial's status moves through QUEUED → RUNNING → (eventually) SUCCESS. `mode` is `freeform`. `reward` is populated when complete.
 
-- [ ] **Step 5: Confirm Harbor actually ran**
+- **Step 5: Confirm Harbor actually ran**
 
 ```bash
 docker ps   # while the trial is running, you should see a Harbor-spawned task container
@@ -985,7 +993,7 @@ cat /tmp/oddish-local-trials/<trial_id>/*/agent/claude-code.txt | head -50
 
 The agent transcript should reference the cheating prompt (the agent reasoning about how to bypass the verifier).
 
-- [ ] **Step 6: Done**
+- **Step 6: Done**
 
 If all six steps work, the backend half of this plan is complete. Frontend tasks follow.
 
@@ -996,9 +1004,9 @@ If all six steps work, the backend half of this plan is complete. Frontend tasks
 ## Task 11: Frontend `.env.local` + sanity boot
 
 **Files:**
-- Create: `~/Developer/os_repos/oddish/frontend/.env.local`
 
-- [ ] **Step 1: Write the .env.local**
+- Create: `~/Developer/os_repos/oddish/frontend/.env.local`
+- **Step 1: Write the .env.local**
 
 ```bash
 cat > ~/Developer/os_repos/oddish/frontend/.env.local <<EOF
@@ -1011,7 +1019,7 @@ EOF
 
 Replace placeholders with the Clerk test keys you grabbed in Task 2.
 
-- [ ] **Step 2: Install + boot the frontend**
+- **Step 2: Install + boot the frontend**
 
 ```bash
 cd ~/Developer/os_repos/oddish/frontend
@@ -1021,13 +1029,13 @@ pnpm dev
 
 Expected: Next.js boots on `http://localhost:3000`. Open it in a browser. You should land on a Clerk sign-in page.
 
-- [ ] **Step 3: Sign in as a test user**
+- **Step 3: Sign in as a test user**
 
 In Clerk's dashboard → "Users" → "Add user" → set an email + password. Use them to sign in at localhost:3000.
 
 After sign-in, you should see the dashboard with your seeded tasks (the 8 from `seed_tasks.py`).
 
-- [ ] **Step 4: Add to .gitignore**
+- **Step 4: Add to .gitignore**
 
 ```bash
 cd ~/Developer/os_repos/oddish
@@ -1043,10 +1051,10 @@ No code commit — verification step.
 ## Task 12: Add "Freeform run" button to per-task row in experiment-trials-table
 
 **Files:**
+
 - Modify: `frontend/src/components/experiment-trials-table.tsx`
 - Test: (manual UI verification — no Jest setup expected for this codebase; if there is one, write a render test)
-
-- [ ] **Step 1: Find where each task row is rendered**
+- **Step 1: Find where each task row is rendered**
 
 ```bash
 grep -n "task\.name\|task\.id\|TaskRow" ~/Developer/os_repos/oddish/frontend/src/components/experiment-trials-table.tsx | head -20
@@ -1054,7 +1062,7 @@ grep -n "task\.name\|task\.id\|TaskRow" ~/Developer/os_repos/oddish/frontend/src
 
 Identify the JSX block that renders one task header row inside the trials table.
 
-- [ ] **Step 2: Add the button**
+- **Step 2: Add the button**
 
 In that block, add a button that links to the freeform-agent page for that task:
 
@@ -1074,11 +1082,11 @@ import Link from "next/link";
 
 Match the existing styling conventions of nearby buttons (the codebase uses Tailwind + shadcn/ui — copy the className pattern of any neighboring button).
 
-- [ ] **Step 3: Verify in browser**
+- **Step 3: Verify in browser**
 
 Reload `http://localhost:3000/(app)/experiments/<some-experiment-id>` (or wherever the experiment-trials-table renders). Each task row should show a "Freeform run" link. Clicking it opens a new tab pointing at `/tasks/<id>/freeform-agent` (which 404s for now — that's the next task).
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```bash
 cd ~/Developer/os_repos/oddish
@@ -1091,11 +1099,11 @@ git commit -m "Add Freeform run link to per-task row"
 ## Task 13: Create `/tasks/[task_id]/freeform-agent` workbench page
 
 **Files:**
+
 - Create: `frontend/src/app/(app)/tasks/[task_id]/freeform-agent/page.tsx`
 - Create: `frontend/src/components/freeform-submit-form.tsx`
 - Create: `frontend/src/components/freeform-history-table.tsx`
-
-- [ ] **Step 1: Create the route page**
+- **Step 1: Create the route page**
 
 ```tsx
 // frontend/src/app/(app)/tasks/[task_id]/freeform-agent/page.tsx
@@ -1118,7 +1126,7 @@ export default async function FreeformAgentPage({
 }
 ```
 
-- [ ] **Step 2: Create the submit form component**
+- **Step 2: Create the submit form component**
 
 ```tsx
 // frontend/src/components/freeform-submit-form.tsx
@@ -1240,7 +1248,7 @@ export function FreeformSubmitForm({ taskId }: { taskId: string }) {
 
 The fetch URL `/api/tasks/sweep` assumes a Next.js API route exists that proxies to the backend. If the codebase uses a different proxy convention, mirror it (look at how other `fetch(...)` calls in the FE are structured).
 
-- [ ] **Step 3: Create the history table component**
+- **Step 3: Create the history table component**
 
 ```tsx
 // frontend/src/components/freeform-history-table.tsx
@@ -1327,15 +1335,15 @@ export function FreeformHistoryTable({ taskId }: { taskId: string }) {
 }
 ```
 
-- [ ] **Step 4: Verify in browser**
+- **Step 4: Verify in browser**
 
 Visit `http://localhost:3000/tasks/<some-task-id>/freeform-agent`. The page renders, the form is interactive, and (initially) "No freeform runs yet." is shown.
 
-- [ ] **Step 5: Submit a freeform run from the UI**
+- **Step 5: Submit a freeform run from the UI**
 
 Pick agent claude-code, paste a cheating prompt, hit Submit. The page redirects to `/tasks/<id>/freeform-agent/<trial_id>` (which 404s — fixed in Task 14). Reload the workbench page; the history table should now show the run with status `running` (polling every 5s) → eventually `done`.
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```bash
 cd ~/Developer/os_repos/oddish
@@ -1348,9 +1356,9 @@ git commit -m "Add freeform-agent workbench page (form + history table)"
 ## Task 14: Create `/tasks/[task_id]/freeform-agent/[trial_id]` result page
 
 **Files:**
-- Create: `frontend/src/app/(app)/tasks/[task_id]/freeform-agent/[trial_id]/page.tsx`
 
-- [ ] **Step 1: Write the result page**
+- Create: `frontend/src/app/(app)/tasks/[task_id]/freeform-agent/[trial_id]/page.tsx`
+- **Step 1: Write the result page**
 
 ```tsx
 // frontend/src/app/(app)/tasks/[task_id]/freeform-agent/[trial_id]/page.tsx
@@ -1414,7 +1422,7 @@ export default function FreeformResultPage({
             ) : (
               <span className="ml-2 rounded bg-emerald-500/20 px-2 py-1 text-xs font-medium text-emerald-600">
                 Clean
-              </span>
+              </span>a
             )}
           </p>
         )}
@@ -1445,11 +1453,11 @@ export default function FreeformResultPage({
 }
 ```
 
-- [ ] **Step 2: Verify in browser**
+- **Step 2: Verify in browser**
 
 Click into a freeform run from the workbench history table. The result page renders the operator instructions, status, and (when complete) the raw `result.json` blob showing agent transcript references and verifier output. The page polls every 3s while running.
 
-- [ ] **Step 3: Commit**
+- **Step 3: Commit**
 
 ```bash
 cd ~/Developer/os_repos/oddish
@@ -1462,13 +1470,13 @@ git commit -m "Add freeform-agent result page (raw artifacts)"
 ## Task 15: Default-hide freeform trials in the experiment trials table
 
 **Files:**
-- Modify: `frontend/src/components/experiment-trials-table.tsx`
 
-- [ ] **Step 1: Find where trials are filtered for display**
+- Modify: `frontend/src/components/experiment-trials-table.tsx`
+- **Step 1: Find where trials are filtered for display**
 
 Look for the place in `experiment-trials-table.tsx` where the trials list is mapped/filtered before rendering rows. Most likely a `.filter(...)` or a memoized derived list near the top of the component.
 
-- [ ] **Step 2: Add a `showFreeform` toggle and filter**
+- **Step 2: Add a `showFreeform` toggle and filter**
 
 ```tsx
 const [showFreeform, setShowFreeform] = useState(false);
@@ -1494,11 +1502,11 @@ const visibleTrials = useMemo(
 
 Use `visibleTrials` (instead of `trials`) wherever the table iterates rows.
 
-- [ ] **Step 3: Verify**
+- **Step 3: Verify**
 
 Reload the experiment view. Freeform trials are hidden by default. Tick the box → they appear. The default-view reward stats are no longer polluted by freeform runs.
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```bash
 cd ~/Developer/os_repos/oddish
@@ -1510,7 +1518,7 @@ git commit -m "Default-hide freeform trials in experiment table behind toggle"
 
 ## Task 16: End-to-end UI smoke test (manual)
 
-- [ ] **Step 1: Verify the happy path**
+- **Step 1: Verify the happy path**
 
 1. Open `http://localhost:3000`.
 2. Sign in.
@@ -1523,12 +1531,12 @@ git commit -m "Default-hide freeform trials in experiment table behind toggle"
 9. Go back to the workbench page → history table shows the run with timestamp, agent, status: `done`, result: `Cheat (reward=...)` or `Clean (reward=...)`.
 10. Back on the experiment view → freeform run is hidden by default; tick the toggle → it appears.
 
-- [ ] **Step 2: Verify the error path**
+- **Step 2: Verify the error path**
 
 1. Submit a freeform run with an invalid model name (e.g. `anthropic/no-such-model`).
 2. The trial transitions to `failed` and `error_message` is shown on the result page.
 
-- [ ] **Step 3: Done**
+- **Step 3: Done**
 
 If both flows work, this plan is complete. You have an adversarial Harbor running through a self-hosted Oddish backend with a freeform-agent workbench in the dashboard, no Modal, no AWS, no Daytona, no oddish.app.
 
@@ -1536,35 +1544,37 @@ If both flows work, this plan is complete. You have an adversarial Harbor runnin
 
 ## Self-review checklist
 
-- [ ] All committed unit tests pass: `cd ~/Developer/os_repos/oddish && uv run pytest oddish/tests backend/tests -v`
-- [ ] `harbor start -p <task-dir>` against an unmodified task still works locally (no regression to upstream Harbor behavior).
-- [ ] `POST /api/tasks/sweep` with `extra_instructions` set creates a `freeform`-mode trial that runs in local Docker.
-- [ ] `/tasks/<id>/freeform-agent` workbench page form submits, history table polls and updates.
-- [ ] `/tasks/<id>/freeform-agent/<trial_id>` result page shows operator instructions, status, reward, raw result.
-- [ ] Experiment trials table hides freeform trials by default.
-- [ ] Branches pushed, no secrets committed (`backend/.env.local`, `frontend/.env.local` ignored).
+- All committed unit tests pass: `cd ~/Developer/os_repos/oddish && uv run pytest oddish/tests backend/tests -v`
+- `harbor start -p <task-dir>` against an unmodified task still works locally (no regression to upstream Harbor behavior).
+- `POST /api/tasks/sweep` with `extra_instructions` set creates a `freeform`-mode trial that runs in local Docker.
+- `/tasks/<id>/freeform-agent` workbench page form submits, history table polls and updates.
+- `/tasks/<id>/freeform-agent/<trial_id>` result page shows operator instructions, status, reward, raw result.
+- Experiment trials table hides freeform trials by default.
+- Branches pushed, no secrets committed (`backend/.env.local`, `frontend/.env.local` ignored).
 
 ---
 
 ## Plan summary
 
-| Task | What | Files |
-|---|---|---|
-| 1 | Local stack bring-up script | scripts/dev_up.sh |
-| 2 | Backend env config | backend/.env.local |
-| 3 | Migrations + seed | (verification) |
-| 4 | TaskSweepSubmission.extra_instructions | schemas.py |
-| 5 | Stamp mode + extra_instructions in harbor_config | queue.py, sweeps.py |
-| 6 | Settings.local_mode flag | config.py |
-| 7 | local_runner skeleton | worker/local_runner.py |
-| 8 | local_runner Harbor execution | worker/local_runner.py |
-| 9 | LOCAL_MODE branch in create_task_sweep_core | core/endpoints.py |
-| 10 | Backend smoke test | (manual curl) |
-| 11 | Frontend env + Clerk | frontend/.env.local |
-| 12 | "Freeform run" button | experiment-trials-table.tsx |
-| 13 | Workbench page (form + history) | freeform-* components, page.tsx |
-| 14 | Result page (raw artifacts) | [trial_id]/page.tsx |
-| 15 | Default-hide freeform in trials table | experiment-trials-table.tsx |
-| 16 | End-to-end UI smoke test | (manual) |
+
+| Task | What                                             | Files                           |
+| ---- | ------------------------------------------------ | ------------------------------- |
+| 1    | Local stack bring-up script                      | scripts/dev_up.sh               |
+| 2    | Backend env config                               | backend/.env.local              |
+| 3    | Migrations + seed                                | (verification)                  |
+| 4    | TaskSweepSubmission.extra_instructions           | schemas.py                      |
+| 5    | Stamp mode + extra_instructions in harbor_config | queue.py, sweeps.py             |
+| 6    | Settings.local_mode flag                         | config.py                       |
+| 7    | local_runner skeleton                            | worker/local_runner.py          |
+| 8    | local_runner Harbor execution                    | worker/local_runner.py          |
+| 9    | LOCAL_MODE branch in create_task_sweep_core      | core/endpoints.py               |
+| 10   | Backend smoke test                               | (manual curl)                   |
+| 11   | Frontend env + Clerk                             | frontend/.env.local             |
+| 12   | "Freeform run" button                            | experiment-trials-table.tsx     |
+| 13   | Workbench page (form + history)                  | freeform-* components, page.tsx |
+| 14   | Result page (raw artifacts)                      | [trial_id]/page.tsx             |
+| 15   | Default-hide freeform in trials table            | experiment-trials-table.tsx     |
+| 16   | End-to-end UI smoke test                         | (manual)                        |
+
 
 13 commits + 3 manual verifications. After this plan ships, you can submit adversarial Harbor runs from the dashboard against any task with any operator prompt and inspect the agent's transcript, verifier output, and reward — all running locally.
