@@ -52,6 +52,16 @@ class DaytonaClient(Protocol):
         on_stderr: Callable[[str], Awaitable[None]],
     ) -> None: ...
 
+    async def exec_sync(
+        self, sandbox: CreatedSandbox, *, command: str
+    ) -> tuple[int, str]:
+        """Run a one-off command, wait for completion, return (exit_code, output)."""
+        ...
+
+    async def download_file(
+        self, sandbox: CreatedSandbox, *, src_path: str
+    ) -> bytes: ...
+
     async def delete_sandbox(self, sandbox: CreatedSandbox) -> None: ...
 
 
@@ -110,6 +120,17 @@ class RealDaytonaClient:
             on_stdout,
             on_stderr,
         )
+
+    async def exec_sync(
+        self, sandbox: CreatedSandbox, *, command: str
+    ) -> tuple[int, str]:
+        result = await sandbox._sdk_handle.process.exec(command)
+        return result.exit_code, result.result
+
+    async def download_file(
+        self, sandbox: CreatedSandbox, *, src_path: str
+    ) -> bytes:
+        return await sandbox._sdk_handle.fs.download_file(src_path)
 
     async def delete_sandbox(self, sandbox: CreatedSandbox) -> None:
         await self._daytona.delete(sandbox._sdk_handle)

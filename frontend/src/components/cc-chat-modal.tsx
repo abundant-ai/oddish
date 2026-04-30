@@ -177,6 +177,24 @@ export function CCChatModal({
             Send
           </Button>
         </form>
+
+        <div className="flex justify-end pt-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={!sessionId || phase === "creating" || phase === "error"}
+            onClick={() => {
+              if (!sessionId) return;
+              const url = `/api/experiments/${encodeURIComponent(
+                experimentId,
+              )}/cc-session/${encodeURIComponent(sessionId)}/skills.tar.gz`;
+              window.location.href = url;
+            }}
+          >
+            Download skills
+          </Button>
+        </div>
       </DialogContent>
     </Dialog>
   );
