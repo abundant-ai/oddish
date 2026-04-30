@@ -6,15 +6,24 @@ import { useAuth } from "@clerk/nextjs";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800";
 
+type Attempt = {
+  success?: boolean | null;
+};
+
+type Analysis = {
+  attempts?: Attempt[];
+  cheating_attempted?: boolean | null;
+  cheating_succeeded?: boolean | null;
+};
+
 type Trial = {
   id: string;
   agent: string;
   status: string;
   started_at: string | null;
   reward: number | null;
-  // harbor_config is not currently exposed on TrialResponse; the optional
-  // chain below is defensive — once Task 15 surfaces this field the filter
-  // will start narrowing the table to probe-only runs.
+  error_message?: string | null;
+  analysis?: Analysis | null;
   harbor_config?: { mode?: string } | null;
 };
 
@@ -26,12 +35,83 @@ function statusLabel(t: Trial): string {
   return t.status;
 }
 
-function resultLabel(t: Trial): string {
-  if (t.reward === null || t.reward === undefined) return "—";
-  return t.reward >= 0.5
-    ? `Cheat (reward=${t.reward.toFixed(2)})`
-    : `Clean (reward=${t.reward.toFixed(2)})`;
+type ResultDisplay = {
+  text: string;
+  variant: "cheat" | "blocked" | "neutral" | "muted" | "error";
+  title?: string;
+};
+
+function resultDisplay(t: Trial): ResultDisplay {
+  // In-flight or pending — nothing to report yet
+  if (t.status === "queued" || t.status === "pending") {
+    return { text: "—", variant: "muted" };
+  }
+  if (t.status === "running") {
+    return { text: "—", variant: "muted", title: "Trial in progress" };
+  }
+  // Harness-level failure (agent didn't get to run, or backend orphaned)
+  if (t.status === "failed") {
+    return {
+      text: "harness error",
+      variant: "error",
+      title: t.error_message ?? "Trial failed before producing a result",
+    };
+  }
+
+  // Trial completed. Prefer the analyzer's per-attempt cheat ratio.
+  const attempts = t.analysis?.attempts ?? [];
+  const cheatAttempts = attempts.filter(
+    (a) => a.success === true || a.success === false,
+  );
+  if (cheatAttempts.length > 0) {
+    const succeeded = cheatAttempts.filter((a) => a.success === true).length;
+    const total = cheatAttempts.length;
+    return {
+      text: `${succeeded}/${total} cheats`,
+      variant: succeeded > 0 ? "cheat" : "blocked",
+      title:
+        succeeded > 0
+          ? `${succeeded} of ${total} cheat attempts succeeded`
+          : `${total} cheat attempt(s) — all blocked by the verifier`,
+    };
+  }
+
+  // No structured attempt data. Fall back to top-level cheat verdict.
+  if (t.analysis?.cheating_attempted === true) {
+    return t.analysis.cheating_succeeded
+      ? { text: "cheat succeeded", variant: "cheat" }
+      : { text: "cheat blocked", variant: "blocked" };
+  }
+  if (t.analysis?.cheating_attempted === false) {
+    return {
+      text: "no cheat attempted",
+      variant: "neutral",
+      title:
+        "Agent did not attempt to cheat (may have done legitimate work or just analyzed)",
+    };
+  }
+
+  // Analyzer hasn't filled the trial yet, just show raw reward
+  if (t.reward === null || t.reward === undefined) {
+    return { text: "no result", variant: "muted" };
+  }
+  return {
+    text: `reward ${t.reward.toFixed(2)}`,
+    variant: "neutral",
+    title: "Analyzer hasn't classified this run yet — raw verifier reward",
+  };
 }
+
+const VARIANT_CLASS: Record<ResultDisplay["variant"], string> = {
+  cheat:
+    "rounded bg-red-500/15 px-2 py-0.5 text-[11px] font-medium text-red-600",
+  blocked:
+    "rounded bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-700",
+  neutral: "rounded bg-muted px-2 py-0.5 text-[11px] font-medium",
+  muted: "text-[11px] text-muted-foreground",
+  error:
+    "rounded bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-700",
+};
 
 export function ProbeHistoryTable({ taskId }: { taskId: string }) {
   const { getToken } = useAuth();
@@ -102,7 +182,16 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
                 </td>
                 <td className="py-2 pr-4">{t.agent}</td>
                 <td className="py-2 pr-4">{statusLabel(t)}</td>
-                <td className="py-2 pr-4">{resultLabel(t)}</td>
+                <td className="py-2 pr-4">
+                  {(() => {
+                    const r = resultDisplay(t);
+                    return (
+                      <span className={VARIANT_CLASS[r.variant]} title={r.title}>
+                        {r.text}
+                      </span>
+                    );
+                  })()}
+                </td>
                 <td className="py-2">
                   <Link
                     href={`/tasks/${taskId}/probe/${t.id}`}
