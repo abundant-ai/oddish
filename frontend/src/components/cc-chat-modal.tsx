@@ -85,6 +85,7 @@ export function CCChatModal({
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [draft, setDraft] = useState("");
+  const [wide, setWide] = useState(false);
   const sendingRef = useRef(false);
 
   const start = useCallback(async () => {
@@ -169,22 +170,39 @@ export function CCChatModal({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="w-full sm:max-w-xl flex flex-col gap-4"
+        className={
+          wide
+            ? "flex w-full flex-col gap-4 sm:max-w-4xl"
+            : "flex w-full flex-col gap-4 sm:max-w-xl"
+        }
       >
         <SheetHeader>
-          <SheetTitle>Chat with experiment logs</SheetTitle>
+          <div className="flex items-start justify-between gap-2">
+            <SheetTitle>Chat with experiment logs</SheetTitle>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => setWide((w) => !w)}
+              aria-label={wide ? "Shrink chat panel" : "Expand chat panel"}
+              title={wide ? "Shrink" : "Expand"}
+            >
+              {wide ? "→ shrink" : "← expand"}
+            </Button>
+          </div>
           <SheetDescription>
             <span className="inline-flex items-center gap-1.5">
               {(phase === "creating" || phase === "thinking") && (
                 <span
                   aria-hidden
-                  className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground"
+                  className="border-muted-foreground/30 border-t-muted-foreground inline-block h-3 w-3 animate-spin rounded-full border-2"
                 />
               )}
               Status: <span className="font-mono text-xs">{phase}</span>
               {phase === "creating" && (
                 <span className="text-xs opacity-60">
-                  (booting sandbox + uploading trial logs)
+                  (booting sandbox + uploading logs)
                 </span>
               )}
               {error ? (
@@ -194,18 +212,18 @@ export function CCChatModal({
           </SheetDescription>
         </SheetHeader>
 
-        <div className="flex-1 overflow-y-auto space-y-4 py-2">
+        <div className="flex-1 space-y-4 overflow-y-auto py-2">
           {turns.map((turn, i) => (
             <div key={i}>
               {turn.role === "user" ? (
-                <div className="rounded-md border bg-muted/50 px-3 py-2">
+                <div className="bg-muted/50 rounded-md border px-3 py-2">
                   <div className="text-xs font-medium uppercase opacity-60">
                     you
                   </div>
-                  <div className="whitespace-pre-wrap text-sm">{turn.text}</div>
+                  <div className="text-sm whitespace-pre-wrap">{turn.text}</div>
                 </div>
               ) : (
-                <div className="rounded-md border px-3 py-2 space-y-2">
+                <div className="space-y-2 rounded-md border px-3 py-2">
                   <div className="text-xs font-medium uppercase opacity-60">
                     claude
                   </div>
@@ -215,10 +233,7 @@ export function CCChatModal({
                     <div className="space-y-1">
                       {collapseSystemRuns(turn.events).map((item, j) =>
                         item.kind === "system_run" ? (
-                          <div
-                            key={j}
-                            className="text-xs opacity-50 italic"
-                          >
+                          <div key={j} className="text-xs italic opacity-50">
                             ↻ {item.count} system updates
                           </div>
                         ) : (
@@ -231,7 +246,7 @@ export function CCChatModal({
                               </div>
                             );
                           })()
-                        ),
+                        )
                       )}
                     </div>
                   )}
@@ -252,11 +267,18 @@ export function CCChatModal({
             placeholder="Ask about this experiment…"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            disabled={phase === "thinking" || phase === "creating" || phase === "error"}
+            disabled={
+              phase === "thinking" || phase === "creating" || phase === "error"
+            }
           />
           <Button
             type="submit"
-            disabled={phase === "thinking" || phase === "creating" || phase === "error" || !draft.trim()}
+            disabled={
+              phase === "thinking" ||
+              phase === "creating" ||
+              phase === "error" ||
+              !draft.trim()
+            }
           >
             Send
           </Button>
