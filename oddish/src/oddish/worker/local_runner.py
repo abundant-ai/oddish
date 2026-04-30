@@ -34,6 +34,10 @@ from oddish.db import (
     TrialStatus,
     get_session,
 )
+from oddish.worker.prior_attempts import (
+    fetch_prior_attempts,
+    format_prior_attempts_block,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +290,29 @@ async def _run_harbor_trial(trial_id: str) -> None:
         agent_name = trial.agent
         model_name = trial.model
         extra_instructions = harbor_config.get("extra_instructions")
+        preset_name = harbor_config.get("preset_name")
+        prior_attempts_config = harbor_config.get("prior_attempts_config") or {}
+        prior_attempts_block = ""
+        if (
+            extra_instructions
+            and preset_name
+            and prior_attempts_config.get("enabled")
+        ):
+            try:
+                prior = await fetch_prior_attempts(
+                    session=session,
+                    task_id=trial.task_id,
+                    preset_name=preset_name,
+                    filter_config=prior_attempts_config,
+                )
+                prior_attempts_block = format_prior_attempts_block(prior)
+            except Exception:
+                logger.warning(
+                    "fetch_prior_attempts failed for trial %s; continuing without injection",
+                    trial_id,
+                    exc_info=True,
+                )
+                prior_attempts_block = ""
 
     if not task_path.exists():
         raise FileNotFoundError(
@@ -309,6 +336,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         instr_path.write_text(
             f"{_PROBE_SYSTEM_FRAMING}\n\n"
             f"---\n\n"
+            f"{prior_attempts_block}"
             f"## OPERATOR DIRECTIVE\n\n{extra_instructions}\n\n"
             f"---\n\n"
             f"## ORIGINAL TASK INSTRUCTION (context only)\n\n{original}"

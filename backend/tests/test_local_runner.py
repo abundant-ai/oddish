@@ -10,13 +10,15 @@ local stack:
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
 
 from oddish.db import (
+    AnalysisStatus,
     ExperimentModel,
     TaskModel,
     TrialModel,
@@ -242,3 +244,146 @@ async def test_probe_overlay_prepends_extra_instructions_to_instruction_md(
 
     # Temp work dir is cleaned up after Harbor exits.
     assert not Path(captured["task_path"]).exists()
+
+
+@pytest_asyncio.fixture
+async def seeded_probe_trial_with_prior_attempts(tmp_path):
+    """Like ``seeded_probe_trial_with_task_dir`` but also seeds two prior
+    completed trials with failed analyzer attempts under the same preset."""
+    suffix = uuid.uuid4().hex[:8]
+    experiment_id = f"exp_lr_pa_{suffix}"
+    task_id = f"task_lr_pa_{suffix}"
+    preset_name = "cheat-detector"
+
+    task_dir = tmp_path / "fake-task"
+    task_dir.mkdir()
+    (task_dir / "instruction.md").write_text("solve the task")
+    (task_dir / "task.toml").write_text('version = "1.0"\n')
+
+    prior_trial_ids = [f"trial_lr_pa_{suffix}_prior_{i}" for i in range(2)]
+    main_trial_id = f"trial_lr_pa_{suffix}_main"
+
+    async with get_session() as session:
+        session.add(ExperimentModel(id=experiment_id, name=f"e-{suffix}"))
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=f"t-{suffix}",
+                user="test",
+                task_path=str(task_dir),
+            )
+        )
+        for i, tid in enumerate(prior_trial_ids):
+            session.add(
+                TrialModel(
+                    id=tid,
+                    name=tid,
+                    task_id=task_id,
+                    experiment_id=experiment_id,
+                    agent="claude-code",
+                    provider="anthropic",
+                    model="anthropic/claude-sonnet-4-6",
+                    queue_key="test-lr-pa",
+                    status=TrialStatus.SUCCESS,
+                    origin=TrialOrigin.ODDISH,
+                    finished_at=datetime.now(timezone.utc) - timedelta(hours=i + 1),
+                    harbor_config={"preset_name": preset_name},
+                    analysis={
+                        "kind": "probe_summary",
+                        "attempts": [
+                            {
+                                "title": f"Fake binary output ({tid})",
+                                "outcome": "Verifier rebuilt; reward 0.0",
+                                "success": False,
+                            }
+                        ],
+                    },
+                    analysis_status=AnalysisStatus.SUCCESS,
+                )
+            )
+        session.add(
+            TrialModel(
+                id=main_trial_id,
+                name=main_trial_id,
+                task_id=task_id,
+                experiment_id=experiment_id,
+                agent="claude-code",
+                provider="anthropic",
+                model="anthropic/claude-sonnet-4-6",
+                queue_key="test-lr-pa",
+                status=TrialStatus.RUNNING,
+                origin=TrialOrigin.ODDISH,
+                harbor_config={
+                    "mode": "probe",
+                    "extra_instructions": "be adversarial",
+                    "preset_name": preset_name,
+                    "prior_attempts_config": {
+                        "enabled": True,
+                        "mode": "all",
+                        "max_attempts": 50,
+                    },
+                },
+            )
+        )
+
+    yield main_trial_id, prior_trial_ids, task_dir
+
+    async with get_session() as session:
+        for tid in [main_trial_id, *prior_trial_ids]:
+            await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.id == tid)
+            )
+        await session.execute(
+            TaskModel.__table__.delete().where(TaskModel.id == task_id)
+        )
+        await session.execute(
+            ExperimentModel.__table__.delete().where(ExperimentModel.id == experiment_id)
+        )
+
+
+@pytest.mark.asyncio
+async def test_probe_overlay_prepends_prior_attempts_block_when_enabled(
+    monkeypatch, seeded_probe_trial_with_prior_attempts
+):
+    """When prior_attempts_config.enabled is on, the temp-copy instruction.md
+    should contain the prior-attempts header AND the seeded prior titles."""
+    main_trial_id, _, _ = seeded_probe_trial_with_prior_attempts
+    captured: dict[str, object] = {}
+
+    class FakeTrial:
+        def __init__(self, cfg, **_kwargs):
+            captured["instruction"] = (
+                Path(cfg.task.path) / "instruction.md"
+            ).read_text()
+            self.result = MagicMock()
+            self.result.verifier_result = MagicMock(rewards={"reward": 0.0})
+            self.result.model_dump = lambda mode=None: {}
+
+        @classmethod
+        async def create(cls, cfg):
+            return cls(cfg)
+
+        async def run(self):
+            return self.result
+
+    monkeypatch.setattr("oddish.worker.local_runner.Trial", FakeTrial)
+    # Stub the analyzer + watchdog so the test doesn't hit the network or docker.
+    monkeypatch.setattr(
+        "oddish.worker.local_runner._run_probe_analyzer",
+        AsyncMock(return_value={"kind": "probe_summary", "attempts": []}),
+    )
+    monkeypatch.setattr(
+        "oddish.worker.local_runner._watchdog_task",
+        AsyncMock(return_value=None),
+    )
+
+    from oddish.worker.local_runner import _run_harbor_trial
+    await _run_harbor_trial(main_trial_id)
+
+    instr = captured["instruction"]
+    assert "ALREADY been tried" in instr
+    assert "Fake binary output" in instr
+    # Operator directive still present and still in front of the original task.
+    assert "## OPERATOR DIRECTIVE" in instr
+    assert "be adversarial" in instr
+    assert "## ORIGINAL TASK INSTRUCTION (context only)" in instr
