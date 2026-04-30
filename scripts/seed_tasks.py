@@ -35,8 +35,15 @@ from oddish.db import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LONG_HORIZON_TASKS = REPO_ROOT / "long-horizon" / "tasks"
+DEFAULT_ABUNDANT_LH_TASKS = (
+    Path.home() / "Developer" / "abundant" / "long-horizon-tasks"
+)
 DEFAULT_SWE_GEN_JS_TASKS = Path.home() / "Developer" / "abundant" / "SWE-gen-JS-tasks"
-DEFAULT_TASK_SOURCES = [DEFAULT_LONG_HORIZON_TASKS, DEFAULT_SWE_GEN_JS_TASKS]
+DEFAULT_TASK_SOURCES = [
+    DEFAULT_LONG_HORIZON_TASKS,
+    DEFAULT_ABUNDANT_LH_TASKS,
+    DEFAULT_SWE_GEN_JS_TASKS,
+]
 
 
 # Per-task seed scenarios — keyed by task directory name.
@@ -136,6 +143,20 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         ),
         "verdict": None,
     },
+    "wasm-simd": {
+        "status": TaskStatus.COMPLETED,
+        "verdict_status": VerdictStatus.SUCCESS,
+        "verdict": {
+            "is_good": True,
+            "confidence": "high",
+            "primary_issue": None,
+            "recommendations": [],
+            "reasoning": (
+                "31,767 deterministic spec tests with planted bugs uncovered only "
+                "by full pipeline runs — strong differential signal across agents."
+            ),
+        },
+    },
 }
 
 
@@ -144,9 +165,12 @@ def load_task_toml(task_dir: Path) -> dict[str, Any]:
         return tomllib.load(f)
 
 
-def build_tags(toml_data: dict[str, Any]) -> dict[str, Any]:
+def build_tags(toml_data: dict[str, Any]) -> dict[str, str]:
+    """Build the task tags dict. Values must be strings — TaskSubmission's
+    Pydantic schema enforces dict[str, str], so we coerce lists and ints.
+    """
     metadata = toml_data.get("metadata", {})
-    tags = {
+    raw = {
         "category": metadata.get("category"),
         "difficulty": metadata.get("difficulty"),
         "harbor_tags": metadata.get("tags", []),
@@ -155,17 +179,30 @@ def build_tags(toml_data: dict[str, Any]) -> dict[str, Any]:
         "author_organization": metadata.get("author_organization"),
         "expert_time_estimate_hours": metadata.get("expert_time_estimate_hours"),
     }
-    return {k: v for k, v in tags.items() if v is not None}
+    tags: dict[str, str] = {}
+    for k, v in raw.items():
+        if v is None:
+            continue
+        if isinstance(v, list):
+            tags[k] = ",".join(str(x) for x in v)
+        else:
+            tags[k] = str(v)
+    return tags
 
 
 async def resolve_org_id(explicit: str | None) -> str | None:
     if explicit is not None:
         return explicit or None
+    # The `organizations` table only exists in the cloud schema, not OSS.
+    # Fall back to NULL when it isn't present (local-dev case).
     async with get_session() as session:
-        row = (
-            await session.execute(text("SELECT id FROM organizations LIMIT 1"))
-        ).first()
-        return row[0] if row else None
+        try:
+            row = (
+                await session.execute(text("SELECT id FROM organizations LIMIT 1"))
+            ).first()
+            return row[0] if row else None
+        except Exception:
+            return None
 
 
 async def seed(task_sources: list[Path], org_id: str | None) -> None:

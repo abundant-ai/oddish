@@ -52,4 +52,10 @@ oddish = { path = "../oddish", editable = true }
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-asyncio_mode = "auto"
+# Async tests share a single event loop for the whole session so the
+# import-time SQLAlchemy engine + asyncpg pool (created on the first
+# loop they see) keep working across tests. Without this, the second
+# DB-touching test fails with `RuntimeError: Event loop is closed`.
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"

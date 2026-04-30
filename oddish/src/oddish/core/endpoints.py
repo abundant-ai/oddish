@@ -1728,6 +1728,15 @@ async def create_task_sweep_core(
             experiment_id=new_experiment_id,
         )
 
+        # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
+        # to the in-process runner instead of going through the Modal queue.
+        from oddish.config import settings
+        if settings.local_mode:
+            import asyncio
+            from oddish.worker.local_runner import run_trial_locally
+            for trial in new_trials:
+                asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
+
         return task, new_trials, True, experiment
 
     # Create mode
@@ -1765,4 +1774,15 @@ async def create_task_sweep_core(
 
     experiment = await _primary_experiment_for_task_model(task)
 
-    return task, list(task.trials), False, experiment
+    new_trials = list(task.trials)
+
+    # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
+    # to the in-process runner instead of going through the Modal queue.
+    from oddish.config import settings
+    if settings.local_mode:
+        import asyncio
+        from oddish.worker.local_runner import run_trial_locally
+        for trial in new_trials:
+            asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
+
+    return task, new_trials, False, experiment
