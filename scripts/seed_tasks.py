@@ -144,9 +144,12 @@ def load_task_toml(task_dir: Path) -> dict[str, Any]:
         return tomllib.load(f)
 
 
-def build_tags(toml_data: dict[str, Any]) -> dict[str, Any]:
+def build_tags(toml_data: dict[str, Any]) -> dict[str, str]:
+    """Build the task tags dict. Values must be strings — TaskSubmission's
+    Pydantic schema enforces dict[str, str], so we coerce lists and ints.
+    """
     metadata = toml_data.get("metadata", {})
-    tags = {
+    raw = {
         "category": metadata.get("category"),
         "difficulty": metadata.get("difficulty"),
         "harbor_tags": metadata.get("tags", []),
@@ -155,7 +158,15 @@ def build_tags(toml_data: dict[str, Any]) -> dict[str, Any]:
         "author_organization": metadata.get("author_organization"),
         "expert_time_estimate_hours": metadata.get("expert_time_estimate_hours"),
     }
-    return {k: v for k, v in tags.items() if v is not None}
+    tags: dict[str, str] = {}
+    for k, v in raw.items():
+        if v is None:
+            continue
+        if isinstance(v, list):
+            tags[k] = ",".join(str(x) for x in v)
+        else:
+            tags[k] = str(v)
+    return tags
 
 
 async def resolve_org_id(explicit: str | None) -> str | None:
