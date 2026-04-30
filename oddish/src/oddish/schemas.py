@@ -185,7 +185,7 @@ class TaskSubmission(BaseModel):
         default=None,
         description=(
             "Operator-supplied prompt content to prepend to the task's instruction "
-            "for every trial in this submission. Used for freeform / adversarial probes."
+            "for every trial in this submission. Used for probe / adversarial probes."
         ),
     )
 
@@ -242,7 +242,7 @@ class TaskSweepSubmission(BaseModel):
         default=None,
         description=(
             "Operator-supplied prompt content to prepend to the task's instruction "
-            "for every trial in this submission. Used for freeform / adversarial probes."
+            "for every trial in this submission. Used for probe / adversarial probes."
         ),
     )
 
@@ -481,7 +481,7 @@ class TrialResponse(BaseModel):
         None,
         description=(
             "Harbor passthrough config (agent env/kwargs, environment "
-            "resources, freeform mode marker, extra_instructions, etc.). "
+            "resources, probe mode marker, extra_instructions, etc.). "
             "Surfaced for clients that need to render mode-specific UI."
         ),
     )

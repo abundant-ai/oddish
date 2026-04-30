@@ -1728,7 +1728,7 @@ async def create_task_sweep_core(
             experiment_id=new_experiment_id,
         )
 
-        # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each freeform trial
+        # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
         # to the in-process runner instead of going through the Modal queue.
         from oddish.config import settings
         if settings.local_mode:
@@ -1776,7 +1776,7 @@ async def create_task_sweep_core(
 
     new_trials = list(task.trials)
 
-    # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each freeform trial
+    # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
     # to the in-process runner instead of going through the Modal queue.
     from oddish.config import settings
     if settings.local_mode:
