@@ -42,6 +42,15 @@ export function getAuthHeaders(clerkToken?: string | null): HeadersInit {
 export async function getClerkToken(
   getToken: (options?: { template?: string }) => Promise<string | null>,
 ): Promise<string | null> {
+  // Dev-only escape hatch for testing local frontend against prod backend.
+  // Disabled in production builds. Set BACKEND_JWT_OVERRIDE in .env.local.
+  if (
+    process.env.NODE_ENV !== "production" &&
+    process.env.BACKEND_JWT_OVERRIDE
+  ) {
+    return process.env.BACKEND_JWT_OVERRIDE;
+  }
+
   const template = process.env.CLERK_JWT_TEMPLATE;
   if (template) {
     try {

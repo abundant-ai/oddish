@@ -1,0 +1,44 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 2,
+            "passed": 0,
+            "failed": 2,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1777247209.3032491,
+            "stop": 1777247209.3392944
+        },
+        "tests": [
+            {
+                "name": "test_state.py::test_hello_file_exists",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0004479579999951966,
+                "start": 1777247209.3263094,
+                "stop": 1777247209.3301246,
+                "retries": 0,
+                "file_path": "test_state.py",
+                "trace": "def test_hello_file_exists():\n        hello_path = Path(\"/app/hello.txt\")\n    \n>       assert hello_path.exists(), f\"File {hello_path} does not exist\"\nE       AssertionError: File /app/hello.txt does not exist\nE       assert False\nE        +  where False = exists()\nE        +    where exists = PosixPath('/app/hello.txt').exists\n\n/tests/test_state.py:10: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_state.py::test_hello_file_contents",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.0003003319999947962,
+                "start": 1777247209.3302076,
+                "stop": 1777247209.3391583,
+                "retries": 0,
+                "file_path": "test_state.py",
+                "trace": "def test_hello_file_contents():\n        hello_path = Path(\"/app/hello.txt\")\n    \n>       content = hello_path.read_text().strip()\n                  ^^^^^^^^^^^^^^^^^^^^^^\n\n/tests/test_state.py:16: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/root/.local/share/uv/python/cpython-3.14.0-linux-aarch64-gnu/lib/python3.14/pathlib/__init__.py:792: in read_text\n    with self.open(mode='r', encoding=encoding, errors=errors, newline=newline) as f:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = PosixPath('/app/hello.txt'), mode = 'r', buffering = -1\nencoding = 'utf-8', errors = None, newline = None\n\n    def open(self, mode='r', buffering=-1, encoding=None,\n             errors=None, newline=None):\n        \"\"\"\n        Open the file pointed to by this path and return a file object, as\n        the built-in open() function does.\n        \"\"\"\n        if \"b\" not in mode:\n            encoding = io.text_encoding(encoding)\n>       return io.open(self, mode, buffering, encoding, errors, newline)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       FileNotFoundError: [Errno 2] No such file or directory: '/app/hello.txt'\n\n/root/.local/share/uv/python/cpython-3.14.0-linux-aarch64-gnu/lib/python3.14/pathlib/__init__.py:776: FileNotFoundError",
+                "message": "The test failed in the call phase"
+            }
+        ]
+    }
+}

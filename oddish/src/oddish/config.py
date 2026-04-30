@@ -298,6 +298,10 @@ class Settings(BaseSettings):
 
     # API keys (read from env without ODDISH_ prefix)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    daytona_api_key: str | None = Field(
+        default=None, alias="DAYTONA_API_KEY"
+    )
+    cc_chat_local_jobs_dir: str | None = Field(default=None)
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
 
