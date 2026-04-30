@@ -434,6 +434,9 @@ def _build_harbor_config_for_trial(
     if submission.result_focus:
         base["result_focus"] = submission.result_focus
 
+    if submission.evaluation_metric:
+        base["evaluation_metric"] = submission.evaluation_metric
+
     return base or None
 
 

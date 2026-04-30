@@ -44,7 +44,11 @@ type Trial = {
   reward: number | null;
   started_at: string | null;
   finished_at: string | null;
-  harbor_config: { mode?: string; extra_instructions?: string } | null;
+  harbor_config: {
+    mode?: string;
+    extra_instructions?: string;
+    evaluation_metric?: "cheat_ratio" | "result_focus" | "none";
+  } | null;
   result: {
     _artifacts?: {
       trajectory?: unknown;
@@ -209,9 +213,26 @@ export default function ProbeResultPage({
             <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               Summary
             </h2>
-            <span className="text-[10px] text-muted-foreground">
-              {summary.model ?? ""}
-            </span>
+            <div className="flex items-center gap-2">
+              {(() => {
+                const metric =
+                  trial.harbor_config?.evaluation_metric ?? "none";
+                const label =
+                  metric === "cheat_ratio"
+                    ? "cheat ratio metric"
+                    : metric === "result_focus"
+                      ? "result focus metric"
+                      : "no specific metric";
+                return (
+                  <span className="rounded bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    {label}
+                  </span>
+                );
+              })()}
+              <span className="text-[10px] text-muted-foreground">
+                {summary.model ?? ""}
+              </span>
+            </div>
           </div>
           {summary.result_focus_question && summary.result_focus_findings ? (
             <div className="rounded border-2 border-amber-500/30 bg-amber-500/5 p-3 mb-2 space-y-2">

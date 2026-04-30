@@ -41,3 +41,16 @@ def test_harbor_config_carries_result_focus():
     )
     cfg = _build_harbor_config_for_trial(submission, _make_spec())
     assert cfg["result_focus"] == "Did the agent find ambiguities?"
+
+
+def test_harbor_config_carries_evaluation_metric():
+    submission = TaskSubmission(
+        task_path="some/task",
+        trials=[],
+        user="alice",
+        harbor=HarborConfig(),
+        extra_instructions="cheat",
+        evaluation_metric="cheat_ratio",
+    )
+    cfg = _build_harbor_config_for_trial(submission, _make_spec())
+    assert cfg["evaluation_metric"] == "cheat_ratio"

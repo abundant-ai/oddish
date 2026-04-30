@@ -89,4 +89,5 @@ def build_task_submission_from_sweep(
         content_hash=submission.content_hash,
         extra_instructions=submission.extra_instructions,
         result_focus=submission.result_focus,
+        evaluation_metric=submission.evaluation_metric,
     )
