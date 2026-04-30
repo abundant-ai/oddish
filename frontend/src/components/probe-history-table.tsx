@@ -59,20 +59,31 @@ function resultDisplay(t: Trial): ResultDisplay {
   }
 
   // Trial completed. Prefer the analyzer's per-attempt cheat ratio.
+  // Counts: succeeded=success===true, blocked=success===false,
+  // investigation=success===null/undefined (not a cheat attempt at all).
   const attempts = t.analysis?.attempts ?? [];
-  const cheatAttempts = attempts.filter(
-    (a) => a.success === true || a.success === false,
-  );
-  if (cheatAttempts.length > 0) {
-    const succeeded = cheatAttempts.filter((a) => a.success === true).length;
-    const total = cheatAttempts.length;
+  const succeeded = attempts.filter((a) => a.success === true).length;
+  const blocked = attempts.filter((a) => a.success === false).length;
+  const investigation = attempts.length - succeeded - blocked;
+  const cheatAttempts = succeeded + blocked;
+
+  if (cheatAttempts > 0) {
+    // Concise primary text + verbose tooltip. Color is operator-centric:
+    // any cheat that bypassed the verifier = red (task is gameable). All
+    // blocked = green (task is robust).
+    const text =
+      succeeded > 0
+        ? `${succeeded} cheat${succeeded === 1 ? "" : "s"} succeeded`
+        : `${blocked} blocked`;
+    const tipParts: string[] = [];
+    if (succeeded > 0) tipParts.push(`${succeeded} succeeded (verifier was bypassed)`);
+    if (blocked > 0) tipParts.push(`${blocked} blocked by verifier`);
+    if (investigation > 0)
+      tipParts.push(`${investigation} investigation step${investigation === 1 ? "" : "s"} (not cheat attempts)`);
     return {
-      text: `${succeeded}/${total} cheats`,
+      text,
       variant: succeeded > 0 ? "cheat" : "blocked",
-      title:
-        succeeded > 0
-          ? `${succeeded} of ${total} cheat attempts succeeded`
-          : `${total} cheat attempt(s) — all blocked by the verifier`,
+      title: tipParts.join(" · "),
     };
   }
 
