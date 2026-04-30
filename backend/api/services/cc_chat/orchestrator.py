@@ -4,7 +4,7 @@ import asyncio
 import json
 import secrets
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import AsyncIterator
 
 from api.services.cc_chat.claude_md import render_claude_md
@@ -14,7 +14,7 @@ from api.services.cc_chat.sessions import SessionRegistry, SessionState
 
 
 _DAYTONA_SESSION_NAME = "cc"
-_WORKSPACE_ROOT = "/workspace"
+_WORKSPACE_ROOT = "/home/daytona/workspace"
 
 
 class SessionNotFound(Exception):
@@ -37,11 +37,13 @@ class CCChatOrchestrator:
         file_store: ExperimentFileStore,
         anthropic_api_key: str,
         auto_stop_minutes: int = 30,
+        skills_dir: Path | None = None,
     ) -> None:
         self._daytona = daytona
         self._file_store = file_store
         self._anthropic_api_key = anthropic_api_key
         self._auto_stop_minutes = auto_stop_minutes
+        self._skills_dir = skills_dir
         self._sessions = SessionRegistry()
         self._sandbox_handles: dict[str, CreatedSandbox] = {}
 
@@ -84,6 +86,8 @@ class CCChatOrchestrator:
                 dest_path=f"{_WORKSPACE_ROOT}/CLAUDE.md",
                 content=claude_md.encode("utf-8"),
             )
+
+            await self._inject_skills(sandbox)
         except Exception:
             await self._daytona.delete_sandbox(sandbox)
             raise
@@ -193,6 +197,18 @@ class CCChatOrchestrator:
                     yield {"type": "_invalid_json", "raw": leftover.strip()}
         finally:
             await closer_task
+
+    async def _inject_skills(self, sandbox: CreatedSandbox) -> None:
+        if self._skills_dir is None or not self._skills_dir.is_dir():
+            return
+        for path in self._skills_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(self._skills_dir).as_posix()
+            dest = f"{_WORKSPACE_ROOT}/.claude/skills/{rel}"
+            await self._daytona.upload_file(
+                sandbox, dest_path=dest, content=path.read_bytes()
+            )
 
     async def close(self, *, session_id: str) -> None:
         state = self._sessions.pop(session_id)
