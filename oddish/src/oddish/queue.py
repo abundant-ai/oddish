@@ -442,6 +442,11 @@ def _build_harbor_config_for_trial(
     if submission.ratio_verb:
         base["ratio_verb"] = submission.ratio_verb
 
+    if submission.preset_name:
+        base["preset_name"] = submission.preset_name
+    if submission.prior_attempts_config:
+        base["prior_attempts_config"] = submission.prior_attempts_config
+
     return base or None
 
 
