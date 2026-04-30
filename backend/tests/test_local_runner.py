@@ -25,7 +25,7 @@ from oddish.db import (
     get_session,
 )
 
-from worker.local_runner import _run_harbor_trial, run_trial_locally
+from oddish.worker.local_runner import _run_harbor_trial, run_trial_locally
 
 
 @pytest_asyncio.fixture
@@ -217,7 +217,7 @@ async def test_freeform_overlay_prepends_extra_instructions_to_instruction_md(
         async def run(self):
             return self.result
 
-    monkeypatch.setattr("worker.local_runner.Trial", FakeTrial)
+    monkeypatch.setattr("oddish.worker.local_runner.Trial", FakeTrial)
 
     await _run_harbor_trial(trial_id)
 
