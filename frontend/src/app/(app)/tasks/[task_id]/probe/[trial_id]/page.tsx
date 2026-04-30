@@ -483,7 +483,6 @@ export default function ProbeResultPage({
                     <details
                       key={attemptIdx}
                       className="rounded border-2 border-primary/20 bg-primary/5 p-3"
-                      open={attemptIdx === 0}
                     >
                       <summary className="cursor-pointer">
                         <span className="text-sm font-medium">
