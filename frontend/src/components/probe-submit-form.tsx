@@ -30,8 +30,6 @@ const MODELS_BY_AGENT: Record<string, { value: string; label: string }[]> = {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800";
 
-const PRESETS_KEY = "oddish:probe_presets:v1";
-
 type EvaluationMetric = "cheat_ratio" | "result_focus" | "none";
 
 type Preset = {
@@ -149,36 +147,39 @@ Final report: which anti-cheat layer did you target, what specific exploit you t
   },
 ];
 
-function loadPresets(): Preset[] {
-  if (typeof window === "undefined") return SEED_PRESETS;
+async function fetchPresets(): Promise<Preset[]> {
   try {
-    const stored = window.localStorage.getItem(PRESETS_KEY);
-    if (!stored) return SEED_PRESETS;
-    const parsed: Preset[] = JSON.parse(stored);
+    const res = await fetch("/api/probe-presets", { cache: "no-store" });
+    if (!res.ok) {
+      console.warn("probe presets fetch failed:", res.status);
+      return [];
+    }
+    const data = await res.json();
+    if (!Array.isArray(data)) return [];
     // Backfill: stored presets from before evaluation_metric existed
     // default to "none" so they keep working.
-    const normalized = parsed.map((p) => ({
+    return (data as Preset[]).map((p) => ({
       ...p,
       evaluation_metric: (p.evaluation_metric ?? "none") as EvaluationMetric,
     }));
-    const userPresetIds = new Set(normalized.map((p) => p.id));
-    // Merge: stored presets first, then any seeds not yet in storage
-    const merged = [...normalized];
-    for (const seed of SEED_PRESETS) {
-      if (!userPresetIds.has(seed.id)) merged.push(seed);
-    }
-    return merged;
-  } catch {
-    return SEED_PRESETS;
+  } catch (err) {
+    console.warn("probe presets fetch error:", err);
+    return [];
   }
 }
 
-function savePresets(presets: Preset[]): void {
-  if (typeof window === "undefined") return;
+async function persistPresets(customs: Preset[]): Promise<void> {
   try {
-    window.localStorage.setItem(PRESETS_KEY, JSON.stringify(presets));
-  } catch {
-    // localStorage full / disabled — silently ignore
+    const res = await fetch("/api/probe-presets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(customs),
+    });
+    if (!res.ok) {
+      console.warn("probe presets persist failed:", res.status);
+    }
+  } catch (err) {
+    console.warn("probe presets persist error:", err);
   }
 }
 
@@ -200,6 +201,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
   const [error, setError] = useState<string | null>(null);
 
   const [presets, setPresets] = useState<Preset[]>([]);
+  const [presetsLoaded, setPresetsLoaded] = useState(false);
   const [selectedPresetId, setSelectedPresetId] = useState<string>("");
   const [result_focus, setResultFocus] = useState("");
 
@@ -220,7 +222,22 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     presets.find((p) => p.id === selectedPresetId) ?? null;
 
   useEffect(() => {
-    setPresets(loadPresets());
+    let cancelled = false;
+    (async () => {
+      const customs = await fetchPresets();
+      if (cancelled) return;
+      // Merge: stored customs first, then any seeds not yet in storage.
+      const customIds = new Set(customs.map((p) => p.id));
+      const merged = [...customs];
+      for (const seed of SEED_PRESETS) {
+        if (!customIds.has(seed.id)) merged.push(seed);
+      }
+      setPresets(merged);
+      setPresetsLoaded(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   function loadPreset(id: string) {
@@ -296,7 +313,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     };
     const updated = [newPreset, ...presets.filter((p) => p.id !== targetId)];
     setPresets(updated);
-    savePresets(updated.filter((p) => !p.is_seed));
+    void persistPresets(updated.filter((p) => !p.is_seed));
     setSelectedPresetId(targetId);
     // Apply to the current submission form too
     setAgent(newPreset.agent);
@@ -311,7 +328,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     if (!confirm(`Delete preset "${selectedPreset.name}"?`)) return;
     const updated = presets.filter((p) => p.id !== selectedPreset.id);
     setPresets(updated);
-    savePresets(updated.filter((p) => !p.is_seed));
+    void persistPresets(updated.filter((p) => !p.is_seed));
     setSelectedPresetId("");
   }
 
@@ -377,7 +394,11 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
             onChange={(e) => loadPreset(e.target.value)}
             className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
           >
-            <option value="">— Select a probe agent —</option>
+            <option value="">
+              {presetsLoaded
+                ? "— Select a probe agent —"
+                : "Loading presets…"}
+            </option>
             {presets.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -541,6 +562,8 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {selectedPresetId ? (
+        <>
       <div className="flex gap-4">
         <label className="flex-1">
           <span className="text-sm font-medium">Agent</span>
@@ -615,6 +638,12 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
       >
         {submitting ? "Submitting..." : "Submit"}
       </button>
+        </>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          Select a probe agent above or create your own to get started.
+        </p>
+      )}
     </form>
   );
 }

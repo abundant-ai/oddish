@@ -14,6 +14,10 @@ const isPublicRoute = createRouteMatcher([
   "/datasets(.*)",
   "/experiments(.*)",
   "/api/public(.*)",
+  // Local dev-only state, written to a gitignored JSON file at the repo
+  // root. Not deployed to production builds; useful for the probe workbench
+  // in `pnpm dev`.
+  "/api/probe-presets(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, request) => {
