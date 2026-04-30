@@ -17,6 +17,7 @@ type Attempt = {
   title?: string;
   rationale?: string;
   outcome?: string;
+  success?: boolean | null;
   step_indices?: number[];
 };
 
@@ -246,6 +247,25 @@ export default function ProbeResultPage({
               ) : null}
             </div>
           ) : null}
+          {(() => {
+            const cheatAttempts = (summary.attempts ?? []).filter(
+              (a) => a.success === true || a.success === false,
+            );
+            const cheatSucceeded = cheatAttempts.filter(
+              (a) => a.success === true,
+            ).length;
+            const cheatTotal = cheatAttempts.length;
+            return cheatTotal > 0 ? (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="rounded bg-muted px-2 py-1">
+                  Cheat ratio: <strong>{cheatSucceeded}</strong> / {cheatTotal}
+                </span>
+                <span className="text-muted-foreground">
+                  attempts that bypassed the verifier
+                </span>
+              </div>
+            ) : null;
+          })()}
           {summary.evidence ? (
             <p className="text-xs text-muted-foreground italic">
               Evidence: {summary.evidence}
@@ -269,20 +289,10 @@ export default function ProbeResultPage({
         </section>
       ) : null}
 
-      {/* Operator instructions */}
-      <section className="rounded border p-4 space-y-2">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Operator instructions
-        </h2>
-        <pre className="whitespace-pre-wrap rounded bg-muted p-3 font-mono text-xs">
-          {extra || "(none)"}
-        </pre>
-      </section>
-
-      {/* Agent thought process */}
+      {/* Agent process */}
       <section className="rounded border p-4 space-y-3">
         <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Agent thought process
+          Agent process
         </h2>
         {messages.length === 0 ? (
           <p className="text-xs text-muted-foreground">(no messages yet)</p>
@@ -323,6 +333,15 @@ export default function ProbeResultPage({
                           Attempt {attemptIdx + 1}:{" "}
                           {attempt.title || "(untitled)"}
                         </span>
+                        {attempt.success === true ? (
+                          <span className="ml-2 rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-medium text-red-600">
+                            cheat succeeded
+                          </span>
+                        ) : attempt.success === false ? (
+                          <span className="ml-2 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
+                            blocked
+                          </span>
+                        ) : null}
                         <span className="ml-2 text-xs text-muted-foreground">
                           ({indices.length} step
                           {indices.length === 1 ? "" : "s"})
@@ -426,6 +445,16 @@ export default function ProbeResultPage({
             ))}
           </ol>
         )}
+      </section>
+
+      {/* Operator instructions */}
+      <section className="rounded border p-4 space-y-2">
+        <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Operator instructions
+        </h2>
+        <pre className="whitespace-pre-wrap rounded bg-muted p-3 font-mono text-xs">
+          {extra || "(none)"}
+        </pre>
       </section>
 
       {/* Verifier output */}
