@@ -35,7 +35,7 @@ dependencies = [
     "python-multipart==0.0.21",
 
     # Environment loading
-    "python-dotenv==1.2.1",
+    "python-dotenv==1.2.2",
 ]
 
 [project.optional-dependencies]
