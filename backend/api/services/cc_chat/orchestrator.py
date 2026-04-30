@@ -78,6 +78,9 @@ class CCChatOrchestrator:
         self._idle_timeout = timedelta(minutes=idle_timeout_minutes)
         self._sweep_interval = sweep_interval_seconds
         self._sweeper_task: asyncio.Task[None] | None = None
+        # Per-session live stream tasks so close() can cancel them and
+        # avoid orphaned poll loops outliving their sandbox.
+        self._stream_tasks: dict[str, list[asyncio.Task[None]]] = {}
 
     async def start(self, *, experiment_id: str, org_id: str) -> str:
         """Start an experiment-scoped chat. Uploads `jobs/<exp>/<trial>/...`
@@ -313,6 +316,9 @@ class CCChatOrchestrator:
                 on_stderr=on_stderr,
             )
         )
+        # Register so close(session_id) can cancel us if the user tears
+        # down the panel mid-stream. Unregistered in `finally` below.
+        self._stream_tasks.setdefault(session_id, []).append(stream_task)
 
         async def closer() -> None:
             try:
@@ -398,7 +404,15 @@ class CCChatOrchestrator:
                 n_events,
                 n_stderr,
             )
-            await closer_task
+            try:
+                await closer_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            tasks = self._stream_tasks.get(session_id)
+            if tasks and stream_task in tasks:
+                tasks.remove(stream_task)
+                if not tasks:
+                    self._stream_tasks.pop(session_id, None)
 
     async def export_skills(self, *, session_id: str) -> bytes:
         """Tar the sandbox's .claude/skills/ directory and return the archive bytes."""
@@ -434,9 +448,24 @@ class CCChatOrchestrator:
             )
 
     async def close(self, *, session_id: str) -> None:
+        # Cancel any in-flight stream tasks for this session BEFORE deleting
+        # the sandbox. Otherwise the polling loop survives the sandbox death,
+        # spams Daytona with errors, and never terminates the SSE stream.
+        tasks = self._stream_tasks.pop(session_id, None)
+        if tasks:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            for t in tasks:
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+
         state = self._sessions.pop(session_id)
         if state is None:
             return
+        state.broken = True
         sandbox = self._sandbox_handles.pop(session_id, None)
         if sandbox is not None:
             try:
