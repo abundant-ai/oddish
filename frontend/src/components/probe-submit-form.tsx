@@ -3,6 +3,13 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 const AGENTS = [
   { value: "claude-code", label: "claude-code" },
@@ -181,9 +188,18 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
 
   const [presets, setPresets] = useState<Preset[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState<string>("");
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
-  const [newPresetName, setNewPresetName] = useState("");
   const [result_focus, setResultFocus] = useState("");
+
+  // Modal state for create/edit preset
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
+  const [modalName, setModalName] = useState("");
+  const [modalAgent, setModalAgent] = useState("claude-code");
+  const [modalModel, setModalModel] = useState(
+    MODELS_BY_AGENT["claude-code"][0].value,
+  );
+  const [modalOperatorPrompt, setModalOperatorPrompt] = useState("");
+  const [modalResultFocus, setModalResultFocus] = useState("");
 
   const selectedPreset =
     presets.find((p) => p.id === selectedPresetId) ?? null;
@@ -203,47 +219,73 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     setResultFocus(p.result_focus ?? "");
   }
 
-  function savePreset() {
-    const id = slugify(newPresetName);
-    if (!id) return;
-    const now = new Date().toISOString();
-    const newPreset: Preset = {
-      id,
-      name: newPresetName.trim(),
-      agent,
-      model,
-      operator_prompt: extraInstructions,
-      result_focus: result_focus.trim() || null,
-      is_seed: false,
-      created_at: now,
-      updated_at: now,
-    };
-    // Replace if id exists, otherwise prepend
-    const updated = [newPreset, ...presets.filter((p) => p.id !== id)];
-    setPresets(updated);
-    savePresets(updated.filter((p) => !p.is_seed));
-    setSelectedPresetId(id);
-    setShowSaveDialog(false);
-    setNewPresetName("");
+  function openCreateModal() {
+    setEditingPresetId(null);
+    setModalName("");
+    setModalAgent("claude-code");
+    setModalModel(MODELS_BY_AGENT["claude-code"][0].value);
+    setModalOperatorPrompt("");
+    setModalResultFocus("");
+    setModalOpen(true);
   }
 
-  function updateSelectedPreset() {
-    if (!selectedPreset || selectedPreset.is_seed) return;
+  function openEditModal() {
+    if (!selectedPreset) return;
+    setEditingPresetId(selectedPreset.id);
+    setModalName(selectedPreset.name);
+    setModalAgent(selectedPreset.agent);
+    setModalModel(selectedPreset.model);
+    setModalOperatorPrompt(selectedPreset.operator_prompt);
+    setModalResultFocus(selectedPreset.result_focus ?? "");
+    setModalOpen(true);
+  }
+
+  function savePresetFromModal() {
+    if (!modalName.trim() || !modalOperatorPrompt.trim()) return;
     const now = new Date().toISOString();
-    const updated = presets.map((p) =>
-      p.id === selectedPreset.id
-        ? {
-            ...p,
-            agent,
-            model,
-            operator_prompt: extraInstructions,
-            result_focus: result_focus.trim() || null,
-            updated_at: now,
-          }
-        : p,
-    );
+    let targetId: string;
+    if (editingPresetId !== null && !selectedPreset?.is_seed) {
+      // Editing an existing custom preset — keep the same id
+      targetId = editingPresetId;
+    } else {
+      // Creating new, or forking a seed
+      let candidate = slugify(modalName);
+      if (selectedPreset?.is_seed && editingPresetId !== null) {
+        candidate = `${candidate}-copy`;
+      }
+      const existingIds = new Set(presets.map((p) => p.id));
+      let suffix = 1;
+      targetId = candidate;
+      while (existingIds.has(targetId)) {
+        suffix += 1;
+        targetId = `${candidate}-${suffix}`;
+      }
+    }
+    const existingForId = presets.find((p) => p.id === targetId);
+    const newPreset: Preset = {
+      id: targetId,
+      name: modalName.trim(),
+      agent: modalAgent,
+      model: modalModel,
+      operator_prompt: modalOperatorPrompt,
+      result_focus: modalResultFocus.trim() || null,
+      is_seed: false,
+      created_at:
+        existingForId && !existingForId.is_seed
+          ? existingForId.created_at
+          : now,
+      updated_at: now,
+    };
+    const updated = [newPreset, ...presets.filter((p) => p.id !== targetId)];
     setPresets(updated);
     savePresets(updated.filter((p) => !p.is_seed));
+    setSelectedPresetId(targetId);
+    // Apply to the current submission form too
+    setAgent(newPreset.agent);
+    setModel(newPreset.model);
+    setExtraInstructions(newPreset.operator_prompt);
+    setResultFocus(newPreset.result_focus ?? "");
+    setModalOpen(false);
   }
 
   function deleteSelectedPreset() {
@@ -308,15 +350,15 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
 
   return (
     <form onSubmit={onSubmit} className="space-y-4">
-      <div className="flex items-end gap-2">
-        <label className="flex-1">
-          <span className="text-sm font-medium">Preset</span>
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="flex-1 min-w-[200px]">
+          <span className="text-sm font-medium">Your probe agents</span>
           <select
             value={selectedPresetId}
             onChange={(e) => loadPreset(e.target.value)}
             className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
           >
-            <option value="">— Custom (no preset) —</option>
+            <option value="">— Select a probe agent —</option>
             {presets.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -327,59 +369,136 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
         </label>
         <button
           type="button"
-          onClick={() => setShowSaveDialog(true)}
-          disabled={!extraInstructions.trim()}
-          className="rounded border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+          onClick={openCreateModal}
+          className="rounded border bg-muted/40 px-3 py-1.5 text-sm hover:bg-muted"
         >
-          Save as…
+          + Create your own probe agent
         </button>
+        {selectedPreset ? (
+          <button
+            type="button"
+            onClick={openEditModal}
+            className="rounded border px-3 py-1.5 text-sm hover:bg-muted"
+          >
+            Edit
+          </button>
+        ) : null}
         {selectedPreset && !selectedPreset.is_seed ? (
-          <>
-            <button
-              type="button"
-              onClick={updateSelectedPreset}
-              className="rounded border px-3 py-1.5 text-sm hover:bg-muted"
-            >
-              Update
-            </button>
-            <button
-              type="button"
-              onClick={deleteSelectedPreset}
-              className="rounded border border-red-500/50 px-3 py-1.5 text-sm text-red-600 hover:bg-red-500/10"
-            >
-              Delete
-            </button>
-          </>
+          <button
+            type="button"
+            onClick={deleteSelectedPreset}
+            className="rounded border border-red-500/50 px-3 py-1.5 text-sm text-red-600 hover:bg-red-500/10"
+          >
+            Delete
+          </button>
         ) : null}
       </div>
-      {showSaveDialog ? (
-        <div className="rounded border bg-muted/40 p-3 space-y-2">
-          <input
-            type="text"
-            placeholder="Preset name"
-            value={newPresetName}
-            onChange={(e) => setNewPresetName(e.target.value)}
-            className="w-full rounded border bg-background px-2 py-1.5 text-sm"
-          />
-          <div className="flex gap-2">
+      <Dialog open={modalOpen} onOpenChange={setModalOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {editingPresetId === null
+                ? "Create a probe agent"
+                : selectedPreset?.is_seed
+                  ? "Fork a built-in probe agent"
+                  : "Edit probe agent"}
+            </DialogTitle>
+            {selectedPreset?.is_seed && editingPresetId !== null ? (
+              <p className="text-xs text-muted-foreground">
+                Built-in presets can&apos;t be modified directly. Saving will
+                create a personal copy you can edit and delete freely.
+              </p>
+            ) : null}
+          </DialogHeader>
+          <div className="space-y-4">
+            <label className="block">
+              <span className="text-sm font-medium">Name</span>
+              <input
+                type="text"
+                value={modalName}
+                onChange={(e) => setModalName(e.target.value)}
+                maxLength={80}
+                className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+                placeholder="My adversarial probe"
+              />
+            </label>
+            <div className="flex gap-3">
+              <label className="flex-1">
+                <span className="text-sm font-medium">Agent</span>
+                <select
+                  value={modalAgent}
+                  onChange={(e) => {
+                    const a = e.target.value;
+                    setModalAgent(a);
+                    setModalModel(MODELS_BY_AGENT[a]?.[0]?.value ?? "");
+                  }}
+                  className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+                >
+                  {AGENTS.map((a) => (
+                    <option key={a.value} value={a.value}>
+                      {a.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex-1">
+                <span className="text-sm font-medium">Model</span>
+                <select
+                  value={modalModel}
+                  onChange={(e) => setModalModel(e.target.value)}
+                  className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+                >
+                  {(MODELS_BY_AGENT[modalAgent] ?? []).map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label className="block">
+              <span className="text-sm font-medium">Operator prompt</span>
+              <textarea
+                value={modalOperatorPrompt}
+                onChange={(e) => setModalOperatorPrompt(e.target.value)}
+                rows={10}
+                className="mt-1 w-full rounded border bg-background px-2 py-1.5 font-mono text-sm"
+                placeholder="What should the probe agent do?"
+              />
+            </label>
+            <label className="block">
+              <span className="text-sm font-medium">
+                Result focus{" "}
+                <span className="text-muted-foreground">(optional)</span>
+              </span>
+              <textarea
+                value={modalResultFocus}
+                onChange={(e) => setModalResultFocus(e.target.value)}
+                rows={2}
+                className="mt-1 w-full rounded border bg-background px-2 py-1.5 font-mono text-sm"
+                placeholder="A specific question for the analyzer to answer"
+              />
+            </label>
+          </div>
+          <DialogFooter>
             <button
               type="button"
-              onClick={savePreset}
-              disabled={!newPresetName.trim()}
-              className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
-            >
-              Save
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowSaveDialog(false)}
+              onClick={() => setModalOpen(false)}
               className="rounded border px-3 py-1.5 text-sm"
             >
               Cancel
             </button>
-          </div>
-        </div>
-      ) : null}
+            <button
+              type="button"
+              onClick={savePresetFromModal}
+              disabled={!modalName.trim() || !modalOperatorPrompt.trim()}
+              className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
+            >
+              Save
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <div className="flex gap-4">
         <label className="flex-1">
           <span className="text-sm font-medium">Agent</span>
