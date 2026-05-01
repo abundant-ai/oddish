@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, status
 from oddish.core.experiment_backfill import backfill_experiment_core
 from oddish.core.experiment_cells import (
     add_cell_core,
+    create_experiment_core,
     delete_cell_core,
     list_cells_core,
     resolve_experiment_core,
@@ -18,6 +19,7 @@ from oddish.schemas import (
     ExperimentCellCreateRequest,
     ExperimentCellResponse,
     ExperimentCellUpdateRequest,
+    ExperimentCreateRequest,
     ResolvedExperimentResponse,
 )
 
@@ -25,6 +27,29 @@ from auth import APIKeyScope, AuthContext, require_admin, require_auth
 
 
 router = APIRouter(tags=["Experiments"])
+
+
+@router.post(
+    "/experiments",
+    response_model=ResolvedExperimentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_experiment(
+    payload: ExperimentCreateRequest,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> ResolvedExperimentResponse:
+    """Create a new experiment with optional initial cells.
+
+    Pure spec creation -- no trials are produced; call
+    ``POST /experiments/{id}/backfill`` afterwards to enqueue work.
+    """
+    async with get_session() as session:
+        return await create_experiment_core(
+            session,
+            name=payload.name,
+            cells=payload.cells,
+            org_id=auth.org_id,
+        )
 
 
 @router.get(
