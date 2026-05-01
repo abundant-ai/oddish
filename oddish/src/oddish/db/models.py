@@ -248,6 +248,65 @@ class ExperimentModel(TimestampedMixin, Base):
     )
 
 
+class ExperimentCellModel(TimestampedMixin, Base):
+    """One cell of an experiment's selection.
+
+    An experiment is a set of cells; each cell declares "I want at
+    least ``target_n_trials`` of this agent against this specific task
+    version". Cells are *frozen at save*: the ``task_version_id`` never
+    silently shifts. The experiment as a whole is editable -- cells can
+    be added, removed, or have their target bumped.
+
+    Evidence is *not* owned by the cell -- the resolved view joins on
+    ``(task_version_id, agent_equivalence_key)`` against the trial table
+    at read time so any new trial against that pair improves every
+    experiment that contains it.
+    """
+
+    __tablename__ = "experiment_cells"
+    __table_args__ = (
+        Index(
+            "idx_experiment_cells_unique",
+            "experiment_id",
+            "task_version_id",
+            "agent_equivalence_key",
+            unique=True,
+        ),
+        Index(
+            "idx_experiment_cells_experiment",
+            "experiment_id",
+        ),
+        Index(
+            "idx_experiment_cells_task_version",
+            "task_version_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    experiment_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("experiments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    task_version_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("task_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    agent_equivalence_key: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    target_n_trials: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Denormalized agent identity so the FE can render cells without
+    # joining the trial table to recover the (harness, model, provider)
+    # tuple. Kept in sync only at write time -- it's display metadata,
+    # not a join key. ``agent_equivalence_key`` is the load-bearing id.
+    agent_harness: Mapped[str] = mapped_column(String(64), nullable=False)
+    agent_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    agent_provider: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class JobModel(TimestampedMixin, Base):
     """User-visible batch of trials.
 

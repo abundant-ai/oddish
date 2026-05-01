@@ -588,6 +588,74 @@ class JobListResponse(BaseModel):
     has_more: bool
 
 
+class ExperimentCellAgent(BaseModel):
+    """Denormalized agent identity carried on each cell."""
+
+    harness: str
+    model: str | None = None
+    provider: str
+    equivalence_key: str
+
+
+class ExperimentCellResponse(BaseModel):
+    """One row of an experiment's selection."""
+
+    id: str
+    task_version_id: str
+    target_n_trials: int
+    agent: ExperimentCellAgent
+
+
+class ResolvedExperimentCellResponse(BaseModel):
+    """A cell plus the trial counts currently matching it."""
+
+    id: str
+    task_version_id: str
+    task_id: str
+    task_name: str | None = None
+    task_version: int | None = None
+    target_n_trials: int
+    agent: ExperimentCellAgent
+
+    have_n_total: int
+    have_n_successful: int
+    have_n_failed: int
+    have_n_running: int
+    gap: int  # max(0, target - successful)
+
+    mean_reward: float | None = None
+    last_run_at: datetime | None = None
+
+
+class ResolvedExperimentResponse(BaseModel):
+    experiment_id: str
+    experiment_name: str
+    cells: list[ResolvedExperimentCellResponse]
+    total_gap: int
+
+
+class ExperimentCellCreateRequest(BaseModel):
+    task_version_id: str
+    agent_harness: str
+    agent_model: str | None = None
+    agent_provider: str
+    target_n_trials: int = Field(ge=1)
+
+
+class ExperimentCellUpdateRequest(BaseModel):
+    target_n_trials: int = Field(ge=1)
+
+
+class ExperimentCreateRequest(BaseModel):
+    name: str
+    cells: list[ExperimentCellCreateRequest] = Field(default_factory=list)
+
+
+class ExperimentBackfillResponse(BaseModel):
+    job_id: str
+    enqueued_trial_count: int
+
+
 class TaskBrowseExperiment(BaseModel):
     id: str
     name: str
