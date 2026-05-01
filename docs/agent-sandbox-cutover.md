@@ -124,3 +124,30 @@ The agent-sandbox-service itself has two cleanup items carried over from the Pha
 - **`delete_sandbox_by_id` not implemented** — blocks explicit sandbox teardown (see limitation above).
 
 Neither item blocks this cutover, but both should be addressed before v2 detail-page work begins.
+
+## Trajectory summary
+
+The `GET /trials/{trial_id}/trajectory/summary` endpoint proxies to the
+agent-sandbox-service when `agent_sandbox_client` is on `app.state`. The
+service reads/writes the cache file at the same S3 key oddish has used
+all along (`tasks/{task_id}/trials/{trial_id}/agent/trajectory_summary.json`),
+so previously-seeded summaries continue to be served without regeneration.
+
+If the service call fails (network error / 5xx), oddish falls back to the
+existing local generation path. This means a service outage degrades to
+"summaries only available for cache hits" rather than total failure.
+
+### Shared bucket configuration
+
+The service's `AGENT_SANDBOX_S3_*` env vars should match oddish's
+`ODDISH_S3_*` (same bucket, same credentials). With Cloudflare R2:
+
+- `ODDISH_S3_ENDPOINT_URL` and `AGENT_SANDBOX_S3_ENDPOINT_URL` → same R2 endpoint.
+- `ODDISH_S3_BUCKET` and `AGENT_SANDBOX_S3_BUCKET` → same bucket name.
+- Credentials match.
+
+Different prefixes within the bucket prevent collisions:
+- Oddish writes to `tasks/{task_id}/...`.
+- Service writes probe artifacts to `runs/{probe_run_id}/...` and chat
+  transcripts to `chat-sessions/{session_id}/...`.
+- The trajectory cache lives at oddish's prefix; the service writes there.
