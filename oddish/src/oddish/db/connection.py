@@ -74,6 +74,50 @@ def _create_session_maker(
 engine = _create_engine()
 async_session_maker = _create_session_maker(engine)
 
+
+# ---------------------------------------------------------------------------
+# Defensive disconnect classification.
+#
+# Under load (or on client disconnects) an asyncpg pool connection can end up
+# with a stuck ``_top_xact``: ``Connection.transaction()`` was started but the
+# matching rollback was interrupted by an asyncio cancellation. The pool's
+# pre-ping (``pool_pre_ping=True``) also uses ``Connection.transaction()`` to
+# verify liveness, so once a connection is stuck, every subsequent ping fails
+# with::
+#
+#     InterfaceError: cannot use Connection.transaction() in a manually
+#     started transaction
+#
+# SQLAlchemy's stock ``is_disconnect`` for asyncpg doesn't recognize this
+# message as a dead connection, so the bad row stays in the pool and poisons
+# every checkout it lands in. Patching ``is_disconnect`` to treat this error
+# as a disconnect lets pre-ping evict the bad connection and grab a fresh one
+# transparently. The cost is a single dropped connection per occurrence; the
+# alternative is the pool being stuck for ``pool_recycle`` seconds.
+# ---------------------------------------------------------------------------
+
+_STUCK_TRANSACTION_HINTS = (
+    "manually started transaction",
+    "another operation is in progress",
+    "connection is closed",
+)
+
+
+def _patch_dialect_is_disconnect(dialect) -> None:
+    original = dialect.is_disconnect
+
+    def _wrapped(e, connection, cursor):
+        if original(e, connection, cursor):
+            return True
+        msg = str(e or "").lower()
+        return any(hint in msg for hint in _STUCK_TRANSACTION_HINTS)
+
+    dialect.is_disconnect = _wrapped
+
+
+_patch_dialect_is_disconnect(engine.sync_engine.dialect)
+
+
 # Global connection pool for asyncpg (used by queue workers)
 _pool: asyncpg.Pool | None = None
 
@@ -125,6 +169,7 @@ async def reconfigure_database_connections() -> None:
     global engine, async_session_maker
     await close_database_connections()
     engine = _create_engine()
+    _patch_dialect_is_disconnect(engine.sync_engine.dialect)
     async_session_maker = _create_session_maker(engine)
 
 
