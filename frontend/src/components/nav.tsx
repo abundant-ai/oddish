@@ -173,7 +173,7 @@ export function Nav() {
               </DropdownMenu>
             </Show>
             <Show when="signed-out">
-              <SignInButton mode="modal" fallbackRedirectUrl="/dashboard">
+              <SignInButton mode="modal" fallbackRedirectUrl="/tasks">
                 <Button variant="outline" size="sm">
                   Sign in
                 </Button>
