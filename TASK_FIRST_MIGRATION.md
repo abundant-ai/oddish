@@ -33,7 +33,10 @@ These are baked into the plan and worth disagreeing with now if they're wrong.
    write-once enforcement is the DB-level CHECK trigger / role revoke in
    P6. The `updated_at` drop in P0 is cosmetic, included to make the
    intent obvious in the schema.
-5. **Validation runs are jobs of `kind=validation`**, not synthetic experiments.
+5. **`JobKind` is reporting metadata, not branching logic.** Same
+   execution path for `validation` / `experiment_backfill` / `ad_hoc`;
+   the label only affects how jobs surface in the UI and CLI listings.
+   Validation runs are not a special code path.
 
 ## Phase 0 — Foundation
 
