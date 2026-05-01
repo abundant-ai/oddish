@@ -346,6 +346,17 @@ async def _create_probe_sweep(
     )
 
 
+@router.get("/tasks/{task_id}/probe-runs")
+async def get_task_probe_runs(
+    task_id: str,
+    request: Request,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> list[dict]:
+    """Return the union of legacy probe trials and service-routed probe runs."""
+    auth.require_scope(APIKeyScope.READ)
+    return await list_task_probe_runs(task_id, auth, request)
+
+
 async def list_task_probe_runs(
     task_id: str,
     auth: AuthContext,

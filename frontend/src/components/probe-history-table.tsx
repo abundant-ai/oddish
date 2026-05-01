@@ -10,48 +10,24 @@ type Attempt = {
   success?: boolean | null;
 };
 
-// Keep "cheat_ratio" as a legacy alias — old DB rows still carry it.
-// Read sites normalize to "ratio" + cheat-flavored defaults.
-type EvaluationMetric = "ratio" | "result_focus" | "none" | "cheat_ratio";
-
-type Analysis = {
+type AnalyzerResult = {
   attempts?: Attempt[];
   cheating_attempted?: boolean | null;
   cheating_succeeded?: boolean | null;
   result_focus_findings?: string | null;
-};
+} | null;
 
-type Trial = {
+// Union row returned by GET /tasks/{task_id}/probe-runs.
+// kind === "legacy"  → row originated from a TrialModel (pre-cutover probe run)
+// kind === "service" → row originated from ExternalProbeRun (agent-sandbox-service)
+type ProbeRun = {
   id: string;
-  agent: string;
+  kind: "legacy" | "service";
   status: string;
-  started_at: string | null;
-  reward: number | null;
-  error_message?: string | null;
-  analysis?: Analysis | null;
-  harbor_config?: {
-    mode?: string;
-    evaluation_metric?: EvaluationMetric;
-    ratio_unit?: string | null;
-    ratio_verb?: string | null;
-  } | null;
+  task_id: string;
+  created_at: string | null;
+  analyzer_result: AnalyzerResult;
 };
-
-function pluralize(noun: string): string {
-  const n = noun.trim();
-  if (!n) return "";
-  if (/[sxz]$|[cs]h$/.test(n)) return n + "es";
-  if (/[^aeiou]y$/.test(n)) return n.slice(0, -1) + "ies";
-  return n + "s";
-}
-
-function statusLabel(t: Trial): string {
-  if (t.status === "queued" || t.status === "pending") return "queued";
-  if (t.status === "running") return "running";
-  if (t.status === "success") return "done";
-  if (t.status === "failed") return "failed";
-  return t.status;
-}
 
 type ResultDisplay = {
   text: string;
@@ -59,143 +35,37 @@ type ResultDisplay = {
   title?: string;
 };
 
-function resultDisplay(t: Trial): ResultDisplay {
-  // Branch on metric first so a probe-agent type renders the SAME column
-  // shape regardless of trial state. Within each metric branch, status
-  // determines the placeholder vs. real content.
-  // Normalize legacy "cheat_ratio" to "ratio" with cheat-flavored defaults.
-  const rawMetric = t.harbor_config?.evaluation_metric ?? "none";
-  const metric = rawMetric === "cheat_ratio" ? "ratio" : rawMetric;
-  const unit =
-    t.harbor_config?.ratio_unit ??
-    (rawMetric === "cheat_ratio" ? "cheat" : "attempt");
-  const verb =
-    t.harbor_config?.ratio_verb ??
-    (rawMetric === "cheat_ratio" ? "succeeded" : null);
+function statusLabel(r: ProbeRun): string {
+  if (r.status === "queued" || r.status === "pending") return "queued";
+  if (r.status === "running") return "running";
+  if (r.status === "success" || r.status === "completed") return "done";
+  if (r.status === "failed") return "failed";
+  return r.status;
+}
 
-  if (metric === "ratio") {
-    const plural = pluralize(unit);
-    const verbStr = verb ? ` ${verb}` : "";
-    if (t.status === "queued" || t.status === "pending") {
-      return { text: `—/— ${plural}`, variant: "muted", title: "Trial queued" };
-    }
-    if (t.status === "running") {
-      return { text: `—/— ${plural}`, variant: "muted", title: "Trial running" };
-    }
-    if (t.status === "failed") {
-      return {
-        text: "harness error",
-        variant: "error",
-        title: t.error_message ?? "Trial failed before producing a result",
-      };
-    }
-    // status === "success"
-    if (t.analysis === null || t.analysis === undefined) {
-      return {
-        text: `—/— ${plural}`,
-        variant: "muted",
-        title: "Waiting for analyzer",
-      };
-    }
-    const all = t.analysis.attempts ?? [];
-    const succeeded = all.filter((a) => a.success === true).length;
-    const blocked = all.filter((a) => a.success === false).length;
-    const total = succeeded + blocked;
-    if (total === 0) {
-      return {
-        text: `0/0 ${plural}`,
-        variant: "neutral",
-        title: `Analyzer ran but found no ${plural} in the transcript`,
-      };
-    }
-    return {
-      text: `${succeeded}/${total} ${plural}${verbStr}`,
-      variant: succeeded > 0 ? "cheat" : "blocked",
-      title:
-        succeeded > 0
-          ? `${succeeded} of ${total} ${plural}${verbStr} — task is gameable`
-          : `All ${total} ${plural} were blocked — task is robust`,
-    };
-  }
+function resultDisplay(r: ProbeRun): ResultDisplay {
+  const analysis = r.analyzer_result;
 
-  if (metric === "result_focus") {
-    if (t.status === "queued" || t.status === "pending") {
-      return {
-        text: "awaiting answer",
-        variant: "muted",
-        title: "Trial queued",
-      };
-    }
-    if (t.status === "running") {
-      return {
-        text: "awaiting answer",
-        variant: "muted",
-        title: "Trial running",
-      };
-    }
-    if (t.status === "failed") {
-      return {
-        text: "harness error",
-        variant: "error",
-        title: t.error_message ?? "Trial failed before producing a result",
-      };
-    }
-    // status === "success"
-    if (t.analysis === null || t.analysis === undefined) {
-      return {
-        text: "awaiting answer",
-        variant: "muted",
-        title: "Waiting for analyzer",
-      };
-    }
-    const findings = t.analysis.result_focus_findings;
-    if (!findings) {
-      return {
-        text: "awaiting answer",
-        variant: "muted",
-        title: "Analyzer ran but produced no answer",
-      };
-    }
-    const truncated =
-      findings.length > 60 ? `${findings.slice(0, 60)}…` : findings;
-    return {
-      text: truncated,
-      variant: "neutral",
-      title: findings,
-    };
-  }
-
-  // metric === "none" — fallback path (no format-locking).
-
-  // In-flight or pending — nothing to report yet
-  if (t.status === "queued" || t.status === "pending") {
+  if (r.status === "queued" || r.status === "pending") {
     return { text: "—", variant: "muted" };
   }
-  if (t.status === "running") {
-    return { text: "—", variant: "muted", title: "Trial in progress" };
+  if (r.status === "running") {
+    return { text: "—", variant: "muted", title: "Run in progress" };
   }
-  // Harness-level failure (agent didn't get to run, or backend orphaned)
-  if (t.status === "failed") {
-    return {
-      text: "harness error",
-      variant: "error",
-      title: t.error_message ?? "Trial failed before producing a result",
-    };
+  if (r.status === "failed") {
+    return { text: "harness error", variant: "error" };
   }
 
-  // Prefer the analyzer's per-attempt cheat ratio.
-  // Counts: succeeded=success===true, blocked=success===false,
-  // investigation=success===null/undefined (not a cheat attempt at all).
-  const attempts = t.analysis?.attempts ?? [];
+  if (analysis === null || analysis === undefined) {
+    return { text: "no result", variant: "muted", title: "Waiting for analyzer" };
+  }
+
+  const attempts = analysis.attempts ?? [];
   const succeeded = attempts.filter((a) => a.success === true).length;
   const blocked = attempts.filter((a) => a.success === false).length;
-  const investigation = attempts.length - succeeded - blocked;
   const cheatAttempts = succeeded + blocked;
 
   if (cheatAttempts > 0) {
-    // Concise primary text + verbose tooltip. Color is operator-centric:
-    // any cheat that bypassed the verifier = red (task is gameable). All
-    // blocked = green (task is robust).
     const text =
       succeeded > 0
         ? `${succeeded} cheat${succeeded === 1 ? "" : "s"} succeeded`
@@ -203,8 +73,6 @@ function resultDisplay(t: Trial): ResultDisplay {
     const tipParts: string[] = [];
     if (succeeded > 0) tipParts.push(`${succeeded} succeeded (verifier was bypassed)`);
     if (blocked > 0) tipParts.push(`${blocked} blocked by verifier`);
-    if (investigation > 0)
-      tipParts.push(`${investigation} investigation step${investigation === 1 ? "" : "s"} (not cheat attempts)`);
     return {
       text,
       variant: succeeded > 0 ? "cheat" : "blocked",
@@ -212,30 +80,27 @@ function resultDisplay(t: Trial): ResultDisplay {
     };
   }
 
-  // No structured attempt data. Fall back to top-level cheat verdict.
-  if (t.analysis?.cheating_attempted === true) {
-    return t.analysis.cheating_succeeded
+  if (analysis.result_focus_findings) {
+    const findings = analysis.result_focus_findings;
+    const truncated =
+      findings.length > 60 ? `${findings.slice(0, 60)}…` : findings;
+    return { text: truncated, variant: "neutral", title: findings };
+  }
+
+  if (analysis.cheating_attempted === true) {
+    return analysis.cheating_succeeded
       ? { text: "cheat succeeded", variant: "cheat" }
       : { text: "cheat blocked", variant: "blocked" };
   }
-  if (t.analysis?.cheating_attempted === false) {
+  if (analysis.cheating_attempted === false) {
     return {
       text: "no cheat attempted",
       variant: "neutral",
-      title:
-        "Agent did not attempt to cheat (may have done legitimate work or just analyzed)",
+      title: "Agent did not attempt to cheat",
     };
   }
 
-  // Analyzer hasn't filled the trial yet, just show raw reward
-  if (t.reward === null || t.reward === undefined) {
-    return { text: "no result", variant: "muted" };
-  }
-  return {
-    text: `reward ${t.reward.toFixed(2)}`,
-    variant: "neutral",
-    title: "Analyzer hasn't classified this run yet — raw verifier reward",
-  };
+  return { text: "no result", variant: "muted" };
 }
 
 const VARIANT_CLASS: Record<ResultDisplay["variant"], string> = {
@@ -269,8 +134,8 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
     return res.json();
   };
 
-  const { data, error } = useSWR<Trial[]>(
-    `${API_URL}/tasks/${taskId}/trials`,
+  const { data, error } = useSWR<ProbeRun[]>(
+    `${API_URL}/tasks/${taskId}/probe-runs`,
     fetcher,
     { refreshInterval: 5000 },
   );
@@ -284,57 +149,58 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
   if (!data)
     return <p className="text-sm text-muted-foreground">Loading history…</p>;
 
-  // If harbor_config is exposed (Task 15+), narrow to probe runs only.
-  // Otherwise show every trial for the task — better than hiding the whole
-  // history if the field hasn't been wired through yet.
-  const anyHaveHarborConfig = data.some(
-    (t) => t.harbor_config !== undefined && t.harbor_config !== null,
-  );
-  const probes = anyHaveHarborConfig
-    ? data.filter((t) => t.harbor_config?.mode === "probe")
-    : data;
-
   return (
     <div>
       <h2 className="mb-3 text-lg font-medium">History</h2>
-      {probes.length === 0 ? (
+      {data.length === 0 ? (
         <p className="text-sm text-muted-foreground">No probe runs yet.</p>
       ) : (
         <table className="w-full text-sm">
           <thead className="text-left text-muted-foreground">
             <tr>
               <th className="py-2 pr-4 font-medium">Timestamp</th>
-              <th className="py-2 pr-4 font-medium">Agent</th>
               <th className="py-2 pr-4 font-medium">Status</th>
               <th className="py-2 pr-4 font-medium">Result</th>
               <th className="py-2 font-medium"></th>
             </tr>
           </thead>
           <tbody>
-            {probes.map((t) => (
-              <tr key={t.id} className="border-t">
+            {data.map((r) => (
+              <tr key={r.id} className="border-t">
                 <td className="py-2 pr-4 font-mono text-xs">
-                  {t.started_at ? new Date(t.started_at).toLocaleString() : "—"}
+                  {r.created_at
+                    ? new Date(r.created_at).toLocaleString()
+                    : "—"}
+                  {r.kind === "legacy" && (
+                    <span className="ml-2 px-1.5 py-0.5 text-[10px] rounded bg-zinc-200 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">
+                      legacy
+                    </span>
+                  )}
                 </td>
-                <td className="py-2 pr-4">{t.agent}</td>
-                <td className="py-2 pr-4">{statusLabel(t)}</td>
+                <td className="py-2 pr-4">{statusLabel(r)}</td>
                 <td className="py-2 pr-4">
                   {(() => {
-                    const r = resultDisplay(t);
+                    const rd = resultDisplay(r);
                     return (
-                      <span className={VARIANT_CLASS[r.variant]} title={r.title}>
-                        {r.text}
+                      <span className={VARIANT_CLASS[rd.variant]} title={rd.title}>
+                        {rd.text}
                       </span>
                     );
                   })()}
                 </td>
                 <td className="py-2">
-                  <Link
-                    href={`/tasks/${taskId}/probe/${t.id}`}
-                    className="text-xs underline"
-                  >
-                    View →
-                  </Link>
+                  {r.kind === "legacy" ? (
+                    <Link
+                      href={`/tasks/${taskId}/probe/${r.id}`}
+                      className="text-xs underline"
+                    >
+                      View →
+                    </Link>
+                  ) : (
+                    <span className="text-xs text-muted-foreground" title={`Service run: ${r.id}`}>
+                      {r.id.slice(0, 12)}…
+                    </span>
+                  )}
                 </td>
               </tr>
             ))}
