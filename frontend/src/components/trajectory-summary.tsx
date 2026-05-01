@@ -93,10 +93,10 @@ export function TrajectorySummary({
                   <button
                     type="button"
                     disabled={disabled}
-                    onClick={() => !disabled && onStepSelect(index)}
+                    onClick={() => onStepSelect(index)}
                     className="group flex w-full items-start gap-2 rounded-md p-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground group-hover:text-foreground" />
+                    <ChevronRight aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground group-hover:text-foreground" />
                     <span className="flex-1">
                       <span className="font-medium">
                         Step {h.step_id} · {h.title}
