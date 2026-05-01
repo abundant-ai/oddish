@@ -4,6 +4,7 @@ import asyncio
 from collections import Counter
 from datetime import datetime, timezone
 import logging
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -37,6 +38,7 @@ from api.schemas import (
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
 )
+from api.services.task_archive import build_task_archive
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from models import APIKeyModel, UserModel
 from oddish.core.tasks import (
@@ -738,6 +740,41 @@ async def retry_task_verdict(
         return await rerun_task_verdict_core(
             session, task_id=task_id, org_id=auth.org_id
         )
+
+
+@router.get("/tasks/{task_id}/definition")
+async def get_task_definition(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> Response:
+    """Return a tar.gz of the task source directory for agent-sandbox-service probe runs."""
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        task = (
+            await session.execute(select(TaskModel).where(TaskModel.id == task_id))
+        ).scalar_one_or_none()
+        if task is None:
+            raise HTTPException(status_code=404, detail="task_not_found")
+        if task.org_id is not None and task.org_id != auth.org_id:
+            raise HTTPException(status_code=403, detail="org_mismatch")
+
+    if not task.task_path:
+        raise HTTPException(status_code=404, detail="task_path_unset")
+    task_path = Path(task.task_path)
+    if not task_path.is_absolute():
+        task_path = Path.home() / task.task_path
+    if not task_path.is_dir():
+        raise HTTPException(status_code=404, detail="task_dir_missing")
+
+    archive = build_task_archive(task_path, fallback_name=task.name)
+    return Response(
+        content=archive.body,
+        media_type="application/gzip",
+        headers={
+            "X-Task-Name": archive.task_name,
+            "X-Task-Verifier-Command": archive.verifier_command,
+        },
+    )
 
 
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
