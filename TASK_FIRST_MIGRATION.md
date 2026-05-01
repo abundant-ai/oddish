@@ -14,19 +14,25 @@ ad-hoc execution batch.
 
 These are baked into the plan and worth disagreeing with now if they're wrong.
 
-1. **Agent equivalence key** = `sha256(harness | model | provider | harbor_config_hash)`.
-   `harbor_config_hash` covers Harbor passthrough fields that materially
-   affect outcomes (env, kwargs, verifier overrides, timeouts). Cosmetic
-   fields are excluded so irrelevant churn doesn't fragment evidence pools.
+1. **Agent equivalence key** = `sha256(harness | model | provider)`.
+   Bundle identity is a separate axis, carried by `TaskVersion.content_hash`
+   (the hash of the task bundle zip). Two trials are fungible evidence iff
+   their `(task_version_id, agent_equivalence_key)` match. Harbor passthrough
+   overrides at submission time are not part of the equivalence key — the
+   bundle is the source of truth for what the agent saw.
 2. **Cells are frozen at save; the experiment is editable.** Each cell
    stores a concrete `task_version_id` and never silently shifts. But the
    set of cells in an experiment is mutable — you can add cells, remove
    cells, bump `target_n_trials`, and grow the experiment over time. No
    living queries; no auto-resolution against new task versions.
-3. **`WorkerJobKind` collapses to `TRIAL` + `ANALYSIS`.** `VERDICT` folds
-   into `ANALYSIS` at task-version scope. `TASK_EXPAND` becomes a synchronous
-   step on upload (or stays as an internal queue kind, unsurfaced to users).
-4. **Task versions are structurally immutable.** `updated_at` dropped.
+3. **`WorkerJobKind` stays as today** (`TRIAL`, `ANALYSIS`, `VERDICT`,
+   `TASK_EXPAND`). `TASK_EXPAND` is a derived-cache job that extracts the
+   bundle tarball into a per-file s3 tree for FE rendering. `VERDICT` vs
+   `ANALYSIS` consolidation is non-load-bearing; defer to a later cleanup.
+4. **Task versions: dropping `updated_at` is semantic theatre.** Real
+   write-once enforcement is the DB-level CHECK trigger / role revoke in
+   P6. The `updated_at` drop in P0 is cosmetic, included to make the
+   intent obvious in the schema.
 5. **Validation runs are jobs of `kind=validation`**, not synthetic experiments.
 
 ## Phase 0 — Foundation
@@ -37,7 +43,7 @@ Cheap, isolated, unblocks everything.
 - [ ] Decide and execute fate of `VERDICT` / `TASK_EXPAND`:
   - `VERDICT` → fold into `ANALYSIS` with a `scope` discriminator (trial vs task_version).
   - `TASK_EXPAND` → keep as internal kind for now, do not surface in new APIs.
-- [ ] Add helper: `compute_agent_equivalence_key(agent, model, provider, harbor_config)`.
+- [ ] Add helper: `compute_agent_equivalence_key(harness, model, provider)`.
 
 **Risk:** low. **Ships:** silently.
 
