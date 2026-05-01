@@ -594,7 +594,15 @@ async def read_trial_trajectory_summary(trial: TrialModel) -> dict | None:
     summarize). Otherwise returns the persisted summary, generating and
     writing one on first access. Per-key locking prevents duplicate
     generation when multiple viewers arrive at once.
+
+    Summaries are only generated for finished trials. While a trial is
+    still running (or being retried), this returns ``None`` so the UI
+    falls through to the empty state. This also prevents persisting
+    a partial summary that would survive into a successful retry.
     """
+    if not _should_cache_trial(trial):
+        return None
+
     cache_key = trial.id
     if _should_cache_trial(trial):
         cached = _cache_get(_TRAJECTORY_SUMMARY_CACHE, cache_key)

@@ -163,12 +163,15 @@ async def generate(trajectory: dict) -> dict:
     compact = preprocess(trajectory)
     prompt = _PROMPT_HEADER + "<trajectory>\n" + json.dumps(compact) + "\n</trajectory>"
 
-    client = AsyncAnthropic()
-    msg = await client.messages.create(
-        model=MODEL,
-        max_tokens=2048,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        client = AsyncAnthropic()
+        msg = await client.messages.create(
+            model=MODEL,
+            max_tokens=2048,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as e:
+        raise SummaryGenerationError(f"Anthropic API call failed: {e}") from e
 
     raw_text = ""
     for block in msg.content:
