@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from pydantic import BaseModel
 
 
@@ -22,13 +23,35 @@ class Agent(BaseModel):
     provider: str
 
 
+class TrialStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class Trial(BaseModel):
     id: str
     task_version_id: str
     agent: Agent
     job_id: str | None
+    queue_key: str  # slot pool this trial competes in (usually per-provider)
+    status: TrialStatus
+    attempts: int
+    worker_id: str | None
+    claimed_at: datetime | None
+    heartbeat_at: datetime | None
     reward: float | None
     created_at: datetime
+    finished_at: datetime | None
+
+
+class QueueSlot(BaseModel):
+    queue_key: str
+    slot: int
+    locked_by: str | None
+    locked_until: datetime | None
 
 
 class Job(BaseModel):
