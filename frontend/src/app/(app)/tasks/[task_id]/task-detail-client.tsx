@@ -21,13 +21,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
 import { TaskFilesPanel } from "@/components/task-files-panel";
+import { TrialInspectDrawer } from "@/components/trial-inspect-drawer";
 import { fetcher } from "@/lib/api";
 import type { Task, Trial } from "@/lib/types";
 
@@ -43,78 +38,12 @@ interface TaskVersion {
   created_at: string;
 }
 
-type AgentKey = string;
-
-interface AgentRow {
-  key: AgentKey;
-  agent: string;
-  model: string | null;
-  provider: string;
-  total: number;
-  succeeded: number;
-  failed: number;
-  running: number;
-  meanReward: number | null;
-  lastRunAt: string | null;
+function fmt(n: number | null | undefined): string {
+  if (n === null || n === undefined) return "—";
+  return n.toFixed(2);
 }
 
-const RUNNING = new Set(["pending", "queued", "running", "retrying"]);
-
-function agentKey(t: Trial): string {
-  return `${(t.agent ?? "").toLowerCase()}|${(t.model ?? "").toLowerCase()}|${(
-    t.provider ?? ""
-  ).toLowerCase()}`;
-}
-
-function summarize(trials: Trial[]): AgentRow[] {
-  const byKey = new Map<string, AgentRow & { rewardSum: number; rewardCount: number }>();
-  for (const t of trials) {
-    const k = agentKey(t);
-    let row = byKey.get(k);
-    if (!row) {
-      row = {
-        key: k,
-        agent: t.agent ?? "",
-        model: t.model ?? null,
-        provider: t.provider ?? "",
-        total: 0,
-        succeeded: 0,
-        failed: 0,
-        running: 0,
-        meanReward: null,
-        lastRunAt: null,
-        rewardSum: 0,
-        rewardCount: 0,
-      };
-      byKey.set(k, row);
-    }
-    row.total += 1;
-    if (t.status === "success") row.succeeded += 1;
-    else if (t.status === "failed") row.failed += 1;
-    else if (RUNNING.has(t.status)) row.running += 1;
-    if (typeof t.reward === "number") {
-      row.rewardSum += t.reward;
-      row.rewardCount += 1;
-    }
-    if (t.finished_at && (!row.lastRunAt || t.finished_at > row.lastRunAt)) {
-      row.lastRunAt = t.finished_at;
-    }
-  }
-  const rows = Array.from(byKey.values());
-  for (const r of rows) {
-    r.meanReward = r.rewardCount > 0 ? r.rewardSum / r.rewardCount : null;
-  }
-  rows.sort((a, b) =>
-    `${a.agent}|${a.model ?? ""}`.localeCompare(`${b.agent}|${b.model ?? ""}`),
-  );
-  return rows;
-}
-
-function fmt(n: number | null): string {
-  return n === null ? "—" : n.toFixed(2);
-}
-
-function rel(iso: string | null): string {
+function rel(iso: string | null | undefined): string {
   if (!iso) return "—";
   const ms = Date.now() - new Date(iso).getTime();
   const s = Math.floor(ms / 1000);
@@ -124,6 +53,15 @@ function rel(iso: string | null): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+function statusVariant(
+  status: string,
+): "default" | "secondary" | "outline" | "destructive" {
+  if (status === "success") return "secondary";
+  if (status === "failed") return "destructive";
+  if (status === "running") return "default";
+  return "outline";
 }
 
 export function TaskDetailClient({ taskId }: { taskId: string }) {
@@ -156,21 +94,20 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
     selectedVersionId ?? sortedVersions[0]?.id ?? null;
   const activeVersion = sortedVersions.find((v) => v.id === activeVersionId);
 
-  const trialsForVersion = useMemo(() => {
+  const trialsForVersion = useMemo<Trial[]>(() => {
     if (!trials || !activeVersionId) return [];
-    return trials.filter((t) => t.task_version_id === activeVersionId);
+    return [...trials]
+      .filter((t) => t.task_version_id === activeVersionId)
+      .sort((a, b) => {
+        const av = a.finished_at ?? a.created_at ?? "";
+        const bv = b.finished_at ?? b.created_at ?? "";
+        return bv.localeCompare(av);
+      });
   }, [trials, activeVersionId]);
 
-  const summary = useMemo(() => summarize(trialsForVersion), [trialsForVersion]);
-
-  const totalRewards = useMemo(() => {
-    if (trialsForVersion.length === 0) return null;
-    const scored = trialsForVersion.filter((t) => typeof t.reward === "number");
-    if (scored.length === 0) return null;
-    return (
-      scored.reduce((acc, t) => acc + (t.reward ?? 0), 0) / scored.length
-    );
-  }, [trialsForVersion]);
+  const [inspecting, setInspecting] = useState<{ trialId: string } | null>(
+    null,
+  );
 
   if (taskError) {
     return (
@@ -198,13 +135,18 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
               {Object.entries(task.tags)
                 .filter(([k]) => !k.startsWith("github_"))
                 .map(([k, v]) => (
-                  <Badge
+                  <Link
                     key={k}
-                    variant="secondary"
-                    className="font-mono text-[10px]"
+                    href={`/tasks?query=${encodeURIComponent(v)}`}
+                    title={`Filter by ${k}=${v}`}
                   >
-                    {k}={v}
-                  </Badge>
+                    <Badge
+                      variant="secondary"
+                      className="cursor-pointer font-mono text-[10px] hover:bg-muted"
+                    >
+                      {k}={v}
+                    </Badge>
+                  </Link>
                 ))}
             </div>
           ) : null}
@@ -264,9 +206,9 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
             </div>
             <div>
               <div className="text-[10px] uppercase text-muted-foreground">
-                evidence (mean reward)
+                trials on this version
               </div>
-              <div className="font-mono">{fmt(totalRewards)}</div>
+              <div className="font-mono">{trialsForVersion.length}</div>
             </div>
           </div>
           {activeVersion.message ? (
@@ -277,95 +219,100 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
         </div>
       ) : null}
 
-      <Tabs defaultValue="evidence" className="space-y-3">
-        <TabsList>
-          <TabsTrigger value="evidence">Evidence</TabsTrigger>
-          <TabsTrigger value="files">Files</TabsTrigger>
-        </TabsList>
-        <TabsContent value="evidence" className="mt-0">
-          <div className="rounded-md border">
-            <div className="border-b px-4 py-2 text-xs font-medium text-muted-foreground">
-              Agents tested against this version
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="rounded-md border bg-card">
+          <div className="border-b px-4 py-2 text-xs font-medium text-muted-foreground">
+            Files
+          </div>
+          <TaskFilesPanel
+            isOpen={true}
+            onClose={() => {}}
+            taskId={taskId}
+            task={task ?? null}
+            contentOnly
+          />
+        </div>
+
+        <div className="rounded-md border">
+          <div className="border-b px-4 py-2 text-xs font-medium text-muted-foreground">
+            Trials on this version
+          </div>
+          {trialsError ? (
+            <div className="p-3 text-sm">
+              Failed to load trials:{" "}
+              {String((trialsError as Error).message)}
             </div>
-            {trialsError ? (
-              <div className="p-3 text-sm">
-                Failed to load trials:{" "}
-                {String((trialsError as Error).message)}
-              </div>
-            ) : !trials || !versions ? (
-              <Skeleton className="m-3 h-32" />
-            ) : summary.length === 0 ? (
-              <div className="p-6 text-center text-sm text-muted-foreground">
-                No trials for this version yet.
-              </div>
-            ) : (
+          ) : !trials || !versions ? (
+            <Skeleton className="m-3 h-32" />
+          ) : trialsForVersion.length === 0 ? (
+            <div className="p-6 text-center text-sm text-muted-foreground">
+              No trials for this version yet.
+            </div>
+          ) : (
+            <div className="max-h-[70vh] overflow-y-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Agent</TableHead>
-                    <TableHead>Provider</TableHead>
-                    <TableHead>Trials</TableHead>
-                    <TableHead>Mean reward</TableHead>
-                    <TableHead>Last run</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Reward</TableHead>
+                    <TableHead>Finished</TableHead>
+                    <TableHead className="text-right">Inspect</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {summary.map((row) => (
-                    <TableRow key={row.key}>
+                  {trialsForVersion.map((t) => (
+                    <TableRow key={t.id}>
                       <TableCell className="font-mono text-xs">
-                        {row.agent}
-                        {row.model ? ` · ${row.model}` : ""}
+                        {t.agent}
+                        {t.model ? ` · ${t.model}` : ""}
                       </TableCell>
-                      <TableCell className="text-xs">
-                        {row.provider}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        <span className="text-emerald-700 dark:text-emerald-400">
-                          {row.succeeded}
-                        </span>
-                        /{row.total}
-                        {row.failed > 0 ? (
-                          <span className="ml-1 text-rose-600 dark:text-rose-400">
-                            ({row.failed} failed)
-                          </span>
-                        ) : null}
-                        {row.running > 0 ? (
-                          <span className="ml-1 text-amber-600 dark:text-amber-400">
-                            ({row.running} running)
-                          </span>
-                        ) : null}
+                      <TableCell>
+                        <Badge variant={statusVariant(t.status)}>
+                          {t.status}
+                        </Badge>
                       </TableCell>
                       <TableCell className="font-mono text-xs">
-                        {fmt(row.meanReward)}
+                        {fmt(t.reward)}
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {rel(row.lastRunAt)}
+                        {rel(t.finished_at)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7"
+                          onClick={() => setInspecting({ trialId: t.id })}
+                        >
+                          Inspect
+                        </Button>
                       </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
-            )}
-          </div>
-        </TabsContent>
-        <TabsContent value="files" className="mt-0">
-          <div className="rounded-md border bg-card">
-            <TaskFilesPanel
-              isOpen={true}
-              onClose={() => {}}
-              taskId={taskId}
-              task={task ?? null}
-              contentOnly
-            />
-          </div>
-        </TabsContent>
-      </Tabs>
+            </div>
+          )}
+        </div>
+      </div>
 
       <div className="flex justify-end">
         <Button variant="ghost" size="sm" asChild>
           <Link href="/tasks">← All tasks</Link>
         </Button>
       </div>
+
+      {inspecting ? (
+        <TrialInspectDrawer
+          open={true}
+          onOpenChange={(o) => {
+            if (!o) setInspecting(null);
+          }}
+          trialId={inspecting.trialId}
+          taskId={taskId}
+        />
+      ) : null}
     </div>
   );
 }
