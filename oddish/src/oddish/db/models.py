@@ -212,6 +212,7 @@ class ExperimentModel(TimestampedMixin, Base):
     __tablename__ = "experiments"
     __table_args__ = (
         Index("idx_experiments_public_token", "public_token", unique=True),
+        Index("idx_experiments_created_by_user_id", "created_by_user_id"),
     )
 
     # Override id to add auto-generation
@@ -222,6 +223,14 @@ class ExperimentModel(TimestampedMixin, Base):
     # Cloud-ready column (denormalized for efficient org-scoped queries)
     # -------------------------------------------------------------------------
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+
+    # Author: set once when the experiment row is created. The dashboard
+    # reads this so the displayed author is the principal who kicked off the
+    # experiment — not whoever last appended a task to it. Nullable for
+    # historical rows; OSS deployments without auth also leave it NULL.
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
 
     # Public sharing (nullable until published)
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
