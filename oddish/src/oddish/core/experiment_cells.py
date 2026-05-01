@@ -358,6 +358,78 @@ async def update_cell_core(
     return _cell_to_response(cell)
 
 
+async def list_cell_trials_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    cell_id: str,
+    org_id: str | None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """List the trials that match a cell's (task_version, agent) pair.
+
+    Returns a compact dict-per-trial for the FE drawer; not a full
+    TrialResponse. Ordered by ``finished_at`` descending so the most
+    recent runs surface first.
+    """
+    await _load_experiment(session, experiment_id=experiment_id, org_id=org_id)
+    cell = (
+        await session.execute(
+            select(ExperimentCellModel).where(
+                ExperimentCellModel.id == cell_id,
+                ExperimentCellModel.experiment_id == experiment_id,
+                ExperimentCellModel.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if cell is None:
+        raise HTTPException(status_code=404, detail="Cell not found")
+
+    rows = (
+        await session.execute(
+            select(
+                TrialModel.id,
+                TrialModel.status,
+                TrialModel.reward,
+                TrialModel.error_message,
+                TrialModel.started_at,
+                TrialModel.finished_at,
+                TrialModel.created_at,
+                TrialModel.task_id,
+                TrialModel.agent,
+                TrialModel.model,
+                TrialModel.provider,
+            )
+            .where(
+                TrialModel.task_version_id == cell.task_version_id,
+                TrialModel.agent_equivalence_key == cell.agent_equivalence_key,
+            )
+            .order_by(
+                TrialModel.finished_at.desc().nullslast(),
+                TrialModel.created_at.desc(),
+            )
+            .limit(max(1, min(limit, 1000)))
+        )
+    ).all()
+
+    return [
+        {
+            "id": r.id,
+            "status": r.status.value if hasattr(r.status, "value") else str(r.status),
+            "reward": r.reward,
+            "error_message": r.error_message,
+            "started_at": r.started_at.isoformat() if r.started_at else None,
+            "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "task_id": r.task_id,
+            "agent": r.agent,
+            "model": r.model,
+            "provider": r.provider,
+        }
+        for r in rows
+    ]
+
+
 async def delete_cell_core(
     session: AsyncSession,
     *,

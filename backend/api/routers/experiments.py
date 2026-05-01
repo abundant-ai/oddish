@@ -9,6 +9,7 @@ from oddish.core.experiment_cells import (
     add_cell_core,
     create_experiment_core,
     delete_cell_core,
+    list_cell_trials_core,
     list_cells_core,
     resolve_experiment_core,
     update_cell_core,
@@ -146,6 +147,27 @@ async def backfill_experiment(
             experiment_id=experiment_id,
             org_id=auth.org_id,
             user_id=None,
+        )
+
+
+@router.get(
+    "/experiments/{experiment_id}/cells/{cell_id}/trials",
+)
+async def list_cell_trials(
+    experiment_id: str,
+    cell_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    limit: int = 200,
+) -> list[dict]:
+    """Return the trials matching a cell's (task_version, agent) pair."""
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        return await list_cell_trials_core(
+            session,
+            experiment_id=experiment_id,
+            cell_id=cell_id,
+            org_id=auth.org_id,
+            limit=limit,
         )
 
 

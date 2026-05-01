@@ -103,14 +103,121 @@ function formatReward(reward: number | null | undefined): string {
   return reward.toFixed(2);
 }
 
+interface CellTrial {
+  id: string;
+  status: string;
+  reward: number | null;
+  error_message: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string | null;
+  task_id: string;
+  agent: string;
+  model: string | null;
+  provider: string;
+}
+
+function CellTrialsDialog({
+  experimentId,
+  cellId,
+  open,
+  onOpenChange,
+  agent,
+}: {
+  experimentId: string;
+  cellId: string;
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  agent: ExperimentCellAgent;
+}) {
+  const url =
+    open && cellId
+      ? `/api/experiments/${encodeExperimentRouteParam(experimentId)}/cells/${encodeURIComponent(cellId)}/trials`
+      : null;
+  const { data, error, isLoading } = useSWR<CellTrial[]>(url, fetcher);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>
+            Trials · {agent.harness}
+            {agent.model ? ` · ${agent.model}` : ""}
+          </DialogTitle>
+        </DialogHeader>
+        {error ? (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs">
+            {String((error as Error).message)}
+          </div>
+        ) : isLoading || !data ? (
+          <Skeleton className="h-40" />
+        ) : data.length === 0 ? (
+          <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+            No trials match this cell yet.
+          </div>
+        ) : (
+          <div className="max-h-[60vh] overflow-y-auto rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Trial</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Reward</TableHead>
+                  <TableHead>Finished</TableHead>
+                  <TableHead>Error</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.map((t) => (
+                  <TableRow key={t.id}>
+                    <TableCell className="font-mono text-[11px]">
+                      {t.id}
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={
+                          t.status === "success"
+                            ? "secondary"
+                            : t.status === "failed"
+                              ? "destructive"
+                              : "outline"
+                        }
+                      >
+                        {t.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {t.reward === null ? "—" : t.reward.toFixed(2)}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {t.finished_at
+                        ? new Date(t.finished_at).toLocaleString()
+                        : "—"}
+                    </TableCell>
+                    <TableCell className="max-w-[28ch] truncate text-xs text-rose-600 dark:text-rose-400">
+                      {t.error_message ?? ""}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function CellBadge({
   cell,
   canEdit,
+  experimentId,
   onUpdateTarget,
   onDelete,
 }: {
   cell: ResolvedExperimentCell | undefined;
   canEdit: boolean;
+  experimentId: string;
   onUpdateTarget: (cellId: string, target: number) => Promise<void>;
   onDelete: (cellId: string) => Promise<void>;
 }) {
@@ -118,6 +225,7 @@ function CellBadge({
   const [draft, setDraft] = useState<string>(
     cell ? String(cell.target_n_trials) : "1",
   );
+  const [trialsOpen, setTrialsOpen] = useState(false);
 
   if (!cell) {
     return <span className="text-muted-foreground text-xs">—</span>;
@@ -144,26 +252,47 @@ function CellBadge({
 
   if (!canEdit) {
     return (
-      <TooltipProvider delayDuration={150}>
-        <Tooltip>
-          <TooltipTrigger asChild>{badge}</TooltipTrigger>
-          <TooltipContent side="top" className="max-w-xs space-y-1 text-xs">
-            <div className="font-mono">
-              successful: {cell.have_n_successful} · failed:{" "}
-              {cell.have_n_failed} · running: {cell.have_n_running}
-            </div>
-            <div>
-              target: {cell.target_n_trials} · gap:{" "}
-              <span className="font-semibold">{cell.gap}</span>
-            </div>
-            {cell.last_run_at ? (
-              <div className="text-muted-foreground">
-                last run {new Date(cell.last_run_at).toLocaleString()}
+      <>
+        <TooltipProvider delayDuration={150}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex"
+                onClick={() => setTrialsOpen(true)}
+                aria-label="View trials"
+              >
+                {badge}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-xs space-y-1 text-xs">
+              <div className="font-mono">
+                successful: {cell.have_n_successful} · failed:{" "}
+                {cell.have_n_failed} · running: {cell.have_n_running}
               </div>
-            ) : null}
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+              <div>
+                target: {cell.target_n_trials} · gap:{" "}
+                <span className="font-semibold">{cell.gap}</span>
+              </div>
+              {cell.last_run_at ? (
+                <div className="text-muted-foreground">
+                  last run {new Date(cell.last_run_at).toLocaleString()}
+                </div>
+              ) : null}
+              <div className="text-[10px] text-muted-foreground">
+                click to view trials
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+        <CellTrialsDialog
+          experimentId={experimentId}
+          cellId={cell.id}
+          open={trialsOpen}
+          onOpenChange={setTrialsOpen}
+          agent={cell.agent}
+        />
+      </>
     );
   }
 
@@ -225,7 +354,16 @@ function CellBadge({
             </Button>
           </div>
         ) : (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="default"
+              className="h-7"
+              onClick={() => setTrialsOpen(true)}
+            >
+              View {cell.have_n_total} trial
+              {cell.have_n_total === 1 ? "" : "s"}
+            </Button>
             <Button
               size="sm"
               variant="outline"
@@ -245,6 +383,13 @@ function CellBadge({
           </div>
         )}
       </PopoverContent>
+      <CellTrialsDialog
+        experimentId={experimentId}
+        cellId={cell.id}
+        open={trialsOpen}
+        onOpenChange={setTrialsOpen}
+        agent={cell.agent}
+      />
     </Popover>
   );
 }
@@ -600,6 +745,7 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
                     <CellBadge
                       cell={row.cellsByAgent[key]}
                       canEdit={canEdit}
+                      experimentId={experimentId}
                       onUpdateTarget={onUpdateTarget}
                       onDelete={onDeleteCell}
                     />
