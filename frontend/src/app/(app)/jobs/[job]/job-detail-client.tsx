@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +14,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TrialInspectDrawer } from "@/components/trial-inspect-drawer";
 import { fetcher } from "@/lib/api";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import type { JobSummary } from "@/lib/types";
@@ -70,6 +72,11 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
     fetcher,
     { refreshInterval: 15_000 },
   );
+
+  const [inspecting, setInspecting] = useState<{
+    trialId: string;
+    taskId: string;
+  } | null>(null);
 
   return (
     <div className="mx-auto w-full max-w-(--breakpoint-2xl) space-y-4 p-4">
@@ -202,33 +209,17 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
                       ? new Date(t.finished_at).toLocaleString()
                       : "—"}
                   </TableCell>
-                  <TableCell className="space-x-1 whitespace-nowrap text-[11px]">
-                    <a
-                      className="underline-offset-2 hover:underline"
-                      href={`/api/trials/${encodeURIComponent(t.id)}/logs`}
-                      target="_blank"
-                      rel="noreferrer"
+                  <TableCell className="whitespace-nowrap text-[11px]">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7"
+                      onClick={() =>
+                        setInspecting({ trialId: t.id, taskId: t.task_id })
+                      }
                     >
-                      logs
-                    </a>
-                    <span>·</span>
-                    <a
-                      className="underline-offset-2 hover:underline"
-                      href={`/api/trials/${encodeURIComponent(t.id)}/result`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      result
-                    </a>
-                    <span>·</span>
-                    <a
-                      className="underline-offset-2 hover:underline"
-                      href={`/api/trials/${encodeURIComponent(t.id)}/trajectory`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      trajectory
-                    </a>
+                      Inspect
+                    </Button>
                   </TableCell>
                 </TableRow>
               ))}
@@ -236,6 +227,17 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
           </Table>
         )}
       </div>
+
+      {inspecting ? (
+        <TrialInspectDrawer
+          open={true}
+          onOpenChange={(o) => {
+            if (!o) setInspecting(null);
+          }}
+          trialId={inspecting.trialId}
+          taskId={inspecting.taskId}
+        />
+      ) : null}
     </div>
   );
 }

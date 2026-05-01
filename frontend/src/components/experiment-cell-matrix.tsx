@@ -35,6 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { TrialInspectDrawer } from "@/components/trial-inspect-drawer";
 import {
   Tooltip,
   TooltipContent,
@@ -143,6 +144,11 @@ function CellTrialsDialog({
       : null;
   const { data, error, isLoading } = useSWR<CellTrial[]>(url, fetcher);
 
+  const [inspecting, setInspecting] = useState<{
+    trialId: string;
+    taskId: string;
+  } | null>(null);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl">
@@ -205,33 +211,17 @@ function CellTrialsDialog({
                     <TableCell className="max-w-[28ch] truncate text-xs text-rose-600 dark:text-rose-400">
                       {t.error_message ?? ""}
                     </TableCell>
-                    <TableCell className="space-x-1 whitespace-nowrap text-[11px]">
-                      <a
-                        className="underline-offset-2 hover:underline"
-                        href={`/api/trials/${encodeURIComponent(t.id)}/logs`}
-                        target="_blank"
-                        rel="noreferrer"
+                    <TableCell className="whitespace-nowrap text-[11px]">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7"
+                        onClick={() =>
+                          setInspecting({ trialId: t.id, taskId: t.task_id })
+                        }
                       >
-                        logs
-                      </a>
-                      <span>·</span>
-                      <a
-                        className="underline-offset-2 hover:underline"
-                        href={`/api/trials/${encodeURIComponent(t.id)}/result`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        result
-                      </a>
-                      <span>·</span>
-                      <a
-                        className="underline-offset-2 hover:underline"
-                        href={`/api/trials/${encodeURIComponent(t.id)}/trajectory`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        trajectory
-                      </a>
+                        Inspect
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -240,6 +230,16 @@ function CellTrialsDialog({
           </div>
         )}
       </DialogContent>
+      {inspecting ? (
+        <TrialInspectDrawer
+          open={true}
+          onOpenChange={(o) => {
+            if (!o) setInspecting(null);
+          }}
+          trialId={inspecting.trialId}
+          taskId={inspecting.taskId}
+        />
+      ) : null}
     </Dialog>
   );
 }
