@@ -415,6 +415,7 @@ async def browse_tasks_core(
             ranked_tasks_subquery.c.name,
             ranked_tasks_subquery.c.current_version,
             ranked_tasks_subquery.c.current_version_id,
+            ranked_tasks_subquery.c.tags.label("tags"),
             func.coalesce(version_counts.c.version_count, 0).label("version_count"),
             func.coalesce(trial_aggregates.c.total_trials, 0).label("total_trials"),
             func.coalesce(trial_aggregates.c.completed_trials, 0).label(
