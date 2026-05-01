@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Route, ChevronRight, ImageOff } from "lucide-react";
 import { CodeBlock } from "@/components/code-block";
+import { TrajectorySummary } from "@/components/trajectory-summary";
 import {
   Tooltip,
   TooltipContent,
@@ -818,6 +819,16 @@ export function TrajectoryViewer({
           <StepDurationBar
             steps={trajectory.steps}
             onStepClick={handleStepClick}
+          />
+
+          {/* Summary */}
+          <TrajectorySummary
+            trialId={trialId}
+            stepIdToIndex={(stepId) =>
+              trajectory.steps.findIndex((s) => s.step_id === stepId)
+            }
+            onStepSelect={handleStepClick}
+            apiBaseUrl={apiBaseUrl}
           />
 
           {/* Steps Accordion */}
