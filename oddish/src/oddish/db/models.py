@@ -335,11 +335,16 @@ class TaskModel(TimestampedMixin, Base):
     )
 
 
-class TaskVersionModel(TimestampedMixin, Base):
+class TaskVersionModel(Base):
     """Immutable snapshot of a task's content at a point in time.
 
     Each re-upload of a task bundle creates a new row.  Trials reference the
     specific version they ran against via ``task_version_id``.
+
+    Inherits ``Base`` (not ``TimestampedMixin``) because task versions are
+    write-once: there is no ``updated_at`` -- once created, a row is
+    immutable. Real write-protection at the DB layer (CHECK trigger /
+    role revoke) is set up in a follow-up migration.
     """
 
     __tablename__ = "task_versions"
@@ -353,6 +358,12 @@ class TaskVersionModel(TimestampedMixin, Base):
     )
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     task_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
     )
