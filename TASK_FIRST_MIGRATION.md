@@ -143,6 +143,47 @@ The rake-up phase.
 - Migration of historical IMPORTED trials beyond the equivalence-key backfill.
 - New auth / sharing primitives beyond extending public_token to task versions.
 
+## Status (live)
+
+- **P0 — shipped.** ``f7a8b9c0d1e2`` drops ``task_versions.updated_at``;
+  ``compute_agent_equivalence_key`` helper + tests live in
+  ``oddish.core.agent_identity``.
+- **P1 — shipped.** ``g8b9c0d1e2f3`` adds ``jobs`` table,
+  ``trials.job_id``, ``trials.agent_equivalence_key``,
+  ``worker_jobs.user_job_id`` plus the load-bearing composite index.
+  ``h9c0d1e2f3a4`` backfills synthetic Jobs and equivalence keys.
+  Trial-creation paths dual-write. ``GET /jobs`` and ``GET /jobs/{id}``
+  expose the new surface.
+- **P3 — shipped.** ``i0d1e2f3a4b5`` adds ``experiment_cells`` and
+  backfills from existing ``task_experiments`` + trial counts. New
+  endpoints under ``/experiments/{id}``: ``cells`` (CRUD), ``resolved``
+  (matrix view), ``backfill`` (enqueue gaps as a Job). ``ExperimentCellMatrix``
+  renders the matrix on the experiment detail page above the legacy
+  trials table.
+- **P2 — partial.** ``/jobs`` page + nav link shipped.
+  Tasks-as-front-door redirect and the task detail rewrite (version
+  switcher with per-version evidence summary) are deferred.
+- **P4 — shipped.** ``POST /experiments`` creates an experiment with
+  optional cells. The matrix is now editable: add cell dialog, bump
+  target popover, remove cell. ``/experiments/new`` page for empty
+  experiments. CLI surface (``oddish experiments create / backfill``)
+  is deferred.
+- **P5 — partial.** ``j1e2f3a4b5c6`` makes ``trials.experiment_id``
+  nullable. The follow-up migration
+  ``k2f3a4b5c6d7_drop_trial_experiment_id_AFTER_BAKE`` is checked in
+  but **must not be applied** until writers stop populating
+  ``experiment_id`` and a bake period has passed (preconditions
+  enumerated in its docstring). Writers still dual-write today.
+- **P6 — partial.** ``l3a4b5c6d7e8`` installs a row-level trigger on
+  ``task_versions`` that blocks updates to the immutable columns
+  (``id``, ``task_id``, ``version``, ``task_path``, ``task_s3_key``,
+  ``content_hash``, ``message``, ``created_by_user_id``, ``created_at``).
+  ``expanded_at`` / ``expanded_manifest_key`` / ``deleted_at`` remain
+  writable by design. The dead-queue-column cleanup on ``trials``
+  (``status``, ``attempts``, ``current_worker_id`` etc.) is deferred
+  -- it requires every reader and worker to migrate to ``worker_jobs``
+  first.
+
 ## Order of operations summary
 
 ```
