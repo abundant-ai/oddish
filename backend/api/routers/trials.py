@@ -17,7 +17,6 @@ from oddish.core.trial_io import (
     read_trial_logs_structured,
     read_trial_result,
     read_trial_trajectory,
-    read_trial_trajectory_summary,
 )
 from oddish.core.trial_imports import (
     complete_trial_import,
@@ -43,8 +42,6 @@ from oddish.schemas import (
 )
 
 import logging
-
-from api.services.summarize_trajectory import SummaryGenerationError
 
 logger = logging.getLogger(__name__)
 
@@ -268,51 +265,26 @@ async def get_trial_trajectory_summary(
     request: Request,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """Get a Claude-generated summary of the trajectory.
+    """Proxy a trajectory summary from agent-sandbox-service.
 
-    Lazy-generated on first read and cached as an S3 sibling file. Returns
-    404 when the trial has no trajectory to summarize, 502 if generation
-    fails or the model returns malformed JSON.
+    Returns 404 when the service is not configured (self-hosters who
+    haven't stood it up just see an empty summary in the UI).
     """
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
 
-    # If agent-sandbox-service is configured, proxy through it.
-    # The service shares oddish's R2 bucket, reads/writes the cache at the
-    # same key oddish historically used.
     client = getattr(request.app.state, "agent_sandbox_client", None)
-    if client is not None:
-        from oddish.db.storage import StorageClient
-
-        s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
-        try:
-            return await client.get_trajectory_summary(
-                trial_id=trial.id, s3_prefix=s3_prefix,
-            )
-        except Exception as e:
-            # Service unreachable / 404 / 502: fall through to local read.
-            # Note: this is best-effort — if we got a service-side cache
-            # miss + Claude failure, falling back to local won't help.
-            logger.warning(
-                "Service trajectory summary failed for %s; falling back: %s",
-                trial.id, e,
-            )
-
-    # Local fallback: existing path.
-    try:
-        summary = await read_trial_trajectory_summary(trial)
-    except SummaryGenerationError as e:
-        logger.error(
-            "Trajectory summary generation failed for trial %s: %s", trial_id, e
-        )
+    if client is None:
         raise HTTPException(
-            status_code=502, detail=f"Summary generation failed: {e}"
+            status_code=404, detail="Trajectory summary service not configured"
         )
-    if summary is None:
-        raise HTTPException(
-            status_code=404, detail="No trajectory available for this trial"
-        )
-    return summary
+
+    from oddish.db.storage import StorageClient
+
+    s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
+    return await client.get_trajectory_summary(
+        trial_id=trial.id, s3_prefix=s3_prefix,
+    )
 
 
 @router.get("/trials/{trial_id}/result")

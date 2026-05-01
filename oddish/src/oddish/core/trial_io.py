@@ -24,8 +24,6 @@ _STRUCTURED_LOGS_CACHE: dict[str, tuple[float, dict]] = {}
 _TRAJECTORY_CACHE: dict[str, tuple[float, dict | None]] = {}
 _STRUCTURED_LOGS_LOCKS: dict[str, asyncio.Lock] = {}
 _TRAJECTORY_LOCKS: dict[str, asyncio.Lock] = {}
-_TRAJECTORY_SUMMARY_CACHE: dict[str, tuple[float, dict | None]] = {}
-_TRAJECTORY_SUMMARY_LOCKS: dict[str, asyncio.Lock] = {}
 _T = TypeVar("_T")
 
 
@@ -155,15 +153,6 @@ def _trajectory_candidate_keys(trial: TrialModel, s3_prefix: str) -> list[str]:
         candidates.append(f"{s3_prefix}{trial.name}/agent/trajectory.json")
     # Common Harbor fallback naming convention.
     candidates.append(f"{s3_prefix}trial-0/agent/trajectory.json")
-    return list(dict.fromkeys(candidates))
-
-
-def _trajectory_summary_candidate_keys(trial: TrialModel, s3_prefix: str) -> list[str]:
-    """Return likely S3 keys for the cached trajectory summary."""
-    candidates: list[str] = [f"{s3_prefix}agent/trajectory_summary.json"]
-    if trial.name:
-        candidates.append(f"{s3_prefix}{trial.name}/agent/trajectory_summary.json")
-    candidates.append(f"{s3_prefix}trial-0/agent/trajectory_summary.json")
     return list(dict.fromkeys(candidates))
 
 
@@ -532,113 +521,6 @@ async def read_trial_trajectory(trial: TrialModel) -> dict | None:
         if _should_cache_trial(trial):
             _cache_set(_TRAJECTORY_CACHE, cache_key, result)
         return result
-
-
-async def _read_trial_trajectory_summary_uncached(trial: TrialModel) -> dict | None:
-    """Read trajectory_summary.json from S3 (or local fallback)."""
-    s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
-    storage = get_storage_client()
-
-    for key in _trajectory_summary_candidate_keys(trial, s3_prefix):
-        try:
-            content = await storage.download_text(key)
-            if content:
-                parsed: dict = _json.loads(content)
-                return parsed
-        except Exception:
-            continue
-
-    # Unlike _read_trial_trajectory_uncached, we do not fall back to
-    # listing the entire prefix: summaries are always written by
-    # _write_trial_trajectory_summary at the canonical key, so any
-    # non-canonical placement implies the file genuinely does not exist
-    # and should trigger a regenerate.
-    if not trial.harbor_result_path:
-        return None
-    trial_paths = _resolve_local_trial_paths(trial)
-    if trial_paths is None:
-        return None
-    summary_path = trial_paths.agent_dir / "trajectory_summary.json"
-    try:
-        summary_path_resolved = summary_path.resolve()
-    except Exception:
-        return None
-    if not summary_path_resolved.exists() or not summary_path_resolved.is_file():
-        return None
-    try:
-        return _json.loads(summary_path_resolved.read_text(errors="replace"))
-    except Exception:
-        return None
-
-
-async def _write_trial_trajectory_summary(
-    trial: TrialModel, summary: dict
-) -> None:
-    """Best-effort persist of a generated summary to S3."""
-    s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
-    key = f"{s3_prefix}agent/trajectory_summary.json"
-    storage = get_storage_client()
-    payload = _json.dumps(summary).encode("utf-8")
-    try:
-        await storage.upload_bytes(payload, key, content_type="application/json")
-    except Exception as e:
-        logging.getLogger(__name__).warning(
-            f"Failed to persist trajectory summary for {trial.id} at {key}: {e}"
-        )
-
-
-async def read_trial_trajectory_summary(trial: TrialModel) -> dict | None:
-    """Read or lazily generate the trajectory summary for a trial.
-
-    Returns ``None`` if the trial has no trajectory at all (nothing to
-    summarize). Otherwise returns the persisted summary, generating and
-    writing one on first access. Per-key locking prevents duplicate
-    generation when multiple viewers arrive at once.
-
-    Summaries are only generated for finished trials. While a trial is
-    still running (or being retried), this returns ``None`` so the UI
-    falls through to the empty state. This also prevents persisting
-    a partial summary that would survive into a successful retry.
-    """
-    if not _should_cache_trial(trial):
-        return None
-
-    cache_key = trial.id
-    if _should_cache_trial(trial):
-        cached = _cache_get(_TRAJECTORY_SUMMARY_CACHE, cache_key)
-        if cached is not None:
-            return cached  # type: ignore[return-value]
-
-    lock = _get_lock(_TRAJECTORY_SUMMARY_LOCKS, cache_key)
-    async with lock:
-        if _should_cache_trial(trial):
-            cached = _cache_get(_TRAJECTORY_SUMMARY_CACHE, cache_key)
-            if cached is not None:
-                return cached  # type: ignore[return-value]
-
-        existing = await _read_trial_trajectory_summary_uncached(trial)
-        if existing is not None:
-            if _should_cache_trial(trial):
-                _cache_set(_TRAJECTORY_SUMMARY_CACHE, cache_key, existing)
-            return existing
-
-        trajectory = await _read_trial_trajectory_uncached(trial)
-        if trajectory is None:
-            # _cache_get can't distinguish a cached None from a miss, so
-            # caching None here would not short-circuit subsequent reads.
-            # Skipping the cache_set is intentional.
-            return None
-
-        # Lazy import to avoid pulling backend service code into oddish
-        # at module load. Backend pytest pythonpath = ["."] makes this
-        # resolvable as `api.services.summarize_trajectory`.
-        from api.services.summarize_trajectory import generate
-
-        summary = await generate(trajectory)
-        await _write_trial_trajectory_summary(trial, summary)
-        if _should_cache_trial(trial):
-            _cache_set(_TRAJECTORY_SUMMARY_CACHE, cache_key, summary)
-        return summary
 
 
 def _normalize_relative_agent_path(file_path: str) -> str:
