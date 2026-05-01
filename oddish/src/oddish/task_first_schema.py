@@ -40,8 +40,6 @@ class Trial(BaseModel):
 class WorkerJobKind(str, Enum):
     TRIAL = "trial"
     ANALYSIS = "analysis"
-    VERDICT = "verdict"
-    TASK_EXPAND = "task_expand"
 
 
 class WorkerJobStatus(str, Enum):
