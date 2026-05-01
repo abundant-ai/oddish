@@ -17,12 +17,9 @@ type AnalyzerResult = {
   result_focus_findings?: string | null;
 } | null;
 
-// Union row returned by GET /tasks/{task_id}/probe-runs.
-// kind === "legacy"  → row originated from a TrialModel (pre-cutover probe run)
-// kind === "service" → row originated from ExternalProbeRun (agent-sandbox-service)
+// Row returned by GET /tasks/{task_id}/probe-runs.
 type ProbeRun = {
   id: string;
-  kind: "legacy" | "service";
   status: string;
   task_id: string;
   created_at: string | null;
@@ -194,11 +191,6 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
                   {r.created_at
                     ? new Date(r.created_at).toLocaleString()
                     : "—"}
-                  {r.kind === "legacy" && (
-                    <span className="ml-2 px-1.5 py-0.5 text-[10px] rounded bg-zinc-200 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">
-                      legacy
-                    </span>
-                  )}
                 </td>
                 <td className="py-2 pr-4">{statusLabel(r)}</td>
                 <td className="py-2 pr-4">
@@ -223,7 +215,6 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
                     <Link
                       href={`/tasks/${taskId}/probe/${r.id}`}
                       className="text-xs underline"
-                      title={r.kind === "service" ? `Service run: ${r.id}` : undefined}
                     >
                       View →
                     </Link>

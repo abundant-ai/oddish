@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
@@ -105,57 +105,28 @@ export default function ProbeResultPage({
     return res.json();
   };
 
-  const isServiceProbe = trial_id.startsWith("pr_");
-
-  const { data: legacyTrials, error: legacyError } = useSWR<Trial[]>(
-    isServiceProbe ? null : `${API_URL}/tasks/${task_id}/trials`,
+  const TERMINAL_STATUSES = new Set([
+    "success",
+    "succeeded",
+    "failed",
+    "timed_out",
+    "canceled",
+    "SUCCESS",
+    "FAILED",
+  ]);
+  const { data: trial, error } = useSWR<Trial>(
+    `${API_URL}/tasks/${task_id}/probe-runs/${trial_id}`,
     fetcher,
     {
-      refreshInterval: (data) => {
-        const t = (data ?? []).find((x) => x.id === trial_id);
-        return t && (t.status === "success" || t.status === "failed")
-          ? 0
-          : 3000;
-      },
+      refreshInterval: (data) =>
+        data && TERMINAL_STATUSES.has(data.status) ? 0 : 3000,
     },
   );
-
-  const { data: serviceTrial, error: serviceError } = useSWR<Trial>(
-    isServiceProbe ? `${API_URL}/tasks/${task_id}/probe-runs/${trial_id}` : null,
-    fetcher,
-    {
-      refreshInterval: (data) => {
-        const terminal = new Set([
-          "succeeded",
-          "failed",
-          "timed_out",
-          "canceled",
-        ]);
-        return data && terminal.has(data.status) ? 0 : 3000;
-      },
-    },
-  );
-
-  const trials = isServiceProbe
-    ? serviceTrial
-      ? [serviceTrial]
-      : undefined
-    : legacyTrials;
-  const error = isServiceProbe ? serviceError : legacyError;
 
   const { data: taskInfo } = useSWR<{ name?: string; task_path?: string }>(
     `${API_URL}/tasks/${task_id}`,
     fetcher,
   );
-
-  // After ~30s of polling without finding the trial, treat it as truly missing.
-  // Until then, keep showing a loading state — covers the race where the trial
-  // row was just created and SWR's first fetch was served from stale cache.
-  const [waitedTooLong, setWaitedTooLong] = useState(false);
-  useEffect(() => {
-    const t = setTimeout(() => setWaitedTooLong(true), 30_000);
-    return () => clearTimeout(t);
-  }, [trial_id]);
 
   if (error)
     return (
@@ -165,35 +136,12 @@ export default function ProbeResultPage({
         </p>
       </div>
     );
-  if (!trials)
+  if (!trial)
     return (
       <div className="container mx-auto max-w-3xl py-8">
         <p className="text-sm text-muted-foreground">Loading…</p>
       </div>
     );
-  const trial = trials.find((t) => t.id === trial_id);
-  if (!trial) {
-    if (waitedTooLong) {
-      return (
-        <div className="container mx-auto max-w-3xl py-8">
-          <p className="text-sm text-red-500">Trial not found.</p>
-          <Link
-            href={`/tasks/${task_id}/probe`}
-            className="text-xs underline text-muted-foreground hover:text-foreground"
-          >
-            ← Back to workbench
-          </Link>
-        </div>
-      );
-    }
-    return (
-      <div className="container mx-auto max-w-3xl py-8">
-        <p className="text-sm text-muted-foreground">
-          Waiting for the trial to register…
-        </p>
-      </div>
-    );
-  }
 
   const extra = trial.harbor_config?.extra_instructions ?? "";
   const summary = trial.analysis;

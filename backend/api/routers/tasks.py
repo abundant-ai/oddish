@@ -376,10 +376,11 @@ async def list_task_probe_runs(
     auth: AuthContext,
     request: Request,
 ) -> list[dict]:
-    """Union of legacy probe trials and service-routed probe runs.
+    """Probe runs for a task (unified across local trial rows and service runs).
 
-    Legacy rows: ``TrialModel`` rows where ``harbor_config.mode == 'probe'``.
-    Service rows: ``ExternalProbeRun`` rows, fetched fresh from the service.
+    Legacy probe trials (``TrialModel`` rows with ``harbor_config.mode == 'probe'``)
+    and service-routed probe runs (``ExternalProbeRun`` rows) are returned in the
+    same shape — callers do not distinguish them.
 
     Returns a list of dicts sorted by ``created_at`` descending.
     """
@@ -398,7 +399,6 @@ async def list_task_probe_runs(
             out.append(
                 {
                     "id": t.id,
-                    "kind": "legacy",
                     "status": t.analysis_status.value
                     if t.analysis_status
                     else "unknown",
@@ -430,7 +430,6 @@ async def list_task_probe_runs(
             out.append(
                 {
                     "id": envelope["probe_run_id"],
-                    "kind": "service",
                     "status": envelope.get("status", "unknown"),
                     "task_id": envelope.get("task_id", task_id),
                     "created_at": envelope.get("created_at"),
@@ -525,15 +524,47 @@ async def get_task_probe_run(
 ) -> dict:
     """Return Trial-shaped detail for a single probe run.
 
-    For ``pr_*`` ids: proxies to agent-sandbox-service ``GET /v1/probes/{id}``,
-    fetches the transcript + verifier_stdout artifacts via signed URLs, parses
-    the transcript into legacy agent_messages, and assembles a payload the
-    workbench detail page can render unchanged.
+    Service-routed runs (``pr_*`` ids) proxy to agent-sandbox-service
+    ``GET /v1/probes/{id}`` and fetch artifacts via signed URLs. Locally-stored
+    legacy probe trials read from ``TrialModel`` directly. Both paths return
+    the same envelope shape — callers do not distinguish them.
     """
     auth.require_scope(APIKeyScope.READ)
 
     if not run_id.startswith("pr_"):
-        raise HTTPException(status_code=404, detail="probe run not found")
+        async with get_session() as session:
+            trial = await session.get(TrialModel, run_id)
+            if (
+                trial is None
+                or trial.task_id != task_id
+                or (trial.harbor_config or {}).get("mode") != "probe"
+                or (trial.org_id and auth.org_id and trial.org_id != auth.org_id)
+            ):
+                raise HTTPException(status_code=404, detail="probe run not found")
+            result = trial.result or {}
+            artifacts = (result.get("_artifacts") if isinstance(result, dict) else None) or {}
+            return {
+                "id": trial.id,
+                "agent": trial.agent,
+                "model": trial.model,
+                "status": trial.status.value if trial.status else "unknown",
+                "reward": trial.reward,
+                "started_at": trial.started_at,
+                "finished_at": trial.finished_at,
+                "harbor_config": trial.harbor_config,
+                "result": {
+                    "_artifacts": {
+                        "agent_messages": artifacts.get("agent_messages") or [],
+                        "verifier_stdout": artifacts.get("verifier_stdout"),
+                    }
+                },
+                "analysis": trial.analysis,
+                "analysis_status": trial.analysis_status.value
+                if trial.analysis_status
+                else None,
+                "analysis_error": trial.analysis_error,
+                "error_message": trial.error_message,
+            }
 
     async with get_session() as session:
         row = await session.get(ExternalProbeRun, run_id)
