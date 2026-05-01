@@ -1,7 +1,19 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, delete, func, nulls_last, or_, select, text, tuple_
+from sqlalchemy import (
+    Text,
+    and_,
+    case,
+    cast,
+    delete,
+    func,
+    nulls_last,
+    or_,
+    select,
+    text,
+    tuple_,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm import load_only, selectinload
@@ -371,7 +383,16 @@ async def browse_tasks_core(
     if org_id is not None:
         ranked_tasks = ranked_tasks.where(TaskModel.org_id == org_id)
     if normalized_query:
-        ranked_tasks = ranked_tasks.where(TaskModel.name.ilike(f"%{normalized_query}%"))
+        pattern = f"%{normalized_query}%"
+        ranked_tasks = ranked_tasks.where(
+            or_(
+                TaskModel.name.ilike(pattern),
+                # JSONB cast lets the same search box match tag keys
+                # and values, e.g. typing "swe-bench" finds every task
+                # tagged ``dataset=swe-bench`` or ``swe-bench: true``.
+                cast(TaskModel.tags, Text).ilike(pattern),
+            )
+        )
     ranked_tasks_subquery = ranked_tasks.subquery()
 
     version_counts = (
