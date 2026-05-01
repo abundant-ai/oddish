@@ -18,6 +18,7 @@ import {
   BookOpen,
   ChevronDown,
   FileText,
+  ListChecks,
   LogOut,
   Shield,
   User,
@@ -68,6 +69,21 @@ export function Nav() {
               >
                 <FileText className="h-4 w-4" />
                 <span>Tasks</span>
+              </Link>
+            </Button>
+            <Button
+              variant={pathname?.startsWith("/jobs") ? "secondary" : "ghost"}
+              size="sm"
+              asChild
+              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+            >
+              <Link
+                href="/jobs"
+                className="flex items-center gap-2"
+                data-active={pathname?.startsWith("/jobs") ?? false}
+              >
+                <ListChecks className="h-4 w-4" />
+                <span>Jobs</span>
               </Link>
             </Button>
           </div>
