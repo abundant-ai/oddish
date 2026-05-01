@@ -154,7 +154,12 @@ export function JobsPageClient() {
                   return (
                     <TableRow key={job.id}>
                       <TableCell className="font-mono text-xs">
-                        {job.name ?? job.id}
+                        <Link
+                          href={`/jobs/${encodeURIComponent(job.id)}`}
+                          className="underline-offset-2 hover:underline"
+                        >
+                          {job.name ?? job.id}
+                        </Link>
                       </TableCell>
                       <TableCell>
                         <Badge variant="outline">

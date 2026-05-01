@@ -4,7 +4,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
-from oddish.core.jobs import get_job_core, list_jobs_core
+from oddish.core.jobs import (
+    get_job_core,
+    list_job_trials_core,
+    list_jobs_core,
+)
 from oddish.db import get_session
 from oddish.schemas import JobListResponse, JobResponse
 
@@ -49,3 +53,17 @@ async def get_job(
 
     async with get_session() as session:
         return await get_job_core(session, job_id=job_id, org_id=auth.org_id)
+
+
+@router.get("/jobs/{job_id}/trials")
+async def list_job_trials(
+    job_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    limit: int = 500,
+) -> list[dict]:
+    """List trials produced by a Job (compact representation)."""
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        return await list_job_trials_core(
+            session, job_id=job_id, org_id=auth.org_id, limit=limit
+        )
