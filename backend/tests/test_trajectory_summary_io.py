@@ -98,6 +98,10 @@ async def test_read_lazily_generates_writes_and_caches():
         "oddish.core.trial_io._read_trial_trajectory_uncached",
         new=AsyncMock(return_value=fake_trajectory),
     ), patch(
+        # Patch the module attribute, not a local name: read_trial_trajectory_summary
+        # does `from api.services.summarize_trajectory import generate` lazily, so
+        # the patch must replace the attribute on the module that the import will
+        # re-fetch from sys.modules at call time.
         "api.services.summarize_trajectory.generate",
         new=AsyncMock(return_value=fake_summary),
     ) as mock_gen:
