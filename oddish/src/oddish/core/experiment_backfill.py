@@ -80,7 +80,6 @@ async def backfill_experiment_core(
     await session.flush()
 
     if not gaps:
-        await session.commit()
         return ExperimentBackfillResponse(job_id=job.id, enqueued_trial_count=0)
 
     # Resolve every task_version we'll be enqueuing against in one shot
@@ -177,7 +176,7 @@ async def backfill_experiment_core(
             enqueued += 1
             next_index += 1
 
-    await session.commit()
+    await session.flush()
     return ExperimentBackfillResponse(
         job_id=job.id, enqueued_trial_count=enqueued
     )
