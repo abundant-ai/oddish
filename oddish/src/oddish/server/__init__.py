@@ -31,6 +31,10 @@ from oddish.core.jobs import (
     get_job_core,
     list_jobs_core,
 )
+from oddish.core.evidence import (
+    get_experiment_cells_core,
+    get_task_version_evidence_core,
+)
 from oddish.core.public_helpers import (
     get_task_file_content_s3,
     get_trial_file_content_s3,
@@ -76,7 +80,9 @@ from oddish.db import (
 from oddish.schemas import (
     TaskBatchCancelRequest,
     TaskBrowseResponse,
+    EvidenceCellResponse,
     JobResponse,
+    ResolvedExperimentCellResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
     TaskUploadCompleteRequest,
@@ -387,7 +393,7 @@ async def create_task_sweep(submission: TaskSweepSubmission):
         if not is_append and hasattr(task, "task_s3_key") and task.task_s3_key:
             await session.commit()
 
-        response_trials = new_trials if is_append else list(task.trials)
+        response_trials = new_trials
         provider_counts: Counter[str] = Counter(t.provider for t in response_trials)
         primary = experiment or (task.experiments[0] if task.experiments else None)
         resp_experiment_id = primary.id if primary else None
@@ -474,6 +480,36 @@ async def get_task_version(task_id: str, version: int):
     """Get a specific version of a task."""
     async with get_session() as session:
         return await get_task_version_core(session, task_id=task_id, version=version)
+
+
+@api.get(
+    "/tasks/{task_id}/versions/{version}/evidence",
+    response_model=list[EvidenceCellResponse],
+)
+async def get_task_version_evidence(
+    task_id: str,
+    version: int,
+) -> list[EvidenceCellResponse]:
+    async with get_session() as session:
+        return await get_task_version_evidence_core(
+            session,
+            task_id=task_id,
+            version=version,
+        )
+
+
+@api.get(
+    "/experiments/{experiment_id}/cells",
+    response_model=list[ResolvedExperimentCellResponse],
+)
+async def get_experiment_cells(
+    experiment_id: str,
+) -> list[ResolvedExperimentCellResponse]:
+    async with get_session() as session:
+        return await get_experiment_cells_core(
+            session,
+            experiment_id=experiment_id,
+        )
 
 
 @api.post("/tasks/cancel")

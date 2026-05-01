@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Any
+from dataclasses import dataclass
 
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -11,7 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.core.agent_identity import compute_agent_equivalence_key
-from oddish.core.jobs import AgentCellSpec, add_job_cells, create_batch_job
+from oddish.core.jobs import (
+    AgentCellSpec,
+    add_experiment_cells,
+    add_job_cells,
+    create_batch_job,
+)
 from oddish.db import (
     AnalysisStatus,
     BatchJobKind,
@@ -55,6 +61,13 @@ ACTIVE_TASK_STATUSES = (
     TaskStatus.ANALYZING,
     TaskStatus.VERDICT_PENDING,
 )
+
+
+@dataclass(frozen=True)
+class PlannedTrial:
+    id: str
+    provider: str
+    job_id: str
 
 
 # =============================================================================
@@ -130,6 +143,7 @@ async def cancel_tasks_runs(
                   AND  (
                       (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
                       OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))
+                      OR (kind::text = 'TRIAL' AND payload->>'task_id' = ANY(:task_ids))
                   )
                 RETURNING id,
                           kind::text AS kind,
@@ -330,15 +344,21 @@ async def enqueue_trial_worker_job(
     max_attempts: int,
     parent_job_id: str | None = None,
     job_id: str | None = None,
+    subject_table: str | None = "trials",
+    subject_id: str | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> WorkerJobModel:
+    effective_payload = {"trial_id": trial_id}
+    if payload:
+        effective_payload.update(payload)
     return await enqueue_worker_job(
         session,
         EnqueueRequest(
             kind=WorkerJobKind.TRIAL,
             queue_key=queue_key,
-            payload={"trial_id": trial_id},
-            subject_table="trials",
-            subject_id=trial_id,
+            payload=effective_payload,
+            subject_table=subject_table,
+            subject_id=subject_id or trial_id,
             org_id=org_id,
             max_attempts=max_attempts,
             parent_job_id=parent_job_id,
@@ -440,21 +460,44 @@ def _build_harbor_config_for_trial(
     return base or None
 
 
-def _get_next_trial_index(task_id: str, existing_trials: list[TrialModel]) -> int:
+def _get_next_trial_index_from_ids(task_id: str, existing_ids: list[str]) -> int:
     """Return the next numeric suffix for ``{task_id}-{index}`` trial IDs."""
     prefix = f"{task_id}-"
     max_index = -1
 
-    for trial in existing_trials:
-        if not trial.id.startswith(prefix):
+    for trial_id in existing_ids:
+        if not trial_id.startswith(prefix):
             continue
-        suffix = trial.id[len(prefix) :]
+        suffix = trial_id[len(prefix) :]
         if suffix.isdigit():
             max_index = max(max_index, int(suffix))
 
     if max_index >= 0:
         return max_index + 1
-    return len(existing_trials)
+    return len(existing_ids)
+
+
+def _get_next_trial_index(task_id: str, existing_trials: list[TrialModel]) -> int:
+    return _get_next_trial_index_from_ids(
+        task_id,
+        [trial.id for trial in existing_trials],
+    )
+
+
+async def _get_reserved_trial_ids(session: AsyncSession, task_id: str) -> list[str]:
+    rows = await session.execute(
+        text(
+            """
+            SELECT payload->>'trial_id' AS trial_id
+            FROM worker_jobs
+            WHERE kind::text = 'TRIAL'
+              AND payload->>'task_id' = :task_id
+              AND payload ? 'trial_id'
+            """
+        ),
+        {"task_id": task_id},
+    )
+    return [str(row.trial_id) for row in rows if row.trial_id]
 
 
 async def create_task(
@@ -463,10 +506,7 @@ async def create_task(
     task_id: str | None = None,
     org_id: str | None = None,
 ) -> TaskModel:
-    """Create a task with its trials.
-
-    Trials are created with status=QUEUED which makes them immediately
-    visible to the fair-scheduling claim query in workers.
+    """Create a task and enqueue its requested trial executions.
 
     A ``TaskVersionModel`` (v1) is also created to snapshot the task
     content for this first submission.
@@ -485,6 +525,7 @@ async def create_task(
             storage = get_storage_client()
             task_s3_key = await storage.upload_task_directory(task_id, local_path)
 
+    experiment: ExperimentModel | None = None
     if submission.experiment_id:
         experiment = await get_experiment_by_id_or_name(
             session, submission.experiment_id, org_id
@@ -493,16 +534,13 @@ async def create_task(
             experiment = await get_or_create_experiment(
                 session, submission.experiment_id, org_id
             )
-    else:
-        experiment_name = generate_experiment_name()
-        experiment = await get_or_create_experiment(session, experiment_name, org_id)
 
     batch_job = create_batch_job(
         session,
         kind=BatchJobKind.AD_HOC,
         status=BatchJobStatus.RUNNING,
         org_id=org_id,
-        triggered_by_experiment_id=experiment.id,
+        triggered_by_experiment_id=experiment.id if experiment else None,
     )
 
     # Insert the task first (without version pointer to avoid circular FK).
@@ -520,9 +558,10 @@ async def create_task(
     session.add(task)
     await session.flush()
 
-    await _link_task_to_experiment(
-        session, task_id=task_id, experiment_id=experiment.id
-    )
+    if experiment is not None:
+        await _link_task_to_experiment(
+            session, task_id=task_id, experiment_id=experiment.id
+        )
 
     # Determine the version: if one was pre-created during upload, use the
     # latest; otherwise create v1 now that the task row exists.
@@ -569,50 +608,23 @@ async def create_task(
                 org_id=org_id,
             )
 
-    # Now safe to set the back-pointer and create trials.
+    # Now safe to set the back-pointer and enqueue executions. Trial rows are
+    # terminal evidence and are inserted by the worker after Harbor finishes.
     task.current_version_id = version_id
 
     job_cells: list[AgentCellSpec] = []
-    for i, spec in enumerate(submission.trials):
+    prepared: list[tuple[TrialSpec, str, str, str, str, dict[str, Any] | None]] = []
+    for spec in submission.trials:
         model = settings.normalize_trial_model(spec.agent, spec.model)
         provider = settings.get_provider_for_trial(spec.agent, model)
         queue_key = settings.get_queue_key_for_trial(spec.agent, model)
         agent_equivalence_key = compute_agent_equivalence_key(
             spec.agent, model, provider
         )
-        trial_id = f"{task_id}-{i}"
-        trial_name = f"{task_name}-{i}"
-
         harbor_config = _build_harbor_config_for_trial(submission, spec)
-
-        trial = TrialModel(
-            id=trial_id,
-            name=trial_name,
-            task_id=task_id,
-            task_version_id=version_id,
-            experiment_id=experiment.id,
-            job_id=batch_job.id,
-            org_id=org_id,
-            agent=spec.agent,
-            provider=provider,
-            queue_key=queue_key,
-            model=model,
-            agent_equivalence_key=agent_equivalence_key,
-            timeout_minutes=spec.timeout_minutes,
-            environment=spec.environment,
-            harbor_config=harbor_config,
-            status=TrialStatus.QUEUED,
+        prepared.append(
+            (spec, model, provider, queue_key, agent_equivalence_key, harbor_config)
         )
-        session.add(trial)
-        worker_job = await enqueue_trial_worker_job(
-            session,
-            trial_id=trial_id,
-            queue_key=queue_key,
-            org_id=org_id,
-            max_attempts=trial.max_attempts,
-            job_id=batch_job.id,
-        )
-        trial.worker_job_id = worker_job.id
         job_cells.append(
             AgentCellSpec(
                 task_version_id=version_id,
@@ -622,10 +634,50 @@ async def create_task(
             )
         )
 
-    add_job_cells(session, job=batch_job, cells=job_cells)
+    job_cell_rows = add_job_cells(session, job=batch_job, cells=job_cells)
+    await add_experiment_cells(
+        session,
+        experiment_id=experiment.id if experiment else None,
+        cells=job_cells,
+    )
+    planned_trials: list[PlannedTrial] = []
+    for i, (spec, model, provider, queue_key, agent_equivalence_key, harbor_config) in enumerate(
+        prepared
+    ):
+        trial_id = f"{task_id}-{i}"
+        job_cell = job_cell_rows[(version_id, agent_equivalence_key)]
+        await enqueue_trial_worker_job(
+            session,
+            trial_id=trial_id,
+            queue_key=queue_key,
+            org_id=org_id,
+            max_attempts=6,
+            job_id=batch_job.id,
+            subject_table="job_cells",
+            subject_id=job_cell.id,
+            payload={
+                "trial_id": trial_id,
+                "trial_name": f"{task_name}-{i}",
+                "task_id": task_id,
+                "task_version_id": version_id,
+                "experiment_id": experiment.id if experiment else None,
+                "job_id": batch_job.id,
+                "job_cell_id": job_cell.id,
+                "agent": spec.agent,
+                "provider": provider,
+                "queue_key": queue_key,
+                "model": model,
+                "agent_equivalence_key": agent_equivalence_key,
+                "timeout_minutes": spec.timeout_minutes,
+                "environment": spec.environment,
+                "harbor_config": harbor_config,
+            },
+        )
+        planned_trials.append(PlannedTrial(trial_id, provider, batch_job.id))
 
     await session.flush()
-    await session.refresh(task, attribute_names=["trials"])
+    task._planned_trials = planned_trials  # type: ignore[attr-defined]
+    task._job_id = batch_job.id  # type: ignore[attr-defined]
     return task
 
 
@@ -648,13 +700,10 @@ async def append_trials_to_task(
     task: TaskModel,
     submission: TaskSubmission,
     experiment_id: str | None = None,
-) -> list[TrialModel]:
-    """Append new queued trials to an existing task.
+) -> list[PlannedTrial]:
+    """Append new trial executions to an existing task.
 
-    New trials are pinned to the task's ``current_version_id``. When
-    ``experiment_id`` is given, new trials use that experiment and the
-    task is auto-linked to it via ``task_experiments`` (matching the
-    implicit behavior of the old single-FK world).
+    New executions are pinned to the task's ``current_version_id``.
     """
     trial_rows = await session.execute(
         select(TrialModel)
@@ -662,19 +711,21 @@ async def append_trials_to_task(
         .order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
     )
     existing_trials = list(trial_rows.scalars().all())
-    next_index = _get_next_trial_index(task.id, existing_trials)
+    reserved_trial_ids = await _get_reserved_trial_ids(session, task.id)
+    next_index = _get_next_trial_index_from_ids(
+        task.id,
+        [trial.id for trial in existing_trials] + reserved_trial_ids,
+    )
 
     current_version_id = task.current_version_id
+    if current_version_id is None:
+        raise ValueError(f"Task {task.id} has no current version; cannot enqueue trials")
 
     # Pick the target experiment: explicit argument wins, otherwise fall back
     # to the first linked experiment (the task's "primary" association).
     if experiment_id is None:
         primary = list(task.experiments or [])
-        if not primary:
-            raise ValueError(
-                f"Task {task.id} has no linked experiments; cannot append trials"
-            )
-        trial_experiment_id = primary[0].id
+        trial_experiment_id = primary[0].id if primary else None
     else:
         trial_experiment_id = experiment_id
         await _link_task_to_experiment(
@@ -689,8 +740,8 @@ async def append_trials_to_task(
         triggered_by_experiment_id=trial_experiment_id,
     )
 
-    new_trials: list[TrialModel] = []
     job_cells: list[AgentCellSpec] = []
+    prepared: list[tuple[TrialSpec, str, str, str, str, dict[str, Any] | None, str]] = []
     for spec in submission.trials:
         model = settings.normalize_trial_model(spec.agent, spec.model)
         provider = settings.get_provider_for_trial(spec.agent, model)
@@ -699,39 +750,19 @@ async def append_trials_to_task(
             spec.agent, model, provider
         )
         trial_id = f"{task.id}-{next_index}"
-        trial_name = f"{task.name}-{next_index}"
-
         harbor_config = _build_harbor_config_for_trial(submission, spec)
-
-        trial = TrialModel(
-            id=trial_id,
-            name=trial_name,
-            task_id=task.id,
-            task_version_id=current_version_id,
-            experiment_id=trial_experiment_id,
-            job_id=batch_job.id,
-            org_id=task.org_id,
-            agent=spec.agent,
-            provider=provider,
-            queue_key=queue_key,
-            model=model,
-            agent_equivalence_key=agent_equivalence_key,
-            timeout_minutes=spec.timeout_minutes,
-            environment=spec.environment,
-            harbor_config=harbor_config,
-            status=TrialStatus.QUEUED,
-        )
-        session.add(trial)
-        worker_job = await enqueue_trial_worker_job(
-            session,
-            trial_id=trial_id,
-            queue_key=queue_key,
-            org_id=task.org_id,
-            max_attempts=trial.max_attempts,
-            job_id=batch_job.id,
-        )
-        trial.worker_job_id = worker_job.id
         if current_version_id is not None:
+            prepared.append(
+                (
+                    spec,
+                    model,
+                    provider,
+                    queue_key,
+                    agent_equivalence_key,
+                    harbor_config,
+                    trial_id,
+                )
+            )
             job_cells.append(
                 AgentCellSpec(
                     task_version_id=current_version_id,
@@ -740,12 +771,56 @@ async def append_trials_to_task(
                     provider=provider,
                 )
             )
-        new_trials.append(trial)
         next_index += 1
 
-    add_job_cells(session, job=batch_job, cells=job_cells)
+    job_cell_rows = add_job_cells(session, job=batch_job, cells=job_cells)
+    await add_experiment_cells(
+        session,
+        experiment_id=trial_experiment_id,
+        cells=job_cells,
+    )
+    planned_trials: list[PlannedTrial] = []
+    for (
+        spec,
+        model,
+        provider,
+        queue_key,
+        agent_equivalence_key,
+        harbor_config,
+        trial_id,
+    ) in prepared:
+        assert current_version_id is not None
+        job_cell = job_cell_rows[(current_version_id, agent_equivalence_key)]
+        await enqueue_trial_worker_job(
+            session,
+            trial_id=trial_id,
+            queue_key=queue_key,
+            org_id=task.org_id,
+            max_attempts=6,
+            job_id=batch_job.id,
+            subject_table="job_cells",
+            subject_id=job_cell.id,
+            payload={
+                "trial_id": trial_id,
+                "trial_name": f"{task.name}-{trial_id.rsplit('-', 1)[-1]}",
+                "task_id": task.id,
+                "task_version_id": current_version_id,
+                "experiment_id": trial_experiment_id,
+                "job_id": batch_job.id,
+                "job_cell_id": job_cell.id,
+                "agent": spec.agent,
+                "provider": provider,
+                "queue_key": queue_key,
+                "model": model,
+                "agent_equivalence_key": agent_equivalence_key,
+                "timeout_minutes": spec.timeout_minutes,
+                "environment": spec.environment,
+                "harbor_config": harbor_config,
+            },
+        )
+        planned_trials.append(PlannedTrial(trial_id, provider, batch_job.id))
 
-    if new_trials and task.status in (
+    if planned_trials and task.status in (
         TaskStatus.COMPLETED,
         TaskStatus.FAILED,
         TaskStatus.ANALYZING,
@@ -754,7 +829,7 @@ async def append_trials_to_task(
         task.status = TaskStatus.RUNNING
         task.finished_at = None
 
-    if new_trials and task.run_analysis:
+    if planned_trials and task.run_analysis:
         task.verdict = None
         task.verdict_status = None
         task.verdict_error = None
@@ -785,8 +860,9 @@ async def append_trials_to_task(
         )
 
     await session.flush()
-    await session.refresh(task, attribute_names=["trials"])
-    return new_trials
+    task._planned_trials = planned_trials  # type: ignore[attr-defined]
+    task._job_id = batch_job.id  # type: ignore[attr-defined]
+    return planned_trials
 
 
 # =============================================================================
@@ -794,7 +870,12 @@ async def append_trials_to_task(
 # =============================================================================
 
 
-async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bool:
+async def maybe_start_analysis_stage(
+    session: AsyncSession,
+    trial_id: str,
+    *,
+    exclude_worker_job_id: str | None = None,
+) -> bool:
     """Check if all trials for a task are done and transition task status.
 
     If run_analysis is enabled -> status becomes ANALYZING
@@ -834,8 +915,21 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
             )
         )
     )
+    active_worker_count = await session.scalar(
+        text(
+            """
+            SELECT COUNT(*)
+            FROM worker_jobs
+            WHERE kind::text = 'TRIAL'
+              AND status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+              AND payload->>'task_id' = :task_id
+              AND (:exclude_worker_job_id IS NULL OR id <> :exclude_worker_job_id)
+            """
+        ),
+        {"task_id": task_id, "exclude_worker_job_id": exclude_worker_job_id},
+    )
 
-    if pending_count > 0:
+    if pending_count > 0 or int(active_worker_count or 0) > 0:
         return False
 
     if task.run_analysis:

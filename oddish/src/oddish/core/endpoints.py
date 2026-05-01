@@ -1621,7 +1621,7 @@ async def create_task_sweep_core(
     org_id: str | None = None,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
-) -> tuple[TaskModel, list[TrialModel], bool, ExperimentModel | None]:
+) -> tuple[TaskModel, list["PlannedTrial"], bool, ExperimentModel | None]:
     """
     Expands a sweep submission into trials and either appends to an existing task
     or creates a new one.
@@ -1633,6 +1633,7 @@ async def create_task_sweep_core(
         build_task_submission_from_sweep,
     )
     from oddish.queue import (
+        PlannedTrial,
         append_trials_to_task,
         create_task,
         get_experiment_by_id_or_name,
@@ -1671,20 +1672,6 @@ async def create_task_sweep_core(
             new_experiment_id = experiment.id
         elif primary_experiment is not None:
             experiment = primary_experiment
-        else:
-            # Task was uploaded via ``oddish upload`` (or otherwise
-            # landed in the DB without any trials) and therefore has no
-            # linked experiment yet. Auto-create one here so the user
-            # can run trials against an upload-only task without having
-            # to pass ``--experiment`` explicitly -- mirroring plain
-            # ``oddish run`` which also auto-generates an experiment
-            # when none is supplied.
-            from oddish.experiment import generate_experiment_name
-
-            experiment = await get_or_create_experiment(
-                session, generate_experiment_name(), org_id
-            )
-            new_experiment_id = experiment.id
 
         # Determine default environment from existing trial, if present.
         existing_env_result = await session.execute(
@@ -1723,14 +1710,14 @@ async def create_task_sweep_core(
         expanded = build_task_submission_from_sweep(
             append_submission, task_path=task.task_path, trials=trials
         )
-        new_trials = await append_trials_to_task(
+        planned_trials = await append_trials_to_task(
             session,
             task=task,
             submission=expanded,
             experiment_id=new_experiment_id,
         )
 
-        return task, new_trials, True, experiment
+        return task, planned_trials, True, experiment
 
     # Create mode
     task_path, task_s3_key = await resolve_task_storage(
@@ -1767,4 +1754,5 @@ async def create_task_sweep_core(
 
     experiment = await _primary_experiment_for_task_model(task)
 
-    return task, list(task.trials), False, experiment
+    planned_trials = getattr(task, "_planned_trials", [])
+    return task, planned_trials, False, experiment

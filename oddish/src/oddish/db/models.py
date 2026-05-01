@@ -500,6 +500,38 @@ class JobCellModel(TimestampedMixin, Base):
     )
 
 
+class ExperimentCellModel(TimestampedMixin, Base):
+    """Saved experiment selection cell resolved against global evidence."""
+
+    __tablename__ = "experiment_cells"
+    __table_args__ = (
+        Index(
+            "idx_experiment_cells_unique_cell",
+            "experiment_id",
+            "task_version_id",
+            "agent_equivalence_key",
+            unique=True,
+        ),
+        Index("idx_experiment_cells_task_version", "task_version_id"),
+        Index("idx_experiment_cells_agent_equivalence", "agent_equivalence_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    experiment_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("experiments.id", ondelete="CASCADE"), nullable=False
+    )
+    task_version_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("task_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    agent_equivalence_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    harness: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_n_trials: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class TrialModel(TimestampedMixin, Base):
     """Trial database model."""
 
@@ -514,10 +546,10 @@ class TrialModel(TimestampedMixin, Base):
     task_version_id: Mapped[str | None] = mapped_column(
         String(128), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
     )
-    experiment_id: Mapped[str] = mapped_column(
+    experiment_id: Mapped[str | None] = mapped_column(
         String(64),
         ForeignKey("experiments.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     job_id: Mapped[str | None] = mapped_column(

@@ -87,11 +87,31 @@ def upgrade() -> None:
         )
         """
     )
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS experiment_cells (
+            id                    VARCHAR(64) PRIMARY KEY,
+            experiment_id         VARCHAR(64) NOT NULL
+                REFERENCES experiments(id) ON DELETE CASCADE,
+            task_version_id       VARCHAR(128) NOT NULL
+                REFERENCES task_versions(id) ON DELETE CASCADE,
+            agent_equivalence_key VARCHAR(64) NOT NULL,
+            harness               VARCHAR(64) NOT NULL,
+            model                 VARCHAR(128) NOT NULL,
+            provider              VARCHAR(32) NOT NULL,
+            target_n_trials       INTEGER NOT NULL,
+            created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            deleted_at            TIMESTAMPTZ
+        )
+        """
+    )
 
     op.execute(
         "ALTER TABLE trials ADD COLUMN IF NOT EXISTS job_id VARCHAR(64) "
         "REFERENCES jobs(id) ON DELETE SET NULL"
     )
+    op.execute("ALTER TABLE trials ALTER COLUMN experiment_id DROP NOT NULL")
     op.execute(
         "ALTER TABLE trials ADD COLUMN IF NOT EXISTS worker_job_id VARCHAR(64) "
         "REFERENCES worker_jobs(id) ON DELETE SET NULL"
@@ -123,6 +143,18 @@ def upgrade() -> None:
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_job_cells_agent_equivalence "
         "ON job_cells (agent_equivalence_key)"
+    )
+    op.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_experiment_cells_unique_cell "
+        "ON experiment_cells (experiment_id, task_version_id, agent_equivalence_key)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_experiment_cells_task_version "
+        "ON experiment_cells (task_version_id)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_experiment_cells_agent_equivalence "
+        "ON experiment_cells (agent_equivalence_key)"
     )
     op.execute("CREATE INDEX IF NOT EXISTS idx_trials_job_id ON trials (job_id)")
     op.execute(
@@ -285,6 +317,48 @@ def upgrade() -> None:
         ON CONFLICT (job_id, task_version_id, agent_equivalence_key) DO NOTHING
         """
     )
+    op.execute(
+        """
+        INSERT INTO experiment_cells (
+            id,
+            experiment_id,
+            task_version_id,
+            agent_equivalence_key,
+            harness,
+            model,
+            provider,
+            target_n_trials,
+            created_at,
+            updated_at
+        )
+        SELECT
+            'ecell_' || left(md5(
+                t.experiment_id || '|' || t.task_version_id || '|' || t.agent_equivalence_key
+            ), 24) AS id,
+            t.experiment_id,
+            t.task_version_id,
+            t.agent_equivalence_key,
+            t.agent AS harness,
+            COALESCE(t.model, '') AS model,
+            t.provider,
+            COUNT(*)::integer AS target_n_trials,
+            MIN(t.created_at) AS created_at,
+            NOW() AS updated_at
+        FROM trials t
+        WHERE t.experiment_id IS NOT NULL
+          AND t.task_version_id IS NOT NULL
+          AND t.agent_equivalence_key IS NOT NULL
+        GROUP BY
+            t.experiment_id,
+            t.task_version_id,
+            t.agent_equivalence_key,
+            t.agent,
+            COALESCE(t.model, ''),
+            t.provider
+        ON CONFLICT (experiment_id, task_version_id, agent_equivalence_key)
+        DO UPDATE SET target_n_trials = experiment_cells.target_n_trials + EXCLUDED.target_n_trials
+        """
+    )
 
 
 def downgrade() -> None:
@@ -296,13 +370,28 @@ def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS idx_job_cells_agent_equivalence")
     op.execute("DROP INDEX IF EXISTS idx_job_cells_task_version")
     op.execute("DROP INDEX IF EXISTS idx_job_cells_unique_cell")
+    op.execute("DROP INDEX IF EXISTS idx_experiment_cells_agent_equivalence")
+    op.execute("DROP INDEX IF EXISTS idx_experiment_cells_task_version")
+    op.execute("DROP INDEX IF EXISTS idx_experiment_cells_unique_cell")
     op.execute("DROP INDEX IF EXISTS idx_jobs_triggered_by_experiment")
     op.execute("DROP INDEX IF EXISTS idx_jobs_org_status_launched")
     op.execute("ALTER TABLE worker_jobs DROP COLUMN IF EXISTS job_id")
     op.execute("ALTER TABLE trials DROP COLUMN IF EXISTS agent_equivalence_key")
     op.execute("ALTER TABLE trials DROP COLUMN IF EXISTS worker_job_id")
     op.execute("ALTER TABLE trials DROP COLUMN IF EXISTS job_id")
+    op.execute(
+        """
+        UPDATE trials
+        SET experiment_id = (
+            SELECT id FROM experiments ORDER BY created_at ASC LIMIT 1
+        )
+        WHERE experiment_id IS NULL
+          AND EXISTS (SELECT 1 FROM experiments)
+        """
+    )
+    op.execute("ALTER TABLE trials ALTER COLUMN experiment_id SET NOT NULL")
     op.execute("DROP TABLE IF EXISTS job_cells")
+    op.execute("DROP TABLE IF EXISTS experiment_cells")
     op.execute("DROP TABLE IF EXISTS jobs")
     op.execute("DROP TYPE IF EXISTS batch_job_status")
     op.execute("DROP TYPE IF EXISTS batch_job_kind")

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,6 +13,7 @@ from oddish.core.agent_identity import compute_agent_equivalence_key
 from oddish.db import (
     BatchJobKind,
     BatchJobStatus,
+    ExperimentCellModel,
     JobCellModel,
     JobModel,
     TrialModel,
@@ -74,7 +76,7 @@ def add_job_cells(
     *,
     job: JobModel,
     cells: Iterable[AgentCellSpec],
-) -> None:
+) -> dict[tuple[str, str], JobCellModel]:
     merged: dict[tuple[str, str], AgentCellSpec] = {}
     counts: dict[tuple[str, str], int] = {}
 
@@ -85,19 +87,67 @@ def add_job_cells(
             counts[key] = 0
         counts[key] += cell.n_trials
 
+    rows: dict[tuple[str, str], JobCellModel] = {}
     for key, cell in merged.items():
-        session.add(
-            JobCellModel(
+        row = JobCellModel(
+            id=generate_id(),
+            job_id=job.id,
+            task_version_id=cell.task_version_id,
+            agent_equivalence_key=cell.agent_equivalence_key,
+            harness=cell.harness,
+            model=cell.model,
+            provider=cell.provider,
+            n_trials=counts[key],
+        )
+        session.add(row)
+        rows[key] = row
+    return rows
+
+
+async def add_experiment_cells(
+    session: AsyncSession,
+    *,
+    experiment_id: str | None,
+    cells: Iterable[AgentCellSpec],
+) -> None:
+    if experiment_id is None:
+        return
+
+    merged: dict[tuple[str, str], AgentCellSpec] = {}
+    counts: dict[tuple[str, str], int] = {}
+    for cell in cells:
+        key = (cell.task_version_id, cell.agent_equivalence_key)
+        if key not in merged:
+            merged[key] = cell
+            counts[key] = 0
+        counts[key] += cell.n_trials
+
+    for key, cell in merged.items():
+        stmt = (
+            pg_insert(ExperimentCellModel)
+            .values(
                 id=generate_id(),
-                job_id=job.id,
+                experiment_id=experiment_id,
                 task_version_id=cell.task_version_id,
                 agent_equivalence_key=cell.agent_equivalence_key,
                 harness=cell.harness,
                 model=cell.model,
                 provider=cell.provider,
-                n_trials=counts[key],
+                target_n_trials=counts[key],
+            )
+            .on_conflict_do_update(
+                index_elements=[
+                    "experiment_id",
+                    "task_version_id",
+                    "agent_equivalence_key",
+                ],
+                set_={
+                    "target_n_trials": ExperimentCellModel.target_n_trials
+                    + counts[key],
+                },
             )
         )
+        await session.execute(stmt)
 
 
 @dataclass(frozen=True)

@@ -189,6 +189,8 @@ async def cleanup_orphaned_queue_state(
                               status::text AS new_status,
                               subject_table,
                               subject_id,
+                              payload,
+                              org_id,
                               attempts,
                               max_attempts,
                               error_message
@@ -215,12 +217,45 @@ async def cleanup_orphaned_queue_state(
 
             kind = row["kind"]
             subject_id = row["subject_id"]
+            payload = row.get("payload") or {}
             if not subject_id:
                 continue
 
             if kind == "TRIAL":
                 trial = await session.get(TrialModel, str(subject_id))
                 if trial is None:
+                    if (
+                        row["new_status"] == "FAILED"
+                        and isinstance(payload, dict)
+                        and payload.get("trial_id")
+                        and payload.get("task_id")
+                    ):
+                        trial = TrialModel(
+                            id=str(payload["trial_id"]),
+                            name=str(payload.get("trial_name") or payload["trial_id"]),
+                            task_id=str(payload["task_id"]),
+                            task_version_id=payload.get("task_version_id"),
+                            experiment_id=payload.get("experiment_id"),
+                            job_id=payload.get("job_id"),
+                            worker_job_id=str(row["id"]),
+                            org_id=row.get("org_id"),
+                            agent=str(payload.get("agent") or "unknown"),
+                            provider=str(payload.get("provider") or "unknown"),
+                            queue_key=str(payload.get("queue_key") or "unknown"),
+                            model=payload.get("model"),
+                            agent_equivalence_key=payload.get("agent_equivalence_key"),
+                            environment=payload.get("environment"),
+                            harbor_config=payload.get("harbor_config"),
+                            status=TrialStatus.FAILED,
+                            attempts=int(row["attempts"] or 0),
+                            max_attempts=int(row["max_attempts"] or 0),
+                            harbor_stage="cancelled",
+                            error_message=row["error_message"],
+                            finished_at=utcnow(),
+                            stale_reaped_at=utcnow(),
+                        )
+                        session.add(trial)
+                        stale_trial_ids.append(trial.id)
                     continue
                 if row["new_status"] == "RETRYING":
                     # Domain row goes back to RETRYING so the UI

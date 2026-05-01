@@ -481,6 +481,39 @@ class JobResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class EvidenceCellResponse(BaseModel):
+    task_version_id: str
+    agent_equivalence_key: str
+    harness: str
+    model: str
+    provider: str
+    n_trials: int
+    mean_reward: float | None = None
+    last_run_at: datetime | None = None
+
+
+class ExperimentCellResponse(BaseModel):
+    id: str
+    experiment_id: str
+    task_version_id: str
+    agent_equivalence_key: str
+    harness: str
+    model: str
+    provider: str
+    target_n_trials: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ResolvedExperimentCellResponse(BaseModel):
+    cell: ExperimentCellResponse
+    have_n_trials: int
+    mean_reward: float | None = None
+    last_run_at: datetime | None = None
+    trial_ids: list[str] = Field(default_factory=list)
+
+
 class TrialResponse(BaseModel):
     id: str
     name: str

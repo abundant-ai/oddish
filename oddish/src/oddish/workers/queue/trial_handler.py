@@ -20,7 +20,9 @@ from oddish.db import (
     TaskModel,
     TaskStatus,
     TaskVersionModel,
+    TrialModel,
     TrialStatus,
+    get_session,
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
@@ -37,8 +39,19 @@ class PreparedTrialRun:
     task_path: str | None
     task_s3_key: str | None
     task_id: str
+    task_name: str
+    trial_id: str
+    trial_name: str
+    task_version_id: str | None
+    experiment_id: str | None
+    job_id: str | None
+    worker_job_id: str | None
+    org_id: str | None
     trial_agent: str
     trial_model: str
+    trial_provider: str
+    trial_queue_key: str
+    agent_equivalence_key: str | None
     trial_environment: str | None
     trial_harbor_config: dict | None
 
@@ -371,10 +384,78 @@ async def _prepare_trial_run(
             task_path=task_path,
             task_s3_key=task_s3_key,
             task_id=task_id,
+            task_name=task.name if task else trial.task_id,
+            trial_id=trial.id,
+            trial_name=trial.name,
+            task_version_id=trial.task_version_id,
+            experiment_id=trial.experiment_id,
+            job_id=trial.job_id,
+            worker_job_id=worker_job_id,
+            org_id=trial.org_id,
             trial_agent=trial_agent,
             trial_model=trial_model,
+            trial_provider=trial.provider,
+            trial_queue_key=trial.queue_key,
+            agent_equivalence_key=trial.agent_equivalence_key,
             trial_environment=trial_environment,
             trial_harbor_config=trial_harbor_config,
+        )
+
+
+async def _prepare_planned_trial_run(
+    *,
+    payload: dict,
+    worker_job_id: str | None,
+) -> PreparedTrialRun:
+    task_id = str(payload["task_id"])
+    task_version_id = payload.get("task_version_id")
+
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        if task is None:
+            raise RuntimeError(f"Task {task_id} not found")
+        if task.status == TaskStatus.PENDING:
+            task.status = TaskStatus.RUNNING
+            task.started_at = utcnow()
+
+        task_path: str | None = task.task_path
+        task_s3_key: str | None = task.task_s3_key
+        if task_version_id:
+            tv = await session.get(TaskVersionModel, str(task_version_id))
+            if tv is not None:
+                task_path = tv.task_path
+                task_s3_key = tv.task_s3_key
+
+        model = settings.normalize_trial_model(
+            str(payload["agent"]), payload.get("model")
+        )
+        provider = str(payload.get("provider") or settings.get_provider_for_trial(
+            str(payload["agent"]), model
+        ))
+        queue_key = str(
+            payload.get("queue_key")
+            or settings.get_queue_key_for_trial(str(payload["agent"]), model)
+        )
+
+        return PreparedTrialRun(
+            task_path=task_path,
+            task_s3_key=task_s3_key,
+            task_id=task.id,
+            task_name=task.name,
+            trial_id=str(payload["trial_id"]),
+            trial_name=str(payload.get("trial_name") or payload["trial_id"]),
+            task_version_id=str(task_version_id) if task_version_id else None,
+            experiment_id=payload.get("experiment_id"),
+            job_id=payload.get("job_id"),
+            worker_job_id=worker_job_id,
+            org_id=task.org_id,
+            trial_agent=str(payload["agent"]),
+            trial_model=model,
+            trial_provider=provider,
+            trial_queue_key=queue_key,
+            agent_equivalence_key=payload.get("agent_equivalence_key"),
+            trial_environment=payload.get("environment"),
+            trial_harbor_config=payload.get("harbor_config"),
         )
 
 
@@ -503,6 +584,115 @@ async def _store_trial_results(
                 console.print(
                     f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
                 )
+
+
+async def _store_planned_trial_results(
+    *,
+    prepared_trial: PreparedTrialRun,
+    outcome: HarborOutcome | None,
+    trial_s3_key: str | None,
+    execution_error: str | None,
+    attempts: int,
+    max_attempts: int,
+) -> TrialStatus:
+    derived_reward: float | None = None
+    error_message = execution_error
+    harbor_result_path: str | None = None
+    input_tokens = None
+    cache_tokens = None
+    output_tokens = None
+    cost_usd = None
+    phase_timing = None
+    has_trajectory = False
+
+    if outcome:
+        is_timeout = _is_agent_timeout_error_message(outcome.error)
+        derived_reward = outcome.reward
+        if derived_reward is None and is_timeout:
+            verifier_ran = _verifier_ran_from_job_result(
+                str(outcome.job_result_path) if outcome.job_result_path else None
+            )
+            if verifier_ran:
+                derived_reward = 0.0
+        error_message = outcome.error or None
+        harbor_result_path = str(outcome.job_result_path) if outcome.job_result_path else None
+        input_tokens = outcome.input_tokens
+        cache_tokens = outcome.cache_tokens
+        output_tokens = outcome.output_tokens
+        cost_usd = outcome.cost_usd
+        phase_timing = outcome.phase_timing
+        has_trajectory = outcome.has_trajectory
+
+    if outcome and derived_reward is not None:
+        terminal_status = TrialStatus.SUCCESS
+    elif attempts < max_attempts:
+        return TrialStatus.RETRYING
+    else:
+        terminal_status = TrialStatus.FAILED
+        error_message = error_message or "Trial execution failed with exception"
+
+    async with get_session() as session:
+        trial = await session.get(TrialModel, prepared_trial.trial_id)
+        if trial is None:
+            trial = TrialModel(
+                id=prepared_trial.trial_id,
+                name=prepared_trial.trial_name,
+                task_id=prepared_trial.task_id,
+                task_version_id=prepared_trial.task_version_id,
+                experiment_id=prepared_trial.experiment_id,
+                job_id=prepared_trial.job_id,
+                worker_job_id=prepared_trial.worker_job_id,
+                org_id=prepared_trial.org_id,
+                agent=prepared_trial.trial_agent,
+                provider=prepared_trial.trial_provider,
+                queue_key=prepared_trial.trial_queue_key,
+                model=prepared_trial.trial_model,
+                agent_equivalence_key=prepared_trial.agent_equivalence_key,
+                environment=prepared_trial.trial_environment,
+                harbor_config=prepared_trial.trial_harbor_config,
+                status=terminal_status,
+                attempts=attempts,
+                max_attempts=max_attempts,
+                harbor_stage="completed" if terminal_status == TrialStatus.SUCCESS else "failed",
+                started_at=None,
+            )
+            session.add(trial)
+        else:
+            trial.status = terminal_status
+            trial.attempts = attempts
+            trial.max_attempts = max_attempts
+
+        trial.reward = derived_reward
+        trial.error_message = error_message
+        trial.harbor_result_path = harbor_result_path
+        trial.trial_s3_key = trial_s3_key
+        trial.input_tokens = input_tokens
+        trial.cache_tokens = cache_tokens
+        trial.output_tokens = output_tokens
+        trial.cost_usd = cost_usd
+        trial.phase_timing = phase_timing
+        trial.has_trajectory = has_trajectory
+        trial.finished_at = utcnow()
+
+        task = await session.get(TaskModel, prepared_trial.task_id)
+        from oddish.queue import enqueue_analysis_worker_job, maybe_start_analysis_stage
+
+        if task and task.run_analysis and trial.analysis_status is None:
+            trial.analysis_status = AnalysisStatus.QUEUED
+            await enqueue_analysis_worker_job(
+                session,
+                trial_id=trial.id,
+                org_id=trial.org_id,
+                job_id=trial.job_id,
+            )
+
+        await maybe_start_analysis_stage(
+            session,
+            trial.id,
+            exclude_worker_job_id=prepared_trial.worker_job_id,
+        )
+
+    return terminal_status
 
 
 async def _handle_harbor_event(
@@ -709,11 +899,14 @@ async def run_trial_job(
     trial_id: str,
     queue_key: str,
     *,
+    payload: dict | None = None,
+    worker_job_attempts: int = 1,
+    worker_job_max_attempts: int = 1,
     worker_id: str | None = None,
     queue_slot: int | None = None,
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
-) -> None:
+) -> TrialStatus | None:
     """
     Execute a claimed trial.
 
@@ -724,32 +917,40 @@ async def run_trial_job(
     """
     console.print(f"[cyan]Processing trial[/cyan] {trial_id} (queue_key={queue_key})")
 
-    # Check idempotency
-    async with _trial_session(trial_id) as (session, trial):
-        if not trial:
-            raise RuntimeError(f"Trial {trial_id} not found in database")
-
-        console.print(
-            f"[dim]Trial {trial_id} current status: {trial.status.value}, agent: {trial.agent}[/dim]"
+    if payload and payload.get("task_id"):
+        prepared_trial = await _prepare_planned_trial_run(
+            payload=payload,
+            worker_job_id=worker_job_id,
         )
+        terminal_only = True
+    else:
+        # Check idempotency for legacy trial-placeholder jobs.
+        async with _trial_session(trial_id) as (session, trial):
+            if not trial:
+                raise RuntimeError(f"Trial {trial_id} not found in database")
 
-        if trial.idempotency_key and trial.status in (
-            TrialStatus.SUCCESS,
-            TrialStatus.FAILED,
-        ):
             console.print(
-                f"[yellow]Trial {trial_id} already processed (idempotent), skipping[/yellow]"
+                f"[dim]Trial {trial_id} current status: {trial.status.value}, agent: {trial.agent}[/dim]"
             )
-            return
 
-    prepared_trial = await _prepare_trial_run(
-        trial_id=trial_id,
-        worker_id=worker_id,
-        queue_slot=queue_slot,
-        modal_function_call_id=modal_function_call_id,
-    )
-    if prepared_trial is None:
-        return
+            if trial.idempotency_key and trial.status in (
+                TrialStatus.SUCCESS,
+                TrialStatus.FAILED,
+            ):
+                console.print(
+                    f"[yellow]Trial {trial_id} already processed (idempotent), skipping[/yellow]"
+                )
+                return trial.status
+
+        prepared_trial = await _prepare_trial_run(
+            trial_id=trial_id,
+            worker_id=worker_id,
+            queue_slot=queue_slot,
+            modal_function_call_id=modal_function_call_id,
+        )
+        terminal_only = False
+        if prepared_trial is None:
+            return None
 
     # Session is now closed - connection returned to pool
 
@@ -802,6 +1003,17 @@ async def run_trial_job(
                     f"[yellow]Failed to upload trial results to S3: {e}[/yellow]"
                 )
 
+        if terminal_only:
+            return await asyncio.shield(
+                _store_planned_trial_results(
+                    prepared_trial=prepared_trial,
+                    outcome=execution.outcome,
+                    trial_s3_key=trial_s3_key,
+                    execution_error=execution.execution_error,
+                    attempts=worker_job_attempts,
+                    max_attempts=worker_job_max_attempts,
+                )
+            )
         await asyncio.shield(
             _store_trial_results(
                 trial_id=trial_id,
@@ -810,6 +1022,8 @@ async def run_trial_job(
                 execution_error=execution.execution_error,
             )
         )
+        async with _trial_session(trial_id, allow_missing=True) as (_session, trial):
+            return trial.status if trial else None
     finally:
         # Backstop for the non-happy paths (harness exception, worker
         # cancel, S3 upload failure, or Harbor dying before producing a

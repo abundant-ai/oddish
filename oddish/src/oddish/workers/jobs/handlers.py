@@ -31,6 +31,7 @@ from oddish.workers.queue.verdict_handler import run_verdict_job
 class WorkerJobLike:
     id: str
     queue_key: str
+    subject_table: str | None
     subject_id: str | None
     payload: dict
     worker_id: str | None
@@ -56,18 +57,30 @@ class TrialJobHandler:
         return payload
 
     async def run(self, job: WorkerJobLike) -> JobOutcome:
-        trial_id = job.subject_id
+        trial_id = (job.payload or {}).get("trial_id")
+        if not trial_id and getattr(job, "subject_table", None) == "trials":
+            trial_id = job.subject_id
         if not trial_id:
-            raise ValueError("TRIAL worker_job missing subject_id")
+            raise ValueError("TRIAL worker_job missing payload.trial_id")
 
-        await run_trial_job(
+        status = await run_trial_job(
             trial_id,
             queue_key=job.queue_key,
+            payload=job.payload,
+            worker_job_attempts=getattr(job, "attempts", 1),
+            worker_job_max_attempts=getattr(job, "max_attempts", 1),
             worker_id=job.worker_id,
             queue_slot=job.queue_slot,
             modal_function_call_id=job.modal_function_call_id,
             worker_job_id=job.id,
         )
+
+        if status == TrialStatus.SUCCESS:
+            return JobOutcome.ok()
+        if status == TrialStatus.RETRYING:
+            return _fail_retryable(f"Trial {trial_id} marked RETRYING")
+        if status == TrialStatus.FAILED:
+            return _fail_retryable(f"Trial {trial_id} marked FAILED")
 
         async with get_session() as session:
             trial = await session.get(TrialModel, trial_id)

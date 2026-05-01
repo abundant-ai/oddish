@@ -99,13 +99,24 @@ WHERE  id = (
         ON  wj.kind::text = 'TRIAL'
         AND wj.subject_table = 'trials'
         AND wj.subject_id = tr.id
-    LEFT JOIN tasks tk ON tr.task_id = tk.id
+    LEFT JOIN job_cells jc
+        ON  wj.kind::text = 'TRIAL'
+        AND wj.subject_table = 'job_cells'
+        AND wj.subject_id = jc.id
+    LEFT JOIN task_versions tv ON jc.task_version_id = tv.id
+    LEFT JOIN tasks tk ON tk.id = COALESCE(tr.task_id, tv.task_id)
     LEFT JOIN (
         SELECT COALESCE(tk2.created_by_user_id, tk2.user) AS fairness_key,
                COUNT(*) AS running_count
         FROM   worker_jobs wj2
-        JOIN   trials tr2  ON wj2.subject_id = tr2.id
-        JOIN   tasks  tk2  ON tr2.task_id = tk2.id
+        LEFT JOIN trials tr2
+            ON  wj2.subject_table = 'trials'
+            AND wj2.subject_id = tr2.id
+        LEFT JOIN job_cells jc2
+            ON  wj2.subject_table = 'job_cells'
+            AND wj2.subject_id = jc2.id
+        LEFT JOIN task_versions tv2 ON jc2.task_version_id = tv2.id
+        JOIN   tasks  tk2  ON tk2.id = COALESCE(tr2.task_id, tv2.task_id)
         WHERE  wj2.kind::text = 'TRIAL'
           AND  wj2.status::text = 'RUNNING'
           AND  wj2.queue_key = $1
@@ -420,11 +431,15 @@ async def run_single_worker_job(
         max_attempts=job.max_attempts,
     )
 
-    if outcome.success is not None and post_success_hooks and job.subject_id:
+    hook_subject_id = job.subject_id
+    if job.kind == WorkerJobKind.TRIAL and job.payload.get("trial_id"):
+        hook_subject_id = str(job.payload["trial_id"])
+
+    if outcome.success is not None and post_success_hooks and hook_subject_id:
         hook = post_success_hooks.get(job.kind)
         if hook is not None:
             try:
-                await hook(job.subject_id)
+                await hook(hook_subject_id)
             except Exception as exc:
                 console.print(
                     f"[yellow]post-success hook for kind={job.kind.value} "

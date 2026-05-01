@@ -24,6 +24,10 @@ from oddish.core.endpoints import (
     rerun_task_analysis_core,
     rerun_task_verdict_core,
 )
+from oddish.core.evidence import (
+    get_experiment_cells_core,
+    get_task_version_evidence_core,
+)
 from oddish.core.public_helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
@@ -52,6 +56,8 @@ from oddish.queue import (
 from oddish.schemas import (
     TaskBrowseResponse,
     TaskBatchCancelRequest,
+    EvidenceCellResponse,
+    ResolvedExperimentCellResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
     TaskUploadInitResponse,
@@ -323,7 +329,7 @@ async def create_task_sweep(
 
         await session.commit()
 
-        response_trials = new_trials if is_append else list(task.trials)
+        response_trials = new_trials
         provider_counts: Counter[str] = Counter(t.provider for t in response_trials)
         primary = experiment or (task.experiments[0] if task.experiments else None)
         resp_experiment_id = primary.id if primary else None
@@ -655,6 +661,42 @@ async def get_task_version(
     async with get_session() as session:
         return await get_task_version_core(
             session, task_id=task_id, version=version, org_id=auth.org_id
+        )
+
+
+@router.get(
+    "/tasks/{task_id}/versions/{version}/evidence",
+    response_model=list[EvidenceCellResponse],
+)
+async def get_task_version_evidence(
+    task_id: str,
+    version: int,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> list[EvidenceCellResponse]:
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        return await get_task_version_evidence_core(
+            session,
+            task_id=task_id,
+            version=version,
+            org_id=auth.org_id,
+        )
+
+
+@router.get(
+    "/experiments/{experiment_id}/cells",
+    response_model=list[ResolvedExperimentCellResponse],
+)
+async def get_experiment_cells(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> list[ResolvedExperimentCellResponse]:
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        return await get_experiment_cells_core(
+            session,
+            experiment_id=experiment_id,
+            org_id=auth.org_id,
         )
 
 
