@@ -450,11 +450,7 @@ async def list_task_probe_runs(
 
 
 def _parse_claude_transcript(content: bytes) -> list[dict]:
-    """Parse claude-code stream-json transcript into the legacy agent_messages shape.
-
-    Mirrors oddish/worker/local_runner.py so service-routed probes render identically
-    to legacy probe trials in the workbench detail page.
-    """
+    """Parse claude-code stream-json transcript into the legacy agent_messages shape."""
     out: list[dict] = []
     for raw in content.decode("utf-8", errors="replace").splitlines():
         raw = raw.strip()
