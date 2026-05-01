@@ -100,3 +100,14 @@ class AgentSandboxClient:
         r = await self._client.get(f"/v1/chat-sessions/{session_id}/skills.tar.gz")
         r.raise_for_status()
         return r.content
+
+    # --- Trials ---
+    async def get_trajectory_summary(
+        self, *, trial_id: str, s3_prefix: str
+    ) -> dict[str, Any]:
+        r = await self._client.get(
+            f"/v1/trials/{trial_id}/trajectory/summary",
+            params={"s3_prefix": s3_prefix},
+        )
+        r.raise_for_status()
+        return r.json()

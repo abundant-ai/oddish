@@ -107,3 +107,34 @@ async def test_authorization_header_uses_bearer_with_api_key():
     )
     assert captured == ["Bearer my-key"]
     await client.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_trajectory_summary_proxies():
+    respx.get("https://service.test/v1/trials/task_a-1/trajectory/summary").mock(
+        return_value=httpx.Response(200, json={"summary": "x", "model": "claude-sonnet-4-6"})
+    )
+    client = AgentSandboxClient(base_url="https://service.test", api_key="k")
+    out = await client.get_trajectory_summary(
+        trial_id="task_a-1", s3_prefix="tasks/task_a/trials/task_a-1/"
+    )
+    assert out["summary"] == "x"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_trajectory_summary_passes_s3_prefix_as_query():
+    captured_request = []
+
+    def handler(request):
+        captured_request.append(request)
+        return httpx.Response(200, json={"summary": "ok"})
+
+    respx.get("https://service.test/v1/trials/x/trajectory/summary").mock(side_effect=handler)
+    client = AgentSandboxClient(base_url="https://service.test", api_key="k")
+    await client.get_trajectory_summary(trial_id="x", s3_prefix="tasks/y/trials/x/")
+    assert "s3_prefix=tasks%2Fy%2Ftrials%2Fx%2F" in str(captured_request[0].url) \
+        or "s3_prefix=tasks/y/trials/x/" in str(captured_request[0].url)
+    await client.aclose()
