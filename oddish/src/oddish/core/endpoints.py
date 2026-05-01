@@ -1644,11 +1644,6 @@ async def create_task_sweep_core(
         task = await get_task_for_org_core(
             session, task_id=submission.task_id, org_id=org_id
         )
-        if task.status in (TaskStatus.ANALYZING, TaskStatus.VERDICT_PENDING):
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot append trials while task analysis or verdict is in progress",
-            )
         if submission.run_analysis and not task.run_analysis:
             raise HTTPException(
                 status_code=400,
