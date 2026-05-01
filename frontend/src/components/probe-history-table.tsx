@@ -134,11 +134,34 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
     return res.json();
   };
 
-  const { data, error } = useSWR<ProbeRun[]>(
+  const { data, error, mutate } = useSWR<ProbeRun[]>(
     `${API_URL}/tasks/${taskId}/probe-runs`,
     fetcher,
     { refreshInterval: 5000 },
   );
+
+  async function deleteRun(runId: string) {
+    if (!confirm("Delete this probe run? This cannot be undone.")) return;
+    let token: string | null = null;
+    try {
+      token = await getToken({ template: "oddish" });
+    } catch {
+      // fall through to default session token
+    }
+    if (!token) token = await getToken();
+    const res = await fetch(
+      `${API_URL}/tasks/${taskId}/probe-runs/${runId}`,
+      {
+        method: "DELETE",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      },
+    );
+    if (!res.ok) {
+      alert(`Delete failed: HTTP ${res.status}`);
+      return;
+    }
+    mutate((cur) => (cur ?? []).filter((x) => x.id !== runId), false);
+  }
 
   if (error)
     return (
@@ -189,13 +212,22 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
                   })()}
                 </td>
                 <td className="py-2">
-                  <Link
-                    href={`/tasks/${taskId}/probe/${r.id}`}
-                    className="text-xs underline"
-                    title={r.kind === "service" ? `Service run: ${r.id}` : undefined}
-                  >
-                    View →
-                  </Link>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => deleteRun(r.id)}
+                      className="text-xs text-red-600 underline hover:text-red-700"
+                    >
+                      Del
+                    </button>
+                    <Link
+                      href={`/tasks/${taskId}/probe/${r.id}`}
+                      className="text-xs underline"
+                      title={r.kind === "service" ? `Service run: ${r.id}` : undefined}
+                    >
+                      View →
+                    </Link>
+                  </div>
                 </td>
               </tr>
             ))}

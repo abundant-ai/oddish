@@ -22,6 +22,7 @@ from oddish.core.endpoints import (
     create_task_sweep_core,
     delete_experiment_core,
     delete_task_core,
+    delete_trial_core,
     get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
@@ -409,7 +410,10 @@ async def list_task_probe_runs(
 
         external_rows = (
             await session.execute(
-                select(ExternalProbeRun).where(ExternalProbeRun.task_id == task_id)
+                select(ExternalProbeRun).where(
+                    ExternalProbeRun.task_id == task_id,
+                    ExternalProbeRun.deleted_at.is_(None),
+                )
             )
         ).scalars().all()
 
@@ -535,6 +539,7 @@ async def get_task_probe_run(
         row = await session.get(ExternalProbeRun, run_id)
         if (
             row is None
+            or row.deleted_at is not None
             or row.task_id != task_id
             or (row.org_id and auth.org_id and row.org_id != auth.org_id)
         ):
@@ -602,6 +607,64 @@ async def get_task_probe_run(
         "analysis_error": None,
         "error_message": envelope.get("error"),
     }
+
+
+_LIVE_PROBE_STATUSES = frozenset(
+    {"queued", "provisioning", "running", "verifying", "analyzing"}
+)
+
+
+@router.delete("/tasks/{task_id}/probe-runs/{run_id}")
+async def delete_task_probe_run(
+    task_id: str,
+    run_id: str,
+    request: Request,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> dict:
+    """Delete a probe run.
+
+    Service ids (``pr_*``): best-effort cancel-if-running via the
+    agent-sandbox-service, then soft-delete the local ``ExternalProbeRun``.
+    Legacy trial ids: delegate to ``delete_trial_core`` (and S3 cleanup).
+    """
+    if run_id.startswith("pr_"):
+        async with get_session() as session:
+            row = await session.get(ExternalProbeRun, run_id)
+            if (
+                row is None
+                or row.deleted_at is not None
+                or row.task_id != task_id
+                or (row.org_id and auth.org_id and row.org_id != auth.org_id)
+            ):
+                raise HTTPException(status_code=404, detail="probe run not found")
+
+            client = getattr(request.app.state, "agent_sandbox_client", None)
+            if client is not None:
+                try:
+                    envelope = await client.get_probe(run_id)
+                    if envelope.get("status") in _LIVE_PROBE_STATUSES:
+                        await client.cancel_probe(run_id)
+                except Exception as e:
+                    logger.warning("cancel-on-delete for %s failed: %s", run_id, e)
+
+            row.deleted_at = datetime.now(timezone.utc)
+            await session.commit()
+
+        return {"status": "success", "deleted": run_id}
+
+    async with get_session() as session:
+        result = await delete_trial_core(
+            session, trial_id=run_id, org_id=auth.org_id
+        )
+        await session.commit()
+
+    if result.get("s3_prefixes"):
+        try:
+            await delete_s3_prefixes(result["s3_prefixes"])
+        except Exception:
+            logger.exception("failed to delete S3 artifacts for %s", run_id)
+
+    return {"status": "success", "deleted": result.get("deleted")}
 
 
 # =============================================================================
