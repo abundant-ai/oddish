@@ -89,3 +89,53 @@ def test_endpoint_returns_502_on_generation_error(client, fake_trial):
         resp = client.get("/trials/t-1/trajectory/summary")
     assert resp.status_code == 502
     assert "Summary generation failed" in resp.json()["detail"]
+
+
+def test_endpoint_calls_service_when_client_configured(app_with_stub_auth, fake_trial):
+    """When agent_sandbox_client is on app.state, the route calls the service
+    and returns the service response directly — bypassing local generation."""
+    summary = {"schema_version": "1", "summary": "from-service", "highlights": []}
+
+    fake_client = AsyncMock()
+    fake_client.get_trajectory_summary = AsyncMock(return_value=summary)
+
+    app_with_stub_auth.state.agent_sandbox_client = fake_client
+    client = TestClient(app_with_stub_auth)
+
+    with patch(
+        "api.routers.trials._get_authorized_trial",
+        new=AsyncMock(return_value=fake_trial),
+    ), patch(
+        "api.routers.trials.read_trial_trajectory_summary",
+        new=AsyncMock(side_effect=AssertionError("local generation should not be called")),
+    ):
+        resp = client.get("/trials/t-1/trajectory/summary")
+
+    assert resp.status_code == 200
+    assert resp.json() == summary
+    fake_client.get_trajectory_summary.assert_awaited_once_with(
+        trial_id="t-1", s3_prefix="trials/t-1/"
+    )
+
+
+def test_endpoint_falls_back_to_local_when_service_fails(app_with_stub_auth, fake_trial):
+    """When the service raises, the route falls back to local generation."""
+    summary = {"schema_version": "1", "summary": "local", "highlights": []}
+
+    fake_client = AsyncMock()
+    fake_client.get_trajectory_summary = AsyncMock(side_effect=Exception("service down"))
+
+    app_with_stub_auth.state.agent_sandbox_client = fake_client
+    client = TestClient(app_with_stub_auth)
+
+    with patch(
+        "api.routers.trials._get_authorized_trial",
+        new=AsyncMock(return_value=fake_trial),
+    ), patch(
+        "api.routers.trials.read_trial_trajectory_summary",
+        new=AsyncMock(return_value=summary),
+    ):
+        resp = client.get("/trials/t-1/trajectory/summary")
+
+    assert resp.status_code == 200
+    assert resp.json() == summary
