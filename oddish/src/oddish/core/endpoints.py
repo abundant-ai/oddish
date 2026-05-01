@@ -128,6 +128,8 @@ async def list_tasks_core(
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
+                TrialModel.analysis,
+                TrialModel.harbor_config,
                 TrialModel.input_tokens,
                 TrialModel.cache_tokens,
                 TrialModel.output_tokens,
