@@ -315,6 +315,14 @@ async def create_task_sweep(
             )
             if created_by_user_id:
                 task.created_by_user_id = created_by_user_id
+                # Stamp the experiment's creator at the moment it's first
+                # linked to a task. We only set this on freshly-created
+                # experiments (created_by_user_id is None) so re-running
+                # against an existing experiment doesn't overwrite the
+                # original author.
+                for exp in task.experiments or []:
+                    if exp.created_by_user_id is None:
+                        exp.created_by_user_id = created_by_user_id
 
             await _maybe_publish_experiment(session, task, submission, auth)
 

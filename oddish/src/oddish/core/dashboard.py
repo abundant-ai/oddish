@@ -5,7 +5,18 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, case, func, nulls_last, or_, select
+from sqlalchemy import (
+    Column,
+    MetaData,
+    String,
+    Table,
+    and_,
+    case,
+    func,
+    nulls_last,
+    or_,
+    select,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -25,6 +36,42 @@ from oddish.db import (
 )
 from oddish.queue import get_queue_and_pipeline_stats_with_concurrency
 from oddish.timing import TimingRecorder, elapsed_ms, now
+
+
+# Lightweight reference to the cloud `users` table used to resolve an
+# experiment's stored ``created_by_user_id`` to a display identity. The
+# table only exists in cloud-deployed backends; the OSS/self-hosted path
+# (which calls this module without an ``org_id``) skips the lookup so
+# this stays optional. Defined inline so the OSS package doesn't import
+# from the cloud-only ``backend`` namespace.
+_users_lookup = Table(
+    "users",
+    MetaData(),
+    Column("id", String(64), primary_key=True),
+    Column("email", String(320)),
+    Column("github_username", String(255)),
+)
+
+
+def resolve_dashboard_experiment_author(
+    *,
+    creator: dict[str, str | None] | None,
+    last_github_username: str | None,
+    last_user: str | None,
+) -> tuple[str | None, str]:
+    """Pick the displayed author for an experiment dashboard row.
+
+    The stamped ``created_by_user_id`` (resolved to a UserModel) is
+    authoritative — it represents the principal who first kicked off the
+    experiment. We fall back to the latest-task derivation only when the
+    experiment has no stored creator (historical rows that pre-date the
+    column, or OSS deployments without auth). Returns ``(name, source)``.
+    """
+    if creator and creator.get("email"):
+        return creator["email"], "creator"
+    name = last_github_username or last_user
+    source = "github" if last_github_username else "api"
+    return name, source
 
 
 def _parse_github_meta(raw_github_meta: str | None) -> dict[str, Any] | None:
@@ -224,6 +271,7 @@ async def load_dashboard_experiments(
         select(
             ExperimentModel.id.label("experiment_id"),
             ExperimentModel.name.label("experiment_name"),
+            ExperimentModel.created_by_user_id.label("creator_user_id"),
             case((ExperimentModel.is_public.is_(True), 1), else_=0).label(
                 "experiment_is_public"
             ),
@@ -329,12 +377,53 @@ async def load_dashboard_experiments(
     experiments_has_more = len(paged_rows) > experiments_limit
     page_rows = paged_rows[:experiments_limit]
 
+    # Resolve experiment creators to a display identity. We only do this in
+    # cloud (org-scoped) deployments — the OSS/self-hosted server has no
+    # ``users`` table.
+    creator_lookup: dict[str, dict[str, str | None]] = {}
+    if org_id is not None:
+        creator_ids = sorted(
+            {row["creator_user_id"] for row in page_rows if row["creator_user_id"]}
+        )
+        if creator_ids:
+            user_rows = (
+                (
+                    await session.execute(
+                        select(
+                            _users_lookup.c.id,
+                            _users_lookup.c.email,
+                            _users_lookup.c.github_username,
+                        ).where(_users_lookup.c.id.in_(creator_ids))
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            creator_lookup = {
+                ur["id"]: {
+                    "email": ur["email"],
+                    "github_username": ur["github_username"],
+                }
+                for ur in user_rows
+            }
+
     experiments_response: list[dict[str, Any]] = []
     build_started_at = now()
     for row in page_rows:
         github_meta = _parse_github_meta(row["last_github_meta"])
-        last_author_name = row["last_github_username"] or row["last_user"]
-        last_author_source = "github" if row["last_github_username"] else "api"
+        # Prefer the stamped experiment creator over the latest task's
+        # author. The stored creator is set once at experiment creation
+        # time, so it doesn't drift when someone else appends a rerun.
+        creator = (
+            creator_lookup.get(row["creator_user_id"])
+            if row["creator_user_id"]
+            else None
+        )
+        last_author_name, last_author_source = resolve_dashboard_experiment_author(
+            creator=creator,
+            last_github_username=row["last_github_username"],
+            last_user=row["last_user"],
+        )
         total_trials = int(row["total_trials"] or 0)
         completed_trials = int(row["completed_trials"] or 0)
         failed_trials = int(row["failed_trials"] or 0)
