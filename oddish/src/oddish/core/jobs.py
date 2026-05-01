@@ -137,6 +137,68 @@ async def list_jobs_core(
     )
 
 
+async def list_job_trials_core(
+    session: AsyncSession,
+    *,
+    job_id: str,
+    org_id: str | None,
+    limit: int = 500,
+) -> list[dict]:
+    """Compact list of trials produced by a Job, for the detail page."""
+    where = [JobModel.id == job_id, JobModel.deleted_at.is_(None)]
+    if org_id is not None:
+        where.append(JobModel.org_id == org_id)
+    job = (
+        await session.execute(select(JobModel).where(*where))
+    ).scalar_one_or_none()
+    if job is None:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    rows = (
+        await session.execute(
+            select(
+                TrialModel.id,
+                TrialModel.task_id,
+                TrialModel.task_version_id,
+                TrialModel.status,
+                TrialModel.reward,
+                TrialModel.error_message,
+                TrialModel.started_at,
+                TrialModel.finished_at,
+                TrialModel.created_at,
+                TrialModel.agent,
+                TrialModel.model,
+                TrialModel.provider,
+            )
+            .where(TrialModel.job_id == job_id)
+            .order_by(
+                TrialModel.created_at.desc(),
+                TrialModel.id.desc(),
+            )
+            .limit(max(1, min(limit, 2000)))
+        )
+    ).all()
+    return [
+        {
+            "id": r.id,
+            "task_id": r.task_id,
+            "task_version_id": r.task_version_id,
+            "status": r.status.value if hasattr(r.status, "value") else str(r.status),
+            "reward": r.reward,
+            "error_message": r.error_message,
+            "started_at": r.started_at.isoformat() if r.started_at else None,
+            "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "agent": r.agent,
+            "model": r.model,
+            "provider": r.provider,
+        }
+        for r in rows
+    ]
+
+
 async def get_job_core(
     session: AsyncSession, *, job_id: str, org_id: str | None
 ) -> JobResponse:
