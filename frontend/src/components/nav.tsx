@@ -20,6 +20,7 @@ import {
   FileText,
   ListChecks,
   LogOut,
+  Plus,
   Shield,
   User,
 } from "lucide-react";
@@ -90,6 +91,19 @@ export function Nav() {
 
           {/* Right side - consolidated settings menu */}
           <div className="flex items-center gap-2">
+            <Show when="signed-in">
+              <Button
+                variant="default"
+                size="sm"
+                asChild
+                className="gap-2"
+              >
+                <Link href="/experiments/new" className="flex items-center gap-2">
+                  <Plus className="h-4 w-4" />
+                  <span className="hidden sm:inline">New experiment</span>
+                </Link>
+              </Button>
+            </Show>
             <ThemeToggle />
             <Show when="signed-in">
               <Button
