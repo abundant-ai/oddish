@@ -387,6 +387,20 @@ export interface Trajectory {
   final_metrics: FinalMetrics | null;
 }
 
+export interface TrajectoryHighlight {
+  step_id: number;
+  title: string;
+  why: string;
+}
+
+export interface TrajectorySummary {
+  schema_version: string;
+  model: string;
+  generated_at: string;
+  summary: string;
+  highlights: TrajectoryHighlight[];
+}
+
 // =============================================================================
 // Admin Dashboard Types
 // =============================================================================
