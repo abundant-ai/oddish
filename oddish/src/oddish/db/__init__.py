@@ -21,6 +21,7 @@ from oddish.db.models import (
     generate_id,
     utcnow,
 )
+from oddish.db.external_probe_runs import ExternalProbeRun
 
 # Connection
 from oddish.db.connection import (
@@ -57,6 +58,7 @@ __all__ = [
     "WorkerJobStatus",
     # ORM Models
     "ExperimentModel",
+    "ExternalProbeRun",
     "QueueSlotModel",
     "TaskModel",
     "TaskVersionModel",

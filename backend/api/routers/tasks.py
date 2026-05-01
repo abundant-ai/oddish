@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from datetime import datetime, timezone
 import logging
 from typing import Annotated
 
@@ -44,7 +45,9 @@ from oddish.core.tasks import (
 )
 from oddish.db import (
     ExperimentModel,
+    ExternalProbeRun,
     TaskModel,
+    TrialModel,
     get_session,
 )
 from oddish.db.storage import delete_s3_prefixes
@@ -201,10 +204,20 @@ async def finalize_task_upload(
 @router.post("/tasks/sweep", response_model=TaskResponse)
 async def create_task_sweep(
     submission: TaskSweepSubmission,
+    request: Request,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> TaskResponse:
-    """Submit a task sweep - expands a task_id into many trials."""
+    """Submit a task sweep - expands a task_id into many trials.
+
+    When ``extra_instructions`` is set the submission is treated as a probe
+    and forwarded to the agent-sandbox-service.  An ``ExternalProbeRun`` row
+    is written locally so the workbench history can surface the run; no
+    ``TrialModel`` rows are created.
+    """
     auth.require_scope(APIKeyScope.TASKS)
+
+    if submission.extra_instructions:
+        return await _create_probe_sweep(submission, request, auth)
 
     from oddish.core.sweeps import validate_sweep_submission
 
@@ -252,6 +265,161 @@ async def create_task_sweep(
             created_at=task.created_at,
             new_trial_ids=[t.id for t in response_trials],
         )
+
+
+async def _create_probe_sweep(
+    submission: TaskSweepSubmission,
+    request: Request,
+    auth: AuthContext,
+) -> TaskResponse:
+    """Forward a probe submission to the agent-sandbox-service.
+
+    Skips local trial creation entirely.  Writes one ``ExternalProbeRun``
+    row so the workbench history helper can surface the run later.
+    Returns a ``TaskResponse`` shaped from the existing ``TaskModel`` row
+    (which must already exist — the task was uploaded before the sweep).
+    """
+    from oddish.db.models import TaskStatus, Priority
+
+    client = getattr(request.app.state, "agent_sandbox_client", None)
+    if client is None:
+        raise HTTPException(
+            status_code=503, detail="agent-sandbox-service not configured"
+        )
+
+    # Pick agent/model from first config; fall back to defaults used by the
+    # service when the submission carries no explicit overrides.
+    first_config = submission.configs[0] if submission.configs else None
+    agent = (first_config.agent if first_config else None) or "claude-code"
+    model = (first_config.model if first_config else None) or "claude-sonnet-4-6"
+
+    probe_run_id = await client.submit_probe(
+        org_id=auth.org_id or "",
+        user_id=getattr(auth, "user_id", None),
+        task_id=submission.task_id,
+        agent=agent,
+        model=model,
+        extra_instructions=submission.extra_instructions or "",
+        timeout_minutes=30,
+    )
+
+    async with get_session() as session:
+        session.add(
+            ExternalProbeRun(
+                id=probe_run_id,
+                org_id=auth.org_id,
+                user_id=getattr(auth, "user_id", None),
+                task_id=submission.task_id,
+            )
+        )
+        # Fetch the task so we can return a well-shaped TaskResponse.
+        task = await session.get(TaskModel, submission.task_id)
+        await session.commit()
+
+    if task is None:
+        # Task row not found — return a minimal valid response.
+        return TaskResponse(
+            id=submission.task_id,
+            name=submission.name or submission.task_id,
+            status=TaskStatus.RUNNING,
+            priority=submission.priority,
+            trials_count=1,
+            providers={agent: 1},
+            experiment_id=None,
+            experiment_name=None,
+            created_at=datetime.now(timezone.utc),
+            new_trial_ids=[probe_run_id],
+        )
+
+    primary = task.experiments[0] if task.experiments else None
+    return TaskResponse(
+        id=task.id,
+        name=task.name,
+        status=task.status,
+        priority=task.priority,
+        trials_count=1,
+        providers={agent: 1},
+        experiment_id=primary.id if primary else None,
+        experiment_name=primary.name if primary else None,
+        created_at=task.created_at,
+        new_trial_ids=[probe_run_id],
+    )
+
+
+async def list_task_probe_runs(
+    task_id: str,
+    auth: AuthContext,
+    request: Request,
+) -> list[dict]:
+    """Union of legacy probe trials and service-routed probe runs.
+
+    Legacy rows: ``TrialModel`` rows where ``harbor_config.mode == 'probe'``.
+    Service rows: ``ExternalProbeRun`` rows, fetched fresh from the service.
+
+    Returns a list of dicts sorted by ``created_at`` descending.
+    """
+    out: list[dict] = []
+
+    async with get_session() as session:
+        legacy_rows = (
+            await session.execute(
+                select(TrialModel).where(TrialModel.task_id == task_id)
+            )
+        ).scalars().all()
+
+        for t in legacy_rows:
+            if (t.harbor_config or {}).get("mode") != "probe":
+                continue
+            out.append(
+                {
+                    "id": t.id,
+                    "kind": "legacy",
+                    "status": t.analysis_status.value
+                    if t.analysis_status
+                    else "unknown",
+                    "task_id": t.task_id,
+                    "created_at": t.created_at,
+                    "analyzer_result": t.analysis,
+                }
+            )
+
+        external_rows = (
+            await session.execute(
+                select(ExternalProbeRun).where(ExternalProbeRun.task_id == task_id)
+            )
+        ).scalars().all()
+
+    client = getattr(request.app.state, "agent_sandbox_client", None)
+    if client is not None and external_rows:
+        results = await asyncio.gather(
+            *[client.get_probe(e.id) for e in external_rows],
+            return_exceptions=True,
+        )
+        for envelope in results:
+            if isinstance(envelope, Exception):
+                logger.warning("get_probe failed: %s", envelope)
+                continue
+            out.append(
+                {
+                    "id": envelope["probe_run_id"],
+                    "kind": "service",
+                    "status": envelope.get("status", "unknown"),
+                    "task_id": envelope.get("task_id", task_id),
+                    "created_at": envelope.get("created_at"),
+                    "analyzer_result": envelope.get("analyzer_result"),
+                }
+            )
+
+    def _sort_key(r: dict) -> str:
+        ca = r.get("created_at")
+        if ca is None:
+            return ""
+        if isinstance(ca, datetime):
+            return ca.isoformat()
+        return str(ca)
+
+    out.sort(key=_sort_key, reverse=True)
+    return out
 
 
 # =============================================================================

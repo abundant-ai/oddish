@@ -15,6 +15,7 @@ sys.path.insert(0, str(src_path))
 # Import your models
 from oddish.config import settings  # noqa: E402
 from oddish.db.models import Base  # noqa: E402
+import oddish.db.external_probe_runs  # noqa: E402, F401 — registers ExternalProbeRun with Base.metadata
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
