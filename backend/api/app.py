@@ -152,6 +152,7 @@ def create_app() -> FastAPI:
         dashboard,
         github_webhooks,
         orgs,
+        probe_presets,
         public,
         tasks,
         trials,
@@ -166,6 +167,7 @@ def create_app() -> FastAPI:
     api.include_router(trials.router)
     api.include_router(public.router)
     api.include_router(admin.router)
+    api.include_router(probe_presets.router)
 
     api.include_router(cc_chat.router)
 

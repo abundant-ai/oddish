@@ -22,6 +22,7 @@ from oddish.db.models import (
     utcnow,
 )
 from oddish.db.external_probe_runs import ExternalProbeRun
+from oddish.db.probe_presets import ProbePreset
 
 # Connection
 from oddish.db.connection import (

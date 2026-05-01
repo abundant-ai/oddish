@@ -1,60 +1,75 @@
-import { NextResponse } from "next/server";
-import { promises as fs } from "node:fs";
-import path from "node:path";
+import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
+import {
+  getAuthHeaders,
+  getBackendUrl,
+  getClerkToken,
+} from "@/lib/backend-config";
 
-// process.cwd() is the frontend dir when running `pnpm dev`, so go up one
-// level to land at the repo root. Allow an env override for non-standard
-// invocations (e.g. running from a different working dir).
-const PRESETS_PATH =
-  process.env.ODDISH_PROBE_PRESETS_PATH ??
-  path.join(process.cwd(), "..", "probe-presets.json");
+async function _token() {
+  const authObj = await auth();
+  if (!authObj || !authObj.userId) return null;
+  return getClerkToken(authObj.getToken);
+}
 
 export async function GET() {
+  const token = await _token();
+  if (!token) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   try {
-    const raw = await fs.readFile(PRESETS_PATH, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
+    const res = await fetch(getBackendUrl("probe-presets"), {
+      cache: "no-store",
+      headers: getAuthHeaders(token),
+    });
+    if (!res.ok) {
+      const errorText = await res.text();
       return NextResponse.json(
-        { error: "presets file is not an array" },
-        { status: 500 },
+        { error: "Failed to fetch probe presets", details: errorText },
+        { status: res.status },
       );
     }
-    return NextResponse.json(parsed);
-  } catch (err: unknown) {
-    if (
-      err &&
-      typeof err === "object" &&
-      "code" in err &&
-      (err as { code?: string }).code === "ENOENT"
-    ) {
-      // File doesn't exist yet — return empty array
-      return NextResponse.json([]);
-    }
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    return NextResponse.json(await res.json());
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Unknown error" },
+      { status: 503 },
+    );
   }
 }
 
-export async function PUT(req: Request) {
+export async function PUT(req: NextRequest) {
+  const token = await _token();
+  if (!token) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   let body: unknown;
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "body must be JSON" }, { status: 400 });
   }
-  if (!Array.isArray(body)) {
-    return NextResponse.json(
-      { error: "body must be an array of presets" },
-      { status: 400 },
-    );
-  }
   try {
-    await fs.writeFile(
-      PRESETS_PATH,
-      JSON.stringify(body, null, 2) + "\n",
-      "utf-8",
+    const res = await fetch(getBackendUrl("probe-presets"), {
+      method: "PUT",
+      headers: {
+        ...getAuthHeaders(token),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const errorText = await res.text();
+      return NextResponse.json(
+        { error: "Failed to save probe presets", details: errorText },
+        { status: res.status },
+      );
+    }
+    return NextResponse.json(await res.json());
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Unknown error" },
+      { status: 503 },
     );
-    return NextResponse.json({ ok: true, count: body.length });
-  } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
