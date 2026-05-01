@@ -230,7 +230,7 @@ Common flags:
   filter datasets (task-upload mode)
 - `-M, --message` attaches a description to the uploaded task version
   (task-upload mode)
-- `-u, --user` attributes the created task row to a user (defaults to OS username)
+- `-u, --user` attributes the created task row to a user (defaults to your authenticated identity — Clerk-linked email for API keys / dashboard sessions)
 - `-P, --priority` sets the task priority (`low` or `high`) (task-upload mode)
 - `--task` pins imported trials to an existing task ID (trial-import mode)
 - `-E, --experiment` pins imported trials to a new or existing

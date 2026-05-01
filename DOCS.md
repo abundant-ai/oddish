@@ -69,8 +69,8 @@ oddish run ./my-task -c sweep.yaml
 - `--env`, `-e` - Execution environment: `docker`, `daytona`, `e2b`, `modal`, `runloop`, or `gke`
 - `--priority`, `-P TEXT` - Queue priority, typically `low` or `high`
 - `--experiment`, `-E TEXT` - Reuse or create an experiment ID/name
-- `--user`, `-u TEXT` - Override the user name attached to the run
-- `--github-user`, `-G TEXT` - GitHub user attribution for CI metadata
+- `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.
+- `--github-user`, `-G TEXT` - GitHub user attribution for CI metadata. When omitted, the backend auto-fills this from the authenticated user's Clerk-linked GitHub username (if any) so CI-style attribution still works.
 - `--github-meta TEXT` - JSON metadata blob to attach to the task
 - `--publish` - Publish the experiment for public read-only access
 - `--watch/--no-watch`, `-w` - Watch progress after submission; enabled by default
