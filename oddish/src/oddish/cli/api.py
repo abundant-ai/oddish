@@ -533,7 +533,7 @@ def submit_sweep(
     task_id: str,
     configs: list[dict],
     environment: EnvironmentType | None,
-    user: str,
+    user: str | None,
     priority: str,
     experiment_id: str | None,
     run_analysis: bool = False,
@@ -593,10 +593,11 @@ def submit_sweep(
     payload: dict = {
         "task_id": task_id,
         "configs": configs,
-        "user": user,
         "priority": priority,
         "run_analysis": run_analysis,
     }
+    if user:
+        payload["user"] = user
     if experiment_id:
         payload["experiment_id"] = experiment_id
     if env_value is not None:

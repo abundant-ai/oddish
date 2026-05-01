@@ -110,6 +110,85 @@ def _apply_github_attribution(submission: TaskSweepSubmission) -> None:
         submission.tags.setdefault("github_username", submission.github_username)
 
 
+async def _resolve_actor_user(
+    session: AsyncSession,
+    auth: AuthContext,
+) -> UserModel | None:
+    """Return the UserModel of the authenticating principal, or None.
+
+    The auth dependency caches lightweight identity tuples — on cache hits
+    the ORM ``user`` / ``api_key`` objects are stripped and only the IDs are
+    available, so we lazy-load via ``session.get`` when needed.
+    """
+    if auth.user is not None:
+        return auth.user
+    if auth.user_id:
+        user = await session.get(UserModel, auth.user_id)
+        if user is not None:
+            return user
+    if auth.api_key_id:
+        api_key = auth.api_key or await session.get(APIKeyModel, auth.api_key_id)
+        if api_key and api_key.created_by_user_id:
+            return await session.get(UserModel, api_key.created_by_user_id)
+    return None
+
+
+async def _resolve_actor_user_string(
+    session: AsyncSession,
+    auth: AuthContext,
+    explicit_user: str | None,
+    explicit_github_username: str | None,
+) -> str:
+    """Resolve a non-empty author string from the authenticated actor.
+
+    Precedence:
+      1. explicit_user (e.g. --user)
+      2. explicit_github_username (e.g. --github-user)
+      3. actor's UserModel.email (the stable Clerk-backed identity)
+      4. api_key.name (service-account API keys with no linked user)
+      5. "unknown" (so tasks.user is never empty)
+    """
+    if explicit_user:
+        return explicit_user
+    if explicit_github_username:
+        return explicit_github_username
+
+    actor = await _resolve_actor_user(session, auth)
+    if actor and actor.email:
+        return actor.email
+
+    if auth.api_key_id:
+        api_key = auth.api_key or await session.get(APIKeyModel, auth.api_key_id)
+        if api_key and api_key.name:
+            return api_key.name
+
+    return "unknown"
+
+
+async def _resolve_submission_identity(
+    session: AsyncSession,
+    submission: TaskSweepSubmission,
+    auth: AuthContext,
+) -> None:
+    """Fill submission.user and submission.github_username from the authenticated
+    actor when missing. Mutates submission in place.
+
+    `github_username` is only auto-filled from UserModel.github_username so the
+    dashboard's `source: "github"` attribution stays meaningful.
+    """
+    if not submission.github_username:
+        actor = await _resolve_actor_user(session, auth)
+        if actor and actor.github_username:
+            submission.github_username = actor.github_username
+
+    submission.user = await _resolve_actor_user_string(
+        session,
+        auth,
+        explicit_user=submission.user,
+        explicit_github_username=submission.github_username,
+    )
+
+
 async def _resolve_created_by_user_id(
     session: AsyncSession,
     submission: TaskSweepSubmission,
@@ -181,6 +260,17 @@ async def finalize_task_upload(
 ) -> UploadResponse:
     """Finalize a direct task upload after the client PUTs the archive to S3."""
     auth.require_scope(APIKeyScope.TASKS)
+
+    resolved_user = payload.user
+    if payload.register_task and not resolved_user:
+        async with get_session() as session:
+            resolved_user = await _resolve_actor_user_string(
+                session,
+                auth,
+                explicit_user=payload.user,
+                explicit_github_username=None,
+            )
+
     return await complete_task_upload(
         task_id=payload.task_id,
         task_name=payload.name,
@@ -190,7 +280,7 @@ async def finalize_task_upload(
         org_id=auth.org_id,
         created_by_user_id=auth.user_id,
         register=payload.register_task,
-        user=payload.user,
+        user=resolved_user,
         priority=payload.priority,
     )
 
@@ -206,9 +296,11 @@ async def create_task_sweep(
     from oddish.core.sweeps import validate_sweep_submission
 
     validate_sweep_submission(submission)
-    _apply_github_attribution(submission)
 
     async with get_session() as session:
+        await _resolve_submission_identity(session, submission, auth)
+        _apply_github_attribution(submission)
+
         task, new_trials, is_append, experiment = await create_task_sweep_core(
             session,
             submission=submission,

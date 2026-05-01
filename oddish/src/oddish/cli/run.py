@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import getpass
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -160,7 +159,7 @@ def run(
         typer.Option(
             "--user",
             "-u",
-            help="User name (defaults to OS username)",
+            help="Override the task author (defaults to your authenticated identity).",
         ),
     ] = None,
     github_user: Annotated[
@@ -457,10 +456,6 @@ def run(
     # Ensure each run uses a single experiment unless specified.
     if not experiment_id and not existing_task_ids:
         experiment_id = generate_experiment_name()
-
-    # Default user to OS username
-    if not user:
-        user = getpass.getuser()
 
     if environment is None and not existing_task_ids:
         environment = EnvironmentType.MODAL if is_modal_api else EnvironmentType.DOCKER
