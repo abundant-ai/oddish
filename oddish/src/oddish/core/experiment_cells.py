@@ -234,6 +234,41 @@ async def resolve_experiment_core(
     )
 
 
+async def create_experiment_core(
+    session: AsyncSession,
+    *,
+    name: str,
+    cells: list[ExperimentCellCreateRequest],
+    org_id: str | None,
+) -> ResolvedExperimentResponse:
+    """Create a new experiment with optional initial cells.
+
+    The experiment owns no trials and no tasks directly -- only its
+    cells. Returns the resolved view so the caller can render the
+    matrix immediately.
+    """
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(
+            status_code=400, detail="Experiment name cannot be empty"
+        )
+    exp = ExperimentModel(name=name, org_id=org_id)
+    session.add(exp)
+    await session.flush()
+
+    for cell in cells:
+        await add_cell_core(
+            session,
+            experiment_id=exp.id,
+            payload=cell,
+            org_id=org_id,
+        )
+
+    return await resolve_experiment_core(
+        session, experiment_id=exp.id, org_id=org_id
+    )
+
+
 async def add_cell_core(
     session: AsyncSession,
     *,
