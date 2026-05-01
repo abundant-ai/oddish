@@ -11,6 +11,7 @@ from oddish.core.experiment_cells import (
     delete_cell_core,
     list_cell_trials_core,
     list_cells_core,
+    list_experiments_core,
     resolve_experiment_core,
     update_cell_core,
 )
@@ -28,6 +29,20 @@ from auth import APIKeyScope, AuthContext, require_admin, require_auth
 
 
 router = APIRouter(tags=["Experiments"])
+
+
+@router.get("/experiments")
+async def list_experiments(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    """List experiments visible to the org. Lightweight payload for pickers."""
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        return await list_experiments_core(
+            session, org_id=auth.org_id, limit=limit, offset=offset
+        )
 
 
 @router.post(

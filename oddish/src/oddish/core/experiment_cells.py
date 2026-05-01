@@ -358,6 +358,39 @@ async def update_cell_core(
     return _cell_to_response(cell)
 
 
+async def list_experiments_core(
+    session: AsyncSession,
+    *,
+    org_id: str | None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List experiments visible to the org. Used by the FE pickers."""
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    where = []
+    if org_id is not None:
+        where.append(ExperimentModel.org_id == org_id)
+    rows = (
+        await session.execute(
+            select(ExperimentModel)
+            .where(*where)
+            .order_by(ExperimentModel.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": e.id,
+            "name": e.name,
+            "is_public": e.is_public,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in rows
+    ]
+
+
 async def list_cell_trials_core(
     session: AsyncSession,
     *,
