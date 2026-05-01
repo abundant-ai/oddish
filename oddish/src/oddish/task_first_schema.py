@@ -12,20 +12,20 @@ class TaskVersion(BaseModel):
     task_id: str
     version: int
     content_hash: str
+    bundle_s3_key: str
     created_at: datetime
 
 
 class Agent(BaseModel):
-    id: str
-    name: str
-    model: str | None
-    config_hash: str
+    harness: str
+    model: str
+    provider: str
 
 
 class Trial(BaseModel):
     id: str
     task_version_id: str
-    agent_id: str
+    agent: Agent
     job_id: str | None
     reward: float | None
     created_at: datetime
@@ -39,7 +39,7 @@ class Job(BaseModel):
 
 class JobCell(BaseModel):
     task_version_id: str
-    agent_id: str
+    agent: Agent
     n_trials: int
 
 
@@ -51,5 +51,5 @@ class Experiment(BaseModel):
 
 class ExperimentCell(BaseModel):
     task_version_id: str
-    agent_id: str
+    agent: Agent
     target_n_trials: int
