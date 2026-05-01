@@ -269,3 +269,21 @@ async def test_generate_raises_when_model_returns_non_object_json():
     with patch("anthropic.AsyncAnthropic", return_value=fake):
         with pytest.raises(SummaryGenerationError):
             await generate(_trajectory_with_steps([1]))
+
+
+@pytest.mark.asyncio
+async def test_generate_wraps_anthropic_errors_in_summary_generation_error():
+    """A non-JSON failure (e.g. AuthenticationError, network error) should
+    surface as SummaryGenerationError so the endpoint can return 502."""
+    from api.services.summarize_trajectory import (
+        SummaryGenerationError,
+        generate,
+    )
+
+    fake_client = MagicMock()
+    fake_client.messages.create = AsyncMock(
+        side_effect=RuntimeError("anthropic auth failed")
+    )
+    with patch("anthropic.AsyncAnthropic", return_value=fake_client):
+        with pytest.raises(SummaryGenerationError):
+            await generate(_trajectory_with_steps([1]))

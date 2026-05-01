@@ -152,3 +152,29 @@ async def test_write_failure_after_generate_still_returns_summary():
     ):
         result = await read_trial_trajectory_summary(_trial("t-s3-fail"))
     assert result == fake_summary
+
+
+@pytest.mark.asyncio
+async def test_read_returns_none_for_unfinished_trial():
+    """Unfinished trials must not trigger generation, so no partial summary
+    can be persisted to the canonical S3 key and survive into a retry."""
+    from oddish.core.trial_io import (
+        _TRAJECTORY_SUMMARY_CACHE,
+        read_trial_trajectory_summary,
+    )
+
+    _TRAJECTORY_SUMMARY_CACHE.clear()
+    storage = _fake_storage_with_text(None)
+
+    with patch("oddish.core.trial_io.get_storage_client", return_value=storage), patch(
+        "oddish.core.trial_io._read_trial_trajectory_uncached",
+        new=AsyncMock(return_value={"steps": [{"step_id": 1}]}),
+    ), patch(
+        "api.services.summarize_trajectory.generate",
+        new=AsyncMock(return_value={"summary": "x"}),
+    ) as mock_gen:
+        result = await read_trial_trajectory_summary(_trial("t-running", finished=False))
+
+    assert result is None
+    assert mock_gen.await_count == 0
+    storage.upload_bytes.assert_not_awaited()

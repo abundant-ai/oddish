@@ -49,6 +49,7 @@ export function TrajectorySummary({
   }
 
   if (error) {
+    if ((error as { status?: number }).status === 404) return null;
     return (
       <Card className="my-3 border-red-200">
         <CardHeader className="pb-2">
