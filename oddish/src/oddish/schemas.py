@@ -557,6 +557,37 @@ class ExperimentUpdateResponse(BaseModel):
     name: str
 
 
+class JobResponse(BaseModel):
+    """One row in the user-visible jobs list.
+
+    A Job groups the trials produced by a single submission. Aggregate
+    progress is computed on read by joining ``worker_jobs`` rows.
+    """
+
+    id: str
+    kind: str
+    name: str | None = None
+    triggered_by_experiment_id: str | None = None
+    launched_by_user_id: str | None = None
+    launched_at: datetime
+    finished_at: datetime | None = None
+    org_id: str | None = None
+
+    # Aggregate counts derived from joined trials. Cheap to compute; we
+    # don't denormalize because there's no single source of truth.
+    trial_count: int = 0
+    succeeded_trial_count: int = 0
+    failed_trial_count: int = 0
+    running_trial_count: int = 0
+
+
+class JobListResponse(BaseModel):
+    items: list[JobResponse]
+    limit: int
+    offset: int
+    has_more: bool
+
+
 class TaskBrowseExperiment(BaseModel):
     id: str
     name: str
