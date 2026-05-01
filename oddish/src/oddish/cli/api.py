@@ -334,17 +334,41 @@ def _upload_to_presigned_url(
 ) -> None:
     upload_headers = dict(headers)
     upload_headers.setdefault("Content-Length", str(tarball_path.stat().st_size))
+    retry_status_codes = {408, 425, 429, 500, 502, 503, 504}
+    max_attempts = 3
+
     with httpx.Client(timeout=600.0, follow_redirects=True) as upload_client:
-        response = upload_client.put(
-            url,
-            headers=upload_headers,
-            content=tarball_path.read_bytes(),
-        )
-    if response.status_code not in {200, 201, 204}:
-        error_console.print(
-            f"[red]Failed to upload task directly to storage:[/red] {response.text}"
-        )
-        raise typer.Exit(1)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with tarball_path.open("rb") as tarball:
+                    response = upload_client.put(
+                        url,
+                        headers=upload_headers,
+                        content=tarball,
+                    )
+            except httpx.TransportError as exc:
+                if attempt >= max_attempts:
+                    error_console.print(
+                        "[red]Failed to upload task directly to storage after "
+                        f"{max_attempts} attempts:[/red] {exc}"
+                    )
+                    raise typer.Exit(1) from exc
+                time.sleep(min(2 ** (attempt - 1), 5))
+                continue
+
+            if response.status_code in {200, 201, 204}:
+                return
+
+            if (
+                response.status_code not in retry_status_codes
+                or attempt >= max_attempts
+            ):
+                error_console.print(
+                    f"[red]Failed to upload task directly to storage:[/red] {response.text}"
+                )
+                raise typer.Exit(1)
+
+            time.sleep(min(2 ** (attempt - 1), 5))
 
 
 def upload_task(
