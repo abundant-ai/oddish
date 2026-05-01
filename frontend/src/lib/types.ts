@@ -533,3 +533,67 @@ export interface PublicExperimentInfo {
   name: string;
   public_token: string;
 }
+
+// =============================================================================
+// Task-first model (P1 / P3)
+// =============================================================================
+
+export interface JobSummary {
+  id: string;
+  kind: "validation" | "experiment_backfill" | "ad_hoc" | string;
+  name: string | null;
+  triggered_by_experiment_id: string | null;
+  launched_by_user_id: string | null;
+  launched_at: string;
+  finished_at: string | null;
+  org_id: string | null;
+  trial_count: number;
+  succeeded_trial_count: number;
+  failed_trial_count: number;
+  running_trial_count: number;
+}
+
+export interface JobListResponse {
+  items: JobSummary[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+export interface ExperimentCellAgent {
+  harness: string;
+  model: string | null;
+  provider: string;
+  equivalence_key: string;
+}
+
+export interface ExperimentCell {
+  id: string;
+  task_version_id: string;
+  target_n_trials: number;
+  agent: ExperimentCellAgent;
+}
+
+export interface ResolvedExperimentCell {
+  id: string;
+  task_version_id: string;
+  task_id: string;
+  task_name: string | null;
+  task_version: number | null;
+  target_n_trials: number;
+  agent: ExperimentCellAgent;
+  have_n_total: number;
+  have_n_successful: number;
+  have_n_failed: number;
+  have_n_running: number;
+  gap: number;
+  mean_reward: number | null;
+  last_run_at: string | null;
+}
+
+export interface ResolvedExperiment {
+  experiment_id: string;
+  experiment_name: string;
+  cells: ResolvedExperimentCell[];
+  total_gap: number;
+}
