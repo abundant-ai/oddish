@@ -542,7 +542,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
               </p>
             ) : null}
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
             <label className="block">
               <span className="text-sm font-medium">Name</span>
               <input
