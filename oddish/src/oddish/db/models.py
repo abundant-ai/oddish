@@ -537,10 +537,14 @@ class TrialModel(TimestampedMixin, Base):
     task_version_id: Mapped[str | None] = mapped_column(
         String(128), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
     )
-    experiment_id: Mapped[str] = mapped_column(
+    # P5 made this nullable; writers still populate it during the bake
+    # period so existing readers keep working. The column will be
+    # dropped (along with ``task_experiments``) in a follow-up
+    # migration once writers stop writing it.
+    experiment_id: Mapped[str | None] = mapped_column(
         String(64),
         ForeignKey("experiments.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     # User-visible batch this trial was produced by. Nullable because it
