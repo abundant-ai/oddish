@@ -172,6 +172,7 @@ function CellTrialsDialog({
                   <TableHead>Reward</TableHead>
                   <TableHead>Finished</TableHead>
                   <TableHead>Error</TableHead>
+                  <TableHead>Inspect</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -203,6 +204,34 @@ function CellTrialsDialog({
                     </TableCell>
                     <TableCell className="max-w-[28ch] truncate text-xs text-rose-600 dark:text-rose-400">
                       {t.error_message ?? ""}
+                    </TableCell>
+                    <TableCell className="space-x-1 whitespace-nowrap text-[11px]">
+                      <a
+                        className="underline-offset-2 hover:underline"
+                        href={`/api/trials/${encodeURIComponent(t.id)}/logs`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        logs
+                      </a>
+                      <span>·</span>
+                      <a
+                        className="underline-offset-2 hover:underline"
+                        href={`/api/trials/${encodeURIComponent(t.id)}/result`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        result
+                      </a>
+                      <span>·</span>
+                      <a
+                        className="underline-offset-2 hover:underline"
+                        href={`/api/trials/${encodeURIComponent(t.id)}/trajectory`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        trajectory
+                      </a>
                     </TableCell>
                   </TableRow>
                 ))}

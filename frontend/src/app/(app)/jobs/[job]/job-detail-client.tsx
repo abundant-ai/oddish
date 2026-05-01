@@ -170,6 +170,7 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
                 <TableHead>Status</TableHead>
                 <TableHead>Reward</TableHead>
                 <TableHead>Finished</TableHead>
+                <TableHead>Inspect</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -200,6 +201,34 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
                     {t.finished_at
                       ? new Date(t.finished_at).toLocaleString()
                       : "—"}
+                  </TableCell>
+                  <TableCell className="space-x-1 whitespace-nowrap text-[11px]">
+                    <a
+                      className="underline-offset-2 hover:underline"
+                      href={`/api/trials/${encodeURIComponent(t.id)}/logs`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      logs
+                    </a>
+                    <span>·</span>
+                    <a
+                      className="underline-offset-2 hover:underline"
+                      href={`/api/trials/${encodeURIComponent(t.id)}/result`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      result
+                    </a>
+                    <span>·</span>
+                    <a
+                      className="underline-offset-2 hover:underline"
+                      href={`/api/trials/${encodeURIComponent(t.id)}/trajectory`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      trajectory
+                    </a>
                   </TableCell>
                 </TableRow>
               ))}
