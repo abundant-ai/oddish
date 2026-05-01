@@ -12,6 +12,7 @@ from oddish.db.models import (
     WorkerJobKind,
     WorkerJobStatus,
     # ORM Models
+    ExperimentCellModel,
     ExperimentModel,
     JobModel,
     TaskModel,
@@ -59,6 +60,7 @@ __all__ = [
     "WorkerJobKind",
     "WorkerJobStatus",
     # ORM Models
+    "ExperimentCellModel",
     "ExperimentModel",
     "JobModel",
     "QueueSlotModel",
