@@ -11,6 +11,12 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ExperimentShareButton } from "@/components/experiment-share-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentCellMatrix } from "@/components/experiment-cell-matrix";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 import type { Task, Trial } from "@/lib/types";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
@@ -432,14 +438,21 @@ export function ExperimentClientPage({
           </AlertDescription>
         </Alert>
       ) : (
-        <>
-          <div className="rounded-md border bg-card p-4">
-            <ExperimentCellMatrix
-              experimentId={experimentId}
-              canEdit={canManageExperimentShare}
-            />
-          </div>
-          <ExperimentDetailView
+        <Tabs defaultValue="cells" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="cells">Cells</TabsTrigger>
+            <TabsTrigger value="trials">Trials (legacy)</TabsTrigger>
+          </TabsList>
+          <TabsContent value="cells" className="mt-0">
+            <div className="rounded-md border bg-card p-4">
+              <ExperimentCellMatrix
+                experimentId={experimentId}
+                canEdit={canManageExperimentShare}
+              />
+            </div>
+          </TabsContent>
+          <TabsContent value="trials" className="mt-0">
+            <ExperimentDetailView
           experimentId={experimentId}
           tasksForExperiment={tasksForExperiment}
           isLoading={isLoading}
@@ -583,7 +596,8 @@ export function ExperimentClientPage({
           onTrialDelete={handleDeleteTrial}
           onRerun={refreshTaskPages}
         />
-        </>
+          </TabsContent>
+        </Tabs>
       )}
     </div>
   );
