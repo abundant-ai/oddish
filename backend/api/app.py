@@ -70,6 +70,8 @@ async def lifespan(_api: FastAPI):
     `metadata.create_all()`. Avoiding a startup-time DB handshake keeps the
     ASGI app from hard-failing when the Supabase pooler is briefly unavailable.
     """
+    from api.services.agent_sandbox_client import AgentSandboxClient
+
     Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
 
     role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
@@ -81,28 +83,27 @@ async def lifespan(_api: FastAPI):
     except Exception as exc:
         logger.warning("orphan reaper failed at startup: %s", exc)
 
-    cc_orch = _try_get_cc_chat_orchestrator()
-    if cc_orch is not None:
-        print("[cc_chat] lifespan startup: starting sweeper", flush=True)
-        cc_orch.start_sweeper()
+    if settings.agent_sandbox_service_url:
+        _api.state.agent_sandbox_client = AgentSandboxClient(
+            base_url=settings.agent_sandbox_service_url,
+            api_key=settings.agent_sandbox_service_api_key,
+        )
+        print("[agent_sandbox] lifespan startup: client initialized", flush=True)
     else:
         print(
-            "[cc_chat] lifespan startup: orchestrator NOT initialized; "
-            "sweeper + close_all hooks will not run",
+            "[agent_sandbox] lifespan startup: ODDISH_AGENT_SANDBOX_SERVICE_URL not set; "
+            "cc-chat proxy endpoints will return 503",
             flush=True,
         )
 
     yield
 
-    if cc_orch is not None:
+    agent_sandbox_client = getattr(_api.state, "agent_sandbox_client", None)
+    if agent_sandbox_client is not None:
         try:
-            await cc_orch.stop_sweeper()
+            await agent_sandbox_client.aclose()
         except Exception:
-            logger.exception("cc_chat: stop_sweeper raised")
-        try:
-            await cc_orch.close_all()
-        except Exception:
-            logger.exception("cc_chat: close_all raised")
+            logger.exception("agent_sandbox: aclose raised")
 
     role_defaults_task.cancel()
     try:
@@ -114,16 +115,6 @@ async def lifespan(_api: FastAPI):
         await close_database_connections()
     except Exception:
         pass
-
-
-def _try_get_cc_chat_orchestrator():
-    """Return the cc_chat orchestrator singleton, or None if not initialized."""
-    try:
-        from api.routers.cc_chat import get_orchestrator
-
-        return get_orchestrator()
-    except (ImportError, RuntimeError):
-        return None
 
 
 def create_app() -> FastAPI:
@@ -185,45 +176,6 @@ def create_app() -> FastAPI:
     api.include_router(public.router)
     api.include_router(admin.router)
 
-    _init_cc_chat_orchestrator()
     api.include_router(cc_chat.router)
 
     return api
-
-
-def _init_cc_chat_orchestrator() -> None:
-    from oddish.config import settings
-    from api.services.cc_chat.daytona_client import RealDaytonaClient
-    from api.services.cc_chat.file_store import LocalFileStore, S3FileStore
-    from api.services.cc_chat.orchestrator import CCChatOrchestrator
-    from api.routers.cc_chat import init_orchestrator
-
-    if not settings.daytona_api_key:
-        # Skip wiring; the endpoints will fail loudly with 500 when called.
-        # We don't want the entire app to refuse to boot in environments
-        # that don't use the chat feature.
-        return
-    if not settings.anthropic_api_key:
-        return
-
-    if settings.cc_chat_local_jobs_dir:
-        file_store = LocalFileStore(
-            base_path=Path(settings.cc_chat_local_jobs_dir)
-        )
-    else:
-        from api.services.cc_chat.oddish_storage_adapter import (
-            OddishStorageAdapter,
-        )
-
-        file_store = S3FileStore(storage=OddishStorageAdapter())
-
-    skills_dir = Path(__file__).parent / "services" / "cc_chat" / "skills"
-
-    orch = CCChatOrchestrator(
-        daytona=RealDaytonaClient(api_key=settings.daytona_api_key),
-        file_store=file_store,
-        anthropic_api_key=settings.anthropic_api_key,
-        auto_stop_minutes=30,
-        skills_dir=skills_dir,
-    )
-    init_orchestrator(orch)

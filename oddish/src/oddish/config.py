@@ -303,6 +303,8 @@ class Settings(BaseSettings):
     )
     cc_chat_local_jobs_dir: str | None = Field(default=None)
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    agent_sandbox_service_url: str = ""
+    agent_sandbox_service_api_key: str = ""
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
 
     # ==========================================================================
