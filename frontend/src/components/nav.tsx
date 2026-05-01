@@ -15,6 +15,7 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
+  Beaker,
   BookOpen,
   ChevronDown,
   FileText,
@@ -63,6 +64,23 @@ export function Nav() {
               >
                 <FileText className="h-4 w-4" />
                 <span>Tasks</span>
+              </Link>
+            </Button>
+            <Button
+              variant={
+                pathname?.startsWith("/experiments") ? "secondary" : "ghost"
+              }
+              size="sm"
+              asChild
+              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+            >
+              <Link
+                href="/experiments"
+                className="flex items-center gap-2"
+                data-active={pathname?.startsWith("/experiments") ?? false}
+              >
+                <Beaker className="h-4 w-4" />
+                <span>Experiments</span>
               </Link>
             </Button>
             <Button
