@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from typing import Any
 from pydantic import BaseModel
 
 
@@ -23,26 +24,48 @@ class Agent(BaseModel):
     provider: str
 
 
-class TrialStatus(str, Enum):
+class Trial(BaseModel):
+    """Pure evidence row. Written when execution finishes."""
+
+    id: str
+    task_version_id: str
+    agent: Agent
+    job_id: str | None  # user-visible batch
+    worker_job_id: str | None  # null for IMPORTED trials
+    reward: float | None
+    error_message: str | None
+    created_at: datetime
+
+
+class WorkerJobKind(str, Enum):
+    TRIAL = "trial"
+    ANALYSIS = "analysis"
+    VERDICT = "verdict"
+    TASK_EXPAND = "task_expand"
+
+
+class WorkerJobStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
+    RETRYING = "retrying"
     SUCCESS = "success"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
 
-class Trial(BaseModel):
+class WorkerJob(BaseModel):
+    """A unit of queued work. Polymorphic by kind."""
+
     id: str
-    task_version_id: str
-    agent: Agent
-    job_id: str | None
-    queue_key: str  # slot pool this trial competes in (usually per-provider)
-    status: TrialStatus
+    kind: WorkerJobKind
+    queue_key: str  # slot pool (usually per-provider)
+    status: WorkerJobStatus
     attempts: int
     worker_id: str | None
     claimed_at: datetime | None
     heartbeat_at: datetime | None
-    reward: float | None
+    job_id: str | None  # user-visible batch this work belongs to
+    payload: dict[str, Any]  # kind-specific input
     created_at: datetime
     finished_at: datetime | None
 
