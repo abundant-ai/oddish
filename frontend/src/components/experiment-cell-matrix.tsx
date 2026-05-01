@@ -29,6 +29,13 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -394,6 +401,18 @@ function CellBadge({
   );
 }
 
+interface BrowseTask {
+  id: string;
+  name: string;
+  current_version: number | null;
+  current_version_id: string | null;
+}
+
+interface BrowseResponse {
+  items: BrowseTask[];
+  has_more: boolean;
+}
+
 function AddCellDialog({
   experimentId,
   onCreated,
@@ -402,27 +421,42 @@ function AddCellDialog({
   onCreated: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
-  const [taskVersionId, setTaskVersionId] = useState("");
-  const [harness, setHarness] = useState("");
-  const [model, setModel] = useState("");
-  const [provider, setProvider] = useState("");
+  const [taskId, setTaskId] = useState<string>("");
+  const [harness, setHarness] = useState("claude-code");
+  const [model, setModel] = useState("claude-sonnet-4-5");
+  const [provider, setProvider] = useState("anthropic");
   const [targetN, setTargetN] = useState("3");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const { data: browse } = useSWR<BrowseResponse>(
+    open ? "/api/tasks/browse?limit=200&offset=0" : null,
+    fetcher,
+  );
+
+  const tasks = useMemo(() => {
+    return (browse?.items ?? []).filter((t) => t.current_version_id !== null);
+  }, [browse]);
+
+  const selectedTask = tasks.find((t) => t.id === taskId);
+
   const reset = () => {
-    setTaskVersionId("");
-    setHarness("");
-    setModel("");
-    setProvider("");
+    setTaskId("");
+    setHarness("claude-code");
+    setModel("claude-sonnet-4-5");
+    setProvider("anthropic");
     setTargetN("3");
     setError(null);
   };
 
   const onSubmit = async () => {
     setError(null);
-    if (!taskVersionId.trim() || !harness.trim() || !provider.trim()) {
-      setError("task_version_id, harness, and provider are required");
+    if (!selectedTask?.current_version_id) {
+      setError("Pick a task with at least one uploaded version");
+      return;
+    }
+    if (!harness.trim() || !provider.trim()) {
+      setError("Harness and provider are required");
       return;
     }
     setSubmitting(true);
@@ -434,7 +468,7 @@ function AddCellDialog({
           credentials: "include",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            task_version_id: taskVersionId.trim(),
+            task_version_id: selectedTask.current_version_id,
             agent_harness: harness.trim(),
             agent_model: model.trim() || null,
             agent_provider: provider.trim(),
@@ -475,16 +509,36 @@ function AddCellDialog({
         </DialogHeader>
         <div className="space-y-3 text-sm">
           <div>
-            <Label htmlFor="task_version_id">Task version id</Label>
-            <Input
-              id="task_version_id"
-              placeholder="e.g. abc123-v2"
-              value={taskVersionId}
-              onChange={(e) => setTaskVersionId(e.target.value)}
-            />
-            <p className="mt-1 text-xs text-muted-foreground">
-              Find this on the task detail page (it's stable per upload).
-            </p>
+            <Label htmlFor="task">Task</Label>
+            <Select value={taskId} onValueChange={setTaskId}>
+              <SelectTrigger id="task">
+                <SelectValue
+                  placeholder={
+                    browse ? "Select a task" : "Loading tasks…"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent className="max-h-[40vh]">
+                {tasks.map((t) => (
+                  <SelectItem key={t.id} value={t.id}>
+                    {t.name}{" "}
+                    <span className="text-muted-foreground">
+                      v{t.current_version ?? "?"}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {selectedTask ? (
+              <p className="mt-1 font-mono text-[10px] text-muted-foreground">
+                pinning to {selectedTask.current_version_id}
+              </p>
+            ) : (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Cells pin to a specific task version. Re-uploading the
+                task later does not shift this cell's evidence pool.
+              </p>
+            )}
           </div>
           <div className="grid grid-cols-3 gap-2">
             <div className="col-span-1">
