@@ -53,3 +53,13 @@ class ExperimentCell(BaseModel):
     task_version_id: str
     agent: Agent
     target_n_trials: int
+
+
+class ResolvedExperimentCell(BaseModel):
+    cell: ExperimentCell
+    trials: list[Trial]
+
+
+class ResolvedExperiment(BaseModel):
+    experiment: Experiment
+    cells: list[ResolvedExperimentCell]
