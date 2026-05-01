@@ -10,8 +10,12 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.agent_identity import compute_agent_equivalence_key
+from oddish.core.jobs import AgentCellSpec, add_job_cells, create_batch_job
 from oddish.db import (
     AnalysisStatus,
+    BatchJobKind,
+    BatchJobStatus,
     ExperimentModel,
     TaskModel,
     TaskStatus,
@@ -325,6 +329,7 @@ async def enqueue_trial_worker_job(
     org_id: str | None,
     max_attempts: int,
     parent_job_id: str | None = None,
+    job_id: str | None = None,
 ) -> WorkerJobModel:
     return await enqueue_worker_job(
         session,
@@ -337,6 +342,7 @@ async def enqueue_trial_worker_job(
             org_id=org_id,
             max_attempts=max_attempts,
             parent_job_id=parent_job_id,
+            job_id=job_id,
         ),
     )
 
@@ -347,6 +353,7 @@ async def enqueue_analysis_worker_job(
     trial_id: str,
     org_id: str | None,
     parent_job_id: str | None = None,
+    job_id: str | None = None,
 ) -> WorkerJobModel:
     return await enqueue_worker_job(
         session,
@@ -358,6 +365,7 @@ async def enqueue_analysis_worker_job(
             subject_id=trial_id,
             org_id=org_id,
             parent_job_id=parent_job_id,
+            job_id=job_id,
         ),
     )
 
@@ -367,6 +375,7 @@ async def enqueue_verdict_worker_job(
     *,
     task_id: str,
     org_id: str | None,
+    job_id: str | None = None,
 ) -> WorkerJobModel:
     return await enqueue_worker_job(
         session,
@@ -377,6 +386,7 @@ async def enqueue_verdict_worker_job(
             subject_table="tasks",
             subject_id=task_id,
             org_id=org_id,
+            job_id=job_id,
         ),
     )
 
@@ -487,6 +497,14 @@ async def create_task(
         experiment_name = generate_experiment_name()
         experiment = await get_or_create_experiment(session, experiment_name, org_id)
 
+    batch_job = create_batch_job(
+        session,
+        kind=BatchJobKind.AD_HOC,
+        status=BatchJobStatus.RUNNING,
+        org_id=org_id,
+        triggered_by_experiment_id=experiment.id,
+    )
+
     # Insert the task first (without version pointer to avoid circular FK).
     task = TaskModel(
         id=task_id,
@@ -554,10 +572,14 @@ async def create_task(
     # Now safe to set the back-pointer and create trials.
     task.current_version_id = version_id
 
+    job_cells: list[AgentCellSpec] = []
     for i, spec in enumerate(submission.trials):
         model = settings.normalize_trial_model(spec.agent, spec.model)
         provider = settings.get_provider_for_trial(spec.agent, model)
         queue_key = settings.get_queue_key_for_trial(spec.agent, model)
+        agent_equivalence_key = compute_agent_equivalence_key(
+            spec.agent, model, provider
+        )
         trial_id = f"{task_id}-{i}"
         trial_name = f"{task_name}-{i}"
 
@@ -569,24 +591,38 @@ async def create_task(
             task_id=task_id,
             task_version_id=version_id,
             experiment_id=experiment.id,
+            job_id=batch_job.id,
             org_id=org_id,
             agent=spec.agent,
             provider=provider,
             queue_key=queue_key,
             model=model,
+            agent_equivalence_key=agent_equivalence_key,
             timeout_minutes=spec.timeout_minutes,
             environment=spec.environment,
             harbor_config=harbor_config,
             status=TrialStatus.QUEUED,
         )
         session.add(trial)
-        await enqueue_trial_worker_job(
+        worker_job = await enqueue_trial_worker_job(
             session,
             trial_id=trial_id,
             queue_key=queue_key,
             org_id=org_id,
             max_attempts=trial.max_attempts,
+            job_id=batch_job.id,
         )
+        trial.worker_job_id = worker_job.id
+        job_cells.append(
+            AgentCellSpec(
+                task_version_id=version_id,
+                harness=spec.agent,
+                model=model,
+                provider=provider,
+            )
+        )
+
+    add_job_cells(session, job=batch_job, cells=job_cells)
 
     await session.flush()
     await session.refresh(task, attribute_names=["trials"])
@@ -645,11 +681,23 @@ async def append_trials_to_task(
             session, task_id=task.id, experiment_id=experiment_id
         )
 
+    batch_job = create_batch_job(
+        session,
+        kind=BatchJobKind.AD_HOC,
+        status=BatchJobStatus.RUNNING,
+        org_id=task.org_id,
+        triggered_by_experiment_id=trial_experiment_id,
+    )
+
     new_trials: list[TrialModel] = []
+    job_cells: list[AgentCellSpec] = []
     for spec in submission.trials:
         model = settings.normalize_trial_model(spec.agent, spec.model)
         provider = settings.get_provider_for_trial(spec.agent, model)
         queue_key = settings.get_queue_key_for_trial(spec.agent, model)
+        agent_equivalence_key = compute_agent_equivalence_key(
+            spec.agent, model, provider
+        )
         trial_id = f"{task.id}-{next_index}"
         trial_name = f"{task.name}-{next_index}"
 
@@ -661,26 +709,41 @@ async def append_trials_to_task(
             task_id=task.id,
             task_version_id=current_version_id,
             experiment_id=trial_experiment_id,
+            job_id=batch_job.id,
             org_id=task.org_id,
             agent=spec.agent,
             provider=provider,
             queue_key=queue_key,
             model=model,
+            agent_equivalence_key=agent_equivalence_key,
             timeout_minutes=spec.timeout_minutes,
             environment=spec.environment,
             harbor_config=harbor_config,
             status=TrialStatus.QUEUED,
         )
         session.add(trial)
-        await enqueue_trial_worker_job(
+        worker_job = await enqueue_trial_worker_job(
             session,
             trial_id=trial_id,
             queue_key=queue_key,
             org_id=task.org_id,
             max_attempts=trial.max_attempts,
+            job_id=batch_job.id,
         )
+        trial.worker_job_id = worker_job.id
+        if current_version_id is not None:
+            job_cells.append(
+                AgentCellSpec(
+                    task_version_id=current_version_id,
+                    harness=spec.agent,
+                    model=model,
+                    provider=provider,
+                )
+            )
         new_trials.append(trial)
         next_index += 1
+
+    add_job_cells(session, job=batch_job, cells=job_cells)
 
     if new_trials and task.status in (
         TaskStatus.COMPLETED,

@@ -171,6 +171,28 @@ class WorkerJobStatus(str, Enum):
     BLOCKED = "BLOCKED"
 
 
+class BatchJobKind(str, Enum):
+    """User-visible execution batch kind.
+
+    This is reporting metadata, not worker dispatch logic. Low-level
+    dispatch stays keyed by ``WorkerJobKind``.
+    """
+
+    VALIDATION = "validation"
+    EXPERIMENT_BACKFILL = "experiment_backfill"
+    AD_HOC = "ad_hoc"
+
+
+class BatchJobStatus(str, Enum):
+    """Coarse status for user-visible execution batches."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 # =============================================================================
 # SQLAlchemy Models (Database Tables)
 # =============================================================================
@@ -383,6 +405,101 @@ class TaskVersionModel(TimestampedMixin, Base):
     )
 
 
+class JobModel(TimestampedMixin, Base):
+    """User-visible execution batch.
+
+    ``worker_jobs`` is still the low-level queue. ``jobs`` groups a set
+    of requested cells for CLI/API/UI reporting.
+    """
+
+    __tablename__ = "jobs"
+    __table_args__ = (
+        Index("idx_jobs_org_status_launched", "org_id", "status", "launched_at"),
+        Index("idx_jobs_triggered_by_experiment", "triggered_by_experiment_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    kind: Mapped[BatchJobKind] = mapped_column(
+        SQLEnum(
+            BatchJobKind,
+            name="batch_job_kind",
+            native_enum=True,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    status: Mapped[BatchJobStatus] = mapped_column(
+        SQLEnum(
+            BatchJobStatus,
+            name="batch_job_status",
+            native_enum=True,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=BatchJobStatus.QUEUED,
+        server_default=BatchJobStatus.QUEUED.value,
+    )
+    launched_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    launched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    triggered_by_experiment_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("experiments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+
+    cells: Mapped[list["JobCellModel"]] = relationship(  # type: ignore[assignment]
+        "JobCellModel",
+        back_populates="job",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class JobCellModel(TimestampedMixin, Base):
+    """Concrete cell requested by a user-visible execution batch."""
+
+    __tablename__ = "job_cells"
+    __table_args__ = (
+        Index(
+            "idx_job_cells_unique_cell",
+            "job_id",
+            "task_version_id",
+            "agent_equivalence_key",
+            unique=True,
+        ),
+        Index("idx_job_cells_task_version", "task_version_id"),
+        Index("idx_job_cells_agent_equivalence", "agent_equivalence_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    job_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    task_version_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("task_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    agent_equivalence_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    harness: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    n_trials: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    job: Mapped["JobModel"] = relationship(  # type: ignore[assignment]
+        "JobModel",
+        back_populates="cells",
+        lazy="selectin",
+    )
+
+
 class TrialModel(TimestampedMixin, Base):
     """Trial database model."""
 
@@ -403,6 +520,12 @@ class TrialModel(TimestampedMixin, Base):
         nullable=False,
         index=True,
     )
+    job_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    worker_job_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("worker_jobs.id", ondelete="SET NULL"), nullable=True
+    )
 
     # -------------------------------------------------------------------------
     # Cloud-ready column (denormalized for efficient org-scoped queries)
@@ -420,6 +543,9 @@ class TrialModel(TimestampedMixin, Base):
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     queue_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    agent_equivalence_key: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
     timeout_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     environment: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
@@ -543,6 +669,13 @@ class TrialModel(TimestampedMixin, Base):
     __table_args__ = (
         Index("idx_trials_task_id", "task_id"),
         Index("idx_trials_task_version_id", "task_version_id"),
+        Index("idx_trials_job_id", "job_id"),
+        Index("idx_trials_worker_job_id", "worker_job_id"),
+        Index(
+            "idx_trials_task_version_agent_equivalence",
+            "task_version_id",
+            "agent_equivalence_key",
+        ),
         # Display / API filter path. Claim/stale-reap indexes on
         # trials were retired in the ``worker_jobs`` refactor --
         # scheduling queries now hit ``idx_worker_jobs_claim`` and
@@ -664,6 +797,9 @@ class WorkerJobModel(TimestampedMixin, Base):
         ForeignKey("worker_jobs.id", ondelete="SET NULL"),
         nullable=True,
     )
+    job_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
 
     payload: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
@@ -743,6 +879,11 @@ class WorkerJobModel(TimestampedMixin, Base):
             "idx_worker_jobs_parent",
             "parent_job_id",
             postgresql_where=text("parent_job_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_worker_jobs_job_id",
+            "job_id",
+            postgresql_where=text("job_id IS NOT NULL"),
         ),
         Index(
             "idx_worker_jobs_org",

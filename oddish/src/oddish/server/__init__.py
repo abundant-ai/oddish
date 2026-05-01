@@ -27,6 +27,10 @@ from oddish.core.endpoints import (
     rerun_trial_analysis_core,
     retry_trial_core,
 )
+from oddish.core.jobs import (
+    get_job_core,
+    list_jobs_core,
+)
 from oddish.core.public_helpers import (
     get_task_file_content_s3,
     get_trial_file_content_s3,
@@ -60,6 +64,7 @@ from oddish.core.trial_imports import (
 )
 from oddish.config import settings
 from oddish.db import (
+    BatchJobStatus,
     ExperimentModel,
     TaskModel,
     TrialModel,
@@ -71,6 +76,7 @@ from oddish.db import (
 from oddish.schemas import (
     TaskBatchCancelRequest,
     TaskBrowseResponse,
+    JobResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
     TaskUploadCompleteRequest,
@@ -240,6 +246,28 @@ async def health():
 
 
 # =============================================================================
+# Jobs
+# =============================================================================
+
+
+@api.get("/jobs", response_model=list[JobResponse])
+async def list_jobs(
+    status: BatchJobStatus | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+) -> list[JobResponse]:
+    """List user-visible execution batches."""
+    async with get_session() as session:
+        return await list_jobs_core(session, status=status, limit=limit)
+
+
+@api.get("/jobs/{job_id}", response_model=JobResponse)
+async def get_job(job_id: str) -> JobResponse:
+    """Fetch one user-visible execution batch."""
+    async with get_session() as session:
+        return await get_job_core(session, job_id=job_id)
+
+
+# =============================================================================
 # Dashboard
 # =============================================================================
 
@@ -364,6 +392,8 @@ async def create_task_sweep(submission: TaskSweepSubmission):
         primary = experiment or (task.experiments[0] if task.experiments else None)
         resp_experiment_id = primary.id if primary else None
         resp_experiment_name = primary.name if primary else None
+        response_job_ids = {t.job_id for t in response_trials if t.job_id}
+        resp_job_id = next(iter(response_job_ids)) if len(response_job_ids) == 1 else None
 
         return TaskResponse(
             id=task.id,
@@ -374,6 +404,7 @@ async def create_task_sweep(submission: TaskSweepSubmission):
             providers=dict(provider_counts),
             experiment_id=resp_experiment_id,
             experiment_name=resp_experiment_name,
+            job_id=resp_job_id,
             created_at=task.created_at,
             new_trial_ids=[t.id for t in response_trials],
         )

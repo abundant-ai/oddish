@@ -787,13 +787,15 @@ async def retry_trial_core(
     # ``oddish.queue`` -> ``oddish.workers.jobs.enqueue``.
     from oddish.queue import enqueue_trial_worker_job
 
-    await enqueue_trial_worker_job(
+    worker_job = await enqueue_trial_worker_job(
         session,
         trial_id=trial_id,
         queue_key=trial.queue_key,
         org_id=trial.org_id,
         max_attempts=trial.max_attempts,
+        job_id=trial.job_id,
     )
+    trial.worker_job_id = worker_job.id
 
     await session.commit()
     return {"status": "queued", "trial_id": trial_id}
@@ -932,7 +934,9 @@ async def rerun_trial_analysis_core(
 
     from oddish.queue import enqueue_analysis_worker_job
 
-    await enqueue_analysis_worker_job(session, trial_id=trial_id, org_id=trial.org_id)
+    await enqueue_analysis_worker_job(
+        session, trial_id=trial_id, org_id=trial.org_id, job_id=trial.job_id
+    )
 
     await session.commit()
     return {"status": "queued", "trial_id": trial_id}
@@ -992,7 +996,10 @@ async def rerun_task_analysis_core(
         _reset_trial_analysis(trial)
         trial.analysis_status = AnalysisStatus.QUEUED
         await enqueue_analysis_worker_job(
-            session, trial_id=trial.id, org_id=trial.org_id
+            session,
+            trial_id=trial.id,
+            org_id=trial.org_id,
+            job_id=trial.job_id,
         )
 
     _reset_task_verdict(task)

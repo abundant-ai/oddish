@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 from harbor.models.agent.name import AgentName
 from harbor.models.environment_type import EnvironmentType
@@ -18,6 +18,8 @@ from harbor.models.trial.config import (
 from oddish.config import normalize_model_id
 from oddish.db import (
     AnalysisStatus,
+    BatchJobKind,
+    BatchJobStatus,
     Priority,
     TaskStatus,
     TrialOrigin,
@@ -433,6 +435,52 @@ class VisibleWorkerJob(BaseModel):
     error_message: str | None = None
 
 
+class AgentResponse(BaseModel):
+    harness: str
+    model: str
+    provider: str
+
+
+class JobCellResponse(BaseModel):
+    id: str
+    task_version_id: str
+    agent_equivalence_key: str
+    harness: str
+    model: str
+    provider: str
+    n_trials: int
+    created_at: datetime
+
+    @computed_field
+    @property
+    def agent(self) -> AgentResponse:
+        return AgentResponse(
+            harness=self.harness,
+            model=self.model,
+            provider=self.provider,
+        )
+
+    model_config = {"from_attributes": True}
+
+
+class JobResponse(BaseModel):
+    id: str
+    kind: BatchJobKind
+    status: BatchJobStatus
+    launched_by_user_id: str | None = None
+    launched_at: datetime
+    finished_at: datetime | None = None
+    triggered_by_experiment_id: str | None = None
+    org_id: str | None = None
+    cells: list[JobCellResponse] = Field(default_factory=list)
+    worker_jobs_count: int = 0
+    active_worker_jobs_count: int = 0
+    trials_count: int = 0
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class TrialResponse(BaseModel):
     id: str
     name: str
@@ -441,10 +489,13 @@ class TrialResponse(BaseModel):
     task_version: int | None = None
     task_version_id: str | None = None
     experiment_id: str | None = None
+    job_id: str | None = None
+    worker_job_id: str | None = None
     agent: str
     provider: str
     queue_key: str
     model: str | None
+    agent_equivalence_key: str | None = None
     status: TrialStatus = Field(
         ...,
         description="Execution status: 'success'=completed (regardless of test result), 'failed'=execution error",
@@ -538,6 +589,7 @@ class TaskResponse(BaseModel):
     providers: dict[str, int]  # provider -> count of trials
     experiment_id: str | None = None
     experiment_name: str | None = None
+    job_id: str | None = None
     created_at: datetime
     new_trial_ids: list[str] = Field(
         default_factory=list,

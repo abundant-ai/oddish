@@ -328,6 +328,8 @@ async def create_task_sweep(
         primary = experiment or (task.experiments[0] if task.experiments else None)
         resp_experiment_id = primary.id if primary else None
         resp_experiment_name = primary.name if primary else None
+        response_job_ids = {t.job_id for t in response_trials if t.job_id}
+        resp_job_id = next(iter(response_job_ids)) if len(response_job_ids) == 1 else None
 
         return TaskResponse(
             id=task.id,
@@ -338,6 +340,7 @@ async def create_task_sweep(
             providers=dict(provider_counts),
             experiment_id=resp_experiment_id,
             experiment_name=resp_experiment_name,
+            job_id=resp_job_id,
             created_at=task.created_at,
             new_trial_ids=[t.id for t in response_trials],
         )

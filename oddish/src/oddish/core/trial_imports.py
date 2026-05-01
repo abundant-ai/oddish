@@ -39,7 +39,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.agent_identity import compute_agent_equivalence_key
+from oddish.core.jobs import AgentCellSpec, add_job_cells, create_batch_job
 from oddish.db import (
+    BatchJobKind,
+    BatchJobStatus,
     ExperimentModel,
     TaskModel,
     TaskStatus,
@@ -209,6 +213,7 @@ async def initialize_trial_import(
         model = settings.normalize_trial_model(agent, trial_spec.model)
         provider = settings.get_provider_for_trial(agent, model)
         queue_key = settings.get_queue_key_for_trial(agent, model)
+        agent_equivalence_key = compute_agent_equivalence_key(agent, model, provider)
 
         # Pin the trial to the task's current version so the UI's
         # "version filter" keeps working for imported rows too.
@@ -236,6 +241,19 @@ async def initialize_trial_import(
             if trial_spec.external_trial_id
             else f"import-{uuid.uuid4()}"
         )
+        terminal_status = (
+            BatchJobStatus.FAILED
+            if trial_spec.status.value == "failed"
+            else BatchJobStatus.SUCCESS
+        )
+        batch_job = create_batch_job(
+            session,
+            kind=BatchJobKind.AD_HOC,
+            status=terminal_status,
+            org_id=task.org_id,
+            triggered_by_experiment_id=experiment.id,
+            finished=True,
+        )
 
         trial_row = TrialModel(
             id=trial_id,
@@ -243,12 +261,14 @@ async def initialize_trial_import(
             task_id=task.id,
             task_version_id=task_version_id,
             experiment_id=experiment.id,
+            job_id=batch_job.id,
             org_id=task.org_id,
             idempotency_key=idempotency_key,
             agent=agent,
             provider=provider,
             queue_key=queue_key,
             model=model,
+            agent_equivalence_key=agent_equivalence_key,
             environment=(
                 trial_spec.environment.value
                 if trial_spec.environment is not None
@@ -273,6 +293,19 @@ async def initialize_trial_import(
             finished_at=finished_at,
         )
         session.add(trial_row)
+        if task_version_id is not None:
+            add_job_cells(
+                session,
+                job=batch_job,
+                cells=[
+                    AgentCellSpec(
+                        task_version_id=task_version_id,
+                        harness=agent,
+                        model=model,
+                        provider=provider,
+                    )
+                ],
+            )
 
         # Keep the task ↔ experiment association in sync. Imports can
         # attach a task that already belongs to other experiments to an

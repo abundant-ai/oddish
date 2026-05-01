@@ -34,6 +34,7 @@ class EnqueueRequest:
     max_attempts: int = 6
     org_id: str | None = None
     parent_job_id: str | None = None
+    job_id: str | None = None
 
 
 async def enqueue_worker_job(
@@ -68,6 +69,7 @@ async def enqueue_worker_job(
         subject_table=request.subject_table,
         subject_id=request.subject_id,
         parent_job_id=request.parent_job_id,
+        job_id=request.job_id,
         payload=payload,
         attempts=0,
         max_attempts=request.max_attempts,

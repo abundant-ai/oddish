@@ -491,7 +491,10 @@ async def _store_trial_results(
             if task and task.run_analysis and trial.analysis_status is None:
                 trial.analysis_status = AnalysisStatus.QUEUED
                 await enqueue_analysis_worker_job(
-                    session, trial_id=trial_id, org_id=trial.org_id
+                    session,
+                    trial_id=trial_id,
+                    org_id=trial.org_id,
+                    job_id=trial.job_id,
                 )
                 console.print(f"[cyan]Queued analysis for {trial_id}[/cyan]")
 
