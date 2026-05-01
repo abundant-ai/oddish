@@ -18,9 +18,11 @@ These are baked into the plan and worth disagreeing with now if they're wrong.
    `harbor_config_hash` covers Harbor passthrough fields that materially
    affect outcomes (env, kwargs, verifier overrides, timeouts). Cosmetic
    fields are excluded so irrelevant churn doesn't fragment evidence pools.
-2. **Experiment selections are frozen at save.** Cells store concrete
-   `task_version_id`s; we add an explicit "refresh selection" action later.
-   Living queries are out of scope.
+2. **Cells are frozen at save; the experiment is editable.** Each cell
+   stores a concrete `task_version_id` and never silently shifts. But the
+   set of cells in an experiment is mutable — you can add cells, remove
+   cells, bump `target_n_trials`, and grow the experiment over time. No
+   living queries; no auto-resolution against new task versions.
 3. **`WorkerJobKind` collapses to `TRIAL` + `ANALYSIS`.** `VERDICT` folds
    into `ANALYSIS` at task-version scope. `TASK_EXPAND` becomes a synchronous
    step on upload (or stays as an internal queue kind, unsurfaced to users).
@@ -90,8 +92,9 @@ The new builder + backfill action.
 - [ ] FE: experiment builder page — pick agents, pick task versions (filter by tag, validation status), set `target_n_trials` (global or per-cell), preview matrix with current evidence + computed gaps.
 - [ ] API: `POST /experiments` accepts `{name, cells: [{task_version_id, agent, target_n_trials}]}`.
 - [ ] API: `POST /experiments/{id}/backfill` enqueues a `Job` of kind `experiment_backfill` with cells matching current gaps. Returns `{job_id}`.
-- [ ] FE: "refresh selection" action — re-resolves selectors against current task versions, surfaces a diff for confirmation.
-- [ ] CLI: `oddish experiments create -c spec.yaml`, `oddish experiments backfill <id>`.
+- [ ] API: `POST /experiments/{id}/cells`, `DELETE /experiments/{id}/cells/{cell_id}`, `PATCH /experiments/{id}/cells/{cell_id}` (target_n_trials only). Editing cells never mutates an existing cell's `task_version_id` — replacing a cell means delete + add.
+- [ ] FE: cell-level edit UI on the experiment detail page — add cells (pick task version + agent + target), remove cells, bump targets. Adds and removes show up in the matrix immediately; backfill picks them up next run.
+- [ ] CLI: `oddish experiments create -c spec.yaml`, `oddish experiments backfill <id>`, `oddish experiments add-cell <id> --task-version=... --agent=... --n=...`.
 
 **Risk:** medium. **Ships:** users can author experiments in the UI for the first time. Sweep CLI continues to work, internally creates a Job + Experiment.
 
