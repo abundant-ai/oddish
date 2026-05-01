@@ -151,3 +151,30 @@ Different prefixes within the bucket prevent collisions:
 - Service writes probe artifacts to `runs/{probe_run_id}/...` and chat
   transcripts to `chat-sessions/{session_id}/...`.
 - The trajectory cache lives at oddish's prefix; the service writes there.
+
+---
+
+## Trial artifact access
+
+The agent-sandbox-service reads oddish's trial artifacts directly from the
+shared R2 bucket — there are no `GET /experiments/{id}/trial-files` or
+`GET /tasks/{id}/probe-trials/files` endpoints. The service holds R2
+credentials matching `ODDISH_S3_*` and lists/reads keys under
+`tasks/{experiment_id}/trials/...` as it needs them.
+
+The only oddish endpoint the service still calls is
+`GET /tasks/{task_id}/definition` (A1), because task source is stored on
+oddish's local disk rather than in R2.
+
+When the service starts a chat session:
+
+| Scope | Data sources |
+| --- | --- |
+| `experiment` | Service lists `tasks/{exp_id}/trials/...` directly from R2; uploads each file into the sandbox under `jobs/{exp_id}/...`. |
+| `task_probes` | Service queries its own `probe_runs` table for the task's probe runs, then reads each probe's artifacts from `runs/{probe_run_id}/...` in R2. Task source comes from oddish via A1. |
+
+Probe runs created post-cutover are tracked in the service's own DB and
+artifacts live under the service's `runs/` prefix in R2. Pre-cutover
+probe trials (in oddish's `trials` table with `harbor_config.mode == 'probe'`)
+are NOT included in the task_probes chat scope. They remain queryable
+through the workbench history endpoint.
