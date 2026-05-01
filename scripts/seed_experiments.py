@@ -103,6 +103,15 @@ def load_trial(trial_dir: Path) -> dict[str, Any] | None:
         return None
 
 
+def detect_trajectory(trial_dir: Path) -> bool:
+    """Mirror oddish.workers.harbor_runner._detect_trajectory."""
+    if any(trial_dir.rglob("trajectory.json")):
+        return True
+    if any(trial_dir.rglob("trajectory.jsonl")):
+        return True
+    return False
+
+
 async def seed_one_job(
     job_dir: Path,
     org_id: str | None,
@@ -274,6 +283,7 @@ async def seed_one_job(
                     cache_tokens=agent_result.get("n_cache_tokens"),
                     output_tokens=agent_result.get("n_output_tokens"),
                     cost_usd=agent_result.get("cost_usd"),
+                    has_trajectory=detect_trajectory(td),
                 )
                 session.add(trial)
                 trial_count += 1
