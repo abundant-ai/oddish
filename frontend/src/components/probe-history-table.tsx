@@ -189,18 +189,13 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
                   })()}
                 </td>
                 <td className="py-2">
-                  {r.kind === "legacy" ? (
-                    <Link
-                      href={`/tasks/${taskId}/probe/${r.id}`}
-                      className="text-xs underline"
-                    >
-                      View →
-                    </Link>
-                  ) : (
-                    <span className="text-xs text-muted-foreground" title={`Service run: ${r.id}`}>
-                      {r.id.slice(0, 12)}…
-                    </span>
-                  )}
+                  <Link
+                    href={`/tasks/${taskId}/probe/${r.id}`}
+                    className="text-xs underline"
+                    title={r.kind === "service" ? `Service run: ${r.id}` : undefined}
+                  >
+                    View →
+                  </Link>
                 </td>
               </tr>
             ))}
