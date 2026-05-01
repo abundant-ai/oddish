@@ -1,207 +1,142 @@
-"""Tests for the GET /tasks/{task_id}/definition endpoint.
+"""Tests for GET /tasks/{task_id}/definition.
 
-These tests cover two layers:
-
-1. Pure unit tests for ``build_task_archive`` — the service function that does
-   all the real work. No DB, auth, or HTTP machinery involved.
-
-2. A smoke-test confirming the return-type contract that the route handler
-   depends on from ``build_task_archive``.
+The route fetches the task source archive from S3 (where oddish already
+stores it) and streams it to agent-sandbox-service. These tests stub the
+storage client and the DB lookup so they don't need real S3 or Postgres.
 """
 
 from __future__ import annotations
 
 import io
 import tarfile
-from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
 
-from api.services.task_archive import TaskArchive, build_task_archive
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+from api.app import create_app
 
 
-def _tar_members(body: bytes) -> list[str]:
-    """Return sorted list of member names from a gzipped tar."""
-    with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as tar:
-        return sorted(m.name for m in tar.getmembers())
+def _make_archive(task_toml: str = "name = 'test'\nverifier_command = 'bash verifier/run.sh'\n") -> bytes:
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w:gz") as tar:
+        data = task_toml.encode()
+        info = tarfile.TarInfo(name="task.toml")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return out.getvalue()
 
 
-def _tar_read(body: bytes, member: str) -> str:
-    """Read a single text member from a gzipped tar."""
-    with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as tar:
-        f = tar.extractfile(member)
-        assert f is not None, f"member {member!r} not found"
-        return f.read().decode()
+@pytest.fixture
+def app_with_stub_auth():
+    from auth import APIKeyScope, AuthContext, AuthMethod, require_auth
 
-
-# ---------------------------------------------------------------------------
-# Unit tests for build_task_archive
-# ---------------------------------------------------------------------------
-
-
-def test_returns_tar_with_priority_files(tmp_path):
-    task_dir = tmp_path / "test-task"
-    task_dir.mkdir()
-    (task_dir / "task.toml").write_text(
-        "name = 'my-task'\nverifier_command = 'bash verifier/run.sh'\n"
-    )
-    (task_dir / "instruction.md").write_text("# do the thing\n")
-    (task_dir / "verifier").mkdir()
-    (task_dir / "verifier" / "run.sh").write_text("#!/bin/sh\necho 1\n")
-
-    archive = build_task_archive(task_dir, fallback_name="fallback")
-
-    assert isinstance(archive, TaskArchive)
-    members = _tar_members(archive.body)
-    assert "task.toml" in members
-    assert "instruction.md" in members
-    assert "verifier/run.sh" in members
-
-
-def test_task_name_and_verifier_command_extracted_from_toml(tmp_path):
-    task_dir = tmp_path / "test-task"
-    task_dir.mkdir()
-    (task_dir / "task.toml").write_text(
-        "name = 'extracted-name'\nverifier_command = 'python verifier/check.py'\n"
+    fake_auth = AuthContext(
+        method=AuthMethod.API_KEY,
+        org_id="org-1",
+        user_id="u-1",
+        scope=APIKeyScope.READ,
     )
 
-    archive = build_task_archive(task_dir, fallback_name="fallback")
+    async def _fake_require_auth():
+        return fake_auth
 
-    assert archive.task_name == "extracted-name"
-    assert archive.verifier_command == "python verifier/check.py"
-
-
-def test_falls_back_to_fallback_name_when_toml_missing(tmp_path):
-    task_dir = tmp_path / "test-task"
-    task_dir.mkdir()
-    (task_dir / "instruction.md").write_text("# no toml here\n")
-
-    archive = build_task_archive(task_dir, fallback_name="my-fallback")
-
-    assert archive.task_name == "my-fallback"
-    assert archive.verifier_command == "bash verifier/run.sh"
+    app = create_app()
+    app.dependency_overrides[require_auth] = _fake_require_auth
+    return app
 
 
-def test_falls_back_to_fallback_name_when_toml_has_no_name(tmp_path):
-    task_dir = tmp_path / "test-task"
-    task_dir.mkdir()
-    (task_dir / "task.toml").write_text("timeout_sec = 60\n")
-
-    archive = build_task_archive(task_dir, fallback_name="my-fallback")
-
-    assert archive.task_name == "my-fallback"
+@pytest.fixture
+def client(app_with_stub_auth):
+    return TestClient(app_with_stub_auth)
 
 
-def test_skips_dotfiles_and_skip_dirs(tmp_path):
-    task_dir = tmp_path / "test-task"
-    task_dir.mkdir()
-    (task_dir / "task.toml").write_text("name = 'test'\n")
-    (task_dir / ".env").write_text("SECRET=oops\n")
-    git_dir = task_dir / ".git"
-    git_dir.mkdir()
-    (git_dir / "config").write_text("[core]\n")
-    pycache = task_dir / "__pycache__"
-    pycache.mkdir()
-    (pycache / "foo.pyc").write_bytes(b"\x00" * 10)
-
-    archive = build_task_archive(task_dir, fallback_name="test")
-
-    members = _tar_members(archive.body)
-    assert ".env" not in members
-    assert not any(".git" in m for m in members)
-    assert not any("__pycache__" in m for m in members)
+@pytest.fixture
+def fake_task():
+    return SimpleNamespace(id="task-1", name="my-task", org_id="org-1", task_path="x")
 
 
-def test_discretionary_tail_included(tmp_path):
-    task_dir = tmp_path / "test-task"
-    task_dir.mkdir()
-    (task_dir / "task.toml").write_text("name = 'test'\n")
-    (task_dir / "extra.txt").write_text("some extra content\n")
-
-    archive = build_task_archive(task_dir, fallback_name="test")
-
-    members = _tar_members(archive.body)
-    assert "extra.txt" in members
-
-
-def test_file_content_preserved(tmp_path):
-    task_dir = tmp_path / "test-task"
-    task_dir.mkdir()
-    (task_dir / "task.toml").write_text("name = 'test'\n")
-    (task_dir / "instruction.md").write_text("# Hello world\n")
-
-    archive = build_task_archive(task_dir, fallback_name="test")
-
-    content = _tar_read(archive.body, "instruction.md")
-    assert content == "# Hello world\n"
-
-
-def test_oversize_file_excluded_from_discretionary_tail(tmp_path):
-    task_dir = tmp_path / "test-task"
-    task_dir.mkdir()
-    (task_dir / "task.toml").write_text("name = 'test'\n")
-    # Write a file just over the 1MB per-file cap.
-    big_file = task_dir / "big.bin"
-    big_file.write_bytes(b"x" * (1 * 1024 * 1024 + 1))
-
-    archive = build_task_archive(task_dir, fallback_name="test")
-
-    members = _tar_members(archive.body)
-    assert "big.bin" not in members
-
-
-def test_body_is_valid_gzip(tmp_path):
-    task_dir = tmp_path / "test-task"
-    task_dir.mkdir()
-    (task_dir / "task.toml").write_text("name = 'test'\n")
-
-    archive = build_task_archive(task_dir, fallback_name="test")
-
-    # gzip magic bytes
-    assert archive.body[:2] == b"\x1f\x8b"
-
-
-def test_verifier_subdir_included_recursively(tmp_path):
-    task_dir = tmp_path / "test-task"
-    task_dir.mkdir()
-    (task_dir / "task.toml").write_text("name = 'test'\n")
-    verifier = task_dir / "verifier"
-    verifier.mkdir()
-    (verifier / "run.sh").write_text("#!/bin/sh\necho done\n")
-    nested = verifier / "lib"
-    nested.mkdir()
-    (nested / "helper.py").write_text("def check(): pass\n")
-
-    archive = build_task_archive(task_dir, fallback_name="test")
-
-    members = _tar_members(archive.body)
-    assert "verifier/run.sh" in members
-    assert "verifier/lib/helper.py" in members
-
-
-# ---------------------------------------------------------------------------
-# Return-type contract test (guards the route handler dependency)
-# ---------------------------------------------------------------------------
-
-
-def test_build_task_archive_returns_task_archive_dataclass(tmp_path):
-    """Confirm the return type contract the route handler depends on."""
-    task_dir = tmp_path / "test-task"
-    task_dir.mkdir()
-    (task_dir / "task.toml").write_text(
-        "name = 'contract-test'\nverifier_command = 'bash verifier/run.sh'\n"
+def test_streams_archive_from_s3(client, fake_task):
+    archive = _make_archive(
+        "name = 'irrelevant'\nverifier_command = 'python verifier/check.py'\n"
     )
 
-    result = build_task_archive(task_dir, fallback_name="fallback")
+    fake_storage = SimpleNamespace(
+        _load_task_archive=AsyncMock(return_value=(archive, []))
+    )
 
-    assert hasattr(result, "body")
-    assert hasattr(result, "task_name")
-    assert hasattr(result, "verifier_command")
-    assert isinstance(result.body, bytes)
-    assert isinstance(result.task_name, str)
-    assert isinstance(result.verifier_command, str)
+    with patch(
+        "api.routers.tasks.select",
+        side_effect=lambda *a, **kw: __import__("sqlalchemy").select(*a, **kw),
+    ), patch(
+        "api.routers.tasks.get_session"
+    ) as gs, patch(
+        "oddish.db.get_storage_client", return_value=fake_storage
+    ):
+        gs.return_value.__aenter__.return_value.execute = AsyncMock(
+            return_value=SimpleNamespace(scalar_one_or_none=lambda: fake_task)
+        )
+        gs.return_value.__aexit__ = AsyncMock(return_value=None)
+        resp = client.get("/tasks/task-1/definition")
+
+    assert resp.status_code == 200
+    assert resp.content == archive
+    assert resp.headers["X-Task-Name"] == "my-task"
+    assert resp.headers["X-Task-Verifier-Command"] == "python verifier/check.py"
+
+
+def test_returns_404_when_archive_missing(client, fake_task):
+    fake_storage = SimpleNamespace(
+        _load_task_archive=AsyncMock(side_effect=FileNotFoundError())
+    )
+
+    with patch(
+        "api.routers.tasks.get_session"
+    ) as gs, patch(
+        "oddish.db.get_storage_client", return_value=fake_storage
+    ):
+        gs.return_value.__aenter__.return_value.execute = AsyncMock(
+            return_value=SimpleNamespace(scalar_one_or_none=lambda: fake_task)
+        )
+        gs.return_value.__aexit__ = AsyncMock(return_value=None)
+        resp = client.get("/tasks/task-1/definition")
+
+    assert resp.status_code == 404
+
+
+def test_returns_403_on_org_mismatch(client):
+    other_org_task = SimpleNamespace(
+        id="task-1", name="my-task", org_id="other-org", task_path="x"
+    )
+
+    with patch("api.routers.tasks.get_session") as gs:
+        gs.return_value.__aenter__.return_value.execute = AsyncMock(
+            return_value=SimpleNamespace(scalar_one_or_none=lambda: other_org_task)
+        )
+        gs.return_value.__aexit__ = AsyncMock(return_value=None)
+        resp = client.get("/tasks/task-1/definition")
+
+    assert resp.status_code == 403
+
+
+def test_default_verifier_command_when_toml_lacks_field(client, fake_task):
+    archive = _make_archive("name = 'whatever'\n")
+
+    fake_storage = SimpleNamespace(
+        _load_task_archive=AsyncMock(return_value=(archive, []))
+    )
+
+    with patch(
+        "api.routers.tasks.get_session"
+    ) as gs, patch(
+        "oddish.db.get_storage_client", return_value=fake_storage
+    ):
+        gs.return_value.__aenter__.return_value.execute = AsyncMock(
+            return_value=SimpleNamespace(scalar_one_or_none=lambda: fake_task)
+        )
+        gs.return_value.__aexit__ = AsyncMock(return_value=None)
+        resp = client.get("/tasks/task-1/definition")
+
+    assert resp.status_code == 200
+    assert resp.headers["X-Task-Verifier-Command"] == "bash verifier/run.sh"

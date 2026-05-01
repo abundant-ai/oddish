@@ -41,7 +41,6 @@ from api.schemas import (
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
 )
-from api.services.task_archive import build_task_archive
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from models import APIKeyModel, UserModel
 from oddish.core.tasks import (
@@ -1025,7 +1024,12 @@ async def get_task_definition(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> Response:
-    """Return a tar.gz of the task source directory for agent-sandbox-service probe runs."""
+    """Return the task source tar.gz from S3 for agent-sandbox-service probe runs."""
+    import tomllib
+
+    from oddish.db import get_storage_client
+    from oddish.db.storage import StorageClient, _read_task_archive_text
+
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
         task = (
@@ -1036,21 +1040,27 @@ async def get_task_definition(
         if task.org_id is not None and task.org_id != auth.org_id:
             raise HTTPException(status_code=403, detail="org_mismatch")
 
-    if not task.task_path:
-        raise HTTPException(status_code=404, detail="task_path_unset")
-    task_path = Path(task.task_path)
-    if not task_path.is_absolute():
-        task_path = Path.home() / task.task_path
-    if not task_path.is_dir():
-        raise HTTPException(status_code=404, detail="task_dir_missing")
+    storage = get_storage_client()
+    archive_key = StorageClient._task_archive_key(task_id)
+    try:
+        archive_bytes, _members = await storage._load_task_archive(archive_key)
+    except Exception:
+        raise HTTPException(status_code=404, detail="task_archive_missing")
 
-    archive = build_task_archive(task_path, fallback_name=task.name)
+    verifier_command = "bash verifier/run.sh"
+    try:
+        toml_text = _read_task_archive_text(archive_bytes, "task.toml")
+        doc = tomllib.loads(toml_text)
+        verifier_command = doc.get("verifier_command") or verifier_command
+    except Exception:
+        pass
+
     return Response(
-        content=archive.body,
+        content=archive_bytes,
         media_type="application/gzip",
         headers={
-            "X-Task-Name": archive.task_name,
-            "X-Task-Verifier-Command": archive.verifier_command,
+            "X-Task-Name": task.name,
+            "X-Task-Verifier-Command": verifier_command,
         },
     )
 
