@@ -105,8 +105,10 @@ export default function ProbeResultPage({
     return res.json();
   };
 
-  const { data: trials, error } = useSWR<Trial[]>(
-    `${API_URL}/tasks/${task_id}/trials`,
+  const isServiceProbe = trial_id.startsWith("pr_");
+
+  const { data: legacyTrials, error: legacyError } = useSWR<Trial[]>(
+    isServiceProbe ? null : `${API_URL}/tasks/${task_id}/trials`,
     fetcher,
     {
       refreshInterval: (data) => {
@@ -117,6 +119,29 @@ export default function ProbeResultPage({
       },
     },
   );
+
+  const { data: serviceTrial, error: serviceError } = useSWR<Trial>(
+    isServiceProbe ? `${API_URL}/tasks/${task_id}/probe-runs/${trial_id}` : null,
+    fetcher,
+    {
+      refreshInterval: (data) => {
+        const terminal = new Set([
+          "succeeded",
+          "failed",
+          "timed_out",
+          "canceled",
+        ]);
+        return data && terminal.has(data.status) ? 0 : 3000;
+      },
+    },
+  );
+
+  const trials = isServiceProbe
+    ? serviceTrial
+      ? [serviceTrial]
+      : undefined
+    : legacyTrials;
+  const error = isServiceProbe ? serviceError : legacyError;
 
   const { data: taskInfo } = useSWR<{ name?: string; task_path?: string }>(
     `${API_URL}/tasks/${task_id}`,

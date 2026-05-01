@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import Counter
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -295,6 +297,14 @@ async def _create_probe_sweep(
     agent = (first_config.agent if first_config else None) or "claude-code"
     model = (first_config.model if first_config else None) or "claude-sonnet-4-6"
 
+    harbor_config = {
+        "mode": "probe",
+        "extra_instructions": submission.extra_instructions or "",
+        "evaluation_metric": submission.evaluation_metric,
+        "ratio_unit": submission.ratio_unit,
+        "ratio_verb": submission.ratio_verb,
+        "result_focus": submission.result_focus,
+    }
     probe_run_id = await client.submit_probe(
         org_id=auth.org_id or "",
         user_id=getattr(auth, "user_id", None),
@@ -303,6 +313,7 @@ async def _create_probe_sweep(
         model=model,
         extra_instructions=submission.extra_instructions or "",
         timeout_minutes=30,
+        metadata={"harbor_config": harbor_config},
     )
 
     async with get_session() as session:
@@ -433,6 +444,164 @@ async def list_task_probe_runs(
 
     out.sort(key=_sort_key, reverse=True)
     return out
+
+
+def _parse_claude_transcript(content: bytes) -> list[dict]:
+    """Parse claude-code stream-json transcript into the legacy agent_messages shape.
+
+    Mirrors oddish/worker/local_runner.py so service-routed probes render identically
+    to legacy probe trials in the workbench detail page.
+    """
+    out: list[dict] = []
+    for raw in content.decode("utf-8", errors="replace").splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            event = json.loads(raw)
+        except Exception:
+            continue
+        etype = event.get("type")
+        if etype == "assistant":
+            for c in event.get("message", {}).get("content", []) or []:
+                ctype = c.get("type")
+                if ctype == "text":
+                    txt = c.get("text", "")
+                    if txt:
+                        out.append({"kind": "assistant_text", "text": txt})
+                elif ctype == "tool_use":
+                    name = c.get("name", "?")
+                    inp = c.get("input") or {}
+                    if name == "Bash" and isinstance(inp, dict):
+                        cmd = str(inp.get("command", ""))
+                        desc = inp.get("description")
+                        pieces = [f"$ {cmd}"] if cmd else ["$ (no command)"]
+                        if desc:
+                            pieces.append(f"# {desc}")
+                        if inp.get("timeout"):
+                            pieces.append(f"# timeout: {inp['timeout']}ms")
+                        text = "\n".join(pieces)
+                    else:
+                        try:
+                            payload = json.dumps(inp, indent=2)[:1500]
+                        except Exception:
+                            payload = str(inp)[:1500]
+                        text = f"[{name}]\n{payload}"
+                    out.append({"kind": "tool_use", "name": name, "text": text})
+        elif etype == "user":
+            for c in event.get("message", {}).get("content", []) or []:
+                if c.get("type") == "tool_result":
+                    out.append(
+                        {"kind": "tool_result", "text": str(c.get("content", ""))[:2000]}
+                    )
+        elif etype == "result":
+            out.append(
+                {
+                    "kind": "result",
+                    "is_error": event.get("is_error", False),
+                    "text": event.get("result", "")[:1000],
+                }
+            )
+    return out
+
+
+_ANALYSIS_STATUS_BY_PROBE_STATUS = {
+    "succeeded": "SUCCESS",
+    "failed": "FAILED",
+    "cancelled": "FAILED",
+}
+
+
+@router.get("/tasks/{task_id}/probe-runs/{run_id}")
+async def get_task_probe_run(
+    task_id: str,
+    run_id: str,
+    request: Request,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Return Trial-shaped detail for a single probe run.
+
+    For ``pr_*`` ids: proxies to agent-sandbox-service ``GET /v1/probes/{id}``,
+    fetches the transcript + verifier_stdout artifacts via signed URLs, parses
+    the transcript into legacy agent_messages, and assembles a payload the
+    workbench detail page can render unchanged.
+    """
+    auth.require_scope(APIKeyScope.READ)
+
+    if not run_id.startswith("pr_"):
+        raise HTTPException(status_code=404, detail="probe run not found")
+
+    async with get_session() as session:
+        row = await session.get(ExternalProbeRun, run_id)
+        if (
+            row is None
+            or row.task_id != task_id
+            or (row.org_id and auth.org_id and row.org_id != auth.org_id)
+        ):
+            raise HTTPException(status_code=404, detail="probe run not found")
+
+    client = getattr(request.app.state, "agent_sandbox_client", None)
+    if client is None:
+        raise HTTPException(
+            status_code=503, detail="agent-sandbox-service not configured"
+        )
+
+    envelope = await client.get_probe(run_id)
+
+    artifacts = envelope.get("artifacts") or {}
+    metadata = envelope.get("metadata") or {}
+    harbor_config = metadata.get("harbor_config") or {
+        "mode": "probe",
+        "extra_instructions": envelope.get("extra_instructions", ""),
+    }
+
+    agent_messages: list[dict] = []
+    verifier_stdout: str | None = None
+    async with httpx.AsyncClient(timeout=30.0) as http:
+        transcript_url = artifacts.get("transcript")
+        if transcript_url:
+            try:
+                r = await http.get(transcript_url)
+                r.raise_for_status()
+                agent_messages = _parse_claude_transcript(r.content)
+            except Exception as e:
+                logger.warning("failed to fetch transcript for %s: %s", run_id, e)
+        stdout_url = artifacts.get("verifier_stdout")
+        if stdout_url:
+            try:
+                r = await http.get(stdout_url)
+                r.raise_for_status()
+                verifier_stdout = r.text[:50_000]
+            except Exception as e:
+                logger.warning("failed to fetch verifier_stdout for %s: %s", run_id, e)
+
+    verifier = envelope.get("verifier") or {}
+    reward = verifier.get("reward")
+    status = envelope.get("status", "unknown")
+    analyzer_result = envelope.get("analyzer_result")
+
+    return {
+        "id": envelope.get("probe_run_id", run_id),
+        "agent": envelope.get("agent"),
+        "model": envelope.get("model"),
+        "status": status,
+        "reward": reward,
+        "started_at": envelope.get("started_at"),
+        "finished_at": envelope.get("finished_at"),
+        "harbor_config": harbor_config,
+        "result": {
+            "_artifacts": {
+                "agent_messages": agent_messages,
+                "verifier_stdout": verifier_stdout,
+            }
+        },
+        "analysis": analyzer_result,
+        "analysis_status": _ANALYSIS_STATUS_BY_PROBE_STATUS.get(status)
+        if analyzer_result is None
+        else "SUCCESS",
+        "analysis_error": None,
+        "error_message": envelope.get("error"),
+    }
 
 
 # =============================================================================
