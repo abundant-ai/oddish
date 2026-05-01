@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ExperimentShareButton } from "@/components/experiment-share-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
+import { ExperimentCellMatrix } from "@/components/experiment-cell-matrix";
 import type { Task, Trial } from "@/lib/types";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
@@ -431,7 +432,14 @@ export function ExperimentClientPage({
           </AlertDescription>
         </Alert>
       ) : (
-        <ExperimentDetailView
+        <>
+          <div className="rounded-md border bg-card p-4">
+            <ExperimentCellMatrix
+              experimentId={experimentId}
+              canEdit={canManageExperimentShare}
+            />
+          </div>
+          <ExperimentDetailView
           experimentId={experimentId}
           tasksForExperiment={tasksForExperiment}
           isLoading={isLoading}
@@ -575,6 +583,7 @@ export function ExperimentClientPage({
           onTrialDelete={handleDeleteTrial}
           onRerun={refreshTaskPages}
         />
+        </>
       )}
     </div>
   );

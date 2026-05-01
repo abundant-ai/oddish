@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 
+from oddish.core.experiment_backfill import backfill_experiment_core
 from oddish.core.experiment_cells import (
     add_cell_core,
     delete_cell_core,
@@ -13,6 +14,7 @@ from oddish.core.experiment_cells import (
 )
 from oddish.db import get_session
 from oddish.schemas import (
+    ExperimentBackfillResponse,
     ExperimentCellCreateRequest,
     ExperimentCellResponse,
     ExperimentCellUpdateRequest,
@@ -97,6 +99,28 @@ async def update_experiment_cell(
             cell_id=cell_id,
             payload=payload,
             org_id=auth.org_id,
+        )
+
+
+@router.post(
+    "/experiments/{experiment_id}/backfill",
+    response_model=ExperimentBackfillResponse,
+)
+async def backfill_experiment(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> ExperimentBackfillResponse:
+    """Enqueue trials to fill the gaps on every cell of an experiment.
+
+    Creates a Job(kind=experiment_backfill); the trials it produces show
+    up in the matrix as their corresponding cells fill in.
+    """
+    async with get_session() as session:
+        return await backfill_experiment_core(
+            session,
+            experiment_id=experiment_id,
+            org_id=auth.org_id,
+            user_id=None,
         )
 
 
