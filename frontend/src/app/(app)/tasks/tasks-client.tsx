@@ -267,13 +267,18 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
                   {Object.entries(task.tags)
                     .filter(([k]) => k !== "github_username" && !k.startsWith("github_"))
                     .map(([k, v]) => (
-                      <Badge
+                      <Link
                         key={k}
-                        variant="secondary"
-                        className="font-mono text-[10px]"
+                        href={`/tasks?query=${encodeURIComponent(v)}`}
+                        title={`Filter by ${k}=${v}`}
                       >
-                        {k}={v}
-                      </Badge>
+                        <Badge
+                          variant="secondary"
+                          className="cursor-pointer font-mono text-[10px] hover:bg-muted"
+                        >
+                          {k}={v}
+                        </Badge>
+                      </Link>
                     ))}
                 </div>
               ) : null}
