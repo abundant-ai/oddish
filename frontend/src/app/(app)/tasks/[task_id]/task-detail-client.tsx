@@ -21,6 +21,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
+import { TaskFilesPanel } from "@/components/task-files-panel";
 import { fetcher } from "@/lib/api";
 import type { Task, Trial } from "@/lib/types";
 
@@ -255,67 +262,89 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
         </div>
       ) : null}
 
-      <div className="rounded-md border">
-        <div className="border-b px-4 py-2 text-xs font-medium text-muted-foreground">
-          Agents tested against this version
-        </div>
-        {trialsError ? (
-          <div className="p-3 text-sm">
-            Failed to load trials: {String((trialsError as Error).message)}
+      <Tabs defaultValue="evidence" className="space-y-3">
+        <TabsList>
+          <TabsTrigger value="evidence">Evidence</TabsTrigger>
+          <TabsTrigger value="files">Files</TabsTrigger>
+        </TabsList>
+        <TabsContent value="evidence" className="mt-0">
+          <div className="rounded-md border">
+            <div className="border-b px-4 py-2 text-xs font-medium text-muted-foreground">
+              Agents tested against this version
+            </div>
+            {trialsError ? (
+              <div className="p-3 text-sm">
+                Failed to load trials:{" "}
+                {String((trialsError as Error).message)}
+              </div>
+            ) : !trials || !versions ? (
+              <Skeleton className="m-3 h-32" />
+            ) : summary.length === 0 ? (
+              <div className="p-6 text-center text-sm text-muted-foreground">
+                No trials for this version yet.
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Agent</TableHead>
+                    <TableHead>Provider</TableHead>
+                    <TableHead>Trials</TableHead>
+                    <TableHead>Mean reward</TableHead>
+                    <TableHead>Last run</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {summary.map((row) => (
+                    <TableRow key={row.key}>
+                      <TableCell className="font-mono text-xs">
+                        {row.agent}
+                        {row.model ? ` · ${row.model}` : ""}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {row.provider}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        <span className="text-emerald-700 dark:text-emerald-400">
+                          {row.succeeded}
+                        </span>
+                        /{row.total}
+                        {row.failed > 0 ? (
+                          <span className="ml-1 text-rose-600 dark:text-rose-400">
+                            ({row.failed} failed)
+                          </span>
+                        ) : null}
+                        {row.running > 0 ? (
+                          <span className="ml-1 text-amber-600 dark:text-amber-400">
+                            ({row.running} running)
+                          </span>
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {fmt(row.meanReward)}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {rel(row.lastRunAt)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
           </div>
-        ) : !trials || !versions ? (
-          <Skeleton className="m-3 h-32" />
-        ) : summary.length === 0 ? (
-          <div className="p-6 text-center text-sm text-muted-foreground">
-            No trials for this version yet.
+        </TabsContent>
+        <TabsContent value="files" className="mt-0">
+          <div className="rounded-md border bg-card">
+            <TaskFilesPanel
+              isOpen={true}
+              onClose={() => {}}
+              taskId={taskId}
+              task={task ?? null}
+              contentOnly
+            />
           </div>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Agent</TableHead>
-                <TableHead>Provider</TableHead>
-                <TableHead>Trials</TableHead>
-                <TableHead>Mean reward</TableHead>
-                <TableHead>Last run</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {summary.map((row) => (
-                <TableRow key={row.key}>
-                  <TableCell className="font-mono text-xs">
-                    {row.agent}
-                    {row.model ? ` · ${row.model}` : ""}
-                  </TableCell>
-                  <TableCell className="text-xs">{row.provider}</TableCell>
-                  <TableCell className="font-mono text-xs">
-                    <span className="text-emerald-700 dark:text-emerald-400">
-                      {row.succeeded}
-                    </span>
-                    /{row.total}
-                    {row.failed > 0 ? (
-                      <span className="ml-1 text-rose-600 dark:text-rose-400">
-                        ({row.failed} failed)
-                      </span>
-                    ) : null}
-                    {row.running > 0 ? (
-                      <span className="ml-1 text-amber-600 dark:text-amber-400">
-                        ({row.running} running)
-                      </span>
-                    ) : null}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {fmt(row.meanReward)}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {rel(row.lastRunAt)}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-      </div>
+        </TabsContent>
+      </Tabs>
 
       <div className="flex justify-end">
         <Button variant="ghost" size="sm" asChild>
