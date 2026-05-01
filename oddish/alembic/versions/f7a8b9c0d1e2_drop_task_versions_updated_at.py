@@ -6,19 +6,18 @@ written to in practice but its presence implied mutability. Dropping it
 makes the intent obvious in the schema. Real write-once enforcement at
 the DB layer (CHECK trigger / role revoke) lands separately.
 
-Revision ID: a4b5c6d7e8f9
-Revises: z3a4b5c6d7e8
+Revision ID: f7a8b9c0d1e2
+Revises: e6f7a8b9c0d1
 Create Date: 2026-05-01 00:00:00.000000
 """
 
 from typing import Sequence, Union
 
 from alembic import op
-import sqlalchemy as sa
 
 
-revision: str = "a4b5c6d7e8f9"
-down_revision: Union[str, Sequence[str], None] = "z3a4b5c6d7e8"
+revision: str = "f7a8b9c0d1e2"
+down_revision: Union[str, Sequence[str], None] = "e6f7a8b9c0d1"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

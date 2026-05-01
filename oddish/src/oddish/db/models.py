@@ -171,6 +171,18 @@ class WorkerJobStatus(str, Enum):
     BLOCKED = "BLOCKED"
 
 
+class JobKind(str, Enum):
+    """User-visible categorization of a Job (a batch of trials).
+
+    Reporting metadata only -- the execution path is identical across
+    kinds. The label only affects how jobs surface in UI / CLI listings.
+    """
+
+    VALIDATION = "validation"
+    EXPERIMENT_BACKFILL = "experiment_backfill"
+    AD_HOC = "ad_hoc"
+
+
 # =============================================================================
 # SQLAlchemy Models (Database Tables)
 # =============================================================================
@@ -234,6 +246,64 @@ class ExperimentModel(TimestampedMixin, Base):
         lazy="selectin",
         passive_deletes=True,
     )
+
+
+class JobModel(TimestampedMixin, Base):
+    """User-visible batch of trials.
+
+    A Job is the unit of "I just launched some work". It groups the
+    trials produced together so the UI / CLI can show what was run side
+    by side, who launched it, and what kind of run it was (validation,
+    experiment backfill, ad-hoc).
+
+    Aggregate status is computed at read time by joining child
+    ``worker_jobs`` rows; we deliberately do not denormalize a status
+    column here -- there is no source of truth to point at, and lazy
+    aggregation is cheap.
+    """
+
+    __tablename__ = "jobs"
+    __table_args__ = (
+        Index("idx_jobs_org_launched_at", "org_id", "launched_at"),
+        Index(
+            "idx_jobs_triggered_by_experiment",
+            "triggered_by_experiment_id",
+            postgresql_where=text("triggered_by_experiment_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    kind: Mapped[JobKind] = mapped_column(
+        SQLEnum(
+            JobKind,
+            name="job_kind",
+            native_enum=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Cosmetic backreference: when a Job is enqueued by hitting "backfill"
+    # on an experiment, we record which experiment triggered it so the UI
+    # can surface "jobs for experiment X". Not load-bearing -- the
+    # experiment's evidence pool is a query over (task_version, agent),
+    # not over jobs.
+    triggered_by_experiment_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("experiments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    launched_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    launched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
 
 class TaskModel(TimestampedMixin, Base):
@@ -414,6 +484,18 @@ class TrialModel(TimestampedMixin, Base):
         nullable=False,
         index=True,
     )
+    # User-visible batch this trial was produced by. Nullable because it
+    # is added in P1 and backfilled. Will become the primary provenance
+    # link once ``experiment_id`` is dropped in P5.
+    job_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    # Canonical hash of (harness, model, provider) for evidence aggregation.
+    # See ``oddish.core.agent_identity.compute_agent_equivalence_key``.
+    # Nullable in P1 (backfill); planned NOT NULL after backfill bake.
+    agent_equivalence_key: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
 
     # -------------------------------------------------------------------------
     # Cloud-ready column (denormalized for efficient org-scoped queries)
@@ -589,6 +671,19 @@ class TrialModel(TimestampedMixin, Base):
             "model",
             "provider",
         ),
+        # Task-first read path: "evidence for (task_version, agent)".
+        # The cell-matrix experiment view and validation surfaces hit
+        # this composite -- it's the load-bearing index of P1.
+        Index(
+            "idx_trials_task_version_agent",
+            "task_version_id",
+            "agent_equivalence_key",
+        ),
+        Index(
+            "idx_trials_job_id",
+            "job_id",
+            postgresql_where=text("job_id IS NOT NULL"),
+        ),
     )
 
 
@@ -676,6 +771,16 @@ class WorkerJobModel(TimestampedMixin, Base):
         nullable=True,
     )
 
+    # User-visible batch (``jobs.id``) this work belongs to. Lets the UI
+    # show "what's currently running for Job X" without scanning all
+    # work. Nullable: predates this concept and is set by enqueue helpers
+    # going forward.
+    user_job_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("jobs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     payload: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
@@ -760,5 +865,11 @@ class WorkerJobModel(TimestampedMixin, Base):
             "org_id",
             "status",
             postgresql_where=text("org_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_worker_jobs_user_job",
+            "user_job_id",
+            "status",
+            postgresql_where=text("user_job_id IS NOT NULL"),
         ),
     )
