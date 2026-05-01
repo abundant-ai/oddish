@@ -36,27 +36,20 @@ export function Nav() {
         <div className="flex w-full items-center justify-between">
           {/* Left side - primary nav */}
           <div className="flex items-center gap-4">
-            <Button
-              variant={pathname === "/dashboard" ? "secondary" : "ghost"}
-              size="sm"
-              asChild
-              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+            <Link
+              href="/tasks"
+              className="flex items-center gap-2 font-mono text-sm font-semibold tracking-tight"
+              aria-label="Oddish home"
             >
-              <Link
-                href="/dashboard"
-                className="flex items-center gap-2"
-                data-active={pathname === "/dashboard"}
-              >
-                <Image
-                  src="/oddish.png"
-                  alt="Oddish"
-                  width={24}
-                  height={24}
-                  className="drop-shadow-xs"
-                />
-                <span>Dashboard</span>
-              </Link>
-            </Button>
+              <Image
+                src="/oddish.png"
+                alt="Oddish"
+                width={24}
+                height={24}
+                className="drop-shadow-xs"
+              />
+              <span className="hidden sm:inline">oddish</span>
+            </Link>
             <Button
               variant={pathname === "/tasks" ? "secondary" : "ghost"}
               size="sm"
