@@ -174,6 +174,7 @@ export interface Task {
   current_version?: number | null;
   current_version_id?: string | null;
   trials?: Trial[] | null;
+  tags?: Record<string, string>;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -207,6 +208,7 @@ export interface TaskBrowseItem {
   last_run_at?: string | null;
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
+  tags?: Record<string, string>;
 }
 
 export interface TaskBrowseResponse {

@@ -684,6 +684,7 @@ class TaskBrowseItem(BaseModel):
     last_run_at: datetime | None = None
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+    tags: dict[str, str] = Field(default_factory=dict)
 
 
 class TaskBrowseResponse(BaseModel):
@@ -726,6 +727,7 @@ class TaskStatusResponse(BaseModel):
         description="Active/recent worker_jobs rows for this task and its trials",
     )
     trials: list[TrialResponse] | None = None
+    tags: dict[str, str] = Field(default_factory=dict)
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None

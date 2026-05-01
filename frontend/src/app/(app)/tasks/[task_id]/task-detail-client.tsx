@@ -193,6 +193,21 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
             {task?.id ?? ""} · {sortedVersions.length} version
             {sortedVersions.length === 1 ? "" : "s"}
           </p>
+          {task?.tags && Object.keys(task.tags).length > 0 ? (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {Object.entries(task.tags)
+                .filter(([k]) => !k.startsWith("github_"))
+                .map(([k, v]) => (
+                  <Badge
+                    key={k}
+                    variant="secondary"
+                    className="font-mono text-[10px]"
+                  >
+                    {k}={v}
+                  </Badge>
+                ))}
+            </div>
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
           {sortedVersions.length > 0 ? (

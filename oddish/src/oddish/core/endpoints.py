@@ -353,6 +353,7 @@ async def browse_tasks_core(
             TaskModel.current_version_id.label("current_version_id"),
             current_version.version.label("current_version"),
             TaskModel.created_at.label("created_at"),
+            TaskModel.tags.label("tags"),
             func.row_number()
             .over(
                 partition_by=TaskModel.name,
@@ -584,6 +585,7 @@ async def browse_tasks_core(
                 last_run_at=row["last_run_at"],
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),
+                tags=dict(row["tags"] or {}),
             )
             for row in visible_rows
         ],
