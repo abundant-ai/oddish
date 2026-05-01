@@ -262,6 +262,21 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
               <Badge variant="outline" className="w-fit font-mono text-[11px]">
                 v{task.current_version ?? "—"}
               </Badge>
+              {task.tags && Object.keys(task.tags).length > 0 ? (
+                <div className="flex flex-wrap gap-1">
+                  {Object.entries(task.tags)
+                    .filter(([k]) => k !== "github_username" && !k.startsWith("github_"))
+                    .map(([k, v]) => (
+                      <Badge
+                        key={k}
+                        variant="secondary"
+                        className="font-mono text-[10px]"
+                      >
+                        {k}={v}
+                      </Badge>
+                    ))}
+                </div>
+              ) : null}
             </div>
           </div>
           <div className="shrink-0 text-right">

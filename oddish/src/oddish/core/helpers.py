@@ -682,6 +682,7 @@ def _build_task_status_response(
         verdict=task.verdict,
         verdict_error=task.verdict_error,
         jobs=list(jobs or []),
+        tags=dict(task.tags or {}),
         created_at=task.created_at,
         started_at=task.started_at,
         finished_at=task.finished_at,
