@@ -548,6 +548,11 @@ async def _read_trial_trajectory_summary_uncached(trial: TrialModel) -> dict | N
         except Exception:
             continue
 
+    # Unlike _read_trial_trajectory_uncached, we do not fall back to
+    # listing the entire prefix: summaries are always written by
+    # _write_trial_trajectory_summary at the canonical key, so any
+    # non-canonical placement implies the file genuinely does not exist
+    # and should trigger a regenerate.
     if not trial.harbor_result_path:
         return None
     trial_paths = _resolve_local_trial_paths(trial)
@@ -611,6 +616,9 @@ async def read_trial_trajectory_summary(trial: TrialModel) -> dict | None:
 
         trajectory = await _read_trial_trajectory_uncached(trial)
         if trajectory is None:
+            # _cache_get can't distinguish a cached None from a miss, so
+            # caching None here would not short-circuit subsequent reads.
+            # Skipping the cache_set is intentional.
             return None
 
         # Lazy import to avoid pulling backend service code into oddish
