@@ -319,7 +319,7 @@ async def add_cell_core(
         )
     )
     await session.execute(insert_stmt)
-    await session.commit()
+    await session.flush()
 
     cell = (
         await session.execute(
@@ -354,7 +354,7 @@ async def update_cell_core(
     if cell is None:
         raise HTTPException(status_code=404, detail="Cell not found")
     cell.target_n_trials = payload.target_n_trials
-    await session.commit()
+    await session.flush()
     return _cell_to_response(cell)
 
 
@@ -374,4 +374,4 @@ async def delete_cell_core(
     )
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Cell not found")
-    await session.commit()
+    await session.flush()
