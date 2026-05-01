@@ -428,6 +428,81 @@ export function ExperimentClientPage({
     }, 2000);
   };
 
+  const experimentHeader = experimentId ? (
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      {isEditingName ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            value={nameDraft}
+            onChange={(event) => setNameDraft(event.target.value)}
+            className="h-10 w-[320px] border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] font-mono text-[22px] font-semibold tracking-[-0.02em]"
+            placeholder="Experiment name"
+          />
+          <Button
+            type="button"
+            size="sm"
+            className="h-8"
+            onClick={handleRename}
+            disabled={isSavingName}
+          >
+            {isSavingName ? "Saving..." : "Save"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8"
+            onClick={() => setIsEditingName(false)}
+            disabled={isSavingName}
+          >
+            Cancel
+          </Button>
+        </div>
+      ) : (
+        <div className="flex min-w-0 items-center gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={handleCopyExperimentName}
+            className="h-auto min-w-0 max-w-full cursor-pointer justify-start truncate rounded-sm bg-transparent p-0 pb-1 text-left font-mono text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)] transition hover:bg-transparent hover:text-[color:var(--paper-ink-2)]"
+            aria-label={`Copy experiment name ${displayName}`}
+            title={
+              copiedExperimentName
+                ? "Copied"
+                : "Click to copy experiment name"
+            }
+          >
+            <h1 className="truncate">{displayName}</h1>
+          </Button>
+          {copiedExperimentName && (
+            <span
+              aria-live="polite"
+              className="font-mono text-[11px] text-[color:var(--paper-ink-3)]"
+            >
+              copied
+            </span>
+          )}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={() => setIsEditingName(true)}
+            disabled={!experimentId}
+            className="h-6 w-6 rounded-sm text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] disabled:opacity-50"
+            aria-label="Rename experiment"
+            title="Rename experiment"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      )}
+      <ExperimentShareButton
+        experimentId={experimentId}
+        canManageShare={canManageExperimentShare}
+      />
+    </div>
+  ) : null;
+
   return (
     <div className="space-y-4">
       {!experimentId ? (
@@ -438,94 +513,35 @@ export function ExperimentClientPage({
           </AlertDescription>
         </Alert>
       ) : (
-        <Tabs defaultValue="cells" className="space-y-4">
-          <TabsList>
-            <TabsTrigger value="cells">Cells</TabsTrigger>
-            <TabsTrigger value="trials">Trials (legacy)</TabsTrigger>
-          </TabsList>
-          <TabsContent value="cells" className="mt-0">
-            <div className="rounded-md border bg-card p-4">
-              <ExperimentCellMatrix
-                experimentId={experimentId}
-                canEdit={canManageExperimentShare}
-              />
-            </div>
-          </TabsContent>
-          <TabsContent value="trials" className="mt-0">
-            <ExperimentDetailView
+        <>
+          {experimentHeader}
+          {nameError ? (
+            <Alert variant="destructive">
+              <AlertTitle>Rename failed</AlertTitle>
+              <AlertDescription>{nameError}</AlertDescription>
+            </Alert>
+          ) : null}
+          <Tabs defaultValue="cells" className="space-y-4">
+            <TabsList>
+              <TabsTrigger value="cells">Cells</TabsTrigger>
+              <TabsTrigger value="trials">Trials (legacy)</TabsTrigger>
+            </TabsList>
+            <TabsContent value="cells" className="mt-0">
+              <div className="rounded-md border bg-card p-4">
+                <ExperimentCellMatrix
+                  experimentId={experimentId}
+                  canEdit={canManageExperimentShare}
+                />
+              </div>
+            </TabsContent>
+            <TabsContent value="trials" className="mt-0">
+              <ExperimentDetailView
           experimentId={experimentId}
           tasksForExperiment={tasksForExperiment}
           isLoading={isLoading}
           isLoadingTrials={isLoadingTrials}
           hasError={Boolean(lightweightError)}
-          headerLeft={
-            isEditingName ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  value={nameDraft}
-                  onChange={(event) => setNameDraft(event.target.value)}
-                  className="h-10 w-[320px] border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] font-mono text-[22px] font-semibold tracking-[-0.02em]"
-                  placeholder="Experiment name"
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  className="h-8"
-                  onClick={handleRename}
-                  disabled={isSavingName}
-                >
-                  {isSavingName ? "Saving..." : "Save"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-8"
-                  onClick={() => setIsEditingName(false)}
-                  disabled={isSavingName}
-                >
-                  Cancel
-                </Button>
-              </div>
-            ) : (
-              <div className="flex min-w-0 items-center gap-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={handleCopyExperimentName}
-                  className="h-auto min-w-0 max-w-full cursor-pointer justify-start truncate rounded-sm bg-transparent p-0 pb-1 text-left font-mono text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)] transition hover:bg-transparent hover:text-[color:var(--paper-ink-2)]"
-                  aria-label={`Copy experiment name ${displayName}`}
-                  title={
-                    copiedExperimentName
-                      ? "Copied"
-                      : "Click to copy experiment name"
-                  }
-                >
-                  <h1 className="truncate">{displayName}</h1>
-                </Button>
-                {copiedExperimentName && (
-                  <span
-                    aria-live="polite"
-                    className="font-mono text-[11px] text-[color:var(--paper-ink-3)]"
-                  >
-                    copied
-                  </span>
-                )}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setIsEditingName(true)}
-                  disabled={!experimentId}
-                  className="h-6 w-6 rounded-sm text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] disabled:opacity-50"
-                  aria-label="Rename experiment"
-                  title="Rename experiment"
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            )
-          }
+          headerLeft={null}
           headerStatus={
             isLoadingTrials ? (
               <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
@@ -540,55 +556,40 @@ export function ExperimentClientPage({
               </div>
             ) : null
           }
-          headerRight={
-            experimentId ? (
-              <ExperimentShareButton
-                experimentId={experimentId}
-                canManageShare={canManageExperimentShare}
-              />
-            ) : null
-          }
+          headerRight={null}
           inlineAlert={
-            <>
-              {nameError ? (
-                <Alert variant="destructive">
-                  <AlertTitle>Rename failed</AlertTitle>
-                  <AlertDescription>{nameError}</AlertDescription>
-                </Alert>
-              ) : null}
-              {remainingTrialTaskCount > 0 ? (
-                <Alert>
-                  <AlertTitle>Trial details are loading on demand</AlertTitle>
-                  <AlertDescription className="flex flex-wrap items-center gap-2">
-                    <span>
-                      Loaded compact trial data for {trialsLoadedCount}/
-                      {totalTaskCount} tasks.
-                    </span>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="h-7"
-                      onClick={loadMoreTrials}
-                      disabled={!canLoadMoreTrials}
-                    >
-                      Load next{" "}
-                      {Math.min(TRIALS_BATCH_SIZE, remainingTrialTaskCount)}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-7"
-                      onClick={loadAllTrials}
-                      disabled={!canLoadAllTrials}
-                    >
-                      Load all
-                    </Button>
-                  </AlertDescription>
-                </Alert>
-              ) : null}
-            </>
+            remainingTrialTaskCount > 0 ? (
+              <Alert>
+                <AlertTitle>Trial details are loading on demand</AlertTitle>
+                <AlertDescription className="flex flex-wrap items-center gap-2">
+                  <span>
+                    Loaded compact trial data for {trialsLoadedCount}/
+                    {totalTaskCount} tasks.
+                  </span>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="h-7"
+                    onClick={loadMoreTrials}
+                    disabled={!canLoadMoreTrials}
+                  >
+                    Load next{" "}
+                    {Math.min(TRIALS_BATCH_SIZE, remainingTrialTaskCount)}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7"
+                    onClick={loadAllTrials}
+                    disabled={!canLoadAllTrials}
+                  >
+                    Load all
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            ) : null
           }
           readOnly={false}
           allowRetry
@@ -598,6 +599,7 @@ export function ExperimentClientPage({
         />
           </TabsContent>
         </Tabs>
+        </>
       )}
     </div>
   );
