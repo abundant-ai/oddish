@@ -298,9 +298,28 @@ async def _create_probe_sweep(
     agent = (first_config.agent if first_config else None) or "claude-code"
     model = (first_config.model if first_config else None) or "claude-sonnet-4-6"
 
+    extra_instructions = submission.extra_instructions or ""
+    prior_cfg = submission.prior_attempts_config or {}
+    if prior_cfg.get("enabled") and submission.preset_name:
+        from oddish.core.prior_attempts import (
+            fetch_prior_attempts,
+            format_prior_attempts_block,
+        )
+
+        async with get_session() as session:
+            prior = await fetch_prior_attempts(
+                session=session,
+                task_id=submission.task_id,
+                preset_name=submission.preset_name,
+                filter_config=prior_cfg,
+            )
+        block = format_prior_attempts_block(prior)
+        if block:
+            extra_instructions = block + extra_instructions
+
     harbor_config = {
         "mode": "probe",
-        "extra_instructions": submission.extra_instructions or "",
+        "extra_instructions": extra_instructions,
         "evaluation_metric": submission.evaluation_metric,
         "ratio_unit": submission.ratio_unit,
         "ratio_verb": submission.ratio_verb,
@@ -312,7 +331,7 @@ async def _create_probe_sweep(
         task_id=submission.task_id,
         agent=agent,
         model=model,
-        extra_instructions=submission.extra_instructions or "",
+        extra_instructions=extra_instructions,
         timeout_minutes=30,
         metadata={"harbor_config": harbor_config},
     )
