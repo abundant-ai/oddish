@@ -117,9 +117,18 @@ async def _resolve_actor_user(
     session: AsyncSession,
     auth: AuthContext,
 ) -> UserModel | None:
-    """Return the UserModel of the authenticating principal, or None."""
+    """Return the UserModel of the authenticating principal, or None.
+
+    The auth dependency caches lightweight identity tuples — on cache hits
+    the ORM ``user`` / ``api_key`` objects are stripped and only the IDs are
+    available, so we lazy-load via ``session.get`` when needed.
+    """
     if auth.user is not None:
         return auth.user
+    if auth.user_id:
+        user = await session.get(UserModel, auth.user_id)
+        if user is not None:
+            return user
     if auth.api_key_id:
         api_key = auth.api_key or await session.get(APIKeyModel, auth.api_key_id)
         if api_key and api_key.created_by_user_id:
@@ -138,11 +147,9 @@ async def _resolve_actor_user_string(
     Precedence:
       1. explicit_user (e.g. --user)
       2. explicit_github_username (e.g. --github-user)
-      3. actor's UserModel.github_username (Clerk OAuth identity)
-      4. actor's UserModel.name (Clerk display name)
-      5. actor's UserModel.email
-      6. api_key.name (service-account API keys with no linked user)
-      7. "unknown" (so tasks.user is never empty)
+      3. actor's UserModel.email (the stable Clerk-backed identity)
+      4. api_key.name (service-account API keys with no linked user)
+      5. "unknown" (so tasks.user is never empty)
     """
     if explicit_user:
         return explicit_user
@@ -150,10 +157,8 @@ async def _resolve_actor_user_string(
         return explicit_github_username
 
     actor = await _resolve_actor_user(session, auth)
-    if actor:
-        resolved = actor.github_username or actor.name or actor.email
-        if resolved:
-            return resolved
+    if actor and actor.email:
+        return actor.email
 
     if auth.api_key_id:
         api_key = auth.api_key or await session.get(APIKeyModel, auth.api_key_id)

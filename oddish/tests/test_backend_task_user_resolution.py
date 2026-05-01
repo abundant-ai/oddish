@@ -132,8 +132,8 @@ def test_explicit_github_username_used_when_no_user():
     assert result == "alice-gh"
 
 
-def test_api_key_resolves_to_linked_user_github_username():
-    user = _UserStub(id="u1", github_username="alice-gh", name="Alice", email="a@x")
+def test_api_key_resolves_to_linked_user_email():
+    user = _UserStub(id="u1", github_username="alice-gh", name="Alice", email="alice@example.com")
     api_key = _APIKeyStub(id="k1", name="ci-bot", created_by_user_id="u1")
     auth = _AuthStub(api_key_id="k1", api_key=api_key)
     session = _SessionStub(objects={(_UserStub, "u1"): user})
@@ -142,37 +142,12 @@ def test_api_key_resolves_to_linked_user_github_username():
             session, auth, explicit_user=None, explicit_github_username=None
         )
     )
-    assert result == "alice-gh"
-
-
-def test_api_key_falls_back_to_name_when_no_github_username():
-    user = _UserStub(id="u1", github_username=None, name="Alice", email="a@x")
-    api_key = _APIKeyStub(id="k1", name="ci-bot", created_by_user_id="u1")
-    auth = _AuthStub(api_key_id="k1", api_key=api_key)
-    session = _SessionStub(objects={(_UserStub, "u1"): user})
-    result = _run(
-        _resolve_actor_user_string(
-            session, auth, explicit_user=None, explicit_github_username=None
-        )
-    )
-    assert result == "Alice"
-
-
-def test_api_key_falls_back_to_email_when_no_github_username_or_name():
-    user = _UserStub(id="u1", github_username=None, name=None, email="alice@example.com")
-    api_key = _APIKeyStub(id="k1", name="ci-bot", created_by_user_id="u1")
-    auth = _AuthStub(api_key_id="k1", api_key=api_key)
-    session = _SessionStub(objects={(_UserStub, "u1"): user})
-    result = _run(
-        _resolve_actor_user_string(
-            session, auth, explicit_user=None, explicit_github_username=None
-        )
-    )
+    # When UserModel is present, only email is used — never github_username/name.
     assert result == "alice@example.com"
 
 
-def test_clerk_jwt_uses_auth_user_directly():
-    user = _UserStub(id="u1", github_username="bob", name=None, email="bob@x")
+def test_clerk_jwt_uses_auth_user_email():
+    user = _UserStub(id="u1", github_username="bob", name="Bob", email="bob@example.com")
     auth = _AuthStub(user=user, user_id="u1")
     session = _SessionStub()  # no DB load needed
     result = _run(
@@ -180,7 +155,23 @@ def test_clerk_jwt_uses_auth_user_directly():
             session, auth, explicit_user=None, explicit_github_username=None
         )
     )
-    assert result == "bob"
+    assert result == "bob@example.com"
+
+
+def test_clerk_jwt_cache_hit_lazy_loads_user():
+    """Auth dependency strips the ORM user object on cache hits — verify we
+    re-fetch via session.get(UserModel, auth.user_id) so the cached request
+    still resolves to the real Clerk identity instead of falling back to
+    "unknown"."""
+    user = _UserStub(id="u1", github_username=None, name=None, email="cached@example.com")
+    auth = _AuthStub(user_id="u1")  # no .user (cache-hit shape)
+    session = _SessionStub(objects={(_UserStub, "u1"): user})
+    result = _run(
+        _resolve_actor_user_string(
+            session, auth, explicit_user=None, explicit_github_username=None
+        )
+    )
+    assert result == "cached@example.com"
 
 
 def test_service_account_api_key_falls_back_to_key_name():
@@ -206,8 +197,8 @@ def test_no_actor_falls_back_to_unknown():
     assert result == "unknown"
 
 
-def test_actor_with_only_empty_strings_falls_back_to_api_key_name():
-    user = _UserStub(id="u1", github_username="", name="", email="")
+def test_actor_with_empty_email_falls_back_to_api_key_name():
+    user = _UserStub(id="u1", github_username="alice-gh", name="Alice", email="")
     api_key = _APIKeyStub(id="k1", name="ci-bot", created_by_user_id="u1")
     auth = _AuthStub(api_key_id="k1", api_key=api_key)
     session = _SessionStub(objects={(_UserStub, "u1"): user})
@@ -219,13 +210,22 @@ def test_actor_with_only_empty_strings_falls_back_to_api_key_name():
     assert result == "ci-bot"
 
 
-def test_resolve_actor_user_prefers_auth_user_over_api_key_lookup():
-    """If both auth.user and auth.api_key are set, auth.user wins (no DB hit)."""
-    direct_user = _UserStub(id="u-direct", github_username="direct")
+def test_resolve_actor_user_prefers_auth_user_over_lookup():
+    """If auth.user is set, it wins — no DB hit needed."""
+    direct_user = _UserStub(id="u-direct", email="direct@example.com")
     auth = _AuthStub(api_key_id="k1", api_key=_APIKeyStub(id="k1"), user=direct_user)
-    session = _SessionStub()  # session.get would return None — this proves we don't call it
+    session = _SessionStub()  # session.get would return None — proves we don't call it
     actor = _run(_resolve_actor_user(session, auth))
     assert actor is direct_user
+
+
+def test_resolve_actor_user_lazy_loads_via_user_id_on_cache_hit():
+    """Clerk JWT cache hits drop the ORM user; we must lazy-load via user_id."""
+    user = _UserStub(id="u1", email="cached@example.com")
+    auth = _AuthStub(user_id="u1")  # no .user
+    session = _SessionStub(objects={(_UserStub, "u1"): user})
+    actor = _run(_resolve_actor_user(session, auth))
+    assert actor is user
 
 
 def test_resolve_actor_user_returns_none_when_unauthenticated():
