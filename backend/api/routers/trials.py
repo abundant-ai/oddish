@@ -44,6 +44,8 @@ from oddish.schemas import (
 
 import logging
 
+from api.services.summarize_trajectory import SummaryGenerationError
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Trials"])
@@ -271,13 +273,14 @@ async def get_trial_trajectory_summary(
     404 when the trial has no trajectory to summarize, 502 if generation
     fails or the model returns malformed JSON.
     """
-    from api.services.summarize_trajectory import SummaryGenerationError
-
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
     try:
         summary = await read_trial_trajectory_summary(trial)
     except SummaryGenerationError as e:
+        logger.error(
+            "Trajectory summary generation failed for trial %s: %s", trial_id, e
+        )
         raise HTTPException(
             status_code=502, detail=f"Summary generation failed: {e}"
         )
