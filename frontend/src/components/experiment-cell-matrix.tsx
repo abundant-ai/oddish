@@ -102,8 +102,13 @@ function pivotCells(cells: ResolvedExperimentCell[]): Pivot {
 }
 
 function formatAgentLabel(agent: ExperimentCellAgent): string {
-  const model = agent.model ? ` · ${agent.model}` : "";
+  const model =
+    agent.model && agent.model !== "default" ? ` · ${agent.model}` : "";
   return `${agent.harness}${model}`;
+}
+
+function shouldShowProvider(provider: string | undefined | null): boolean {
+  return Boolean(provider) && provider !== "default";
 }
 
 function formatReward(reward: number | null | undefined): string {
@@ -809,9 +814,11 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
                   className="whitespace-nowrap text-center font-mono text-xs"
                 >
                   {formatAgentLabel(agent)}
-                  <div className="text-[10px] font-normal text-muted-foreground">
-                    {agent.provider}
-                  </div>
+                  {shouldShowProvider(agent.provider) ? (
+                    <div className="text-[10px] font-normal text-muted-foreground">
+                      {agent.provider}
+                    </div>
+                  ) : null}
                 </TableHead>
               ))}
             </TableRow>

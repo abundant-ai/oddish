@@ -208,18 +208,29 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
         : null,
     [trialsForVersion, inspectingTrialId],
   );
+  const inspectingAgentSiblings = useMemo<Trial[]>(() => {
+    if (!inspectingTrial) return [];
+    const k = `${(inspectingTrial.agent ?? "").toLowerCase()}|${(inspectingTrial.model ?? "").toLowerCase()}|${(inspectingTrial.provider ?? "").toLowerCase()}`;
+    return trialsForVersion.filter(
+      (t) =>
+        `${(t.agent ?? "").toLowerCase()}|${(t.model ?? "").toLowerCase()}|${(t.provider ?? "").toLowerCase()}` ===
+        k,
+    );
+  }, [inspectingTrial, trialsForVersion]);
+
   const inspectingIndex = useMemo(
     () =>
       inspectingTrialId
-        ? trialsForVersion.findIndex((t) => t.id === inspectingTrialId)
+        ? inspectingAgentSiblings.findIndex((t) => t.id === inspectingTrialId)
         : -1,
-    [trialsForVersion, inspectingTrialId],
+    [inspectingAgentSiblings, inspectingTrialId],
   );
   const prevTrial =
-    inspectingIndex > 0 ? trialsForVersion[inspectingIndex - 1] : null;
+    inspectingIndex > 0 ? inspectingAgentSiblings[inspectingIndex - 1] : null;
   const nextTrial =
-    inspectingIndex >= 0 && inspectingIndex < trialsForVersion.length - 1
-      ? trialsForVersion[inspectingIndex + 1]
+    inspectingIndex >= 0 &&
+    inspectingIndex < inspectingAgentSiblings.length - 1
+      ? inspectingAgentSiblings[inspectingIndex + 1]
       : null;
 
   if (taskError) {
@@ -321,31 +332,20 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
         ) : null}
 
         <div className="grid min-h-[70vh] grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
-          {/* Left: files panel (task bundle, or trial outputs when inspecting) */}
+          {/* Left: task files (always; doesn't reload when inspecting). */}
           <div className="flex min-h-0 flex-col border-b lg:border-b-0 lg:border-r">
             <div className="shrink-0 border-b px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              {inspectingTrial ? "Trial files" : "Task files"}
+              Task files
             </div>
             <div className="min-h-0 flex-1 overflow-hidden">
-              {inspectingTrial ? (
-                <TaskFilesPanel
-                  key={`trial-files-${inspectingTrial.id}`}
-                  isOpen={true}
-                  onClose={() => {}}
-                  taskId={null}
-                  filesUrl={`/api/trials/${encodeURIComponent(inspectingTrial.id)}/files`}
-                  contentOnly
-                />
-              ) : (
-                <TaskFilesPanel
-                  key={`task-files-${activeVersionId ?? "none"}`}
-                  isOpen={true}
-                  onClose={() => {}}
-                  taskId={taskId}
-                  task={task ?? null}
-                  contentOnly
-                />
-              )}
+              <TaskFilesPanel
+                key={`task-files-${activeVersionId ?? "none"}`}
+                isOpen={true}
+                onClose={() => {}}
+                taskId={taskId}
+                task={task ?? null}
+                contentOnly
+              />
             </div>
           </div>
 
@@ -353,34 +353,36 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
           <div className="flex min-h-0 flex-col">
             {inspectingTrial && task ? (
               <>
-                <div className="flex items-center gap-2 border-b px-5 py-2">
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-7 w-7"
-                    disabled={!prevTrial}
-                    onClick={() =>
-                      prevTrial && setInspectingTrialId(prevTrial.id)
-                    }
-                    title="Previous trial"
-                  >
-                    <ChevronLeft className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-7 w-7"
-                    disabled={!nextTrial}
-                    onClick={() =>
-                      nextTrial && setInspectingTrialId(nextTrial.id)
-                    }
-                    title="Next trial"
-                  >
-                    <ChevronRight className="h-4 w-4" />
-                  </Button>
-                  <div className="flex-1 truncate text-xs text-muted-foreground">
-                    Trial {inspectingIndex + 1} of {trialsForVersion.length} ·{" "}
-                    <span className="font-mono">{inspectingTrial.id}</span>
+                <div className="flex items-center justify-between gap-2 border-b px-5 py-2">
+                  <div className="flex items-center gap-1">
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      disabled={!prevTrial}
+                      onClick={() =>
+                        prevTrial && setInspectingTrialId(prevTrial.id)
+                      }
+                      title="Previous trial for this agent"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      disabled={!nextTrial}
+                      onClick={() =>
+                        nextTrial && setInspectingTrialId(nextTrial.id)
+                      }
+                      title="Next trial for this agent"
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                    <span className="ml-1 text-[11px] text-muted-foreground">
+                      {inspectingIndex + 1} / {inspectingAgentSiblings.length}{" "}
+                      for this agent
+                    </span>
                   </div>
                   <Button
                     size="sm"
@@ -397,12 +399,11 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
                     onClose={() => setInspectingTrialId(null)}
                     trial={inspectingTrial}
                     task={task}
-                    orderedTrials={trialsForVersion}
+                    orderedTrials={inspectingAgentSiblings}
                     trialIndex={inspectingIndex}
                     onNavigate={(t) => setInspectingTrialId(t.id)}
                     allowRetry
                     contentOnly
-                    hideFilesTab
                   />
                 </div>
               </>
@@ -488,10 +489,15 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
                               >
                                 <TableCell className="font-mono text-xs font-semibold">
                                   {agent.agent}
-                                  {agent.model ? ` · ${agent.model}` : ""}
-                                  <span className="ml-1 text-[10px] font-normal text-muted-foreground">
-                                    {agent.provider}
-                                  </span>
+                                  {agent.model && agent.model !== "default"
+                                    ? ` · ${agent.model}`
+                                    : ""}
+                                  {agent.provider &&
+                                  agent.provider !== "default" ? (
+                                    <span className="ml-1 text-[10px] font-normal text-muted-foreground">
+                                      {agent.provider}
+                                    </span>
+                                  ) : null}
                                 </TableCell>
                                 <TableCell className="font-mono text-xs">
                                   <span className="text-emerald-700 dark:text-emerald-400">
@@ -509,9 +515,6 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
                                     </span>
                                   ) : null}
                                 </TableCell>
-                                <TableCell className="text-right font-mono text-xs">
-                                  {fmt(agent.meanReward)}
-                                </TableCell>
                                 <TableCell className="text-right text-xs text-muted-foreground">
                                   {agent.passRate === null
                                     ? "—"
@@ -520,6 +523,7 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
                                 <TableCell className="text-right text-xs text-muted-foreground">
                                   {rel(agent.lastRunAt)}
                                 </TableCell>
+                                <TableCell />
                               </TableRow>
                               {agentTrials.map((t) => (
                                 <TableRow key={t.id}>
