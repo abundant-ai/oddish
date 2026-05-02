@@ -874,8 +874,8 @@ wheels = [
 
 [[package]]
 name = "harbor"
-version = "0.6.2"
-source = { registry = "https://pypi.org/simple" }
+version = "0.6.4"
+source = { git = "https://github.com/rishidesai/harbor?branch=main#3b81c93d9928a1ec47f627d962c7258d20aa3843" }
 dependencies = [
     { name = "claude-agent-sdk" },
     { name = "datasets" },
@@ -898,10 +898,6 @@ dependencies = [
     { name = "toml" },
     { name = "typer" },
     { name = "uvicorn" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/70/16/3f08efe420192b6f22f87ec09c66cc51a020a663f4acf5227e069081d122/harbor-0.6.2.tar.gz", hash = "sha256:61eddc21e185380d542cc00d4cca949e3c68293cf30fcc7b826bd676834610ae", size = 980453, upload-time = "2026-04-30T06:01:53.625Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b7/cd/68ac50c9e60973fa33bc5e47c14c48e5369cddb0d209a09bc515a9664820/harbor-0.6.2-py3-none-any.whl", hash = "sha256:94324b70e51d6646823f3460bcb1e97a49f86b16b2d98b2a53c9f3057c7097b1", size = 1112035, upload-time = "2026-04-30T06:01:55.19Z" },
 ]
 
 [[package]]
@@ -1574,7 +1570,7 @@ requires-dist = [
     { name = "asyncpg", marker = "extra == 'server'", specifier = "==0.31.0" },
     { name = "fastapi", marker = "extra == 'server'", specifier = "==0.128.0" },
     { name = "google-generativeai", marker = "extra == 'worker'", specifier = "==0.8.6" },
-    { name = "harbor", specifier = "==0.6.2" },
+    { name = "harbor", git = "https://github.com/rishidesai/harbor?branch=main" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "litellm", specifier = "==1.83.14" },
     { name = "modal", marker = "extra == 'worker'", specifier = "==1.4.2" },

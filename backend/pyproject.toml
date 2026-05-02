@@ -46,3 +46,7 @@ dev = [
 
 [tool.uv.sources]
 oddish = { path = "../oddish", editable = true }
+# Mirror oddish's harbor source so the backend's own resolution also
+# pulls harbor from the rishidesai/harbor fork (uv does not inherit
+# sources from transitive dependencies).
+harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }

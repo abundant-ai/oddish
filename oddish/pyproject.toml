@@ -37,8 +37,11 @@ dependencies = [
     # Validation & settings
     "pydantic==2.12.5",
     "pydantic-settings==2.12.0",
-    # Harbor (task models, agent config, dataset handling)
-    "harbor==0.6.2",
+    # Harbor (task models, agent config, dataset handling).
+    # Installed from the rishidesai/harbor fork's main branch via
+    # [tool.uv.sources] below.  When bumping, run
+    # ``uv lock --upgrade-package harbor`` to refresh the pinned commit.
+    "harbor",
     # Source-of-truth pricing table (`litellm.model_cost`) covering ~2,700
     # models.  See ``oddish.model_pricing`` for our fallback for brand-new
     # models not yet in the installed litellm release.  Bump this pin on a
@@ -86,6 +89,9 @@ Documentation = "https://github.com/abundant-ai/oddish/blob/main/DOCS.md"
 
 [project.scripts]
 oddish = "oddish.cli:app"
+
+[tool.uv.sources]
+harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
 
 [tool.hatch.build.targets.sdist]
 exclude = [".git", "uv.lock"]
