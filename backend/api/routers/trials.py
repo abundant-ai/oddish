@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import RedirectResponse
 from oddish.core.endpoints import (
     get_trial_by_index_core,
     get_task_for_org_core,
@@ -25,6 +26,7 @@ from oddish.core.public_helpers import (
     get_trial_file_content_s3,
     list_task_trials_for_task,
     list_trial_files_s3,
+    presign_trial_file_s3,
 )
 from auth import APIKeyScope, AuthContext, require_auth
 from oddish.db import (
@@ -212,11 +214,19 @@ async def get_trial_file(
 ) -> Response:
     """Get a file from a trial's S3 directory by relative path.
 
-    Tries the general S3 path first (any file in the trial directory),
-    then falls back to the agent/ subdirectory for backward compatibility.
+    Hot path: redirect to a short-lived presigned S3 URL so the browser
+    pulls bytes directly from S3 instead of streaming through Modal +
+    Vercel. Falls back to the bytes path (agent dir / local harbor
+    result) when the file isn't reachable via S3.
     """
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
+
+    presigned = await presign_trial_file_s3(trial, file_path)
+    if presigned:
+        # 307 preserves the GET method on the redirect.
+        return RedirectResponse(presigned, status_code=307)
+
     try:
         content, media_type = await get_trial_file_content_s3(trial, file_path)
         return Response(content=content, media_type=media_type)
