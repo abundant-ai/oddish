@@ -442,7 +442,7 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
                     </div>
                     <div>
                       <div className="text-[10px] uppercase text-muted-foreground">
-                        μ reward
+                        avg reward
                       </div>
                       <div className="font-mono">
                         {fmt(versionStats.meanReward)}
@@ -510,7 +510,7 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
                                   ) : null}
                                 </TableCell>
                                 <TableCell className="text-right font-mono text-xs">
-                                  μ {fmt(agent.meanReward)}
+                                  {fmt(agent.meanReward)}
                                 </TableCell>
                                 <TableCell className="text-right text-xs text-muted-foreground">
                                   {agent.passRate === null
