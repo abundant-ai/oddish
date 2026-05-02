@@ -30,6 +30,8 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Checkbox } from "@/components/ui/checkbox";
 import { TrialInspectDrawer } from "@/components/trial-inspect-drawer";
+import { ExperimentPassAtKGraph } from "@/components/experiment-pass-at-k";
+import { ExperimentLeaderboard } from "@/components/experiment-leaderboard";
 import { Plus, Pencil, X, Search, Eye, ExternalLink } from "lucide-react";
 import { fetcher } from "@/lib/api";
 import type {
@@ -80,10 +82,12 @@ interface CellTrial {
   provider: string;
 }
 
-function formatAgentLabel(agent: ExperimentCellAgent): string {
-  const model =
-    agent.model && agent.model !== "default" ? ` · ${agent.model}` : "";
-  return `${agent.harness}${model}`;
+function modelSubtitle(agent: ExperimentCellAgent): string {
+  const harnessLower = agent.harness.toLowerCase();
+  if (harnessLower === "oracle") return "reference solution";
+  if (harnessLower === "nop") return "do-nothing baseline";
+  if (agent.model && agent.model !== "default") return agent.model;
+  return agent.provider && agent.provider !== "default" ? agent.provider : "";
 }
 
 function shouldShowProvider(provider: string | undefined | null): boolean {
@@ -857,6 +861,16 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [isBackfilling, setIsBackfilling] = useState(false);
   const [jobsRefreshKey, setJobsRefreshKey] = useState(0);
+  const [hiddenAgents, setHiddenAgents] = useState<Set<string>>(new Set());
+
+  const toggleHiddenAgent = (eqKey: string) => {
+    setHiddenAgents((prev) => {
+      const next = new Set(prev);
+      if (next.has(eqKey)) next.delete(eqKey);
+      else next.add(eqKey);
+      return next;
+    });
+  };
 
   const targetN = data?.target_n_trials ?? 3;
   const tasks: ExperimentTaskRef[] = data?.tasks ?? [];
@@ -1112,46 +1126,63 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
         </div>
       ) : null}
 
+      {/* Graph + leaderboard sit above the matrix when there's enough
+          evidence to compute pass@k. Both auto-hide if the data is
+          too sparse. */}
+      <ExperimentPassAtKGraph
+        data={data}
+        hiddenAgents={hiddenAgents}
+        onToggleAgent={toggleHiddenAgent}
+      />
+      <ExperimentLeaderboard data={data} />
+
       {/* Empty + view mode: nothing to show */}
       {!editable && tasks.length === 0 && agents.length === 0 ? (
         <div className="rounded-sm border border-dashed p-6 text-center text-sm text-muted-foreground">
           Empty experiment. Switch to Edit to add tasks and agents.
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-sm border">
+        <div className="max-h-[70vh] overflow-auto rounded-sm border bg-card">
           <Table>
-            <TableHeader>
-              <TableRow>
-                {/* Top-left corner: intentionally empty */}
-                <TableHead className="sticky left-0 z-10 bg-card" />
+            <TableHeader className="sticky top-0 z-20">
+              <TableRow className="border-b-2 border-border bg-muted hover:bg-muted">
+                {/* Top-left corner: row #s + Task header */}
+                <TableHead className="sticky left-0 z-30 w-48 border-r border-border bg-muted font-mono font-bold text-foreground">
+                  <div className="flex items-center gap-2">
+                    <span className="w-6 flex-shrink-0 text-right text-xs text-muted-foreground">
+                      #
+                    </span>
+                    <span className="text-xs">Task</span>
+                  </div>
+                </TableHead>
                 {agents.map((agent) => (
                   <TableHead
                     key={agent.equivalence_key}
-                    className="whitespace-nowrap text-center font-mono text-xs"
+                    className="border-r border-border bg-muted px-2 text-center font-mono last:border-r-0"
                   >
-                    <div className="inline-flex items-center justify-center gap-1">
-                      <span>{formatAgentLabel(agent)}</span>
-                      {editable ? (
-                        <button
-                          type="button"
-                          aria-label="Remove agent"
-                          title="Remove agent"
-                          className="rounded-sm p-0.5 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
-                          onClick={() => onDeleteAgent(agent)}
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      ) : null}
-                    </div>
-                    {shouldShowProvider(agent.provider) ? (
-                      <div className="text-[10px] font-normal text-muted-foreground">
-                        {agent.provider}
+                    <div className="flex flex-col items-center gap-0.5">
+                      <div className="inline-flex items-center gap-1 text-xs font-bold text-foreground">
+                        <span className="truncate">{agent.harness}</span>
+                        {editable ? (
+                          <button
+                            type="button"
+                            aria-label="Remove agent"
+                            title="Remove agent"
+                            className="rounded-sm p-0.5 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+                            onClick={() => onDeleteAgent(agent)}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        ) : null}
                       </div>
-                    ) : null}
+                      <div className="truncate text-[10px] font-normal text-muted-foreground">
+                        {modelSubtitle(agent)}
+                      </div>
+                    </div>
                   </TableHead>
                 ))}
                 {editable ? (
-                  <TableHead className="w-12 text-center">
+                  <TableHead className="w-12 bg-muted text-center">
                     <button
                       type="button"
                       aria-label="Add agent"
@@ -1166,15 +1197,25 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {tasks.map((task) => (
-                <TableRow key={task.task_version_id}>
-                  <TableCell className="sticky left-0 z-10 bg-card">
+              {tasks.map((task, idx) => (
+                <TableRow
+                  key={task.task_version_id}
+                  className={
+                    idx % 2 === 0
+                      ? "bg-background hover:bg-muted/30"
+                      : "bg-muted/20 hover:bg-muted/40"
+                  }
+                >
+                  <TableCell className="sticky left-0 z-10 w-48 border-r border-border bg-card px-2 font-mono text-xs">
                     <div className="flex items-center gap-2">
-                      <div className="flex flex-col">
-                        <span className="font-medium">
+                      <span className="w-6 flex-shrink-0 text-right text-muted-foreground">
+                        {idx + 1}
+                      </span>
+                      <div className="flex min-w-0 flex-col">
+                        <span className="truncate font-bold" title={task.task_name ?? task.task_id}>
                           {task.task_name ?? task.task_id}
                         </span>
-                        <span className="text-xs text-muted-foreground">
+                        <span className="text-[10px] font-normal text-muted-foreground">
                           v{task.task_version ?? "?"}
                         </span>
                       </div>
@@ -1198,7 +1239,7 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
                     return (
                       <TableCell
                         key={agent.equivalence_key}
-                        className="text-center"
+                        className="border-r border-border p-1.5 text-center last:border-r-0"
                       >
                         {cell ? (
                           <IntersectionCell
@@ -1220,7 +1261,7 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
               ))}
               {editable ? (
                 <TableRow>
-                  <TableCell className="sticky left-0 z-10 bg-card">
+                  <TableCell className="sticky left-0 z-10 w-48 border-r border-border bg-card px-2">
                     <button
                       type="button"
                       aria-label="Add task"
@@ -1232,7 +1273,10 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
                     </button>
                   </TableCell>
                   {agents.map((agent) => (
-                    <TableCell key={`new-${agent.equivalence_key}`} />
+                    <TableCell
+                      key={`new-${agent.equivalence_key}`}
+                      className="border-r border-border last:border-r-0"
+                    />
                   ))}
                   <TableCell />
                 </TableRow>
