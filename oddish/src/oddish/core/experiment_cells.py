@@ -26,8 +26,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.agent_identity import compute_agent_equivalence_key
 from oddish.db import (
+    ExperimentAgentModel,
     ExperimentCellModel,
     ExperimentModel,
+    ExperimentTaskModel,
     TaskModel,
     TaskVersionModel,
     TrialModel,
@@ -39,6 +41,7 @@ from oddish.schemas import (
     ExperimentCellCreateRequest,
     ExperimentCellResponse,
     ExperimentCellUpdateRequest,
+    ExperimentTaskRef,
     ResolvedExperimentCellResponse,
     ResolvedExperimentResponse,
 )
@@ -104,133 +107,204 @@ async def list_cells_core(
     return [_cell_to_response(c) for c in rows]
 
 
+def _synthetic_cell_id(task_version_id: str, agent_eq_key: str) -> str:
+    """Stable cross-product cell id used by the FE.
+
+    Cells are now a derived cross product of the membership tables, so
+    most cells don't have an underlying ``experiment_cells`` row. The
+    FE still needs a stable handle for things like "load this cell's
+    trials", so we synthesize one from the (task_version, agent) pair.
+    """
+    return f"{task_version_id}:{agent_eq_key}"
+
+
+def _parse_synthetic_cell_id(cell_id: str) -> tuple[str, str] | None:
+    if ":" not in cell_id:
+        return None
+    tv, _, eq = cell_id.partition(":")
+    if not tv or not eq:
+        return None
+    return tv, eq
+
+
 async def resolve_experiment_core(
     session: AsyncSession, *, experiment_id: str, org_id: str | None
 ) -> ResolvedExperimentResponse:
-    """Compute the cell matrix + per-cell evidence counts."""
+    """Compute the matrix as the cross product of the experiment's
+    task and agent membership lists, with per-pair evidence counts.
+
+    Per-pair ``target_n_trials`` overrides come from
+    ``experiment_cells``; pairs without an override use the
+    experiment's default ``target_n_trials``.
+    """
     exp = await _load_experiment(
         session, experiment_id=experiment_id, org_id=org_id
     )
 
-    cells = (
+    task_rows = (
         await session.execute(
-            select(ExperimentCellModel)
-            .where(
-                ExperimentCellModel.experiment_id == experiment_id,
-                ExperimentCellModel.deleted_at.is_(None),
-            )
-            .order_by(
-                ExperimentCellModel.task_version_id,
-                ExperimentCellModel.agent_equivalence_key,
-            )
+            select(ExperimentTaskModel)
+            .where(ExperimentTaskModel.experiment_id == experiment_id)
+            .order_by(ExperimentTaskModel.added_at)
+        )
+    ).scalars().all()
+    agent_rows = (
+        await session.execute(
+            select(ExperimentAgentModel)
+            .where(ExperimentAgentModel.experiment_id == experiment_id)
+            .order_by(ExperimentAgentModel.added_at)
         )
     ).scalars().all()
 
-    if not cells:
-        return ResolvedExperimentResponse(
-            experiment_id=exp.id,
-            experiment_name=exp.name,
-            target_n_trials=exp.target_n_trials,
-            cells=[],
-            total_gap=0,
-        )
-
-    # Aggregate trial evidence per (task_version, agent_equivalence_key).
-    # Single grouped query; the composite index added in P1 makes this
-    # cheap.
-    pairs = list({(c.task_version_id, c.agent_equivalence_key) for c in cells})
-    succ_expr = case((TrialModel.status == TrialStatus.SUCCESS, 1), else_=0)
-    fail_expr = case((TrialModel.status == TrialStatus.FAILED, 1), else_=0)
-    run_expr = case((TrialModel.status.in_(_RUNNING_STATUSES), 1), else_=0)
-
-    # Postgres tuple-IN: SQLAlchemy's tuple_().in_() composes natively.
-    from sqlalchemy import tuple_
-
-    agg_rows = (
+    # Per-pair target override map.
+    overrides_rows = (
         await session.execute(
-            select(
-                TrialModel.task_version_id,
-                TrialModel.agent_equivalence_key,
-                func.count().label("total"),
-                func.coalesce(func.sum(succ_expr), 0).label("succ"),
-                func.coalesce(func.sum(fail_expr), 0).label("fail"),
-                func.coalesce(func.sum(run_expr), 0).label("run"),
-                func.avg(TrialModel.reward).label("mean_reward"),
-                func.max(TrialModel.finished_at).label("last_run_at"),
+            select(ExperimentCellModel).where(
+                ExperimentCellModel.experiment_id == experiment_id,
+                ExperimentCellModel.deleted_at.is_(None),
             )
-            .where(
-                tuple_(
+        )
+    ).scalars().all()
+    overrides: dict[tuple[str, str], ExperimentCellModel] = {
+        (c.task_version_id, c.agent_equivalence_key): c
+        for c in overrides_rows
+    }
+
+    # Aggregate evidence for the cross product. We query trials by the
+    # full set of task_version_ids and agent_equivalence_keys, then
+    # filter to the membership set in Python -- the index on (tv, eq)
+    # makes the wider scan cheap and avoids tuple_().in_() blowup for
+    # large matrices.
+    tv_ids = [t.task_version_id for t in task_rows]
+    eq_keys = [a.agent_equivalence_key for a in agent_rows]
+
+    aggs: dict[tuple[str, str], dict[str, Any]] = {}
+    if tv_ids and eq_keys:
+        succ_expr = case((TrialModel.status == TrialStatus.SUCCESS, 1), else_=0)
+        fail_expr = case((TrialModel.status == TrialStatus.FAILED, 1), else_=0)
+        run_expr = case((TrialModel.status.in_(_RUNNING_STATUSES), 1), else_=0)
+        agg_rows = (
+            await session.execute(
+                select(
                     TrialModel.task_version_id,
                     TrialModel.agent_equivalence_key,
-                ).in_(pairs)
+                    func.count().label("total"),
+                    func.coalesce(func.sum(succ_expr), 0).label("succ"),
+                    func.coalesce(func.sum(fail_expr), 0).label("fail"),
+                    func.coalesce(func.sum(run_expr), 0).label("run"),
+                    func.avg(TrialModel.reward).label("mean_reward"),
+                    func.max(TrialModel.finished_at).label("last_run_at"),
+                )
+                .where(
+                    TrialModel.task_version_id.in_(tv_ids),
+                    TrialModel.agent_equivalence_key.in_(eq_keys),
+                )
+                .group_by(
+                    TrialModel.task_version_id,
+                    TrialModel.agent_equivalence_key,
+                )
             )
-            .group_by(
-                TrialModel.task_version_id, TrialModel.agent_equivalence_key
-            )
-        )
-    ).all()
-    aggs: dict[tuple[str, str], dict[str, Any]] = {
-        (tv, ek): {
-            "total": int(total),
-            "succ": int(succ),
-            "fail": int(fail),
-            "run": int(run),
-            "mean_reward": float(mean) if mean is not None else None,
-            "last_run_at": last,
+        ).all()
+        aggs = {
+            (tv, ek): {
+                "total": int(total),
+                "succ": int(succ),
+                "fail": int(fail),
+                "run": int(run),
+                "mean_reward": float(mean) if mean is not None else None,
+                "last_run_at": last,
+            }
+            for tv, ek, total, succ, fail, run, mean, last in agg_rows
         }
-        for tv, ek, total, succ, fail, run, mean, last in agg_rows
-    }
 
-    # Resolve task_version -> (task_id, task_name, version)
-    tv_ids = list({c.task_version_id for c in cells})
-    tv_rows = (
-        await session.execute(
-            select(
-                TaskVersionModel.id,
-                TaskVersionModel.task_id,
-                TaskVersionModel.version,
-                TaskModel.name,
+    # Resolve task version metadata once.
+    tv_meta: dict[str, dict[str, Any]] = {}
+    if tv_ids:
+        tv_rows = (
+            await session.execute(
+                select(
+                    TaskVersionModel.id,
+                    TaskVersionModel.task_id,
+                    TaskVersionModel.version,
+                    TaskModel.name,
+                )
+                .join(TaskModel, TaskModel.id == TaskVersionModel.task_id)
+                .where(TaskVersionModel.id.in_(tv_ids))
             )
-            .join(TaskModel, TaskModel.id == TaskVersionModel.task_id)
-            .where(TaskVersionModel.id.in_(tv_ids))
-        )
-    ).all()
-    tv_meta: dict[str, dict[str, Any]] = {
-        tv_id: {"task_id": task_id, "version": version, "task_name": name}
-        for tv_id, task_id, version, name in tv_rows
-    }
+        ).all()
+        tv_meta = {
+            tv_id: {"task_id": task_id, "version": version, "task_name": name}
+            for tv_id, task_id, version, name in tv_rows
+        }
 
     resolved: list[ResolvedExperimentCellResponse] = []
     total_gap = 0
-    for c in cells:
-        agg = aggs.get((c.task_version_id, c.agent_equivalence_key), {})
-        succ = int(agg.get("succ", 0))
-        gap = max(0, c.target_n_trials - succ)
-        total_gap += gap
-        meta = tv_meta.get(c.task_version_id, {})
-        resolved.append(
-            ResolvedExperimentCellResponse(
-                id=c.id,
-                task_version_id=c.task_version_id,
-                task_id=meta.get("task_id", ""),
-                task_name=meta.get("task_name"),
-                task_version=meta.get("version"),
-                target_n_trials=c.target_n_trials,
-                agent=_agent_from_cell(c),
-                have_n_total=int(agg.get("total", 0)),
-                have_n_successful=succ,
-                have_n_failed=int(agg.get("fail", 0)),
-                have_n_running=int(agg.get("run", 0)),
-                gap=gap,
-                mean_reward=agg.get("mean_reward"),
-                last_run_at=agg.get("last_run_at"),
+    default_target = exp.target_n_trials
+    for t in task_rows:
+        meta = tv_meta.get(t.task_version_id, {})
+        for a in agent_rows:
+            override = overrides.get((t.task_version_id, a.agent_equivalence_key))
+            target = override.target_n_trials if override else default_target
+            agg = aggs.get((t.task_version_id, a.agent_equivalence_key), {})
+            succ = int(agg.get("succ", 0))
+            gap = max(0, target - succ)
+            total_gap += gap
+            cell_id = (
+                override.id
+                if override
+                else _synthetic_cell_id(
+                    t.task_version_id, a.agent_equivalence_key
+                )
             )
+            resolved.append(
+                ResolvedExperimentCellResponse(
+                    id=cell_id,
+                    task_version_id=t.task_version_id,
+                    task_id=meta.get("task_id", ""),
+                    task_name=meta.get("task_name"),
+                    task_version=meta.get("version"),
+                    target_n_trials=target,
+                    agent=ExperimentCellAgent(
+                        harness=a.agent_harness,
+                        model=a.agent_model,
+                        provider=a.agent_provider,
+                        equivalence_key=a.agent_equivalence_key,
+                    ),
+                    have_n_total=int(agg.get("total", 0)),
+                    have_n_successful=succ,
+                    have_n_failed=int(agg.get("fail", 0)),
+                    have_n_running=int(agg.get("run", 0)),
+                    gap=gap,
+                    mean_reward=agg.get("mean_reward"),
+                    last_run_at=agg.get("last_run_at"),
+                )
+            )
+
+    tasks_payload = [
+        ExperimentTaskRef(
+            task_version_id=t.task_version_id,
+            task_id=tv_meta.get(t.task_version_id, {}).get("task_id", ""),
+            task_name=tv_meta.get(t.task_version_id, {}).get("task_name"),
+            task_version=tv_meta.get(t.task_version_id, {}).get("version"),
         )
+        for t in task_rows
+    ]
+    agents_payload = [
+        ExperimentCellAgent(
+            harness=a.agent_harness,
+            model=a.agent_model,
+            provider=a.agent_provider,
+            equivalence_key=a.agent_equivalence_key,
+        )
+        for a in agent_rows
+    ]
 
     return ResolvedExperimentResponse(
         experiment_id=exp.id,
         experiment_name=exp.name,
         target_n_trials=exp.target_n_trials,
+        tasks=tasks_payload,
+        agents=agents_payload,
         cells=resolved,
         total_gap=total_gap,
     )
@@ -241,13 +315,16 @@ async def create_experiment_core(
     *,
     name: str,
     cells: list[ExperimentCellCreateRequest],
+    task_version_ids: list[str] | None = None,
+    agents: list[Any] | None = None,
+    target_n_trials: int | None = None,
     org_id: str | None,
 ) -> ResolvedExperimentResponse:
-    """Create a new experiment with optional initial cells.
+    """Create a new experiment with optional initial members.
 
-    The experiment owns no trials and no tasks directly -- only its
-    cells. Returns the resolved view so the caller can render the
-    matrix immediately.
+    Tasks and agents are seeded independently via ``task_version_ids``
+    and ``agents``. ``cells`` is a legacy seed (list of (task, agent)
+    pairs) that we keep working for older clients.
     """
     name = (name or "").strip()
     if not name:
@@ -255,9 +332,35 @@ async def create_experiment_core(
             status_code=400, detail="Experiment name cannot be empty"
         )
     exp = ExperimentModel(name=name, org_id=org_id)
+    if target_n_trials is not None and target_n_trials >= 1:
+        exp.target_n_trials = target_n_trials
     session.add(exp)
     await session.flush()
 
+    for tv_id in task_version_ids or []:
+        await bulk_cells_core(
+            session,
+            experiment_id=exp.id,
+            op="add_task",
+            target_n_trials=exp.target_n_trials,
+            agent_harness=None,
+            agent_model=None,
+            agent_provider=None,
+            task_version_id=tv_id,
+            org_id=org_id,
+        )
+    for a in agents or []:
+        await bulk_cells_core(
+            session,
+            experiment_id=exp.id,
+            op="add_agent",
+            target_n_trials=exp.target_n_trials,
+            agent_harness=getattr(a, "harness", None),
+            agent_model=getattr(a, "model", None),
+            agent_provider=getattr(a, "provider", None),
+            task_version_id=None,
+            org_id=org_id,
+        )
     for cell in cells:
         await add_cell_core(
             session,
@@ -298,6 +401,29 @@ async def add_cell_core(
 
     equivalence_key = compute_agent_equivalence_key(
         payload.agent_harness, payload.agent_model, payload.agent_provider
+    )
+
+    # Make sure both sides are members; the cell itself is just a
+    # per-pair target override.
+    await session.execute(
+        pg_insert(ExperimentTaskModel.__table__)
+        .values(experiment_id=experiment_id, task_version_id=tv_id)
+        .on_conflict_do_nothing(
+            index_elements=["experiment_id", "task_version_id"],
+        )
+    )
+    await session.execute(
+        pg_insert(ExperimentAgentModel.__table__)
+        .values(
+            experiment_id=experiment_id,
+            agent_equivalence_key=equivalence_key,
+            agent_harness=payload.agent_harness,
+            agent_model=payload.agent_model,
+            agent_provider=payload.agent_provider,
+        )
+        .on_conflict_do_nothing(
+            index_elements=["experiment_id", "agent_equivalence_key"],
+        )
     )
 
     cell_id = generate_id()
@@ -349,21 +475,29 @@ async def bulk_cells_core(
     task_version_id: str | None,
     org_id: str | None,
 ) -> int:
-    """Apply a fan-out cell operation. Returns the number of cells touched."""
+    """Add or remove members of an experiment.
+
+    Tasks and agents are independent membership lists; the matrix is
+    the cross product. Ops:
+
+    - ``add_agent`` / ``add_agent_to_all_tasks`` -- insert into
+      ``experiment_agents``.
+    - ``add_task`` / ``add_task_to_all_agents`` -- insert into
+      ``experiment_tasks``.
+    - ``delete_agent`` -- remove from ``experiment_agents`` and any
+      per-pair overrides referencing it.
+    - ``delete_task`` / ``delete_task_version`` -- same for tasks.
+    - ``set_default_target`` / ``bump_all_targets`` -- set
+      ``experiments.target_n_trials`` and clear all per-pair overrides
+      so the new default applies everywhere.
+
+    The two name pairs are aliases; the long names are kept for FE
+    compatibility while we transition. Returns the number of rows
+    touched.
+    """
     await _load_experiment(session, experiment_id=experiment_id, org_id=org_id)
 
-    existing = (
-        await session.execute(
-            select(ExperimentCellModel).where(
-                ExperimentCellModel.experiment_id == experiment_id,
-                ExperimentCellModel.deleted_at.is_(None),
-            )
-        )
-    ).scalars().all()
-
-    if op == "bump_all_targets":
-        # Bump the experiment-level target so future "add cell" calls
-        # default to it, then rewrite every existing cell.
+    if op in ("set_default_target", "bump_all_targets"):
         exp = (
             await session.execute(
                 select(ExperimentModel).where(
@@ -373,12 +507,18 @@ async def bulk_cells_core(
         ).scalar_one_or_none()
         if exp is not None:
             exp.target_n_trials = target_n_trials
-        for cell in existing:
-            cell.target_n_trials = target_n_trials
+        # Clearing per-pair overrides means the new default takes
+        # effect everywhere, which is what users expect from "set
+        # trials per cell to N".
+        cleared = await session.execute(
+            delete(ExperimentCellModel).where(
+                ExperimentCellModel.experiment_id == experiment_id,
+            )
+        )
         await session.flush()
-        return len(existing)
+        return cleared.rowcount or 0
 
-    if op == "add_agent_to_all_tasks":
+    if op in ("add_agent", "add_agent_to_all_tasks"):
         if not agent_harness or not agent_provider:
             raise HTTPException(
                 status_code=400,
@@ -387,47 +527,28 @@ async def bulk_cells_core(
         equivalence_key = compute_agent_equivalence_key(
             agent_harness, agent_model, agent_provider
         )
-        task_version_ids = sorted({c.task_version_id for c in existing})
-        if not task_version_ids:
-            raise HTTPException(
-                status_code=400,
-                detail="Experiment has no task versions yet -- add a cell first",
-            )
-        rows = [
-            {
-                "id": generate_id(),
-                "experiment_id": experiment_id,
-                "task_version_id": tv,
-                "agent_equivalence_key": equivalence_key,
-                "target_n_trials": target_n_trials,
-                "agent_harness": agent_harness,
-                "agent_model": agent_model,
-                "agent_provider": agent_provider,
-            }
-            for tv in task_version_ids
-        ]
         stmt = (
-            pg_insert(ExperimentCellModel.__table__)
-            .values(rows)
-            .on_conflict_do_update(
-                index_elements=[
-                    "experiment_id",
-                    "task_version_id",
-                    "agent_equivalence_key",
-                ],
-                set_={"target_n_trials": target_n_trials},
+            pg_insert(ExperimentAgentModel.__table__)
+            .values(
+                experiment_id=experiment_id,
+                agent_equivalence_key=equivalence_key,
+                agent_harness=agent_harness,
+                agent_model=agent_model,
+                agent_provider=agent_provider,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["experiment_id", "agent_equivalence_key"],
             )
         )
         await session.execute(stmt)
         await session.flush()
-        return len(rows)
+        return 1
 
-    if op == "add_task_to_all_agents":
+    if op in ("add_task", "add_task_to_all_agents"):
         if not task_version_id:
             raise HTTPException(
                 status_code=400, detail="task_version_id required"
             )
-        # Verify the task version exists and (if scoped) belongs to org.
         tv_check = (
             await session.execute(
                 select(TaskVersionModel.id, TaskModel.org_id)
@@ -440,44 +561,19 @@ async def bulk_cells_core(
         _, tv_org = tv_check
         if org_id is not None and tv_org is not None and tv_org != org_id:
             raise HTTPException(status_code=404, detail="Task version not found")
-
-        # One row per distinct agent identity already in the experiment.
-        agents: dict[str, ExperimentCellModel] = {}
-        for c in existing:
-            agents.setdefault(c.agent_equivalence_key, c)
-        if not agents:
-            raise HTTPException(
-                status_code=400,
-                detail="Experiment has no agents yet -- add a cell first",
-            )
-        rows = [
-            {
-                "id": generate_id(),
-                "experiment_id": experiment_id,
-                "task_version_id": task_version_id,
-                "agent_equivalence_key": c.agent_equivalence_key,
-                "target_n_trials": target_n_trials,
-                "agent_harness": c.agent_harness,
-                "agent_model": c.agent_model,
-                "agent_provider": c.agent_provider,
-            }
-            for c in agents.values()
-        ]
         stmt = (
-            pg_insert(ExperimentCellModel.__table__)
-            .values(rows)
-            .on_conflict_do_update(
-                index_elements=[
-                    "experiment_id",
-                    "task_version_id",
-                    "agent_equivalence_key",
-                ],
-                set_={"target_n_trials": target_n_trials},
+            pg_insert(ExperimentTaskModel.__table__)
+            .values(
+                experiment_id=experiment_id,
+                task_version_id=task_version_id,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["experiment_id", "task_version_id"],
             )
         )
         await session.execute(stmt)
         await session.flush()
-        return len(rows)
+        return 1
 
     if op == "delete_agent":
         if not agent_harness or not agent_provider:
@@ -488,24 +584,37 @@ async def bulk_cells_core(
         equivalence_key = compute_agent_equivalence_key(
             agent_harness, agent_model, agent_provider
         )
-        result = await session.execute(
+        # Drop from membership and clean up any per-pair overrides.
+        await session.execute(
             delete(ExperimentCellModel).where(
                 ExperimentCellModel.experiment_id == experiment_id,
                 ExperimentCellModel.agent_equivalence_key == equivalence_key,
             )
         )
+        result = await session.execute(
+            delete(ExperimentAgentModel).where(
+                ExperimentAgentModel.experiment_id == experiment_id,
+                ExperimentAgentModel.agent_equivalence_key == equivalence_key,
+            )
+        )
         await session.flush()
         return result.rowcount or 0
 
-    if op == "delete_task_version":
+    if op in ("delete_task", "delete_task_version"):
         if not task_version_id:
             raise HTTPException(
                 status_code=400, detail="task_version_id required"
             )
-        result = await session.execute(
+        await session.execute(
             delete(ExperimentCellModel).where(
                 ExperimentCellModel.experiment_id == experiment_id,
                 ExperimentCellModel.task_version_id == task_version_id,
+            )
+        )
+        result = await session.execute(
+            delete(ExperimentTaskModel).where(
+                ExperimentTaskModel.experiment_id == experiment_id,
+                ExperimentTaskModel.task_version_id == task_version_id,
             )
         )
         await session.flush()
@@ -524,6 +633,14 @@ async def update_cell_core(
     payload: ExperimentCellUpdateRequest,
     org_id: str | None,
 ) -> ExperimentCellResponse:
+    """Set the per-pair target trials override for a (task, agent) cell.
+
+    Most cells in the matrix don't have a backing ``experiment_cells``
+    row -- they fall back to ``experiments.target_n_trials``. The
+    ``cell_id`` may be either a real row id or a synthetic
+    ``"{task_version_id}:{agent_equivalence_key}"`` handle. We
+    upsert into ``experiment_cells`` either way.
+    """
     await _load_experiment(session, experiment_id=experiment_id, org_id=org_id)
     cell = (
         await session.execute(
@@ -534,10 +651,68 @@ async def update_cell_core(
             )
         )
     ).scalar_one_or_none()
-    if cell is None:
+    if cell is not None:
+        cell.target_n_trials = payload.target_n_trials
+        await session.flush()
+        return _cell_to_response(cell)
+
+    # Synthetic id path: derive (task_version, agent) and upsert the
+    # override row. We need the agent identity to denormalize, which
+    # we recover from experiment_agents.
+    parsed = _parse_synthetic_cell_id(cell_id)
+    if parsed is None:
         raise HTTPException(status_code=404, detail="Cell not found")
-    cell.target_n_trials = payload.target_n_trials
+    tv_id, eq_key = parsed
+    agent_row = (
+        await session.execute(
+            select(ExperimentAgentModel).where(
+                ExperimentAgentModel.experiment_id == experiment_id,
+                ExperimentAgentModel.agent_equivalence_key == eq_key,
+            )
+        )
+    ).scalar_one_or_none()
+    task_row = (
+        await session.execute(
+            select(ExperimentTaskModel).where(
+                ExperimentTaskModel.experiment_id == experiment_id,
+                ExperimentTaskModel.task_version_id == tv_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if agent_row is None or task_row is None:
+        raise HTTPException(status_code=404, detail="Cell not found")
+    new_id = generate_id()
+    await session.execute(
+        pg_insert(ExperimentCellModel.__table__)
+        .values(
+            id=new_id,
+            experiment_id=experiment_id,
+            task_version_id=tv_id,
+            agent_equivalence_key=eq_key,
+            target_n_trials=payload.target_n_trials,
+            agent_harness=agent_row.agent_harness,
+            agent_model=agent_row.agent_model,
+            agent_provider=agent_row.agent_provider,
+        )
+        .on_conflict_do_update(
+            index_elements=[
+                "experiment_id",
+                "task_version_id",
+                "agent_equivalence_key",
+            ],
+            set_={"target_n_trials": payload.target_n_trials},
+        )
+    )
     await session.flush()
+    cell = (
+        await session.execute(
+            select(ExperimentCellModel).where(
+                ExperimentCellModel.experiment_id == experiment_id,
+                ExperimentCellModel.task_version_id == tv_id,
+                ExperimentCellModel.agent_equivalence_key == eq_key,
+            )
+        )
+    ).scalar_one()
     return _cell_to_response(cell)
 
 

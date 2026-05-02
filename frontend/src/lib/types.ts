@@ -593,10 +593,19 @@ export interface ResolvedExperimentCell {
   last_run_at: string | null;
 }
 
+export interface ExperimentTaskRef {
+  task_version_id: string;
+  task_id: string;
+  task_name: string | null;
+  task_version: number | null;
+}
+
 export interface ResolvedExperiment {
   experiment_id: string;
   experiment_name: string;
   target_n_trials: number;
+  tasks: ExperimentTaskRef[];
+  agents: ExperimentCellAgent[];
   cells: ResolvedExperimentCell[];
   total_gap: number;
 }

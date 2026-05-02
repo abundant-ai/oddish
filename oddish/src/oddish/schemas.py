@@ -627,10 +627,26 @@ class ResolvedExperimentCellResponse(BaseModel):
     last_run_at: datetime | None = None
 
 
+class ExperimentTaskRef(BaseModel):
+    """One task version in an experiment's membership list."""
+
+    task_version_id: str
+    task_id: str
+    task_name: str | None = None
+    task_version: int | None = None
+
+
 class ResolvedExperimentResponse(BaseModel):
     experiment_id: str
     experiment_name: str
     target_n_trials: int = 3
+    # Membership lists. The matrix is the cross product; the FE
+    # renders headers from these even when the other side is empty
+    # (so an agent column shows up before any task is added, etc).
+    tasks: list[ExperimentTaskRef] = Field(default_factory=list)
+    agents: list[ExperimentCellAgent] = Field(default_factory=list)
+    # Materialized cross-product cells for the (tasks × agents)
+    # intersections. Empty when either membership list is empty.
     cells: list[ResolvedExperimentCellResponse]
     total_gap: int
 
@@ -688,8 +704,25 @@ class ExperimentCellUpdateRequest(BaseModel):
     target_n_trials: int = Field(ge=1)
 
 
+class ExperimentInitialAgent(BaseModel):
+    """Agent identity to seed an experiment with."""
+
+    harness: str
+    model: str | None = None
+    provider: str
+
+
 class ExperimentCreateRequest(BaseModel):
     name: str
+    target_n_trials: int | None = None
+    # New, independent seed lists. Both default to empty -- a freshly
+    # created experiment can have no members, and the matrix renders
+    # empty until rows / columns are added.
+    task_version_ids: list[str] = Field(default_factory=list)
+    agents: list[ExperimentInitialAgent] = Field(default_factory=list)
+    # Legacy seed: a list of (task, agent) pairs. Kept for backwards
+    # compatibility with older clients; resolved into the membership
+    # tables on save.
     cells: list[ExperimentCellCreateRequest] = Field(default_factory=list)
 
 

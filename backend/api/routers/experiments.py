@@ -81,6 +81,9 @@ async def create_experiment(
             session,
             name=payload.name,
             cells=payload.cells,
+            task_version_ids=payload.task_version_ids,
+            agents=payload.agents,
+            target_n_trials=payload.target_n_trials,
             org_id=auth.org_id,
         )
 
