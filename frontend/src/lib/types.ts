@@ -468,6 +468,12 @@ export interface ExperimentCellAgent {
   equivalence_key: string;
 }
 
+export interface CellAttempt {
+  id: string;
+  status: string;
+  reward: number | null;
+}
+
 export interface ResolvedExperimentCell {
   id: string;
   task_version_id: string;
@@ -483,6 +489,7 @@ export interface ResolvedExperimentCell {
   gap: number;
   mean_reward: number | null;
   last_run_at: string | null;
+  attempts: CellAttempt[];
 }
 
 export interface ExperimentTaskRef {

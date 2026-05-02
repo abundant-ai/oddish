@@ -606,6 +606,14 @@ class ExperimentCellResponse(BaseModel):
     agent: ExperimentCellAgent
 
 
+class CellAttempt(BaseModel):
+    """One trial attempt as it appears inside a matrix cell."""
+
+    id: str
+    status: str
+    reward: float | None = None
+
+
 class ResolvedExperimentCellResponse(BaseModel):
     """A cell plus the trial counts currently matching it."""
 
@@ -625,6 +633,10 @@ class ResolvedExperimentCellResponse(BaseModel):
 
     mean_reward: float | None = None
     last_run_at: datetime | None = None
+    # Per-attempt pills shown in the matrix cell. Capped on the
+    # backend to avoid blowing up the response on very busy cells;
+    # the cell-trials drawer fetches the full list.
+    attempts: list[CellAttempt] = Field(default_factory=list)
 
 
 class ExperimentTaskRef(BaseModel):

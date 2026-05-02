@@ -37,6 +37,7 @@ from oddish.db import (
     generate_id,
 )
 from oddish.schemas import (
+    CellAttempt,
     ExperimentCellAgent,
     ExperimentCellResponse,
     ExperimentCellUpdateRequest,
@@ -44,6 +45,9 @@ from oddish.schemas import (
     ResolvedExperimentCellResponse,
     ResolvedExperimentResponse,
 )
+
+
+MAX_ATTEMPTS_PER_CELL = 30
 
 
 _RUNNING_STATUSES = (
@@ -196,6 +200,46 @@ async def resolve_experiment_core(
             for tv, ek, total, succ, fail, run, mean, last in agg_rows
         }
 
+    # Inline up to MAX_ATTEMPTS_PER_CELL trial pills per cell so the
+    # matrix can render the sauron-style per-attempt squares without
+    # an extra round trip. Beyond that cap the FE drops back to the
+    # cell-trials drawer.
+    attempts_by_pair: dict[tuple[str, str], list[CellAttempt]] = {}
+    if tv_ids and eq_keys:
+        attempt_rows = (
+            await session.execute(
+                select(
+                    TrialModel.id,
+                    TrialModel.status,
+                    TrialModel.reward,
+                    TrialModel.task_version_id,
+                    TrialModel.agent_equivalence_key,
+                    TrialModel.finished_at,
+                    TrialModel.created_at,
+                )
+                .where(
+                    TrialModel.task_version_id.in_(tv_ids),
+                    TrialModel.agent_equivalence_key.in_(eq_keys),
+                )
+                .order_by(
+                    TrialModel.finished_at.asc().nullslast(),
+                    TrialModel.created_at.asc(),
+                )
+            )
+        ).all()
+        for tid, status, reward, tv, ek, _fin, _cre in attempt_rows:
+            key = (tv, ek)
+            bucket = attempts_by_pair.setdefault(key, [])
+            if len(bucket) >= MAX_ATTEMPTS_PER_CELL:
+                continue
+            bucket.append(
+                CellAttempt(
+                    id=tid,
+                    status=status.value if hasattr(status, "value") else str(status),
+                    reward=float(reward) if reward is not None else None,
+                )
+            )
+
     # Resolve task version metadata once.
     tv_meta: dict[str, dict[str, Any]] = {}
     if tv_ids:
@@ -256,6 +300,9 @@ async def resolve_experiment_core(
                     gap=gap,
                     mean_reward=agg.get("mean_reward"),
                     last_run_at=agg.get("last_run_at"),
+                    attempts=attempts_by_pair.get(
+                        (t.task_version_id, a.agent_equivalence_key), []
+                    ),
                 )
             )
 
