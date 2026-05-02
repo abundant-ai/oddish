@@ -238,6 +238,12 @@ function CellTrialsDialog({
           }}
           trialId={inspecting.trialId}
           taskId={inspecting.taskId}
+          siblingTrialIds={(data ?? [])
+            .filter((t) => t.task_id === inspecting.taskId)
+            .map((t) => t.id)}
+          onTrialChange={(nextId) =>
+            setInspecting({ trialId: nextId, taskId: inspecting.taskId })
+          }
         />
       ) : null}
     </Dialog>

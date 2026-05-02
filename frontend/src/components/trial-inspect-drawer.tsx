@@ -13,6 +13,23 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   taskId: string;
   trialId: string;
+  /**
+   * Ordered list of trial IDs to navigate between (prev / next inside
+   * the drawer). Defaults to all trials on the parent task. Pass a
+   * subset (e.g. trials in a specific cell or version) to scope
+   * navigation to that context.
+   */
+  siblingTrialIds?: string[];
+  /**
+   * Called when the user picks a different trial via the in-panel
+   * navigation. Parent updates its inspecting state with the new id.
+   */
+  onTrialChange?: (trialId: string) => void;
+  /**
+   * Suppress the backdrop so the page below the drawer stays
+   * interactive (e.g. files panel on the task detail page).
+   */
+  noBackdrop?: boolean;
 }
 
 export function TrialInspectDrawer({
@@ -20,6 +37,9 @@ export function TrialInspectDrawer({
   onOpenChange,
   taskId,
   trialId,
+  siblingTrialIds,
+  onTrialChange,
+  noBackdrop = false,
 }: Props) {
   const url = open && taskId ? `/api/tasks/${encodeURIComponent(taskId)}` : null;
   const { data: task, error } = useSWR<Task>(url, fetcher, {
@@ -27,10 +47,31 @@ export function TrialInspectDrawer({
     revalidateOnFocus: false,
   });
 
-  const trial: Trial | null = useMemo(() => {
-    const trials = (task?.trials as Trial[] | undefined) ?? [];
-    return trials.find((t) => t.id === trialId) ?? null;
-  }, [task, trialId]);
+  const allTrials: Trial[] = useMemo(
+    () => (task?.trials as Trial[] | undefined) ?? [],
+    [task],
+  );
+
+  const trial: Trial | null = useMemo(
+    () => allTrials.find((t) => t.id === trialId) ?? null,
+    [allTrials, trialId],
+  );
+
+  // Order trials for prev/next navigation.
+  const orderedTrials: Trial[] = useMemo(() => {
+    if (siblingTrialIds && siblingTrialIds.length > 0) {
+      const byId = new Map(allTrials.map((t) => [t.id, t]));
+      return siblingTrialIds
+        .map((id) => byId.get(id))
+        .filter((t): t is Trial => Boolean(t));
+    }
+    return allTrials;
+  }, [allTrials, siblingTrialIds]);
+
+  const trialIndex = useMemo(
+    () => orderedTrials.findIndex((t) => t.id === trialId),
+    [orderedTrials, trialId],
+  );
 
   return (
     <ResizableDrawer
@@ -39,6 +80,7 @@ export function TrialInspectDrawer({
       defaultWidth={760}
       minWidth={520}
       maxWidth={1400}
+      noBackdrop={noBackdrop}
     >
       {error ? (
         <div className="p-4 text-sm">
@@ -58,12 +100,11 @@ export function TrialInspectDrawer({
           onClose={() => onOpenChange(false)}
           trial={trial}
           task={task}
-          orderedTrials={(task.trials as Trial[] | undefined) ?? null}
-          trialIndex={
-            (task.trials as Trial[] | undefined)?.findIndex(
-              (t) => t.id === trialId,
-            ) ?? null
-          }
+          orderedTrials={orderedTrials}
+          trialIndex={trialIndex >= 0 ? trialIndex : null}
+          onNavigate={(nextTrial) => {
+            if (onTrialChange) onTrialChange(nextTrial.id);
+          }}
           allowRetry
           contentOnly
         />

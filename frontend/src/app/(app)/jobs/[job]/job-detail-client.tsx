@@ -236,6 +236,12 @@ export function JobDetailClient({ jobId }: { jobId: string }) {
           }}
           trialId={inspecting.trialId}
           taskId={inspecting.taskId}
+          siblingTrialIds={(trials ?? [])
+            .filter((t) => t.task_id === inspecting.taskId)
+            .map((t) => t.id)}
+          onTrialChange={(nextId) =>
+            setInspecting({ trialId: nextId, taskId: inspecting.taskId })
+          }
         />
       ) : null}
     </div>
