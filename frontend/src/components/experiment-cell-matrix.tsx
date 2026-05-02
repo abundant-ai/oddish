@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -35,10 +35,13 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Plus, Pencil, X, Search, Eye } from "lucide-react";
+import { Plus, Pencil, X, Search, Eye, ExternalLink } from "lucide-react";
+import Link from "next/link";
 import { fetcher } from "@/lib/api";
 import type {
   ExperimentCellAgent,
+  JobListResponse,
+  JobSummary,
   ResolvedExperiment,
   ResolvedExperimentCell,
 } from "@/lib/types";
@@ -803,8 +806,13 @@ function FirstCellsDialog({
   onCreate: (
     tasks: BrowseTask[],
     agents: KnownAgent[],
+    targetTrials: number,
   ) => Promise<void>;
 }) {
+  const [draftTargetN, setDraftTargetN] = useState(String(targetN));
+  useEffect(() => {
+    if (open) setDraftTargetN(String(targetN));
+  }, [open, targetN]);
   const { data: browse } = useSWR<BrowseResponse>(
     open ? "/api/tasks/browse?limit=500&offset=0" : null,
     fetcher,
@@ -867,7 +875,8 @@ function FirstCellsDialog({
       const chosenAgents = agents.filter((a) =>
         pickedAgents.has(a.equivalence_key),
       );
-      await onCreate(chosenTasks, chosenAgents);
+      const target = Math.max(1, parseInt(draftTargetN, 10) || 1);
+      await onCreate(chosenTasks, chosenAgents, target);
       reset();
       onOpenChange(false);
     } catch (err) {
@@ -996,15 +1005,32 @@ function FirstCellsDialog({
             </div>
           </div>
         </div>
-        <p className="text-[11px] text-muted-foreground">
-          Will create{" "}
-          <span className="font-mono">
-            {pickedTasks.size * pickedAgents.size}
-          </span>{" "}
-          cell{pickedTasks.size * pickedAgents.size === 1 ? "" : "s"} at{" "}
-          <span className="font-mono">{targetN}</span> trial
-          {targetN === 1 ? "" : "s"} each.
-        </p>
+        <div className="flex flex-wrap items-center gap-2 rounded-sm border bg-muted/30 p-3 text-sm">
+          <Label htmlFor="first-target" className="whitespace-nowrap">
+            Trials per cell
+          </Label>
+          <Input
+            id="first-target"
+            type="number"
+            min={1}
+            value={draftTargetN}
+            onChange={(e) => setDraftTargetN(e.target.value)}
+            className="h-8 w-24"
+          />
+          <span className="text-[11px] text-muted-foreground">
+            will create{" "}
+            <span className="font-mono">
+              {pickedTasks.size * pickedAgents.size}
+            </span>{" "}
+            cell{pickedTasks.size * pickedAgents.size === 1 ? "" : "s"} ·{" "}
+            <span className="font-mono">
+              {pickedTasks.size *
+                pickedAgents.size *
+                Math.max(1, parseInt(draftTargetN, 10) || 1)}
+            </span>{" "}
+            trials total
+          </span>
+        </div>
         {error ? (
           <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-2 text-xs">
             {error}
@@ -1030,6 +1056,69 @@ function FirstCellsDialog({
   );
 }
 
+function jobLabel(job: JobSummary): string {
+  if (job.name) return job.name;
+  if (job.kind === "experiment_backfill") return "Backfill";
+  if (job.kind === "validation") return "Validation";
+  if (job.kind === "ad_hoc") return "Ad-hoc";
+  return job.kind;
+}
+
+function jobIsActive(job: JobSummary): boolean {
+  return job.running_trial_count > 0 || job.finished_at === null;
+}
+
+function RecentJobs({
+  experimentId,
+  refreshKey,
+}: {
+  experimentId: string;
+  refreshKey: number;
+}) {
+  const encodedId = encodeExperimentRouteParam(experimentId);
+  const url = `/api/jobs?triggered_by_experiment_id=${encodedId}&limit=3`;
+  const { data } = useSWR<JobListResponse>(
+    [url, refreshKey],
+    ([u]) => fetcher(u as string),
+    { refreshInterval: 15_000, revalidateOnFocus: false },
+  );
+
+  const jobs = data?.items ?? [];
+  if (jobs.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+      <span className="text-muted-foreground">recent:</span>
+      {jobs.map((job) => {
+        const done = job.succeeded_trial_count + job.failed_trial_count;
+        const active = jobIsActive(job);
+        return (
+          <Link
+            key={job.id}
+            href={`/jobs/${encodeURIComponent(job.id)}`}
+            className={`inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono hover:bg-muted/50 ${
+              active
+                ? "border-amber-500/40 bg-amber-500/10"
+                : "border-border"
+            }`}
+            title={
+              active
+                ? `${job.running_trial_count} running · ${done}/${job.trial_count} done`
+                : `${done}/${job.trial_count} done`
+            }
+          >
+            <span>{jobLabel(job)}</span>
+            <span className="text-muted-foreground">
+              {done}/{job.trial_count}
+            </span>
+            <ExternalLink className="h-2.5 w-2.5 text-muted-foreground" />
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
 function TrialsPerCellEditor({
   value,
   canEdit,
@@ -1039,74 +1128,63 @@ function TrialsPerCellEditor({
   canEdit: boolean;
   onApply: (next: number) => Promise<void>;
 }) {
-  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(String(value));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const dirty =
+    Math.max(1, parseInt(draft, 10) || 1) !== value && draft.trim() !== "";
+
   if (!canEdit) {
     return (
-      <span className="font-mono">
-        {value} trial{value === 1 ? "" : "s"}/cell
+      <span className="inline-flex items-center gap-1.5 text-sm">
+        <span className="text-muted-foreground">Trials per cell:</span>
+        <span className="font-mono">{value}</span>
       </span>
     );
   }
 
-  if (!editing) {
-    return (
-      <button
-        type="button"
-        className="inline-flex items-center gap-1 rounded-sm border border-dashed px-2 py-0.5 font-mono text-xs hover:bg-muted/50"
-        onClick={() => {
-          setDraft(String(value));
-          setEditing(true);
-          setError(null);
-        }}
-      >
-        {value} trial{value === 1 ? "" : "s"}/cell
-        <Pencil className="h-3 w-3 text-muted-foreground" />
-      </button>
-    );
-  }
-
   return (
-    <div className="inline-flex flex-wrap items-center gap-1">
+    <div className="inline-flex flex-wrap items-center gap-1.5">
+      <Label
+        htmlFor="trials-per-cell"
+        className="whitespace-nowrap text-sm text-muted-foreground"
+      >
+        Trials per cell:
+      </Label>
       <Input
+        id="trials-per-cell"
         type="number"
         min={1}
-        className="h-7 w-20 text-xs"
+        className="h-7 w-16 text-xs"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
       />
-      <Button
-        size="sm"
-        className="h-7"
-        disabled={busy}
-        onClick={async () => {
-          const n = Math.max(1, parseInt(draft, 10) || 1);
-          setBusy(true);
-          setError(null);
-          try {
-            await onApply(n);
-            setEditing(false);
-          } catch (err) {
-            setError(err instanceof Error ? err.message : String(err));
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        {busy ? "…" : "Apply to all"}
-      </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        className="h-7"
-        disabled={busy}
-        onClick={() => setEditing(false)}
-      >
-        Cancel
-      </Button>
+      {dirty ? (
+        <Button
+          size="sm"
+          className="h-7"
+          disabled={busy}
+          onClick={async () => {
+            const n = Math.max(1, parseInt(draft, 10) || 1);
+            setBusy(true);
+            setError(null);
+            try {
+              await onApply(n);
+            } catch (err) {
+              setError(err instanceof Error ? err.message : String(err));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? "…" : "Apply to all"}
+        </Button>
+      ) : null}
       {error ? (
         <span className="text-[11px] text-destructive">{error}</span>
       ) : null}
@@ -1139,6 +1217,7 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
   const [busyMsg, setBusyMsg] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isBackfilling, setIsBackfilling] = useState(false);
+  const [jobsRefreshKey, setJobsRefreshKey] = useState(0);
 
   const targetN = data?.target_n_trials ?? 3;
 
@@ -1167,6 +1246,7 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
         const text = await res.text();
         throw new Error(text || `Backfill failed (${res.status})`);
       }
+      setJobsRefreshKey((k) => k + 1);
       await mutate();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
@@ -1250,10 +1330,19 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
   const onCreateFirstCells = async (
     tasks: BrowseTask[],
     agents: KnownAgent[],
+    targetTrials: number,
   ) => {
     setActionError(null);
     setBusyMsg("Creating cells…");
     try {
+      // Persist the experiment-level target so future "+ row" / "+ col"
+      // adds default to it.
+      if (targetTrials !== targetN) {
+        await callBulk({
+          op: "bump_all_targets",
+          target_n_trials: targetTrials,
+        });
+      }
       for (const t of tasks) {
         if (!t.current_version_id) continue;
         for (const a of agents) {
@@ -1266,7 +1355,7 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
               agent_harness: a.harness,
               agent_model: a.model,
               agent_provider: a.provider,
-              target_n_trials: targetN,
+              target_n_trials: targetTrials,
             }),
           });
           if (!res.ok) {
@@ -1361,24 +1450,23 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
   return (
     <div className="space-y-3">
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3 text-sm">
-          <Badge variant={data.total_gap === 0 ? "secondary" : "outline"}>
-            {data.total_gap === 0
-              ? "all targets met"
-              : `${data.total_gap} trial${data.total_gap === 1 ? "" : "s"} to run`}
-          </Badge>
+          <TrialsPerCellEditor
+            value={targetN}
+            canEdit={canEdit}
+            onApply={onApplyTrialsPerCell}
+          />
           {pivot ? (
-            <span className="text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               {pivot.rows.length} task version
               {pivot.rows.length === 1 ? "" : "s"} · {pivot.agents.length} agent
               {pivot.agents.length === 1 ? "" : "s"}
             </span>
           ) : null}
-          <TrialsPerCellEditor
-            value={targetN}
-            canEdit={canEdit}
-            onApply={onApplyTrialsPerCell}
+          <RecentJobs
+            experimentId={experimentId}
+            refreshKey={jobsRefreshKey}
           />
         </div>
         <div className="flex flex-wrap items-center gap-2">
