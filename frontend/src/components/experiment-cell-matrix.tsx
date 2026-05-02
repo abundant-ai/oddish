@@ -680,7 +680,7 @@ function PickTasksDialog({
   onAdd: (tasks: BrowseTask[]) => Promise<void>;
 }) {
   const { data, error: fetchError } = useSWR<{ items: BrowseTask[] }>(
-    open ? "/api/tasks/browse?limit=500&offset=0" : null,
+    open ? "/api/tasks/browse?limit=100&offset=0" : null,
     fetcher,
   );
   const [query, setQuery] = useState("");

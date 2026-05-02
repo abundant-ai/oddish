@@ -104,7 +104,7 @@ export function NewExperimentClient() {
   const [preview, setPreview] = useState<ResolvedExperiment | null>(null);
 
   const { data: browse } = useSWR<BrowseResponse>(
-    step !== "name" ? "/api/tasks/browse?limit=500&offset=0" : null,
+    step !== "name" ? "/api/tasks/browse?limit=100&offset=0" : null,
     fetcher,
   );
   const { data: knownAgents } = useSWR<KnownAgent[]>(
