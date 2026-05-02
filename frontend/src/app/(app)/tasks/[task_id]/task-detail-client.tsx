@@ -106,6 +106,97 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
       });
   }, [trials, activeVersionId]);
 
+  const RUNNING_STATUSES = useMemo(
+    () => new Set(["pending", "queued", "running", "retrying"]),
+    [],
+  );
+
+  const versionStats = useMemo(() => {
+    const total = trialsForVersion.length;
+    let succeeded = 0;
+    let failed = 0;
+    let running = 0;
+    let rewardSum = 0;
+    let rewardCount = 0;
+    for (const t of trialsForVersion) {
+      if (t.status === "success") succeeded += 1;
+      else if (t.status === "failed") failed += 1;
+      else if (RUNNING_STATUSES.has(t.status)) running += 1;
+      if (typeof t.reward === "number") {
+        rewardSum += t.reward;
+        rewardCount += 1;
+      }
+    }
+    const meanReward = rewardCount > 0 ? rewardSum / rewardCount : null;
+    const passRate = total > 0 ? succeeded / total : null;
+    return { total, succeeded, failed, running, meanReward, passRate };
+  }, [trialsForVersion, RUNNING_STATUSES]);
+
+  type AgentStat = {
+    key: string;
+    agent: string;
+    model: string | null;
+    provider: string;
+    total: number;
+    succeeded: number;
+    failed: number;
+    running: number;
+    rewardSum: number;
+    rewardCount: number;
+    meanReward: number | null;
+    passRate: number | null;
+    lastRunAt: string | null;
+  };
+
+  const perAgentStats = useMemo<AgentStat[]>(() => {
+    const byKey = new Map<string, AgentStat>();
+    for (const t of trialsForVersion) {
+      const k = `${(t.agent ?? "").toLowerCase()}|${(t.model ?? "").toLowerCase()}|${(t.provider ?? "").toLowerCase()}`;
+      let row = byKey.get(k);
+      if (!row) {
+        row = {
+          key: k,
+          agent: t.agent ?? "",
+          model: t.model ?? null,
+          provider: t.provider ?? "",
+          total: 0,
+          succeeded: 0,
+          failed: 0,
+          running: 0,
+          rewardSum: 0,
+          rewardCount: 0,
+          meanReward: null,
+          passRate: null,
+          lastRunAt: null,
+        };
+        byKey.set(k, row);
+      }
+      row.total += 1;
+      if (t.status === "success") row.succeeded += 1;
+      else if (t.status === "failed") row.failed += 1;
+      else if (RUNNING_STATUSES.has(t.status)) row.running += 1;
+      if (typeof t.reward === "number") {
+        row.rewardSum += t.reward;
+        row.rewardCount += 1;
+      }
+      const fa = t.finished_at ?? t.created_at;
+      if (fa && (!row.lastRunAt || fa > row.lastRunAt)) row.lastRunAt = fa;
+    }
+    const rows = Array.from(byKey.values());
+    for (const r of rows) {
+      r.meanReward = r.rewardCount > 0 ? r.rewardSum / r.rewardCount : null;
+      r.passRate = r.total > 0 ? r.succeeded / r.total : null;
+    }
+    rows.sort(
+      (a, b) =>
+        b.total - a.total ||
+        `${a.agent}|${a.model ?? ""}`.localeCompare(
+          `${b.agent}|${b.model ?? ""}`,
+        ),
+    );
+    return rows;
+  }, [trialsForVersion, RUNNING_STATUSES]);
+
   const [inspectingTrialId, setInspectingTrialId] = useState<string | null>(
     null,
   );
@@ -322,10 +413,117 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
                     Trials on this version
                   </span>
                   <span className="text-xs text-muted-foreground">
-                    {trialsForVersion.length}{" "}
-                    {trialsForVersion.length === 1 ? "trial" : "trials"}
+                    {versionStats.total}{" "}
+                    {versionStats.total === 1 ? "trial" : "trials"}
                   </span>
                 </div>
+
+                {versionStats.total > 0 ? (
+                  <div className="grid grid-cols-2 gap-3 border-b bg-muted/30 px-5 py-3 text-sm sm:grid-cols-5">
+                    <div>
+                      <div className="text-[10px] uppercase text-muted-foreground">
+                        total
+                      </div>
+                      <div className="font-mono">{versionStats.total}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase text-muted-foreground">
+                        succeeded
+                      </div>
+                      <div className="font-mono text-emerald-700 dark:text-emerald-400">
+                        {versionStats.succeeded}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase text-muted-foreground">
+                        failed
+                      </div>
+                      <div className="font-mono text-rose-600 dark:text-rose-400">
+                        {versionStats.failed}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase text-muted-foreground">
+                        running
+                      </div>
+                      <div className="font-mono text-amber-600 dark:text-amber-400">
+                        {versionStats.running}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase text-muted-foreground">
+                        μ reward
+                      </div>
+                      <div className="font-mono">
+                        {fmt(versionStats.meanReward)}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {perAgentStats.length > 0 ? (
+                  <div className="border-b">
+                    <div className="border-b px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      By agent
+                    </div>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Agent</TableHead>
+                          <TableHead className="text-right">Trials</TableHead>
+                          <TableHead className="text-right">Pass</TableHead>
+                          <TableHead className="text-right">μ reward</TableHead>
+                          <TableHead className="text-right">Last run</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {perAgentStats.map((r) => (
+                          <TableRow key={r.key}>
+                            <TableCell className="font-mono text-xs">
+                              {r.agent}
+                              {r.model ? ` · ${r.model}` : ""}
+                              <span className="ml-1 text-[10px] text-muted-foreground">
+                                {r.provider}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-xs">
+                              <span className="text-emerald-700 dark:text-emerald-400">
+                                {r.succeeded}
+                              </span>
+                              /{r.total}
+                              {r.failed > 0 ? (
+                                <span className="ml-1 text-rose-600 dark:text-rose-400">
+                                  ({r.failed} fail)
+                                </span>
+                              ) : null}
+                              {r.running > 0 ? (
+                                <span className="ml-1 text-amber-600 dark:text-amber-400">
+                                  ({r.running} run)
+                                </span>
+                              ) : null}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-xs">
+                              {r.passRate === null
+                                ? "—"
+                                : `${Math.round(r.passRate * 100)}%`}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-xs">
+                              {fmt(r.meanReward)}
+                            </TableCell>
+                            <TableCell className="text-right text-xs text-muted-foreground">
+                              {rel(r.lastRunAt)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : null}
+
+                <div className="border-b px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  All trials
+                </div>
+
                 {trialsError ? (
                   <div className="p-3 text-sm">
                     Failed to load trials:{" "}
