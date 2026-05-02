@@ -596,6 +596,7 @@ export interface ResolvedExperimentCell {
 export interface ResolvedExperiment {
   experiment_id: string;
   experiment_name: string;
+  target_n_trials: number;
   cells: ResolvedExperimentCell[];
   total_gap: number;
 }

@@ -479,6 +479,38 @@ async def bulk_cells_core(
         await session.flush()
         return len(rows)
 
+    if op == "delete_agent":
+        if not agent_harness or not agent_provider:
+            raise HTTPException(
+                status_code=400,
+                detail="agent_harness and agent_provider required",
+            )
+        equivalence_key = compute_agent_equivalence_key(
+            agent_harness, agent_model, agent_provider
+        )
+        result = await session.execute(
+            delete(ExperimentCellModel).where(
+                ExperimentCellModel.experiment_id == experiment_id,
+                ExperimentCellModel.agent_equivalence_key == equivalence_key,
+            )
+        )
+        await session.flush()
+        return result.rowcount or 0
+
+    if op == "delete_task_version":
+        if not task_version_id:
+            raise HTTPException(
+                status_code=400, detail="task_version_id required"
+            )
+        result = await session.execute(
+            delete(ExperimentCellModel).where(
+                ExperimentCellModel.experiment_id == experiment_id,
+                ExperimentCellModel.task_version_id == task_version_id,
+            )
+        )
+        await session.flush()
+        return result.rowcount or 0
+
     raise HTTPException(
         status_code=400, detail=f"Unknown bulk op: {op}"
     )

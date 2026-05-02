@@ -12,7 +12,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import {
   Popover,
@@ -28,13 +27,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
 import { TrialInspectDrawer } from "@/components/trial-inspect-drawer";
 import {
   Tooltip,
@@ -42,15 +35,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Plus, Pencil, Trash2, MoreHorizontal } from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Plus, Pencil, X, Search, Eye } from "lucide-react";
 import { fetcher } from "@/lib/api";
 import type {
   ExperimentCellAgent,
@@ -172,17 +157,17 @@ function CellTrialsDialog({
           </DialogTitle>
         </DialogHeader>
         {error ? (
-          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs">
+          <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-2 text-xs">
             {String((error as Error).message)}
           </div>
         ) : isLoading || !data ? (
           <Skeleton className="h-40" />
         ) : data.length === 0 ? (
-          <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+          <div className="rounded-sm border border-dashed p-6 text-center text-sm text-muted-foreground">
             No trials match this cell yet.
           </div>
         ) : (
-          <div className="max-h-[60vh] overflow-y-auto rounded-md border">
+          <div className="max-h-[60vh] overflow-y-auto rounded-sm border">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -294,7 +279,7 @@ function CellBadge({
 
   const badge = (
     <div
-      className={`inline-flex flex-col items-start gap-0.5 rounded-md px-2 py-1 ${ratioColor}`}
+      className={`inline-flex flex-col items-start gap-0.5 rounded-sm px-2 py-1 ${ratioColor}`}
     >
       <span className="font-mono text-xs">
         {cell.have_n_successful}/{cell.target_n_trials}
@@ -354,11 +339,7 @@ function CellBadge({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="inline-flex"
-          aria-label="Edit cell"
-        >
+        <button type="button" className="inline-flex" aria-label="Edit cell">
           {badge}
         </button>
       </PopoverTrigger>
@@ -425,7 +406,7 @@ function CellBadge({
               className="h-7"
               onClick={() => setEditing(true)}
             >
-              <Pencil className="mr-1 h-3 w-3" /> Bump target
+              <Pencil className="mr-1 h-3 w-3" /> Override target
             </Button>
             <Button
               size="sm"
@@ -433,7 +414,7 @@ function CellBadge({
               className="h-7 text-rose-600 hover:text-rose-700"
               onClick={() => onDelete(cell.id)}
             >
-              <Trash2 className="mr-1 h-3 w-3" /> Remove
+              <X className="mr-1 h-3 w-3" /> Remove
             </Button>
           </div>
         )}
@@ -454,87 +435,78 @@ interface BrowseTask {
   name: string;
   current_version: number | null;
   current_version_id: string | null;
+  tags?: Record<string, string>;
 }
 
 interface BrowseResponse {
   items: BrowseTask[];
-  has_more: boolean;
 }
 
-function AddCellDialog({
-  experimentId,
-  onCreated,
-}: {
-  experimentId: string;
-  onCreated: () => Promise<void>;
-}) {
-  const [open, setOpen] = useState(false);
-  const [taskId, setTaskId] = useState<string>("");
-  const [harness, setHarness] = useState("claude-code");
-  const [model, setModel] = useState("claude-sonnet-4-5");
-  const [provider, setProvider] = useState("anthropic");
-  const [targetN, setTargetN] = useState("3");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+interface KnownAgent {
+  harness: string;
+  model: string | null;
+  provider: string;
+  equivalence_key: string;
+  trial_count: number;
+  last_seen: string | null;
+}
 
-  const { data: browse } = useSWR<BrowseResponse>(
-    open ? "/api/tasks/browse?limit=200&offset=0" : null,
+function PickAgentsDialog({
+  open,
+  onOpenChange,
+  excludeKeys,
+  targetN,
+  onAdd,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  excludeKeys: Set<string>;
+  targetN: number;
+  onAdd: (agents: KnownAgent[]) => Promise<void>;
+}) {
+  const { data } = useSWR<KnownAgent[]>(
+    open ? "/api/agents/known?limit=200" : null,
     fetcher,
   );
+  const [query, setQuery] = useState("");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const tasks = useMemo(() => {
-    return (browse?.items ?? []).filter((t) => t.current_version_id !== null);
-  }, [browse]);
-
-  const selectedTask = tasks.find((t) => t.id === taskId);
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const all = (data ?? []).filter((a) => !excludeKeys.has(a.equivalence_key));
+    if (!q) return all;
+    return all.filter(
+      (a) =>
+        a.harness.toLowerCase().includes(q) ||
+        (a.model ?? "").toLowerCase().includes(q) ||
+        a.provider.toLowerCase().includes(q),
+    );
+  }, [data, query, excludeKeys]);
 
   const reset = () => {
-    setTaskId("");
-    setHarness("claude-code");
-    setModel("claude-sonnet-4-5");
-    setProvider("anthropic");
-    setTargetN("3");
+    setQuery("");
+    setPicked(new Set());
     setError(null);
   };
 
-  const onSubmit = async () => {
+  const submit = async () => {
+    if (picked.size === 0) {
+      onOpenChange(false);
+      return;
+    }
     setError(null);
-    if (!selectedTask?.current_version_id) {
-      setError("Pick a task with at least one uploaded version");
-      return;
-    }
-    if (!harness.trim() || !provider.trim()) {
-      setError("Harness and provider are required");
-      return;
-    }
-    setSubmitting(true);
+    setBusy(true);
     try {
-      const res = await fetch(
-        `/api/experiments/${encodeExperimentRouteParam(experimentId)}/cells`,
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            task_version_id: selectedTask.current_version_id,
-            agent_harness: harness.trim(),
-            agent_model: model.trim() || null,
-            agent_provider: provider.trim(),
-            target_n_trials: Math.max(1, parseInt(targetN, 10) || 1),
-          }),
-        },
-      );
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `Failed (${res.status})`);
-      }
-      await onCreated();
+      const chosen = (data ?? []).filter((a) => picked.has(a.equivalence_key));
+      await onAdd(chosen);
       reset();
-      setOpen(false);
+      onOpenChange(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSubmitting(false);
+      setBusy(false);
     }
   };
 
@@ -542,95 +514,91 @@ function AddCellDialog({
     <Dialog
       open={open}
       onOpenChange={(o) => {
-        setOpen(o);
+        onOpenChange(o);
         if (!o) reset();
       }}
     >
-      <DialogTrigger asChild>
-        <Button size="sm" variant="outline">
-          <Plus className="mr-1 h-3.5 w-3.5" /> Add cell
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Add cell to experiment</DialogTitle>
+          <DialogTitle>Add agent column</DialogTitle>
         </DialogHeader>
-        <div className="space-y-3 text-sm">
-          <div>
-            <Label htmlFor="task">Task</Label>
-            <Select value={taskId} onValueChange={setTaskId}>
-              <SelectTrigger id="task">
-                <SelectValue
-                  placeholder={
-                    browse ? "Select a task" : "Loading tasks…"
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent className="max-h-[40vh]">
-                {tasks.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>
-                    {t.name}{" "}
-                    <span className="text-muted-foreground">
-                      v{t.current_version ?? "?"}
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {selectedTask ? (
-              <p className="mt-1 font-mono text-[10px] text-muted-foreground">
-                pinning to {selectedTask.current_version_id}
-              </p>
-            ) : (
-              <p className="mt-1 text-xs text-muted-foreground">
-                Cells pin to a specific task version. Re-uploading the
-                task later does not shift this cell's evidence pool.
-              </p>
-            )}
+        <div className="space-y-2 text-sm">
+          <div className="flex items-center gap-2">
+            <Search className="h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Filter by harness, model, provider"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="h-8"
+            />
+            <span className="whitespace-nowrap text-xs text-muted-foreground">
+              {picked.size} selected
+            </span>
           </div>
-          <div className="grid grid-cols-3 gap-2">
-            <div className="col-span-1">
-              <Label htmlFor="harness">Harness</Label>
-              <Input
-                id="harness"
-                placeholder="claude-code"
-                value={harness}
-                onChange={(e) => setHarness(e.target.value)}
-              />
+          {!data ? (
+            <Skeleton className="h-48" />
+          ) : filtered.length === 0 ? (
+            <div className="rounded-sm border border-dashed p-6 text-center text-xs text-muted-foreground">
+              {(data ?? []).length === 0
+                ? "No agents have run yet."
+                : "All known agents are already on this experiment."}
             </div>
-            <div className="col-span-2">
-              <Label htmlFor="model">Model</Label>
-              <Input
-                id="model"
-                placeholder="claude-sonnet-4-5"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-              />
+          ) : (
+            <div className="max-h-[50vh] overflow-y-auto rounded-sm border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-10" />
+                    <TableHead>Agent</TableHead>
+                    <TableHead className="text-right">Seen</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filtered.map((a) => (
+                    <TableRow
+                      key={a.equivalence_key}
+                      className="cursor-pointer"
+                      onClick={() => {
+                        const next = new Set(picked);
+                        if (next.has(a.equivalence_key))
+                          next.delete(a.equivalence_key);
+                        else next.add(a.equivalence_key);
+                        setPicked(next);
+                      }}
+                    >
+                      <TableCell>
+                        <Checkbox
+                          checked={picked.has(a.equivalence_key)}
+                          onCheckedChange={() => {}}
+                        />
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {a.harness}
+                        {a.model && a.model !== "default"
+                          ? ` · ${a.model}`
+                          : ""}
+                        {shouldShowProvider(a.provider) ? (
+                          <span className="ml-1 text-[10px] text-muted-foreground">
+                            ({a.provider})
+                          </span>
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-xs">
+                        {a.trial_count}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             </div>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <Label htmlFor="provider">Provider</Label>
-              <Input
-                id="provider"
-                placeholder="anthropic"
-                value={provider}
-                onChange={(e) => setProvider(e.target.value)}
-              />
-            </div>
-            <div>
-              <Label htmlFor="target_n_trials">Target trials</Label>
-              <Input
-                id="target_n_trials"
-                type="number"
-                min={1}
-                value={targetN}
-                onChange={(e) => setTargetN(e.target.value)}
-              />
-            </div>
-          </div>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            Each picked agent gets paired with every existing task version, at{" "}
+            <span className="font-mono">{targetN}</span> trial
+            {targetN === 1 ? "" : "s"} per cell.
+          </p>
           {error ? (
-            <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs">
+            <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-2 text-xs">
               {error}
             </div>
           ) : null}
@@ -638,16 +606,13 @@ function AddCellDialog({
         <DialogFooter>
           <Button
             variant="ghost"
-            onClick={() => {
-              reset();
-              setOpen(false);
-            }}
-            disabled={submitting}
+            onClick={() => onOpenChange(false)}
+            disabled={busy}
           >
             Cancel
           </Button>
-          <Button onClick={onSubmit} disabled={submitting}>
-            {submitting ? "Adding…" : "Add cell"}
+          <Button onClick={submit} disabled={busy || picked.size === 0}>
+            {busy ? "Adding…" : `Add ${picked.size} agent${picked.size === 1 ? "" : "s"}`}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -655,45 +620,556 @@ function AddCellDialog({
   );
 }
 
+function PickTasksDialog({
+  open,
+  onOpenChange,
+  excludeIds,
+  targetN,
+  onAdd,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  excludeIds: Set<string>;
+  targetN: number;
+  onAdd: (tasks: BrowseTask[]) => Promise<void>;
+}) {
+  const { data } = useSWR<BrowseResponse>(
+    open ? "/api/tasks/browse?limit=500&offset=0" : null,
+    fetcher,
+  );
+  const [query, setQuery] = useState("");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const tasks = useMemo(
+    () =>
+      (data?.items ?? []).filter(
+        (t) =>
+          t.current_version_id !== null &&
+          !excludeIds.has(t.current_version_id),
+      ),
+    [data, excludeIds],
+  );
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return tasks;
+    return tasks.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) ||
+        Object.entries(t.tags ?? {}).some(
+          ([k, v]) =>
+            k.toLowerCase().includes(q) || v.toLowerCase().includes(q),
+        ),
+    );
+  }, [tasks, query]);
+
+  const reset = () => {
+    setQuery("");
+    setPicked(new Set());
+    setError(null);
+  };
+
+  const submit = async () => {
+    if (picked.size === 0) {
+      onOpenChange(false);
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    try {
+      const chosen = tasks.filter((t) => picked.has(t.id));
+      await onAdd(chosen);
+      reset();
+      onOpenChange(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        onOpenChange(o);
+        if (!o) reset();
+      }}
+    >
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Add task version row</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-2 text-sm">
+          <div className="flex items-center gap-2">
+            <Search className="h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Filter by task name or tag"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              className="h-8"
+            />
+            <span className="whitespace-nowrap text-xs text-muted-foreground">
+              {picked.size} selected
+            </span>
+          </div>
+          {!data ? (
+            <Skeleton className="h-48" />
+          ) : filtered.length === 0 ? (
+            <div className="rounded-sm border border-dashed p-6 text-center text-xs text-muted-foreground">
+              {tasks.length === 0
+                ? "All known task versions are already on this experiment."
+                : "No tasks match."}
+            </div>
+          ) : (
+            <div className="max-h-[50vh] overflow-y-auto rounded-sm border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-10" />
+                    <TableHead>Task</TableHead>
+                    <TableHead>Version</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filtered.map((t) => (
+                    <TableRow
+                      key={t.id}
+                      className="cursor-pointer"
+                      onClick={() => {
+                        const next = new Set(picked);
+                        if (next.has(t.id)) next.delete(t.id);
+                        else next.add(t.id);
+                        setPicked(next);
+                      }}
+                    >
+                      <TableCell>
+                        <Checkbox
+                          checked={picked.has(t.id)}
+                          onCheckedChange={() => {}}
+                        />
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {t.name}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        v{t.current_version ?? "?"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            Each picked task gets paired with every existing agent, at{" "}
+            <span className="font-mono">{targetN}</span> trial
+            {targetN === 1 ? "" : "s"} per cell.
+          </p>
+          {error ? (
+            <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-2 text-xs">
+              {error}
+            </div>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+            disabled={busy}
+          >
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={busy || picked.size === 0}>
+            {busy ? "Adding…" : `Add ${picked.size} task${picked.size === 1 ? "" : "s"}`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function FirstCellsDialog({
+  open,
+  onOpenChange,
+  targetN,
+  onCreate,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  targetN: number;
+  onCreate: (
+    tasks: BrowseTask[],
+    agents: KnownAgent[],
+  ) => Promise<void>;
+}) {
+  const { data: browse } = useSWR<BrowseResponse>(
+    open ? "/api/tasks/browse?limit=500&offset=0" : null,
+    fetcher,
+  );
+  const { data: knownAgents } = useSWR<KnownAgent[]>(
+    open ? "/api/agents/known?limit=200" : null,
+    fetcher,
+  );
+  const [taskQuery, setTaskQuery] = useState("");
+  const [agentQuery, setAgentQuery] = useState("");
+  const [pickedTasks, setPickedTasks] = useState<Set<string>>(new Set());
+  const [pickedAgents, setPickedAgents] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const tasks = useMemo(
+    () =>
+      (browse?.items ?? []).filter((t) => t.current_version_id !== null),
+    [browse],
+  );
+  const filteredTasks = useMemo(() => {
+    const q = taskQuery.trim().toLowerCase();
+    if (!q) return tasks;
+    return tasks.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) ||
+        Object.entries(t.tags ?? {}).some(
+          ([k, v]) =>
+            k.toLowerCase().includes(q) || v.toLowerCase().includes(q),
+        ),
+    );
+  }, [tasks, taskQuery]);
+
+  const agents = knownAgents ?? [];
+  const filteredAgents = useMemo(() => {
+    const q = agentQuery.trim().toLowerCase();
+    if (!q) return agents;
+    return agents.filter(
+      (a) =>
+        a.harness.toLowerCase().includes(q) ||
+        (a.model ?? "").toLowerCase().includes(q) ||
+        a.provider.toLowerCase().includes(q),
+    );
+  }, [agents, agentQuery]);
+
+  const reset = () => {
+    setTaskQuery("");
+    setAgentQuery("");
+    setPickedTasks(new Set());
+    setPickedAgents(new Set());
+    setError(null);
+  };
+
+  const submit = async () => {
+    if (pickedTasks.size === 0 || pickedAgents.size === 0) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const chosenTasks = tasks.filter((t) => pickedTasks.has(t.id));
+      const chosenAgents = agents.filter((a) =>
+        pickedAgents.has(a.equivalence_key),
+      );
+      await onCreate(chosenTasks, chosenAgents);
+      reset();
+      onOpenChange(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        onOpenChange(o);
+        if (!o) reset();
+      }}
+    >
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>Add cells</DialogTitle>
+        </DialogHeader>
+        <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+          <div className="space-y-2">
+            <div className="text-xs font-semibold uppercase text-muted-foreground">
+              Task versions
+            </div>
+            <div className="flex items-center gap-2">
+              <Search className="h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Filter tasks"
+                value={taskQuery}
+                onChange={(e) => setTaskQuery(e.target.value)}
+                className="h-8"
+              />
+            </div>
+            <div className="max-h-[40vh] overflow-y-auto rounded-sm border">
+              {!browse ? (
+                <Skeleton className="h-32" />
+              ) : (
+                <Table>
+                  <TableBody>
+                    {filteredTasks.map((t) => (
+                      <TableRow
+                        key={t.id}
+                        className="cursor-pointer"
+                        onClick={() => {
+                          const next = new Set(pickedTasks);
+                          if (next.has(t.id)) next.delete(t.id);
+                          else next.add(t.id);
+                          setPickedTasks(next);
+                        }}
+                      >
+                        <TableCell className="w-8">
+                          <Checkbox
+                            checked={pickedTasks.has(t.id)}
+                            onCheckedChange={() => {}}
+                          />
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {t.name}
+                          <span className="ml-1 text-[10px] text-muted-foreground">
+                            v{t.current_version ?? "?"}
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              {pickedTasks.size} selected
+            </div>
+          </div>
+          <div className="space-y-2">
+            <div className="text-xs font-semibold uppercase text-muted-foreground">
+              Agents
+            </div>
+            <div className="flex items-center gap-2">
+              <Search className="h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Filter agents"
+                value={agentQuery}
+                onChange={(e) => setAgentQuery(e.target.value)}
+                className="h-8"
+              />
+            </div>
+            <div className="max-h-[40vh] overflow-y-auto rounded-sm border">
+              {!knownAgents ? (
+                <Skeleton className="h-32" />
+              ) : (
+                <Table>
+                  <TableBody>
+                    {filteredAgents.map((a) => (
+                      <TableRow
+                        key={a.equivalence_key}
+                        className="cursor-pointer"
+                        onClick={() => {
+                          const next = new Set(pickedAgents);
+                          if (next.has(a.equivalence_key))
+                            next.delete(a.equivalence_key);
+                          else next.add(a.equivalence_key);
+                          setPickedAgents(next);
+                        }}
+                      >
+                        <TableCell className="w-8">
+                          <Checkbox
+                            checked={pickedAgents.has(a.equivalence_key)}
+                            onCheckedChange={() => {}}
+                          />
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {a.harness}
+                          {a.model && a.model !== "default"
+                            ? ` · ${a.model}`
+                            : ""}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              {pickedAgents.size} selected
+            </div>
+          </div>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Will create{" "}
+          <span className="font-mono">
+            {pickedTasks.size * pickedAgents.size}
+          </span>{" "}
+          cell{pickedTasks.size * pickedAgents.size === 1 ? "" : "s"} at{" "}
+          <span className="font-mono">{targetN}</span> trial
+          {targetN === 1 ? "" : "s"} each.
+        </p>
+        {error ? (
+          <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-2 text-xs">
+            {error}
+          </div>
+        ) : null}
+        <DialogFooter>
+          <Button
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+            disabled={busy}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={submit}
+            disabled={busy || pickedTasks.size === 0 || pickedAgents.size === 0}
+          >
+            {busy ? "Adding…" : "Add cells"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function TrialsPerCellEditor({
+  value,
+  canEdit,
+  onApply,
+}: {
+  value: number;
+  canEdit: boolean;
+  onApply: (next: number) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(value));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!canEdit) {
+    return (
+      <span className="font-mono">
+        {value} trial{value === 1 ? "" : "s"}/cell
+      </span>
+    );
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 rounded-sm border border-dashed px-2 py-0.5 font-mono text-xs hover:bg-muted/50"
+        onClick={() => {
+          setDraft(String(value));
+          setEditing(true);
+          setError(null);
+        }}
+      >
+        {value} trial{value === 1 ? "" : "s"}/cell
+        <Pencil className="h-3 w-3 text-muted-foreground" />
+      </button>
+    );
+  }
+
+  return (
+    <div className="inline-flex flex-wrap items-center gap-1">
+      <Input
+        type="number"
+        min={1}
+        className="h-7 w-20 text-xs"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      <Button
+        size="sm"
+        className="h-7"
+        disabled={busy}
+        onClick={async () => {
+          const n = Math.max(1, parseInt(draft, 10) || 1);
+          setBusy(true);
+          setError(null);
+          try {
+            await onApply(n);
+            setEditing(false);
+          } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? "…" : "Apply to all"}
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7"
+        disabled={busy}
+        onClick={() => setEditing(false)}
+      >
+        Cancel
+      </Button>
+      {error ? (
+        <span className="text-[11px] text-destructive">{error}</span>
+      ) : null}
+    </div>
+  );
+}
+
 export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
   const encodedId = encodeExperimentRouteParam(experimentId);
-  const url = experimentId
-    ? `/api/experiments/${encodedId}/resolved`
-    : null;
+  const url = experimentId ? `/api/experiments/${encodedId}/resolved` : null;
 
-  const {
-    data,
-    error,
-    isLoading,
-    mutate,
-  } = useSWR<ResolvedExperiment>(url, fetcher, {
-    refreshInterval: 60_000,
-    revalidateOnFocus: false,
-  });
+  const { data, error, isLoading, mutate } = useSWR<ResolvedExperiment>(
+    url,
+    fetcher,
+    {
+      refreshInterval: 60_000,
+      revalidateOnFocus: false,
+    },
+  );
 
   const pivot = useMemo<Pivot | null>(
     () => (data ? pivotCells(data.cells) : null),
     [data],
   );
 
+  const [mode, setMode] = useState<"view" | "edit">("view");
+  const [pickAgentsOpen, setPickAgentsOpen] = useState(false);
+  const [pickTasksOpen, setPickTasksOpen] = useState(false);
+  const [firstCellsOpen, setFirstCellsOpen] = useState(false);
+  const [busyMsg, setBusyMsg] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [isBackfilling, setIsBackfilling] = useState(false);
-  const [backfillError, setBackfillError] = useState<string | null>(null);
+
+  const targetN = data?.target_n_trials ?? 3;
+
+  const callBulk = async (body: Record<string, unknown>) => {
+    const res = await fetch(`/api/experiments/${encodedId}/cells/bulk`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `Bulk op failed (${res.status})`);
+    }
+  };
 
   const onBackfill = async () => {
-    setBackfillError(null);
+    setActionError(null);
     setIsBackfilling(true);
     try {
-      const res = await fetch(
-        `/api/experiments/${encodedId}/backfill`,
-        { method: "POST", credentials: "include" },
-      );
+      const res = await fetch(`/api/experiments/${encodedId}/backfill`, {
+        method: "POST",
+        credentials: "include",
+      });
       if (!res.ok) {
         const text = await res.text();
         throw new Error(text || `Backfill failed (${res.status})`);
       }
       await mutate();
     } catch (err) {
-      setBackfillError(err instanceof Error ? err.message : String(err));
+      setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsBackfilling(false);
     }
@@ -716,63 +1192,6 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
     await mutate();
   };
 
-  const [bulkOpen, setBulkOpen] = useState<
-    null | "add_agent_to_all_tasks" | "add_task_to_all_agents" | "bump_all_targets"
-  >(null);
-  const [bulkBusy, setBulkBusy] = useState(false);
-  const [bulkError, setBulkError] = useState<string | null>(null);
-  const [bulkTarget, setBulkTarget] = useState("3");
-  const [bulkHarness, setBulkHarness] = useState("");
-  const [bulkModel, setBulkModel] = useState("");
-  const [bulkProvider, setBulkProvider] = useState("");
-  const [bulkTaskId, setBulkTaskId] = useState("");
-
-  const submitBulk = async () => {
-    if (!bulkOpen) return;
-    setBulkError(null);
-    setBulkBusy(true);
-    try {
-      const body: Record<string, unknown> = {
-        op: bulkOpen,
-        target_n_trials: Math.max(1, parseInt(bulkTarget, 10) || 1),
-      };
-      if (bulkOpen === "add_agent_to_all_tasks") {
-        if (!bulkHarness.trim() || !bulkProvider.trim()) {
-          throw new Error("harness and provider required");
-        }
-        body.agent_harness = bulkHarness.trim();
-        body.agent_model = bulkModel.trim() || null;
-        body.agent_provider = bulkProvider.trim();
-      }
-      if (bulkOpen === "add_task_to_all_agents") {
-        if (!bulkTaskId.trim()) {
-          throw new Error("task_version_id required");
-        }
-        body.task_version_id = bulkTaskId.trim();
-      }
-      const res = await fetch(`/api/experiments/${encodedId}/cells/bulk`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `Failed (${res.status})`);
-      }
-      await mutate();
-      setBulkOpen(null);
-      setBulkHarness("");
-      setBulkModel("");
-      setBulkProvider("");
-      setBulkTaskId("");
-    } catch (err) {
-      setBulkError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBulkBusy(false);
-    }
-  };
-
   const onDeleteCell = async (cellId: string) => {
     const res = await fetch(
       `/api/experiments/${encodedId}/cells/${encodeURIComponent(cellId)}`,
@@ -783,6 +1202,134 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
       throw new Error(text || `Delete failed (${res.status})`);
     }
     await mutate();
+  };
+
+  const onApplyTrialsPerCell = async (next: number) => {
+    setActionError(null);
+    await callBulk({ op: "bump_all_targets", target_n_trials: next });
+    await mutate();
+  };
+
+  const onAddAgents = async (agents: KnownAgent[]) => {
+    setActionError(null);
+    setBusyMsg("Adding agents…");
+    try {
+      for (const a of agents) {
+        await callBulk({
+          op: "add_agent_to_all_tasks",
+          target_n_trials: targetN,
+          agent_harness: a.harness,
+          agent_model: a.model,
+          agent_provider: a.provider,
+        });
+      }
+      await mutate();
+    } finally {
+      setBusyMsg(null);
+    }
+  };
+
+  const onAddTasks = async (tasks: BrowseTask[]) => {
+    setActionError(null);
+    setBusyMsg("Adding task versions…");
+    try {
+      for (const t of tasks) {
+        if (!t.current_version_id) continue;
+        await callBulk({
+          op: "add_task_to_all_agents",
+          target_n_trials: targetN,
+          task_version_id: t.current_version_id,
+        });
+      }
+      await mutate();
+    } finally {
+      setBusyMsg(null);
+    }
+  };
+
+  const onCreateFirstCells = async (
+    tasks: BrowseTask[],
+    agents: KnownAgent[],
+  ) => {
+    setActionError(null);
+    setBusyMsg("Creating cells…");
+    try {
+      for (const t of tasks) {
+        if (!t.current_version_id) continue;
+        for (const a of agents) {
+          const res = await fetch(`/api/experiments/${encodedId}/cells`, {
+            method: "POST",
+            credentials: "include",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              task_version_id: t.current_version_id,
+              agent_harness: a.harness,
+              agent_model: a.model,
+              agent_provider: a.provider,
+              target_n_trials: targetN,
+            }),
+          });
+          if (!res.ok) {
+            const text = await res.text();
+            throw new Error(text || `Create cell failed (${res.status})`);
+          }
+        }
+      }
+      await mutate();
+    } finally {
+      setBusyMsg(null);
+    }
+  };
+
+  const onDeleteAgentColumn = async (agent: ExperimentCellAgent) => {
+    if (
+      !window.confirm(
+        `Remove ${agent.harness}${agent.model ? ` · ${agent.model}` : ""} from this experiment? Trial history is kept; only the cells are deleted.`,
+      )
+    )
+      return;
+    setActionError(null);
+    setBusyMsg("Removing column…");
+    try {
+      await callBulk({
+        op: "delete_agent",
+        target_n_trials: targetN,
+        agent_harness: agent.harness,
+        agent_model: agent.model,
+        agent_provider: agent.provider,
+      });
+      await mutate();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyMsg(null);
+    }
+  };
+
+  const onDeleteTaskRow = async (
+    taskVersionId: string,
+    label: string,
+  ) => {
+    if (
+      !window.confirm(
+        `Remove ${label} from this experiment? Trial history is kept; only the cells are deleted.`,
+      )
+    )
+      return;
+    setActionError(null);
+    setBusyMsg("Removing row…");
+    try {
+      await callBulk({
+        op: "delete_task_version",
+        target_n_trials: targetN,
+        task_version_id: taskVersionId,
+      });
+      await mutate();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyMsg(null);
+    }
   };
 
   if (isLoading) {
@@ -796,78 +1343,70 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
 
   if (error) {
     return (
-      <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">
+      <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-3 text-sm">
         Failed to load cell matrix: {String((error as Error).message)}
       </div>
     );
   }
 
-  if (!data || !pivot || pivot.rows.length === 0) {
-    return (
-      <div className="space-y-3">
-        <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-          No cells yet. Add task versions and agents to start collecting
-          evidence.
-        </div>
-        {canEdit ? (
-          <div className="flex justify-end">
-            <AddCellDialog
-              experimentId={experimentId}
-              onCreated={async () => {
-                await mutate();
-              }}
-            />
-          </div>
-        ) : null}
-      </div>
-    );
-  }
+  if (!data) return null;
+
+  const isEmpty = !pivot || pivot.rows.length === 0;
+  const editing = canEdit && mode === "edit";
+  const existingTaskVersionIds = new Set(
+    pivot?.rows.map((r) => r.taskVersionId) ?? [],
+  );
+  const existingAgentKeys = new Set(pivot?.agents.map((a) => a.key) ?? []);
 
   return (
     <div className="space-y-3">
+      {/* Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-3 text-sm">
-          <span className="font-medium">{data.experiment_name}</span>
+        <div className="flex flex-wrap items-center gap-3 text-sm">
           <Badge variant={data.total_gap === 0 ? "secondary" : "outline"}>
             gap: {data.total_gap}
           </Badge>
-          <span className="text-muted-foreground">
-            {pivot.rows.length} task version{pivot.rows.length === 1 ? "" : "s"} ·{" "}
-            {pivot.agents.length} agent{pivot.agents.length === 1 ? "" : "s"}
-          </span>
+          {pivot ? (
+            <span className="text-muted-foreground">
+              {pivot.rows.length} task version
+              {pivot.rows.length === 1 ? "" : "s"} · {pivot.agents.length} agent
+              {pivot.agents.length === 1 ? "" : "s"}
+            </span>
+          ) : null}
+          <TrialsPerCellEditor
+            value={targetN}
+            canEdit={canEdit}
+            onApply={onApplyTrialsPerCell}
+          />
         </div>
-        {canEdit ? (
-          <div className="flex items-center gap-2">
-            <AddCellDialog
-              experimentId={experimentId}
-              onCreated={async () => {
-                await mutate();
-              }}
-            />
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="sm" variant="outline">
-                  <MoreHorizontal className="mr-1 h-3.5 w-3.5" /> Bulk
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-64">
-                <DropdownMenuLabel>Bulk edit</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() => setBulkOpen("add_agent_to_all_tasks")}
-                >
-                  Add agent to every task version
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setBulkOpen("add_task_to_all_agents")}
-                >
-                  Add task version to every agent
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setBulkOpen("bump_all_targets")}>
-                  Bump target for every cell
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+        <div className="flex flex-wrap items-center gap-2">
+          {canEdit ? (
+            <div className="inline-flex items-center overflow-hidden rounded-sm border">
+              <button
+                type="button"
+                onClick={() => setMode("view")}
+                className={`flex items-center gap-1 px-2.5 py-1 text-xs ${
+                  mode === "view"
+                    ? "bg-foreground text-background"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Eye className="h-3 w-3" /> View
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("edit")}
+                className={`flex items-center gap-1 border-l px-2.5 py-1 text-xs ${
+                  mode === "edit"
+                    ? "bg-foreground text-background"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Pencil className="h-3 w-3" /> Edit
+              </button>
+            </div>
+          ) : null}
+          {canEdit ? (
             <Button
               size="sm"
               onClick={onBackfill}
@@ -880,169 +1419,178 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
                   ? "No gaps"
                   : `Backfill ${data.total_gap}`}
             </Button>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
       </div>
 
-      <Dialog
-        open={bulkOpen !== null}
-        onOpenChange={(o) => {
-          if (!o) {
-            setBulkOpen(null);
-            setBulkError(null);
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {bulkOpen === "add_agent_to_all_tasks"
-                ? "Add agent to every task version"
-                : bulkOpen === "add_task_to_all_agents"
-                  ? "Add task version to every agent"
-                  : "Bump target for every cell"}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3 text-sm">
-            {bulkOpen === "add_agent_to_all_tasks" ? (
-              <>
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="col-span-1">
-                    <Label htmlFor="bulk_harness">Harness</Label>
-                    <Input
-                      id="bulk_harness"
-                      placeholder="claude-code"
-                      value={bulkHarness}
-                      onChange={(e) => setBulkHarness(e.target.value)}
-                    />
-                  </div>
-                  <div className="col-span-2">
-                    <Label htmlFor="bulk_model">Model</Label>
-                    <Input
-                      id="bulk_model"
-                      placeholder="claude-sonnet-4-5"
-                      value={bulkModel}
-                      onChange={(e) => setBulkModel(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <Label htmlFor="bulk_provider">Provider</Label>
-                  <Input
-                    id="bulk_provider"
-                    placeholder="anthropic"
-                    value={bulkProvider}
-                    onChange={(e) => setBulkProvider(e.target.value)}
-                  />
-                </div>
-              </>
-            ) : null}
-            {bulkOpen === "add_task_to_all_agents" ? (
-              <div>
-                <Label htmlFor="bulk_taskid">Task version id</Label>
-                <Input
-                  id="bulk_taskid"
-                  placeholder="abc123-v2"
-                  value={bulkTaskId}
-                  onChange={(e) => setBulkTaskId(e.target.value)}
-                />
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  Find this on the task detail page.
-                </p>
-              </div>
-            ) : null}
-            <div>
-              <Label htmlFor="bulk_target">
-                {bulkOpen === "bump_all_targets"
-                  ? "New target trials per cell"
-                  : "Target trials per new cell"}
-              </Label>
-              <Input
-                id="bulk_target"
-                type="number"
-                min={1}
-                value={bulkTarget}
-                onChange={(e) => setBulkTarget(e.target.value)}
-              />
-            </div>
-            {bulkError ? (
-              <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-2 text-xs">
-                {bulkError}
-              </div>
-            ) : null}
-          </div>
-          <DialogFooter>
-            <Button
-              variant="ghost"
-              onClick={() => setBulkOpen(null)}
-              disabled={bulkBusy}
-            >
-              Cancel
-            </Button>
-            <Button onClick={submitBulk} disabled={bulkBusy}>
-              {bulkBusy ? "Applying…" : "Apply"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {backfillError ? (
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs">
-          {backfillError}
+      {actionError ? (
+        <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-2 text-xs">
+          {actionError}
+        </div>
+      ) : null}
+      {busyMsg ? (
+        <div className="rounded-sm border bg-muted/30 p-2 text-xs text-muted-foreground">
+          {busyMsg}
         </div>
       ) : null}
 
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="sticky left-0 z-10 bg-background">
-                Task version
-              </TableHead>
-              {pivot.agents.map(({ key, agent }) => (
-                <TableHead
-                  key={key}
-                  className="whitespace-nowrap text-center font-mono text-xs"
-                >
-                  {formatAgentLabel(agent)}
-                  {shouldShowProvider(agent.provider) ? (
-                    <div className="text-[10px] font-normal text-muted-foreground">
-                      {agent.provider}
-                    </div>
-                  ) : null}
+      {/* Empty state */}
+      {isEmpty ? (
+        <div className="space-y-3">
+          <div className="rounded-sm border border-dashed p-6 text-center text-sm text-muted-foreground">
+            No cells yet. Add task versions and agents to start collecting
+            evidence.
+          </div>
+          {canEdit ? (
+            <div className="flex justify-end">
+              <Button
+                size="sm"
+                variant="default"
+                onClick={() => setFirstCellsOpen(true)}
+              >
+                <Plus className="mr-1 h-3.5 w-3.5" /> Add cells
+              </Button>
+            </div>
+          ) : null}
+          <FirstCellsDialog
+            open={firstCellsOpen}
+            onOpenChange={setFirstCellsOpen}
+            targetN={targetN}
+            onCreate={onCreateFirstCells}
+          />
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-sm border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="sticky left-0 z-10 bg-card">
+                  Task version
                 </TableHead>
-              ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {pivot.rows.map((row) => (
-              <TableRow key={row.taskVersionId}>
-                <TableCell className="sticky left-0 z-10 bg-background">
-                  <div className="flex flex-col">
-                    <span className="font-medium">
-                      {row.taskName ?? row.taskId}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      v{row.version ?? "?"}
-                    </span>
-                  </div>
-                </TableCell>
-                {pivot.agents.map(({ key }) => (
-                  <TableCell key={key} className="text-center">
-                    <CellBadge
-                      cell={row.cellsByAgent[key]}
-                      canEdit={canEdit}
-                      experimentId={experimentId}
-                      onUpdateTarget={onUpdateTarget}
-                      onDelete={onDeleteCell}
-                    />
-                  </TableCell>
+                {pivot!.agents.map(({ key, agent }) => (
+                  <TableHead
+                    key={key}
+                    className="whitespace-nowrap text-center font-mono text-xs"
+                  >
+                    <div className="inline-flex items-center justify-center gap-1">
+                      <span>{formatAgentLabel(agent)}</span>
+                      {editing ? (
+                        <button
+                          type="button"
+                          aria-label="Remove agent column"
+                          title="Remove agent column"
+                          className="rounded-sm p-0.5 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+                          onClick={() => onDeleteAgentColumn(agent)}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      ) : null}
+                    </div>
+                    {shouldShowProvider(agent.provider) ? (
+                      <div className="text-[10px] font-normal text-muted-foreground">
+                        {agent.provider}
+                      </div>
+                    ) : null}
+                  </TableHead>
                 ))}
+                {editing ? (
+                  <TableHead className="w-12 text-center">
+                    <button
+                      type="button"
+                      aria-label="Add agent column"
+                      title="Add agent column"
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-sm border border-dashed text-muted-foreground hover:border-foreground hover:text-foreground"
+                      onClick={() => setPickAgentsOpen(true)}
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                    </button>
+                  </TableHead>
+                ) : null}
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
+            </TableHeader>
+            <TableBody>
+              {pivot!.rows.map((row) => (
+                <TableRow key={row.taskVersionId}>
+                  <TableCell className="sticky left-0 z-10 bg-card">
+                    <div className="flex items-center gap-2">
+                      <div className="flex flex-col">
+                        <span className="font-medium">
+                          {row.taskName ?? row.taskId}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          v{row.version ?? "?"}
+                        </span>
+                      </div>
+                      {editing ? (
+                        <button
+                          type="button"
+                          aria-label="Remove task row"
+                          title="Remove task row"
+                          className="ml-auto rounded-sm p-0.5 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+                          onClick={() =>
+                            onDeleteTaskRow(
+                              row.taskVersionId,
+                              `${row.taskName ?? row.taskId} v${row.version ?? "?"}`,
+                            )
+                          }
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                  {pivot!.agents.map(({ key }) => (
+                    <TableCell key={key} className="text-center">
+                      <CellBadge
+                        cell={row.cellsByAgent[key]}
+                        canEdit={canEdit}
+                        experimentId={experimentId}
+                        onUpdateTarget={onUpdateTarget}
+                        onDelete={onDeleteCell}
+                      />
+                    </TableCell>
+                  ))}
+                  {editing ? <TableCell /> : null}
+                </TableRow>
+              ))}
+              {editing ? (
+                <TableRow>
+                  <TableCell className="sticky left-0 z-10 bg-card">
+                    <button
+                      type="button"
+                      aria-label="Add task version row"
+                      title="Add task version row"
+                      className="inline-flex h-7 items-center gap-1 rounded-sm border border-dashed px-2 text-xs text-muted-foreground hover:border-foreground hover:text-foreground"
+                      onClick={() => setPickTasksOpen(true)}
+                    >
+                      <Plus className="h-3.5 w-3.5" /> task version
+                    </button>
+                  </TableCell>
+                  {pivot!.agents.map(({ key }) => (
+                    <TableCell key={`new-${key}`} />
+                  ))}
+                  <TableCell />
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+
+      <PickAgentsDialog
+        open={pickAgentsOpen}
+        onOpenChange={setPickAgentsOpen}
+        excludeKeys={existingAgentKeys}
+        targetN={targetN}
+        onAdd={onAddAgents}
+      />
+      <PickTasksDialog
+        open={pickTasksOpen}
+        onOpenChange={setPickTasksOpen}
+        excludeIds={existingTaskVersionIds}
+        targetN={targetN}
+        onAdd={onAddTasks}
+      />
     </div>
   );
 }

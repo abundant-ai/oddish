@@ -233,6 +233,7 @@ export function NewExperimentClient() {
       setPreview({
         experiment_id: "preview",
         experiment_name: name.trim() || "(unnamed)",
+        target_n_trials: Math.max(1, parseInt(targetN, 10) || 1),
         cells,
         total_gap: cells.reduce((acc, c) => acc + c.gap, 0),
       });
