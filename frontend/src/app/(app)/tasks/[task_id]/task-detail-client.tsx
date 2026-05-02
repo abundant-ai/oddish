@@ -338,12 +338,17 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
               Task files
             </div>
             <div className="min-h-0 flex-1 overflow-hidden">
+              {/* ``filesUrl`` is set explicitly so the panel renders just
+                  the file tree + viewer (no nested task header / avg
+                  score / rerun buttons). The proxy at
+                  ``/api/tasks/{id}/files`` handles both listing and
+                  individual file content paths. */}
               <TaskFilesPanel
                 key={`task-files-${activeVersionId ?? "none"}`}
                 isOpen={true}
                 onClose={() => {}}
-                taskId={taskId}
-                task={task ?? null}
+                taskId={null}
+                filesUrl={`/api/tasks/${encoded}/files`}
                 contentOnly
               />
             </div>
