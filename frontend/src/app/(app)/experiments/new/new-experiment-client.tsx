@@ -229,6 +229,7 @@ export function NewExperimentClient() {
         gap: c.target_n_trials,
         mean_reward: null,
         last_run_at: null,
+        attempts: [],
       }));
       setPreview({
         experiment_id: "preview",

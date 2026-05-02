@@ -375,6 +375,61 @@ function TrialsListDialog({
 // Intersection cell
 // ---------------------------------------------------------------------------
 
+// Sauron-style status config, mapped onto our (status, reward) shape.
+type AttemptKind = "pass" | "fail" | "harness-error" | "pending" | "missing";
+
+function attemptKind(status: string, reward: number | null): AttemptKind {
+  if (status === "success") return reward === 1 ? "pass" : "fail";
+  if (status === "failed") return "harness-error";
+  if (
+    status === "running" ||
+    status === "queued" ||
+    status === "pending" ||
+    status === "retrying"
+  )
+    return "pending";
+  return "missing";
+}
+
+const STATUS_CONFIG: Record<
+  AttemptKind,
+  { symbol: string; label: string; bracketClass: string; badgeClass: string }
+> = {
+  pass: {
+    symbol: "✓",
+    label: "PASS",
+    bracketClass: "bg-emerald-600 text-white",
+    badgeClass:
+      "bg-emerald-500/90 text-white border-emerald-400 hover:bg-emerald-600",
+  },
+  fail: {
+    symbol: "✗",
+    label: "FAIL",
+    bracketClass: "bg-red-600 text-white",
+    badgeClass: "bg-red-600/90 text-white border-red-500 hover:bg-red-700",
+  },
+  "harness-error": {
+    symbol: "⊘",
+    label: "HARNESS ERROR",
+    bracketClass: "bg-yellow-500 text-gray-900",
+    badgeClass:
+      "bg-yellow-500/90 text-gray-900 border-yellow-400 hover:bg-yellow-600",
+  },
+  pending: {
+    symbol: "◌",
+    label: "PENDING",
+    bracketClass: "bg-gray-500/50 text-gray-300 animate-pulse",
+    badgeClass:
+      "bg-gray-500/50 text-gray-300 border-gray-400 animate-pulse",
+  },
+  missing: {
+    symbol: "∅",
+    label: "MISSING",
+    bracketClass: "bg-gray-600/50 text-gray-400",
+    badgeClass: "bg-gray-600/50 text-gray-400 border-gray-500",
+  },
+};
+
 function IntersectionCell({
   cell,
   editable,
@@ -390,42 +445,82 @@ function IntersectionCell({
   const [draft, setDraft] = useState<string>(String(cell.target_n_trials));
   const [trialsOpen, setTrialsOpen] = useState(false);
 
-  const ratioColor =
-    cell.gap === 0
-      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-      : cell.have_n_running > 0
-        ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-        : "bg-rose-500/15 text-rose-700 dark:text-rose-300";
-
-  const badge = (
-    <div
-      className={`inline-flex flex-col items-start gap-0.5 rounded-sm px-2 py-1 ${ratioColor}`}
-    >
-      <span className="font-mono text-xs">
-        {cell.have_n_successful}/{cell.target_n_trials}
-      </span>
-      <span className="text-[10px] opacity-80">
-        avg {formatReward(cell.mean_reward)}
-      </span>
-    </div>
+  const attempts = cell.attempts ?? [];
+  const realAttempts = attempts.filter(
+    (a) => a.status !== "pending" && a.status !== "queued",
   );
+  const passCount = attempts.filter(
+    (a) => attemptKind(a.status, a.reward) === "pass",
+  ).length;
+  const passPercent =
+    realAttempts.length > 0
+      ? Math.round((passCount / realAttempts.length) * 100)
+      : 0;
+
+  // Single inline pill (when there's only one attempt) or the
+  // multi-attempt strip (sauron-style: a square per attempt + the
+  // ratio + percent).
+  const cellBody =
+    attempts.length === 0 ? (
+      <div className="inline-flex items-center justify-center rounded-sm border border-dashed border-border px-2 py-1 font-mono text-xs text-muted-foreground">
+        —
+      </div>
+    ) : attempts.length === 1 ? (
+      (() => {
+        const a = attempts[0];
+        const k = attemptKind(a.status, a.reward);
+        const cfg = STATUS_CONFIG[k];
+        return (
+          <div
+            className={`inline-flex items-center justify-center gap-1 rounded-sm px-2 py-1 font-mono text-xs ${cfg.badgeClass}`}
+            title={`${cfg.label}${a.reward !== null ? ` · reward ${a.reward.toFixed(2)}` : ""}`}
+          >
+            <span className="font-bold">{cfg.symbol}</span>
+            <span>{cfg.label}</span>
+          </div>
+        );
+      })()
+    ) : (
+      <div className="inline-flex items-center justify-center gap-2 rounded-sm bg-muted/50 px-2 py-1">
+        <div className="flex items-center gap-0.5">
+          {attempts.map((a) => {
+            const k = attemptKind(a.status, a.reward);
+            const cfg = STATUS_CONFIG[k];
+            return (
+              <span
+                key={a.id}
+                className={`inline-flex h-4 w-4 items-center justify-center rounded-sm text-[10px] font-bold ${cfg.bracketClass}`}
+                title={`${a.id}: ${cfg.label}${a.reward !== null ? ` (reward ${a.reward.toFixed(2)})` : ""}`}
+              >
+                {cfg.symbol}
+              </span>
+            );
+          })}
+        </div>
+        <span className="font-mono text-[11px] text-muted-foreground">
+          {passCount}/{realAttempts.length} ({passPercent}%)
+        </span>
+      </div>
+    );
 
   return (
     <>
       <Popover>
         <PopoverTrigger asChild>
           <button type="button" className="inline-flex" aria-label="Inspect">
-            {badge}
+            {cellBody}
           </button>
         </PopoverTrigger>
         <PopoverContent className="w-72 space-y-2 p-3 text-xs">
           <div className="font-mono">
-            successful: {cell.have_n_successful} · failed: {cell.have_n_failed}{" "}
-            · running: {cell.have_n_running}
+            pass: {passCount} · fail:{" "}
+            {realAttempts.length - passCount} · running:{" "}
+            {cell.have_n_running}
           </div>
           <div>
             target: {cell.target_n_trials} ·{" "}
-            <span className="font-semibold">{cell.gap}</span> still to run
+            <span className="font-semibold">{cell.gap}</span> still to run ·
+            avg reward {formatReward(cell.mean_reward)}
           </div>
           {cell.last_run_at ? (
             <div className="text-muted-foreground">
