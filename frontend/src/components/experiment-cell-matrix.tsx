@@ -654,7 +654,7 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
     isLoading,
     mutate,
   } = useSWR<ResolvedExperiment>(url, fetcher, {
-    refreshInterval: 30_000,
+    refreshInterval: 60_000,
     revalidateOnFocus: false,
   });
 

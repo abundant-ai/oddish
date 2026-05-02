@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -68,20 +68,20 @@ function statusVariant(
 export function TaskDetailClient({ taskId }: { taskId: string }) {
   const encoded = encodeURIComponent(taskId);
 
+  // /api/tasks/{id} returns the task with ``trials`` embedded; one
+  // fetch is enough. /trials is intentionally not fetched separately.
   const { data: task, error: taskError } = useSWR<Task>(
     `/api/tasks/${encoded}`,
     fetcher,
-    { refreshInterval: 30_000 },
+    { refreshInterval: 60_000, revalidateOnFocus: false },
   );
   const { data: versions, error: versionsError } = useSWR<TaskVersion[]>(
     `/api/tasks/${encoded}/versions`,
     fetcher,
+    { revalidateOnFocus: false },
   );
-  const { data: trials, error: trialsError } = useSWR<Trial[]>(
-    `/api/tasks/${encoded}/trials`,
-    fetcher,
-    { refreshInterval: 30_000 },
-  );
+  const trials: Trial[] | undefined = task?.trials ?? undefined;
+  const trialsError = taskError;
 
   const sortedVersions = useMemo(() => {
     if (!versions) return [];
@@ -408,16 +408,6 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
               </>
             ) : (
               <>
-                <div className="flex items-center justify-between border-b px-5 py-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Trials on this version
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {versionStats.total}{" "}
-                    {versionStats.total === 1 ? "trial" : "trials"}
-                  </span>
-                </div>
-
                 {versionStats.total > 0 ? (
                   <div className="grid grid-cols-2 gap-3 border-b bg-muted/30 px-5 py-3 text-sm sm:grid-cols-5">
                     <div>
@@ -461,69 +451,6 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
                   </div>
                 ) : null}
 
-                {perAgentStats.length > 0 ? (
-                  <div className="border-b">
-                    <div className="border-b px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                      By agent
-                    </div>
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Agent</TableHead>
-                          <TableHead className="text-right">Trials</TableHead>
-                          <TableHead className="text-right">Pass</TableHead>
-                          <TableHead className="text-right">μ reward</TableHead>
-                          <TableHead className="text-right">Last run</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {perAgentStats.map((r) => (
-                          <TableRow key={r.key}>
-                            <TableCell className="font-mono text-xs">
-                              {r.agent}
-                              {r.model ? ` · ${r.model}` : ""}
-                              <span className="ml-1 text-[10px] text-muted-foreground">
-                                {r.provider}
-                              </span>
-                            </TableCell>
-                            <TableCell className="text-right font-mono text-xs">
-                              <span className="text-emerald-700 dark:text-emerald-400">
-                                {r.succeeded}
-                              </span>
-                              /{r.total}
-                              {r.failed > 0 ? (
-                                <span className="ml-1 text-rose-600 dark:text-rose-400">
-                                  ({r.failed} fail)
-                                </span>
-                              ) : null}
-                              {r.running > 0 ? (
-                                <span className="ml-1 text-amber-600 dark:text-amber-400">
-                                  ({r.running} run)
-                                </span>
-                              ) : null}
-                            </TableCell>
-                            <TableCell className="text-right font-mono text-xs">
-                              {r.passRate === null
-                                ? "—"
-                                : `${Math.round(r.passRate * 100)}%`}
-                            </TableCell>
-                            <TableCell className="text-right font-mono text-xs">
-                              {fmt(r.meanReward)}
-                            </TableCell>
-                            <TableCell className="text-right text-xs text-muted-foreground">
-                              {rel(r.lastRunAt)}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                ) : null}
-
-                <div className="border-b px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  All trials
-                </div>
-
                 {trialsError ? (
                   <div className="p-3 text-sm">
                     Failed to load trials:{" "}
@@ -540,43 +467,93 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
                     <Table>
                       <TableHeader>
                         <TableRow>
-                          <TableHead>Agent</TableHead>
+                          <TableHead>Agent / trial</TableHead>
                           <TableHead>Status</TableHead>
-                          <TableHead>Reward</TableHead>
-                          <TableHead>Finished</TableHead>
+                          <TableHead className="text-right">Reward</TableHead>
+                          <TableHead className="text-right">Finished</TableHead>
                           <TableHead className="text-right">Inspect</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {trialsForVersion.map((t) => (
-                          <TableRow key={t.id}>
-                            <TableCell className="font-mono text-xs">
-                              {t.agent}
-                              {t.model ? ` · ${t.model}` : ""}
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant={statusVariant(t.status)}>
-                                {t.status}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="font-mono text-xs">
-                              {fmt(t.reward)}
-                            </TableCell>
-                            <TableCell className="text-xs text-muted-foreground">
-                              {rel(t.finished_at)}
-                            </TableCell>
-                            <TableCell className="text-right">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7"
-                                onClick={() => setInspectingTrialId(t.id)}
+                        {perAgentStats.map((agent) => {
+                          const agentTrials = trialsForVersion.filter(
+                            (t) =>
+                              `${(t.agent ?? "").toLowerCase()}|${(t.model ?? "").toLowerCase()}|${(t.provider ?? "").toLowerCase()}` ===
+                              agent.key,
+                          );
+                          return (
+                            <Fragment key={agent.key}>
+                              <TableRow
+                                className="bg-muted/40 hover:bg-muted/40"
                               >
-                                Inspect
-                              </Button>
-                            </TableCell>
-                          </TableRow>
-                        ))}
+                                <TableCell className="font-mono text-xs font-semibold">
+                                  {agent.agent}
+                                  {agent.model ? ` · ${agent.model}` : ""}
+                                  <span className="ml-1 text-[10px] font-normal text-muted-foreground">
+                                    {agent.provider}
+                                  </span>
+                                </TableCell>
+                                <TableCell className="font-mono text-xs">
+                                  <span className="text-emerald-700 dark:text-emerald-400">
+                                    {agent.succeeded}
+                                  </span>
+                                  /{agent.total}
+                                  {agent.failed > 0 ? (
+                                    <span className="ml-1 text-rose-600 dark:text-rose-400">
+                                      ({agent.failed} fail)
+                                    </span>
+                                  ) : null}
+                                  {agent.running > 0 ? (
+                                    <span className="ml-1 text-amber-600 dark:text-amber-400">
+                                      ({agent.running} run)
+                                    </span>
+                                  ) : null}
+                                </TableCell>
+                                <TableCell className="text-right font-mono text-xs">
+                                  μ {fmt(agent.meanReward)}
+                                </TableCell>
+                                <TableCell className="text-right text-xs text-muted-foreground">
+                                  {agent.passRate === null
+                                    ? "—"
+                                    : `${Math.round(agent.passRate * 100)}% pass`}
+                                </TableCell>
+                                <TableCell className="text-right text-xs text-muted-foreground">
+                                  {rel(agent.lastRunAt)}
+                                </TableCell>
+                              </TableRow>
+                              {agentTrials.map((t) => (
+                                <TableRow key={t.id}>
+                                  <TableCell className="pl-8 font-mono text-[11px] text-muted-foreground">
+                                    {t.id}
+                                  </TableCell>
+                                  <TableCell>
+                                    <Badge variant={statusVariant(t.status)}>
+                                      {t.status}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="text-right font-mono text-xs">
+                                    {fmt(t.reward)}
+                                  </TableCell>
+                                  <TableCell className="text-right text-xs text-muted-foreground">
+                                    {rel(t.finished_at)}
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7"
+                                      onClick={() =>
+                                        setInspectingTrialId(t.id)
+                                      }
+                                    >
+                                      Inspect
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </Fragment>
+                          );
+                        })}
                       </TableBody>
                     </Table>
                   </div>

@@ -82,7 +82,7 @@ export function JobsPageClient() {
   }, [kind, offset]);
 
   const { data, error, isLoading } = useSWR<JobListResponse>(url, fetcher, {
-    refreshInterval: 15_000,
+    refreshInterval: 30_000,
     revalidateOnFocus: false,
   });
 
