@@ -642,6 +642,33 @@ class ExperimentCellCreateRequest(BaseModel):
     target_n_trials: int = Field(ge=1)
 
 
+class ExperimentBulkCellRequest(BaseModel):
+    """One-shot request that fans out to multiple cells.
+
+    ``op`` discriminates the action:
+    - ``add_agent_to_all_tasks`` -- pair the given agent with every
+      ``task_version_id`` already present on the experiment.
+    - ``add_task_to_all_agents`` -- pair the given task_version with
+      every ``agent_equivalence_key`` already present.
+    - ``bump_all_targets`` -- set every existing cell's
+      ``target_n_trials``.
+    """
+
+    op: str
+    target_n_trials: int = Field(ge=1)
+    # add_agent_to_all_tasks
+    agent_harness: str | None = None
+    agent_model: str | None = None
+    agent_provider: str | None = None
+    # add_task_to_all_agents
+    task_version_id: str | None = None
+
+
+class ExperimentBulkCellResponse(BaseModel):
+    op: str
+    cells_changed: int
+
+
 class ExperimentCellUpdateRequest(BaseModel):
     target_n_trials: int = Field(ge=1)
 
