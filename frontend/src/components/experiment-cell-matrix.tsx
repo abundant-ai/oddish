@@ -428,6 +428,49 @@ const STATUS_CONFIG: Record<
   },
 };
 
+function MatrixLegend({ totalGap }: { totalGap: number }) {
+  const items: { kind: AttemptKind | "needs-backfill"; label: string }[] = [
+    { kind: "pass", label: "Pass" },
+    { kind: "fail", label: "Fail" },
+    { kind: "harness-error", label: "Harness error" },
+    { kind: "pending", label: "Pending" },
+    { kind: "needs-backfill", label: "Needs backfill" },
+  ];
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-sm border bg-muted/30 px-3 py-1.5 text-[11px]">
+      <span className="font-mono uppercase tracking-wide text-muted-foreground">
+        legend
+      </span>
+      {items.map(({ kind, label }) => {
+        const swatch =
+          kind === "needs-backfill" ? (
+            <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-dashed border-zinc-400 text-[9px] text-zinc-400 dark:border-zinc-600 dark:text-zinc-500">
+              ?
+            </span>
+          ) : (
+            <span
+              className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm text-[9px] font-bold ${STATUS_CONFIG[kind].bracketClass}`}
+            >
+              {STATUS_CONFIG[kind].symbol}
+            </span>
+          );
+        return (
+          <span
+            key={kind}
+            className="inline-flex items-center gap-1.5 font-mono text-foreground"
+          >
+            {swatch}
+            <span>{label}</span>
+            {kind === "needs-backfill" && totalGap > 0 ? (
+              <span className="text-muted-foreground">· {totalGap} total</span>
+            ) : null}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function IntersectionCell({
   cell,
   editable,
@@ -461,15 +504,18 @@ function IntersectionCell({
       ? Math.round((passCount / realAttempts.length) * 100)
       : 0;
 
-  // Single inline pill (when there's only one attempt) or the
-  // multi-attempt strip (sauron-style: a square per attempt + the
-  // ratio + percent).
+  // Slots reserved by the cell. We pad attempts up to target_n_trials
+  // with dashed "needs backfill" placeholders so the row of squares
+  // always shows the full target shape -- a half-empty cell visually
+  // tells the user "this still needs N more trials".
+  const missingSlots = Math.max(0, cell.target_n_trials - attempts.length);
+
   const cellBody =
-    attempts.length === 0 ? (
+    attempts.length === 0 && missingSlots === 0 ? (
       <div className="inline-flex items-center justify-center rounded-sm border border-dashed border-border px-2 py-1 font-mono text-xs text-muted-foreground">
         —
       </div>
-    ) : attempts.length === 1 ? (
+    ) : attempts.length === 1 && missingSlots === 0 ? (
       (() => {
         const a = attempts[0];
         const k = attemptKind(a.status, a.reward);
@@ -500,9 +546,20 @@ function IntersectionCell({
               </span>
             );
           })}
+          {Array.from({ length: missingSlots }, (_, i) => (
+            <span
+              key={`missing-${i}`}
+              className="inline-flex h-4 w-4 items-center justify-center rounded-sm border border-dashed border-zinc-400 text-[10px] text-zinc-400 dark:border-zinc-600 dark:text-zinc-500"
+              title="Needs backfill"
+            >
+              ?
+            </span>
+          ))}
         </div>
         <span className="font-mono text-[11px] text-muted-foreground">
-          {passCount}/{realAttempts.length} ({passPercent}%)
+          {realAttempts.length > 0
+            ? `${passCount}/${realAttempts.length} (${passPercent}%)`
+            : `0/${cell.target_n_trials}`}
         </span>
       </div>
     );
@@ -1246,6 +1303,10 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
         onToggleAgent={toggleHiddenAgent}
       />
       <ExperimentLeaderboard data={data} />
+
+      {tasks.length > 0 || agents.length > 0 ? (
+        <MatrixLegend totalGap={data.total_gap} />
+      ) : null}
 
       {/* Read-only viewers see an empty placeholder; editors get the
           spreadsheet with always-visible "+" affordances. */}
