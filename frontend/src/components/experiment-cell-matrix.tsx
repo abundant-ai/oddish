@@ -287,7 +287,7 @@ function CellBadge({
         {cell.have_n_successful}/{cell.target_n_trials}
       </span>
       <span className="text-[10px] opacity-80">
-        μ {formatReward(cell.mean_reward)}
+        avg {formatReward(cell.mean_reward)}
       </span>
     </div>
   );
