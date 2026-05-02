@@ -311,6 +311,9 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
           }}
           trialId={inspecting.trialId}
           taskId={taskId}
+          siblingTrialIds={trialsForVersion.map((t) => t.id)}
+          onTrialChange={(nextId) => setInspecting({ trialId: nextId })}
+          noBackdrop
         />
       ) : null}
     </div>
