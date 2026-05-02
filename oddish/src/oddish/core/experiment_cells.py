@@ -130,6 +130,7 @@ async def resolve_experiment_core(
         return ResolvedExperimentResponse(
             experiment_id=exp.id,
             experiment_name=exp.name,
+            target_n_trials=exp.target_n_trials,
             cells=[],
             total_gap=0,
         )
@@ -229,6 +230,7 @@ async def resolve_experiment_core(
     return ResolvedExperimentResponse(
         experiment_id=exp.id,
         experiment_name=exp.name,
+        target_n_trials=exp.target_n_trials,
         cells=resolved,
         total_gap=total_gap,
     )
@@ -276,7 +278,9 @@ async def add_cell_core(
     payload: ExperimentCellCreateRequest,
     org_id: str | None,
 ) -> ExperimentCellResponse:
-    await _load_experiment(session, experiment_id=experiment_id, org_id=org_id)
+    exp = await _load_experiment(
+        session, experiment_id=experiment_id, org_id=org_id
+    )
 
     # Verify the task version exists (org-scoped via join on task).
     tv_check = (
@@ -358,6 +362,17 @@ async def bulk_cells_core(
     ).scalars().all()
 
     if op == "bump_all_targets":
+        # Bump the experiment-level target so future "add cell" calls
+        # default to it, then rewrite every existing cell.
+        exp = (
+            await session.execute(
+                select(ExperimentModel).where(
+                    ExperimentModel.id == experiment_id
+                )
+            )
+        ).scalar_one_or_none()
+        if exp is not None:
+            exp.target_n_trials = target_n_trials
         for cell in existing:
             cell.target_n_trials = target_n_trials
         await session.flush()

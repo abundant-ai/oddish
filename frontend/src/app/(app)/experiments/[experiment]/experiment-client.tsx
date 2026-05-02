@@ -339,18 +339,40 @@ export function ExperimentClientPage({
       }
 
       setIsEditingName(false);
-      await mutateLightweight(
-        (tasks) =>
-          tasks?.map((task) => ({ ...task, experiment_name: nextName })),
-        { revalidate: false },
-      );
-      await mutateTrials(
-        (pages) =>
-          pages?.map((page) =>
-            page?.map((task) => ({ ...task, experiment_name: nextName })),
-          ),
-        { revalidate: false },
-      );
+      // Update local SWR caches that show the experiment name. The
+      // cell matrix reads from /resolved, the lightweight task list
+      // reads from /tasks, the experiments index reads from /. We
+      // mutate all of them so the rename is reflected everywhere
+      // immediately instead of waiting up to 60s for revalidation.
+      const encodedId = encodeExperimentRouteParam(experimentId);
+      await Promise.all([
+        mutateLightweight(
+          (tasks) =>
+            tasks?.map((task) => ({ ...task, experiment_name: nextName })),
+          { revalidate: false },
+        ),
+        mutateTrials(
+          (pages) =>
+            pages?.map((page) =>
+              page?.map((task) => ({ ...task, experiment_name: nextName })),
+            ),
+          { revalidate: false },
+        ),
+        mutateKey(
+          `/api/experiments/${encodedId}/resolved`,
+          (current: unknown) => {
+            if (!current || typeof current !== "object") return current;
+            return { ...(current as object), experiment_name: nextName };
+          },
+          { revalidate: true },
+        ),
+        mutateKey(
+          (key: unknown) =>
+            typeof key === "string" && key.startsWith("/api/experiments?"),
+          undefined,
+          { revalidate: true },
+        ),
+      ]);
       void refreshTaskPages();
     } catch (err) {
       setNameError(err instanceof Error ? err.message : "Rename failed");
