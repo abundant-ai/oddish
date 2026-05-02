@@ -174,6 +174,7 @@ export interface Task {
   current_version?: number | null;
   current_version_id?: string | null;
   trials?: Trial[] | null;
+  tags?: Record<string, string>;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -257,15 +258,38 @@ export interface ExperimentCell {
   created_at: string;
 }
 
+export interface ExperimentCellAgent {
+  harness: string;
+  model: string | null;
+  provider: string;
+  equivalence_key: string;
+}
+
 export interface ResolvedExperimentCell {
   cell: ExperimentCell;
+  id?: string | null;
   task_id?: string | null;
   task_name?: string | null;
   task_version?: number | null;
+  task_version_id?: string | null;
+  target_n_trials?: number | null;
+  agent?: ExperimentCellAgent | null;
+  have_n_total?: number;
+  have_n_successful?: number;
+  have_n_failed?: number;
+  have_n_running?: number;
+  gap?: number;
   have_n_trials: number;
   mean_reward?: number | null;
   last_run_at?: string | null;
   trial_ids: string[];
+}
+
+export interface ResolvedExperiment {
+  experiment_id: string;
+  experiment_name: string;
+  cells: ResolvedExperimentCell[];
+  total_gap: number;
 }
 
 export interface ExperimentCreateResponse {

@@ -39,7 +39,9 @@ from oddish.core.jobs import (
 from oddish.core.experiments import list_experiments_core
 from oddish.core.evidence import (
     get_experiment_cells_core,
+    get_resolved_experiment_core,
     get_task_version_evidence_core,
+    list_experiment_cell_trials_core,
 )
 from oddish.core.public_helpers import (
     get_task_file_content_s3,
@@ -96,6 +98,7 @@ from oddish.schemas import (
     ExperimentUpdateResponse,
     JobResponse,
     ResolvedExperimentCellResponse,
+    ResolvedExperimentResponse,
     TaskBatchCancelRequest,
     TaskBrowseResponse,
     TaskUploadCompleteRequest,
@@ -557,6 +560,38 @@ async def get_experiment_cells(
         return await get_experiment_cells_core(
             session,
             experiment_id=experiment_id,
+        )
+
+
+@api.get(
+    "/experiments/{experiment_id}/resolved",
+    response_model=ResolvedExperimentResponse,
+)
+async def get_resolved_experiment(
+    experiment_id: str,
+) -> ResolvedExperimentResponse:
+    async with get_session() as session:
+        return await get_resolved_experiment_core(
+            session,
+            experiment_id=experiment_id,
+        )
+
+
+@api.get(
+    "/experiments/{experiment_id}/cells/{cell_id}/trials",
+    response_model=list[TrialResponse],
+)
+async def list_experiment_cell_trials(
+    experiment_id: str,
+    cell_id: str,
+    limit: int = Query(500, ge=1, le=2000),
+) -> list[TrialResponse]:
+    async with get_session() as session:
+        return await list_experiment_cell_trials_core(
+            session,
+            experiment_id=experiment_id,
+            cell_id=cell_id,
+            limit=limit,
         )
 
 

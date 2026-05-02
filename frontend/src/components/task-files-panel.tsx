@@ -94,6 +94,8 @@ interface TaskFilesPanelProps {
    * This allows reusing the file tree viewer for trial files.
    */
   filesUrl?: string;
+  /** Version query param to send when using an explicit filesUrl. */
+  filesVersion?: number | null;
   /**
    * When set, auto-expand the tree to this file path and select it.
    * Useful for deep-linking from external UI (e.g. execution timeline).
@@ -118,7 +120,7 @@ function formatFileSize(bytes: number): string {
 
 function buildNodesFromListing(
   files: TaskFile[] = [],
-  dirs: TaskDirectory[] = [],
+  dirs: TaskDirectory[] = []
 ): TreeNode[] {
   const dirNodes = dirs.map((dir) => ({
     name: getNodeName(dir.path),
@@ -143,7 +145,7 @@ function buildNodesFromListing(
 function updateTree(
   nodes: TreeNode[],
   targetPath: string,
-  updater: (node: TreeNode) => TreeNode,
+  updater: (node: TreeNode) => TreeNode
 ): TreeNode[] {
   return nodes.map((node) => {
     if (node.path === targetPath) {
@@ -261,6 +263,7 @@ export function TaskFilesPanel({
   onRetryComplete,
   contentOnly = false,
   filesUrl,
+  filesVersion,
   initialFilePath,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
@@ -273,11 +276,11 @@ export function TaskFilesPanel({
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
   const [analysisActionError, setAnalysisActionError] = useState<string | null>(
-    null,
+    null
   );
   const [isRunningVerdict, setIsRunningVerdict] = useState(false);
   const [verdictActionError, setVerdictActionError] = useState<string | null>(
-    null,
+    null
   );
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
@@ -323,12 +326,13 @@ export function TaskFilesPanel({
       if (cursor) {
         params.set("cursor", cursor);
       }
-      if (!filesUrl && currentVersion != null) {
-        params.set("version", String(currentVersion));
+      const version = filesUrl ? filesVersion : currentVersion;
+      if (version != null) {
+        params.set("version", String(version));
       }
       return `${resolvedFilesUrl}?${params.toString()}`;
     },
-    [resolvedFilesUrl, filesUrl, currentVersion],
+    [resolvedFilesUrl, filesUrl, filesVersion, currentVersion]
   );
 
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
@@ -344,7 +348,7 @@ export function TaskFilesPanel({
   const retryableTrials = useMemo(() => {
     if (!task?.trials) return [];
     return task.trials.filter(
-      (trial) => trial.status === "failed" || trial.status === "success",
+      (trial) => trial.status === "failed" || trial.status === "success"
     );
   }, [task]);
 
@@ -354,17 +358,17 @@ export function TaskFilesPanel({
   const allTrialsTerminal =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(
-      (trial) => trial.status === "failed" || trial.status === "success",
+      (trial) => trial.status === "failed" || trial.status === "success"
     );
   const hasAnalysisInFlight = (task?.trials ?? []).some((trial) =>
-    isActivePipelineStatus(trial.analysis_status),
+    isActivePipelineStatus(trial.analysis_status)
   );
   const allAnalysesComplete =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(
       (trial) =>
         trial.analysis_status === "success" ||
-        trial.analysis_status === "failed",
+        trial.analysis_status === "failed"
     );
   const verdictInFlight = isActivePipelineStatus(verdictSource?.verdict_status);
   const canRunTaskAnalysis =
@@ -380,7 +384,7 @@ export function TaskFilesPanel({
     allAnalysesComplete &&
     !verdictInFlight;
   const analysisActionLabel = (task?.trials ?? []).some(
-    (trial) => trial.analysis_status || trial.analysis,
+    (trial) => trial.analysis_status || trial.analysis
   )
     ? "Rerun analyses"
     : "Run analyses";
@@ -396,7 +400,7 @@ export function TaskFilesPanel({
       if (!nextTask) return;
       onNavigate(nextTask, nextIndex);
     },
-    [onNavigate, orderedList],
+    [onNavigate, orderedList]
   );
 
   const handleRetryTask = async () => {
@@ -413,10 +417,10 @@ export function TaskFilesPanel({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to retry trial",
+              data.detail || data.error || "Failed to retry trial"
             );
           }
-        }),
+        })
       );
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
@@ -450,7 +454,7 @@ export function TaskFilesPanel({
       onRetryComplete?.(id ? [id] : undefined);
     } catch (err) {
       setCancelError(
-        err instanceof Error ? err.message : "Failed to cancel task",
+        err instanceof Error ? err.message : "Failed to cancel task"
       );
     } finally {
       setIsCancelling(false);
@@ -469,13 +473,13 @@ export function TaskFilesPanel({
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue task analysis",
+          data.detail || data.error || "Failed to queue task analysis"
         );
       }
       onRetryComplete?.([task.id]);
     } catch (err) {
       setAnalysisActionError(
-        err instanceof Error ? err.message : "Failed to queue task analysis",
+        err instanceof Error ? err.message : "Failed to queue task analysis"
       );
     } finally {
       setIsRunningAnalysis(false);
@@ -498,7 +502,7 @@ export function TaskFilesPanel({
       onRetryComplete?.([task.id]);
     } catch (err) {
       setVerdictActionError(
-        err instanceof Error ? err.message : "Failed to queue verdict",
+        err instanceof Error ? err.message : "Failed to queue verdict"
       );
     } finally {
       setIsRunningVerdict(false);
@@ -547,7 +551,7 @@ export function TaskFilesPanel({
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(
-            data.detail || `Failed to fetch files: ${res.statusText}`,
+            data.detail || `Failed to fetch files: ${res.statusText}`
           );
         }
         const data: FilesListingResponse = await res.json();
@@ -565,7 +569,7 @@ export function TaskFilesPanel({
       } catch (err) {
         if (!cancelled) {
           setError(
-            err instanceof Error ? err.message : "Failed to fetch files",
+            err instanceof Error ? err.message : "Failed to fetch files"
           );
         }
       } finally {
@@ -600,11 +604,11 @@ export function TaskFilesPanel({
             ...node,
             children,
             isLoaded: true,
-          })),
+          }))
         );
       } catch (err) {
         setError(
-          err instanceof Error ? err.message : "Failed to fetch directory",
+          err instanceof Error ? err.message : "Failed to fetch directory"
         );
       } finally {
         setLoadingDirs((prev) => {
@@ -614,7 +618,7 @@ export function TaskFilesPanel({
         });
       }
     },
-    [taskId, filesUrl, buildListingUrl],
+    [taskId, filesUrl, buildListingUrl]
   );
 
   // Fetch file content when a file is selected
@@ -697,7 +701,7 @@ export function TaskFilesPanel({
             params.set("version", String(currentVersion));
           }
           const res = await fetch(
-            `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`,
+            `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`
           );
           if (!res.ok) {
             throw new Error("Failed to fetch file content");
@@ -760,7 +764,7 @@ export function TaskFilesPanel({
         params.set("version", String(currentVersion));
       }
       const res = await fetch(
-        `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`,
+        `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`
       );
       if (!res.ok) {
         return;
@@ -931,9 +935,9 @@ export function TaskFilesPanel({
             {node.type === "dir" && (
               <span className="flex h-3 w-3 items-center justify-center">
                 {isExpanded ? (
-                  <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                  <ChevronDown className="text-muted-foreground h-3 w-3" />
                 ) : (
-                  <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                  <ChevronRight className="text-muted-foreground h-3 w-3" />
                 )}
               </span>
             )}
@@ -946,7 +950,7 @@ export function TaskFilesPanel({
               }`}
             />
             {node.type === "dir" && isLoadingDir && (
-              <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+              <Loader2 className="text-muted-foreground h-3 w-3 animate-spin" />
             )}
             <span className="truncate">{node.name}</span>
           </Button>
@@ -961,7 +965,7 @@ export function TaskFilesPanel({
   const renderFileContent = () => {
     if (!selectedFile) {
       return (
-        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
           Select a file to view its contents
         </div>
       );
@@ -979,7 +983,7 @@ export function TaskFilesPanel({
 
     if (fileContent === null) {
       return (
-        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
           Unable to load file content
         </div>
       );
@@ -1011,8 +1015,8 @@ export function TaskFilesPanel({
           />
         </div>
         {!isBinary && isTruncated && (
-          <div className="flex items-center justify-between border-t border-border bg-muted/50 px-4 py-3">
-            <span className="text-xs text-muted-foreground">
+          <div className="border-border bg-muted/50 flex items-center justify-between border-t px-4 py-3">
+            <span className="text-muted-foreground text-xs">
               Showing first {formatFileSize(TRUNCATE_THRESHOLD)} of{" "}
               {fullFileSize ? formatFileSize(fullFileSize) : "large file"}
             </span>
@@ -1057,7 +1061,7 @@ export function TaskFilesPanel({
         : trials;
     const rewardSum = versionTrials.reduce(
       (sum, trial) => sum + (trial.reward ?? 0),
-      0,
+      0
     );
     const total = versionTrials.filter((t) => t.reward != null).length;
     return {
@@ -1096,7 +1100,7 @@ export function TaskFilesPanel({
     <>
       {isListingLoading ? (
         <div className="flex flex-1 items-center justify-center">
-          <div className="flex items-center gap-2 text-muted-foreground">
+          <div className="text-muted-foreground flex items-center gap-2">
             <Loader2 className="h-5 w-5 animate-spin" />
             <span className="text-sm">Loading files...</span>
           </div>
@@ -1105,18 +1109,18 @@ export function TaskFilesPanel({
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <AlertCircle className="mx-auto h-8 w-8 text-red-500" />
-            <p className="text-sm text-muted-foreground">
+            <p className="text-muted-foreground text-sm">
               Unable to load files
             </p>
-            <p className="text-xs text-muted-foreground">{listingError}</p>
+            <p className="text-muted-foreground text-xs">{listingError}</p>
           </div>
         </div>
       ) : fileTree.length === 0 ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
-            <p className="text-sm text-muted-foreground">No files found</p>
+            <p className="text-muted-foreground text-sm">No files found</p>
             {!filesUrl && (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-muted-foreground text-xs">
                 The task directory may be empty or not uploaded to S3
               </p>
             )}
@@ -1124,9 +1128,9 @@ export function TaskFilesPanel({
         </div>
       ) : (
         <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
-          <div className="max-h-[30vh] w-full overflow-auto border-b border-border bg-muted/30 md:max-h-none md:w-56 md:border-b-0 md:border-r lg:w-64">
+          <div className="border-border bg-muted/30 max-h-[30vh] w-full overflow-auto border-b md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
             <div className="p-2">
-              <div className="px-2 py-2 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground sm:text-xs">
+              <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
                 Files
               </div>
               {renderFileTree(fileTree)}
@@ -1134,16 +1138,14 @@ export function TaskFilesPanel({
           </div>
           <div className="flex flex-1 flex-col overflow-hidden">
             {selectedFile && (
-              <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2 sm:px-4">
-                <div className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground sm:text-xs">
+              <div className="border-border bg-muted/30 flex items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
+                <div className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px] sm:text-xs">
                   {selectedFile.path}
                 </div>
                 {!isBinaryRendererFile(selectedFile.name) && (
                   <Tabs
                     value={viewMode}
-                    onValueChange={(v) =>
-                      setViewMode(v as "rendered" | "raw")
-                    }
+                    onValueChange={(v) => setViewMode(v as "rendered" | "raw")}
                   >
                     <TabsList className="h-7">
                       <TabsTrigger
@@ -1153,10 +1155,7 @@ export function TaskFilesPanel({
                         <Eye className="mr-1 h-3 w-3" />
                         Rendered
                       </TabsTrigger>
-                      <TabsTrigger
-                        value="raw"
-                        className="h-6 px-2 text-[10px]"
-                      >
+                      <TabsTrigger value="raw" className="h-6 px-2 text-[10px]">
                         <Code className="mr-1 h-3 w-3" />
                         Raw
                       </TabsTrigger>
@@ -1165,7 +1164,7 @@ export function TaskFilesPanel({
                 )}
               </div>
             )}
-            <div ref={contentRef} className="flex-1 overflow-auto bg-card">
+            <div ref={contentRef} className="bg-card flex-1 overflow-auto">
               {renderFileContent()}
             </div>
           </div>
@@ -1176,7 +1175,7 @@ export function TaskFilesPanel({
 
   const content = (
     <>
-      <DrawerHeader className="shrink-0 border-b border-border px-4 py-3">
+      <DrawerHeader className="border-border shrink-0 border-b px-4 py-3">
         <div className="mb-2 flex flex-wrap items-start justify-between gap-3 pr-20">
           <div className="min-w-0 flex-1">
             <DrawerTitle className="flex items-center gap-2 font-mono text-base font-semibold">
@@ -1184,14 +1183,14 @@ export function TaskFilesPanel({
                 type="button"
                 variant="ghost"
                 onClick={handleCopyTaskName}
-                className="h-auto min-w-0 max-w-full justify-start truncate bg-transparent p-0 text-left font-mono text-base font-semibold hover:bg-transparent hover:text-blue-400"
+                className="h-auto max-w-full min-w-0 justify-start truncate bg-transparent p-0 text-left font-mono text-base font-semibold hover:bg-transparent hover:text-blue-400"
                 title="Copy task name"
                 aria-label={`Copy task name ${taskName}`}
               >
                 {taskName}
               </Button>
               {currentVersion != null && (
-                <span className="inline-flex shrink-0 items-center rounded-md border border-border bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-foreground">
+                <span className="border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-medium">
                   v{currentVersion}
                 </span>
               )}
@@ -1208,7 +1207,7 @@ export function TaskFilesPanel({
           allowRetry ||
           canRunTaskAnalysis ||
           canRunVerdict) && (
-          <div className="space-y-2 pt-2 text-xs text-muted-foreground">
+          <div className="text-muted-foreground space-y-2 pt-2 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-3">
                 {/* Task list navigation with position indicator */}
@@ -1227,7 +1226,7 @@ export function TaskFilesPanel({
                       <ChevronUp className="h-4 w-4" />
                     </Button>
                     <span
-                      className="min-w-[52px] px-1 text-center font-mono text-[11px] tabular-nums text-muted-foreground"
+                      className="text-muted-foreground min-w-[52px] px-1 text-center font-mono text-[11px] tabular-nums"
                       aria-label={`Task ${resolvedIndex + 1} of ${orderedList.length}`}
                       title={`Task ${resolvedIndex + 1} of ${orderedList.length}`}
                     >
@@ -1255,7 +1254,7 @@ export function TaskFilesPanel({
                     variant="outline"
                     size="sm"
                     onClick={onNavigateToFirstTrial}
-                    className="h-7 gap-1 px-2 text-[10px] font-semibold uppercase tracking-wide"
+                    className="h-7 gap-1 px-2 text-[10px] font-semibold tracking-wide uppercase"
                     aria-label="View trials for this task"
                     title="View trials (→)"
                   >
@@ -1266,15 +1265,15 @@ export function TaskFilesPanel({
               </div>
 
               <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-                <div className="rounded-md border border-border bg-muted/30 px-3 py-1.5 text-right">
-                  <div className="text-[9px] uppercase leading-none tracking-wider text-muted-foreground">
+                <div className="border-border bg-muted/30 rounded-md border px-3 py-1.5 text-right">
+                  <div className="text-muted-foreground text-[9px] leading-none tracking-wider uppercase">
                     Avg score
                   </div>
                   <div className="mt-1 flex items-baseline justify-end gap-2">
-                    <span className="font-mono text-sm font-semibold leading-none">
+                    <span className="font-mono text-sm leading-none font-semibold">
                       {averageRewardPct !== null ? `${averageRewardPct}%` : "—"}
                     </span>
-                    <span className="text-[10px] leading-none text-muted-foreground">
+                    <span className="text-muted-foreground text-[10px] leading-none">
                       {rewardTotal && rewardTotal > 0 && rewardSuccess != null
                         ? `${rewardSuccess.toFixed(2)}/${rewardTotal}`
                         : "No results"}
@@ -1288,7 +1287,7 @@ export function TaskFilesPanel({
                     size="sm"
                     onClick={handleCancelTask}
                     disabled={isCancelling}
-                    className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
+                    className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
                     {isCancelling ? (
                       <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
@@ -1305,7 +1304,7 @@ export function TaskFilesPanel({
                     size="sm"
                     onClick={handleRetryTask}
                     disabled={!canRetryTask || isRerunning}
-                    className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
+                    className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
                     <RefreshCw
                       className={`mr-1 h-3.5 w-3.5 ${
@@ -1322,7 +1321,7 @@ export function TaskFilesPanel({
                     size="sm"
                     onClick={handleRunTaskAnalysis}
                     disabled={!canRunTaskAnalysis || isRunningAnalysis}
-                    className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
+                    className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
                     {isRunningAnalysis ? (
                       <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
@@ -1339,7 +1338,7 @@ export function TaskFilesPanel({
                     size="sm"
                     onClick={handleRunVerdict}
                     disabled={!canRunVerdict || isRunningVerdict}
-                    className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
+                    className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
                     {isRunningVerdict ? (
                       <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
@@ -1369,7 +1368,7 @@ export function TaskFilesPanel({
 
       <div className="flex flex-1 flex-col overflow-hidden">
         {showVerdictCard && (
-          <div className="shrink-0 border-b border-border bg-muted/10">
+          <div className="border-border bg-muted/10 shrink-0 border-b">
             <div className="p-4 sm:p-6">
               <Card
                 className={
@@ -1386,8 +1385,8 @@ export function TaskFilesPanel({
                           : "border-slate-500/30 bg-slate-500/5"
                 }
               >
-                <CardHeader className="px-4 pb-1 pt-2">
-                  <CardTitle className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <CardHeader className="px-4 pt-2 pb-1">
+                  <CardTitle className="text-muted-foreground flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase">
                     <Microscope className="h-3 w-3" />
                     QA Verdict
                   </CardTitle>
@@ -1423,19 +1422,19 @@ export function TaskFilesPanel({
                                   : "Verdict Pending"}
                         </span>
                         {verdictSource?.verdict?.confidence && (
-                          <span className="text-xs text-muted-foreground">
+                          <span className="text-muted-foreground text-xs">
                             · {verdictSource.verdict.confidence} confidence
                           </span>
                         )}
                       </div>
                       {verdictSource?.verdict?.is_good && verdictReasoning && (
-                        <p className="mt-1 text-xs text-muted-foreground">
+                        <p className="text-muted-foreground mt-1 text-xs">
                           {verdictReasoning}
                         </p>
                       )}
                       {verdictSource?.verdict?.primary_issue &&
                         verdictSource?.verdict?.is_good === false && (
-                          <p className="mt-1 text-xs text-muted-foreground">
+                          <p className="text-muted-foreground mt-1 text-xs">
                             {verdictSource.verdict.primary_issue}
                           </p>
                         )}
@@ -1446,11 +1445,11 @@ export function TaskFilesPanel({
                               (rec: string, idx: number) => (
                                 <p
                                   key={idx}
-                                  className="text-xs italic text-muted-foreground/80"
+                                  className="text-muted-foreground/80 text-xs italic"
                                 >
                                   💡 {rec}
                                 </p>
-                              ),
+                              )
                             )}
                           </div>
                         )}

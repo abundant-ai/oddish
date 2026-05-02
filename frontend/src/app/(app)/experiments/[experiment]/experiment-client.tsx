@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ExperimentShareButton } from "@/components/experiment-share-button";
-import { ExperimentCellsPanel } from "@/components/experiment-cells-panel";
+import { ExperimentCellMatrix } from "@/components/experiment-cell-matrix";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import type { Task, Trial } from "@/lib/types";
 import { Loader2, Pencil } from "lucide-react";
@@ -433,7 +433,9 @@ export function ExperimentClientPage({
         </Alert>
       ) : (
         <>
-          <ExperimentCellsPanel experimentId={experimentId} />
+          <div className="bg-card rounded-md border p-4">
+            <ExperimentCellMatrix experimentId={experimentId} canEdit />
+          </div>
           <ExperimentDetailView
             experimentId={experimentId}
             tasksForExperiment={tasksForExperiment}

@@ -1,13 +1,29 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { fetcher } from "@/lib/api";
 import type { BatchJob } from "@/lib/types";
-import { encodeExperimentRouteParam, formatRelativeTime } from "@/lib/utils";
+import { encodeExperimentRouteParam } from "@/lib/utils";
 
 const KIND_LABEL: Record<string, string> = {
   validation: "Validation",
@@ -16,118 +32,163 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 function statusVariant(status: string): NonNullable<BadgeProps["variant"]> {
-  if (status === "success") return "success";
-  if (status === "failed") return "failed";
-  if (status === "cancelled") return "failed";
-  if (status === "running") return "running";
+  if (status === "success") return "secondary";
+  if (status === "failed" || status === "cancelled") return "destructive";
+  if (status === "running") return "default";
   return "outline";
 }
 
+function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const ms = Date.now() - new Date(iso).getTime();
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 export function JobsClient() {
+  const [kind, setKind] = useState("all");
   const { data, error, isLoading } = useSWR<BatchJob[]>(
     "/api/jobs?limit=100",
     fetcher,
-    { refreshInterval: 15000, revalidateOnFocus: false }
+    { refreshInterval: 30000, revalidateOnFocus: false }
   );
 
+  const jobs = useMemo(() => {
+    const rows = data ?? [];
+    if (kind === "all") return rows;
+    return rows.filter((job) => job.kind === kind);
+  }, [data, kind]);
+
   return (
-    <div className="space-y-5">
-      <div>
-        <h1 className="font-mono text-2xl font-semibold tracking-tight">
-          Jobs
-        </h1>
-        <p className="text-muted-foreground mt-1 max-w-3xl text-sm">
-          User-visible execution batches. Worker jobs remain the low-level
-          queue; this page is the read-side view for submitted work.
-        </p>
+    <div className="mx-auto w-full max-w-(--breakpoint-2xl) space-y-4 p-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="font-mono text-[26px] font-semibold tracking-[-0.02em]">
+            Jobs
+          </h1>
+          <p className="text-muted-foreground text-sm">
+            Recently launched batches. A Job groups the worker_jobs and terminal
+            trial evidence produced by one submission.
+          </p>
+        </div>
+        <Select value={kind} onValueChange={setKind}>
+          <SelectTrigger className="h-9 w-[180px]">
+            <SelectValue placeholder="Filter kind" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All kinds</SelectItem>
+            <SelectItem value="ad_hoc">Ad hoc</SelectItem>
+            <SelectItem value="experiment_backfill">Backfill</SelectItem>
+            <SelectItem value="validation">Validation</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
-      <Card className="border-[#6f88b4]/20 shadow-xs">
-        <CardHeader>
-          <CardTitle className="text-base">Recent Jobs</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {error ? (
-            <div className="border-destructive/40 bg-destructive/5 rounded-md border p-3 text-sm">
-              Failed to load jobs: {String((error as Error).message)}
-            </div>
-          ) : isLoading && !data ? (
-            <Skeleton className="h-64 w-full" />
-          ) : !data || data.length === 0 ? (
-            <div className="bg-card/60 text-muted-foreground rounded-lg border border-dashed border-[#6f88b4]/30 px-6 py-10 text-center text-sm">
-              No jobs have been launched yet.
-            </div>
-          ) : (
-            <div className="border-border/70 overflow-x-auto rounded-lg border">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="bg-muted/40 text-muted-foreground text-left text-[11px] tracking-wide uppercase">
-                    <th className="px-3 py-2 font-medium">Job</th>
-                    <th className="px-3 py-2 font-medium">Kind</th>
-                    <th className="px-3 py-2 font-medium">Status</th>
-                    <th className="px-3 py-2 font-medium">Cells</th>
-                    <th className="px-3 py-2 font-medium">Trials</th>
-                    <th className="px-3 py-2 font-medium">Experiment</th>
-                    <th className="px-3 py-2 font-medium">Launched</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.map((job) => (
-                    <tr key={job.id} className="border-border/70 border-t">
-                      <td className="px-3 py-3 font-mono text-xs">
+      {error ? (
+        <div className="border-destructive/40 bg-destructive/5 rounded-md border p-3 text-sm">
+          Failed to load jobs: {String((error as Error).message)}
+        </div>
+      ) : null}
+
+      {isLoading && !data ? (
+        <Skeleton className="h-64 w-full" />
+      ) : (
+        <div className="overflow-x-auto rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Job</TableHead>
+                <TableHead>Kind</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Cells</TableHead>
+                <TableHead>Trials</TableHead>
+                <TableHead>Experiment</TableHead>
+                <TableHead>Launched</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {jobs.length === 0 ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={7}
+                    className="text-muted-foreground text-center text-sm"
+                  >
+                    No jobs match this view.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                jobs.map((job) => (
+                  <TableRow key={job.id}>
+                    <TableCell className="font-mono text-xs">
+                      <Link
+                        href={`/jobs/${encodeURIComponent(job.id)}`}
+                        className="underline-offset-2 hover:underline"
+                      >
+                        {job.id}
+                      </Link>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline">
+                        {KIND_LABEL[job.kind] ?? job.kind}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={statusVariant(job.status)}>
+                        {job.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {job.cells.length}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {job.trials_count}
+                      {job.active_worker_jobs_count > 0 ? (
+                        <span className="ml-1 text-amber-600 dark:text-amber-400">
+                          ({job.active_worker_jobs_count} active)
+                        </span>
+                      ) : null}
+                    </TableCell>
+                    <TableCell>
+                      {job.triggered_by_experiment_id ? (
                         <Link
-                          href={`/jobs/${encodeURIComponent(job.id)}`}
-                          className="text-[#5d77a5] underline-offset-4 hover:underline dark:text-[#a8b8d2]"
+                          className="font-mono text-xs underline-offset-2 hover:underline"
+                          href={`/experiments/${encodeExperimentRouteParam(
+                            job.triggered_by_experiment_id
+                          )}`}
                         >
-                          {job.id}
+                          {job.triggered_by_experiment_id}
                         </Link>
-                      </td>
-                      <td className="px-3 py-3">
-                        <Badge variant="outline">
-                          {KIND_LABEL[job.kind] ?? job.kind}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-3">
-                        <Badge variant={statusVariant(job.status)}>
-                          {job.status}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-3 font-mono">
-                        {job.cells.length}
-                      </td>
-                      <td className="px-3 py-3 font-mono">
-                        {job.trials_count}
-                        {job.active_worker_jobs_count > 0 ? (
-                          <span className="ml-1 text-amber-500">
-                            ({job.active_worker_jobs_count} active)
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="px-3 py-3">
-                        {job.triggered_by_experiment_id ? (
-                          <Link
-                            href={`/experiments/${encodeExperimentRouteParam(
-                              job.triggered_by_experiment_id
-                            )}`}
-                            className="font-mono text-xs text-[#5d77a5] underline-offset-4 hover:underline dark:text-[#a8b8d2]"
-                          >
-                            {job.triggered_by_experiment_id}
-                          </Link>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </td>
-                      <td className="text-muted-foreground px-3 py-3 text-xs">
-                        {formatRelativeTime(job.launched_at)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-xs">
+                      {relativeTime(job.launched_at)}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+
+      {data ? (
+        <div className="text-muted-foreground flex items-center justify-end gap-2 text-xs">
+          <span>{jobs.length} shown</span>
+          <Button size="sm" variant="outline" disabled>
+            Prev
+          </Button>
+          <Button size="sm" variant="outline" disabled>
+            Next
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }

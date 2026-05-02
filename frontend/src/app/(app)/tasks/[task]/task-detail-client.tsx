@@ -1,13 +1,10 @@
 "use client";
 
+import { Fragment, useMemo, useState } from "react";
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select,
   SelectContent,
@@ -15,360 +12,552 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { fetcher } from "@/lib/api";
-import { formatRelativeTime, formatShortDateTime } from "@/lib/utils";
-import type { EvidenceCell, Task, TaskVersion } from "@/lib/types";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { TaskFilesPanel } from "@/components/task-files-panel";
-import { TrialInspectDrawer } from "@/components/trial-inspect-drawer";
-import { ArrowLeft, Beaker, GitBranch } from "lucide-react";
+import { TrialDetailPanel } from "@/components/trial-detail-panel";
+import { fetcher } from "@/lib/api";
+import type { Task, TaskVersion, Trial } from "@/lib/types";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 
-function formatMeanReward(value: number | null | undefined) {
-  if (value == null) return "—";
-  return `${Math.round(value * 100)}%`;
+function formatNumber(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  return value.toFixed(2);
 }
 
-function versionLabel(version: TaskVersion) {
-  const hash = version.content_hash ? version.content_hash.slice(0, 10) : null;
-  return `v${version.version}${hash ? ` · ${hash}` : ""}`;
+function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const ms = Date.now() - new Date(iso).getTime();
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
-type TaskDetailClientProps = {
-  taskId: string;
-  task: Task | null;
-  versions: TaskVersion[];
-  selectedVersion: number | null;
-  initialEvidence: EvidenceCell[];
+function statusVariant(
+  status: string
+): "default" | "secondary" | "outline" | "destructive" {
+  if (status === "success") return "secondary";
+  if (status === "failed") return "destructive";
+  if (status === "running") return "default";
+  return "outline";
+}
+
+type AgentStat = {
+  key: string;
+  agent: string;
+  model: string | null;
+  provider: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  running: number;
+  rewardSum: number;
+  rewardCount: number;
+  meanReward: number | null;
+  passRate: number | null;
+  lastRunAt: string | null;
 };
 
-export function TaskDetailClient({
-  taskId,
-  task,
-  versions,
-  selectedVersion,
-  initialEvidence,
-}: TaskDetailClientProps) {
-  const router = useRouter();
-  const [inspecting, setInspecting] = useState<{
-    trialId: string;
-    taskId: string;
-  } | null>(null);
-  const evidenceKey =
-    selectedVersion == null
-      ? null
-      : `/api/tasks/${encodeURIComponent(taskId)}/versions/${selectedVersion}/evidence`;
-  const { data: evidence = initialEvidence, error } = useSWR<EvidenceCell[]>(
-    evidenceKey,
-    fetcher,
-    {
-      fallbackData: initialEvidence,
-      refreshInterval: 30000,
-      revalidateOnFocus: false,
-    }
-  );
-  const selectedVersionRow =
-    versions.find((version) => version.version === selectedVersion) ?? null;
-  const { data: taskWithTrials } = useSWR<Task>(
-    task
-      ? `/api/tasks/${encodeURIComponent(taskId)}?include_trials=true`
-      : null,
-    fetcher,
-    {
-      refreshInterval: 30000,
-      revalidateOnFocus: false,
-    }
-  );
-  const trials = useMemo(
-    () => taskWithTrials?.trials ?? [],
-    [taskWithTrials?.trials]
-  );
-  const trialsForVersion = useMemo(() => {
-    if (!selectedVersionRow) return [];
-    return trials
-      .filter((trial) => trial.task_version_id === selectedVersionRow.id)
-      .sort((a, b) =>
-        (b.finished_at ?? b.created_at).localeCompare(
-          a.finished_at ?? a.created_at
-        )
-      );
-  }, [selectedVersionRow, trials]);
+const RUNNING_STATUSES = new Set(["pending", "queued", "running", "retrying"]);
 
-  if (!task) {
+export function TaskDetailClient({ taskId }: { taskId: string }) {
+  const encoded = encodeURIComponent(taskId);
+  const { data: task, error: taskError } = useSWR<Task>(
+    `/api/tasks/${encoded}`,
+    fetcher,
+    { refreshInterval: 60000, revalidateOnFocus: false }
+  );
+  const { data: versions, error: versionsError } = useSWR<TaskVersion[]>(
+    `/api/tasks/${encoded}/versions`,
+    fetcher,
+    { revalidateOnFocus: false }
+  );
+
+  const sortedVersions = useMemo(() => {
+    if (!versions) return [];
+    return [...versions].sort((a, b) => b.version - a.version);
+  }, [versions]);
+
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
+    null
+  );
+  const activeVersionId = selectedVersionId ?? sortedVersions[0]?.id ?? null;
+  const activeVersion = sortedVersions.find(
+    (version) => version.id === activeVersionId
+  );
+  const trials = useMemo(() => task?.trials ?? [], [task?.trials]);
+
+  const trialsForVersion = useMemo<Trial[]>(() => {
+    if (!activeVersionId) return [];
+    return [...trials]
+      .filter((trial) => trial.task_version_id === activeVersionId)
+      .sort((a, b) => {
+        const av = a.finished_at ?? a.created_at ?? "";
+        const bv = b.finished_at ?? b.created_at ?? "";
+        return bv.localeCompare(av);
+      });
+  }, [trials, activeVersionId]);
+
+  const versionStats = useMemo(() => {
+    const total = trialsForVersion.length;
+    let succeeded = 0;
+    let failed = 0;
+    let running = 0;
+    let rewardSum = 0;
+    let rewardCount = 0;
+    for (const trial of trialsForVersion) {
+      if (trial.status === "success") succeeded += 1;
+      else if (trial.status === "failed") failed += 1;
+      else if (RUNNING_STATUSES.has(trial.status)) running += 1;
+      if (typeof trial.reward === "number") {
+        rewardSum += trial.reward;
+        rewardCount += 1;
+      }
+    }
+    return {
+      total,
+      succeeded,
+      failed,
+      running,
+      meanReward: rewardCount > 0 ? rewardSum / rewardCount : null,
+      passRate: total > 0 ? succeeded / total : null,
+    };
+  }, [trialsForVersion]);
+
+  const perAgentStats = useMemo<AgentStat[]>(() => {
+    const byKey = new Map<string, AgentStat>();
+    for (const trial of trialsForVersion) {
+      const key = `${(trial.agent ?? "").toLowerCase()}|${(trial.model ?? "").toLowerCase()}|${(trial.provider ?? "").toLowerCase()}`;
+      let row = byKey.get(key);
+      if (!row) {
+        row = {
+          key,
+          agent: trial.agent ?? "",
+          model: trial.model ?? null,
+          provider: trial.provider ?? "",
+          total: 0,
+          succeeded: 0,
+          failed: 0,
+          running: 0,
+          rewardSum: 0,
+          rewardCount: 0,
+          meanReward: null,
+          passRate: null,
+          lastRunAt: null,
+        };
+        byKey.set(key, row);
+      }
+      row.total += 1;
+      if (trial.status === "success") row.succeeded += 1;
+      else if (trial.status === "failed") row.failed += 1;
+      else if (RUNNING_STATUSES.has(trial.status)) row.running += 1;
+      if (typeof trial.reward === "number") {
+        row.rewardSum += trial.reward;
+        row.rewardCount += 1;
+      }
+      const finishedAt = trial.finished_at ?? trial.created_at;
+      if (finishedAt && (!row.lastRunAt || finishedAt > row.lastRunAt)) {
+        row.lastRunAt = finishedAt;
+      }
+    }
+    const rows = Array.from(byKey.values());
+    for (const row of rows) {
+      row.meanReward =
+        row.rewardCount > 0 ? row.rewardSum / row.rewardCount : null;
+      row.passRate = row.total > 0 ? row.succeeded / row.total : null;
+    }
+    rows.sort(
+      (a, b) =>
+        b.total - a.total ||
+        `${a.agent}|${a.model ?? ""}`.localeCompare(
+          `${b.agent}|${b.model ?? ""}`
+        )
+    );
+    return rows;
+  }, [trialsForVersion]);
+
+  const [inspectingTrialId, setInspectingTrialId] = useState<string | null>(
+    null
+  );
+  const inspectingTrial = useMemo<Trial | null>(
+    () =>
+      inspectingTrialId
+        ? (trialsForVersion.find((trial) => trial.id === inspectingTrialId) ??
+          null)
+        : null,
+    [trialsForVersion, inspectingTrialId]
+  );
+  const inspectingAgentSiblings = useMemo<Trial[]>(() => {
+    if (!inspectingTrial) return [];
+    const key = `${(inspectingTrial.agent ?? "").toLowerCase()}|${(inspectingTrial.model ?? "").toLowerCase()}|${(inspectingTrial.provider ?? "").toLowerCase()}`;
+    return trialsForVersion.filter(
+      (trial) =>
+        `${(trial.agent ?? "").toLowerCase()}|${(trial.model ?? "").toLowerCase()}|${(trial.provider ?? "").toLowerCase()}` ===
+        key
+    );
+  }, [inspectingTrial, trialsForVersion]);
+  const inspectingIndex = useMemo(
+    () =>
+      inspectingTrialId
+        ? inspectingAgentSiblings.findIndex(
+            (trial) => trial.id === inspectingTrialId
+          )
+        : -1,
+    [inspectingAgentSiblings, inspectingTrialId]
+  );
+  const prevTrial =
+    inspectingIndex > 0 ? inspectingAgentSiblings[inspectingIndex - 1] : null;
+  const nextTrial =
+    inspectingIndex >= 0 && inspectingIndex < inspectingAgentSiblings.length - 1
+      ? inspectingAgentSiblings[inspectingIndex + 1]
+      : null;
+
+  if (taskError) {
     return (
-      <Alert variant="destructive">
-        <AlertTitle>Task not found</AlertTitle>
-        <AlertDescription>
-          The task could not be loaded, or you do not have access to it.
-        </AlertDescription>
-      </Alert>
+      <div className="p-4">
+        <div className="border-destructive/40 bg-destructive/5 rounded-md border p-3 text-sm">
+          Failed to load task: {String((taskError as Error).message)}
+        </div>
+      </div>
     );
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="space-y-2">
-          <Button variant="ghost" size="sm" asChild className="-ml-2 h-8">
-            <Link href="/tasks">
-              <ArrowLeft className="mr-1.5 h-4 w-4" />
-              Tasks
-            </Link>
-          </Button>
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="font-mono text-2xl font-semibold tracking-tight">
-              {task.name}
+    <div className="mx-auto w-full max-w-(--breakpoint-2xl) p-4">
+      <div className="bg-card overflow-hidden rounded-lg border">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b px-5 py-4">
+          <div className="min-w-0">
+            <h1 className="font-mono text-[24px] font-semibold tracking-[-0.02em]">
+              {task?.name ?? taskId}
             </h1>
-            {selectedVersion != null ? (
-              <Badge variant="outline" className="font-mono">
-                v{selectedVersion}
-              </Badge>
+            <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <span className="font-mono">{task?.id ?? taskId}</span>
+              <span>·</span>
+              <span>
+                {sortedVersions.length} version
+                {sortedVersions.length === 1 ? "" : "s"}
+              </span>
+              {activeVersion ? (
+                <>
+                  <span>·</span>
+                  <span>created {relativeTime(activeVersion.created_at)}</span>
+                  {activeVersion.content_hash ? (
+                    <>
+                      <span>·</span>
+                      <span className="font-mono">
+                        {activeVersion.content_hash.slice(0, 12)}
+                      </span>
+                    </>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+            {task?.tags && Object.keys(task.tags).length > 0 ? (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {Object.entries(task.tags)
+                  .filter(([key]) => !key.startsWith("github_"))
+                  .map(([key, value]) => (
+                    <Link
+                      key={key}
+                      href={`/tasks?query=${encodeURIComponent(value)}`}
+                      title={`Filter by ${key}=${value}`}
+                    >
+                      <Badge
+                        variant="secondary"
+                        className="hover:bg-muted cursor-pointer font-mono text-[10px]"
+                      >
+                        {key}={value}
+                      </Badge>
+                    </Link>
+                  ))}
+              </div>
+            ) : null}
+            {activeVersion?.message ? (
+              <div className="text-muted-foreground mt-2 text-xs">
+                {activeVersion.message}
+              </div>
             ) : null}
           </div>
-          <p className="text-muted-foreground max-w-3xl text-sm">
-            Task versions are immutable. Evidence below is pooled by the pinned
-            task version and agent identity, independent of which experiment or
-            job produced it.
-          </p>
+          <div className="flex shrink-0 items-center gap-2">
+            {sortedVersions.length > 0 ? (
+              <Select
+                value={activeVersionId ?? undefined}
+                onValueChange={(value) => {
+                  setSelectedVersionId(value);
+                  setInspectingTrialId(null);
+                }}
+              >
+                <SelectTrigger className="h-9 w-[220px]">
+                  <SelectValue placeholder="Select version" />
+                </SelectTrigger>
+                <SelectContent>
+                  {sortedVersions.map((version) => (
+                    <SelectItem key={version.id} value={version.id}>
+                      v{version.version}
+                      {version.message
+                        ? ` - ${version.message.slice(0, 40)}`
+                        : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+          </div>
         </div>
-        <Button asChild>
-          <Link href="/experiments/new">
-            <Beaker className="mr-2 h-4 w-4" />
-            Build experiment
-          </Link>
+
+        {versionsError ? (
+          <div className="text-destructive border-b p-3 text-sm">
+            Failed to load versions: {String((versionsError as Error).message)}
+          </div>
+        ) : null}
+
+        <div className="grid min-h-[70vh] grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+          <div className="flex min-h-0 flex-col border-b lg:border-r lg:border-b-0">
+            <div className="text-muted-foreground shrink-0 border-b px-5 py-2 text-[11px] font-semibold tracking-wide uppercase">
+              Task files
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <TaskFilesPanel
+                key={`task-files-${activeVersionId ?? "none"}`}
+                isOpen
+                onClose={() => {}}
+                taskId={null}
+                filesUrl={`/api/tasks/${encoded}/files`}
+                filesVersion={activeVersion?.version ?? null}
+                contentOnly
+              />
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-col">
+            {inspectingTrial && task ? (
+              <>
+                <div className="flex items-center justify-between gap-2 border-b px-5 py-2">
+                  <div className="flex items-center gap-1">
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      disabled={!prevTrial}
+                      onClick={() =>
+                        prevTrial && setInspectingTrialId(prevTrial.id)
+                      }
+                      title="Previous trial for this agent"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      disabled={!nextTrial}
+                      onClick={() =>
+                        nextTrial && setInspectingTrialId(nextTrial.id)
+                      }
+                      title="Next trial for this agent"
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                    <span className="text-muted-foreground ml-1 text-[11px]">
+                      {inspectingIndex + 1} / {inspectingAgentSiblings.length}{" "}
+                      for this agent
+                    </span>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7"
+                    onClick={() => setInspectingTrialId(null)}
+                  >
+                    <X className="mr-1 h-3.5 w-3.5" /> Close
+                  </Button>
+                </div>
+                <div className="flex-1 overflow-hidden">
+                  <TrialDetailPanel
+                    isOpen
+                    onClose={() => setInspectingTrialId(null)}
+                    trial={inspectingTrial}
+                    task={task}
+                    orderedTrials={inspectingAgentSiblings}
+                    trialIndex={inspectingIndex}
+                    onNavigate={(trial) => setInspectingTrialId(trial.id)}
+                    allowRetry
+                    contentOnly
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                {versionStats.total > 0 ? (
+                  <div className="bg-muted/30 grid grid-cols-2 gap-3 border-b px-5 py-3 text-sm sm:grid-cols-5">
+                    <div>
+                      <div className="text-muted-foreground text-[10px] uppercase">
+                        total
+                      </div>
+                      <div className="font-mono">{versionStats.total}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground text-[10px] uppercase">
+                        succeeded
+                      </div>
+                      <div className="font-mono text-emerald-700 dark:text-emerald-400">
+                        {versionStats.succeeded}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground text-[10px] uppercase">
+                        failed
+                      </div>
+                      <div className="font-mono text-rose-600 dark:text-rose-400">
+                        {versionStats.failed}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground text-[10px] uppercase">
+                        running
+                      </div>
+                      <div className="font-mono text-amber-600 dark:text-amber-400">
+                        {versionStats.running}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground text-[10px] uppercase">
+                        avg reward
+                      </div>
+                      <div className="font-mono">
+                        {formatNumber(versionStats.meanReward)}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {!task || !versions ? (
+                  <Skeleton className="m-3 h-32" />
+                ) : trialsForVersion.length === 0 ? (
+                  <div className="text-muted-foreground p-6 text-center text-sm">
+                    No trials for this version yet.
+                  </div>
+                ) : (
+                  <div className="min-h-0 flex-1 overflow-y-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Agent / trial</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead className="text-right">Reward</TableHead>
+                          <TableHead className="text-right">Finished</TableHead>
+                          <TableHead className="text-right">Inspect</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {perAgentStats.map((agent) => {
+                          const agentTrials = trialsForVersion.filter(
+                            (trial) =>
+                              `${(trial.agent ?? "").toLowerCase()}|${(trial.model ?? "").toLowerCase()}|${(trial.provider ?? "").toLowerCase()}` ===
+                              agent.key
+                          );
+                          return (
+                            <Fragment key={agent.key}>
+                              <TableRow className="bg-muted/40 hover:bg-muted/40">
+                                <TableCell className="font-mono text-xs font-semibold">
+                                  {agent.agent}
+                                  {agent.model && agent.model !== "default"
+                                    ? ` · ${agent.model}`
+                                    : ""}
+                                  {agent.provider &&
+                                  agent.provider !== "default" ? (
+                                    <span className="text-muted-foreground ml-1 text-[10px] font-normal">
+                                      {agent.provider}
+                                    </span>
+                                  ) : null}
+                                </TableCell>
+                                <TableCell className="font-mono text-xs">
+                                  <span className="text-emerald-700 dark:text-emerald-400">
+                                    {agent.succeeded}
+                                  </span>
+                                  /{agent.total}
+                                  {agent.failed > 0 ? (
+                                    <span className="ml-1 text-rose-600 dark:text-rose-400">
+                                      ({agent.failed} fail)
+                                    </span>
+                                  ) : null}
+                                  {agent.running > 0 ? (
+                                    <span className="ml-1 text-amber-600 dark:text-amber-400">
+                                      ({agent.running} run)
+                                    </span>
+                                  ) : null}
+                                </TableCell>
+                                <TableCell className="text-muted-foreground text-right text-xs">
+                                  {agent.passRate === null
+                                    ? "—"
+                                    : `${Math.round(agent.passRate * 100)}% pass`}
+                                </TableCell>
+                                <TableCell className="text-muted-foreground text-right text-xs">
+                                  {relativeTime(agent.lastRunAt)}
+                                </TableCell>
+                                <TableCell />
+                              </TableRow>
+                              {agentTrials.map((trial) => (
+                                <TableRow key={trial.id}>
+                                  <TableCell className="text-muted-foreground pl-8 font-mono text-[11px]">
+                                    {trial.id}
+                                  </TableCell>
+                                  <TableCell>
+                                    <Badge
+                                      variant={statusVariant(trial.status)}
+                                    >
+                                      {trial.status}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="text-right font-mono text-xs">
+                                    {formatNumber(trial.reward)}
+                                  </TableCell>
+                                  <TableCell className="text-muted-foreground text-right text-xs">
+                                    {relativeTime(trial.finished_at)}
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7"
+                                      onClick={() =>
+                                        setInspectingTrialId(trial.id)
+                                      }
+                                    >
+                                      Inspect
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </Fragment>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 flex justify-end">
+        <Button variant="ghost" size="sm" asChild>
+          <Link href="/tasks">← All tasks</Link>
         </Button>
       </div>
-
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-        <Card className="border-[#6f88b4]/20 shadow-xs">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <GitBranch className="text-muted-foreground h-4 w-4" />
-              Version
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <Select
-              value={selectedVersion == null ? "" : String(selectedVersion)}
-              onValueChange={(value) => {
-                router.replace(
-                  `/tasks/${encodeURIComponent(taskId)}?version=${value}`
-                );
-              }}
-            >
-              <SelectTrigger className="border-[#6f88b4]/20">
-                <SelectValue placeholder="Select task version" />
-              </SelectTrigger>
-              <SelectContent>
-                {versions.map((version) => (
-                  <SelectItem key={version.id} value={String(version.version)}>
-                    {versionLabel(version)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            {selectedVersionRow ? (
-              <div className="border-border/70 bg-muted/25 space-y-3 rounded-lg border p-3 text-sm">
-                <div>
-                  <div className="text-muted-foreground text-[11px] tracking-wide uppercase">
-                    Content hash
-                  </div>
-                  <div className="mt-1 font-mono text-xs break-all">
-                    {selectedVersionRow.content_hash ?? "—"}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-muted-foreground text-[11px] tracking-wide uppercase">
-                    Bundle
-                  </div>
-                  <div className="mt-1 font-mono text-xs break-all">
-                    {selectedVersionRow.task_s3_key ??
-                      selectedVersionRow.task_path}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-muted-foreground text-[11px] tracking-wide uppercase">
-                    Message
-                  </div>
-                  <div className="mt-1 text-xs">
-                    {selectedVersionRow.message || "No version message."}
-                  </div>
-                </div>
-                <div className="text-muted-foreground text-xs">
-                  Created {formatShortDateTime(selectedVersionRow.created_at)}
-                </div>
-              </div>
-            ) : (
-              <div className="border-border/70 text-muted-foreground rounded-lg border border-dashed p-4 text-sm">
-                No task versions have been registered yet.
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="border-[#6f88b4]/20 shadow-xs">
-          <CardHeader className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-            <CardTitle className="text-base">Evidence Matrix</CardTitle>
-            <div className="text-muted-foreground text-xs">
-              {evidence.length} agent{evidence.length === 1 ? "" : "s"}
-            </div>
-          </CardHeader>
-          <CardContent>
-            {error ? (
-              <Alert variant="destructive">
-                <AlertTitle>Evidence failed to load</AlertTitle>
-                <AlertDescription>
-                  Refresh the page or check the backend logs.
-                </AlertDescription>
-              </Alert>
-            ) : evidence.length === 0 ? (
-              <div className="bg-card/60 text-muted-foreground rounded-lg border border-dashed border-[#6f88b4]/30 px-6 py-10 text-center text-sm">
-                No evidence exists for this task version yet. Create an
-                experiment or run a job against this version to populate it.
-              </div>
-            ) : (
-              <div className="border-border/70 overflow-hidden rounded-lg border">
-                <div className="bg-muted/40 text-muted-foreground grid grid-cols-[minmax(180px,1.4fr)_90px_110px_130px] px-3 py-2 text-[11px] tracking-wide uppercase">
-                  <div>Agent</div>
-                  <div>Trials</div>
-                  <div>Mean reward</div>
-                  <div>Last run</div>
-                </div>
-                {evidence.map((cell) => (
-                  <div
-                    key={`${cell.task_version_id}:${cell.agent_equivalence_key}`}
-                    className="border-border/70 grid grid-cols-[minmax(180px,1.4fr)_90px_110px_130px] items-center border-t px-3 py-3 text-sm"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate font-mono font-medium">
-                        {cell.harness}
-                      </div>
-                      <div className="text-muted-foreground truncate text-xs">
-                        {cell.provider}/{cell.model}
-                      </div>
-                    </div>
-                    <div className="font-mono">{cell.n_trials}</div>
-                    <div className="font-mono">
-                      {formatMeanReward(cell.mean_reward)}
-                    </div>
-                    <div className="text-muted-foreground text-xs">
-                      {cell.last_run_at
-                        ? formatRelativeTime(cell.last_run_at)
-                        : "—"}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card className="border-[#6f88b4]/20 shadow-xs">
-          <CardHeader>
-            <CardTitle className="text-base">Files</CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            <TaskFilesPanel
-              isOpen
-              onClose={() => {}}
-              taskId={taskId}
-              task={{
-                ...task,
-                current_version: selectedVersion,
-                current_version_id: selectedVersionRow?.id ?? null,
-              }}
-              contentOnly
-            />
-          </CardContent>
-        </Card>
-
-        <Card className="border-[#6f88b4]/20 shadow-xs">
-          <CardHeader className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-            <CardTitle className="text-base">Trials On This Version</CardTitle>
-            <div className="text-muted-foreground text-xs">
-              {trialsForVersion.length} trial
-              {trialsForVersion.length === 1 ? "" : "s"}
-            </div>
-          </CardHeader>
-          <CardContent>
-            {trialsForVersion.length === 0 ? (
-              <div className="bg-card/60 text-muted-foreground rounded-lg border border-dashed border-[#6f88b4]/30 px-6 py-10 text-center text-sm">
-                No terminal trials exist for this version yet.
-              </div>
-            ) : (
-              <div className="border-border/70 max-h-[70vh] overflow-auto rounded-lg border">
-                <table className="min-w-full text-sm">
-                  <thead>
-                    <tr className="bg-muted/40 text-muted-foreground text-left text-[11px] tracking-wide uppercase">
-                      <th className="px-3 py-2 font-medium">Trial</th>
-                      <th className="px-3 py-2 font-medium">Agent</th>
-                      <th className="px-3 py-2 font-medium">Status</th>
-                      <th className="px-3 py-2 font-medium">Reward</th>
-                      <th className="px-3 py-2 text-right font-medium">
-                        Inspect
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {trialsForVersion.map((trial) => (
-                      <tr key={trial.id} className="border-border/70 border-t">
-                        <td className="px-3 py-3 font-mono text-xs">
-                          {trial.id}
-                        </td>
-                        <td className="px-3 py-3 font-mono text-xs">
-                          {trial.agent}
-                          {trial.model ? ` · ${trial.model}` : ""}
-                        </td>
-                        <td className="px-3 py-3">
-                          <Badge variant="outline">{trial.status}</Badge>
-                        </td>
-                        <td className="px-3 py-3 font-mono">
-                          {formatMeanReward(trial.reward)}
-                        </td>
-                        <td className="px-3 py-3 text-right">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-7"
-                            onClick={() =>
-                              setInspecting({
-                                trialId: trial.id,
-                                taskId: trial.task_id,
-                              })
-                            }
-                          >
-                            Inspect
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {inspecting ? (
-        <TrialInspectDrawer
-          open
-          onOpenChange={(open) => {
-            if (!open) setInspecting(null);
-          }}
-          taskId={inspecting.taskId}
-          trialId={inspecting.trialId}
-          siblingTrialIds={trialsForVersion.map((trial) => trial.id)}
-          onTrialChange={(trialId) =>
-            setInspecting((current) =>
-              current ? { ...current, trialId } : current
-            )
-          }
-          noBackdrop
-        />
-      ) : null}
     </div>
   );
 }

@@ -537,15 +537,38 @@ class ExperimentCellResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ExperimentCellAgentResponse(BaseModel):
+    harness: str
+    model: str | None = None
+    provider: str
+    equivalence_key: str
+
+
 class ResolvedExperimentCellResponse(BaseModel):
     cell: ExperimentCellResponse
+    id: str | None = None
     task_id: str | None = None
     task_name: str | None = None
     task_version: int | None = None
+    task_version_id: str | None = None
+    target_n_trials: int | None = None
+    agent: ExperimentCellAgentResponse | None = None
+    have_n_total: int = 0
+    have_n_successful: int = 0
+    have_n_failed: int = 0
+    have_n_running: int = 0
+    gap: int = 0
     have_n_trials: int
     mean_reward: float | None = None
     last_run_at: datetime | None = None
     trial_ids: list[str] = Field(default_factory=list)
+
+
+class ResolvedExperimentResponse(BaseModel):
+    experiment_id: str
+    experiment_name: str
+    cells: list[ResolvedExperimentCellResponse] = Field(default_factory=list)
+    total_gap: int = 0
 
 
 class TrialResponse(BaseModel):
