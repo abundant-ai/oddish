@@ -764,9 +764,22 @@ function PickTasksDialog({
             <Skeleton className="h-48" />
           ) : filtered.length === 0 ? (
             <div className="rounded-sm border border-dashed p-6 text-center text-xs text-muted-foreground">
-              {tasks.length === 0
-                ? "All known tasks are already on this experiment."
-                : "No tasks match."}
+              {(data?.items ?? []).length === 0 ? (
+                <>
+                  No tasks have been uploaded for your org yet.
+                  <br />
+                  <Link
+                    href="/tasks"
+                    className="mt-2 inline-block underline underline-offset-2 hover:text-foreground"
+                  >
+                    Upload one on the Tasks page →
+                  </Link>
+                </>
+              ) : tasks.length === 0 ? (
+                "All known tasks are already on this experiment."
+              ) : (
+                "No tasks match the filter."
+              )}
             </div>
           ) : (
             <div className="max-h-[50vh] overflow-y-auto rounded-sm border">
