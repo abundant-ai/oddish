@@ -18,6 +18,7 @@ import {
   BookOpen,
   Beaker,
   ChevronDown,
+  ListChecks,
   LayoutDashboard,
   LogOut,
   Shield,
@@ -80,12 +81,27 @@ export function Nav() {
               className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
             >
               <Link
-                href="/experiments/new"
+                href="/experiments"
                 className="flex items-center gap-2"
                 data-active={pathname?.startsWith("/experiments")}
               >
                 <Beaker className="h-4 w-4" />
                 <span>Experiments</span>
+              </Link>
+            </Button>
+            <Button
+              variant={pathname?.startsWith("/jobs") ? "secondary" : "ghost"}
+              size="sm"
+              asChild
+              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+            >
+              <Link
+                href="/jobs"
+                className="flex items-center gap-2"
+                data-active={pathname?.startsWith("/jobs")}
+              >
+                <ListChecks className="h-4 w-4" />
+                <span>Jobs</span>
               </Link>
             </Button>
           </div>

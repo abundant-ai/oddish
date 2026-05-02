@@ -28,6 +28,7 @@ from oddish.core.evidence import (
     get_experiment_cells_core,
     get_task_version_evidence_core,
 )
+from oddish.core.experiments import list_experiments_core
 from oddish.core.jobs import (
     add_experiment_cells_core,
     create_experiment_core,
@@ -69,6 +70,7 @@ from oddish.schemas import (
     ExperimentCellResponse,
     ExperimentCreateRequest,
     ExperimentCreateResponse,
+    ExperimentListItemResponse,
     ResolvedExperimentCellResponse,
     TaskBatchCancelRequest,
     TaskBrowseResponse,
@@ -442,6 +444,22 @@ async def browse_tasks(
             offset=offset,
             query=query,
             record_timing=_make_timing_recorder(request),
+        )
+
+
+@router.get("/experiments", response_model=list[ExperimentListItemResponse])
+async def list_experiments(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> list[ExperimentListItemResponse]:
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        return await list_experiments_core(
+            session,
+            org_id=auth.org_id,
+            limit=limit,
+            offset=offset,
         )
 
 

@@ -32,9 +32,11 @@ from oddish.core.jobs import (
     create_experiment_core,
     delete_experiment_cell_core,
     get_job_core,
+    list_job_trials_core,
     list_jobs_core,
     patch_experiment_cell_core,
 )
+from oddish.core.experiments import list_experiments_core
 from oddish.core.evidence import (
     get_experiment_cells_core,
     get_task_version_evidence_core,
@@ -89,6 +91,7 @@ from oddish.schemas import (
     ExperimentCellResponse,
     ExperimentCreateRequest,
     ExperimentCreateResponse,
+    ExperimentListItemResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
     JobResponse,
@@ -284,6 +287,16 @@ async def get_job(job_id: str) -> JobResponse:
         return await get_job_core(session, job_id=job_id)
 
 
+@api.get("/jobs/{job_id}/trials", response_model=list[TrialResponse])
+async def list_job_trials(
+    job_id: str,
+    limit: int = Query(500, ge=1, le=2000),
+) -> list[TrialResponse]:
+    """List terminal trial evidence produced by one Job."""
+    async with get_session() as session:
+        return await list_job_trials_core(session, job_id=job_id, limit=limit)
+
+
 # =============================================================================
 # Dashboard
 # =============================================================================
@@ -465,6 +478,15 @@ async def browse_tasks(
     """Browse latest task versions with aggregated trial stats."""
     async with get_session() as session:
         return await browse_tasks_core(session, limit=limit, offset=offset, query=query)
+
+
+@api.get("/experiments", response_model=list[ExperimentListItemResponse])
+async def list_experiments(
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> list[ExperimentListItemResponse]:
+    async with get_session() as session:
+        return await list_experiments_core(session, limit=limit, offset=offset)
 
 
 @api.post("/experiments", response_model=ExperimentCreateResponse)

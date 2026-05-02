@@ -3,7 +3,13 @@ from __future__ import annotations
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.db import ExperimentCellModel, ExperimentModel, TaskVersionModel, TrialModel
+from oddish.db import (
+    ExperimentCellModel,
+    ExperimentModel,
+    TaskModel,
+    TaskVersionModel,
+    TrialModel,
+)
 from oddish.schemas import (
     EvidenceCellResponse,
     ExperimentCellResponse,
@@ -98,27 +104,32 @@ async def get_experiment_cells_core(
     if experiment is None:
         return []
 
-    cells = (
+    rows = (
         (
             await session.execute(
-                select(ExperimentCellModel)
+                select(ExperimentCellModel, TaskVersionModel, TaskModel)
+                .join(
+                    TaskVersionModel,
+                    TaskVersionModel.id == ExperimentCellModel.task_version_id,
+                )
+                .join(TaskModel, TaskModel.id == TaskVersionModel.task_id)
                 .where(ExperimentCellModel.experiment_id == experiment_id)
                 .order_by(
-                    ExperimentCellModel.task_version_id.asc(),
+                    TaskModel.name.asc(),
+                    TaskVersionModel.version.asc(),
                     ExperimentCellModel.provider.asc(),
                     ExperimentCellModel.model.asc(),
                     ExperimentCellModel.harness.asc(),
                 )
             )
         )
-        .scalars()
         .all()
     )
-    if not cells:
+    if not rows:
         return []
 
     responses: list[ResolvedExperimentCellResponse] = []
-    for cell in cells:
+    for cell, version, task in rows:
         evidence_rows = (
             await session.execute(
                 select(
@@ -136,6 +147,9 @@ async def get_experiment_cells_core(
         responses.append(
             ResolvedExperimentCellResponse(
                 cell=ExperimentCellResponse.model_validate(cell),
+                task_id=task.id,
+                task_name=task.name,
+                task_version=version.version,
                 have_n_trials=int(have or 0),
                 mean_reward=float(mean_reward) if mean_reward is not None else None,
                 last_run_at=last_run_at,

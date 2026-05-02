@@ -259,6 +259,9 @@ export interface ExperimentCell {
 
 export interface ResolvedExperimentCell {
   cell: ExperimentCell;
+  task_id?: string | null;
+  task_name?: string | null;
+  task_version?: number | null;
   have_n_trials: number;
   mean_reward?: number | null;
   last_run_at?: string | null;
@@ -269,6 +272,15 @@ export interface ExperimentCreateResponse {
   id: string;
   name: string;
   cells: ResolvedExperimentCell[];
+}
+
+export interface ExperimentListItem {
+  id: string;
+  name: string;
+  is_public: boolean;
+  public_token?: string | null;
+  cell_count: number;
+  created_at: string;
 }
 
 export interface JobCell {

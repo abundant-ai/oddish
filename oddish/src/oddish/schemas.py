@@ -539,6 +539,9 @@ class ExperimentCellResponse(BaseModel):
 
 class ResolvedExperimentCellResponse(BaseModel):
     cell: ExperimentCellResponse
+    task_id: str | None = None
+    task_name: str | None = None
+    task_version: int | None = None
     have_n_trials: int
     mean_reward: float | None = None
     last_run_at: datetime | None = None
@@ -683,6 +686,15 @@ class ExperimentCreateResponse(BaseModel):
     id: str
     name: str
     cells: list["ResolvedExperimentCellResponse"] = Field(default_factory=list)
+
+
+class ExperimentListItemResponse(BaseModel):
+    id: str
+    name: str
+    is_public: bool = False
+    public_token: str | None = None
+    cell_count: int = 0
+    created_at: datetime
 
 
 class ExperimentBackfillResponse(BaseModel):

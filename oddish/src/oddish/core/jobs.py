@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from oddish.core.agent_identity import compute_agent_equivalence_key
 from oddish.config import settings
+from oddish.core.helpers import build_trial_response
 from oddish.db import (
     BatchJobKind,
     BatchJobStatus,
@@ -32,6 +33,7 @@ from oddish.schemas import (
     ExperimentCreateResponse,
     JobCellResponse,
     JobResponse,
+    TrialResponse,
 )
 
 
@@ -523,3 +525,25 @@ async def get_job_core(
         job,
         counts=counts,
     )
+
+
+async def list_job_trials_core(
+    session: AsyncSession,
+    *,
+    job_id: str,
+    org_id: str | None = None,
+    limit: int = 500,
+) -> list[TrialResponse]:
+    await get_job_core(session, job_id=job_id, org_id=org_id)
+    query = (
+        select(TrialModel, TaskModel.task_path)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .where(TrialModel.job_id == job_id)
+        .order_by(TrialModel.created_at.desc(), TrialModel.id.desc())
+        .limit(max(1, min(limit, 2000)))
+    )
+    if org_id is not None:
+        query = query.where(TrialModel.org_id == org_id)
+
+    rows = (await session.execute(query)).all()
+    return [build_trial_response(trial, task_path) for trial, task_path in rows]
