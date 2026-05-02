@@ -661,37 +661,26 @@ class ExperimentTargetUpdateResponse(BaseModel):
     cells_changed: int
 
 
-class ExperimentCellCreateRequest(BaseModel):
-    task_version_id: str
-    agent_harness: str
-    agent_model: str | None = None
-    agent_provider: str
-    target_n_trials: int = Field(ge=1)
-
-
 class ExperimentBulkCellRequest(BaseModel):
-    """One-shot request that fans out to multiple cells.
+    """Membership change on an experiment.
 
-    ``op`` discriminates the action:
-    - ``add_agent_to_all_tasks`` -- pair the given agent with every
-      ``task_version_id`` already present on the experiment.
-    - ``add_task_to_all_agents`` -- pair the given task_version with
-      every ``agent_equivalence_key`` already present.
-    - ``bump_all_targets`` -- set every existing cell's
-      ``target_n_trials``.
-    - ``delete_agent`` -- nuke every cell with the given agent identity
-      (column-delete in the spreadsheet view).
-    - ``delete_task_version`` -- nuke every cell with the given
-      ``task_version_id`` (row-delete in the spreadsheet view).
+    Tasks and agents are independent lists; the matrix is the cross
+    product. ``op`` discriminates the action:
+
+    - ``add_agent`` -- insert into ``experiment_agents``.
+    - ``add_task`` -- insert into ``experiment_tasks``.
+    - ``delete_agent`` / ``delete_task`` -- remove from membership
+      and clean up any per-pair target overrides.
+    - ``set_default_target`` -- set ``experiments.target_n_trials``
+      and clear all per-pair overrides so the new default applies
+      everywhere.
     """
 
     op: str
     target_n_trials: int = Field(ge=1)
-    # add_agent_to_all_tasks
     agent_harness: str | None = None
     agent_model: str | None = None
     agent_provider: str | None = None
-    # add_task_to_all_agents
     task_version_id: str | None = None
 
 
@@ -715,15 +704,8 @@ class ExperimentInitialAgent(BaseModel):
 class ExperimentCreateRequest(BaseModel):
     name: str
     target_n_trials: int | None = None
-    # New, independent seed lists. Both default to empty -- a freshly
-    # created experiment can have no members, and the matrix renders
-    # empty until rows / columns are added.
     task_version_ids: list[str] = Field(default_factory=list)
     agents: list[ExperimentInitialAgent] = Field(default_factory=list)
-    # Legacy seed: a list of (task, agent) pairs. Kept for backwards
-    # compatibility with older clients; resolved into the membership
-    # tables on save.
-    cells: list[ExperimentCellCreateRequest] = Field(default_factory=list)
 
 
 class ExperimentBackfillResponse(BaseModel):

@@ -6,12 +6,9 @@ from fastapi import APIRouter, Depends, status
 
 from oddish.core.experiment_backfill import backfill_experiment_core
 from oddish.core.experiment_cells import (
-    add_cell_core,
     bulk_cells_core,
     create_experiment_core,
-    delete_cell_core,
     list_cell_trials_core,
-    list_cells_core,
     list_experiments_core,
     list_known_agents_core,
     resolve_experiment_core,
@@ -22,7 +19,6 @@ from oddish.schemas import (
     ExperimentBackfillResponse,
     ExperimentBulkCellRequest,
     ExperimentBulkCellResponse,
-    ExperimentCellCreateRequest,
     ExperimentCellResponse,
     ExperimentCellUpdateRequest,
     ExperimentCreateRequest,
@@ -80,27 +76,10 @@ async def create_experiment(
         return await create_experiment_core(
             session,
             name=payload.name,
-            cells=payload.cells,
             task_version_ids=payload.task_version_ids,
             agents=payload.agents,
             target_n_trials=payload.target_n_trials,
             org_id=auth.org_id,
-        )
-
-
-@router.get(
-    "/experiments/{experiment_id}/cells",
-    response_model=list[ExperimentCellResponse],
-)
-async def list_experiment_cells(
-    experiment_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> list[ExperimentCellResponse]:
-    """List the cells in an experiment's selection (no evidence join)."""
-    auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
-        return await list_cells_core(
-            session, experiment_id=experiment_id, org_id=auth.org_id
         )
 
 
@@ -120,28 +99,6 @@ async def resolve_experiment(
         )
 
 
-@router.post(
-    "/experiments/{experiment_id}/cells",
-    response_model=ExperimentCellResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def add_experiment_cell(
-    experiment_id: str,
-    payload: ExperimentCellCreateRequest,
-    auth: Annotated[AuthContext, Depends(require_admin)],
-) -> ExperimentCellResponse:
-    """Append a cell to an experiment. Idempotent on the equivalence key
-    (existing cell with the same (task_version, agent) gets its target
-    bumped instead of duplicated)."""
-    async with get_session() as session:
-        return await add_cell_core(
-            session,
-            experiment_id=experiment_id,
-            payload=payload,
-            org_id=auth.org_id,
-        )
-
-
 @router.patch(
     "/experiments/{experiment_id}/cells/{cell_id}",
     response_model=ExperimentCellResponse,
@@ -152,7 +109,9 @@ async def update_experiment_cell(
     payload: ExperimentCellUpdateRequest,
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> ExperimentCellResponse:
-    """Bump ``target_n_trials`` on an existing cell."""
+    """Set the per-pair ``target_n_trials`` override for one (task, agent)
+    intersection. ``cell_id`` may be a real ``experiment_cells.id`` or a
+    synthetic ``"{task_version_id}:{agent_equivalence_key}"`` handle."""
     async with get_session() as session:
         return await update_cell_core(
             session,
@@ -215,8 +174,8 @@ async def bulk_experiment_cells(
     payload: ExperimentBulkCellRequest,
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> ExperimentBulkCellResponse:
-    """Fan-out cell operation: bump all targets, add agent to all tasks,
-    or add task to all agents."""
+    """Add or remove tasks and agents in bulk; see
+    ``ExperimentBulkCellRequest`` for the supported ops."""
     async with get_session() as session:
         n = await bulk_cells_core(
             session,
@@ -230,22 +189,3 @@ async def bulk_experiment_cells(
             org_id=auth.org_id,
         )
         return ExperimentBulkCellResponse(op=payload.op, cells_changed=n)
-
-
-@router.delete(
-    "/experiments/{experiment_id}/cells/{cell_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-async def remove_experiment_cell(
-    experiment_id: str,
-    cell_id: str,
-    auth: Annotated[AuthContext, Depends(require_admin)],
-) -> None:
-    """Drop a cell from an experiment."""
-    async with get_session() as session:
-        await delete_cell_core(
-            session,
-            experiment_id=experiment_id,
-            cell_id=cell_id,
-            org_id=auth.org_id,
-        )
