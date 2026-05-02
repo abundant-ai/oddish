@@ -32,7 +32,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { TrialInspectDrawer } from "@/components/trial-inspect-drawer";
 import { ExperimentPassAtKGraph } from "@/components/experiment-pass-at-k";
 import { ExperimentLeaderboard } from "@/components/experiment-leaderboard";
-import { Plus, Pencil, X, Search, Eye, ExternalLink } from "lucide-react";
+import { Plus, Pencil, X, Search, ExternalLink } from "lucide-react";
 import { fetcher } from "@/lib/api";
 import type {
   ExperimentCellAgent,
@@ -43,8 +43,6 @@ import type {
   ResolvedExperimentCell,
 } from "@/lib/types";
 import { encodeExperimentRouteParam } from "@/lib/utils";
-
-type Mode = "view" | "edit";
 
 type Props = {
   experimentId: string;
@@ -992,7 +990,6 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
     },
   );
 
-  const [mode, setMode] = useState<Mode>("view");
   const [pickAgentsOpen, setPickAgentsOpen] = useState(false);
   const [pickTasksOpen, setPickTasksOpen] = useState(false);
   const [busyMsg, setBusyMsg] = useState<string | null>(null);
@@ -1023,7 +1020,9 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
     return m;
   }, [data]);
 
-  const editable = canEdit && mode === "edit";
+  // Edit affordances are gated purely on role -- there is no toggle.
+  // Owners / admins always see them, viewers never do.
+  const editable = canEdit;
 
   const callBulk = async (body: Record<string, unknown>) => {
     const res = await fetch(`/api/experiments/${encodedId}/cells/bulk`, {
@@ -1211,32 +1210,6 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {canEdit ? (
-            <div className="inline-flex items-center overflow-hidden rounded-sm border">
-              <button
-                type="button"
-                onClick={() => setMode("view")}
-                className={`flex items-center gap-1 px-2.5 py-1 text-xs ${
-                  mode === "view"
-                    ? "bg-foreground text-background"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Eye className="h-3 w-3" /> View
-              </button>
-              <button
-                type="button"
-                onClick={() => setMode("edit")}
-                className={`flex items-center gap-1 border-l px-2.5 py-1 text-xs ${
-                  mode === "edit"
-                    ? "bg-foreground text-background"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Pencil className="h-3 w-3" /> Edit
-              </button>
-            </div>
-          ) : null}
-          {canEdit ? (
             <Button
               size="sm"
               onClick={onBackfill}
@@ -1274,10 +1247,11 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
       />
       <ExperimentLeaderboard data={data} />
 
-      {/* Empty + view mode: nothing to show */}
+      {/* Read-only viewers see an empty placeholder; editors get the
+          spreadsheet with always-visible "+" affordances. */}
       {!editable && tasks.length === 0 && agents.length === 0 ? (
         <div className="rounded-sm border border-dashed p-6 text-center text-sm text-muted-foreground">
-          Empty experiment. Switch to Edit to add tasks and agents.
+          This experiment is empty. Ask an admin to add tasks and agents.
         </div>
       ) : (
         <div className="max-h-[70vh] overflow-auto rounded-sm border-2 border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-950">
