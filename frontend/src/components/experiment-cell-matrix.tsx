@@ -311,8 +311,8 @@ function CellBadge({
                 {cell.have_n_failed} · running: {cell.have_n_running}
               </div>
               <div>
-                target: {cell.target_n_trials} · gap:{" "}
-                <span className="font-semibold">{cell.gap}</span>
+                target: {cell.target_n_trials} ·{" "}
+                <span className="font-semibold">{cell.gap}</span> still to run
               </div>
               {cell.last_run_at ? (
                 <div className="text-muted-foreground">
@@ -349,8 +349,8 @@ function CellBadge({
           running: {cell.have_n_running}
         </div>
         <div>
-          target: {cell.target_n_trials} · gap:{" "}
-          <span className="font-semibold">{cell.gap}</span>
+          target: {cell.target_n_trials} ·{" "}
+          <span className="font-semibold">{cell.gap}</span> still to run
         </div>
         {cell.last_run_at ? (
           <div className="text-muted-foreground">
@@ -1364,7 +1364,9 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-3 text-sm">
           <Badge variant={data.total_gap === 0 ? "secondary" : "outline"}>
-            gap: {data.total_gap}
+            {data.total_gap === 0
+              ? "all targets met"
+              : `${data.total_gap} trial${data.total_gap === 1 ? "" : "s"} to run`}
           </Badge>
           {pivot ? (
             <span className="text-muted-foreground">
@@ -1416,8 +1418,8 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
               {isBackfilling
                 ? "Enqueuing…"
                 : data.total_gap === 0
-                  ? "No gaps"
-                  : `Backfill ${data.total_gap}`}
+                  ? "Up to date"
+                  : `Run ${data.total_gap} trial${data.total_gap === 1 ? "" : "s"}`}
             </Button>
           ) : null}
         </div>
