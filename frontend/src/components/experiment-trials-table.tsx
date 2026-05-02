@@ -1568,7 +1568,6 @@ export function ExperimentTrialsTable({
                   <QueueKeyIcon
                     queueKey={agent.queueKey}
                     model={agent.model}
-                    agent={agent.agent}
                     size={10}
                     className="shrink-0"
                   />
@@ -1977,8 +1976,6 @@ export function ExperimentTrialsTable({
                                 title="Copy agent name"
                               >
                                 <QueueKeyIcon
-                                  queueKey={agent.queueKey}
-                                  model={agent.model}
                                   agent={agent.agent}
                                   size={12}
                                   className="shrink-0"
@@ -2012,8 +2009,15 @@ export function ExperimentTrialsTable({
                                   aria-label={`Copy model id ${agent.model}`}
                                   title="Copy model id"
                                 >
-                                  {copiedAgentModelKey === agent.key && (
+                                  {copiedAgentModelKey === agent.key ? (
                                     <Check className="h-3 w-3 shrink-0 text-emerald-500" />
+                                  ) : (
+                                    <QueueKeyIcon
+                                      queueKey={agent.queueKey}
+                                      model={agent.model}
+                                      size={10}
+                                      className="shrink-0"
+                                    />
                                   )}
                                   <span className="min-w-0 truncate">
                                     {agent.model}
