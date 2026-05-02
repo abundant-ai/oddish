@@ -42,7 +42,15 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Plus, Pencil, Trash2 } from "lucide-react";
+import { Plus, Pencil, Trash2, MoreHorizontal } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { fetcher } from "@/lib/api";
 import type {
   ExperimentCellAgent,
@@ -708,6 +716,63 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
     await mutate();
   };
 
+  const [bulkOpen, setBulkOpen] = useState<
+    null | "add_agent_to_all_tasks" | "add_task_to_all_agents" | "bump_all_targets"
+  >(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bulkTarget, setBulkTarget] = useState("3");
+  const [bulkHarness, setBulkHarness] = useState("");
+  const [bulkModel, setBulkModel] = useState("");
+  const [bulkProvider, setBulkProvider] = useState("");
+  const [bulkTaskId, setBulkTaskId] = useState("");
+
+  const submitBulk = async () => {
+    if (!bulkOpen) return;
+    setBulkError(null);
+    setBulkBusy(true);
+    try {
+      const body: Record<string, unknown> = {
+        op: bulkOpen,
+        target_n_trials: Math.max(1, parseInt(bulkTarget, 10) || 1),
+      };
+      if (bulkOpen === "add_agent_to_all_tasks") {
+        if (!bulkHarness.trim() || !bulkProvider.trim()) {
+          throw new Error("harness and provider required");
+        }
+        body.agent_harness = bulkHarness.trim();
+        body.agent_model = bulkModel.trim() || null;
+        body.agent_provider = bulkProvider.trim();
+      }
+      if (bulkOpen === "add_task_to_all_agents") {
+        if (!bulkTaskId.trim()) {
+          throw new Error("task_version_id required");
+        }
+        body.task_version_id = bulkTaskId.trim();
+      }
+      const res = await fetch(`/api/experiments/${encodedId}/cells/bulk`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Failed (${res.status})`);
+      }
+      await mutate();
+      setBulkOpen(null);
+      setBulkHarness("");
+      setBulkModel("");
+      setBulkProvider("");
+      setBulkTaskId("");
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const onDeleteCell = async (cellId: string) => {
     const res = await fetch(
       `/api/experiments/${encodedId}/cells/${encodeURIComponent(cellId)}`,
@@ -779,6 +844,30 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
                 await mutate();
               }}
             />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="outline">
+                  <MoreHorizontal className="mr-1 h-3.5 w-3.5" /> Bulk
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                <DropdownMenuLabel>Bulk edit</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => setBulkOpen("add_agent_to_all_tasks")}
+                >
+                  Add agent to every task version
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setBulkOpen("add_task_to_all_agents")}
+                >
+                  Add task version to every agent
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setBulkOpen("bump_all_targets")}>
+                  Bump target for every cell
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
               size="sm"
               onClick={onBackfill}
@@ -794,6 +883,108 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
           </div>
         ) : null}
       </div>
+
+      <Dialog
+        open={bulkOpen !== null}
+        onOpenChange={(o) => {
+          if (!o) {
+            setBulkOpen(null);
+            setBulkError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {bulkOpen === "add_agent_to_all_tasks"
+                ? "Add agent to every task version"
+                : bulkOpen === "add_task_to_all_agents"
+                  ? "Add task version to every agent"
+                  : "Bump target for every cell"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            {bulkOpen === "add_agent_to_all_tasks" ? (
+              <>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="col-span-1">
+                    <Label htmlFor="bulk_harness">Harness</Label>
+                    <Input
+                      id="bulk_harness"
+                      placeholder="claude-code"
+                      value={bulkHarness}
+                      onChange={(e) => setBulkHarness(e.target.value)}
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <Label htmlFor="bulk_model">Model</Label>
+                    <Input
+                      id="bulk_model"
+                      placeholder="claude-sonnet-4-5"
+                      value={bulkModel}
+                      onChange={(e) => setBulkModel(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Label htmlFor="bulk_provider">Provider</Label>
+                  <Input
+                    id="bulk_provider"
+                    placeholder="anthropic"
+                    value={bulkProvider}
+                    onChange={(e) => setBulkProvider(e.target.value)}
+                  />
+                </div>
+              </>
+            ) : null}
+            {bulkOpen === "add_task_to_all_agents" ? (
+              <div>
+                <Label htmlFor="bulk_taskid">Task version id</Label>
+                <Input
+                  id="bulk_taskid"
+                  placeholder="abc123-v2"
+                  value={bulkTaskId}
+                  onChange={(e) => setBulkTaskId(e.target.value)}
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Find this on the task detail page.
+                </p>
+              </div>
+            ) : null}
+            <div>
+              <Label htmlFor="bulk_target">
+                {bulkOpen === "bump_all_targets"
+                  ? "New target trials per cell"
+                  : "Target trials per new cell"}
+              </Label>
+              <Input
+                id="bulk_target"
+                type="number"
+                min={1}
+                value={bulkTarget}
+                onChange={(e) => setBulkTarget(e.target.value)}
+              />
+            </div>
+            {bulkError ? (
+              <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-2 text-xs">
+                {bulkError}
+              </div>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setBulkOpen(null)}
+              disabled={bulkBusy}
+            >
+              Cancel
+            </Button>
+            <Button onClick={submitBulk} disabled={bulkBusy}>
+              {bulkBusy ? "Applying…" : "Apply"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {backfillError ? (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-xs">

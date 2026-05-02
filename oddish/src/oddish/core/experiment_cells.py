@@ -333,6 +333,142 @@ async def add_cell_core(
     return _cell_to_response(cell)
 
 
+async def bulk_cells_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    op: str,
+    target_n_trials: int,
+    agent_harness: str | None,
+    agent_model: str | None,
+    agent_provider: str | None,
+    task_version_id: str | None,
+    org_id: str | None,
+) -> int:
+    """Apply a fan-out cell operation. Returns the number of cells touched."""
+    await _load_experiment(session, experiment_id=experiment_id, org_id=org_id)
+
+    existing = (
+        await session.execute(
+            select(ExperimentCellModel).where(
+                ExperimentCellModel.experiment_id == experiment_id,
+                ExperimentCellModel.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+
+    if op == "bump_all_targets":
+        for cell in existing:
+            cell.target_n_trials = target_n_trials
+        await session.flush()
+        return len(existing)
+
+    if op == "add_agent_to_all_tasks":
+        if not agent_harness or not agent_provider:
+            raise HTTPException(
+                status_code=400,
+                detail="agent_harness and agent_provider required",
+            )
+        equivalence_key = compute_agent_equivalence_key(
+            agent_harness, agent_model, agent_provider
+        )
+        task_version_ids = sorted({c.task_version_id for c in existing})
+        if not task_version_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="Experiment has no task versions yet -- add a cell first",
+            )
+        rows = [
+            {
+                "id": generate_id(),
+                "experiment_id": experiment_id,
+                "task_version_id": tv,
+                "agent_equivalence_key": equivalence_key,
+                "target_n_trials": target_n_trials,
+                "agent_harness": agent_harness,
+                "agent_model": agent_model,
+                "agent_provider": agent_provider,
+            }
+            for tv in task_version_ids
+        ]
+        stmt = (
+            pg_insert(ExperimentCellModel.__table__)
+            .values(rows)
+            .on_conflict_do_update(
+                index_elements=[
+                    "experiment_id",
+                    "task_version_id",
+                    "agent_equivalence_key",
+                ],
+                set_={"target_n_trials": target_n_trials},
+            )
+        )
+        await session.execute(stmt)
+        await session.flush()
+        return len(rows)
+
+    if op == "add_task_to_all_agents":
+        if not task_version_id:
+            raise HTTPException(
+                status_code=400, detail="task_version_id required"
+            )
+        # Verify the task version exists and (if scoped) belongs to org.
+        tv_check = (
+            await session.execute(
+                select(TaskVersionModel.id, TaskModel.org_id)
+                .join(TaskModel, TaskModel.id == TaskVersionModel.task_id)
+                .where(TaskVersionModel.id == task_version_id)
+            )
+        ).first()
+        if tv_check is None:
+            raise HTTPException(status_code=404, detail="Task version not found")
+        _, tv_org = tv_check
+        if org_id is not None and tv_org is not None and tv_org != org_id:
+            raise HTTPException(status_code=404, detail="Task version not found")
+
+        # One row per distinct agent identity already in the experiment.
+        agents: dict[str, ExperimentCellModel] = {}
+        for c in existing:
+            agents.setdefault(c.agent_equivalence_key, c)
+        if not agents:
+            raise HTTPException(
+                status_code=400,
+                detail="Experiment has no agents yet -- add a cell first",
+            )
+        rows = [
+            {
+                "id": generate_id(),
+                "experiment_id": experiment_id,
+                "task_version_id": task_version_id,
+                "agent_equivalence_key": c.agent_equivalence_key,
+                "target_n_trials": target_n_trials,
+                "agent_harness": c.agent_harness,
+                "agent_model": c.agent_model,
+                "agent_provider": c.agent_provider,
+            }
+            for c in agents.values()
+        ]
+        stmt = (
+            pg_insert(ExperimentCellModel.__table__)
+            .values(rows)
+            .on_conflict_do_update(
+                index_elements=[
+                    "experiment_id",
+                    "task_version_id",
+                    "agent_equivalence_key",
+                ],
+                set_={"target_n_trials": target_n_trials},
+            )
+        )
+        await session.execute(stmt)
+        await session.flush()
+        return len(rows)
+
+    raise HTTPException(
+        status_code=400, detail=f"Unknown bulk op: {op}"
+    )
+
+
 async def update_cell_core(
     session: AsyncSession,
     *,

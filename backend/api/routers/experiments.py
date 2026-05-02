@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, status
 from oddish.core.experiment_backfill import backfill_experiment_core
 from oddish.core.experiment_cells import (
     add_cell_core,
+    bulk_cells_core,
     create_experiment_core,
     delete_cell_core,
     list_cell_trials_core,
@@ -19,6 +20,8 @@ from oddish.core.experiment_cells import (
 from oddish.db import get_session
 from oddish.schemas import (
     ExperimentBackfillResponse,
+    ExperimentBulkCellRequest,
+    ExperimentBulkCellResponse,
     ExperimentCellCreateRequest,
     ExperimentCellResponse,
     ExperimentCellUpdateRequest,
@@ -198,6 +201,32 @@ async def list_cell_trials(
             org_id=auth.org_id,
             limit=limit,
         )
+
+
+@router.post(
+    "/experiments/{experiment_id}/cells/bulk",
+    response_model=ExperimentBulkCellResponse,
+)
+async def bulk_experiment_cells(
+    experiment_id: str,
+    payload: ExperimentBulkCellRequest,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> ExperimentBulkCellResponse:
+    """Fan-out cell operation: bump all targets, add agent to all tasks,
+    or add task to all agents."""
+    async with get_session() as session:
+        n = await bulk_cells_core(
+            session,
+            experiment_id=experiment_id,
+            op=payload.op,
+            target_n_trials=payload.target_n_trials,
+            agent_harness=payload.agent_harness,
+            agent_model=payload.agent_model,
+            agent_provider=payload.agent_provider,
+            task_version_id=payload.task_version_id,
+            org_id=auth.org_id,
+        )
+        return ExperimentBulkCellResponse(op=payload.op, cells_changed=n)
 
 
 @router.delete(
