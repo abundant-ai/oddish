@@ -358,6 +358,66 @@ async def update_cell_core(
     return _cell_to_response(cell)
 
 
+async def list_known_agents_core(
+    session: AsyncSession,
+    *,
+    org_id: str | None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Distinct ``(harness, model, provider)`` identities seen in trials.
+
+    Used by the experiment-builder agent picker so users select from
+    real agents that have actually run instead of typing strings. Each
+    row carries the canonical ``equivalence_key`` plus a usage count
+    (recent trial count) so we can surface popular agents first.
+    """
+    where = []
+    if org_id is not None:
+        where.append(TrialModel.org_id == org_id)
+
+    rows = (
+        await session.execute(
+            select(
+                TrialModel.agent.label("harness"),
+                TrialModel.model.label("model"),
+                TrialModel.provider.label("provider"),
+                TrialModel.agent_equivalence_key.label("equivalence_key"),
+                func.count(TrialModel.id).label("trial_count"),
+                func.max(TrialModel.created_at).label("last_seen"),
+            )
+            .where(
+                TrialModel.agent.is_not(None),
+                TrialModel.provider.is_not(None),
+                TrialModel.agent_equivalence_key.is_not(None),
+                *where,
+            )
+            .group_by(
+                TrialModel.agent,
+                TrialModel.model,
+                TrialModel.provider,
+                TrialModel.agent_equivalence_key,
+            )
+            .order_by(
+                func.count(TrialModel.id).desc(),
+                func.max(TrialModel.created_at).desc(),
+            )
+            .limit(max(1, min(limit, 500)))
+        )
+    ).all()
+
+    return [
+        {
+            "harness": r.harness,
+            "model": r.model,
+            "provider": r.provider,
+            "equivalence_key": r.equivalence_key,
+            "trial_count": int(r.trial_count or 0),
+            "last_seen": r.last_seen.isoformat() if r.last_seen else None,
+        }
+        for r in rows
+    ]
+
+
 async def list_experiments_core(
     session: AsyncSession,
     *,

@@ -12,6 +12,7 @@ from oddish.core.experiment_cells import (
     list_cell_trials_core,
     list_cells_core,
     list_experiments_core,
+    list_known_agents_core,
     resolve_experiment_core,
     update_cell_core,
 )
@@ -29,6 +30,19 @@ from auth import APIKeyScope, AuthContext, require_admin, require_auth
 
 
 router = APIRouter(tags=["Experiments"])
+
+
+@router.get("/agents/known")
+async def list_known_agents(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    limit: int = 200,
+) -> list[dict]:
+    """List distinct agent identities seen in trials, for builder pickers."""
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        return await list_known_agents_core(
+            session, org_id=auth.org_id, limit=limit
+        )
 
 
 @router.get("/experiments")
