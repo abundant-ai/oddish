@@ -633,3 +633,33 @@ curl ${NEXT_PUBLIC_API_URL:-http://localhost:8000}/openapi.json
 - Verify Clerk keys in `frontend/.env.local`.
 - If org-scoped backend access fails, confirm `CLERK_JWT_TEMPLATE` is set and includes `org_id`.
 - If using production Clerk keys locally, use `frontend/run-prod-clerk-local.sh`.
+
+## Cursor Cloud specific instructions
+
+### System dependencies
+
+The VM needs Docker, Python 3.14+, Node.js 20+, pnpm 10+, and `uv`. The update
+script handles `uv` and `pnpm` installs. Docker, Python, and Node are expected
+to already be provisioned on the VM snapshot; the update script does **not**
+reinstall them.
+
+### Running services
+
+All three services are documented in the sections above. Quick reference:
+
+| Service | Start command | Port |
+|---------|---------------|------|
+| Postgres | `docker start oddish-db` (container already created) | 5432 |
+| MinIO | `docker start minio` (container already created) | 9000 / 9001 |
+| Oddish API | `cd oddish && uv run python -m oddish.server` | 8000 |
+| Frontend | `cd frontend && pnpm dev` | 3000 |
+
+### Non-obvious gotchas
+
+- **Clerk production keys vs localhost**: The injected `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is a production key (`pk_live_`). It only works on the `oddish.app` domain. For local development on `localhost`, you need Clerk **test** keys (`pk_test_`). Without test keys, the frontend renders a blank page with a Clerk error. The backend API itself works fine regardless.
+- **`pyroaring` C++ build**: Backend depends on `pyroaring` (transitive via `harbor → supabase → storage3 → pyiceberg`). On Ubuntu with clang as the default C++ compiler, you must set `CXXFLAGS="-stdlib=libc++"` and `LDFLAGS="-stdlib=libc++"` before `uv sync` in `backend/`, otherwise the Cython extension build fails with missing `<ios>` header.
+- **Python version split**: `oddish/` pins `requires-python = ">=3.13,<3.14"` while `backend/` pins `requires-python = ">=3.14"`. Each package has its own `.venv`. Run `uv sync` from within each directory.
+- **Environment variable override**: When env vars like `ODDISH_DATABASE_URL` are injected at the system level, they override values in `oddish/.env`. The server will connect to the injected DB, not the local Postgres container.
+- **Oddish `uv.lock` re-resolution**: Running `uv sync --extra all` in `oddish/` on Python 3.13 may re-resolve the lockfile (which was originally generated for 3.14). This produces a diff in `oddish/uv.lock` — do not commit it unless intentional.
+- **Ruff lint rules**: The pre-commit config only enables `F401,F841` for `ruff` on `backend/` and `oddish/`. Running bare `ruff check` in `backend/` shows E402 errors that are expected (intentional import-after-config pattern). Use `ruff check --select F401,F841` to match the pre-commit scope.
+- **Frontend lint vs format**: `pnpm lint` (ESLint) passes clean. `pnpm format:check` (Prettier) may show warnings on the existing codebase — this is pre-existing, not from agent changes.
