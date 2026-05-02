@@ -1644,11 +1644,16 @@ async def create_task_sweep_core(
         task = await get_task_for_org_core(
             session, task_id=submission.task_id, org_id=org_id
         )
+        # Allow flipping task.run_analysis from False to True on append.
+        # ``run_analysis`` runs at trial-completion time, so updating the
+        # task-level flag does not retroactively analyze pre-existing
+        # trials, but new trials submitted with ``--run-analysis`` will be
+        # analyzed as the caller requested. This matches the documented
+        # purpose of ``--force-new-version`` (see ``TaskUploadInitRequest``)
+        # and lets a task that was first registered without analysis later
+        # opt in without manual intervention.
         if submission.run_analysis and not task.run_analysis:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot enable run_analysis when appending to a task that was created without it",
-            )
+            task.run_analysis = True
 
         new_experiment_id: str | None = None
         experiment: ExperimentModel | None = None
