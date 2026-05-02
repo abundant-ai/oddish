@@ -230,18 +230,30 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
         ) : null}
 
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
-          {/* Left: task files */}
+          {/* Left: files panel (task bundle, or trial outputs when inspecting) */}
           <div className="border-b lg:border-b-0 lg:border-r">
             <div className="border-b px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Task files
+              {inspectingTrial ? "Trial files" : "Task files"}
             </div>
-            <TaskFilesPanel
-              isOpen={true}
-              onClose={() => {}}
-              taskId={taskId}
-              task={task ?? null}
-              contentOnly
-            />
+            {inspectingTrial ? (
+              <TaskFilesPanel
+                key={`trial-files-${inspectingTrial.id}`}
+                isOpen={true}
+                onClose={() => {}}
+                taskId={null}
+                filesUrl={`/api/trials/${encodeURIComponent(inspectingTrial.id)}/files`}
+                contentOnly
+              />
+            ) : (
+              <TaskFilesPanel
+                key={`task-files-${activeVersionId ?? "none"}`}
+                isOpen={true}
+                onClose={() => {}}
+                taskId={taskId}
+                task={task ?? null}
+                contentOnly
+              />
+            )}
           </div>
 
           {/* Right: trials list, swapped for inline trial detail when inspecting */}
@@ -297,6 +309,7 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
                     onNavigate={(t) => setInspectingTrialId(t.id)}
                     allowRetry
                     contentOnly
+                    hideFilesTab
                   />
                 </div>
               </>
