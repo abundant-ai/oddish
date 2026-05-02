@@ -1977,6 +1977,8 @@ export function ExperimentTrialsTable({
                               >
                                 <QueueKeyIcon
                                   agent={agent.agent}
+                                  model={agent.model}
+                                  queueKey={agent.queueKey}
                                   size={12}
                                   className="shrink-0"
                                 />
