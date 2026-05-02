@@ -38,7 +38,6 @@ from oddish.db import (
 )
 from oddish.schemas import (
     ExperimentCellAgent,
-    ExperimentCellCreateRequest,
     ExperimentCellResponse,
     ExperimentCellUpdateRequest,
     ExperimentTaskRef,
@@ -85,26 +84,6 @@ async def _load_experiment(
     if exp is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
     return exp
-
-
-async def list_cells_core(
-    session: AsyncSession, *, experiment_id: str, org_id: str | None
-) -> list[ExperimentCellResponse]:
-    await _load_experiment(session, experiment_id=experiment_id, org_id=org_id)
-    rows = (
-        await session.execute(
-            select(ExperimentCellModel)
-            .where(
-                ExperimentCellModel.experiment_id == experiment_id,
-                ExperimentCellModel.deleted_at.is_(None),
-            )
-            .order_by(
-                ExperimentCellModel.task_version_id,
-                ExperimentCellModel.agent_equivalence_key,
-            )
-        )
-    ).scalars().all()
-    return [_cell_to_response(c) for c in rows]
 
 
 def _synthetic_cell_id(task_version_id: str, agent_eq_key: str) -> str:
@@ -314,17 +293,15 @@ async def create_experiment_core(
     session: AsyncSession,
     *,
     name: str,
-    cells: list[ExperimentCellCreateRequest],
     task_version_ids: list[str] | None = None,
     agents: list[Any] | None = None,
     target_n_trials: int | None = None,
     org_id: str | None,
 ) -> ResolvedExperimentResponse:
-    """Create a new experiment with optional initial members.
+    """Create a new experiment seeded with task and agent membership.
 
-    Tasks and agents are seeded independently via ``task_version_ids``
-    and ``agents``. ``cells`` is a legacy seed (list of (task, agent)
-    pairs) that we keep working for older clients.
+    Tasks and agents are independent membership lists; the matrix is
+    the cross product. Either side may be empty at creation.
     """
     name = (name or "").strip()
     if not name:
@@ -361,106 +338,10 @@ async def create_experiment_core(
             task_version_id=None,
             org_id=org_id,
         )
-    for cell in cells:
-        await add_cell_core(
-            session,
-            experiment_id=exp.id,
-            payload=cell,
-            org_id=org_id,
-        )
 
     return await resolve_experiment_core(
         session, experiment_id=exp.id, org_id=org_id
     )
-
-
-async def add_cell_core(
-    session: AsyncSession,
-    *,
-    experiment_id: str,
-    payload: ExperimentCellCreateRequest,
-    org_id: str | None,
-) -> ExperimentCellResponse:
-    exp = await _load_experiment(
-        session, experiment_id=experiment_id, org_id=org_id
-    )
-
-    # Verify the task version exists (org-scoped via join on task).
-    tv_check = (
-        await session.execute(
-            select(TaskVersionModel.id, TaskModel.org_id)
-            .join(TaskModel, TaskModel.id == TaskVersionModel.task_id)
-            .where(TaskVersionModel.id == payload.task_version_id)
-        )
-    ).first()
-    if tv_check is None:
-        raise HTTPException(status_code=404, detail="Task version not found")
-    tv_id, tv_org = tv_check
-    if org_id is not None and tv_org is not None and tv_org != org_id:
-        raise HTTPException(status_code=404, detail="Task version not found")
-
-    equivalence_key = compute_agent_equivalence_key(
-        payload.agent_harness, payload.agent_model, payload.agent_provider
-    )
-
-    # Make sure both sides are members; the cell itself is just a
-    # per-pair target override.
-    await session.execute(
-        pg_insert(ExperimentTaskModel.__table__)
-        .values(experiment_id=experiment_id, task_version_id=tv_id)
-        .on_conflict_do_nothing(
-            index_elements=["experiment_id", "task_version_id"],
-        )
-    )
-    await session.execute(
-        pg_insert(ExperimentAgentModel.__table__)
-        .values(
-            experiment_id=experiment_id,
-            agent_equivalence_key=equivalence_key,
-            agent_harness=payload.agent_harness,
-            agent_model=payload.agent_model,
-            agent_provider=payload.agent_provider,
-        )
-        .on_conflict_do_nothing(
-            index_elements=["experiment_id", "agent_equivalence_key"],
-        )
-    )
-
-    cell_id = generate_id()
-    insert_stmt = (
-        pg_insert(ExperimentCellModel.__table__)
-        .values(
-            id=cell_id,
-            experiment_id=experiment_id,
-            task_version_id=tv_id,
-            agent_equivalence_key=equivalence_key,
-            target_n_trials=payload.target_n_trials,
-            agent_harness=payload.agent_harness,
-            agent_model=payload.agent_model,
-            agent_provider=payload.agent_provider,
-        )
-        .on_conflict_do_update(
-            index_elements=[
-                "experiment_id",
-                "task_version_id",
-                "agent_equivalence_key",
-            ],
-            set_={"target_n_trials": payload.target_n_trials},
-        )
-    )
-    await session.execute(insert_stmt)
-    await session.flush()
-
-    cell = (
-        await session.execute(
-            select(ExperimentCellModel).where(
-                ExperimentCellModel.experiment_id == experiment_id,
-                ExperimentCellModel.task_version_id == tv_id,
-                ExperimentCellModel.agent_equivalence_key == equivalence_key,
-            )
-        )
-    ).scalar_one()
-    return _cell_to_response(cell)
 
 
 async def bulk_cells_core(
@@ -881,20 +762,3 @@ async def list_cell_trials_core(
     ]
 
 
-async def delete_cell_core(
-    session: AsyncSession,
-    *,
-    experiment_id: str,
-    cell_id: str,
-    org_id: str | None,
-) -> None:
-    await _load_experiment(session, experiment_id=experiment_id, org_id=org_id)
-    result = await session.execute(
-        delete(ExperimentCellModel).where(
-            ExperimentCellModel.id == cell_id,
-            ExperimentCellModel.experiment_id == experiment_id,
-        )
-    )
-    if result.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Cell not found")
-    await session.flush()

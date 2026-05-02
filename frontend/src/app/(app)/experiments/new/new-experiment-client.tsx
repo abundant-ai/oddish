@@ -253,13 +253,26 @@ export function NewExperimentClient() {
     setError(null);
     setSubmitting(true);
     try {
+      const target = Math.max(1, parseInt(targetN, 10) || 1);
+      const taskVersionIds = tasks
+        .filter((t) => selectedTaskIds.has(t.id) && t.current_version_id)
+        .map((t) => t.current_version_id as string);
+      const agentPayloads = agents
+        .filter((a) => selectedAgentKeys.has(a.equivalence_key))
+        .map((a) => ({
+          harness: a.harness,
+          model: a.model,
+          provider: a.provider,
+        }));
       const res = await fetch("/api/experiments", {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           name: name.trim(),
-          cells: cellsPayload,
+          target_n_trials: target,
+          task_version_ids: taskVersionIds,
+          agents: agentPayloads,
         }),
       });
       if (!res.ok) {
