@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -29,17 +30,11 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Checkbox } from "@/components/ui/checkbox";
 import { TrialInspectDrawer } from "@/components/trial-inspect-drawer";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { Plus, Pencil, X, Search, Eye, ExternalLink } from "lucide-react";
-import Link from "next/link";
 import { fetcher } from "@/lib/api";
 import type {
   ExperimentCellAgent,
+  ExperimentTaskRef,
   JobListResponse,
   JobSummary,
   ResolvedExperiment,
@@ -47,54 +42,42 @@ import type {
 } from "@/lib/types";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 
+type Mode = "view" | "edit";
+
 type Props = {
   experimentId: string;
   canEdit: boolean;
 };
 
-type Pivot = {
-  agents: { key: string; agent: ExperimentCellAgent }[];
-  rows: {
-    taskVersionId: string;
-    taskId: string;
-    taskName: string | null;
-    version: number | null;
-    cellsByAgent: Record<string, ResolvedExperimentCell | undefined>;
-  }[];
-};
+interface BrowseTask {
+  id: string;
+  name: string;
+  current_version: number | null;
+  current_version_id: string | null;
+  tags?: Record<string, string>;
+}
 
-function pivotCells(cells: ResolvedExperimentCell[]): Pivot {
-  const agentByKey = new Map<string, ExperimentCellAgent>();
-  const rowsByTV = new Map<string, Pivot["rows"][number]>();
+interface KnownAgent {
+  harness: string;
+  model: string | null;
+  provider: string;
+  equivalence_key: string;
+  trial_count: number;
+  last_seen: string | null;
+}
 
-  for (const cell of cells) {
-    agentByKey.set(cell.agent.equivalence_key, cell.agent);
-    const row = rowsByTV.get(cell.task_version_id) ?? {
-      taskVersionId: cell.task_version_id,
-      taskId: cell.task_id,
-      taskName: cell.task_name,
-      version: cell.task_version,
-      cellsByAgent: {},
-    };
-    row.cellsByAgent[cell.agent.equivalence_key] = cell;
-    rowsByTV.set(cell.task_version_id, row);
-  }
-
-  const agents = Array.from(agentByKey.entries())
-    .sort((a, b) => {
-      const an = `${a[1].harness}|${a[1].model ?? ""}`;
-      const bn = `${b[1].harness}|${b[1].model ?? ""}`;
-      return an.localeCompare(bn);
-    })
-    .map(([key, agent]) => ({ key, agent }));
-
-  const rows = Array.from(rowsByTV.values()).sort((a, b) => {
-    const an = a.taskName ?? a.taskId;
-    const bn = b.taskName ?? b.taskId;
-    return an.localeCompare(bn) || (a.version ?? 0) - (b.version ?? 0);
-  });
-
-  return { agents, rows };
+interface CellTrial {
+  id: string;
+  status: string;
+  reward: number | null;
+  error_message: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string | null;
+  task_id: string;
+  agent: string;
+  model: string | null;
+  provider: string;
 }
 
 function formatAgentLabel(agent: ExperimentCellAgent): string {
@@ -112,21 +95,155 @@ function formatReward(reward: number | null | undefined): string {
   return reward.toFixed(2);
 }
 
-interface CellTrial {
-  id: string;
-  status: string;
-  reward: number | null;
-  error_message: string | null;
-  started_at: string | null;
-  finished_at: string | null;
-  created_at: string | null;
-  task_id: string;
-  agent: string;
-  model: string | null;
-  provider: string;
+// ---------------------------------------------------------------------------
+// Recent jobs strip
+// ---------------------------------------------------------------------------
+
+function jobLabel(job: JobSummary): string {
+  if (job.name) return job.name;
+  if (job.kind === "experiment_backfill") return "Backfill";
+  if (job.kind === "validation") return "Validation";
+  if (job.kind === "ad_hoc") return "Ad-hoc";
+  return job.kind;
 }
 
-function CellTrialsDialog({
+function jobIsActive(job: JobSummary): boolean {
+  return job.running_trial_count > 0 || job.finished_at === null;
+}
+
+function RecentJobs({
+  experimentId,
+  refreshKey,
+}: {
+  experimentId: string;
+  refreshKey: number;
+}) {
+  const encodedId = encodeExperimentRouteParam(experimentId);
+  const url = `/api/jobs?triggered_by_experiment_id=${encodedId}&limit=3`;
+  const { data } = useSWR<JobListResponse>(
+    [url, refreshKey],
+    ([u]) => fetcher(u as string),
+    { refreshInterval: 15_000, revalidateOnFocus: false },
+  );
+
+  const jobs = data?.items ?? [];
+  if (jobs.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+      <span className="text-muted-foreground">recent:</span>
+      {jobs.map((job) => {
+        const done = job.succeeded_trial_count + job.failed_trial_count;
+        const active = jobIsActive(job);
+        return (
+          <Link
+            key={job.id}
+            href={`/jobs/${encodeURIComponent(job.id)}`}
+            className={`inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono hover:bg-muted/50 ${
+              active
+                ? "border-amber-500/40 bg-amber-500/10"
+                : "border-border"
+            }`}
+            title={
+              active
+                ? `${job.running_trial_count} running · ${done}/${job.trial_count} done`
+                : `${done}/${job.trial_count} done`
+            }
+          >
+            <span>{jobLabel(job)}</span>
+            <span className="text-muted-foreground">
+              {done}/{job.trial_count}
+            </span>
+            <ExternalLink className="h-2.5 w-2.5 text-muted-foreground" />
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Trials-per-cell input
+// ---------------------------------------------------------------------------
+
+function DefaultTargetEditor({
+  value,
+  canEdit,
+  onApply,
+}: {
+  value: number;
+  canEdit: boolean;
+  onApply: (next: number) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const dirty =
+    Math.max(1, parseInt(draft, 10) || 1) !== value && draft.trim() !== "";
+
+  if (!canEdit) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-sm">
+        <span className="text-muted-foreground">Trials each:</span>
+        <span className="font-mono">{value}</span>
+      </span>
+    );
+  }
+
+  return (
+    <div className="inline-flex flex-wrap items-center gap-1.5">
+      <Label
+        htmlFor="trials-each"
+        className="whitespace-nowrap text-sm text-muted-foreground"
+      >
+        Trials each:
+      </Label>
+      <Input
+        id="trials-each"
+        type="number"
+        min={1}
+        className="h-7 w-16 text-xs"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      {dirty ? (
+        <Button
+          size="sm"
+          className="h-7"
+          disabled={busy}
+          onClick={async () => {
+            const n = Math.max(1, parseInt(draft, 10) || 1);
+            setBusy(true);
+            setError(null);
+            try {
+              await onApply(n);
+            } catch (err) {
+              setError(err instanceof Error ? err.message : String(err));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? "…" : "Apply"}
+        </Button>
+      ) : null}
+      {error ? (
+        <span className="text-[11px] text-destructive">{error}</span>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Per-intersection trials list dialog
+// ---------------------------------------------------------------------------
+
+function TrialsListDialog({
   experimentId,
   cellId,
   open,
@@ -144,7 +261,6 @@ function CellTrialsDialog({
       ? `/api/experiments/${encodeExperimentRouteParam(experimentId)}/cells/${encodeURIComponent(cellId)}/trials`
       : null;
   const { data, error, isLoading } = useSWR<CellTrial[]>(url, fetcher);
-
   const [inspecting, setInspecting] = useState<{
     trialId: string;
     taskId: string;
@@ -167,7 +283,7 @@ function CellTrialsDialog({
           <Skeleton className="h-40" />
         ) : data.length === 0 ? (
           <div className="rounded-sm border border-dashed p-6 text-center text-sm text-muted-foreground">
-            No trials match this cell yet.
+            No trials yet.
           </div>
         ) : (
           <div className="max-h-[60vh] overflow-y-auto rounded-sm border">
@@ -251,28 +367,25 @@ function CellTrialsDialog({
   );
 }
 
-function CellBadge({
+// ---------------------------------------------------------------------------
+// Intersection cell
+// ---------------------------------------------------------------------------
+
+function IntersectionCell({
   cell,
-  canEdit,
+  editable,
   experimentId,
   onUpdateTarget,
-  onDelete,
 }: {
-  cell: ResolvedExperimentCell | undefined;
-  canEdit: boolean;
+  cell: ResolvedExperimentCell;
+  editable: boolean;
   experimentId: string;
   onUpdateTarget: (cellId: string, target: number) => Promise<void>;
-  onDelete: (cellId: string) => Promise<void>;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<string>(
-    cell ? String(cell.target_n_trials) : "1",
-  );
+  const [editingTarget, setEditingTarget] = useState(false);
+  const [draft, setDraft] = useState<string>(String(cell.target_n_trials));
   const [trialsOpen, setTrialsOpen] = useState(false);
 
-  if (!cell) {
-    return <span className="text-muted-foreground text-xs">—</span>;
-  }
   const ratioColor =
     cell.gap === 0
       ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
@@ -293,178 +406,109 @@ function CellBadge({
     </div>
   );
 
-  if (!canEdit) {
-    return (
-      <>
-        <TooltipProvider delayDuration={150}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                className="inline-flex"
-                onClick={() => setTrialsOpen(true)}
-                aria-label="View trials"
-              >
-                {badge}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="max-w-xs space-y-1 text-xs">
-              <div className="font-mono">
-                successful: {cell.have_n_successful} · failed:{" "}
-                {cell.have_n_failed} · running: {cell.have_n_running}
-              </div>
-              <div>
-                target: {cell.target_n_trials} ·{" "}
-                <span className="font-semibold">{cell.gap}</span> still to run
-              </div>
-              {cell.last_run_at ? (
-                <div className="text-muted-foreground">
-                  last run {new Date(cell.last_run_at).toLocaleString()}
-                </div>
-              ) : null}
-              <div className="text-[10px] text-muted-foreground">
-                click to view trials
-              </div>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-        <CellTrialsDialog
-          experimentId={experimentId}
-          cellId={cell.id}
-          open={trialsOpen}
-          onOpenChange={setTrialsOpen}
-          agent={cell.agent}
-        />
-      </>
-    );
-  }
-
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button type="button" className="inline-flex" aria-label="Edit cell">
-          {badge}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-72 space-y-2 p-3 text-xs">
-        <div className="font-mono">
-          successful: {cell.have_n_successful} · failed: {cell.have_n_failed} ·
-          running: {cell.have_n_running}
-        </div>
-        <div>
-          target: {cell.target_n_trials} ·{" "}
-          <span className="font-semibold">{cell.gap}</span> still to run
-        </div>
-        {cell.last_run_at ? (
-          <div className="text-muted-foreground">
-            last run {new Date(cell.last_run_at).toLocaleString()}
+    <>
+      <Popover>
+        <PopoverTrigger asChild>
+          <button type="button" className="inline-flex" aria-label="Inspect">
+            {badge}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent className="w-72 space-y-2 p-3 text-xs">
+          <div className="font-mono">
+            successful: {cell.have_n_successful} · failed: {cell.have_n_failed}{" "}
+            · running: {cell.have_n_running}
           </div>
-        ) : null}
-        {editing ? (
-          <div className="flex items-center gap-2">
-            <Input
-              type="number"
-              min={1}
-              className="h-7 w-20 text-xs"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-            />
-            <Button
-              size="sm"
-              className="h-7"
-              onClick={async () => {
-                const n = Math.max(1, parseInt(draft, 10) || 1);
-                await onUpdateTarget(cell.id, n);
-                setEditing(false);
-              }}
-            >
-              Save
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7"
-              onClick={() => {
-                setDraft(String(cell.target_n_trials));
-                setEditing(false);
-              }}
-            >
-              Cancel
-            </Button>
+          <div>
+            target: {cell.target_n_trials} ·{" "}
+            <span className="font-semibold">{cell.gap}</span> still to run
           </div>
-        ) : (
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              variant="default"
-              className="h-7"
-              onClick={() => setTrialsOpen(true)}
-            >
-              View {cell.have_n_total} trial
-              {cell.have_n_total === 1 ? "" : "s"}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7"
-              onClick={() => setEditing(true)}
-            >
-              <Pencil className="mr-1 h-3 w-3" /> Override target
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 text-rose-600 hover:text-rose-700"
-              onClick={() => onDelete(cell.id)}
-            >
-              <X className="mr-1 h-3 w-3" /> Remove
-            </Button>
-          </div>
-        )}
-      </PopoverContent>
-      <CellTrialsDialog
+          {cell.last_run_at ? (
+            <div className="text-muted-foreground">
+              last run {new Date(cell.last_run_at).toLocaleString()}
+            </div>
+          ) : null}
+          {editable && editingTarget ? (
+            <div className="flex items-center gap-2">
+              <Input
+                type="number"
+                min={1}
+                className="h-7 w-20 text-xs"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+              />
+              <Button
+                size="sm"
+                className="h-7"
+                onClick={async () => {
+                  const n = Math.max(1, parseInt(draft, 10) || 1);
+                  await onUpdateTarget(cell.id, n);
+                  setEditingTarget(false);
+                }}
+              >
+                Save
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7"
+                onClick={() => {
+                  setDraft(String(cell.target_n_trials));
+                  setEditingTarget(false);
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="default"
+                className="h-7"
+                onClick={() => setTrialsOpen(true)}
+              >
+                View {cell.have_n_total} trial
+                {cell.have_n_total === 1 ? "" : "s"}
+              </Button>
+              {editable ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7"
+                  onClick={() => setEditingTarget(true)}
+                >
+                  <Pencil className="mr-1 h-3 w-3" /> Override target
+                </Button>
+              ) : null}
+            </div>
+          )}
+        </PopoverContent>
+      </Popover>
+      <TrialsListDialog
         experimentId={experimentId}
         cellId={cell.id}
         open={trialsOpen}
         onOpenChange={setTrialsOpen}
         agent={cell.agent}
       />
-    </Popover>
+    </>
   );
 }
 
-interface BrowseTask {
-  id: string;
-  name: string;
-  current_version: number | null;
-  current_version_id: string | null;
-  tags?: Record<string, string>;
-}
-
-interface BrowseResponse {
-  items: BrowseTask[];
-}
-
-interface KnownAgent {
-  harness: string;
-  model: string | null;
-  provider: string;
-  equivalence_key: string;
-  trial_count: number;
-  last_seen: string | null;
-}
+// ---------------------------------------------------------------------------
+// Pickers
+// ---------------------------------------------------------------------------
 
 function PickAgentsDialog({
   open,
   onOpenChange,
   excludeKeys,
-  targetN,
   onAdd,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   excludeKeys: Set<string>;
-  targetN: number;
   onAdd: (agents: KnownAgent[]) => Promise<void>;
 }) {
   const { data } = useSWR<KnownAgent[]>(
@@ -523,7 +567,7 @@ function PickAgentsDialog({
     >
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Add agent column</DialogTitle>
+          <DialogTitle>Add agent</DialogTitle>
         </DialogHeader>
         <div className="space-y-2 text-sm">
           <div className="flex items-center gap-2">
@@ -595,11 +639,6 @@ function PickAgentsDialog({
               </Table>
             </div>
           )}
-          <p className="text-[11px] text-muted-foreground">
-            Each picked agent gets paired with every existing task version, at{" "}
-            <span className="font-mono">{targetN}</span> trial
-            {targetN === 1 ? "" : "s"} per cell.
-          </p>
           {error ? (
             <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-2 text-xs">
               {error}
@@ -615,7 +654,9 @@ function PickAgentsDialog({
             Cancel
           </Button>
           <Button onClick={submit} disabled={busy || picked.size === 0}>
-            {busy ? "Adding…" : `Add ${picked.size} agent${picked.size === 1 ? "" : "s"}`}
+            {busy
+              ? "Adding…"
+              : `Add ${picked.size} agent${picked.size === 1 ? "" : "s"}`}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -627,16 +668,14 @@ function PickTasksDialog({
   open,
   onOpenChange,
   excludeIds,
-  targetN,
   onAdd,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   excludeIds: Set<string>;
-  targetN: number;
   onAdd: (tasks: BrowseTask[]) => Promise<void>;
 }) {
-  const { data } = useSWR<BrowseResponse>(
+  const { data } = useSWR<{ items: BrowseTask[] }>(
     open ? "/api/tasks/browse?limit=500&offset=0" : null,
     fetcher,
   );
@@ -649,8 +688,7 @@ function PickTasksDialog({
     () =>
       (data?.items ?? []).filter(
         (t) =>
-          t.current_version_id !== null &&
-          !excludeIds.has(t.current_version_id),
+          t.current_version_id !== null && !excludeIds.has(t.current_version_id),
       ),
     [data, excludeIds],
   );
@@ -703,7 +741,7 @@ function PickTasksDialog({
     >
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Add task version row</DialogTitle>
+          <DialogTitle>Add task</DialogTitle>
         </DialogHeader>
         <div className="space-y-2 text-sm">
           <div className="flex items-center gap-2">
@@ -723,7 +761,7 @@ function PickTasksDialog({
           ) : filtered.length === 0 ? (
             <div className="rounded-sm border border-dashed p-6 text-center text-xs text-muted-foreground">
               {tasks.length === 0
-                ? "All known task versions are already on this experiment."
+                ? "All known tasks are already on this experiment."
                 : "No tasks match."}
             </div>
           ) : (
@@ -766,11 +804,6 @@ function PickTasksDialog({
               </Table>
             </div>
           )}
-          <p className="text-[11px] text-muted-foreground">
-            Each picked task gets paired with every existing agent, at{" "}
-            <span className="font-mono">{targetN}</span> trial
-            {targetN === 1 ? "" : "s"} per cell.
-          </p>
           {error ? (
             <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-2 text-xs">
               {error}
@@ -786,7 +819,9 @@ function PickTasksDialog({
             Cancel
           </Button>
           <Button onClick={submit} disabled={busy || picked.size === 0}>
-            {busy ? "Adding…" : `Add ${picked.size} task${picked.size === 1 ? "" : "s"}`}
+            {busy
+              ? "Adding…"
+              : `Add ${picked.size} task${picked.size === 1 ? "" : "s"}`}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -794,402 +829,12 @@ function PickTasksDialog({
   );
 }
 
-function FirstCellsDialog({
-  open,
-  onOpenChange,
-  targetN,
-  onCreate,
-}: {
-  open: boolean;
-  onOpenChange: (o: boolean) => void;
-  targetN: number;
-  onCreate: (
-    tasks: BrowseTask[],
-    agents: KnownAgent[],
-    targetTrials: number,
-  ) => Promise<void>;
-}) {
-  const [draftTargetN, setDraftTargetN] = useState(String(targetN));
-  useEffect(() => {
-    if (open) setDraftTargetN(String(targetN));
-  }, [open, targetN]);
-  const { data: browse } = useSWR<BrowseResponse>(
-    open ? "/api/tasks/browse?limit=500&offset=0" : null,
-    fetcher,
-  );
-  const { data: knownAgents } = useSWR<KnownAgent[]>(
-    open ? "/api/agents/known?limit=200" : null,
-    fetcher,
-  );
-  const [taskQuery, setTaskQuery] = useState("");
-  const [agentQuery, setAgentQuery] = useState("");
-  const [pickedTasks, setPickedTasks] = useState<Set<string>>(new Set());
-  const [pickedAgents, setPickedAgents] = useState<Set<string>>(new Set());
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+// ---------------------------------------------------------------------------
+// Main matrix
+// ---------------------------------------------------------------------------
 
-  const tasks = useMemo(
-    () =>
-      (browse?.items ?? []).filter((t) => t.current_version_id !== null),
-    [browse],
-  );
-  const filteredTasks = useMemo(() => {
-    const q = taskQuery.trim().toLowerCase();
-    if (!q) return tasks;
-    return tasks.filter(
-      (t) =>
-        t.name.toLowerCase().includes(q) ||
-        Object.entries(t.tags ?? {}).some(
-          ([k, v]) =>
-            k.toLowerCase().includes(q) || v.toLowerCase().includes(q),
-        ),
-    );
-  }, [tasks, taskQuery]);
-
-  const agents = knownAgents ?? [];
-  const filteredAgents = useMemo(() => {
-    const q = agentQuery.trim().toLowerCase();
-    if (!q) return agents;
-    return agents.filter(
-      (a) =>
-        a.harness.toLowerCase().includes(q) ||
-        (a.model ?? "").toLowerCase().includes(q) ||
-        a.provider.toLowerCase().includes(q),
-    );
-  }, [agents, agentQuery]);
-
-  const reset = () => {
-    setTaskQuery("");
-    setAgentQuery("");
-    setPickedTasks(new Set());
-    setPickedAgents(new Set());
-    setError(null);
-  };
-
-  const submit = async () => {
-    if (pickedTasks.size === 0 || pickedAgents.size === 0) return;
-    setError(null);
-    setBusy(true);
-    try {
-      const chosenTasks = tasks.filter((t) => pickedTasks.has(t.id));
-      const chosenAgents = agents.filter((a) =>
-        pickedAgents.has(a.equivalence_key),
-      );
-      const target = Math.max(1, parseInt(draftTargetN, 10) || 1);
-      await onCreate(chosenTasks, chosenAgents, target);
-      reset();
-      onOpenChange(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => {
-        onOpenChange(o);
-        if (!o) reset();
-      }}
-    >
-      <DialogContent className="max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>Add cells</DialogTitle>
-        </DialogHeader>
-        <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
-          <div className="space-y-2">
-            <div className="text-xs font-semibold uppercase text-muted-foreground">
-              Task versions
-            </div>
-            <div className="flex items-center gap-2">
-              <Search className="h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Filter tasks"
-                value={taskQuery}
-                onChange={(e) => setTaskQuery(e.target.value)}
-                className="h-8"
-              />
-            </div>
-            <div className="max-h-[40vh] overflow-y-auto rounded-sm border">
-              {!browse ? (
-                <Skeleton className="h-32" />
-              ) : (
-                <Table>
-                  <TableBody>
-                    {filteredTasks.map((t) => (
-                      <TableRow
-                        key={t.id}
-                        className="cursor-pointer"
-                        onClick={() => {
-                          const next = new Set(pickedTasks);
-                          if (next.has(t.id)) next.delete(t.id);
-                          else next.add(t.id);
-                          setPickedTasks(next);
-                        }}
-                      >
-                        <TableCell className="w-8">
-                          <Checkbox
-                            checked={pickedTasks.has(t.id)}
-                            onCheckedChange={() => {}}
-                          />
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {t.name}
-                          <span className="ml-1 text-[10px] text-muted-foreground">
-                            v{t.current_version ?? "?"}
-                          </span>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </div>
-            <div className="text-[11px] text-muted-foreground">
-              {pickedTasks.size} selected
-            </div>
-          </div>
-          <div className="space-y-2">
-            <div className="text-xs font-semibold uppercase text-muted-foreground">
-              Agents
-            </div>
-            <div className="flex items-center gap-2">
-              <Search className="h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Filter agents"
-                value={agentQuery}
-                onChange={(e) => setAgentQuery(e.target.value)}
-                className="h-8"
-              />
-            </div>
-            <div className="max-h-[40vh] overflow-y-auto rounded-sm border">
-              {!knownAgents ? (
-                <Skeleton className="h-32" />
-              ) : (
-                <Table>
-                  <TableBody>
-                    {filteredAgents.map((a) => (
-                      <TableRow
-                        key={a.equivalence_key}
-                        className="cursor-pointer"
-                        onClick={() => {
-                          const next = new Set(pickedAgents);
-                          if (next.has(a.equivalence_key))
-                            next.delete(a.equivalence_key);
-                          else next.add(a.equivalence_key);
-                          setPickedAgents(next);
-                        }}
-                      >
-                        <TableCell className="w-8">
-                          <Checkbox
-                            checked={pickedAgents.has(a.equivalence_key)}
-                            onCheckedChange={() => {}}
-                          />
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {a.harness}
-                          {a.model && a.model !== "default"
-                            ? ` · ${a.model}`
-                            : ""}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </div>
-            <div className="text-[11px] text-muted-foreground">
-              {pickedAgents.size} selected
-            </div>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 rounded-sm border bg-muted/30 p-3 text-sm">
-          <Label htmlFor="first-target" className="whitespace-nowrap">
-            Trials per cell
-          </Label>
-          <Input
-            id="first-target"
-            type="number"
-            min={1}
-            value={draftTargetN}
-            onChange={(e) => setDraftTargetN(e.target.value)}
-            className="h-8 w-24"
-          />
-          <span className="text-[11px] text-muted-foreground">
-            will create{" "}
-            <span className="font-mono">
-              {pickedTasks.size * pickedAgents.size}
-            </span>{" "}
-            cell{pickedTasks.size * pickedAgents.size === 1 ? "" : "s"} ·{" "}
-            <span className="font-mono">
-              {pickedTasks.size *
-                pickedAgents.size *
-                Math.max(1, parseInt(draftTargetN, 10) || 1)}
-            </span>{" "}
-            trials total
-          </span>
-        </div>
-        {error ? (
-          <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-2 text-xs">
-            {error}
-          </div>
-        ) : null}
-        <DialogFooter>
-          <Button
-            variant="ghost"
-            onClick={() => onOpenChange(false)}
-            disabled={busy}
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={submit}
-            disabled={busy || pickedTasks.size === 0 || pickedAgents.size === 0}
-          >
-            {busy ? "Adding…" : "Add cells"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function jobLabel(job: JobSummary): string {
-  if (job.name) return job.name;
-  if (job.kind === "experiment_backfill") return "Backfill";
-  if (job.kind === "validation") return "Validation";
-  if (job.kind === "ad_hoc") return "Ad-hoc";
-  return job.kind;
-}
-
-function jobIsActive(job: JobSummary): boolean {
-  return job.running_trial_count > 0 || job.finished_at === null;
-}
-
-function RecentJobs({
-  experimentId,
-  refreshKey,
-}: {
-  experimentId: string;
-  refreshKey: number;
-}) {
-  const encodedId = encodeExperimentRouteParam(experimentId);
-  const url = `/api/jobs?triggered_by_experiment_id=${encodedId}&limit=3`;
-  const { data } = useSWR<JobListResponse>(
-    [url, refreshKey],
-    ([u]) => fetcher(u as string),
-    { refreshInterval: 15_000, revalidateOnFocus: false },
-  );
-
-  const jobs = data?.items ?? [];
-  if (jobs.length === 0) return null;
-
-  return (
-    <div className="flex flex-wrap items-center gap-1.5 text-xs">
-      <span className="text-muted-foreground">recent:</span>
-      {jobs.map((job) => {
-        const done = job.succeeded_trial_count + job.failed_trial_count;
-        const active = jobIsActive(job);
-        return (
-          <Link
-            key={job.id}
-            href={`/jobs/${encodeURIComponent(job.id)}`}
-            className={`inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono hover:bg-muted/50 ${
-              active
-                ? "border-amber-500/40 bg-amber-500/10"
-                : "border-border"
-            }`}
-            title={
-              active
-                ? `${job.running_trial_count} running · ${done}/${job.trial_count} done`
-                : `${done}/${job.trial_count} done`
-            }
-          >
-            <span>{jobLabel(job)}</span>
-            <span className="text-muted-foreground">
-              {done}/{job.trial_count}
-            </span>
-            <ExternalLink className="h-2.5 w-2.5 text-muted-foreground" />
-          </Link>
-        );
-      })}
-    </div>
-  );
-}
-
-function TrialsPerCellEditor({
-  value,
-  canEdit,
-  onApply,
-}: {
-  value: number;
-  canEdit: boolean;
-  onApply: (next: number) => Promise<void>;
-}) {
-  const [draft, setDraft] = useState(String(value));
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setDraft(String(value));
-  }, [value]);
-
-  const dirty =
-    Math.max(1, parseInt(draft, 10) || 1) !== value && draft.trim() !== "";
-
-  if (!canEdit) {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-sm">
-        <span className="text-muted-foreground">Trials per cell:</span>
-        <span className="font-mono">{value}</span>
-      </span>
-    );
-  }
-
-  return (
-    <div className="inline-flex flex-wrap items-center gap-1.5">
-      <Label
-        htmlFor="trials-per-cell"
-        className="whitespace-nowrap text-sm text-muted-foreground"
-      >
-        Trials per cell:
-      </Label>
-      <Input
-        id="trials-per-cell"
-        type="number"
-        min={1}
-        className="h-7 w-16 text-xs"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-      />
-      {dirty ? (
-        <Button
-          size="sm"
-          className="h-7"
-          disabled={busy}
-          onClick={async () => {
-            const n = Math.max(1, parseInt(draft, 10) || 1);
-            setBusy(true);
-            setError(null);
-            try {
-              await onApply(n);
-            } catch (err) {
-              setError(err instanceof Error ? err.message : String(err));
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          {busy ? "…" : "Apply to all"}
-        </Button>
-      ) : null}
-      {error ? (
-        <span className="text-[11px] text-destructive">{error}</span>
-      ) : null}
-    </div>
-  );
+function cellKey(taskVersionId: string, agentEqKey: string): string {
+  return `${taskVersionId}::${agentEqKey}`;
 }
 
 export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
@@ -1205,21 +850,28 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
     },
   );
 
-  const pivot = useMemo<Pivot | null>(
-    () => (data ? pivotCells(data.cells) : null),
-    [data],
-  );
-
-  const [mode, setMode] = useState<"view" | "edit">("view");
+  const [mode, setMode] = useState<Mode>("view");
   const [pickAgentsOpen, setPickAgentsOpen] = useState(false);
   const [pickTasksOpen, setPickTasksOpen] = useState(false);
-  const [firstCellsOpen, setFirstCellsOpen] = useState(false);
   const [busyMsg, setBusyMsg] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isBackfilling, setIsBackfilling] = useState(false);
   const [jobsRefreshKey, setJobsRefreshKey] = useState(0);
 
   const targetN = data?.target_n_trials ?? 3;
+  const tasks: ExperimentTaskRef[] = data?.tasks ?? [];
+  const agents: ExperimentCellAgent[] = data?.agents ?? [];
+
+  // Index intersections by (task_version, agent_eq_key) for O(1) lookup.
+  const cellsByKey = useMemo(() => {
+    const m = new Map<string, ResolvedExperimentCell>();
+    for (const c of data?.cells ?? []) {
+      m.set(cellKey(c.task_version_id, c.agent.equivalence_key), c);
+    }
+    return m;
+  }, [data]);
+
+  const editable = canEdit && mode === "edit";
 
   const callBulk = async (body: Record<string, unknown>) => {
     const res = await fetch(`/api/experiments/${encodedId}/cells/bulk`, {
@@ -1230,7 +882,7 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
     });
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(text || `Bulk op failed (${res.status})`);
+      throw new Error(text || `Failed (${res.status})`);
     }
   };
 
@@ -1272,31 +924,19 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
     await mutate();
   };
 
-  const onDeleteCell = async (cellId: string) => {
-    const res = await fetch(
-      `/api/experiments/${encodedId}/cells/${encodeURIComponent(cellId)}`,
-      { method: "DELETE", credentials: "include" },
-    );
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || `Delete failed (${res.status})`);
-    }
+  const onApplyDefaultTarget = async (next: number) => {
+    setActionError(null);
+    await callBulk({ op: "set_default_target", target_n_trials: next });
     await mutate();
   };
 
-  const onApplyTrialsPerCell = async (next: number) => {
+  const onAddAgents = async (chosen: KnownAgent[]) => {
     setActionError(null);
-    await callBulk({ op: "bump_all_targets", target_n_trials: next });
-    await mutate();
-  };
-
-  const onAddAgents = async (agents: KnownAgent[]) => {
-    setActionError(null);
-    setBusyMsg("Adding agents…");
+    setBusyMsg("Adding agent…");
     try {
-      for (const a of agents) {
+      for (const a of chosen) {
         await callBulk({
-          op: "add_agent_to_all_tasks",
+          op: "add_agent",
           target_n_trials: targetN,
           agent_harness: a.harness,
           agent_model: a.model,
@@ -1309,14 +949,14 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
     }
   };
 
-  const onAddTasks = async (tasks: BrowseTask[]) => {
+  const onAddTasks = async (chosen: BrowseTask[]) => {
     setActionError(null);
-    setBusyMsg("Adding task versions…");
+    setBusyMsg("Adding task…");
     try {
-      for (const t of tasks) {
+      for (const t of chosen) {
         if (!t.current_version_id) continue;
         await callBulk({
-          op: "add_task_to_all_agents",
+          op: "add_task",
           target_n_trials: targetN,
           task_version_id: t.current_version_id,
         });
@@ -1327,58 +967,15 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
     }
   };
 
-  const onCreateFirstCells = async (
-    tasks: BrowseTask[],
-    agents: KnownAgent[],
-    targetTrials: number,
-  ) => {
-    setActionError(null);
-    setBusyMsg("Creating cells…");
-    try {
-      // Persist the experiment-level target so future "+ row" / "+ col"
-      // adds default to it.
-      if (targetTrials !== targetN) {
-        await callBulk({
-          op: "bump_all_targets",
-          target_n_trials: targetTrials,
-        });
-      }
-      for (const t of tasks) {
-        if (!t.current_version_id) continue;
-        for (const a of agents) {
-          const res = await fetch(`/api/experiments/${encodedId}/cells`, {
-            method: "POST",
-            credentials: "include",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              task_version_id: t.current_version_id,
-              agent_harness: a.harness,
-              agent_model: a.model,
-              agent_provider: a.provider,
-              target_n_trials: targetTrials,
-            }),
-          });
-          if (!res.ok) {
-            const text = await res.text();
-            throw new Error(text || `Create cell failed (${res.status})`);
-          }
-        }
-      }
-      await mutate();
-    } finally {
-      setBusyMsg(null);
-    }
-  };
-
-  const onDeleteAgentColumn = async (agent: ExperimentCellAgent) => {
+  const onDeleteAgent = async (agent: ExperimentCellAgent) => {
     if (
       !window.confirm(
-        `Remove ${agent.harness}${agent.model ? ` · ${agent.model}` : ""} from this experiment? Trial history is kept; only the cells are deleted.`,
+        `Remove ${agent.harness}${agent.model ? ` · ${agent.model}` : ""} from this experiment? Trial history is kept.`,
       )
     )
       return;
     setActionError(null);
-    setBusyMsg("Removing column…");
+    setBusyMsg("Removing agent…");
     try {
       await callBulk({
         op: "delete_agent",
@@ -1395,23 +992,21 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
     }
   };
 
-  const onDeleteTaskRow = async (
-    taskVersionId: string,
-    label: string,
-  ) => {
+  const onDeleteTask = async (task: ExperimentTaskRef) => {
+    const label = `${task.task_name ?? task.task_id} v${task.task_version ?? "?"}`;
     if (
       !window.confirm(
-        `Remove ${label} from this experiment? Trial history is kept; only the cells are deleted.`,
+        `Remove ${label} from this experiment? Trial history is kept.`,
       )
     )
       return;
     setActionError(null);
-    setBusyMsg("Removing row…");
+    setBusyMsg("Removing task…");
     try {
       await callBulk({
-        op: "delete_task_version",
+        op: "delete_task",
         target_n_trials: targetN,
-        task_version_id: taskVersionId,
+        task_version_id: task.task_version_id,
       });
       await mutate();
     } catch (err) {
@@ -1433,37 +1028,30 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
   if (error) {
     return (
       <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-3 text-sm">
-        Failed to load cell matrix: {String((error as Error).message)}
+        Failed to load matrix: {String((error as Error).message)}
       </div>
     );
   }
 
   if (!data) return null;
 
-  const isEmpty = !pivot || pivot.rows.length === 0;
-  const editing = canEdit && mode === "edit";
-  const existingTaskVersionIds = new Set(
-    pivot?.rows.map((r) => r.taskVersionId) ?? [],
-  );
-  const existingAgentKeys = new Set(pivot?.agents.map((a) => a.key) ?? []);
+  const existingTaskVersionIds = new Set(tasks.map((t) => t.task_version_id));
+  const existingAgentKeys = new Set(agents.map((a) => a.equivalence_key));
 
   return (
     <div className="space-y-3">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3 text-sm">
-          <TrialsPerCellEditor
+          <DefaultTargetEditor
             value={targetN}
             canEdit={canEdit}
-            onApply={onApplyTrialsPerCell}
+            onApply={onApplyDefaultTarget}
           />
-          {pivot ? (
-            <span className="text-xs text-muted-foreground">
-              {pivot.rows.length} task version
-              {pivot.rows.length === 1 ? "" : "s"} · {pivot.agents.length} agent
-              {pivot.agents.length === 1 ? "" : "s"}
-            </span>
-          ) : null}
+          <span className="text-xs text-muted-foreground">
+            {tasks.length} task{tasks.length === 1 ? "" : "s"} ·{" "}
+            {agents.length} agent{agents.length === 1 ? "" : "s"}
+          </span>
           <RecentJobs
             experimentId={experimentId}
             refreshKey={jobsRefreshKey}
@@ -1524,53 +1112,32 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
         </div>
       ) : null}
 
-      {/* Empty state */}
-      {isEmpty ? (
-        <div className="space-y-3">
-          <div className="rounded-sm border border-dashed p-6 text-center text-sm text-muted-foreground">
-            No cells yet. Add task versions and agents to start collecting
-            evidence.
-          </div>
-          {canEdit ? (
-            <div className="flex justify-end">
-              <Button
-                size="sm"
-                variant="default"
-                onClick={() => setFirstCellsOpen(true)}
-              >
-                <Plus className="mr-1 h-3.5 w-3.5" /> Add cells
-              </Button>
-            </div>
-          ) : null}
-          <FirstCellsDialog
-            open={firstCellsOpen}
-            onOpenChange={setFirstCellsOpen}
-            targetN={targetN}
-            onCreate={onCreateFirstCells}
-          />
+      {/* Empty + view mode: nothing to show */}
+      {!editable && tasks.length === 0 && agents.length === 0 ? (
+        <div className="rounded-sm border border-dashed p-6 text-center text-sm text-muted-foreground">
+          Empty experiment. Switch to Edit to add tasks and agents.
         </div>
       ) : (
         <div className="overflow-x-auto rounded-sm border">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="sticky left-0 z-10 bg-card">
-                  Task version
-                </TableHead>
-                {pivot!.agents.map(({ key, agent }) => (
+                {/* Top-left corner: intentionally empty */}
+                <TableHead className="sticky left-0 z-10 bg-card" />
+                {agents.map((agent) => (
                   <TableHead
-                    key={key}
+                    key={agent.equivalence_key}
                     className="whitespace-nowrap text-center font-mono text-xs"
                   >
                     <div className="inline-flex items-center justify-center gap-1">
                       <span>{formatAgentLabel(agent)}</span>
-                      {editing ? (
+                      {editable ? (
                         <button
                           type="button"
-                          aria-label="Remove agent column"
-                          title="Remove agent column"
+                          aria-label="Remove agent"
+                          title="Remove agent"
                           className="rounded-sm p-0.5 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
-                          onClick={() => onDeleteAgentColumn(agent)}
+                          onClick={() => onDeleteAgent(agent)}
                         >
                           <X className="h-3 w-3" />
                         </button>
@@ -1583,12 +1150,12 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
                     ) : null}
                   </TableHead>
                 ))}
-                {editing ? (
+                {editable ? (
                   <TableHead className="w-12 text-center">
                     <button
                       type="button"
-                      aria-label="Add agent column"
-                      title="Add agent column"
+                      aria-label="Add agent"
+                      title="Add agent"
                       className="inline-flex h-7 w-7 items-center justify-center rounded-sm border border-dashed text-muted-foreground hover:border-foreground hover:text-foreground"
                       onClick={() => setPickAgentsOpen(true)}
                     >
@@ -1599,65 +1166,73 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {pivot!.rows.map((row) => (
-                <TableRow key={row.taskVersionId}>
+              {tasks.map((task) => (
+                <TableRow key={task.task_version_id}>
                   <TableCell className="sticky left-0 z-10 bg-card">
                     <div className="flex items-center gap-2">
                       <div className="flex flex-col">
                         <span className="font-medium">
-                          {row.taskName ?? row.taskId}
+                          {task.task_name ?? task.task_id}
                         </span>
                         <span className="text-xs text-muted-foreground">
-                          v{row.version ?? "?"}
+                          v{task.task_version ?? "?"}
                         </span>
                       </div>
-                      {editing ? (
+                      {editable ? (
                         <button
                           type="button"
-                          aria-label="Remove task row"
-                          title="Remove task row"
+                          aria-label="Remove task"
+                          title="Remove task"
                           className="ml-auto rounded-sm p-0.5 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
-                          onClick={() =>
-                            onDeleteTaskRow(
-                              row.taskVersionId,
-                              `${row.taskName ?? row.taskId} v${row.version ?? "?"}`,
-                            )
-                          }
+                          onClick={() => onDeleteTask(task)}
                         >
                           <X className="h-3.5 w-3.5" />
                         </button>
                       ) : null}
                     </div>
                   </TableCell>
-                  {pivot!.agents.map(({ key }) => (
-                    <TableCell key={key} className="text-center">
-                      <CellBadge
-                        cell={row.cellsByAgent[key]}
-                        canEdit={canEdit}
-                        experimentId={experimentId}
-                        onUpdateTarget={onUpdateTarget}
-                        onDelete={onDeleteCell}
-                      />
-                    </TableCell>
-                  ))}
-                  {editing ? <TableCell /> : null}
+                  {agents.map((agent) => {
+                    const cell = cellsByKey.get(
+                      cellKey(task.task_version_id, agent.equivalence_key),
+                    );
+                    return (
+                      <TableCell
+                        key={agent.equivalence_key}
+                        className="text-center"
+                      >
+                        {cell ? (
+                          <IntersectionCell
+                            cell={cell}
+                            editable={editable}
+                            experimentId={experimentId}
+                            onUpdateTarget={onUpdateTarget}
+                          />
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            —
+                          </span>
+                        )}
+                      </TableCell>
+                    );
+                  })}
+                  {editable ? <TableCell /> : null}
                 </TableRow>
               ))}
-              {editing ? (
+              {editable ? (
                 <TableRow>
                   <TableCell className="sticky left-0 z-10 bg-card">
                     <button
                       type="button"
-                      aria-label="Add task version row"
-                      title="Add task version row"
+                      aria-label="Add task"
+                      title="Add task"
                       className="inline-flex h-7 items-center gap-1 rounded-sm border border-dashed px-2 text-xs text-muted-foreground hover:border-foreground hover:text-foreground"
                       onClick={() => setPickTasksOpen(true)}
                     >
-                      <Plus className="h-3.5 w-3.5" /> task version
+                      <Plus className="h-3.5 w-3.5" /> task
                     </button>
                   </TableCell>
-                  {pivot!.agents.map(({ key }) => (
-                    <TableCell key={`new-${key}`} />
+                  {agents.map((agent) => (
+                    <TableCell key={`new-${agent.equivalence_key}`} />
                   ))}
                   <TableCell />
                 </TableRow>
@@ -1671,14 +1246,12 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
         open={pickAgentsOpen}
         onOpenChange={setPickAgentsOpen}
         excludeKeys={existingAgentKeys}
-        targetN={targetN}
         onAdd={onAddAgents}
       />
       <PickTasksDialog
         open={pickTasksOpen}
         onOpenChange={setPickTasksOpen}
         excludeIds={existingTaskVersionIds}
-        targetN={targetN}
         onAdd={onAddTasks}
       />
     </div>

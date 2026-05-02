@@ -316,6 +316,57 @@ class ExperimentCellModel(TimestampedMixin, Base):
     agent_provider: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
+class ExperimentTaskModel(Base):
+    """Task version that belongs to an experiment.
+
+    Independent of agents -- you can add a task to an experiment with
+    no agents on it yet (the column will render with empty cells until
+    agents are added). Cells are computed at read time as the cross
+    product of ``experiment_tasks`` and ``experiment_agents``.
+    """
+
+    __tablename__ = "experiment_tasks"
+
+    experiment_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("experiments.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    task_version_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("task_versions.id"),
+        primary_key=True,
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class ExperimentAgentModel(Base):
+    """Agent identity that belongs to an experiment.
+
+    Independent of tasks. Denormalized ``(harness, model, provider)``
+    so we can render an agent column without joining the trial table.
+    """
+
+    __tablename__ = "experiment_agents"
+
+    experiment_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("experiments.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    agent_equivalence_key: Mapped[str] = mapped_column(
+        String(64), primary_key=True
+    )
+    agent_harness: Mapped[str] = mapped_column(String(64), nullable=False)
+    agent_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    agent_provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
 class JobModel(TimestampedMixin, Base):
     """User-visible batch of trials.
 

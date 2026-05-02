@@ -234,6 +234,13 @@ export function NewExperimentClient() {
         experiment_id: "preview",
         experiment_name: name.trim() || "(unnamed)",
         target_n_trials: Math.max(1, parseInt(targetN, 10) || 1),
+        tasks: cells.map((c) => ({
+          task_version_id: c.task_version_id,
+          task_id: c.task_id,
+          task_name: c.task_name,
+          task_version: c.task_version,
+        })),
+        agents: cells.map((c) => c.agent),
         cells,
         total_gap: cells.reduce((acc, c) => acc + c.gap, 0),
       });

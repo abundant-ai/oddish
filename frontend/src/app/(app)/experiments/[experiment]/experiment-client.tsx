@@ -37,14 +37,21 @@ export function ExperimentClientPage({
   const resolvedUrl = experimentId
     ? `/api/experiments/${encodedId}/resolved`
     : null;
-  const { data: resolved } = useSWR<ResolvedExperiment>(resolvedUrl, fetcher, {
-    refreshInterval: 60_000,
-    revalidateOnFocus: false,
-  });
+  const { data: resolved, isLoading: isLoadingResolved } =
+    useSWR<ResolvedExperiment>(resolvedUrl, fetcher, {
+      refreshInterval: 60_000,
+      revalidateOnFocus: false,
+    });
 
   const experimentName = resolved?.experiment_name ?? "";
-  const displayName = experimentName || experimentId || "Experiment";
-  const initialName = experimentName || experimentId || "";
+  // While the resolved fetch is in flight, show a placeholder rather
+  // than flashing the raw experiment id.
+  const displayName = experimentName
+    ? experimentName
+    : isLoadingResolved
+      ? "…"
+      : experimentId || "Experiment";
+  const initialName = experimentName;
   const canManageExperimentShare =
     orgRole === "org:admin" || orgRole === "org:owner";
 
