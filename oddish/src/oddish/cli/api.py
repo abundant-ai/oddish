@@ -765,6 +765,27 @@ def trial_result_to_import_spec(
     agent_info = trial_result.agent_info
     model_info = agent_info.model_info
 
+    # Prefer the fully-qualified ``provider/model`` string from the
+    # trial's harbor config so imported rows land in the same model
+    # bucket as live ones. ``ModelInfo.name`` is the canonical name
+    # *without* the provider prefix (Harbor splits provider into a
+    # separate field), so falling back to it would file
+    # ``anthropic/claude-opus-4-7`` under ``claude-opus-4-7`` and split
+    # it from the live trials in the dashboard.
+    config_agent = getattr(trial_result.config, "agent", None)
+    config_model_name = (
+        getattr(config_agent, "model_name", None) if config_agent else None
+    )
+    if config_model_name:
+        model_id: str | None = config_model_name
+    elif model_info is not None:
+        if model_info.provider:
+            model_id = f"{model_info.provider}/{model_info.name}"
+        else:
+            model_id = model_info.name
+    else:
+        model_id = None
+
     reward: float | None = None
     if trial_result.verifier_result and trial_result.verifier_result.rewards:
         raw = trial_result.verifier_result.rewards.get("reward")
@@ -814,7 +835,7 @@ def trial_result_to_import_spec(
 
     return {
         "agent": agent_info.name,
-        "model": model_info.name if model_info is not None else None,
+        "model": model_id,
         "status": status,
         "reward": reward,
         "error_message": error_message,

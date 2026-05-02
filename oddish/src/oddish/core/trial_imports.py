@@ -23,9 +23,13 @@ The import flow mirrors the task upload pattern:
      live, some imported) transition cleanly when the last pending
      trial settles.
 
-Imports intentionally skip the ``worker_jobs`` queue: imported rows
-land already-terminal, so the dispatcher/cleanup loop has nothing to
-do for them.
+Imports intentionally skip the ``worker_jobs`` queue for trial
+execution: imported rows land already-terminal, so the dispatcher /
+cleanup loop has nothing to do for them. When the target task has
+``run_analysis`` enabled, ``initialize_trial_import`` does enqueue a
+per-trial analysis ``worker_job`` (mirroring the live trial handler)
+so the analysis / verdict pipeline rolls forward over a mix of live
+and imported rows.
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.db import (
+    AnalysisStatus,
     ExperimentModel,
     TaskModel,
     TaskStatus,
@@ -170,23 +175,15 @@ async def initialize_trial_import(
     """Create an imported trial row and return a presigned artifact URL.
 
     See module docstring for the full flow.
+
+    When the target task has ``run_analysis`` enabled, the imported trial
+    gets a per-trial analysis ``worker_job`` enqueued the same way a live
+    trial does after it reaches a terminal state, so the analysis /
+    verdict pipeline can roll forward over a mix of live and imported
+    rows.
     """
-    # Disallow imports into run_analysis tasks for now: the analysis
-    # pipeline assumes trials are fed through worker_jobs, and imported
-    # rows bypass that path. Sweeps already require a matching
-    # ``run_analysis`` flag when appending; this is the mirror check.
     async with get_session() as session:
         task = await _get_task_for_org(session, task_id, org_id)
-
-        if task.run_analysis:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Cannot import trials into a task that has run_analysis "
-                    "enabled. Upload a fresh task (without --run-analysis) "
-                    "or disable analysis before importing."
-                ),
-            )
 
         experiment = await _resolve_experiment_for_import(
             session,
@@ -228,14 +225,15 @@ async def initialize_trial_import(
         started_at = _parse_datetime(trial_spec.started_at) or now
         finished_at = _parse_datetime(trial_spec.finished_at) or now
 
-        # When the client supplies a stable external ID, use it as the
-        # idempotency_key so accidental re-imports collide on the
-        # unique index instead of producing duplicates.
-        idempotency_key = (
-            trial_spec.external_trial_id
-            if trial_spec.external_trial_id
-            else f"import-{uuid.uuid4()}"
-        )
+        # When the client supplies a stable external ID, scope it by
+        # the target experiment so an accidental re-import into the
+        # *same* experiment collides on the unique index, but the same
+        # source trial can still be merged into a *different*
+        # experiment as a separate row.
+        if trial_spec.external_trial_id:
+            idempotency_key = f"import:{trial_spec.external_trial_id}:{experiment.id}"
+        else:
+            idempotency_key = f"import-{uuid.uuid4()}"
 
         trial_row = TrialModel(
             id=trial_id,
@@ -285,29 +283,49 @@ async def initialize_trial_import(
         # trial. Mirror the logic in ``append_trials_to_task``:
         #
         # - PENDING / RUNNING: stay as-is; stage transition below will
-        #   flip to COMPLETED once every trial is terminal.
+        #   flip to COMPLETED / ANALYZING once every trial is terminal.
         # - COMPLETED / FAILED: reset to RUNNING and clear
         #   ``finished_at`` so the stage transition can flip it back
         #   with an updated timestamp that reflects the newly-imported
         #   trials.
-        # - ANALYZING / VERDICT_PENDING: blocked up front by the
-        #   ``run_analysis`` guard, so we don't worry about them here.
+        # - ANALYZING / VERDICT_PENDING: an import on a run_analysis
+        #   task can land while the task is mid-analysis; bounce it
+        #   back to RUNNING so the stage transition re-evaluates with
+        #   the new trial included.
         if task.status == TaskStatus.PENDING:
             task.status = TaskStatus.RUNNING
             task.started_at = task.started_at or started_at
-        elif task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+        elif task.status in (
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.ANALYZING,
+            TaskStatus.VERDICT_PENDING,
+        ):
             task.status = TaskStatus.RUNNING
             task.finished_at = None
 
         await session.flush()
+
+        # Mirror the per-trial analysis enqueue that the live trial
+        # handler runs when a trial reaches a terminal state, so
+        # imported rows participate in the analysis / verdict pipeline
+        # exactly like live ones.
+        from oddish.queue import (
+            enqueue_analysis_worker_job,
+            maybe_start_analysis_stage,
+        )
+
+        if task.run_analysis and trial_row.analysis_status is None:
+            trial_row.analysis_status = AnalysisStatus.QUEUED
+            await enqueue_analysis_worker_job(
+                session, trial_id=trial_id, org_id=task.org_id
+            )
 
         # Run the stage-transition here too so tasks whose only trials
         # are imported (and especially the ``--skip-artifacts`` path,
         # where ``complete`` is never called) still transition to
         # COMPLETED. ``maybe_start_analysis_stage`` is idempotent --
         # calling it again in ``complete_trial_import`` is a no-op.
-        from oddish.queue import maybe_start_analysis_stage
-
         await maybe_start_analysis_stage(session, trial_id)
 
         await session.commit()
