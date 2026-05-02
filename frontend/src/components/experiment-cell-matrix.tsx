@@ -445,7 +445,13 @@ function IntersectionCell({
   const [draft, setDraft] = useState<string>(String(cell.target_n_trials));
   const [trialsOpen, setTrialsOpen] = useState(false);
 
-  const attempts = cell.attempts ?? [];
+  // Take the first target_n_trials attempts as the cell's selection.
+  // If the (task, agent) pool has more attempts than the target, the
+  // surplus is hidden -- the user can swap which N count via the
+  // trials drawer (subset selection follow-up).
+  const allAttempts = cell.attempts ?? [];
+  const surplus = Math.max(0, allAttempts.length - cell.target_n_trials);
+  const attempts = allAttempts.slice(0, cell.target_n_trials);
   const realAttempts = attempts.filter(
     (a) => a.status !== "pending" && a.status !== "queued",
   );
@@ -522,11 +528,11 @@ function IntersectionCell({
             <span className="font-semibold">{cell.gap}</span> still to run ·
             avg reward {formatReward(cell.mean_reward)}
           </div>
-          {realAttempts.length > cell.target_n_trials ? (
+          {surplus > 0 ? (
             <div className="rounded-sm border border-amber-500/30 bg-amber-500/5 p-1.5 text-[11px] text-amber-700 dark:text-amber-300">
-              {realAttempts.length} attempts on file (target: {cell.target_n_trials}).
-              Trials are pooled across every experiment that uses this
-              (task version, agent) pair.
+              {allAttempts.length} attempts available, showing first{" "}
+              {cell.target_n_trials}. Pick a different subset from the
+              trials drawer.
             </div>
           ) : null}
           {cell.last_run_at ? (
