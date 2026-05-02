@@ -250,6 +250,7 @@ async def init_task_upload(
         org_id=auth.org_id,
         content_hash=payload.content_hash,
         message=payload.message,
+        force_new_version=payload.force_new_version,
     )
 
 
