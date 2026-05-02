@@ -663,6 +663,10 @@ class ExperimentBulkCellRequest(BaseModel):
       every ``agent_equivalence_key`` already present.
     - ``bump_all_targets`` -- set every existing cell's
       ``target_n_trials``.
+    - ``delete_agent`` -- nuke every cell with the given agent identity
+      (column-delete in the spreadsheet view).
+    - ``delete_task_version`` -- nuke every cell with the given
+      ``task_version_id`` (row-delete in the spreadsheet view).
     """
 
     op: str
