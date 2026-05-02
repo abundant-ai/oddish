@@ -54,8 +54,14 @@ interface BrowseTask {
   name: string;
   current_version: number | null;
   current_version_id: string | null;
+  version_count?: number;
+  total_trials?: number;
+  last_run_at?: string | null;
+  experiments?: { id: string; name: string }[];
   tags?: Record<string, string>;
 }
+
+type TaskSort = "name" | "recent" | "trials";
 
 interface KnownAgent {
   harness: string;
@@ -847,6 +853,8 @@ function PickTasksDialog({
     fetcher,
   );
   const [query, setQuery] = useState("");
+  const [tagFilter, setTagFilter] = useState<Set<string>>(new Set());
+  const [sort, setSort] = useState<TaskSort>("recent");
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -862,23 +870,75 @@ function PickTasksDialog({
     [rawItems, excludeIds],
   );
 
+  // Union of every "key=value" tag across the available tasks, with
+  // a count so we can sort the chips by popularity. Skip noisy
+  // github_* tags -- they explode the legend without adding signal.
+  const availableTags = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const t of tasks) {
+      for (const [k, v] of Object.entries(t.tags ?? {})) {
+        if (k.startsWith("github_")) continue;
+        const key = `${k}=${v}`;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 30);
+  }, [tasks]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return tasks;
-    return tasks.filter(
-      (t) =>
-        t.name.toLowerCase().includes(q) ||
-        Object.entries(t.tags ?? {}).some(
-          ([k, v]) =>
-            k.toLowerCase().includes(q) || v.toLowerCase().includes(q),
-        ),
-    );
-  }, [tasks, query]);
+    let out = tasks;
+    if (q) {
+      out = out.filter(
+        (t) =>
+          t.name.toLowerCase().includes(q) ||
+          Object.entries(t.tags ?? {}).some(
+            ([k, v]) =>
+              k.toLowerCase().includes(q) || v.toLowerCase().includes(q),
+          ),
+      );
+    }
+    if (tagFilter.size > 0) {
+      out = out.filter((t) => {
+        for (const chip of tagFilter) {
+          const eq = chip.indexOf("=");
+          const k = chip.slice(0, eq);
+          const v = chip.slice(eq + 1);
+          if ((t.tags ?? {})[k] !== v) return false;
+        }
+        return true;
+      });
+    }
+    const sorted = [...out];
+    sorted.sort((a, b) => {
+      if (sort === "name") return a.name.localeCompare(b.name);
+      if (sort === "trials")
+        return (b.total_trials ?? 0) - (a.total_trials ?? 0);
+      // recent
+      const ar = a.last_run_at ? Date.parse(a.last_run_at) : 0;
+      const br = b.last_run_at ? Date.parse(b.last_run_at) : 0;
+      return br - ar || a.name.localeCompare(b.name);
+    });
+    return sorted;
+  }, [tasks, query, tagFilter, sort]);
 
   const reset = () => {
     setQuery("");
+    setTagFilter(new Set());
+    setSort("recent");
     setPicked(new Set());
     setError(null);
+  };
+
+  const toggleTag = (chip: string) => {
+    setTagFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(chip)) next.delete(chip);
+      else next.add(chip);
+      return next;
+    });
   };
 
   const submit = async () => {
@@ -908,7 +968,7 @@ function PickTasksDialog({
         if (!o) reset();
       }}
     >
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>Add task</DialogTitle>
         </DialogHeader>
@@ -916,15 +976,60 @@ function PickTasksDialog({
           <div className="flex items-center gap-2">
             <Search className="h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Filter by task name or tag"
+              placeholder="Search by task name or tag"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               className="h-8"
             />
+            <select
+              value={sort}
+              onChange={(e) => setSort(e.target.value as TaskSort)}
+              className="h-8 rounded-sm border bg-background px-2 font-mono text-xs"
+            >
+              <option value="recent">Sort: recent</option>
+              <option value="name">Sort: name</option>
+              <option value="trials">Sort: trials</option>
+            </select>
             <span className="whitespace-nowrap text-xs text-muted-foreground">
               {picked.size} selected
             </span>
           </div>
+          {availableTags.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                tags
+              </span>
+              {availableTags.map(([chip, count]) => {
+                const active = tagFilter.has(chip);
+                return (
+                  <button
+                    key={chip}
+                    type="button"
+                    onClick={() => toggleTag(chip)}
+                    className={`inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono text-[10px] transition ${
+                      active
+                        ? "border-foreground bg-foreground text-background"
+                        : "border-border bg-muted/40 text-muted-foreground hover:border-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {chip}
+                    <span className={active ? "opacity-70" : "opacity-60"}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+              {tagFilter.size > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setTagFilter(new Set())}
+                  className="text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                >
+                  clear
+                </button>
+              ) : null}
+            </div>
+          ) : null}
           {!data ? (
             fetchError ? (
               <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-3 text-xs">
@@ -968,7 +1073,10 @@ function PickTasksDialog({
                   <TableRow>
                     <TableHead className="w-10" />
                     <TableHead>Task</TableHead>
-                    <TableHead>Version</TableHead>
+                    <TableHead className="text-right">Version</TableHead>
+                    <TableHead className="text-right">Trials</TableHead>
+                    <TableHead className="text-right">Last run</TableHead>
+                    <TableHead className="text-right">Used in</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -990,10 +1098,43 @@ function PickTasksDialog({
                         />
                       </TableCell>
                       <TableCell className="font-mono text-xs">
-                        {t.name}
+                        <div className="flex flex-col">
+                          <span>{t.name}</span>
+                          {t.tags && Object.keys(t.tags).length > 0 ? (
+                            <div className="mt-0.5 flex flex-wrap gap-0.5">
+                              {Object.entries(t.tags)
+                                .filter(([k]) => !k.startsWith("github_"))
+                                .slice(0, 4)
+                                .map(([k, v]) => (
+                                  <span
+                                    key={k}
+                                    className="rounded-sm bg-muted px-1 py-0 text-[9px] text-muted-foreground"
+                                  >
+                                    {k}={v}
+                                  </span>
+                                ))}
+                            </div>
+                          ) : null}
+                        </div>
                       </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
+                      <TableCell className="text-right text-xs text-muted-foreground">
                         v{t.current_version ?? "?"}
+                        {t.version_count && t.version_count > 1 ? (
+                          <span className="ml-1 text-[10px]">
+                            ({t.version_count})
+                          </span>
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-xs">
+                        {t.total_trials ?? 0}
+                      </TableCell>
+                      <TableCell className="text-right text-[11px] text-muted-foreground">
+                        {t.last_run_at
+                          ? new Date(t.last_run_at).toLocaleDateString()
+                          : "—"}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-xs">
+                        {t.experiments?.length ?? 0}
                       </TableCell>
                     </TableRow>
                   ))}
