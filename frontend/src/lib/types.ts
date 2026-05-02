@@ -1,5 +1,4 @@
-// Task status (simplified - just tracks trial execution)
-export type TaskStatus =
+type TaskStatus =
   | "pending"
   | "running"
   | "analyzing"
@@ -7,11 +6,7 @@ export type TaskStatus =
   | "completed"
   | "failed";
 
-// Trial/job status
-// - "success": Trial executed to completion (regardless of test result)
-// - "failed": Trial encountered an execution error (harness/infrastructure failure)
-// - Test results are stored separately in the `reward` field (0..1 score, null=no result)
-export type TrialStatus =
+type TrialStatus =
   | "pending"
   | "queued"
   | "running"
@@ -21,9 +16,9 @@ export type TrialStatus =
 
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
-export type VisibleJobKind = "trial" | "analysis" | "verdict";
+type VisibleJobKind = "trial" | "analysis" | "verdict";
 
-export type VisibleJobStatus =
+type VisibleJobStatus =
   | "queued"
   | "running"
   | "retrying"
@@ -216,102 +211,6 @@ export interface TaskBrowseResponse {
   limit: number;
   offset: number;
   has_more: boolean;
-}
-
-// Queue statistics keyed by queue key
-export interface QueueStats {
-  [queueKey: string]: {
-    pending: number;
-    queued: number;
-    running: number;
-    success: number;
-    failed: number;
-    retrying: number;
-    recommended_concurrency: number;
-  };
-}
-
-// Pipeline statistics (analysis/verdict progress)
-interface PipelineStats {
-  trials: Record<string, number>;
-  analyses: Record<string, number>;
-  verdicts: Record<string, number>;
-}
-
-// Per-model cost & token usage (aggregated from all trials)
-export interface ModelUsage {
-  model: string;
-  provider: string;
-  trial_count: number;
-  input_tokens: number;
-  cache_tokens: number;
-  output_tokens: number;
-  cost_usd: number;
-  running: number;
-  queued: number;
-  succeeded: number;
-  failed: number;
-  avg_duration_s: number | null;
-}
-
-export interface JobUsage {
-  kind: string;
-  queue_key: string;
-  job_count: number;
-  queued: number;
-  running: number;
-  retrying: number;
-  succeeded: number;
-  failed: number;
-  cancelled: number;
-  blocked: number;
-  avg_duration_s: number | null;
-}
-
-export interface DashboardExperimentAuthor {
-  name: string;
-  source: "github" | "api";
-}
-
-export interface DashboardExperiment {
-  id: string;
-  name: string;
-  is_public: boolean;
-  task_count: number;
-  total_trials: number;
-  completed_trials: number;
-  failed_trials: number;
-  active_trials: number;
-  reward_success: number;
-  reward_sum: number;
-  reward_total: number;
-  analysis_tasks: number;
-  verdict_good: number;
-  verdict_needs_review: number;
-  verdict_failed: number;
-  verdict_pending: number;
-  last_created_at: string | null;
-  last_author: DashboardExperimentAuthor | null;
-  last_pr_url: string | null;
-  last_pr_title: string | null;
-  last_pr_number: string | null;
-}
-
-// Combined dashboard response (single API call)
-export interface DashboardResponse {
-  queues: QueueStats;
-  pipeline: PipelineStats;
-  model_usage: ModelUsage[];
-  job_usage?: JobUsage[];
-  tasks: Task[];
-  experiments?: DashboardExperiment[];
-  tasks_limit?: number;
-  tasks_offset?: number;
-  has_more?: boolean;
-  experiments_limit?: number;
-  experiments_offset?: number;
-  experiments_has_more?: boolean;
-  cached: boolean;
 }
 
 // =============================================================================
@@ -567,13 +466,6 @@ export interface ExperimentCellAgent {
   model: string | null;
   provider: string;
   equivalence_key: string;
-}
-
-export interface ExperimentCell {
-  id: string;
-  task_version_id: string;
-  target_n_trials: number;
-  agent: ExperimentCellAgent;
 }
 
 export interface ResolvedExperimentCell {
