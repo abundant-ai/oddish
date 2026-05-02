@@ -522,6 +522,13 @@ function IntersectionCell({
             <span className="font-semibold">{cell.gap}</span> still to run ·
             avg reward {formatReward(cell.mean_reward)}
           </div>
+          {realAttempts.length > cell.target_n_trials ? (
+            <div className="rounded-sm border border-amber-500/30 bg-amber-500/5 p-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+              {realAttempts.length} attempts on file (target: {cell.target_n_trials}).
+              Trials are pooled across every experiment that uses this
+              (task version, agent) pair.
+            </div>
+          ) : null}
           {cell.last_run_at ? (
             <div className="text-muted-foreground">
               last run {new Date(cell.last_run_at).toLocaleString()}
@@ -1267,23 +1274,24 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
           Empty experiment. Switch to Edit to add tasks and agents.
         </div>
       ) : (
-        <div className="max-h-[70vh] overflow-auto rounded-sm border bg-card">
+        <div className="max-h-[70vh] overflow-auto rounded-sm border-2 border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-950">
           <Table>
             <TableHeader className="sticky top-0 z-20">
-              <TableRow className="border-b-2 border-border bg-muted hover:bg-muted">
-                {/* Top-left corner: row #s + Task header */}
-                <TableHead className="sticky left-0 z-30 w-48 border-r border-border bg-muted font-mono font-bold text-foreground">
+              <TableRow className="border-b-2 border-zinc-300 bg-zinc-100 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-900">
+                <TableHead className="sticky left-0 z-30 w-48 border-r-2 border-zinc-300 bg-zinc-100 font-mono text-foreground dark:border-zinc-700 dark:bg-zinc-900">
                   <div className="flex items-center gap-2">
                     <span className="w-6 flex-shrink-0 text-right text-xs text-muted-foreground">
                       #
                     </span>
-                    <span className="text-xs">Task</span>
+                    <span className="text-xs font-bold uppercase tracking-wide">
+                      Task
+                    </span>
                   </div>
                 </TableHead>
                 {agents.map((agent) => (
                   <TableHead
                     key={agent.equivalence_key}
-                    className="border-r border-border bg-muted px-2 text-center font-mono last:border-r-0"
+                    className="border-r border-zinc-300 bg-zinc-100 px-3 text-center font-mono last:border-r-0 dark:border-zinc-700 dark:bg-zinc-900"
                   >
                     <div className="flex flex-col items-center gap-0.5">
                       <div className="inline-flex items-center gap-1 text-xs font-bold text-foreground">
@@ -1307,7 +1315,7 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
                   </TableHead>
                 ))}
                 {editable ? (
-                  <TableHead className="w-12 bg-muted text-center">
+                  <TableHead className="w-12 bg-zinc-100 text-center dark:bg-zinc-900">
                     <button
                       type="button"
                       aria-label="Add agent"
@@ -1322,22 +1330,28 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {tasks.map((task, idx) => (
+              {tasks.map((task, idx) => {
+                const stripeBg =
+                  idx % 2 === 0
+                    ? "bg-white dark:bg-zinc-950"
+                    : "bg-zinc-50 dark:bg-zinc-900/50";
+                return (
                 <TableRow
                   key={task.task_version_id}
-                  className={
-                    idx % 2 === 0
-                      ? "bg-background hover:bg-muted/30"
-                      : "bg-muted/20 hover:bg-muted/40"
-                  }
+                  className={`border-b border-zinc-200 ${stripeBg} hover:bg-zinc-100/70 dark:border-zinc-800 dark:hover:bg-zinc-800/50`}
                 >
-                  <TableCell className="sticky left-0 z-10 w-48 border-r border-border bg-card px-2 font-mono text-xs">
+                  <TableCell
+                    className={`sticky left-0 z-10 w-48 border-r-2 border-zinc-300 px-2 font-mono text-xs ${stripeBg} dark:border-zinc-700`}
+                  >
                     <div className="flex items-center gap-2">
                       <span className="w-6 flex-shrink-0 text-right text-muted-foreground">
                         {idx + 1}
                       </span>
                       <div className="flex min-w-0 flex-col">
-                        <span className="truncate font-bold" title={task.task_name ?? task.task_id}>
+                        <span
+                          className="truncate font-bold"
+                          title={task.task_name ?? task.task_id}
+                        >
                           {task.task_name ?? task.task_id}
                         </span>
                         <span className="text-[10px] font-normal text-muted-foreground">
@@ -1364,7 +1378,7 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
                     return (
                       <TableCell
                         key={agent.equivalence_key}
-                        className="border-r border-border p-1.5 text-center last:border-r-0"
+                        className="border-r border-zinc-200 p-2 text-center last:border-r-0 dark:border-zinc-800"
                       >
                         {cell ? (
                           <IntersectionCell
@@ -1383,10 +1397,11 @@ export function ExperimentCellMatrix({ experimentId, canEdit }: Props) {
                   })}
                   {editable ? <TableCell /> : null}
                 </TableRow>
-              ))}
+              );
+              })}
               {editable ? (
                 <TableRow>
-                  <TableCell className="sticky left-0 z-10 w-48 border-r border-border bg-card px-2">
+                  <TableCell className="sticky left-0 z-10 w-48 border-r-2 border-zinc-300 bg-white px-2 dark:border-zinc-700 dark:bg-zinc-950">
                     <button
                       type="button"
                       aria-label="Add task"
