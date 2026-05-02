@@ -22,8 +22,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TaskFilesPanel } from "@/components/task-files-panel";
-import { TrialInspectDrawer } from "@/components/trial-inspect-drawer";
+import { TrialDetailPanel } from "@/components/trial-detail-panel";
 import { fetcher } from "@/lib/api";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import type { Task, Trial } from "@/lib/types";
 
 interface TaskVersion {
@@ -105,9 +106,30 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
       });
   }, [trials, activeVersionId]);
 
-  const [inspecting, setInspecting] = useState<{ trialId: string } | null>(
+  const [inspectingTrialId, setInspectingTrialId] = useState<string | null>(
     null,
   );
+
+  const inspectingTrial = useMemo<Trial | null>(
+    () =>
+      inspectingTrialId
+        ? trialsForVersion.find((t) => t.id === inspectingTrialId) ?? null
+        : null,
+    [trialsForVersion, inspectingTrialId],
+  );
+  const inspectingIndex = useMemo(
+    () =>
+      inspectingTrialId
+        ? trialsForVersion.findIndex((t) => t.id === inspectingTrialId)
+        : -1,
+    [trialsForVersion, inspectingTrialId],
+  );
+  const prevTrial =
+    inspectingIndex > 0 ? trialsForVersion[inspectingIndex - 1] : null;
+  const nextTrial =
+    inspectingIndex >= 0 && inspectingIndex < trialsForVersion.length - 1
+      ? trialsForVersion[inspectingIndex + 1]
+      : null;
 
   if (taskError) {
     return (
@@ -120,202 +142,243 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
   }
 
   return (
-    <div className="mx-auto w-full max-w-(--breakpoint-2xl) space-y-4 p-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="font-mono text-[26px] font-semibold tracking-[-0.02em]">
-            {task?.name ?? taskId}
-          </h1>
-          <p className="text-xs text-muted-foreground">
-            {task?.id ?? ""} · {sortedVersions.length} version
-            {sortedVersions.length === 1 ? "" : "s"}
-          </p>
-          {task?.tags && Object.keys(task.tags).length > 0 ? (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {Object.entries(task.tags)
-                .filter(([k]) => !k.startsWith("github_"))
-                .map(([k, v]) => (
-                  <Link
-                    key={k}
-                    href={`/tasks?query=${encodeURIComponent(v)}`}
-                    title={`Filter by ${k}=${v}`}
-                  >
-                    <Badge
-                      variant="secondary"
-                      className="cursor-pointer font-mono text-[10px] hover:bg-muted"
+    <div className="mx-auto w-full max-w-(--breakpoint-2xl) p-4">
+      <div className="overflow-hidden rounded-lg border bg-card">
+        {/* Header strip: title, tags, version + small meta inline */}
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b px-5 py-4">
+          <div className="min-w-0">
+            <h1 className="font-mono text-[24px] font-semibold tracking-[-0.02em]">
+              {task?.name ?? taskId}
+            </h1>
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              <span className="font-mono">{task?.id ?? ""}</span>
+              <span>·</span>
+              <span>
+                {sortedVersions.length} version
+                {sortedVersions.length === 1 ? "" : "s"}
+              </span>
+              {activeVersion ? (
+                <>
+                  <span>·</span>
+                  <span>created {rel(activeVersion.created_at)}</span>
+                  {activeVersion.content_hash ? (
+                    <>
+                      <span>·</span>
+                      <span className="font-mono">
+                        {activeVersion.content_hash.slice(0, 12)}
+                      </span>
+                    </>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+            {task?.tags && Object.keys(task.tags).length > 0 ? (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {Object.entries(task.tags)
+                  .filter(([k]) => !k.startsWith("github_"))
+                  .map(([k, v]) => (
+                    <Link
+                      key={k}
+                      href={`/tasks?query=${encodeURIComponent(v)}`}
+                      title={`Filter by ${k}=${v}`}
                     >
-                      {k}={v}
-                    </Badge>
-                  </Link>
-                ))}
-            </div>
-          ) : null}
-        </div>
-        <div className="flex items-center gap-2">
-          {sortedVersions.length > 0 ? (
-            <Select
-              value={activeVersionId ?? undefined}
-              onValueChange={(v) => setSelectedVersionId(v)}
-            >
-              <SelectTrigger className="h-9 w-[220px]">
-                <SelectValue placeholder="Select version" />
-              </SelectTrigger>
-              <SelectContent>
-                {sortedVersions.map((v) => (
-                  <SelectItem key={v.id} value={v.id}>
-                    v{v.version}
-                    {v.message ? ` — ${v.message.slice(0, 40)}` : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : null}
-        </div>
-      </div>
-
-      {versionsError ? (
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">
-          Failed to load versions: {String((versionsError as Error).message)}
-        </div>
-      ) : null}
-
-      {activeVersion ? (
-        <div className="rounded-md border bg-card p-4 text-sm">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div>
-              <div className="text-[10px] uppercase text-muted-foreground">
-                version
-              </div>
-              <div className="font-mono">v{activeVersion.version}</div>
-            </div>
-            <div>
-              <div className="text-[10px] uppercase text-muted-foreground">
-                content hash
-              </div>
-              <div className="font-mono text-xs">
-                {activeVersion.content_hash
-                  ? activeVersion.content_hash.slice(0, 16)
-                  : "—"}
-              </div>
-            </div>
-            <div>
-              <div className="text-[10px] uppercase text-muted-foreground">
-                created
-              </div>
-              <div>{rel(activeVersion.created_at)}</div>
-            </div>
-            <div>
-              <div className="text-[10px] uppercase text-muted-foreground">
-                trials on this version
-              </div>
-              <div className="font-mono">{trialsForVersion.length}</div>
-            </div>
-          </div>
-          {activeVersion.message ? (
-            <div className="mt-3 text-xs text-muted-foreground">
-              {activeVersion.message}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <div className="rounded-md border bg-card">
-          <div className="border-b px-4 py-2 text-xs font-medium text-muted-foreground">
-            Files
-          </div>
-          <TaskFilesPanel
-            isOpen={true}
-            onClose={() => {}}
-            taskId={taskId}
-            task={task ?? null}
-            contentOnly
-          />
-        </div>
-
-        <div className="rounded-md border">
-          <div className="border-b px-4 py-2 text-xs font-medium text-muted-foreground">
-            Trials on this version
-          </div>
-          {trialsError ? (
-            <div className="p-3 text-sm">
-              Failed to load trials:{" "}
-              {String((trialsError as Error).message)}
-            </div>
-          ) : !trials || !versions ? (
-            <Skeleton className="m-3 h-32" />
-          ) : trialsForVersion.length === 0 ? (
-            <div className="p-6 text-center text-sm text-muted-foreground">
-              No trials for this version yet.
-            </div>
-          ) : (
-            <div className="max-h-[70vh] overflow-y-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Agent</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Reward</TableHead>
-                    <TableHead>Finished</TableHead>
-                    <TableHead className="text-right">Inspect</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {trialsForVersion.map((t) => (
-                    <TableRow key={t.id}>
-                      <TableCell className="font-mono text-xs">
-                        {t.agent}
-                        {t.model ? ` · ${t.model}` : ""}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={statusVariant(t.status)}>
-                          {t.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {fmt(t.reward)}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {rel(t.finished_at)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-7"
-                          onClick={() => setInspecting({ trialId: t.id })}
-                        >
-                          Inspect
-                        </Button>
-                      </TableCell>
-                    </TableRow>
+                      <Badge
+                        variant="secondary"
+                        className="cursor-pointer font-mono text-[10px] hover:bg-muted"
+                      >
+                        {k}={v}
+                      </Badge>
+                    </Link>
                   ))}
-                </TableBody>
-              </Table>
+              </div>
+            ) : null}
+            {activeVersion?.message ? (
+              <div className="mt-2 text-xs text-muted-foreground">
+                {activeVersion.message}
+              </div>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {sortedVersions.length > 0 ? (
+              <Select
+                value={activeVersionId ?? undefined}
+                onValueChange={(v) => {
+                  setSelectedVersionId(v);
+                  setInspectingTrialId(null);
+                }}
+              >
+                <SelectTrigger className="h-9 w-[220px]">
+                  <SelectValue placeholder="Select version" />
+                </SelectTrigger>
+                <SelectContent>
+                  {sortedVersions.map((v) => (
+                    <SelectItem key={v.id} value={v.id}>
+                      v{v.version}
+                      {v.message ? ` — ${v.message.slice(0, 40)}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+          </div>
+        </div>
+
+        {versionsError ? (
+          <div className="border-b p-3 text-sm text-destructive">
+            Failed to load versions: {String((versionsError as Error).message)}
+          </div>
+        ) : null}
+
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+          {/* Left: task files */}
+          <div className="border-b lg:border-b-0 lg:border-r">
+            <div className="border-b px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Task files
             </div>
-          )}
+            <TaskFilesPanel
+              isOpen={true}
+              onClose={() => {}}
+              taskId={taskId}
+              task={task ?? null}
+              contentOnly
+            />
+          </div>
+
+          {/* Right: trials list, swapped for inline trial detail when inspecting */}
+          <div className="flex min-h-[60vh] flex-col">
+            {inspectingTrial && task ? (
+              <>
+                <div className="flex items-center gap-2 border-b px-5 py-2">
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7"
+                    disabled={!prevTrial}
+                    onClick={() =>
+                      prevTrial && setInspectingTrialId(prevTrial.id)
+                    }
+                    title="Previous trial"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7"
+                    disabled={!nextTrial}
+                    onClick={() =>
+                      nextTrial && setInspectingTrialId(nextTrial.id)
+                    }
+                    title="Next trial"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                  <div className="flex-1 truncate text-xs text-muted-foreground">
+                    Trial {inspectingIndex + 1} of {trialsForVersion.length} ·{" "}
+                    <span className="font-mono">{inspectingTrial.id}</span>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7"
+                    onClick={() => setInspectingTrialId(null)}
+                  >
+                    <X className="mr-1 h-3.5 w-3.5" /> Close
+                  </Button>
+                </div>
+                <div className="flex-1 overflow-hidden">
+                  <TrialDetailPanel
+                    isOpen={true}
+                    onClose={() => setInspectingTrialId(null)}
+                    trial={inspectingTrial}
+                    task={task}
+                    orderedTrials={trialsForVersion}
+                    trialIndex={inspectingIndex}
+                    onNavigate={(t) => setInspectingTrialId(t.id)}
+                    allowRetry
+                    contentOnly
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between border-b px-5 py-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Trials on this version
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {trialsForVersion.length}{" "}
+                    {trialsForVersion.length === 1 ? "trial" : "trials"}
+                  </span>
+                </div>
+                {trialsError ? (
+                  <div className="p-3 text-sm">
+                    Failed to load trials:{" "}
+                    {String((trialsError as Error).message)}
+                  </div>
+                ) : !trials || !versions ? (
+                  <Skeleton className="m-3 h-32" />
+                ) : trialsForVersion.length === 0 ? (
+                  <div className="p-6 text-center text-sm text-muted-foreground">
+                    No trials for this version yet.
+                  </div>
+                ) : (
+                  <div className="overflow-y-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Agent</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Reward</TableHead>
+                          <TableHead>Finished</TableHead>
+                          <TableHead className="text-right">Inspect</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {trialsForVersion.map((t) => (
+                          <TableRow key={t.id}>
+                            <TableCell className="font-mono text-xs">
+                              {t.agent}
+                              {t.model ? ` · ${t.model}` : ""}
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant={statusVariant(t.status)}>
+                                {t.status}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="font-mono text-xs">
+                              {fmt(t.reward)}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {rel(t.finished_at)}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7"
+                                onClick={() => setInspectingTrialId(t.id)}
+                              >
+                                Inspect
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
 
-      <div className="flex justify-end">
+      <div className="mt-4 flex justify-end">
         <Button variant="ghost" size="sm" asChild>
           <Link href="/tasks">← All tasks</Link>
         </Button>
       </div>
-
-      {inspecting ? (
-        <TrialInspectDrawer
-          open={true}
-          onOpenChange={(o) => {
-            if (!o) setInspecting(null);
-          }}
-          trialId={inspecting.trialId}
-          taskId={taskId}
-          siblingTrialIds={trialsForVersion.map((t) => t.id)}
-          onTrialChange={(nextId) => setInspecting({ trialId: nextId })}
-          noBackdrop
-        />
-      ) : null}
     </div>
   );
 }
