@@ -489,46 +489,48 @@ export function TaskDetailClient({ taskId }: { taskId: string }) {
                           );
                           return (
                             <Fragment key={agent.key}>
-                              <TableRow
-                                className="bg-muted/40 hover:bg-muted/40"
-                              >
-                                <TableCell className="font-mono text-xs font-semibold">
-                                  {agent.agent}
-                                  {agent.model && agent.model !== "default"
-                                    ? ` · ${agent.model}`
-                                    : ""}
-                                  {agent.provider &&
-                                  agent.provider !== "default" ? (
-                                    <span className="ml-1 text-[10px] font-normal text-muted-foreground">
-                                      {agent.provider}
+                              <TableRow className="bg-muted/40 hover:bg-muted/40">
+                                <TableCell
+                                  colSpan={5}
+                                  className="px-5 py-2"
+                                >
+                                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                                    <span className="font-mono text-xs font-semibold">
+                                      {agent.agent}
+                                      {agent.model && agent.model !== "default"
+                                        ? ` · ${agent.model}`
+                                        : ""}
                                     </span>
-                                  ) : null}
-                                </TableCell>
-                                <TableCell className="font-mono text-xs">
-                                  <span className="text-emerald-700 dark:text-emerald-400">
-                                    {agent.succeeded}
-                                  </span>
-                                  /{agent.total}
-                                  {agent.failed > 0 ? (
-                                    <span className="ml-1 text-rose-600 dark:text-rose-400">
-                                      ({agent.failed} fail)
+                                    {agent.provider &&
+                                    agent.provider !== "default" ? (
+                                      <span className="text-[10px] text-muted-foreground">
+                                        {agent.provider}
+                                      </span>
+                                    ) : null}
+                                    <span className="font-mono text-[11px] text-muted-foreground">
+                                      <span className="text-emerald-700 dark:text-emerald-400">
+                                        {agent.succeeded}
+                                      </span>
+                                      /{agent.total}
+                                      {agent.failed > 0 ? (
+                                        <span className="ml-1 text-rose-600 dark:text-rose-400">
+                                          · {agent.failed} failed
+                                        </span>
+                                      ) : null}
+                                      {agent.running > 0 ? (
+                                        <span className="ml-1 text-amber-600 dark:text-amber-400">
+                                          · {agent.running} running
+                                        </span>
+                                      ) : null}
+                                      {agent.passRate !== null ? (
+                                        <span className="ml-1">
+                                          · {Math.round(agent.passRate * 100)}%
+                                          pass
+                                        </span>
+                                      ) : null}
                                     </span>
-                                  ) : null}
-                                  {agent.running > 0 ? (
-                                    <span className="ml-1 text-amber-600 dark:text-amber-400">
-                                      ({agent.running} run)
-                                    </span>
-                                  ) : null}
+                                  </div>
                                 </TableCell>
-                                <TableCell className="text-right text-xs text-muted-foreground">
-                                  {agent.passRate === null
-                                    ? "—"
-                                    : `${Math.round(agent.passRate * 100)}% pass`}
-                                </TableCell>
-                                <TableCell className="text-right text-xs text-muted-foreground">
-                                  {rel(agent.lastRunAt)}
-                                </TableCell>
-                                <TableCell />
                               </TableRow>
                               {agentTrials.map((t) => (
                                 <TableRow key={t.id}>
