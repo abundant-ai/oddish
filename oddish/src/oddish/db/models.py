@@ -239,6 +239,15 @@ class ExperimentModel(TimestampedMixin, Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # Experiment-level trial target. Newly-created cells default to this
+    # value; bulk "bump all targets" rewrites every cell to it. The cell
+    # row's own ``target_n_trials`` stays the source of truth for what
+    # the resolver counts gaps against, so per-cell overrides remain
+    # possible -- but the experiment-level field is what the UI surfaces.
+    target_n_trials: Mapped[int] = mapped_column(
+        Integer, default=3, server_default="3", nullable=False
+    )
+
     tasks: Mapped[list["TaskModel"]] = relationship(  # type: ignore[assignment]
         "TaskModel",
         secondary=task_experiments,

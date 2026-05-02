@@ -630,8 +630,19 @@ class ResolvedExperimentCellResponse(BaseModel):
 class ResolvedExperimentResponse(BaseModel):
     experiment_id: str
     experiment_name: str
+    target_n_trials: int = 3
     cells: list[ResolvedExperimentCellResponse]
     total_gap: int
+
+
+class ExperimentTargetUpdateRequest(BaseModel):
+    target_n_trials: int = Field(ge=1)
+
+
+class ExperimentTargetUpdateResponse(BaseModel):
+    experiment_id: str
+    target_n_trials: int
+    cells_changed: int
 
 
 class ExperimentCellCreateRequest(BaseModel):
