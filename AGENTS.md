@@ -236,10 +236,18 @@ uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/
 | POST | `/tasks/sweep` | Expand a sweep into a task plus trials |
 | GET | `/tasks` | List tasks |
 | GET | `/tasks/{task_id}` | Fetch a task with trials |
+| GET | `/tasks/{task_id}/versions` | List immutable task versions |
+| GET | `/tasks/{task_id}/versions/{version}/evidence` | Read pooled evidence for one task version by agent |
 | POST | `/tasks/cancel` | Cancel many tasks in one request |
 | DELETE | `/tasks/{task_id}` | Delete a task, its trials, and associated S3 artifacts when enabled |
 | POST | `/tasks/{task_id}/analysis/retry` | Queue or rerun task-wide analysis jobs |
 | POST | `/tasks/{task_id}/verdict/retry` | Queue or rerun a task verdict |
+| POST | `/experiments` | Create a task-first experiment from saved cells |
+| GET | `/experiments/{experiment_id}/cells` | Resolve saved experiment cells against pooled evidence |
+| POST | `/experiments/{experiment_id}/cells` | Add or replace saved experiment cells |
+| PATCH | `/experiments/{experiment_id}/cells/{cell_id}` | Update a saved cell target trial count |
+| DELETE | `/experiments/{experiment_id}/cells/{cell_id}` | Remove a saved experiment cell |
+| POST | `/experiments/{experiment_id}/backfill` | Enqueue a Job for missing cell evidence |
 | DELETE | `/experiments/{experiment_id}` | Delete an experiment, its tasks/trials, and associated S3 artifacts when enabled |
 | PATCH | `/experiments/{experiment_id}` | Update experiment metadata |
 | GET | `/tasks/{task_id}/trials/{index}` | Fetch a trial by 0-based index |
@@ -467,10 +475,12 @@ uv run alembic upgrade head
 
 ### App Surface
 
-- `/` — public landing page; signed-in users are redirected to `/dashboard`
-- `/dashboard` — main dashboard and experiment entrypoint
-- `/tasks` — authenticated task browser with search, pagination, version summaries
-- `/experiments/[experiment]` — experiment detail, task and trial inspection, logs, results, files, version history, share controls, cancel
+- `/` — public landing page; signed-in users are redirected to `/tasks`
+- `/tasks` — authenticated task browser with search, pagination, version summaries, and links to task detail pages
+- `/tasks/[task]` — task detail page with immutable version switching and per-version evidence matrix
+- `/experiments/new` — task-first experiment builder for saved task-version × agent cells
+- `/experiments/[experiment]` — experiment detail with saved cell matrix, gap backfill, and legacy task/trial inspection
+- `/dashboard` — aggregate dashboard and legacy experiment entrypoint
 - `/settings` — organization and API key management
 - `/admin` — two tabs:
   - **Worker Jobs** (default): unified `worker_jobs` kind×status matrix,
@@ -535,8 +545,8 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 CLERK_JWT_TEMPLATE=oddish
 
 # Optional
-NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=/dashboard
-NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=/dashboard
+NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=/tasks
+NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=/tasks
 NEXT_PUBLIC_APP_URL=https://local.oddish.app
 ```
 

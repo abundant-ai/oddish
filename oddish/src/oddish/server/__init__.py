@@ -28,8 +28,12 @@ from oddish.core.endpoints import (
     retry_trial_core,
 )
 from oddish.core.jobs import (
+    add_experiment_cells_core,
+    create_experiment_core,
+    delete_experiment_cell_core,
     get_job_core,
     list_jobs_core,
+    patch_experiment_cell_core,
 )
 from oddish.core.evidence import (
     get_experiment_cells_core,
@@ -78,13 +82,19 @@ from oddish.db import (
     utcnow,
 )
 from oddish.schemas import (
-    TaskBatchCancelRequest,
-    TaskBrowseResponse,
     EvidenceCellResponse,
-    JobResponse,
-    ResolvedExperimentCellResponse,
+    ExperimentBackfillResponse,
+    ExperimentCellCreateRequest,
+    ExperimentCellPatchRequest,
+    ExperimentCellResponse,
+    ExperimentCreateRequest,
+    ExperimentCreateResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
+    JobResponse,
+    ResolvedExperimentCellResponse,
+    TaskBatchCancelRequest,
+    TaskBrowseResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
     TaskUploadInitResponse,
@@ -100,6 +110,7 @@ from oddish.schemas import (
     UploadResponse,
 )
 from oddish.queue import (
+    backfill_experiment_gaps,
     cancel_tasks_runs,
 )
 
@@ -456,6 +467,21 @@ async def browse_tasks(
         return await browse_tasks_core(session, limit=limit, offset=offset, query=query)
 
 
+@api.post("/experiments", response_model=ExperimentCreateResponse)
+async def create_experiment(
+    payload: ExperimentCreateRequest,
+) -> ExperimentCreateResponse:
+    """Create an editable task-first experiment from saved cells."""
+    async with get_session() as session:
+        response = await create_experiment_core(
+            session,
+            name=payload.name,
+            cells=payload.cells,
+        )
+        await session.commit()
+        return response
+
+
 @api.get("/tasks/{task_id}", response_model=TaskStatusResponse)
 async def get_task_status(task_id: str):
     """Get status of a task with all trials, analyses, and verdict."""
@@ -509,6 +535,83 @@ async def get_experiment_cells(
         return await get_experiment_cells_core(
             session,
             experiment_id=experiment_id,
+        )
+
+
+@api.post(
+    "/experiments/{experiment_id}/cells",
+    response_model=list[ExperimentCellResponse],
+)
+async def add_experiment_cells_endpoint(
+    experiment_id: str,
+    payload: list[ExperimentCellCreateRequest],
+) -> list[ExperimentCellResponse]:
+    async with get_session() as session:
+        response = await add_experiment_cells_core(
+            session,
+            experiment_id=experiment_id,
+            cells=payload,
+        )
+        await session.commit()
+        return response
+
+
+@api.patch(
+    "/experiments/{experiment_id}/cells/{cell_id}",
+    response_model=ExperimentCellResponse,
+)
+async def patch_experiment_cell_endpoint(
+    experiment_id: str,
+    cell_id: str,
+    payload: ExperimentCellPatchRequest,
+) -> ExperimentCellResponse:
+    async with get_session() as session:
+        response = await patch_experiment_cell_core(
+            session,
+            experiment_id=experiment_id,
+            cell_id=cell_id,
+            target_n_trials=payload.target_n_trials,
+        )
+        await session.commit()
+        return response
+
+
+@api.delete("/experiments/{experiment_id}/cells/{cell_id}")
+async def delete_experiment_cell_endpoint(
+    experiment_id: str,
+    cell_id: str,
+) -> dict[str, str]:
+    async with get_session() as session:
+        response = await delete_experiment_cell_core(
+            session,
+            experiment_id=experiment_id,
+            cell_id=cell_id,
+        )
+        await session.commit()
+        return response
+
+
+@api.post(
+    "/experiments/{experiment_id}/backfill",
+    response_model=ExperimentBackfillResponse,
+)
+async def backfill_experiment(
+    experiment_id: str,
+) -> ExperimentBackfillResponse:
+    async with get_session() as session:
+        try:
+            job_id, enqueued = await backfill_experiment_gaps(
+                session,
+                experiment_id=experiment_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        job = await get_job_core(session, job_id=job_id)
+        await session.commit()
+        return ExperimentBackfillResponse(
+            job_id=job_id,
+            enqueued_trials=enqueued,
+            job=job,
         )
 
 

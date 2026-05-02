@@ -22,6 +22,7 @@ from oddish.db import (
     AnalysisStatus,
     BatchJobKind,
     BatchJobStatus,
+    ExperimentCellModel,
     ExperimentModel,
     TaskModel,
     TaskStatus,
@@ -863,6 +864,155 @@ async def append_trials_to_task(
     task._planned_trials = planned_trials  # type: ignore[attr-defined]
     task._job_id = batch_job.id  # type: ignore[attr-defined]
     return planned_trials
+
+
+async def backfill_experiment_gaps(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    org_id: str | None = None,
+    launched_by_user_id: str | None = None,
+) -> tuple[str, int]:
+    """Enqueue missing trials for an experiment's saved cells.
+
+    Experiment cells are selections over global evidence, so gaps are computed
+    by matching trials on ``(task_version_id, agent_equivalence_key)`` rather
+    than by ``trials.experiment_id``.
+    """
+    experiment_query = select(ExperimentModel).where(ExperimentModel.id == experiment_id)
+    if org_id is not None:
+        experiment_query = experiment_query.where(ExperimentModel.org_id == org_id)
+    experiment = (await session.execute(experiment_query)).scalar_one_or_none()
+    if experiment is None:
+        raise ValueError("Experiment not found")
+
+    rows = (
+        await session.execute(
+            select(ExperimentCellModel, TaskVersionModel, TaskModel)
+            .join(
+                TaskVersionModel,
+                TaskVersionModel.id == ExperimentCellModel.task_version_id,
+            )
+            .join(TaskModel, TaskModel.id == TaskVersionModel.task_id)
+            .where(ExperimentCellModel.experiment_id == experiment_id)
+            .order_by(
+                TaskModel.name.asc(),
+                TaskVersionModel.version.asc(),
+                ExperimentCellModel.provider.asc(),
+                ExperimentCellModel.model.asc(),
+                ExperimentCellModel.harness.asc(),
+            )
+        )
+    ).all()
+
+    gap_specs: list[AgentCellSpec] = []
+    gaps: list[tuple[ExperimentCellModel, TaskVersionModel, TaskModel, int]] = []
+    for cell, version, task in rows:
+        if org_id is not None and task.org_id != org_id:
+            continue
+        have = await session.scalar(
+            select(func.count(TrialModel.id)).where(
+                TrialModel.task_version_id == cell.task_version_id,
+                TrialModel.agent_equivalence_key == cell.agent_equivalence_key,
+                TrialModel.status.in_((TrialStatus.SUCCESS, TrialStatus.FAILED)),
+            )
+        )
+        gap = max(0, int(cell.target_n_trials) - int(have or 0))
+        if gap == 0:
+            continue
+        gaps.append((cell, version, task, gap))
+        gap_specs.append(
+            AgentCellSpec(
+                task_version_id=cell.task_version_id,
+                harness=cell.harness,
+                model=cell.model,
+                provider=cell.provider,
+                n_trials=gap,
+            )
+        )
+
+    batch_job = create_batch_job(
+        session,
+        kind=BatchJobKind.EXPERIMENT_BACKFILL,
+        status=BatchJobStatus.RUNNING if gaps else BatchJobStatus.SUCCESS,
+        org_id=org_id,
+        launched_by_user_id=launched_by_user_id,
+        triggered_by_experiment_id=experiment_id,
+        finished=not gaps,
+    )
+    job_cell_rows = add_job_cells(session, job=batch_job, cells=gap_specs)
+
+    next_index_by_task_id: dict[str, int] = {}
+    enqueued = 0
+    for cell, version, task, gap in gaps:
+        if task.id not in next_index_by_task_id:
+            trial_ids = (
+                await session.execute(
+                    select(TrialModel.id)
+                    .where(TrialModel.task_id == task.id)
+                    .order_by(TrialModel.id.asc())
+                )
+            ).scalars().all()
+            reserved = await _get_reserved_trial_ids(session, task.id)
+            next_index_by_task_id[task.id] = _get_next_trial_index_from_ids(
+                task.id,
+                list(trial_ids) + reserved,
+            )
+
+        agent_equivalence_key = compute_agent_equivalence_key(
+            cell.harness,
+            cell.model,
+            cell.provider,
+        )
+        job_cell = job_cell_rows[(cell.task_version_id, agent_equivalence_key)]
+        queue_key = settings.get_queue_key_for_trial(cell.harness, cell.model)
+        for _ in range(gap):
+            trial_index = next_index_by_task_id[task.id]
+            next_index_by_task_id[task.id] += 1
+            trial_id = f"{task.id}-{trial_index}"
+            await enqueue_trial_worker_job(
+                session,
+                trial_id=trial_id,
+                queue_key=queue_key,
+                org_id=task.org_id,
+                max_attempts=6,
+                job_id=batch_job.id,
+                subject_table="job_cells",
+                subject_id=job_cell.id,
+                payload={
+                    "trial_id": trial_id,
+                    "trial_name": f"{task.name}-{trial_index}",
+                    "task_id": task.id,
+                    "task_version_id": version.id,
+                    "experiment_id": None,
+                    "job_id": batch_job.id,
+                    "job_cell_id": job_cell.id,
+                    "agent": cell.harness,
+                    "provider": cell.provider,
+                    "queue_key": queue_key,
+                    "model": cell.model,
+                    "agent_equivalence_key": agent_equivalence_key,
+                    "timeout_minutes": None,
+                    "environment": None,
+                    "harbor_config": None,
+                },
+            )
+            enqueued += 1
+
+        if task.status in (
+            TaskStatus.PENDING,
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.ANALYZING,
+            TaskStatus.VERDICT_PENDING,
+        ):
+            task.status = TaskStatus.RUNNING
+            task.finished_at = None
+            if task.started_at is None:
+                task.started_at = utcnow()
+
+    await session.flush()
+    return batch_job.id, enqueued
 
 
 # =============================================================================

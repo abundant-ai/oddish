@@ -10,19 +10,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from oddish.core.agent_identity import compute_agent_equivalence_key
+from oddish.config import settings
 from oddish.db import (
     BatchJobKind,
     BatchJobStatus,
     ExperimentCellModel,
+    ExperimentModel,
     JobCellModel,
     JobModel,
+    TaskModel,
+    TaskVersionModel,
     TrialModel,
     WorkerJobModel,
     WorkerJobStatus,
     generate_id,
     utcnow,
 )
-from oddish.schemas import JobCellResponse, JobResponse
+from oddish.schemas import (
+    ExperimentCellCreateRequest,
+    ExperimentCellResponse,
+    ExperimentCreateResponse,
+    JobCellResponse,
+    JobResponse,
+)
 
 
 ACTIVE_WORKER_JOB_STATUSES = {
@@ -148,6 +158,209 @@ async def add_experiment_cells(
             )
         )
         await session.execute(stmt)
+
+
+async def _require_experiment(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    org_id: str | None = None,
+) -> ExperimentModel:
+    query = select(ExperimentModel).where(ExperimentModel.id == experiment_id)
+    if org_id is not None:
+        query = query.where(ExperimentModel.org_id == org_id)
+    experiment = (await session.execute(query)).scalar_one_or_none()
+    if experiment is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return experiment
+
+
+async def _build_agent_cell_specs(
+    session: AsyncSession,
+    *,
+    cells: Iterable[ExperimentCellCreateRequest],
+    org_id: str | None = None,
+) -> list[AgentCellSpec]:
+    raw_cells = list(cells)
+    if not raw_cells:
+        return []
+
+    version_ids = {cell.task_version_id for cell in raw_cells}
+    version_query = (
+        select(TaskVersionModel.id)
+        .join(TaskModel, TaskModel.id == TaskVersionModel.task_id)
+        .where(TaskVersionModel.id.in_(version_ids))
+    )
+    if org_id is not None:
+        version_query = version_query.where(TaskModel.org_id == org_id)
+    existing_version_ids = set((await session.execute(version_query)).scalars().all())
+    missing = sorted(version_ids - existing_version_ids)
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task version not found: {missing[0]}",
+        )
+
+    specs: list[AgentCellSpec] = []
+    for cell in raw_cells:
+        harness = cell.agent.harness.strip()
+        model = settings.normalize_trial_model(harness, cell.agent.model.strip())
+        provider = (cell.agent.provider or "").strip() or settings.get_provider_for_trial(
+            harness,
+            model,
+        )
+        specs.append(
+            AgentCellSpec(
+                task_version_id=cell.task_version_id,
+                harness=harness,
+                model=model,
+                provider=provider,
+                n_trials=cell.target_n_trials,
+            )
+        )
+    return specs
+
+
+async def _upsert_experiment_cells(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    specs: Iterable[AgentCellSpec],
+) -> None:
+    for spec in specs:
+        stmt = (
+            pg_insert(ExperimentCellModel)
+            .values(
+                id=generate_id(),
+                experiment_id=experiment_id,
+                task_version_id=spec.task_version_id,
+                agent_equivalence_key=spec.agent_equivalence_key,
+                harness=spec.harness,
+                model=spec.model,
+                provider=spec.provider,
+                target_n_trials=spec.n_trials,
+            )
+            .on_conflict_do_update(
+                index_elements=[
+                    "experiment_id",
+                    "task_version_id",
+                    "agent_equivalence_key",
+                ],
+                set_={
+                    "harness": spec.harness,
+                    "model": spec.model,
+                    "provider": spec.provider,
+                    "target_n_trials": spec.n_trials,
+                },
+            )
+        )
+        await session.execute(stmt)
+
+
+async def create_experiment_core(
+    session: AsyncSession,
+    *,
+    name: str,
+    cells: Iterable[ExperimentCellCreateRequest],
+    org_id: str | None = None,
+) -> ExperimentCreateResponse:
+    normalized_name = name.strip()
+    if not normalized_name:
+        raise HTTPException(status_code=400, detail="Experiment name cannot be empty")
+
+    specs = await _build_agent_cell_specs(session, cells=cells, org_id=org_id)
+    experiment = ExperimentModel(
+        id=generate_id(),
+        name=normalized_name,
+        org_id=org_id,
+    )
+    session.add(experiment)
+    await session.flush()
+
+    await _upsert_experiment_cells(
+        session,
+        experiment_id=experiment.id,
+        specs=specs,
+    )
+    await session.flush()
+
+    from oddish.core.evidence import get_experiment_cells_core
+
+    return ExperimentCreateResponse(
+        id=experiment.id,
+        name=experiment.name,
+        cells=await get_experiment_cells_core(
+            session,
+            experiment_id=experiment.id,
+            org_id=org_id,
+        ),
+    )
+
+
+async def add_experiment_cells_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    cells: Iterable[ExperimentCellCreateRequest],
+    org_id: str | None = None,
+) -> list[ExperimentCellResponse]:
+    await _require_experiment(session, experiment_id=experiment_id, org_id=org_id)
+    specs = await _build_agent_cell_specs(session, cells=cells, org_id=org_id)
+    await _upsert_experiment_cells(
+        session,
+        experiment_id=experiment_id,
+        specs=specs,
+    )
+    await session.flush()
+
+    rows = (
+        (
+            await session.execute(
+                select(ExperimentCellModel)
+                .where(ExperimentCellModel.experiment_id == experiment_id)
+                .order_by(
+                    ExperimentCellModel.created_at.desc(),
+                    ExperimentCellModel.id.desc(),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [ExperimentCellResponse.model_validate(row) for row in rows]
+
+
+async def patch_experiment_cell_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    cell_id: str,
+    target_n_trials: int,
+    org_id: str | None = None,
+) -> ExperimentCellResponse:
+    await _require_experiment(session, experiment_id=experiment_id, org_id=org_id)
+    cell = await session.get(ExperimentCellModel, cell_id)
+    if cell is None or cell.experiment_id != experiment_id:
+        raise HTTPException(status_code=404, detail="Experiment cell not found")
+    cell.target_n_trials = target_n_trials
+    await session.flush()
+    return ExperimentCellResponse.model_validate(cell)
+
+
+async def delete_experiment_cell_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    cell_id: str,
+    org_id: str | None = None,
+) -> dict[str, str]:
+    await _require_experiment(session, experiment_id=experiment_id, org_id=org_id)
+    cell = await session.get(ExperimentCellModel, cell_id)
+    if cell is None or cell.experiment_id != experiment_id:
+        raise HTTPException(status_code=404, detail="Experiment cell not found")
+    await session.delete(cell)
+    await session.flush()
+    return {"status": "deleted", "cell_id": cell_id}
 
 
 @dataclass(frozen=True)

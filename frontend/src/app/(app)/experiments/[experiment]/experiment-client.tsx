@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ExperimentShareButton } from "@/components/experiment-share-button";
+import { ExperimentCellsPanel } from "@/components/experiment-cells-panel";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import type { Task, Trial } from "@/lib/types";
 import { Loader2, Pencil } from "lucide-react";
@@ -125,7 +126,7 @@ export function ExperimentClientPage({
       const offset = pageIndex * TRIALS_BATCH_SIZE;
       return `/api/experiments/${encodedId}/tasks?limit=${TRIALS_BATCH_SIZE}&offset=${offset}&include_trials=true`;
     },
-    [experimentId, encodedId],
+    [experimentId, encodedId]
   );
 
   const {
@@ -143,7 +144,7 @@ export function ExperimentClientPage({
   });
   const trialsLastPage = trialPages?.[trialPages.length - 1] ?? null;
   const hasMoreTrials = Boolean(
-    trialsLastPage && trialsLastPage.length === TRIALS_BATCH_SIZE,
+    trialsLastPage && trialsLastPage.length === TRIALS_BATCH_SIZE
   );
 
   // Merge lightweight task shells with trial-enriched data.  The backend
@@ -196,7 +197,7 @@ export function ExperimentClientPage({
   const totalTaskCount = lightweightTasks?.length ?? 0;
   const remainingTrialTaskCount = Math.max(
     0,
-    totalTaskCount - trialsLoadedCount,
+    totalTaskCount - trialsLoadedCount
   );
   const canLoadMoreTrials =
     hasMoreTrials && !isLoadingTrialPages && !isValidatingTrials;
@@ -211,7 +212,7 @@ export function ExperimentClientPage({
     const hasActiveTasks = tasksForExperiment.some((task) => {
       const activeTrials = Math.max(
         0,
-        task.total - task.completed - task.failed,
+        task.total - task.completed - task.failed
       );
       return activeTrials > 0 || ACTIVE_TASK_STATUSES.has(task.status);
     });
@@ -228,7 +229,7 @@ export function ExperimentClientPage({
     async (_taskIds?: string[]) => {
       await Promise.all([mutateLightweight(), mutateTrials()]);
     },
-    [mutateLightweight, mutateTrials],
+    [mutateLightweight, mutateTrials]
   );
 
   const loadMoreTrials = useCallback(() => {
@@ -327,13 +328,13 @@ export function ExperimentClientPage({
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: nextName }),
-        },
+        }
       );
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         throw new Error(
-          errorData.detail || errorData.error || "Failed to rename experiment",
+          errorData.detail || errorData.error || "Failed to rename experiment"
         );
       }
 
@@ -341,14 +342,14 @@ export function ExperimentClientPage({
       await mutateLightweight(
         (tasks) =>
           tasks?.map((task) => ({ ...task, experiment_name: nextName })),
-        { revalidate: false },
+        { revalidate: false }
       );
       await mutateTrials(
         (pages) =>
           pages?.map((page) =>
-            page?.map((task) => ({ ...task, experiment_name: nextName })),
+            page?.map((task) => ({ ...task, experiment_name: nextName }))
           ),
-        { revalidate: false },
+        { revalidate: false }
       );
       void refreshTaskPages();
     } catch (err) {
@@ -366,18 +367,18 @@ export function ExperimentClientPage({
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       throw new Error(
-        errorData.detail || errorData.error || "Failed to delete task",
+        errorData.detail || errorData.error || "Failed to delete task"
       );
     }
 
     await mutateLightweight(
       (tasks) => tasks?.filter((item) => item.id !== task.id),
-      { revalidate: false },
+      { revalidate: false }
     );
     await mutateTrials(
       (pages) =>
         pages?.map((page) => page?.filter((item) => item.id !== task.id)),
-      { revalidate: false },
+      { revalidate: false }
     );
     await refreshTaskPages();
   };
@@ -390,7 +391,7 @@ export function ExperimentClientPage({
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       throw new Error(
-        errorData.detail || errorData.error || "Failed to delete trial",
+        errorData.detail || errorData.error || "Failed to delete trial"
       );
     }
 
@@ -398,13 +399,13 @@ export function ExperimentClientPage({
       tasks?.map((task) =>
         task.trials?.some((t) => t.id === trial.id)
           ? { ...task, trials: task.trials.filter((t) => t.id !== trial.id) }
-          : task,
+          : task
       );
 
     await mutateLightweight(filterTrials, { revalidate: false });
     await mutateTrials(
       (pages) => pages?.map((page) => filterTrials(page) ?? page),
-      { revalidate: false },
+      { revalidate: false }
     );
     await refreshTaskPages();
   };
@@ -431,150 +432,153 @@ export function ExperimentClientPage({
           </AlertDescription>
         </Alert>
       ) : (
-        <ExperimentDetailView
-          experimentId={experimentId}
-          tasksForExperiment={tasksForExperiment}
-          isLoading={isLoading}
-          isLoadingTrials={isLoadingTrials}
-          hasError={Boolean(lightweightError)}
-          headerLeft={
-            isEditingName ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  value={nameDraft}
-                  onChange={(event) => setNameDraft(event.target.value)}
-                  className="h-10 w-[320px] border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] font-mono text-[22px] font-semibold tracking-[-0.02em]"
-                  placeholder="Experiment name"
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  className="h-8"
-                  onClick={handleRename}
-                  disabled={isSavingName}
-                >
-                  {isSavingName ? "Saving..." : "Save"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-8"
-                  onClick={() => setIsEditingName(false)}
-                  disabled={isSavingName}
-                >
-                  Cancel
-                </Button>
-              </div>
-            ) : (
-              <div className="flex min-w-0 items-center gap-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={handleCopyExperimentName}
-                  className="h-auto min-w-0 max-w-full cursor-pointer justify-start truncate rounded-sm bg-transparent p-0 pb-1 text-left font-mono text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)] transition hover:bg-transparent hover:text-[color:var(--paper-ink-2)]"
-                  aria-label={`Copy experiment name ${displayName}`}
-                  title={
-                    copiedExperimentName
-                      ? "Copied"
-                      : "Click to copy experiment name"
-                  }
-                >
-                  <h1 className="truncate">{displayName}</h1>
-                </Button>
-                {copiedExperimentName && (
-                  <span
-                    aria-live="polite"
-                    className="font-mono text-[11px] text-[color:var(--paper-ink-3)]"
+        <>
+          <ExperimentCellsPanel experimentId={experimentId} />
+          <ExperimentDetailView
+            experimentId={experimentId}
+            tasksForExperiment={tasksForExperiment}
+            isLoading={isLoading}
+            isLoadingTrials={isLoadingTrials}
+            hasError={Boolean(lightweightError)}
+            headerLeft={
+              isEditingName ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Input
+                    value={nameDraft}
+                    onChange={(event) => setNameDraft(event.target.value)}
+                    className="h-10 w-[320px] border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] font-mono text-[22px] font-semibold tracking-[-0.02em]"
+                    placeholder="Experiment name"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-8"
+                    onClick={handleRename}
+                    disabled={isSavingName}
                   >
-                    copied
-                  </span>
-                )}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setIsEditingName(true)}
-                  disabled={!experimentId}
-                  className="h-6 w-6 rounded-sm text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] disabled:opacity-50"
-                  aria-label="Rename experiment"
-                  title="Rename experiment"
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            )
-          }
-          headerStatus={
-            isLoadingTrials ? (
-              <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                <span>
-                  Loading trials
-                  {lightweightTasks
-                    ? ` ${trialsLoadedCount}/${lightweightTasks.length}`
-                    : ""}
-                  …
-                </span>
-              </div>
-            ) : null
-          }
-          headerRight={
-            experimentId ? (
-              <ExperimentShareButton
-                experimentId={experimentId}
-                canManageShare={canManageExperimentShare}
-              />
-            ) : null
-          }
-          inlineAlert={
-            <>
-              {nameError ? (
-                <Alert variant="destructive">
-                  <AlertTitle>Rename failed</AlertTitle>
-                  <AlertDescription>{nameError}</AlertDescription>
-                </Alert>
-              ) : null}
-              {remainingTrialTaskCount > 0 ? (
-                <Alert>
-                  <AlertTitle>Trial details are loading on demand</AlertTitle>
-                  <AlertDescription className="flex flex-wrap items-center gap-2">
-                    <span>
-                      Loaded compact trial data for {trialsLoadedCount}/
-                      {totalTaskCount} tasks.
+                    {isSavingName ? "Saving..." : "Save"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8"
+                    onClick={() => setIsEditingName(false)}
+                    disabled={isSavingName}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex min-w-0 items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={handleCopyExperimentName}
+                    className="h-auto max-w-full min-w-0 cursor-pointer justify-start truncate rounded-sm bg-transparent p-0 pb-1 text-left font-mono text-[26px] leading-[1.25] font-semibold tracking-[-0.02em] text-[color:var(--paper-ink)] transition hover:bg-transparent hover:text-[color:var(--paper-ink-2)]"
+                    aria-label={`Copy experiment name ${displayName}`}
+                    title={
+                      copiedExperimentName
+                        ? "Copied"
+                        : "Click to copy experiment name"
+                    }
+                  >
+                    <h1 className="truncate">{displayName}</h1>
+                  </Button>
+                  {copiedExperimentName && (
+                    <span
+                      aria-live="polite"
+                      className="font-mono text-[11px] text-[color:var(--paper-ink-3)]"
+                    >
+                      copied
                     </span>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="h-7"
-                      onClick={loadMoreTrials}
-                      disabled={!canLoadMoreTrials}
-                    >
-                      Load next{" "}
-                      {Math.min(TRIALS_BATCH_SIZE, remainingTrialTaskCount)}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-7"
-                      onClick={loadAllTrials}
-                      disabled={!canLoadAllTrials}
-                    >
-                      Load all
-                    </Button>
-                  </AlertDescription>
-                </Alert>
-              ) : null}
-            </>
-          }
-          readOnly={false}
-          allowRetry
-          onTaskDelete={handleDeleteTask}
-          onTrialDelete={handleDeleteTrial}
-          onRerun={refreshTaskPages}
-        />
+                  )}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setIsEditingName(true)}
+                    disabled={!experimentId}
+                    className="h-6 w-6 rounded-sm text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] disabled:opacity-50"
+                    aria-label="Rename experiment"
+                    title="Rename experiment"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              )
+            }
+            headerStatus={
+              isLoadingTrials ? (
+                <div className="text-muted-foreground flex items-center gap-1.5 text-[10px]">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span>
+                    Loading trials
+                    {lightweightTasks
+                      ? ` ${trialsLoadedCount}/${lightweightTasks.length}`
+                      : ""}
+                    …
+                  </span>
+                </div>
+              ) : null
+            }
+            headerRight={
+              experimentId ? (
+                <ExperimentShareButton
+                  experimentId={experimentId}
+                  canManageShare={canManageExperimentShare}
+                />
+              ) : null
+            }
+            inlineAlert={
+              <>
+                {nameError ? (
+                  <Alert variant="destructive">
+                    <AlertTitle>Rename failed</AlertTitle>
+                    <AlertDescription>{nameError}</AlertDescription>
+                  </Alert>
+                ) : null}
+                {remainingTrialTaskCount > 0 ? (
+                  <Alert>
+                    <AlertTitle>Trial details are loading on demand</AlertTitle>
+                    <AlertDescription className="flex flex-wrap items-center gap-2">
+                      <span>
+                        Loaded compact trial data for {trialsLoadedCount}/
+                        {totalTaskCount} tasks.
+                      </span>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="h-7"
+                        onClick={loadMoreTrials}
+                        disabled={!canLoadMoreTrials}
+                      >
+                        Load next{" "}
+                        {Math.min(TRIALS_BATCH_SIZE, remainingTrialTaskCount)}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7"
+                        onClick={loadAllTrials}
+                        disabled={!canLoadAllTrials}
+                      >
+                        Load all
+                      </Button>
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+              </>
+            }
+            readOnly={false}
+            allowRetry
+            onTaskDelete={handleDeleteTask}
+            onTrialDelete={handleDeleteTrial}
+            onRerun={refreshTaskPages}
+          />
+        </>
       )}
     </div>
   );

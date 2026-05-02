@@ -156,8 +156,8 @@ export interface Task {
   github_username?: string | null;
   github_meta?: Record<string, string> | null;
   task_path: string;
-  experiment_id: string;
-  experiment_name: string;
+  experiment_id: string | null;
+  experiment_name: string | null;
   experiment_is_public: boolean;
   total: number;
   completed: number;
@@ -214,6 +214,94 @@ export interface TaskBrowseResponse {
   limit: number;
   offset: number;
   has_more: boolean;
+}
+
+export interface TaskVersion {
+  id: string;
+  task_id: string;
+  version: number;
+  task_path: string;
+  task_s3_key?: string | null;
+  content_hash?: string | null;
+  message?: string | null;
+  created_by_user_id?: string | null;
+  created_at: string;
+}
+
+export interface AgentIdentity {
+  harness: string;
+  model: string;
+  provider: string;
+}
+
+export interface EvidenceCell {
+  task_version_id: string;
+  agent_equivalence_key: string;
+  harness: string;
+  model: string;
+  provider: string;
+  n_trials: number;
+  mean_reward?: number | null;
+  last_run_at?: string | null;
+}
+
+export interface ExperimentCell {
+  id: string;
+  experiment_id: string;
+  task_version_id: string;
+  agent_equivalence_key: string;
+  harness: string;
+  model: string;
+  provider: string;
+  target_n_trials: number;
+  created_at: string;
+}
+
+export interface ResolvedExperimentCell {
+  cell: ExperimentCell;
+  have_n_trials: number;
+  mean_reward?: number | null;
+  last_run_at?: string | null;
+  trial_ids: string[];
+}
+
+export interface ExperimentCreateResponse {
+  id: string;
+  name: string;
+  cells: ResolvedExperimentCell[];
+}
+
+export interface JobCell {
+  id: string;
+  task_version_id: string;
+  agent_equivalence_key: string;
+  harness: string;
+  model: string;
+  provider: string;
+  n_trials: number;
+  created_at: string;
+}
+
+export interface BatchJob {
+  id: string;
+  kind: "validation" | "experiment_backfill" | "ad_hoc" | string;
+  status: "queued" | "running" | "success" | "failed" | "cancelled" | string;
+  launched_by_user_id?: string | null;
+  launched_at: string;
+  finished_at?: string | null;
+  triggered_by_experiment_id?: string | null;
+  org_id?: string | null;
+  cells: JobCell[];
+  worker_jobs_count: number;
+  active_worker_jobs_count: number;
+  trials_count: number;
+  created_at: string;
+}
+
+export interface ExperimentBackfillResponse {
+  job_id: string;
+  enqueued_trials: number;
+  job: BatchJob;
 }
 
 // Queue statistics keyed by queue key

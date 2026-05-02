@@ -8,16 +8,16 @@ import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import Image from "next/image";
 
-function RedirectToDashboard() {
+function RedirectToTasks() {
   const router = useRouter();
 
   useEffect(() => {
-    router.replace("/dashboard");
+    router.replace("/tasks");
   }, [router]);
 
   return (
-    <div className="flex flex-1 items-center justify-center bg-background">
-      <p className="text-muted-foreground">Redirecting to dashboard...</p>
+    <div className="bg-background flex flex-1 items-center justify-center">
+      <p className="text-muted-foreground">Redirecting to tasks...</p>
     </div>
   );
 }
@@ -82,11 +82,11 @@ export default function LandingPage() {
   return (
     <>
       <Show when="signed-in">
-        <RedirectToDashboard />
+        <RedirectToTasks />
       </Show>
 
       <Show when="signed-out">
-        <div className="flex flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(133,184,92,0.16),transparent_34%),radial-gradient(circle_at_80%_20%,rgba(111,136,180,0.12),transparent_28%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--background)))] text-foreground">
+        <div className="text-foreground flex flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(133,184,92,0.16),transparent_34%),radial-gradient(circle_at_80%_20%,rgba(111,136,180,0.12),transparent_28%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--background)))]">
           {/* Header */}
           <header className="w-full border-b border-emerald-700/15 px-6 py-3 dark:border-emerald-400/10">
             <div className="mx-auto flex max-w-5xl items-center justify-between">
@@ -102,11 +102,11 @@ export default function LandingPage() {
               </div>
               <div className="flex items-center gap-3">
                 <ThemeToggle />
-                <SignUpButton mode="modal" fallbackRedirectUrl="/dashboard">
+                <SignUpButton mode="modal" fallbackRedirectUrl="/tasks">
                   <Button
                     variant="outline"
                     size="sm"
-                    className="border-emerald-700/25 bg-background/70 shadow-xs hover:border-emerald-600/35 hover:bg-emerald-500/10 dark:border-emerald-400/20 dark:hover:border-emerald-300/30 dark:hover:bg-emerald-400/10"
+                    className="bg-background/70 border-emerald-700/25 shadow-xs hover:border-emerald-600/35 hover:bg-emerald-500/10 dark:border-emerald-400/20 dark:hover:border-emerald-300/30 dark:hover:bg-emerald-400/10"
                   >
                     Sign Up
                   </Button>

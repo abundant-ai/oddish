@@ -301,6 +301,37 @@ class ExperimentUpdateRequest(BaseModel):
     name: str = Field(..., description="Experiment name")
 
 
+class AgentRequest(BaseModel):
+    """Agent identity used by task-first experiment cells."""
+
+    harness: str = Field(..., min_length=1)
+    model: str = Field(..., min_length=1)
+    provider: str | None = Field(
+        None,
+        description="Optional provider override. Omit to infer from harness/model.",
+    )
+
+    @model_validator(mode="after")
+    def normalize_model_aliases(self) -> "AgentRequest":
+        self.model = normalize_model_id(self.model)
+        return self
+
+
+class ExperimentCellCreateRequest(BaseModel):
+    task_version_id: str = Field(..., min_length=1)
+    agent: AgentRequest
+    target_n_trials: int = Field(1, ge=0)
+
+
+class ExperimentCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    cells: list[ExperimentCellCreateRequest] = Field(default_factory=list)
+
+
+class ExperimentCellPatchRequest(BaseModel):
+    target_n_trials: int = Field(..., ge=0)
+
+
 # =============================================================================
 # Response Schemas
 # =============================================================================
@@ -646,6 +677,18 @@ class TaskBatchCancelRequest(BaseModel):
 class ExperimentUpdateResponse(BaseModel):
     id: str
     name: str
+
+
+class ExperimentCreateResponse(BaseModel):
+    id: str
+    name: str
+    cells: list["ResolvedExperimentCellResponse"] = Field(default_factory=list)
+
+
+class ExperimentBackfillResponse(BaseModel):
+    job_id: str
+    enqueued_trials: int
+    job: JobResponse
 
 
 class TaskBrowseExperiment(BaseModel):

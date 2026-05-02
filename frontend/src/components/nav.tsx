@@ -16,8 +16,9 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
   BookOpen,
+  Beaker,
   ChevronDown,
-  FileText,
+  LayoutDashboard,
   LogOut,
   Shield,
   User,
@@ -29,11 +30,32 @@ export function Nav() {
   const { signOut } = useClerk();
 
   return (
-    <nav className="sticky top-0 z-50 border-b border-[#6f88b4]/15 bg-card/80 backdrop-blur-xs">
+    <nav className="bg-card/80 sticky top-0 z-50 border-b border-[#6f88b4]/15 backdrop-blur-xs">
       <div className="mx-auto flex h-14 max-w-(--breakpoint-2xl) items-center px-4">
         <div className="flex w-full items-center justify-between">
           {/* Left side - primary nav */}
           <div className="flex items-center gap-4">
+            <Button
+              variant={pathname?.startsWith("/tasks") ? "secondary" : "ghost"}
+              size="sm"
+              asChild
+              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+            >
+              <Link
+                href="/tasks"
+                className="flex items-center gap-2"
+                data-active={pathname?.startsWith("/tasks")}
+              >
+                <Image
+                  src="/oddish.png"
+                  alt="Oddish"
+                  width={24}
+                  height={24}
+                  className="drop-shadow-xs"
+                />
+                <span>Tasks</span>
+              </Link>
+            </Button>
             <Button
               variant={pathname === "/dashboard" ? "secondary" : "ghost"}
               size="sm"
@@ -45,29 +67,25 @@ export function Nav() {
                 className="flex items-center gap-2"
                 data-active={pathname === "/dashboard"}
               >
-                <Image
-                  src="/oddish.png"
-                  alt="Oddish"
-                  width={24}
-                  height={24}
-                  className="drop-shadow-xs"
-                />
+                <LayoutDashboard className="h-4 w-4" />
                 <span>Dashboard</span>
               </Link>
             </Button>
             <Button
-              variant={pathname === "/tasks" ? "secondary" : "ghost"}
+              variant={
+                pathname?.startsWith("/experiments") ? "secondary" : "ghost"
+              }
               size="sm"
               asChild
               className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
             >
               <Link
-                href="/tasks"
+                href="/experiments/new"
                 className="flex items-center gap-2"
-                data-active={pathname === "/tasks"}
+                data-active={pathname?.startsWith("/experiments")}
               >
-                <FileText className="h-4 w-4" />
-                <span>Tasks</span>
+                <Beaker className="h-4 w-4" />
+                <span>Experiments</span>
               </Link>
             </Button>
           </div>
@@ -80,7 +98,7 @@ export function Nav() {
                 variant="ghost"
                 size="sm"
                 asChild
-                className="gap-2 text-foreground hover:text-foreground"
+                className="text-foreground hover:text-foreground gap-2"
               >
                 <a
                   href="https://github.com/abundant-ai/oddish/blob/main/DOCS.md"
@@ -97,7 +115,7 @@ export function Nav() {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-auto rounded-full border border-[#6f88b4]/20 bg-background/70 px-2 py-1 text-sm hover:border-[#85b85c]/20 hover:bg-muted"
+                    className="bg-background/70 hover:bg-muted h-auto rounded-full border border-[#6f88b4]/20 px-2 py-1 text-sm hover:border-[#85b85c]/20"
                   >
                     <Avatar className="h-8 w-8">
                       <AvatarImage
@@ -111,7 +129,7 @@ export function Nav() {
                     <span className="hidden md:inline">
                       {user?.firstName ?? user?.fullName ?? "Account"}
                     </span>
-                    <ChevronDown className="hidden h-4 w-4 text-muted-foreground sm:inline" />
+                    <ChevronDown className="text-muted-foreground hidden h-4 w-4 sm:inline" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
@@ -122,7 +140,7 @@ export function Nav() {
                     <p className="text-sm font-medium">
                       {user?.fullName ?? user?.username ?? "Account"}
                     </p>
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-muted-foreground text-xs">
                       {user?.primaryEmailAddress?.emailAddress ?? "—"}
                     </p>
                   </div>
@@ -130,7 +148,7 @@ export function Nav() {
                   <DropdownMenuItem asChild>
                     <Link
                       href="/settings"
-                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden hover:bg-muted focus:bg-muted"
+                      className="hover:bg-muted focus:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden"
                     >
                       <User className="h-4 w-4" />
                       Settings
@@ -139,7 +157,7 @@ export function Nav() {
                   <DropdownMenuItem asChild>
                     <Link
                       href="/admin"
-                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden hover:bg-muted focus:bg-muted"
+                      className="hover:bg-muted focus:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden"
                     >
                       <Shield className="h-4 w-4" />
                       Admin
@@ -148,7 +166,7 @@ export function Nav() {
                   <DropdownMenuSeparator className="my-2" />
                   <DropdownMenuItem
                     onSelect={() => signOut()}
-                    className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-red-500 outline-hidden hover:bg-muted focus:bg-muted"
+                    className="hover:bg-muted focus:bg-muted flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-red-500 outline-hidden"
                   >
                     <LogOut className="h-4 w-4" />
                     Sign out
@@ -157,7 +175,7 @@ export function Nav() {
               </DropdownMenu>
             </Show>
             <Show when="signed-out">
-              <SignInButton mode="modal" fallbackRedirectUrl="/dashboard">
+              <SignInButton mode="modal" fallbackRedirectUrl="/tasks">
                 <Button variant="outline" size="sm">
                   Sign in
                 </Button>

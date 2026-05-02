@@ -72,9 +72,9 @@ export default function RootLayout({
   const signInUrl = process.env.NEXT_PUBLIC_CLERK_SIGN_IN_URL;
   const signUpUrl = process.env.NEXT_PUBLIC_CLERK_SIGN_UP_URL;
   const afterSignInUrl =
-    process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL || "/dashboard";
+    process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL || "/tasks";
   const afterSignUpUrl =
-    process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL || "/dashboard";
+    process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL || "/tasks";
 
   const toAbsoluteUrl = (value?: string) => {
     if (!value) {
@@ -101,7 +101,7 @@ export default function RootLayout({
         lang="en"
         className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable}`}
       >
-        <body className="flex min-h-screen flex-col bg-background font-sans text-foreground antialiased">
+        <body className="bg-background text-foreground flex min-h-screen flex-col font-sans antialiased">
           <Providers>
             <div className="flex flex-1 flex-col">{children}</div>
             <Footer />
