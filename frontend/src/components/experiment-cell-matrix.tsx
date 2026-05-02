@@ -679,7 +679,7 @@ function PickTasksDialog({
   excludeIds: Set<string>;
   onAdd: (tasks: BrowseTask[]) => Promise<void>;
 }) {
-  const { data } = useSWR<{ items: BrowseTask[] }>(
+  const { data, error: fetchError } = useSWR<{ items: BrowseTask[] }>(
     open ? "/api/tasks/browse?limit=500&offset=0" : null,
     fetcher,
   );
@@ -688,13 +688,15 @@ function PickTasksDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const rawItems = data?.items ?? [];
   const tasks = useMemo(
     () =>
-      (data?.items ?? []).filter(
+      rawItems.filter(
         (t) =>
-          t.current_version_id !== null && !excludeIds.has(t.current_version_id),
+          t.current_version_id !== null &&
+          !excludeIds.has(t.current_version_id),
       ),
-    [data, excludeIds],
+    [rawItems, excludeIds],
   );
 
   const filtered = useMemo(() => {
@@ -761,10 +763,17 @@ function PickTasksDialog({
             </span>
           </div>
           {!data ? (
-            <Skeleton className="h-48" />
+            fetchError ? (
+              <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-3 text-xs">
+                Failed to load tasks:{" "}
+                {String((fetchError as Error).message)}
+              </div>
+            ) : (
+              <Skeleton className="h-48" />
+            )
           ) : filtered.length === 0 ? (
             <div className="rounded-sm border border-dashed p-6 text-center text-xs text-muted-foreground">
-              {(data?.items ?? []).length === 0 ? (
+              {rawItems.length === 0 ? (
                 <>
                   No tasks have been uploaded for your org yet.
                   <br />
@@ -776,7 +785,15 @@ function PickTasksDialog({
                   </Link>
                 </>
               ) : tasks.length === 0 ? (
-                "All known tasks are already on this experiment."
+                <>
+                  {rawItems.length} task
+                  {rawItems.length === 1 ? "" : "s"} returned, but{" "}
+                  {rawItems.length -
+                    rawItems.filter((t) => t.current_version_id !== null)
+                      .length}{" "}
+                  have no current version and the rest are already on this
+                  experiment.
+                </>
               ) : (
                 "No tasks match the filter."
               )}
