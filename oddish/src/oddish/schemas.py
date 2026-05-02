@@ -314,6 +314,14 @@ class TaskUploadInitRequest(BaseModel):
     message: str | None = Field(
         None, description="Optional description of what changed in this version"
     )
+    force_new_version: bool = Field(
+        False,
+        description=(
+            "Allocate a new task version even when the content hash matches the "
+            "latest existing version. Used when callers need a fresh version "
+            "stamp (e.g. to flip run_analysis on)."
+        ),
+    )
 
 
 class TaskUploadCompleteRequest(BaseModel):

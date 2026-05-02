@@ -379,6 +379,7 @@ def upload_task(
     message: str | None = None,
     user: str | None = None,
     priority: str | None = None,
+    force_new_version: bool = False,
 ) -> dict:
     """Upload a task directory to the API.
 
@@ -404,6 +405,8 @@ def upload_task(
     }
     if message:
         init_body["message"] = message
+    if force_new_version:
+        init_body["force_new_version"] = True
 
     try:
         with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
@@ -481,6 +484,7 @@ def upload_tasks_with_progress(
     quiet: bool = False,
     json_output: bool = False,
     progress_label: str = "Uploading",
+    force_new_version: bool = False,
 ) -> list[dict]:
     """Upload a batch of task directories with a shared progress bar.
 
@@ -501,6 +505,7 @@ def upload_tasks_with_progress(
             message=message,
             user=user,
             priority=priority,
+            force_new_version=force_new_version,
         )
 
     show_progress = not quiet and not json_output

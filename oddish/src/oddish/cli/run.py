@@ -258,6 +258,17 @@ def run(
             help="Force rebuild the environment Docker image",
         ),
     ] = None,
+    force_new_version: Annotated[
+        bool,
+        typer.Option(
+            "--force-new-version",
+            help=(
+                "Allocate a new task version even when the local content is "
+                "unchanged from the latest existing version. Useful when "
+                "appending trials with a different run_analysis setting."
+            ),
+        ),
+    ] = False,
     agent_env: Annotated[
         Optional[list[str]],
         typer.Option(
@@ -531,6 +542,7 @@ def run(
             quiet=quiet,
             json_output=json_output,
             progress_label="Uploading",
+            force_new_version=force_new_version,
         )
         for task_path, result in zip(task_paths, upload_results):
             is_existing = bool(result.get("existing_task", False))
