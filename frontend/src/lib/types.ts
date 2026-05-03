@@ -204,6 +204,7 @@ export interface TaskBrowseItem {
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
   tags?: Record<string, string>;
+  agents_seen?: string[];
 }
 
 export interface TaskBrowseResponse {

@@ -416,6 +416,7 @@ async def browse_tasks(
     tag: list[str] | None = Query(default=None),
     score_bucket: str | None = None,
     experiment_id: str | None = None,
+    agent: str | None = None,
     sort: str | None = None,
 ) -> TaskBrowseResponse:
     """Browse latest task versions with aggregated trial stats."""
@@ -428,6 +429,7 @@ async def browse_tasks(
             tags=tag,
             score_bucket=score_bucket,
             experiment_id=experiment_id,
+            agent=agent,
             sort=sort,
         )
 

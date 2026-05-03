@@ -752,6 +752,10 @@ class TaskBrowseItem(BaseModel):
     reward_total: int
     last_run_at: datetime | None = None
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
+    # Distinct agent harness names seen across all trials for this
+    # task version. Lets the FE filter "tasks claude-code has run on"
+    # without an extra round trip.
+    agents_seen: list[str] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
     tags: dict[str, str] = Field(default_factory=dict)
 
