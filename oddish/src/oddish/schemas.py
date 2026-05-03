@@ -738,6 +738,14 @@ class TaskBrowseTrial(BaseModel):
     error_message: str | None = None
 
 
+class TaskAgentSummary(BaseModel):
+    agent: str
+    attempts: int
+    passed: int
+    avg_reward: float | None = None
+    last_run_at: datetime | None = None
+
+
 class TaskBrowseItem(BaseModel):
     id: str
     name: str
@@ -752,10 +760,11 @@ class TaskBrowseItem(BaseModel):
     reward_total: int
     last_run_at: datetime | None = None
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
-    # Distinct agent harness names seen across all trials for this
-    # task version. Lets the FE filter "tasks claude-code has run on"
-    # without an extra round trip.
-    agents_seen: list[str] = Field(default_factory=list)
+    # Per-harness rollup over the task's current_version trials. Lets
+    # the FE render "claude-code 4/5 · oracle 5/5" rows on a card and
+    # filter to "tasks claude-code has run on" without a second
+    # round trip.
+    agent_summaries: list[TaskAgentSummary] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
     tags: dict[str, str] = Field(default_factory=dict)
 
