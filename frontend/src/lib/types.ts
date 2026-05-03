@@ -188,6 +188,14 @@ interface TaskBrowseTrial {
   error_message?: string | null;
 }
 
+export interface TaskAgentSummary {
+  agent: string;
+  attempts: number;
+  passed: number;
+  avg_reward: number | null;
+  last_run_at: string | null;
+}
+
 export interface TaskBrowseItem {
   id: string;
   name: string;
@@ -204,7 +212,7 @@ export interface TaskBrowseItem {
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
   tags?: Record<string, string>;
-  agents_seen?: string[];
+  agent_summaries?: TaskAgentSummary[];
 }
 
 export interface TaskBrowseResponse {

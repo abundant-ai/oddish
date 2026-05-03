@@ -25,20 +25,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { fetcher } from "@/lib/api";
-import {
-  formatPartialRewardBadgeValue,
-  formatRewardPercent,
-  formatRewardValue,
-  getMatrixStatus,
-  getRewardStyle,
-  STATUS_CONFIG,
-} from "@/lib/status-config";
-import type { TaskBrowseItem, TaskBrowseResponse } from "@/lib/types";
-import {
-  encodeExperimentRouteParam,
-  formatRelativeTime,
-  formatShortDateTime,
-} from "@/lib/utils";
+import type {
+  TaskAgentSummary,
+  TaskBrowseItem,
+  TaskBrowseResponse,
+} from "@/lib/types";
+import { formatRelativeTime } from "@/lib/utils";
 import {
   ChevronLeft,
   ChevronRight,
@@ -47,7 +39,8 @@ import {
   Loader2,
 } from "lucide-react";
 
-const PAGE_SIZE = 25;
+const DEFAULT_PAGE_SIZE = 25;
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 
 type SortKey = "recent" | "name" | "pass" | "trials" | "version";
 type ScoreBucket = "all" | "pass80" | "pass35to80" | "pass0to35" | "untested";
@@ -74,7 +67,7 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
 
 function TaskCardsSkeleton() {
   return (
-    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+    <div className="grid gap-4 md:grid-cols-2">
       {Array.from({ length: 6 }).map((_, index) => (
         <div
           key={index}
@@ -102,118 +95,86 @@ function TaskCardsSkeleton() {
   );
 }
 
-function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
-  if (task.experiments.length === 0) {
-    return <span className="text-muted-foreground">—</span>;
-  }
-
-  return (
-    <div className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
-      {task.experiments.map((experiment, index) => (
-        <span key={experiment.id}>
-          <Link
-            href={`/experiments/${encodeExperimentRouteParam(experiment.id)}`}
-            className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
-          >
-            {experiment.name}
-          </Link>
-          {index < task.experiments.length - 1 ? "," : null}
-        </span>
-      ))}
-    </div>
-  );
+function passToneClass(rate: number | null): string {
+  if (rate == null) return "text-muted-foreground";
+  if (rate >= 0.8) return "text-emerald-600 dark:text-emerald-400";
+  if (rate >= 0.35) return "text-amber-500";
+  return "text-rose-500";
 }
 
-function getLatestTrialStatusCounts(task: TaskBrowseItem) {
-  return task.latest_trials.reduce(
-    (counts, trial) => {
-      const status = getMatrixStatus(
-        trial.status,
-        trial.reward,
-        trial.error_message,
-      );
-      counts[status] += 1;
-      return counts;
-    },
-    {
-      pass: 0,
-      partial: 0,
-      fail: 0,
-      "harness-error": 0,
-      pending: 0,
-      queued: 0,
-      running: 0,
-    } as Record<ReturnType<typeof getMatrixStatus>, number>,
-  );
-}
-
-function PassRateCell({ task }: { task: TaskBrowseItem }) {
-  const rewardSum = task.reward_sum ?? task.reward_success;
-  const hasScore = task.reward_total > 0;
-  const avgScore = hasScore
-    ? Math.round((rewardSum / task.reward_total) * 100)
-    : null;
-  const toneClass =
-    avgScore == null
-      ? "text-muted-foreground"
-      : avgScore >= 80
-        ? "text-[#5c8e43] dark:text-[#85b85c]"
-        : avgScore >= 35
-          ? "text-yellow-400"
-          : "text-rose-400";
-  const statusCounts = getLatestTrialStatusCounts(task);
-  const summaryItems = [
-    { key: "pass", label: "Pass", count: statusCounts.pass },
-    { key: "partial", label: "Partial", count: statusCounts.partial },
-    { key: "fail", label: "Fail", count: statusCounts.fail },
-    {
-      key: "harness-error",
-      label: "Harness",
-      count: statusCounts["harness-error"],
-    },
-    {
-      key: "pending",
-      label: "Pending",
-      count: statusCounts.pending + statusCounts.queued + statusCounts.running,
-    },
-  ] as const;
-
+function AgentSummaryRow({
+  summary,
+  active,
+  onClick,
+}: {
+  summary: TaskAgentSummary;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const rate = summary.attempts > 0 ? summary.passed / summary.attempts : null;
+  const pct = rate == null ? null : Math.round(rate * 100);
+  const tone = passToneClass(rate);
+  const barWidth = rate == null ? 0 : Math.round(rate * 100);
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-baseline justify-between gap-3">
-        <div className={`text-base font-medium leading-none ${toneClass}`}>
-          {avgScore == null ? "—" : `${avgScore}%`}
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          className={`group flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left transition ${
+            active
+              ? "bg-emerald-500/10 ring-1 ring-emerald-500/40"
+              : "hover:bg-muted/60"
+          }`}
+        >
+          <span className="font-mono text-[11px] text-foreground">
+            <span className="opacity-50">@</span>
+            {summary.agent}
+          </span>
+          <span className="ml-auto flex items-center gap-2">
+            <span className="h-1 w-16 overflow-hidden rounded-full bg-muted">
+              <span
+                className={`block h-full ${
+                  rate == null
+                    ? "bg-zinc-300 dark:bg-zinc-600"
+                    : rate >= 0.8
+                      ? "bg-emerald-500"
+                      : rate >= 0.35
+                        ? "bg-amber-500"
+                        : "bg-rose-500"
+                }`}
+                style={{ width: `${barWidth}%` }}
+              />
+            </span>
+            <span className={`font-mono text-[11px] ${tone}`}>
+              {pct == null ? "—" : `${pct}%`}
+            </span>
+            <span className="font-mono text-[10px] text-muted-foreground">
+              {summary.passed}/{summary.attempts}
+            </span>
+          </span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="left" className="space-y-0.5 text-xs">
+        <div className="font-mono text-foreground">@{summary.agent}</div>
+        <div className="text-muted-foreground">
+          {summary.passed} pass · {summary.attempts - summary.passed} fail
         </div>
-        <div className="text-[11px] leading-none text-muted-foreground">
-          {hasScore
-            ? `${rewardSum.toFixed(2)}/${task.reward_total}`
-            : "No completed trials"}
+        {summary.avg_reward != null ? (
+          <div className="text-muted-foreground">
+            avg reward {summary.avg_reward.toFixed(2)}
+          </div>
+        ) : null}
+        {summary.last_run_at ? (
+          <div className="text-muted-foreground">
+            last run {formatRelativeTime(summary.last_run_at)}
+          </div>
+        ) : null}
+        <div className="pt-1 text-[10px] text-muted-foreground">
+          click to {active ? "clear" : "filter to"} this agent
         </div>
-      </div>
-      {task.latest_trials.length > 0 ? (
-        <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px] leading-none text-muted-foreground">
-          {summaryItems.map((item) => {
-            const config = STATUS_CONFIG[item.key];
-            return (
-              <div
-                key={item.key}
-                className="flex items-center gap-1 whitespace-nowrap"
-              >
-                <span
-                  className={`inline-flex h-2 w-2 rounded-full ${config.bracketClass}`}
-                />
-                <span>{item.label}</span>
-                <span className="font-mono text-foreground">{item.count}</span>
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="text-[10px] leading-none text-muted-foreground">
-          No latest-version trials
-        </div>
-      )}
-    </div>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -226,10 +187,10 @@ function TaskCard({
   activeAgent: string;
   onAgentClick: (agent: string) => void;
 }) {
-  const agents = task.agents_seen ?? [];
+  const summaries = task.agent_summaries ?? [];
   return (
     <Card className="border-[#6f88b4]/20 bg-card/95 shadow-xs">
-      <CardHeader className="space-y-2 px-5 pt-5 pb-2">
+      <CardHeader className="px-5 pt-5 pb-2">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
@@ -243,29 +204,6 @@ function TaskCard({
                 v{task.current_version ?? "—"}
               </Badge>
             </div>
-            {agents.length > 0 ? (
-              <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                {agents.map((a) => {
-                  const active = activeAgent === a;
-                  return (
-                    <button
-                      key={a}
-                      type="button"
-                      onClick={() => onAgentClick(active ? "" : a)}
-                      title={`${active ? "Clear" : "Filter to"} agent ${a}`}
-                      className={`inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono text-[10px] transition ${
-                        active
-                          ? "border-emerald-500 bg-emerald-500 text-white"
-                          : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:border-emerald-500 dark:text-emerald-300"
-                      }`}
-                    >
-                      <span className="opacity-60">@</span>
-                      {a}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
           </div>
           <div className="shrink-0 text-right">
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -274,33 +212,30 @@ function TaskCard({
             <div className="mt-1 text-xs">
               {task.last_run_at ? formatRelativeTime(task.last_run_at) : "—"}
             </div>
-            {task.last_run_at ? (
-              <div className="text-[11px] text-muted-foreground">
-                {formatShortDateTime(task.last_run_at)}
-              </div>
-            ) : null}
           </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-3 px-5 pb-5">
-        <div className="grid gap-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)]">
-          <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-              Avg score
-            </div>
-            <div className="mt-1 text-sm font-semibold">
-              <PassRateCell task={task} />
-            </div>
+      <CardContent className="px-5 pb-5">
+        {summaries.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border/60 px-3 py-3 text-center text-[11px] text-muted-foreground">
+            No trials yet for v{task.current_version ?? "—"}.
           </div>
-          <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-              Experiments
-            </div>
-            <div className="mt-0.5">
-              <ExperimentsCell task={task} />
-            </div>
+        ) : (
+          <div className="flex flex-col">
+            {summaries.map((summary) => (
+              <AgentSummaryRow
+                key={summary.agent}
+                summary={summary}
+                active={activeAgent === summary.agent}
+                onClick={() =>
+                  onAgentClick(
+                    activeAgent === summary.agent ? "" : summary.agent,
+                  )
+                }
+              />
+            ))}
           </div>
-        </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -368,22 +303,32 @@ function TaskListView({
                   {t.total_trials}
                 </TableCell>
                 <TableCell>
-                  {(t.agents_seen ?? []).length > 0 ? (
+                  {(t.agent_summaries ?? []).length > 0 ? (
                     <div className="flex flex-wrap gap-0.5">
-                      {(t.agents_seen ?? []).map((a) => {
-                        const active = activeAgent === a;
+                      {(t.agent_summaries ?? []).map((s) => {
+                        const active = activeAgent === s.agent;
+                        const pct =
+                          s.attempts > 0
+                            ? Math.round((s.passed / s.attempts) * 100)
+                            : null;
                         return (
                           <button
-                            key={a}
+                            key={s.agent}
                             type="button"
-                            onClick={() => onAgentClick(active ? "" : a)}
+                            onClick={() =>
+                              onAgentClick(active ? "" : s.agent)
+                            }
+                            title={`${s.passed}/${s.attempts}${pct != null ? ` · ${pct}%` : ""}`}
                             className={`rounded-sm border px-1 py-0 font-mono text-[9px] ${
                               active
                                 ? "border-emerald-500 bg-emerald-500 text-white"
                                 : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:border-emerald-500 dark:text-emerald-300"
                             }`}
                           >
-                            @{a}
+                            @{s.agent}
+                            {pct != null ? (
+                              <span className="ml-1 opacity-70">{pct}%</span>
+                            ) : null}
                           </button>
                         );
                       })}
@@ -434,6 +379,14 @@ export function TasksPageClient({
     0,
     parseInt(searchParams.get("offset") ?? "0", 10) || 0,
   );
+  const urlPageSize = (() => {
+    const raw = parseInt(
+      searchParams.get("per") ?? String(DEFAULT_PAGE_SIZE),
+      10,
+    );
+    if (!PAGE_SIZE_OPTIONS.includes(raw)) return DEFAULT_PAGE_SIZE;
+    return raw;
+  })();
 
   // The search box is the only field that benefits from local debouncing
   // (every keystroke shouldn't push history). All other filters write
@@ -484,7 +437,7 @@ export function TasksPageClient({
 
   const swrKey = useMemo(() => {
     const params = new URLSearchParams({
-      limit: String(PAGE_SIZE),
+      limit: String(urlPageSize),
       offset: String(urlOffset),
     });
     if (urlQuery) params.set("query", urlQuery);
@@ -518,7 +471,7 @@ export function TasksPageClient({
 
   const items = data?.items ?? [];
   const hasMore = data?.has_more ?? false;
-  const currentPage = Math.floor(urlOffset / PAGE_SIZE) + 1;
+  const currentPage = Math.floor(urlOffset / urlPageSize) + 1;
   const isRefreshing = !error && !isLoading && isValidating;
 
   // Tag/experiment chips are still derived client-side from the
@@ -551,7 +504,8 @@ export function TasksPageClient({
 
   const agentOptions = useMemo(() => {
     const s = new Set<string>();
-    for (const t of items) for (const a of t.agents_seen ?? []) s.add(a);
+    for (const t of items)
+      for (const summary of t.agent_summaries ?? []) s.add(summary.agent);
     return Array.from(s).sort();
   }, [items]);
 
@@ -670,6 +624,26 @@ export function TasksPageClient({
                   ) : null}
                 </select>
               ) : null}
+              <select
+                value={String(urlPageSize)}
+                onChange={(e) =>
+                  updateParam(
+                    "per",
+                    e.target.value === String(DEFAULT_PAGE_SIZE)
+                      ? null
+                      : e.target.value,
+                    { resetOffset: true },
+                  )
+                }
+                className="h-8 rounded-sm border bg-background px-2 font-mono text-xs"
+                title="Tasks per page"
+              >
+                {PAGE_SIZE_OPTIONS.map((n) => (
+                  <option key={n} value={String(n)}>
+                    {n}/page
+                  </option>
+                ))}
+              </select>
               <div className="inline-flex h-8 items-center overflow-hidden rounded-sm border">
                 <button
                   type="button"
@@ -782,7 +756,7 @@ export function TasksPageClient({
                     : "No tasks have been created yet."}
               </div>
             ) : urlView === "cards" ? (
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <div className="grid gap-4 md:grid-cols-2">
                 {items.map((task) => (
                   <TaskCard
                     key={task.id}
@@ -818,7 +792,7 @@ export function TasksPageClient({
                   size="sm"
                   className="h-8 px-3 text-[11px]"
                   onClick={() => {
-                    const next = Math.max(urlOffset - PAGE_SIZE, 0);
+                    const next = Math.max(urlOffset - urlPageSize, 0);
                     updateParam(
                       "offset",
                       next === 0 ? null : String(next),
@@ -835,7 +809,7 @@ export function TasksPageClient({
                   size="sm"
                   className="h-8 px-3 text-[11px]"
                   onClick={() =>
-                    updateParam("offset", String(urlOffset + PAGE_SIZE))
+                    updateParam("offset", String(urlOffset + urlPageSize))
                   }
                   disabled={!hasMore || isValidating}
                 >

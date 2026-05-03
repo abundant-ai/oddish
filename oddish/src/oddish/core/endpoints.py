@@ -50,6 +50,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.schemas import (
+    TaskAgentSummary,
     TaskBrowseExperiment,
     TaskBrowseItem,
     TaskBrowseResponse,
@@ -594,7 +595,7 @@ async def browse_tasks_core(
 
     experiments_by_task: dict[str, list[TaskBrowseExperiment]] = {}
     latest_trials_by_task: dict[str, list[TaskBrowseTrial]] = {}
-    agents_by_task: dict[str, list[str]] = {}
+    agents_by_task: dict[str, list[TaskAgentSummary]] = {}
     task_version_pairs = [
         (str(row["task_id"]), str(row["current_version_id"]))
         for row in visible_rows
@@ -685,13 +686,17 @@ async def browse_tasks_core(
                 )
             )
 
-        # Distinct harness names per task, for the FE agent-filter
-        # chip row. Cheap aggregate over the same (task_id,
-        # task_version_id) pairs we just used.
+        # Per-harness rollup for the task's current_version trials so
+        # the card can render "claude-code 4/5 · oracle 5/5" and the
+        # FE agent-filter dropdown is populated without another query.
         agents_query = (
             select(
                 TrialModel.task_id.label("task_id"),
                 TrialModel.agent.label("agent"),
+                func.count(TrialModel.id).label("attempts"),
+                func.count(case((TrialModel.reward == 1, 1))).label("passed"),
+                func.avg(TrialModel.reward).label("avg_reward"),
+                func.max(TrialModel.finished_at).label("last_run_at"),
             )
             .where(
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
@@ -699,17 +704,27 @@ async def browse_tasks_core(
                 ),
                 TrialModel.agent.is_not(None),
             )
-            .distinct()
+            .group_by(TrialModel.task_id, TrialModel.agent)
         )
         if org_id is not None:
             agents_query = agents_query.where(TrialModel.org_id == org_id)
         agents_rows = await session.execute(agents_query)
-        for agent_row in agents_rows.mappings():
-            agents_by_task.setdefault(str(agent_row["task_id"]), []).append(
-                str(agent_row["agent"])
+        for row in agents_rows.mappings():
+            agents_by_task.setdefault(str(row["task_id"]), []).append(
+                TaskAgentSummary(
+                    agent=str(row["agent"]),
+                    attempts=int(row["attempts"] or 0),
+                    passed=int(row["passed"] or 0),
+                    avg_reward=(
+                        float(row["avg_reward"])
+                        if row["avg_reward"] is not None
+                        else None
+                    ),
+                    last_run_at=row["last_run_at"],
+                )
             )
         for tid in agents_by_task:
-            agents_by_task[tid].sort()
+            agents_by_task[tid].sort(key=lambda s: s.agent)
 
     build_started_at = now()
     response = TaskBrowseResponse(
@@ -738,7 +753,7 @@ async def browse_tasks_core(
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),
                 tags=dict(row["tags"] or {}),
-                agents_seen=agents_by_task.get(str(row["task_id"]), []),
+                agent_summaries=agents_by_task.get(str(row["task_id"]), []),
             )
             for row in visible_rows
         ],
