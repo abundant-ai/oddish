@@ -956,12 +956,14 @@ export function TrialDetailPanel({
             value="trajectory"
             className="m-0 h-full overflow-auto p-0"
           >
-            <TrajectorySummary
-              trialId={trial.id}
-              stepIdToIndex={() => -1}
-              onStepSelect={() => {}}
-              apiBaseUrl={apiBaseUrl}
-            />
+            <div className="px-4 pt-4">
+              <TrajectorySummary
+                trialId={trial.id}
+                stepIdToIndex={() => -1}
+                onStepSelect={() => {}}
+                apiBaseUrl={apiBaseUrl}
+              />
+            </div>
             <TrajectoryViewer
               trialId={trial.id}
               hasTrajectory={trial.has_trajectory}
