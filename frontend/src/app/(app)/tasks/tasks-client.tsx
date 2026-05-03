@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -55,16 +56,6 @@ type ViewMode = "cards" | "list";
 function passRate(task: TaskBrowseItem): number | null {
   if (!task.reward_total || task.reward_total <= 0) return null;
   return (task.reward_sum ?? task.reward_success) / task.reward_total;
-}
-
-function inScoreBucket(task: TaskBrowseItem, bucket: ScoreBucket): boolean {
-  if (bucket === "all") return true;
-  const r = passRate(task);
-  if (r == null) return bucket === "untested";
-  if (bucket === "pass80") return r >= 0.8;
-  if (bucket === "pass35to80") return r >= 0.35 && r < 0.8;
-  if (bucket === "pass0to35") return r < 0.35;
-  return false;
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number) {
@@ -453,34 +444,88 @@ function TaskListView({ tasks }: { tasks: TaskBrowseItem[] }) {
 
 export function TasksPageClient({
   initialData,
-  initialQuery = "",
 }: {
   initialData?: TaskBrowseResponse | null;
+  // ``initialQuery`` was a server-injected default; URL state is now
+  // canonical so we read everything off the search params instead.
   initialQuery?: string;
 }) {
-  const [searchQuery, setSearchQuery] = useState(initialQuery);
-  const [offset, setOffset] = useState(0);
-  const [tagFilter, setTagFilter] = useState<Set<string>>(new Set());
-  const [sort, setSort] = useState<SortKey>("recent");
-  const [scoreBucket, setScoreBucket] = useState<ScoreBucket>("all");
-  const [experimentFilter, setExperimentFilter] = useState<string>("");
-  const [view, setView] = useState<ViewMode>("cards");
-  const debouncedQuery = useDebouncedValue(searchQuery.trim(), 300);
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
+  // URL is the source of truth. Read every filter from search params.
+  const urlQuery = searchParams.get("q") ?? "";
+  const urlSort = (searchParams.get("sort") as SortKey | null) ?? "recent";
+  const urlScore =
+    (searchParams.get("score") as ScoreBucket | null) ?? "all";
+  const urlExperiment = searchParams.get("experiment") ?? "";
+  const urlTags = useMemo(() => searchParams.getAll("tag"), [searchParams]);
+  const urlView = (searchParams.get("view") as ViewMode | null) ?? "cards";
+  const urlOffset = Math.max(
+    0,
+    parseInt(searchParams.get("offset") ?? "0", 10) || 0,
+  );
+
+  // The search box is the only field that benefits from local debouncing
+  // (every keystroke shouldn't push history). All other filters write
+  // immediately on click.
+  const [searchDraft, setSearchDraft] = useState(urlQuery);
+  const debouncedSearch = useDebouncedValue(searchDraft.trim(), 300);
+
+  // Keep the input in sync with URL changes (e.g. browser Back).
   useEffect(() => {
-    setOffset(0);
-  }, [debouncedQuery]);
+    setSearchDraft(urlQuery);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlQuery]);
+
+  // Push debounced search back to URL. Reset offset on query change so
+  // pagination doesn't strand you past the new result count.
+  const lastPushedSearch = useRef(urlQuery);
+  useEffect(() => {
+    if (debouncedSearch === lastPushedSearch.current) return;
+    lastPushedSearch.current = debouncedSearch;
+    const params = new URLSearchParams(searchParams.toString());
+    if (debouncedSearch) params.set("q", debouncedSearch);
+    else params.delete("q");
+    params.delete("offset");
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch]);
+
+  const updateParam = useCallback(
+    (
+      key: string,
+      value: string | string[] | null,
+      opts: { resetOffset?: boolean } = {},
+    ) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (value == null || value === "") {
+        params.delete(key);
+      } else if (Array.isArray(value)) {
+        params.delete(key);
+        for (const v of value) params.append(key, v);
+      } else {
+        params.set(key, value);
+      }
+      if (opts.resetOffset) params.delete("offset");
+      router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    },
+    [router, pathname, searchParams],
+  );
 
   const swrKey = useMemo(() => {
     const params = new URLSearchParams({
       limit: String(PAGE_SIZE),
-      offset: String(offset),
+      offset: String(urlOffset),
     });
-    if (debouncedQuery) {
-      params.set("query", debouncedQuery);
-    }
+    if (urlQuery) params.set("query", urlQuery);
+    if (urlSort && urlSort !== "recent") params.set("sort", urlSort);
+    if (urlScore && urlScore !== "all") params.set("score_bucket", urlScore);
+    if (urlExperiment) params.set("experiment_id", urlExperiment);
+    for (const chip of urlTags) params.append("tag", chip);
     return `/api/tasks/browse?${params.toString()}`;
-  }, [debouncedQuery, offset]);
+  }, [urlOffset, urlQuery, urlSort, urlScore, urlExperiment, urlTags]);
 
   const { data, error, isLoading, isValidating } = useSWR<TaskBrowseResponse>(
     swrKey,
@@ -490,23 +535,29 @@ export function TasksPageClient({
       revalidateOnFocus: false,
       keepPreviousData: true,
       fallbackData:
-        offset === 0 && debouncedQuery.length === 0
+        urlOffset === 0 &&
+        !urlQuery &&
+        urlSort === "recent" &&
+        urlScore === "all" &&
+        !urlExperiment &&
+        urlTags.length === 0
           ? (initialData ?? undefined)
           : undefined,
     },
   );
 
-  const rawItems = data?.items ?? [];
+  const items = data?.items ?? [];
   const hasMore = data?.has_more ?? false;
-  const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
+  const currentPage = Math.floor(urlOffset / PAGE_SIZE) + 1;
   const isRefreshing = !error && !isLoading && isValidating;
 
-  // Derived facets across the current page (server-side filters
-  // would need new BE params; this is a useful slice over the
-  // current page either way).
+  // Tag/experiment chips are still derived client-side from the
+  // current page; with URL-state plumbed in, hopping between pages
+  // discovers more facets naturally and the user can also paste in
+  // a tag chip URL we don't know about yet.
   const tagChips = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const t of rawItems) {
+    for (const t of items) {
       for (const [k, v] of Object.entries(t.tags ?? {})) {
         if (k.startsWith("github_")) continue;
         const key = `${k}=${v}`;
@@ -516,74 +567,35 @@ export function TasksPageClient({
     return Array.from(counts.entries())
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, 30);
-  }, [rawItems]);
+  }, [items]);
 
   const experimentOptions = useMemo(() => {
     const m = new Map<string, string>();
-    for (const t of rawItems) {
+    for (const t of items) {
       for (const e of t.experiments ?? []) m.set(e.id, e.name);
     }
     return Array.from(m.entries()).sort((a, b) =>
       a[1].localeCompare(b[1]),
     );
-  }, [rawItems]);
+  }, [items]);
 
-  const items = useMemo(() => {
-    let out = rawItems;
-    if (tagFilter.size > 0) {
-      out = out.filter((t) => {
-        for (const chip of tagFilter) {
-          const eq = chip.indexOf("=");
-          const k = chip.slice(0, eq);
-          const v = chip.slice(eq + 1);
-          if ((t.tags ?? {})[k] !== v) return false;
-        }
-        return true;
-      });
-    }
-    if (scoreBucket !== "all") {
-      out = out.filter((t) => inScoreBucket(t, scoreBucket));
-    }
-    if (experimentFilter) {
-      out = out.filter((t) =>
-        (t.experiments ?? []).some((e) => e.id === experimentFilter),
-      );
-    }
-    const sorted = [...out];
-    sorted.sort((a, b) => {
-      if (sort === "name") return a.name.localeCompare(b.name);
-      if (sort === "trials")
-        return (b.total_trials ?? 0) - (a.total_trials ?? 0);
-      if (sort === "version")
-        return (b.version_count ?? 0) - (a.version_count ?? 0);
-      if (sort === "pass") {
-        const ra = passRate(a) ?? -1;
-        const rb = passRate(b) ?? -1;
-        return rb - ra;
-      }
-      // recent
-      const ar = a.last_run_at ? Date.parse(a.last_run_at) : 0;
-      const br = b.last_run_at ? Date.parse(b.last_run_at) : 0;
-      return br - ar || a.name.localeCompare(b.name);
-    });
-    return sorted;
-  }, [rawItems, tagFilter, scoreBucket, experimentFilter, sort]);
-
+  const tagFilter = useMemo(() => new Set(urlTags), [urlTags]);
   const toggleTag = (chip: string) => {
-    setTagFilter((prev) => {
-      const next = new Set(prev);
-      if (next.has(chip)) next.delete(chip);
-      else next.add(chip);
-      return next;
-    });
+    const next = new Set(tagFilter);
+    if (next.has(chip)) next.delete(chip);
+    else next.add(chip);
+    updateParam("tag", Array.from(next), { resetOffset: true });
   };
 
   const filtersActive =
-    tagFilter.size > 0 || scoreBucket !== "all" || !!experimentFilter;
+    tagFilter.size > 0 || urlScore !== "all" || !!urlExperiment;
   const clearFilters = () => {
-    setTagFilter(new Set());
-    setScoreBucket("all");
-    setExperimentFilter("");
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("tag");
+    params.delete("score");
+    params.delete("experiment");
+    params.delete("offset");
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   };
 
   const scoreChips: { value: ScoreBucket; label: string }[] = [
@@ -604,7 +616,7 @@ export function TasksPageClient({
               <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
                 <span>
                   Showing {items.length}
-                  {filtersActive ? ` of ${rawItems.length}` : ""}
+                  {hasMore ? "+" : ""}
                   {" • "}Page {currentPage}
                 </span>
                 {isRefreshing ? (
@@ -617,14 +629,20 @@ export function TasksPageClient({
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Input
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
+                value={searchDraft}
+                onChange={(event) => setSearchDraft(event.target.value)}
                 placeholder="Search tasks"
                 className="h-8 w-full border-[#6f88b4]/20 sm:w-[260px]"
               />
               <select
-                value={sort}
-                onChange={(e) => setSort(e.target.value as SortKey)}
+                value={urlSort}
+                onChange={(e) =>
+                  updateParam(
+                    "sort",
+                    e.target.value === "recent" ? null : e.target.value,
+                    { resetOffset: true },
+                  )
+                }
                 className="h-8 rounded-sm border bg-background px-2 font-mono text-xs"
               >
                 <option value="recent">Sort: recent</option>
@@ -633,10 +651,14 @@ export function TasksPageClient({
                 <option value="trials">Sort: trials</option>
                 <option value="version">Sort: versions</option>
               </select>
-              {experimentOptions.length > 0 ? (
+              {experimentOptions.length > 0 || urlExperiment ? (
                 <select
-                  value={experimentFilter}
-                  onChange={(e) => setExperimentFilter(e.target.value)}
+                  value={urlExperiment}
+                  onChange={(e) =>
+                    updateParam("experiment", e.target.value || null, {
+                      resetOffset: true,
+                    })
+                  }
                   className="h-8 max-w-[200px] truncate rounded-sm border bg-background px-2 font-mono text-xs"
                 >
                   <option value="">All experiments</option>
@@ -650,9 +672,11 @@ export function TasksPageClient({
               <div className="inline-flex h-8 items-center overflow-hidden rounded-sm border">
                 <button
                   type="button"
-                  onClick={() => setView("cards")}
+                  onClick={() =>
+                    updateParam("view", urlView === "cards" ? null : "cards")
+                  }
                   className={`flex h-full items-center gap-1 px-2 text-xs ${
-                    view === "cards"
+                    urlView === "cards"
                       ? "bg-foreground text-background"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
@@ -662,9 +686,9 @@ export function TasksPageClient({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setView("list")}
+                  onClick={() => updateParam("view", "list")}
                   className={`flex h-full items-center gap-1 border-l px-2 text-xs ${
-                    view === "list"
+                    urlView === "list"
                       ? "bg-foreground text-background"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
@@ -681,12 +705,16 @@ export function TasksPageClient({
                 pass rate
               </span>
               {scoreChips.map(({ value, label }) => {
-                const active = scoreBucket === value;
+                const active = urlScore === value;
                 return (
                   <button
                     key={value}
                     type="button"
-                    onClick={() => setScoreBucket(value)}
+                    onClick={() =>
+                      updateParam("score", value === "all" ? null : value, {
+                        resetOffset: true,
+                      })
+                    }
                     className={`inline-flex items-center rounded-sm border px-1.5 py-0.5 font-mono transition ${
                       active
                         ? "border-foreground bg-foreground text-background"
@@ -748,11 +776,11 @@ export function TasksPageClient({
               <div className="rounded-lg border border-dashed border-[#6f88b4]/30 bg-card/60 px-6 py-10 text-center text-sm text-muted-foreground">
                 {filtersActive
                   ? "No tasks match the current filters."
-                  : debouncedQuery
+                  : urlQuery
                     ? "No tasks match the current search."
                     : "No tasks have been created yet."}
               </div>
-            ) : view === "cards" ? (
+            ) : urlView === "cards" ? (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {items.map((task) => (
                   <TaskCard key={task.id} task={task} />
@@ -765,7 +793,7 @@ export function TasksPageClient({
             <div className="flex items-center justify-between gap-2">
               <div className="text-xs text-muted-foreground">
                 {items.length > 0
-                  ? `${offset + 1}-${offset + items.length}`
+                  ? `${urlOffset + 1}-${urlOffset + items.length}`
                   : "0"}{" "}
                 shown
               </div>
@@ -775,12 +803,14 @@ export function TasksPageClient({
                   variant="outline"
                   size="sm"
                   className="h-8 px-3 text-[11px]"
-                  onClick={() =>
-                    setOffset((currentOffset) =>
-                      Math.max(currentOffset - PAGE_SIZE, 0),
-                    )
-                  }
-                  disabled={offset === 0 || isValidating}
+                  onClick={() => {
+                    const next = Math.max(urlOffset - PAGE_SIZE, 0);
+                    updateParam(
+                      "offset",
+                      next === 0 ? null : String(next),
+                    );
+                  }}
+                  disabled={urlOffset === 0 || isValidating}
                 >
                   <ChevronLeft className="mr-1 h-3.5 w-3.5" />
                   Previous page
@@ -791,7 +821,7 @@ export function TasksPageClient({
                   size="sm"
                   className="h-8 px-3 text-[11px]"
                   onClick={() =>
-                    setOffset((currentOffset) => currentOffset + PAGE_SIZE)
+                    updateParam("offset", String(urlOffset + PAGE_SIZE))
                   }
                   disabled={!hasMore || isValidating}
                 >

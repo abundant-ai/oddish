@@ -351,9 +351,26 @@ async def browse_tasks_core(
     limit: int = 25,
     offset: int = 0,
     query: str | None = None,
+    tags: list[str] | None = None,
+    score_bucket: str | None = None,
+    experiment_id: str | None = None,
+    sort: str | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
-    """List latest-version task summaries for the task browser."""
+    """List latest-version task summaries for the task browser.
+
+    Filters:
+    - ``query`` -- name or tag substring match.
+    - ``tags`` -- list of ``"key=value"`` chips, AND-applied against
+      ``tasks.tags`` (jsonb @>).
+    - ``score_bucket`` -- one of ``pass80`` / ``pass35to80`` /
+      ``pass0to35`` / ``untested``. Applied post-aggregate.
+    - ``experiment_id`` -- only tasks that have at least one trial
+      belonging to this experiment.
+
+    Sort keys: ``recent`` (default), ``name``, ``pass``, ``trials``,
+    ``version``.
+    """
 
     current_version = aliased(TaskVersionModel)
     normalized_query = query.strip() if query else None
@@ -393,6 +410,18 @@ async def browse_tasks_core(
                 cast(TaskModel.tags, Text).ilike(pattern),
             )
         )
+    # AND-filter on tag chips. Each chip is "key=value"; we use
+    # jsonb @> '{"key":"value"}' so an index on the jsonb column can
+    # serve it.
+    for chip in tags or []:
+        if "=" not in chip:
+            continue
+        k, _, v = chip.partition("=")
+        if not k:
+            continue
+        ranked_tasks = ranked_tasks.where(
+            TaskModel.tags.contains({k: v})
+        )
     ranked_tasks_subquery = ranked_tasks.subquery()
 
     version_counts = (
@@ -430,6 +459,14 @@ async def browse_tasks_core(
         TrialModel.task_id, TrialModel.task_version_id
     ).subquery()
 
+    # Pass-rate expression we can both filter and sort on.
+    reward_total_col = func.coalesce(trial_aggregates.c.reward_total, 0)
+    reward_sum_col = func.coalesce(trial_aggregates.c.reward_sum, 0.0)
+    pass_rate_expr = case(
+        (reward_total_col > 0, reward_sum_col / reward_total_col),
+        else_=None,
+    )
+
     paged_rows = (
         select(
             ranked_tasks_subquery.c.task_id,
@@ -444,8 +481,8 @@ async def browse_tasks_core(
             ),
             func.coalesce(trial_aggregates.c.failed_trials, 0).label("failed_trials"),
             func.coalesce(trial_aggregates.c.reward_success, 0).label("reward_success"),
-            func.coalesce(trial_aggregates.c.reward_sum, 0.0).label("reward_sum"),
-            func.coalesce(trial_aggregates.c.reward_total, 0).label("reward_total"),
+            reward_sum_col.label("reward_sum"),
+            reward_total_col.label("reward_total"),
             trial_aggregates.c.last_run_at.label("last_run_at"),
         )
         .select_from(ranked_tasks_subquery)
@@ -461,21 +498,71 @@ async def browse_tasks_core(
             ),
         )
         .where(ranked_tasks_subquery.c.name_rank == 1)
-        .order_by(
-            # Fresh "never run" tasks should appear near the top of the
-            # browser (ordered by upload time), not buried below every
-            # real experiment. Fall back to the task's created_at when
-            # no trials have finished yet.
-            func.coalesce(
-                trial_aggregates.c.last_run_at,
-                ranked_tasks_subquery.c.created_at,
-            ).desc(),
+    )
+
+    # Pass-rate bucket filter. "untested" matches reward_total == 0 so
+    # it surfaces tasks the user hasn't graded yet.
+    if score_bucket == "pass80":
+        paged_rows = paged_rows.where(pass_rate_expr >= 0.8)
+    elif score_bucket == "pass35to80":
+        paged_rows = paged_rows.where(
+            and_(pass_rate_expr >= 0.35, pass_rate_expr < 0.8)
+        )
+    elif score_bucket == "pass0to35":
+        paged_rows = paged_rows.where(pass_rate_expr < 0.35)
+    elif score_bucket == "untested":
+        paged_rows = paged_rows.where(reward_total_col == 0)
+
+    # "Tasks used in experiment X" -- correlated EXISTS so we don't
+    # multiply rows.
+    if experiment_id:
+        exp_subq = (
+            select(TrialModel.task_id)
+            .where(
+                TrialModel.experiment_id == experiment_id,
+                *([TrialModel.org_id == org_id] if org_id is not None else []),
+            )
+        )
+        paged_rows = paged_rows.where(
+            ranked_tasks_subquery.c.task_id.in_(exp_subq)
+        )
+
+    # Sort. "recent" keeps the existing tie-breakers; the others swap
+    # the lead key but keep name as the final tie-break for stable
+    # pagination.
+    last_activity = func.coalesce(
+        trial_aggregates.c.last_run_at,
+        ranked_tasks_subquery.c.created_at,
+    )
+    if sort == "name":
+        paged_rows = paged_rows.order_by(ranked_tasks_subquery.c.name.asc())
+    elif sort == "pass":
+        paged_rows = paged_rows.order_by(
+            nulls_last(pass_rate_expr.desc()),
+            ranked_tasks_subquery.c.name.asc(),
+        )
+    elif sort == "trials":
+        paged_rows = paged_rows.order_by(
+            func.coalesce(trial_aggregates.c.total_trials, 0).desc(),
+            ranked_tasks_subquery.c.name.asc(),
+        )
+    elif sort == "version":
+        paged_rows = paged_rows.order_by(
+            func.coalesce(version_counts.c.version_count, 0).desc(),
+            ranked_tasks_subquery.c.name.asc(),
+        )
+    else:
+        # Default: fresh "never run" tasks should appear near the top
+        # of the browser (ordered by upload time), not buried below
+        # every real experiment. Fall back to the task's created_at
+        # when no trials have finished yet.
+        paged_rows = paged_rows.order_by(
+            last_activity.desc(),
             nulls_last(ranked_tasks_subquery.c.current_version.desc()),
             ranked_tasks_subquery.c.name.asc(),
         )
-        .limit(limit + 1)
-        .offset(offset)
-    )
+
+    paged_rows = paged_rows.limit(limit + 1).offset(offset)
 
     page_started_at = now()
     result = await session.execute(paged_rows)
