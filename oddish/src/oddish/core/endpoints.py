@@ -579,6 +579,47 @@ async def browse_tasks_core(
             ranked_tasks_subquery.c.name.asc(),
         )
 
+    # Aggregate over the entire filtered set (not just the page) so
+    # the FE can render "matching N tasks · M trials · K% pass" and
+    # seed an experiment from every match, not just the visible 25.
+    # Capped at MAX_FILTER_RESULTS via .limit so a wildcard filter
+    # can't drag back the whole DB.
+    filtered_sub = paged_rows.subquery()
+    aggregate_query = select(
+        func.count().label("total_count"),
+        func.coalesce(func.sum(filtered_sub.c.total_trials), 0).label(
+            "agg_trials"
+        ),
+        func.coalesce(func.sum(filtered_sub.c.reward_sum), 0.0).label(
+            "agg_reward_sum"
+        ),
+        func.coalesce(func.sum(filtered_sub.c.reward_total), 0).label(
+            "agg_reward_total"
+        ),
+    ).select_from(filtered_sub)
+    aggregate_row = (await session.execute(aggregate_query)).mappings().first()
+    total_count = int(aggregate_row["total_count"] or 0)
+    agg_trials = int(aggregate_row["agg_trials"] or 0)
+    agg_reward_sum = float(aggregate_row["agg_reward_sum"] or 0.0)
+    agg_reward_total = int(aggregate_row["agg_reward_total"] or 0)
+    aggregate_pass_rate = (
+        (agg_reward_sum / agg_reward_total) if agg_reward_total > 0 else None
+    )
+
+    # Pull the matching task_version_ids (capped) so the FE can hand
+    # them to "create experiment from this filter" without a second
+    # round trip. Same filtered_sub, just project a single column.
+    MAX_FILTER_RESULTS = 1000
+    matching_ids_query = (
+        select(filtered_sub.c.current_version_id)
+        .where(filtered_sub.c.current_version_id.is_not(None))
+        .limit(MAX_FILTER_RESULTS)
+    )
+    matching_task_version_ids = [
+        str(r[0])
+        for r in (await session.execute(matching_ids_query)).all()
+    ]
+
     paged_rows = paged_rows.limit(limit + 1).offset(offset)
 
     page_started_at = now()
@@ -760,6 +801,11 @@ async def browse_tasks_core(
         limit=limit,
         offset=offset,
         has_more=has_more,
+        total_count=total_count,
+        aggregate_trials=agg_trials,
+        aggregate_passed=int(round(agg_reward_sum)),
+        aggregate_pass_rate=aggregate_pass_rate,
+        matching_task_version_ids=matching_task_version_ids,
     )
     if record_timing is not None:
         record_timing(

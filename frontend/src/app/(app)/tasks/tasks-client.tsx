@@ -8,6 +8,13 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -36,7 +43,14 @@ import type {
   TaskBrowseResponse,
 } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/utils";
-import { ChevronLeft, ChevronRight, Loader2, Plus, X } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  FlaskConical,
+  Loader2,
+  Plus,
+  X,
+} from "lucide-react";
 
 const DEFAULT_PAGE_SIZE = 25;
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
@@ -271,6 +285,206 @@ function AddFilterPopover({
   );
 }
 
+interface KnownAgent {
+  harness: string;
+  model: string | null;
+  provider: string;
+  equivalence_key: string;
+}
+
+function CreateExperimentFromFilterDialog({
+  open,
+  onOpenChange,
+  taskVersionIds,
+  filterSummary,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  taskVersionIds: string[];
+  filterSummary: string;
+}) {
+  const router = useRouter();
+  const { data: knownAgents } = useSWR<KnownAgent[]>(
+    open ? "/api/agents/known?limit=200" : null,
+    fetcher,
+  );
+  const [name, setName] = useState("");
+  const [target, setTarget] = useState("3");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setName("");
+      setTarget("3");
+      setPicked(new Set());
+      setError(null);
+    }
+  }, [open]);
+
+  const submit = async (andBackfill: boolean) => {
+    if (!name.trim() || taskVersionIds.length === 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const chosen = (knownAgents ?? []).filter((a) =>
+        picked.has(a.equivalence_key),
+      );
+      const res = await fetch("/api/experiments", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          target_n_trials: Math.max(1, parseInt(target, 10) || 1),
+          task_version_ids: taskVersionIds,
+          agents: chosen.map((a) => ({
+            harness: a.harness,
+            model: a.model,
+            provider: a.provider,
+          })),
+        }),
+      });
+      if (!res.ok) {
+        throw new Error((await res.text()) || `Failed (${res.status})`);
+      }
+      const created = await res.json();
+      const expId = String(created.experiment_id);
+      if (andBackfill) {
+        await fetch(
+          `/api/experiments/${encodeURIComponent(expId)}/backfill`,
+          { method: "POST", credentials: "include" },
+        );
+      }
+      router.push(`/experiments/${encodeURIComponent(expId)}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Create experiment from filter</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          <div className="rounded-sm border bg-muted/30 px-3 py-2 font-mono text-[11px]">
+            <span className="text-muted-foreground">tasks: </span>
+            {taskVersionIds.length}
+            <span className="ml-3 text-muted-foreground">filter: </span>
+            {filterSummary || "all"}
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">
+              Name
+            </label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. swe-bench-claude-vs-gemini"
+              autoFocus
+            />
+          </div>
+          <div className="flex items-end gap-2">
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">
+                Trials per (task, agent)
+              </label>
+              <Input
+                type="number"
+                min={1}
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+                className="w-24"
+              />
+            </div>
+          </div>
+          <div>
+            <div className="mb-1 flex items-baseline justify-between">
+              <label className="text-xs text-muted-foreground">
+                Agents to seed
+              </label>
+              <span className="text-[11px] text-muted-foreground">
+                {picked.size} selected
+              </span>
+            </div>
+            <div className="max-h-48 overflow-y-auto rounded-sm border">
+              {!knownAgents ? (
+                <Skeleton className="h-24" />
+              ) : knownAgents.length === 0 ? (
+                <p className="px-3 py-2 text-xs text-muted-foreground">
+                  No known agents yet — you can still create the experiment
+                  with just task members and add agents later.
+                </p>
+              ) : (
+                knownAgents.map((a) => {
+                  const active = picked.has(a.equivalence_key);
+                  return (
+                    <button
+                      key={a.equivalence_key}
+                      type="button"
+                      onClick={() => {
+                        const next = new Set(picked);
+                        if (active) next.delete(a.equivalence_key);
+                        else next.add(a.equivalence_key);
+                        setPicked(next);
+                      }}
+                      className={`flex w-full items-center justify-between border-b px-3 py-1.5 text-left font-mono text-xs last:border-b-0 ${
+                        active
+                          ? "bg-foreground text-background"
+                          : "hover:bg-muted/40"
+                      }`}
+                    >
+                      <span>
+                        {a.harness}
+                        {a.model && a.model !== "default"
+                          ? ` · ${a.model}`
+                          : ""}
+                      </span>
+                      <span className="opacity-70">{a.provider}</span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+          {error ? (
+            <div className="rounded-sm border border-destructive/40 bg-destructive/5 p-2 text-xs">
+              {error}
+            </div>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+            disabled={busy}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => submit(false)}
+            disabled={busy || !name.trim() || taskVersionIds.length === 0}
+          >
+            {busy ? "Creating…" : "Create"}
+          </Button>
+          <Button
+            onClick={() => submit(true)}
+            disabled={busy || !name.trim() || taskVersionIds.length === 0}
+          >
+            {busy ? "Creating…" : "Create and run"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function TaskListView({
   tasks,
   activeAgent,
@@ -501,6 +715,10 @@ export function TasksPageClient({
   const items = data?.items ?? [];
   const hasMore = data?.has_more ?? false;
   const currentPage = Math.floor(urlOffset / urlPageSize) + 1;
+  const totalCount = data?.total_count ?? items.length;
+  const aggregateTrials = data?.aggregate_trials ?? 0;
+  const aggregatePassRate = data?.aggregate_pass_rate ?? null;
+  const matchingIds = data?.matching_task_version_ids ?? [];
   const isRefreshing = !error && !isLoading && isValidating;
 
   // Tag/experiment chips are still derived client-side from the
@@ -601,6 +819,12 @@ export function TasksPageClient({
     });
   }
 
+  const [createOpen, setCreateOpen] = useState(false);
+  const filterSummary = activeFilterChips
+    .map((c) => c.label)
+    .concat(urlQuery ? [`q=${urlQuery}`] : [])
+    .join(" · ");
+
   return (
     <TooltipProvider>
       <div className="space-y-4">
@@ -610,8 +834,8 @@ export function TasksPageClient({
               <CardTitle className="text-base">Tasks</CardTitle>
               <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
                 <span>
-                  Showing {items.length}
-                  {hasMore ? "+" : ""}
+                  {totalCount.toLocaleString()} matching · showing{" "}
+                  {items.length}
                   {" • "}Page {currentPage}
                 </span>
                 {isRefreshing ? (
@@ -694,6 +918,67 @@ export function TasksPageClient({
                 </button>
               </div>
             ) : null}
+
+            {/* Population stats over the FULL filtered set (not the
+                page) + the launch-pad button to seed an experiment
+                from this filter. */}
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-sm border bg-muted/30 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
+                <span>
+                  <span className="text-muted-foreground">tasks </span>
+                  <span className="font-mono font-semibold">
+                    {totalCount.toLocaleString()}
+                  </span>
+                </span>
+                <span>
+                  <span className="text-muted-foreground">trials </span>
+                  <span className="font-mono font-semibold">
+                    {aggregateTrials.toLocaleString()}
+                  </span>
+                </span>
+                <span>
+                  <span className="text-muted-foreground">avg pass </span>
+                  <span
+                    className={`font-mono font-semibold ${
+                      aggregatePassRate == null
+                        ? "text-muted-foreground"
+                        : aggregatePassRate >= 0.8
+                          ? "text-emerald-600 dark:text-emerald-400"
+                          : aggregatePassRate >= 0.35
+                            ? "text-amber-500"
+                            : "text-rose-500"
+                    }`}
+                  >
+                    {aggregatePassRate == null
+                      ? "—"
+                      : `${Math.round(aggregatePassRate * 100)}%`}
+                  </span>
+                </span>
+                {matchingIds.length > 0 &&
+                matchingIds.length < totalCount ? (
+                  <span className="text-[10px] text-muted-foreground">
+                    (capped at {matchingIds.length.toLocaleString()} for
+                    experiment seeding)
+                  </span>
+                ) : null}
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                className="h-8"
+                onClick={() => setCreateOpen(true)}
+                disabled={matchingIds.length === 0}
+                title={
+                  matchingIds.length === 0
+                    ? "No matching tasks to add to an experiment"
+                    : `Seed an experiment with ${matchingIds.length} tasks`
+                }
+              >
+                <FlaskConical className="mr-1 h-3.5 w-3.5" /> Create experiment
+                from {matchingIds.length.toLocaleString()} task
+                {matchingIds.length === 1 ? "" : "s"}
+              </Button>
+            </div>
 
             {error ? (
               <Alert variant="destructive">
@@ -778,6 +1063,12 @@ export function TasksPageClient({
             </div>
           </CardContent>
         </Card>
+        <CreateExperimentFromFilterDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          taskVersionIds={matchingIds}
+          filterSummary={filterSummary}
+        />
       </div>
     </TooltipProvider>
   );
