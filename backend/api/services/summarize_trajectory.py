@@ -13,10 +13,18 @@ so the test patterns and prompt-shape conventions match the rest of the repo.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections import defaultdict
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
+
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from oddish.core.trial_io import read_trial_trajectory
+from oddish.db.models import TrialModel
 
 MAX_TEXT_CHARS = 2000
 TRUNCATE_HEAD = 800
@@ -213,3 +221,58 @@ async def generate(trajectory: dict) -> dict:
         "summary": summary,
         "highlights": highlights,
     }
+
+
+# ---------------------------------------------------------------------------
+# DB-backed orchestrator
+# ---------------------------------------------------------------------------
+
+# Per-trial-id locks so two concurrent requests don't both kick off
+# generation for the same trial. Process-local (Modal containers each
+# get their own dict) — that's acceptable: cross-container racing
+# results in at most a few duplicate Anthropic calls, and the second
+# write into the JSONB column is idempotent.
+_GEN_LOCKS: Mapping[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+def _is_fresh(summary: dict | None) -> bool:
+    return (
+        isinstance(summary, dict)
+        and summary.get("schema_version") == SCHEMA_VERSION
+    )
+
+
+async def get_or_generate_summary(
+    session: AsyncSession, trial: TrialModel
+) -> dict | None:
+    """Return the persisted trajectory summary, generating on miss.
+
+    Returns ``None`` when the trial has no trajectory to summarize.
+    Raises ``SummaryGenerationError`` if the LLM call fails.
+    """
+    if _is_fresh(trial.trajectory_summary):
+        return trial.trajectory_summary
+
+    if not trial.has_trajectory:
+        return None
+
+    async with _GEN_LOCKS[trial.id]:
+        # Re-check inside the lock — another coroutine may have populated.
+        await session.refresh(trial, attribute_names=["trajectory_summary"])
+        if _is_fresh(trial.trajectory_summary):
+            return trial.trajectory_summary
+
+        trajectory = await read_trial_trajectory(trial)
+        if trajectory is None:
+            return None
+
+        summary = await generate(trajectory)
+
+        await session.execute(
+            update(TrialModel)
+            .where(TrialModel.id == trial.id)
+            .values(trajectory_summary=summary)
+        )
+        await session.commit()
+        await session.refresh(trial, attribute_names=["trajectory_summary"])
+        return summary

@@ -287,3 +287,141 @@ async def test_generate_wraps_anthropic_errors_in_summary_generation_error():
     with patch("anthropic.AsyncAnthropic", return_value=fake_client):
         with pytest.raises(SummaryGenerationError):
             await generate(_trajectory_with_steps([1]))
+
+
+# ---------------------------------------------------------------------------
+# get_or_generate_summary tests
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace
+
+
+def _fake_trial(*, has_trajectory: bool, trajectory_summary: dict | None):
+    return SimpleNamespace(
+        id="t-1",
+        name="trial-0",
+        trial_s3_key="trials/t-1/",
+        has_trajectory=has_trajectory,
+        trajectory_summary=trajectory_summary,
+    )
+
+
+def _fake_session():
+    """Async session stub: refresh/execute/commit are no-ops for unit tests."""
+    session = MagicMock()
+    session.refresh = AsyncMock()
+    session.execute = AsyncMock()
+    session.commit = AsyncMock()
+    return session
+
+
+@pytest.mark.asyncio
+async def test_get_or_generate_returns_db_column_when_fresh():
+    from api.services.summarize_trajectory import (
+        SCHEMA_VERSION,
+        get_or_generate_summary,
+    )
+
+    cached = {
+        "schema_version": SCHEMA_VERSION,
+        "model": "claude-sonnet-4-6",
+        "generated_at": "2026-05-02T00:00:00Z",
+        "summary": "cached",
+        "highlights": [],
+    }
+    trial = _fake_trial(has_trajectory=True, trajectory_summary=cached)
+    session = _fake_session()
+
+    with patch(
+        "api.services.summarize_trajectory.generate", new_callable=AsyncMock
+    ) as fake_generate:
+        result = await get_or_generate_summary(session, trial)
+
+    assert result == cached
+    fake_generate.assert_not_awaited()
+    session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_or_generate_returns_none_when_no_trajectory():
+    from api.services.summarize_trajectory import get_or_generate_summary
+
+    trial = _fake_trial(has_trajectory=False, trajectory_summary=None)
+    session = _fake_session()
+
+    result = await get_or_generate_summary(session, trial)
+
+    assert result is None
+    session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_or_generate_persists_on_miss():
+    from api.services.summarize_trajectory import (
+        SCHEMA_VERSION,
+        get_or_generate_summary,
+    )
+
+    trial = _fake_trial(has_trajectory=True, trajectory_summary=None)
+    session = _fake_session()
+
+    fresh = {
+        "schema_version": SCHEMA_VERSION,
+        "model": "claude-sonnet-4-6",
+        "generated_at": "2026-05-02T00:00:00Z",
+        "summary": "fresh",
+        "highlights": [],
+    }
+
+    async def fake_read_trajectory(trial_arg):
+        return {"steps": [{"step_id": 1}]}
+
+    with patch(
+        "api.services.summarize_trajectory.read_trial_trajectory",
+        new=fake_read_trajectory,
+    ), patch(
+        "api.services.summarize_trajectory.generate",
+        new_callable=AsyncMock,
+        return_value=fresh,
+    ):
+        result = await get_or_generate_summary(session, trial)
+
+    assert result == fresh
+    session.execute.assert_awaited_once()
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_or_generate_regenerates_on_stale_schema():
+    from api.services.summarize_trajectory import (
+        SCHEMA_VERSION,
+        get_or_generate_summary,
+    )
+
+    stale = {
+        "schema_version": "0",
+        "model": "claude-sonnet-4-6",
+        "generated_at": "2026-04-30T00:00:00Z",
+        "summary": "stale",
+        "highlights": [],
+    }
+    trial = _fake_trial(has_trajectory=True, trajectory_summary=stale)
+    session = _fake_session()
+
+    fresh = {**stale, "schema_version": SCHEMA_VERSION, "summary": "fresh"}
+
+    async def fake_read_trajectory(trial_arg):
+        return {"steps": [{"step_id": 1}]}
+
+    with patch(
+        "api.services.summarize_trajectory.read_trial_trajectory",
+        new=fake_read_trajectory,
+    ), patch(
+        "api.services.summarize_trajectory.generate",
+        new_callable=AsyncMock,
+        return_value=fresh,
+    ):
+        result = await get_or_generate_summary(session, trial)
+
+    assert result["summary"] == "fresh"
+    session.execute.assert_awaited_once()
