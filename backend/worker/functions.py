@@ -16,6 +16,7 @@ from modal_app import (
     WORKER_BUFFER_CONTAINERS,
     WORKER_MAX_CONTAINERS,
     WORKER_MIN_CONTAINERS,
+    WORKER_NONPREEMPTIBLE,
     WORKER_SCALEDOWN_WINDOW_SECONDS,
     WORKER_TIMEOUT_SECONDS,
     app,
@@ -74,6 +75,7 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
     max_containers=WORKER_MAX_CONTAINERS,
     timeout=WORKER_TIMEOUT_SECONDS,
     memory=1024,  # 1GB memory to prevent OOM issues
+    nonpreemptible=WORKER_NONPREEMPTIBLE,
 )
 async def process_single_job(queue_key: str):
     """
