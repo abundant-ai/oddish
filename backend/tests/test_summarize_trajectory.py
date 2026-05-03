@@ -425,3 +425,95 @@ async def test_get_or_generate_regenerates_on_stale_schema():
 
     assert result["summary"] == "fresh"
     session.execute.assert_awaited_once()
+
+
+from api.services.summarize_trajectory import TaskContext, build_task_context
+
+
+def _trial_with_task(*, task_name, reward, model, harbor_config=None):
+    return SimpleNamespace(
+        id="t-1",
+        name="trial-0",
+        trial_s3_key="trials/t-1/",
+        reward=reward,
+        model=model,
+        harbor_config=harbor_config,
+        task=SimpleNamespace(name=task_name),
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_task_context_pulls_all_fields():
+    trial = _trial_with_task(
+        task_name="solve_x", reward=0.75, model="claude-sonnet-4-6"
+    )
+
+    async def fake_instruction(trial_arg):
+        return "Solve the puzzle."
+
+    async def fake_verifier(trial_arg):
+        return "PASS\n"
+
+    with patch(
+        "api.services.summarize_trajectory.read_trial_instruction",
+        new=fake_instruction,
+    ), patch(
+        "api.services.summarize_trajectory.read_trial_verifier_output",
+        new=fake_verifier,
+    ):
+        ctx = await build_task_context(trial)
+
+    assert ctx == TaskContext(
+        task_name="solve_x",
+        instruction="Solve the puzzle.",
+        final_reward=0.75,
+        model_used="claude-sonnet-4-6",
+        verifier_output="PASS\n",
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_task_context_handles_missing_fields():
+    trial = _trial_with_task(task_name="solve_x", reward=None, model=None)
+
+    async def fake_none(trial_arg):
+        return None
+
+    with patch(
+        "api.services.summarize_trajectory.read_trial_instruction",
+        new=fake_none,
+    ), patch(
+        "api.services.summarize_trajectory.read_trial_verifier_output",
+        new=fake_none,
+    ):
+        ctx = await build_task_context(trial)
+
+    assert ctx.task_name == "solve_x"
+    assert ctx.instruction is None
+    assert ctx.final_reward is None
+    assert ctx.model_used is None
+    assert ctx.verifier_output is None
+
+
+@pytest.mark.asyncio
+async def test_build_task_context_falls_back_to_harbor_config_model():
+    trial = _trial_with_task(
+        task_name="solve_x",
+        reward=None,
+        model=None,
+        harbor_config={"agent": {"model": "claude-sonnet-4-6"}},
+    )
+
+    async def fake_none(trial_arg):
+        return None
+
+    with patch(
+        "api.services.summarize_trajectory.read_trial_instruction",
+        new=fake_none,
+    ), patch(
+        "api.services.summarize_trajectory.read_trial_verifier_output",
+        new=fake_none,
+    ):
+        ctx = await build_task_context(trial)
+
+    assert ctx.model_used == "claude-sonnet-4-6"

@@ -17,13 +17,18 @@ import asyncio
 import json
 from collections import defaultdict
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.core.trial_io import read_trial_trajectory
+from oddish.core.trial_io import (
+    read_trial_instruction,
+    read_trial_trajectory,
+    read_trial_verifier_output,
+)
 from oddish.db.models import TrialModel
 
 MAX_TEXT_CHARS = 2000
@@ -221,6 +226,54 @@ async def generate(trajectory: dict) -> dict:
         "summary": summary,
         "highlights": highlights,
     }
+
+
+# ---------------------------------------------------------------------------
+# Task context bundle (fed into the summary prompt)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TaskContext:
+    """Bundle of task and outcome data fed into the summary prompt.
+
+    Each field may be None — the prompt renders missing values as
+    ``[unavailable]`` rather than failing generation.
+    """
+
+    task_name: str
+    instruction: str | None
+    final_reward: float | None
+    model_used: str | None
+    verifier_output: str | None
+
+
+async def build_task_context(trial) -> TaskContext:
+    """Assemble TaskContext from DB fields + parallel S3 reads.
+
+    The two S3 reads (instruction.md, verifier/test-stdout.txt) run
+    concurrently with each other.
+    """
+    instruction, verifier_output = await asyncio.gather(
+        read_trial_instruction(trial),
+        read_trial_verifier_output(trial),
+    )
+
+    model_used = trial.model
+    if model_used is None and isinstance(trial.harbor_config, dict):
+        agent_cfg = trial.harbor_config.get("agent")
+        if isinstance(agent_cfg, dict):
+            model_used = agent_cfg.get("model")
+
+    task_name = trial.task.name if trial.task is not None else ""
+
+    return TaskContext(
+        task_name=task_name,
+        instruction=instruction,
+        final_reward=trial.reward,
+        model_used=model_used,
+        verifier_output=verifier_output,
+    )
 
 
 # ---------------------------------------------------------------------------
