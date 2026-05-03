@@ -10,6 +10,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -30,9 +38,34 @@ import {
   formatRelativeTime,
   formatShortDateTime,
 } from "@/lib/utils";
-import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  LayoutGrid,
+  List,
+  Loader2,
+} from "lucide-react";
 
 const PAGE_SIZE = 25;
+
+type SortKey = "recent" | "name" | "pass" | "trials" | "version";
+type ScoreBucket = "all" | "pass80" | "pass35to80" | "pass0to35" | "untested";
+type ViewMode = "cards" | "list";
+
+function passRate(task: TaskBrowseItem): number | null {
+  if (!task.reward_total || task.reward_total <= 0) return null;
+  return (task.reward_sum ?? task.reward_success) / task.reward_total;
+}
+
+function inScoreBucket(task: TaskBrowseItem, bucket: ScoreBucket): boolean {
+  if (bucket === "all") return true;
+  const r = passRate(task);
+  if (r == null) return bucket === "untested";
+  if (bucket === "pass80") return r >= 0.8;
+  if (bucket === "pass35to80") return r >= 0.35 && r < 0.8;
+  if (bucket === "pass0to35") return r < 0.35;
+  return false;
+}
 
 function useDebouncedValue<T>(value: T, delayMs: number) {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -329,6 +362,95 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
   );
 }
 
+function TaskListView({ tasks }: { tasks: TaskBrowseItem[] }) {
+  return (
+    <div className="overflow-x-auto rounded-sm border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Task</TableHead>
+            <TableHead className="text-right">v</TableHead>
+            <TableHead className="text-right">Pass rate</TableHead>
+            <TableHead className="text-right">Trials</TableHead>
+            <TableHead className="text-right">Last run</TableHead>
+            <TableHead className="text-right">Used in</TableHead>
+            <TableHead>Tags</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {tasks.map((t) => {
+            const r = passRate(t);
+            const pct = r == null ? null : Math.round(r * 100);
+            const tone =
+              pct == null
+                ? "text-muted-foreground"
+                : pct >= 80
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : pct >= 35
+                    ? "text-amber-500"
+                    : "text-rose-500";
+            return (
+              <TableRow key={t.id}>
+                <TableCell>
+                  <Link
+                    href={`/tasks/${encodeURIComponent(t.id)}`}
+                    className="font-mono text-xs hover:underline"
+                  >
+                    {t.name}
+                  </Link>
+                </TableCell>
+                <TableCell className="text-right font-mono text-xs text-muted-foreground">
+                  v{t.current_version ?? "?"}
+                  {t.version_count > 1 ? (
+                    <span className="ml-1 text-[10px]">
+                      ({t.version_count})
+                    </span>
+                  ) : null}
+                </TableCell>
+                <TableCell
+                  className={`text-right font-mono text-xs font-semibold ${tone}`}
+                >
+                  {pct == null ? "—" : `${pct}%`}
+                </TableCell>
+                <TableCell className="text-right font-mono text-xs">
+                  {t.total_trials}
+                </TableCell>
+                <TableCell className="text-right text-[11px] text-muted-foreground">
+                  {t.last_run_at
+                    ? formatRelativeTime(t.last_run_at)
+                    : "—"}
+                </TableCell>
+                <TableCell className="text-right font-mono text-xs">
+                  {t.experiments?.length ?? 0}
+                </TableCell>
+                <TableCell>
+                  {t.tags && Object.keys(t.tags).length > 0 ? (
+                    <div className="flex flex-wrap gap-0.5">
+                      {Object.entries(t.tags)
+                        .filter(([k]) => !k.startsWith("github_"))
+                        .slice(0, 4)
+                        .map(([k, v]) => (
+                          <span
+                            key={k}
+                            className="rounded-sm bg-muted px-1 py-0 font-mono text-[9px] text-muted-foreground"
+                          >
+                            {k}={v}
+                          </span>
+                        ))}
+                    </div>
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground">—</span>
+                  )}
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
 export function TasksPageClient({
   initialData,
   initialQuery = "",
@@ -338,6 +460,11 @@ export function TasksPageClient({
 }) {
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [offset, setOffset] = useState(0);
+  const [tagFilter, setTagFilter] = useState<Set<string>>(new Set());
+  const [sort, setSort] = useState<SortKey>("recent");
+  const [scoreBucket, setScoreBucket] = useState<ScoreBucket>("all");
+  const [experimentFilter, setExperimentFilter] = useState<string>("");
+  const [view, setView] = useState<ViewMode>("cards");
   const debouncedQuery = useDebouncedValue(searchQuery.trim(), 300);
 
   useEffect(() => {
@@ -369,10 +496,103 @@ export function TasksPageClient({
     },
   );
 
-  const items = data?.items ?? [];
+  const rawItems = data?.items ?? [];
   const hasMore = data?.has_more ?? false;
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
   const isRefreshing = !error && !isLoading && isValidating;
+
+  // Derived facets across the current page (server-side filters
+  // would need new BE params; this is a useful slice over the
+  // current page either way).
+  const tagChips = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const t of rawItems) {
+      for (const [k, v] of Object.entries(t.tags ?? {})) {
+        if (k.startsWith("github_")) continue;
+        const key = `${k}=${v}`;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 30);
+  }, [rawItems]);
+
+  const experimentOptions = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of rawItems) {
+      for (const e of t.experiments ?? []) m.set(e.id, e.name);
+    }
+    return Array.from(m.entries()).sort((a, b) =>
+      a[1].localeCompare(b[1]),
+    );
+  }, [rawItems]);
+
+  const items = useMemo(() => {
+    let out = rawItems;
+    if (tagFilter.size > 0) {
+      out = out.filter((t) => {
+        for (const chip of tagFilter) {
+          const eq = chip.indexOf("=");
+          const k = chip.slice(0, eq);
+          const v = chip.slice(eq + 1);
+          if ((t.tags ?? {})[k] !== v) return false;
+        }
+        return true;
+      });
+    }
+    if (scoreBucket !== "all") {
+      out = out.filter((t) => inScoreBucket(t, scoreBucket));
+    }
+    if (experimentFilter) {
+      out = out.filter((t) =>
+        (t.experiments ?? []).some((e) => e.id === experimentFilter),
+      );
+    }
+    const sorted = [...out];
+    sorted.sort((a, b) => {
+      if (sort === "name") return a.name.localeCompare(b.name);
+      if (sort === "trials")
+        return (b.total_trials ?? 0) - (a.total_trials ?? 0);
+      if (sort === "version")
+        return (b.version_count ?? 0) - (a.version_count ?? 0);
+      if (sort === "pass") {
+        const ra = passRate(a) ?? -1;
+        const rb = passRate(b) ?? -1;
+        return rb - ra;
+      }
+      // recent
+      const ar = a.last_run_at ? Date.parse(a.last_run_at) : 0;
+      const br = b.last_run_at ? Date.parse(b.last_run_at) : 0;
+      return br - ar || a.name.localeCompare(b.name);
+    });
+    return sorted;
+  }, [rawItems, tagFilter, scoreBucket, experimentFilter, sort]);
+
+  const toggleTag = (chip: string) => {
+    setTagFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(chip)) next.delete(chip);
+      else next.add(chip);
+      return next;
+    });
+  };
+
+  const filtersActive =
+    tagFilter.size > 0 || scoreBucket !== "all" || !!experimentFilter;
+  const clearFilters = () => {
+    setTagFilter(new Set());
+    setScoreBucket("all");
+    setExperimentFilter("");
+  };
+
+  const scoreChips: { value: ScoreBucket; label: string }[] = [
+    { value: "all", label: "All" },
+    { value: "pass80", label: "≥ 80%" },
+    { value: "pass35to80", label: "35–80%" },
+    { value: "pass0to35", label: "< 35%" },
+    { value: "untested", label: "Untested" },
+  ];
 
   return (
     <TooltipProvider>
@@ -384,6 +604,7 @@ export function TasksPageClient({
               <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
                 <span>
                   Showing {items.length}
+                  {filtersActive ? ` of ${rawItems.length}` : ""}
                   {" • "}Page {currentPage}
                 </span>
                 {isRefreshing ? (
@@ -394,14 +615,126 @@ export function TasksPageClient({
                 ) : null}
               </div>
             </div>
-            <Input
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Search tasks"
-              className="h-8 w-full border-[#6f88b4]/20 sm:w-[260px]"
-            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search tasks"
+                className="h-8 w-full border-[#6f88b4]/20 sm:w-[260px]"
+              />
+              <select
+                value={sort}
+                onChange={(e) => setSort(e.target.value as SortKey)}
+                className="h-8 rounded-sm border bg-background px-2 font-mono text-xs"
+              >
+                <option value="recent">Sort: recent</option>
+                <option value="name">Sort: name</option>
+                <option value="pass">Sort: pass rate</option>
+                <option value="trials">Sort: trials</option>
+                <option value="version">Sort: versions</option>
+              </select>
+              {experimentOptions.length > 0 ? (
+                <select
+                  value={experimentFilter}
+                  onChange={(e) => setExperimentFilter(e.target.value)}
+                  className="h-8 max-w-[200px] truncate rounded-sm border bg-background px-2 font-mono text-xs"
+                >
+                  <option value="">All experiments</option>
+                  {experimentOptions.map(([id, name]) => (
+                    <option key={id} value={id}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              <div className="inline-flex h-8 items-center overflow-hidden rounded-sm border">
+                <button
+                  type="button"
+                  onClick={() => setView("cards")}
+                  className={`flex h-full items-center gap-1 px-2 text-xs ${
+                    view === "cards"
+                      ? "bg-foreground text-background"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                  title="Card view"
+                >
+                  <LayoutGrid className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setView("list")}
+                  className={`flex h-full items-center gap-1 border-l px-2 text-xs ${
+                    view === "list"
+                      ? "bg-foreground text-background"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                  title="List view"
+                >
+                  <List className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+              <span className="font-mono uppercase tracking-wide text-muted-foreground">
+                pass rate
+              </span>
+              {scoreChips.map(({ value, label }) => {
+                const active = scoreBucket === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setScoreBucket(value)}
+                    className={`inline-flex items-center rounded-sm border px-1.5 py-0.5 font-mono transition ${
+                      active
+                        ? "border-foreground bg-foreground text-background"
+                        : "border-border bg-muted/40 text-muted-foreground hover:border-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+              {tagChips.length > 0 ? (
+                <>
+                  <span className="ml-2 font-mono uppercase tracking-wide text-muted-foreground">
+                    tags
+                  </span>
+                  {tagChips.map(([chip, count]) => {
+                    const active = tagFilter.has(chip);
+                    return (
+                      <button
+                        key={chip}
+                        type="button"
+                        onClick={() => toggleTag(chip)}
+                        className={`inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono transition ${
+                          active
+                            ? "border-foreground bg-foreground text-background"
+                            : "border-border bg-muted/40 text-muted-foreground hover:border-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {chip}
+                        <span className={active ? "opacity-70" : "opacity-60"}>
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </>
+              ) : null}
+              {filtersActive ? (
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="ml-1 underline-offset-2 hover:underline"
+                >
+                  clear
+                </button>
+              ) : null}
+            </div>
+
             {error ? (
               <Alert variant="destructive">
                 <AlertTitle>Failed to load tasks</AlertTitle>
@@ -413,16 +746,20 @@ export function TasksPageClient({
               <TaskCardsSkeleton />
             ) : items.length === 0 ? (
               <div className="rounded-lg border border-dashed border-[#6f88b4]/30 bg-card/60 px-6 py-10 text-center text-sm text-muted-foreground">
-                {debouncedQuery
-                  ? "No tasks match the current search."
-                  : "No tasks have been created yet."}
+                {filtersActive
+                  ? "No tasks match the current filters."
+                  : debouncedQuery
+                    ? "No tasks match the current search."
+                    : "No tasks have been created yet."}
               </div>
-            ) : (
+            ) : view === "cards" ? (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {items.map((task) => (
                   <TaskCard key={task.id} task={task} />
                 ))}
               </div>
+            ) : (
+              <TaskListView tasks={items} />
             )}
 
             <div className="flex items-center justify-between gap-2">
