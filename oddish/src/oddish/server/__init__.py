@@ -414,9 +414,15 @@ async def browse_tasks(
     offset: int = Query(0, ge=0),
     query: str | None = None,
     tag: list[str] | None = Query(default=None),
+    tag_match: str = Query(
+        "all", regex="^(all|any)$", description="all = AND, any = OR"
+    ),
     score_bucket: str | None = None,
     experiment_id: str | None = None,
-    agent: str | None = None,
+    agent: list[str] | None = Query(
+        default=None,
+        description="Repeatable; tasks matching ANY listed harness.",
+    ),
     sort: str | None = None,
 ) -> TaskBrowseResponse:
     """Browse latest task versions with aggregated trial stats."""
@@ -427,9 +433,10 @@ async def browse_tasks(
             offset=offset,
             query=query,
             tags=tag,
+            tag_match=tag_match,
             score_bucket=score_bucket,
             experiment_id=experiment_id,
-            agent=agent,
+            agents=agent,
             sort=sort,
         )
 

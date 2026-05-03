@@ -109,17 +109,21 @@ function AddFilterPopover({
   tagChips,
   agentOptions,
   experimentOptions,
+  activeAgents,
+  activeTags,
   onAddTag,
   onSetScore,
-  onSetAgent,
+  onToggleAgent,
   onSetExperiment,
 }: {
   tagChips: [string, number][];
   agentOptions: string[];
   experimentOptions: [string, string][];
+  activeAgents: Set<string>;
+  activeTags: Set<string>;
   onAddTag: (chip: string) => void;
   onSetScore: (b: ScoreBucket) => void;
-  onSetAgent: (a: string) => void;
+  onToggleAgent: (a: string) => void;
   onSetExperiment: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -192,20 +196,31 @@ function AddFilterPopover({
                       filter directly.
                     </p>
                   ) : null}
-                  {tagSuggestions.map(([chip, count]) => (
-                    <button
-                      key={chip}
-                      type="button"
-                      onClick={() => {
-                        onAddTag(chip);
-                        close();
-                      }}
-                      className="flex w-full items-center justify-between rounded-sm px-2 py-1 text-left font-mono hover:bg-muted/60"
-                    >
-                      <span>{chip}</span>
-                      <span className="text-muted-foreground">{count}</span>
-                    </button>
-                  ))}
+                  {tagSuggestions.map(([chip, count]) => {
+                    const active = activeTags.has(chip);
+                    return (
+                      <button
+                        key={chip}
+                        type="button"
+                        onClick={() => onAddTag(chip)}
+                        className={`flex w-full items-center justify-between rounded-sm px-2 py-1 text-left font-mono hover:bg-muted/60 ${
+                          active ? "bg-foreground text-background" : ""
+                        }`}
+                      >
+                        <span>
+                          {active ? "✓ " : ""}
+                          {chip}
+                        </span>
+                        <span
+                          className={
+                            active ? "opacity-70" : "text-muted-foreground"
+                          }
+                        >
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </>
             ) : null}
@@ -216,19 +231,29 @@ function AddFilterPopover({
                     No agents have run on the visible tasks yet.
                   </p>
                 ) : null}
-                {agentOptions.map((a) => (
-                  <button
-                    key={a}
-                    type="button"
-                    onClick={() => {
-                      onSetAgent(a);
-                      close();
-                    }}
-                    className="block w-full rounded-sm px-2 py-1 text-left font-mono hover:bg-muted/60"
-                  >
-                    @{a}
-                  </button>
-                ))}
+                {agentOptions.map((a) => {
+                  const active = activeAgents.has(a);
+                  return (
+                    <button
+                      key={a}
+                      type="button"
+                      onClick={() => onToggleAgent(a)}
+                      className={`flex w-full items-center justify-between rounded-sm px-2 py-1 text-left font-mono hover:bg-muted/60 ${
+                        active ? "bg-foreground text-background" : ""
+                      }`}
+                    >
+                      <span>
+                        {active ? "✓ " : ""}@{a}
+                      </span>
+                    </button>
+                  );
+                })}
+                {agentOptions.length > 0 ? (
+                  <p className="px-2 pt-2 text-[10px] text-muted-foreground">
+                    Multi-select: matches tasks where{" "}
+                    <strong>any</strong> selected agent has run.
+                  </p>
+                ) : null}
               </div>
             ) : null}
             {dim === "score" ? (
@@ -487,12 +512,12 @@ function CreateExperimentFromFilterDialog({
 
 function TaskListView({
   tasks,
-  activeAgent,
-  onAgentClick,
+  activeAgents,
+  onToggleAgent,
 }: {
   tasks: TaskBrowseItem[];
-  activeAgent: string;
-  onAgentClick: (agent: string) => void;
+  activeAgents: Set<string>;
+  onToggleAgent: (agent: string) => void;
 }) {
   return (
     <div className="overflow-x-auto rounded-sm border">
@@ -550,7 +575,7 @@ function TaskListView({
                   {(t.agent_summaries ?? []).length > 0 ? (
                     <div className="flex flex-wrap gap-0.5">
                       {(t.agent_summaries ?? []).map((s) => {
-                        const active = activeAgent === s.agent;
+                        const active = activeAgents.has(s.agent);
                         const pct =
                           s.attempts > 0
                             ? Math.round((s.passed / s.attempts) * 100)
@@ -559,9 +584,7 @@ function TaskListView({
                           <button
                             key={s.agent}
                             type="button"
-                            onClick={() =>
-                              onAgentClick(active ? "" : s.agent)
-                            }
+                            onClick={() => onToggleAgent(s.agent)}
                             title={`${s.passed}/${s.attempts}${pct != null ? ` · ${pct}%` : ""}`}
                             className={`rounded-sm border px-1 py-0 font-mono text-[9px] ${
                               active
@@ -616,8 +639,13 @@ export function TasksPageClient({
   const urlScore =
     (searchParams.get("score") as ScoreBucket | null) ?? "all";
   const urlExperiment = searchParams.get("experiment") ?? "";
-  const urlAgent = searchParams.get("agent") ?? "";
+  const urlAgents = useMemo(
+    () => searchParams.getAll("agent"),
+    [searchParams],
+  );
   const urlTags = useMemo(() => searchParams.getAll("tag"), [searchParams]);
+  const urlTagMatch =
+    (searchParams.get("tag_match") as "all" | "any" | null) ?? "all";
   const urlOffset = Math.max(
     0,
     parseInt(searchParams.get("offset") ?? "0", 10) || 0,
@@ -687,10 +715,22 @@ export function TasksPageClient({
     if (urlSort && urlSort !== "recent") params.set("sort", urlSort);
     if (urlScore && urlScore !== "all") params.set("score_bucket", urlScore);
     if (urlExperiment) params.set("experiment_id", urlExperiment);
-    if (urlAgent) params.set("agent", urlAgent);
+    for (const a of urlAgents) params.append("agent", a);
     for (const chip of urlTags) params.append("tag", chip);
+    if (urlTags.length > 1 && urlTagMatch === "any")
+      params.set("tag_match", "any");
     return `/api/tasks/browse?${params.toString()}`;
-  }, [urlOffset, urlQuery, urlSort, urlScore, urlExperiment, urlAgent, urlTags]);
+  }, [
+    urlOffset,
+    urlPageSize,
+    urlQuery,
+    urlSort,
+    urlScore,
+    urlExperiment,
+    urlAgents,
+    urlTags,
+    urlTagMatch,
+  ]);
 
   const { data, error, isLoading, isValidating } = useSWR<TaskBrowseResponse>(
     swrKey,
@@ -705,7 +745,7 @@ export function TasksPageClient({
         urlSort === "recent" &&
         urlScore === "all" &&
         !urlExperiment &&
-        !urlAgent &&
+        urlAgents.length === 0 &&
         urlTags.length === 0
           ? (initialData ?? undefined)
           : undefined,
@@ -763,15 +803,23 @@ export function TasksPageClient({
     else next.add(chip);
     updateParam("tag", Array.from(next), { resetOffset: true });
   };
+  const agentFilter = useMemo(() => new Set(urlAgents), [urlAgents]);
+  const toggleAgent = (a: string) => {
+    const next = new Set(agentFilter);
+    if (next.has(a)) next.delete(a);
+    else next.add(a);
+    updateParam("agent", Array.from(next), { resetOffset: true });
+  };
 
   const filtersActive =
     tagFilter.size > 0 ||
     urlScore !== "all" ||
     !!urlExperiment ||
-    !!urlAgent;
+    agentFilter.size > 0;
   const clearFilters = () => {
     const params = new URLSearchParams(searchParams.toString());
     params.delete("tag");
+    params.delete("tag_match");
     params.delete("score");
     params.delete("experiment");
     params.delete("agent");
@@ -788,12 +836,13 @@ export function TasksPageClient({
   };
   const experimentNameById = new Map(experimentOptions);
 
-  // Active filters as a flat list of removable chips.
+  // Active filters as a flat list of removable chips. Tag chips
+  // get an inline "any/all" toggle when more than one is selected.
   const activeFilterChips: { key: string; label: string; onRemove: () => void }[] = [];
   for (const chip of urlTags) {
     activeFilterChips.push({
       key: `tag:${chip}`,
-      label: chip,
+      label: `tag: ${chip}`,
       onRemove: () => toggleTag(chip),
     });
   }
@@ -804,11 +853,11 @@ export function TasksPageClient({
       onRemove: () => updateParam("score", null, { resetOffset: true }),
     });
   }
-  if (urlAgent) {
+  for (const a of urlAgents) {
     activeFilterChips.push({
-      key: `agent:${urlAgent}`,
-      label: `agent: @${urlAgent}`,
-      onRemove: () => updateParam("agent", null, { resetOffset: true }),
+      key: `agent:${a}`,
+      label: `agent: @${a}`,
+      onRemove: () => toggleAgent(a),
     });
   }
   if (urlExperiment) {
@@ -857,15 +906,15 @@ export function TasksPageClient({
                 tagChips={tagChips}
                 agentOptions={agentOptions}
                 experimentOptions={experimentOptions}
+                activeAgents={agentFilter}
+                activeTags={tagFilter}
                 onAddTag={(chip) => toggleTag(chip)}
                 onSetScore={(b) =>
                   updateParam("score", b === "all" ? null : b, {
                     resetOffset: true,
                   })
                 }
-                onSetAgent={(a) =>
-                  updateParam("agent", a || null, { resetOffset: true })
-                }
+                onToggleAgent={toggleAgent}
                 onSetExperiment={(id) =>
                   updateParam("experiment", id || null, { resetOffset: true })
                 }
@@ -909,6 +958,32 @@ export function TasksPageClient({
                     </button>
                   </span>
                 ))}
+                {urlTags.length > 1 ? (
+                  <span className="inline-flex items-center overflow-hidden rounded-sm border font-mono">
+                    <span className="px-1.5 py-0.5 text-muted-foreground">
+                      tags:
+                    </span>
+                    {(["all", "any"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() =>
+                          updateParam(
+                            "tag_match",
+                            mode === "all" ? null : mode,
+                          )
+                        }
+                        className={`px-1.5 py-0.5 ${
+                          urlTagMatch === mode
+                            ? "bg-foreground text-background"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {mode === "all" ? "AND" : "OR"}
+                      </button>
+                    ))}
+                  </span>
+                ) : null}
                 <button
                   type="button"
                   onClick={clearFilters}
@@ -1000,10 +1075,8 @@ export function TasksPageClient({
             ) : (
               <TaskListView
                 tasks={items}
-                activeAgent={urlAgent}
-                onAgentClick={(a) =>
-                  updateParam("agent", a || null, { resetOffset: true })
-                }
+                activeAgents={agentFilter}
+                onToggleAgent={toggleAgent}
               />
             )}
 
