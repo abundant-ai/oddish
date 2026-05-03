@@ -274,5 +274,4 @@ async def get_or_generate_summary(
             .values(trajectory_summary=summary)
         )
         await session.commit()
-        await session.refresh(trial, attribute_names=["trajectory_summary"])
         return summary
