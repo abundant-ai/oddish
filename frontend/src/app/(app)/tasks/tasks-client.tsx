@@ -270,7 +270,23 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
   );
 }
 
-function TaskCard({ task }: { task: TaskBrowseItem }) {
+function TaskCard({
+  task,
+  activeTags,
+  activeAgent,
+  onTagClick,
+  onAgentClick,
+}: {
+  task: TaskBrowseItem;
+  activeTags: Set<string>;
+  activeAgent: string;
+  onTagClick: (chip: string) => void;
+  onAgentClick: (agent: string) => void;
+}) {
+  const visibleTags = Object.entries(task.tags ?? {}).filter(
+    ([k]) => k !== "github_username" && !k.startsWith("github_"),
+  );
+  const agents = task.agents_seen ?? [];
   return (
     <Card className="border-[#6f88b4]/20 bg-card/95 shadow-xs">
       <CardHeader className="space-y-2 px-5 pt-5 pb-2">
@@ -286,27 +302,49 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
               <Badge variant="outline" className="w-fit font-mono text-[11px]">
                 v{task.current_version ?? "—"}
               </Badge>
-              {task.tags && Object.keys(task.tags).length > 0 ? (
-                <div className="flex flex-wrap gap-1">
-                  {Object.entries(task.tags)
-                    .filter(([k]) => k !== "github_username" && !k.startsWith("github_"))
-                    .map(([k, v]) => (
-                      <Link
-                        key={k}
-                        href={`/tasks?query=${encodeURIComponent(v)}`}
-                        title={`Filter by ${k}=${v}`}
-                      >
-                        <Badge
-                          variant="secondary"
-                          className="cursor-pointer font-mono text-[10px] hover:bg-muted"
-                        >
-                          {k}={v}
-                        </Badge>
-                      </Link>
-                    ))}
-                </div>
-              ) : null}
             </div>
+            {visibleTags.length > 0 || agents.length > 0 ? (
+              <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                {visibleTags.map(([k, v]) => {
+                  const chip = `${k}=${v}`;
+                  const active = activeTags.has(chip);
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => onTagClick(chip)}
+                      title={`${active ? "Remove" : "Add"} filter ${chip}`}
+                      className={`inline-flex items-center rounded-sm border px-1.5 py-0.5 font-mono text-[10px] transition ${
+                        active
+                          ? "border-foreground bg-foreground text-background"
+                          : "border-border bg-muted/40 text-muted-foreground hover:border-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {chip}
+                    </button>
+                  );
+                })}
+                {agents.map((a) => {
+                  const active = activeAgent === a;
+                  return (
+                    <button
+                      key={a}
+                      type="button"
+                      onClick={() => onAgentClick(active ? "" : a)}
+                      title={`${active ? "Clear" : "Filter to"} agent ${a}`}
+                      className={`inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono text-[10px] transition ${
+                        active
+                          ? "border-emerald-500 bg-emerald-500 text-white"
+                          : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:border-emerald-500 dark:text-emerald-300"
+                      }`}
+                    >
+                      <span className="opacity-60">@</span>
+                      {a}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
           <div className="shrink-0 text-right">
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -353,7 +391,15 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
   );
 }
 
-function TaskListView({ tasks }: { tasks: TaskBrowseItem[] }) {
+function TaskListView({
+  tasks,
+  activeAgent,
+  onAgentClick,
+}: {
+  tasks: TaskBrowseItem[];
+  activeAgent: string;
+  onAgentClick: (agent: string) => void;
+}) {
   return (
     <div className="overflow-x-auto rounded-sm border">
       <Table>
@@ -363,6 +409,7 @@ function TaskListView({ tasks }: { tasks: TaskBrowseItem[] }) {
             <TableHead className="text-right">v</TableHead>
             <TableHead className="text-right">Pass rate</TableHead>
             <TableHead className="text-right">Trials</TableHead>
+            <TableHead>Agents</TableHead>
             <TableHead className="text-right">Last run</TableHead>
             <TableHead className="text-right">Used in</TableHead>
             <TableHead>Tags</TableHead>
@@ -405,6 +452,31 @@ function TaskListView({ tasks }: { tasks: TaskBrowseItem[] }) {
                 </TableCell>
                 <TableCell className="text-right font-mono text-xs">
                   {t.total_trials}
+                </TableCell>
+                <TableCell>
+                  {(t.agents_seen ?? []).length > 0 ? (
+                    <div className="flex flex-wrap gap-0.5">
+                      {(t.agents_seen ?? []).map((a) => {
+                        const active = activeAgent === a;
+                        return (
+                          <button
+                            key={a}
+                            type="button"
+                            onClick={() => onAgentClick(active ? "" : a)}
+                            className={`rounded-sm border px-1 py-0 font-mono text-[9px] ${
+                              active
+                                ? "border-emerald-500 bg-emerald-500 text-white"
+                                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:border-emerald-500 dark:text-emerald-300"
+                            }`}
+                          >
+                            @{a}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground">—</span>
+                  )}
                 </TableCell>
                 <TableCell className="text-right text-[11px] text-muted-foreground">
                   {t.last_run_at
@@ -460,6 +532,7 @@ export function TasksPageClient({
   const urlScore =
     (searchParams.get("score") as ScoreBucket | null) ?? "all";
   const urlExperiment = searchParams.get("experiment") ?? "";
+  const urlAgent = searchParams.get("agent") ?? "";
   const urlTags = useMemo(() => searchParams.getAll("tag"), [searchParams]);
   const urlView = (searchParams.get("view") as ViewMode | null) ?? "cards";
   const urlOffset = Math.max(
@@ -523,9 +596,10 @@ export function TasksPageClient({
     if (urlSort && urlSort !== "recent") params.set("sort", urlSort);
     if (urlScore && urlScore !== "all") params.set("score_bucket", urlScore);
     if (urlExperiment) params.set("experiment_id", urlExperiment);
+    if (urlAgent) params.set("agent", urlAgent);
     for (const chip of urlTags) params.append("tag", chip);
     return `/api/tasks/browse?${params.toString()}`;
-  }, [urlOffset, urlQuery, urlSort, urlScore, urlExperiment, urlTags]);
+  }, [urlOffset, urlQuery, urlSort, urlScore, urlExperiment, urlAgent, urlTags]);
 
   const { data, error, isLoading, isValidating } = useSWR<TaskBrowseResponse>(
     swrKey,
@@ -540,6 +614,7 @@ export function TasksPageClient({
         urlSort === "recent" &&
         urlScore === "all" &&
         !urlExperiment &&
+        !urlAgent &&
         urlTags.length === 0
           ? (initialData ?? undefined)
           : undefined,
@@ -579,6 +654,12 @@ export function TasksPageClient({
     );
   }, [items]);
 
+  const agentOptions = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of items) for (const a of t.agents_seen ?? []) s.add(a);
+    return Array.from(s).sort();
+  }, [items]);
+
   const tagFilter = useMemo(() => new Set(urlTags), [urlTags]);
   const toggleTag = (chip: string) => {
     const next = new Set(tagFilter);
@@ -588,12 +669,16 @@ export function TasksPageClient({
   };
 
   const filtersActive =
-    tagFilter.size > 0 || urlScore !== "all" || !!urlExperiment;
+    tagFilter.size > 0 ||
+    urlScore !== "all" ||
+    !!urlExperiment ||
+    !!urlAgent;
   const clearFilters = () => {
     const params = new URLSearchParams(searchParams.toString());
     params.delete("tag");
     params.delete("score");
     params.delete("experiment");
+    params.delete("agent");
     params.delete("offset");
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   };
@@ -667,6 +752,27 @@ export function TasksPageClient({
                       {name}
                     </option>
                   ))}
+                </select>
+              ) : null}
+              {agentOptions.length > 0 || urlAgent ? (
+                <select
+                  value={urlAgent}
+                  onChange={(e) =>
+                    updateParam("agent", e.target.value || null, {
+                      resetOffset: true,
+                    })
+                  }
+                  className="h-8 max-w-[160px] truncate rounded-sm border bg-background px-2 font-mono text-xs"
+                >
+                  <option value="">All agents</option>
+                  {agentOptions.map((a) => (
+                    <option key={a} value={a}>
+                      @{a}
+                    </option>
+                  ))}
+                  {urlAgent && !agentOptions.includes(urlAgent) ? (
+                    <option value={urlAgent}>@{urlAgent}</option>
+                  ) : null}
                 </select>
               ) : null}
               <div className="inline-flex h-8 items-center overflow-hidden rounded-sm border">
@@ -783,11 +889,26 @@ export function TasksPageClient({
             ) : urlView === "cards" ? (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {items.map((task) => (
-                  <TaskCard key={task.id} task={task} />
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    activeTags={tagFilter}
+                    activeAgent={urlAgent}
+                    onTagClick={toggleTag}
+                    onAgentClick={(a) =>
+                      updateParam("agent", a || null, { resetOffset: true })
+                    }
+                  />
                 ))}
               </div>
             ) : (
-              <TaskListView tasks={items} />
+              <TaskListView
+                tasks={items}
+                activeAgent={urlAgent}
+                onAgentClick={(a) =>
+                  updateParam("agent", a || null, { resetOffset: true })
+                }
+              />
             )}
 
             <div className="flex items-center justify-between gap-2">

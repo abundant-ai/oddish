@@ -354,6 +354,7 @@ async def browse_tasks_core(
     tags: list[str] | None = None,
     score_bucket: str | None = None,
     experiment_id: str | None = None,
+    agent: str | None = None,
     sort: str | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
@@ -367,6 +368,8 @@ async def browse_tasks_core(
       ``pass0to35`` / ``untested``. Applied post-aggregate.
     - ``experiment_id`` -- only tasks that have at least one trial
       belonging to this experiment.
+    - ``agent`` -- only tasks where the given harness has at least
+      one trial.
 
     Sort keys: ``recent`` (default), ``name``, ``pass``, ``trials``,
     ``version``.
@@ -527,6 +530,19 @@ async def browse_tasks_core(
             ranked_tasks_subquery.c.task_id.in_(exp_subq)
         )
 
+    # "Tasks where harness X has run at least once".
+    if agent:
+        agent_subq = (
+            select(TrialModel.task_id)
+            .where(
+                TrialModel.agent == agent,
+                *([TrialModel.org_id == org_id] if org_id is not None else []),
+            )
+        )
+        paged_rows = paged_rows.where(
+            ranked_tasks_subquery.c.task_id.in_(agent_subq)
+        )
+
     # Sort. "recent" keeps the existing tie-breakers; the others swap
     # the lead key but keep name as the final tie-break for stable
     # pagination.
@@ -578,6 +594,7 @@ async def browse_tasks_core(
 
     experiments_by_task: dict[str, list[TaskBrowseExperiment]] = {}
     latest_trials_by_task: dict[str, list[TaskBrowseTrial]] = {}
+    agents_by_task: dict[str, list[str]] = {}
     task_version_pairs = [
         (str(row["task_id"]), str(row["current_version_id"]))
         for row in visible_rows
@@ -668,6 +685,32 @@ async def browse_tasks_core(
                 )
             )
 
+        # Distinct harness names per task, for the FE agent-filter
+        # chip row. Cheap aggregate over the same (task_id,
+        # task_version_id) pairs we just used.
+        agents_query = (
+            select(
+                TrialModel.task_id.label("task_id"),
+                TrialModel.agent.label("agent"),
+            )
+            .where(
+                tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
+                    task_version_pairs
+                ),
+                TrialModel.agent.is_not(None),
+            )
+            .distinct()
+        )
+        if org_id is not None:
+            agents_query = agents_query.where(TrialModel.org_id == org_id)
+        agents_rows = await session.execute(agents_query)
+        for agent_row in agents_rows.mappings():
+            agents_by_task.setdefault(str(agent_row["task_id"]), []).append(
+                str(agent_row["agent"])
+            )
+        for tid in agents_by_task:
+            agents_by_task[tid].sort()
+
     build_started_at = now()
     response = TaskBrowseResponse(
         items=[
@@ -695,6 +738,7 @@ async def browse_tasks_core(
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),
                 tags=dict(row["tags"] or {}),
+                agents_seen=agents_by_task.get(str(row["task_id"]), []),
             )
             for row in visible_rows
         ],
