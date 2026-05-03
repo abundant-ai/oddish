@@ -35,7 +35,7 @@ MAX_TEXT_CHARS = 2000
 TRUNCATE_HEAD = 800
 TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 MODEL = "claude-sonnet-4-6"
 
 
@@ -127,27 +127,6 @@ class SummaryGenerationError(RuntimeError):
     """Raised when the LLM returned content we could not turn into a summary."""
 
 
-_PROMPT_HEADER = (
-    "You are summarizing a recorded agent trajectory for a developer who "
-    "wants a quick scan before diving into the per-step view. Produce a "
-    "2-3 sentence summary covering what the agent set out to do and how "
-    "it ended, then 3-6 pivotal 'key moments' with their step ids.\n\n"
-    "Each highlight must reference a real `step_id` from the trajectory below. "
-    "Pick steps where something genuinely shifted: a strategy was committed, "
-    "a key tool call landed, an error redirected the work, or the final "
-    "verdict was reached. Skip filler.\n\n"
-    "Respond with ONLY a JSON object (no preamble, no code fences) matching "
-    "this exact shape:\n"
-    "{\n"
-    '  "summary": "2-3 sentences",\n'
-    '  "highlights": [\n'
-    '    {"step_id": <int>, "title": "<short label>", "why": "<one sentence>"}\n'
-    "  ]\n"
-    "}\n"
-    "Highlights must be ordered by step_id ascending.\n\n"
-)
-
-
 def _strip_code_fences(text: str) -> str:
     raw = text.strip()
     if raw.startswith("```"):
@@ -158,12 +137,64 @@ def _strip_code_fences(text: str) -> str:
     return raw.strip()
 
 
-async def generate(trajectory: dict) -> dict:
+def _render_prompt(trajectory: dict, task_context: "TaskContext") -> str:
+    instruction = (
+        _truncate(task_context.instruction)
+        if task_context.instruction is not None
+        else "[unavailable]"
+    )
+    verifier_output = (
+        _truncate(task_context.verifier_output)
+        if task_context.verifier_output is not None
+        else "[unavailable]"
+    )
+    final_reward = (
+        f"{task_context.final_reward}"
+        if task_context.final_reward is not None
+        else "[unavailable]"
+    )
+    model_used = task_context.model_used or "[unavailable]"
+
+    return (
+        "You are summarizing a recorded agent trajectory for a developer "
+        "who wants a quick scan before diving into the per-step view.\n\n"
+        f"<task>\n"
+        f"Name: {task_context.task_name}\n"
+        f"Instruction: {instruction}\n"
+        f"</task>\n\n"
+        f"<outcome>\n"
+        f"Final reward: {final_reward}\n"
+        f"Verifier output: {verifier_output}\n"
+        f"Model: {model_used}\n"
+        f"</outcome>\n\n"
+        "Produce a 2-3 sentence summary covering what the agent set out "
+        "to do, how it ended, and whether the verifier agreed. Then 3-6 "
+        "pivotal 'key moments' with their step ids.\n\n"
+        "Each highlight must reference a real `step_id` from the "
+        "trajectory below. Pick steps where something genuinely shifted: "
+        "a strategy was committed, a key tool call landed, an error "
+        "redirected the work, or the final verdict was reached. Skip "
+        "filler.\n\n"
+        "Respond with ONLY a JSON object (no preamble, no code fences) "
+        "matching this exact shape:\n"
+        "{\n"
+        '  "summary": "2-3 sentences",\n'
+        '  "highlights": [\n'
+        '    {"step_id": <int>, "title": "<short label>", '
+        '"why": "<one sentence>"}\n'
+        "  ]\n"
+        "}\n"
+        "Highlights must be ordered by step_id ascending.\n\n"
+        f"<trajectory>\n{json.dumps(preprocess(trajectory))}\n</trajectory>"
+    )
+
+
+async def generate(trajectory: dict, task_context: "TaskContext") -> dict:
     """Call Claude to produce a persistable summary dict for ``trajectory``.
 
-    Raises ``SummaryGenerationError`` if the model returns malformed JSON or
-    cannot be parsed. Highlights referencing step_ids that are not in the
-    source trajectory are dropped silently.
+    Raises ``SummaryGenerationError`` if the model returns malformed JSON
+    or cannot be parsed. Highlights referencing step_ids that are not in
+    the source trajectory are dropped silently.
     """
     from anthropic import AsyncAnthropic
 
@@ -173,8 +204,7 @@ async def generate(trajectory: dict) -> dict:
         if isinstance(step.get("step_id"), int)
     }
 
-    compact = preprocess(trajectory)
-    prompt = _PROMPT_HEADER + "<trajectory>\n" + json.dumps(compact) + "\n</trajectory>"
+    prompt = _render_prompt(trajectory, task_context)
 
     try:
         client = AsyncAnthropic()
@@ -315,11 +345,14 @@ async def get_or_generate_summary(
         if _is_fresh(trial.trajectory_summary):
             return trial.trajectory_summary
 
-        trajectory = await read_trial_trajectory(trial)
+        trajectory, task_context = await asyncio.gather(
+            read_trial_trajectory(trial),
+            build_task_context(trial),
+        )
         if trajectory is None:
             return None
 
-        summary = await generate(trajectory)
+        summary = await generate(trajectory, task_context)
 
         await session.execute(
             update(TrialModel)

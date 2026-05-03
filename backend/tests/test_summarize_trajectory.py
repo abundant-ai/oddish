@@ -176,6 +176,19 @@ def _trajectory_with_steps(step_ids: list[int]) -> dict:
     }
 
 
+def _minimal_ctx():
+    """Return a TaskContext with all optional fields None."""
+    from api.services.summarize_trajectory import TaskContext
+
+    return TaskContext(
+        task_name="test_task",
+        instruction=None,
+        final_reward=None,
+        model_used=None,
+        verifier_output=None,
+    )
+
+
 def _fake_client_returning(text: str) -> MagicMock:
     fake_response = MagicMock()
     fake_response.content = [MagicMock(text=text)]
@@ -203,7 +216,7 @@ async def test_generate_returns_persistable_summary():
     )
     fake = _fake_client_returning(payload)
     with patch("anthropic.AsyncAnthropic", return_value=fake):
-        result = await generate(_trajectory_with_steps([1, 2, 3]))
+        result = await generate(_trajectory_with_steps([1, 2, 3]), _minimal_ctx())
 
     assert result["schema_version"] == SCHEMA_VERSION
     assert result["model"] == MODEL
@@ -227,7 +240,7 @@ async def test_generate_drops_highlights_with_unknown_step_ids():
     )
     fake = _fake_client_returning(payload)
     with patch("anthropic.AsyncAnthropic", return_value=fake):
-        result = await generate(_trajectory_with_steps([1, 2, 3]))
+        result = await generate(_trajectory_with_steps([1, 2, 3]), _minimal_ctx())
 
     assert [h["step_id"] for h in result["highlights"]] == [1]
 
@@ -240,7 +253,7 @@ async def test_generate_strips_code_fences_around_json():
     fenced = f"```json\n{body}\n```"
     fake = _fake_client_returning(fenced)
     with patch("anthropic.AsyncAnthropic", return_value=fake):
-        result = await generate(_trajectory_with_steps([1]))
+        result = await generate(_trajectory_with_steps([1]), _minimal_ctx())
     assert result["summary"] == "ok"
     assert result["highlights"] == []
 
@@ -255,7 +268,7 @@ async def test_generate_raises_on_malformed_json():
     fake = _fake_client_returning("not json at all")
     with patch("anthropic.AsyncAnthropic", return_value=fake):
         with pytest.raises(SummaryGenerationError):
-            await generate(_trajectory_with_steps([1]))
+            await generate(_trajectory_with_steps([1]), _minimal_ctx())
 
 
 @pytest.mark.asyncio
@@ -268,7 +281,7 @@ async def test_generate_raises_when_model_returns_non_object_json():
     fake = _fake_client_returning("[1, 2, 3]")
     with patch("anthropic.AsyncAnthropic", return_value=fake):
         with pytest.raises(SummaryGenerationError):
-            await generate(_trajectory_with_steps([1]))
+            await generate(_trajectory_with_steps([1]), _minimal_ctx())
 
 
 @pytest.mark.asyncio
@@ -286,7 +299,7 @@ async def test_generate_wraps_anthropic_errors_in_summary_generation_error():
     )
     with patch("anthropic.AsyncAnthropic", return_value=fake_client):
         with pytest.raises(SummaryGenerationError):
-            await generate(_trajectory_with_steps([1]))
+            await generate(_trajectory_with_steps([1]), _minimal_ctx())
 
 
 # ---------------------------------------------------------------------------
@@ -376,9 +389,21 @@ async def test_get_or_generate_persists_on_miss():
     async def fake_read_trajectory(trial_arg):
         return {"steps": [{"step_id": 1}]}
 
+    async def fake_build_task_context(trial_arg):
+        return TaskContext(
+            task_name="t",
+            instruction=None,
+            final_reward=None,
+            model_used=None,
+            verifier_output=None,
+        )
+
     with patch(
         "api.services.summarize_trajectory.read_trial_trajectory",
         new=fake_read_trajectory,
+    ), patch(
+        "api.services.summarize_trajectory.build_task_context",
+        new=fake_build_task_context,
     ), patch(
         "api.services.summarize_trajectory.generate",
         new_callable=AsyncMock,
@@ -413,9 +438,21 @@ async def test_get_or_generate_regenerates_on_stale_schema():
     async def fake_read_trajectory(trial_arg):
         return {"steps": [{"step_id": 1}]}
 
+    async def fake_build_task_context(trial_arg):
+        return TaskContext(
+            task_name="t",
+            instruction=None,
+            final_reward=None,
+            model_used=None,
+            verifier_output=None,
+        )
+
     with patch(
         "api.services.summarize_trajectory.read_trial_trajectory",
         new=fake_read_trajectory,
+    ), patch(
+        "api.services.summarize_trajectory.build_task_context",
+        new=fake_build_task_context,
     ), patch(
         "api.services.summarize_trajectory.generate",
         new_callable=AsyncMock,
@@ -427,7 +464,12 @@ async def test_get_or_generate_regenerates_on_stale_schema():
     session.execute.assert_awaited_once()
 
 
-from api.services.summarize_trajectory import TaskContext, build_task_context
+from api.services.summarize_trajectory import (
+    SCHEMA_VERSION,
+    TaskContext,
+    build_task_context,
+    get_or_generate_summary,
+)
 
 
 def _trial_with_task(*, task_name, reward, model, harbor_config=None):
@@ -517,3 +559,123 @@ async def test_build_task_context_falls_back_to_harbor_config_model():
         ctx = await build_task_context(trial)
 
     assert ctx.model_used == "claude-sonnet-4-6"
+
+
+def test_render_prompt_includes_task_block():
+    from api.services.summarize_trajectory import _render_prompt
+
+    trajectory = {"steps": [{"step_id": 1}]}
+    ctx = TaskContext(
+        task_name="solve_x",
+        instruction="Do the thing.",
+        final_reward=1.0,
+        model_used="claude-sonnet-4-6",
+        verifier_output="PASS\n",
+    )
+    prompt = _render_prompt(trajectory, ctx)
+    assert "<task>" in prompt
+    assert "Name: solve_x" in prompt
+    assert "Instruction: Do the thing." in prompt
+    assert "Final reward: 1.0" in prompt
+    assert "Verifier output: PASS" in prompt
+    assert "Model: claude-sonnet-4-6" in prompt
+    assert "<trajectory>" in prompt
+
+
+def test_render_prompt_marks_missing_fields_unavailable():
+    from api.services.summarize_trajectory import _render_prompt
+
+    ctx = TaskContext(
+        task_name="solve_x",
+        instruction=None,
+        final_reward=None,
+        model_used=None,
+        verifier_output=None,
+    )
+    prompt = _render_prompt({"steps": []}, ctx)
+    assert "Instruction: [unavailable]" in prompt
+    assert "Final reward: [unavailable]" in prompt
+    assert "Verifier output: [unavailable]" in prompt
+    assert "Model: [unavailable]" in prompt
+
+
+def test_render_prompt_truncates_long_instruction_and_verifier():
+    from api.services.summarize_trajectory import (
+        MAX_TEXT_CHARS,
+        TRUNCATION_MARKER,
+        _render_prompt,
+    )
+
+    long_text = "A" * (MAX_TEXT_CHARS + 500)
+    ctx = TaskContext(
+        task_name="t",
+        instruction=long_text,
+        final_reward=None,
+        model_used=None,
+        verifier_output=long_text,
+    )
+    prompt = _render_prompt({"steps": []}, ctx)
+    # Both fields are truncated independently — the truncation marker
+    # appears at least twice (once per truncated field).
+    marker_prefix = TRUNCATION_MARKER.split("{")[0]
+    assert prompt.count(marker_prefix) >= 2
+
+
+def test_schema_version_is_two():
+    from api.services.summarize_trajectory import SCHEMA_VERSION
+
+    assert SCHEMA_VERSION == "2"
+
+
+@pytest.mark.asyncio
+async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
+    import asyncio as _asyncio
+
+    trial = _fake_trial(has_trajectory=True, trajectory_summary=None)
+    session = _fake_session()
+
+    started: list[str] = []
+    finished: list[str] = []
+
+    async def slow_trajectory(trial_arg):
+        started.append("trajectory")
+        await _asyncio.sleep(0.05)
+        finished.append("trajectory")
+        return {"steps": [{"step_id": 1}]}
+
+    async def slow_context(trial_arg):
+        started.append("context")
+        await _asyncio.sleep(0.05)
+        finished.append("context")
+        return TaskContext(
+            task_name="t",
+            instruction=None,
+            final_reward=None,
+            model_used=None,
+            verifier_output=None,
+        )
+
+    fresh = {
+        "schema_version": SCHEMA_VERSION,
+        "model": "claude-sonnet-4-6",
+        "generated_at": "2026-05-02T00:00:00Z",
+        "summary": "ok",
+        "highlights": [],
+    }
+
+    with patch(
+        "api.services.summarize_trajectory.read_trial_trajectory",
+        new=slow_trajectory,
+    ), patch(
+        "api.services.summarize_trajectory.build_task_context",
+        new=slow_context,
+    ), patch(
+        "api.services.summarize_trajectory.generate",
+        new_callable=AsyncMock,
+        return_value=fresh,
+    ):
+        await get_or_generate_summary(session, trial)
+
+    # Both started before either finished -> parallel
+    assert {started[0], started[1]} == {"trajectory", "context"}
+    assert len(finished) == 2
