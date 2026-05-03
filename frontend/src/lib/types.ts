@@ -220,6 +220,11 @@ export interface TaskBrowseResponse {
   limit: number;
   offset: number;
   has_more: boolean;
+  total_count: number;
+  aggregate_trials: number;
+  aggregate_passed: number;
+  aggregate_pass_rate: number | null;
+  matching_task_version_ids: string[];
 }
 
 // =============================================================================

@@ -774,6 +774,15 @@ class TaskBrowseResponse(BaseModel):
     limit: int
     offset: int
     has_more: bool
+    # Counts + aggregates over EVERY task that matches the active
+    # filters (not just the current page). Lets the FE render a
+    # "matching N tasks · M trials · K% pass" stats strip and seed an
+    # experiment from the full filtered set, not the page.
+    total_count: int = 0
+    aggregate_trials: int = 0
+    aggregate_passed: int = 0
+    aggregate_pass_rate: float | None = None
+    matching_task_version_ids: list[str] = Field(default_factory=list)
 
 
 class TaskStatusResponse(BaseModel):
