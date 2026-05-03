@@ -110,3 +110,4 @@ def test_endpoint_returns_502_on_generation_error(client, fake_trial):
     ):
         resp = client.get("/trials/t-1/trajectory/summary")
     assert resp.status_code == 502
+    assert "Summary generation failed" in resp.json()["detail"]
