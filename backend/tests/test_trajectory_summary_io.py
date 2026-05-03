@@ -48,3 +48,23 @@ async def test_read_trial_instruction_returns_none_on_missing_key():
     with patch("oddish.core.trial_io.get_storage_client", return_value=storage):
         result = await read_trial_instruction(_trial())
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_read_trial_verifier_output_prefers_test_stdout():
+    from oddish.core.trial_io import read_trial_verifier_output
+
+    storage = _fake_storage_with_text("PASS\n")
+    with patch("oddish.core.trial_io.get_storage_client", return_value=storage):
+        result = await read_trial_verifier_output(_trial())
+    assert result == "PASS\n"
+
+
+@pytest.mark.asyncio
+async def test_read_trial_verifier_output_returns_none_when_missing():
+    from oddish.core.trial_io import read_trial_verifier_output
+
+    storage = _fake_storage_with_text(None)
+    with patch("oddish.core.trial_io.get_storage_client", return_value=storage):
+        result = await read_trial_verifier_output(_trial())
+    assert result is None
