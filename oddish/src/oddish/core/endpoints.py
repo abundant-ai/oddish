@@ -355,22 +355,23 @@ async def browse_tasks_core(
     tags: list[str] | None = None,
     score_bucket: str | None = None,
     experiment_id: str | None = None,
-    agent: str | None = None,
+    agents: list[str] | None = None,
     sort: str | None = None,
+    tag_match: str = "all",
     record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
     """List latest-version task summaries for the task browser.
 
     Filters:
     - ``query`` -- name or tag substring match.
-    - ``tags`` -- list of ``"key=value"`` chips, AND-applied against
-      ``tasks.tags`` (jsonb @>).
+    - ``tags`` -- list of ``"key=value"`` chips. ``tag_match`` picks
+      between ``all`` (AND, default; jsonb @>) and ``any`` (OR).
     - ``score_bucket`` -- one of ``pass80`` / ``pass35to80`` /
       ``pass0to35`` / ``untested``. Applied post-aggregate.
     - ``experiment_id`` -- only tasks that have at least one trial
       belonging to this experiment.
-    - ``agent`` -- only tasks where the given harness has at least
-      one trial.
+    - ``agents`` -- list of harness names; tasks must have a trial
+      from at least one (OR semantics).
 
     Sort keys: ``recent`` (default), ``name``, ``pass``, ``trials``,
     ``version``.
@@ -414,17 +415,20 @@ async def browse_tasks_core(
                 cast(TaskModel.tags, Text).ilike(pattern),
             )
         )
-    # AND-filter on tag chips. Each chip is "key=value"; we use
-    # jsonb @> '{"key":"value"}' so an index on the jsonb column can
-    # serve it.
+    # Tag chips. Each chip is "key=value"; jsonb @> '{"k":"v"}' so a
+    # jsonb_path_ops index can serve it. ``tag_match`` controls
+    # whether chips are AND-ed (all match) or OR-ed (any match).
+    chip_clauses = []
     for chip in tags or []:
         if "=" not in chip:
             continue
         k, _, v = chip.partition("=")
         if not k:
             continue
+        chip_clauses.append(TaskModel.tags.contains({k: v}))
+    if chip_clauses:
         ranked_tasks = ranked_tasks.where(
-            TaskModel.tags.contains({k: v})
+            or_(*chip_clauses) if tag_match == "any" else and_(*chip_clauses)
         )
     ranked_tasks_subquery = ranked_tasks.subquery()
 
@@ -531,12 +535,15 @@ async def browse_tasks_core(
             ranked_tasks_subquery.c.task_id.in_(exp_subq)
         )
 
-    # "Tasks where harness X has run at least once".
-    if agent:
+    # "Tasks where any of the requested harnesses has run at least
+    # once". Multi-select: ``agent=foo&agent=bar`` -> tasks with
+    # trials from foo OR bar.
+    cleaned_agents = [a for a in (agents or []) if a]
+    if cleaned_agents:
         agent_subq = (
             select(TrialModel.task_id)
             .where(
-                TrialModel.agent == agent,
+                TrialModel.agent.in_(cleaned_agents),
                 *([TrialModel.org_id == org_id] if org_id is not None else []),
             )
         )
