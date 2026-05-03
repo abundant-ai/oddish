@@ -17,7 +17,6 @@ from oddish.core.trial_io import (
     read_trial_logs_structured,
     read_trial_result,
     read_trial_trajectory,
-    read_trial_trajectory_summary,
 )
 from oddish.core.trial_imports import (
     complete_trial_import,
@@ -44,7 +43,10 @@ from oddish.schemas import (
 
 import logging
 
-from api.services.summarize_trajectory import SummaryGenerationError
+from api.services.summarize_trajectory import (
+    SummaryGenerationError,
+    get_or_generate_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -283,14 +285,18 @@ async def get_trial_trajectory_summary(
 ) -> dict:
     """Get a Claude-generated summary of the trajectory.
 
-    Lazy-generated on first read and cached as an S3 sibling file. Returns
-    404 when the trial has no trajectory to summarize, 502 if generation
-    fails or the model returns malformed JSON.
+    Returns the persisted summary from `trials.trajectory_summary` when
+    fresh, otherwise generates one and writes it back. 404 when the trial
+    has no trajectory; 502 if generation fails.
     """
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
     try:
-        summary = await read_trial_trajectory_summary(trial)
+        async with get_session() as session:
+            attached_trial = await session.get(TrialModel, trial.id)
+            if attached_trial is None:
+                raise HTTPException(status_code=404, detail="Trial not found")
+            summary = await get_or_generate_summary(session, attached_trial)
     except SummaryGenerationError as e:
         logger.error(
             "Trajectory summary generation failed for trial %s: %s", trial_id, e
