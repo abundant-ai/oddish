@@ -1,7 +1,7 @@
 """add_trajectory_summary_column
 
 Revision ID: aa1b2c3d4e5f
-Revises: z3a4b5c6d7e8
+Revises: e6f7a8b9c0d1
 Create Date: 2026-05-02 12:00:00.000000
 
 Adds a JSONB column on trials to store the LLM-generated trajectory
@@ -14,7 +14,7 @@ from alembic import op
 
 
 revision: str = "aa1b2c3d4e5f"
-down_revision: Union[str, Sequence[str], None] = "z3a4b5c6d7e8"
+down_revision: Union[str, Sequence[str], None] = "e6f7a8b9c0d1"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

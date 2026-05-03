@@ -19,7 +19,7 @@ from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, MutableMapping
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -315,7 +315,7 @@ async def build_task_context(trial) -> TaskContext:
 # get their own dict) — that's acceptable: cross-container racing
 # results in at most a few duplicate Anthropic calls, and the second
 # write into the JSONB column is idempotent.
-_GEN_LOCKS: Mapping[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+_GEN_LOCKS: MutableMapping[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 def _is_fresh(summary: dict | None) -> bool:

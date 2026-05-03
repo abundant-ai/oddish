@@ -1,7 +1,6 @@
 """Tests for the small S3 helpers used by the trajectory-summary prompt builder.
 
-(D1 adds read_trial_instruction; D2 will add read_trial_verifier_output and
-extend this file.)
+Covers ``read_trial_instruction`` and ``read_trial_verifier_output``.
 """
 
 from __future__ import annotations
