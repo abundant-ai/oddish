@@ -9,6 +9,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -31,20 +36,13 @@ import type {
   TaskBrowseResponse,
 } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/utils";
-import {
-  ChevronLeft,
-  ChevronRight,
-  LayoutGrid,
-  List,
-  Loader2,
-} from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Plus, X } from "lucide-react";
 
 const DEFAULT_PAGE_SIZE = 25;
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 
 type SortKey = "recent" | "name" | "pass" | "trials" | "version";
 type ScoreBucket = "all" | "pass80" | "pass35to80" | "pass0to35" | "untested";
-type ViewMode = "cards" | "list";
 
 function passRate(task: TaskBrowseItem): number | null {
   if (!task.reward_total || task.reward_total <= 0) return null;
@@ -67,177 +65,209 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
 
 function TaskCardsSkeleton() {
   return (
-    <div className="grid gap-4 md:grid-cols-2">
-      {Array.from({ length: 6 }).map((_, index) => (
+    <div className="overflow-hidden rounded-sm border">
+      {Array.from({ length: 6 }).map((_, i) => (
         <div
-          key={index}
-          className="rounded-lg border border-[#6f88b4]/20 bg-card/95 p-4 shadow-xs"
+          key={i}
+          className="flex items-center gap-4 border-b px-3 py-2 last:border-b-0"
         >
-          <div className="space-y-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="space-y-2">
-                <Skeleton className="h-5 w-36" />
-                <Skeleton className="h-5 w-12" />
-              </div>
-              <Skeleton className="h-4 w-20" />
-            </div>
-            <Skeleton className="h-16 w-full" />
-            <div className="grid grid-cols-3 gap-3">
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-10 w-full" />
-            </div>
-            <Skeleton className="h-4 w-40" />
-          </div>
+          <Skeleton className="h-3 w-44" />
+          <Skeleton className="ml-auto h-3 w-12" />
+          <Skeleton className="h-3 w-16" />
+          <Skeleton className="h-3 w-10" />
+          <Skeleton className="h-3 w-20" />
         </div>
       ))}
     </div>
   );
 }
 
-function passToneClass(rate: number | null): string {
-  if (rate == null) return "text-muted-foreground";
-  if (rate >= 0.8) return "text-emerald-600 dark:text-emerald-400";
-  if (rate >= 0.35) return "text-amber-500";
-  return "text-rose-500";
-}
+const FILTER_DIMENSIONS = [
+  { id: "tag", label: "Tag" },
+  { id: "agent", label: "Agent" },
+  { id: "score", label: "Pass rate" },
+  { id: "experiment", label: "Experiment" },
+] as const;
 
-function AgentSummaryRow({
-  summary,
-  active,
-  onClick,
+type FilterDimension = (typeof FILTER_DIMENSIONS)[number]["id"];
+
+function AddFilterPopover({
+  tagChips,
+  agentOptions,
+  experimentOptions,
+  onAddTag,
+  onSetScore,
+  onSetAgent,
+  onSetExperiment,
 }: {
-  summary: TaskAgentSummary;
-  active: boolean;
-  onClick: () => void;
+  tagChips: [string, number][];
+  agentOptions: string[];
+  experimentOptions: [string, string][];
+  onAddTag: (chip: string) => void;
+  onSetScore: (b: ScoreBucket) => void;
+  onSetAgent: (a: string) => void;
+  onSetExperiment: (id: string) => void;
 }) {
-  const rate = summary.attempts > 0 ? summary.passed / summary.attempts : null;
-  const pct = rate == null ? null : Math.round(rate * 100);
-  const tone = passToneClass(rate);
-  const barWidth = rate == null ? 0 : Math.round(rate * 100);
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          onClick={onClick}
-          className={`group flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left transition ${
-            active
-              ? "bg-emerald-500/10 ring-1 ring-emerald-500/40"
-              : "hover:bg-muted/60"
-          }`}
-        >
-          <span className="font-mono text-[11px] text-foreground">
-            <span className="opacity-50">@</span>
-            {summary.agent}
-          </span>
-          <span className="ml-auto flex items-center gap-2">
-            <span className="h-1 w-16 overflow-hidden rounded-full bg-muted">
-              <span
-                className={`block h-full ${
-                  rate == null
-                    ? "bg-zinc-300 dark:bg-zinc-600"
-                    : rate >= 0.8
-                      ? "bg-emerald-500"
-                      : rate >= 0.35
-                        ? "bg-amber-500"
-                        : "bg-rose-500"
-                }`}
-                style={{ width: `${barWidth}%` }}
-              />
-            </span>
-            <span className={`font-mono text-[11px] ${tone}`}>
-              {pct == null ? "—" : `${pct}%`}
-            </span>
-            <span className="font-mono text-[10px] text-muted-foreground">
-              {summary.passed}/{summary.attempts}
-            </span>
-          </span>
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="left" className="space-y-0.5 text-xs">
-        <div className="font-mono text-foreground">@{summary.agent}</div>
-        <div className="text-muted-foreground">
-          {summary.passed} pass · {summary.attempts - summary.passed} fail
-        </div>
-        {summary.avg_reward != null ? (
-          <div className="text-muted-foreground">
-            avg reward {summary.avg_reward.toFixed(2)}
-          </div>
-        ) : null}
-        {summary.last_run_at ? (
-          <div className="text-muted-foreground">
-            last run {formatRelativeTime(summary.last_run_at)}
-          </div>
-        ) : null}
-        <div className="pt-1 text-[10px] text-muted-foreground">
-          click to {active ? "clear" : "filter to"} this agent
-        </div>
-      </TooltipContent>
-    </Tooltip>
+  const [open, setOpen] = useState(false);
+  const [dim, setDim] = useState<FilterDimension>("tag");
+  const [tagDraft, setTagDraft] = useState("");
+  const close = () => {
+    setOpen(false);
+    setDim("tag");
+    setTagDraft("");
+  };
+  const tagSuggestions = tagChips.filter(
+    ([chip]) =>
+      !tagDraft || chip.toLowerCase().includes(tagDraft.trim().toLowerCase()),
   );
-}
-
-function TaskCard({
-  task,
-  activeAgent,
-  onAgentClick,
-}: {
-  task: TaskBrowseItem;
-  activeAgent: string;
-  onAgentClick: (agent: string) => void;
-}) {
-  const summaries = task.agent_summaries ?? [];
   return (
-    <Card className="border-[#6f88b4]/20 bg-card/95 shadow-xs">
-      <CardHeader className="px-5 pt-5 pb-2">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <Link
-                href={`/tasks/${encodeURIComponent(task.id)}`}
-                className="font-mono text-sm font-semibold text-foreground underline-offset-2 hover:underline"
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 px-2 text-xs"
+        >
+          <Plus className="mr-1 h-3.5 w-3.5" /> Add filter
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80 p-0">
+        <div className="grid grid-cols-[110px_1fr]">
+          <div className="border-r bg-muted/30 py-1">
+            {FILTER_DIMENSIONS.map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                onClick={() => setDim(d.id)}
+                className={`flex w-full items-center px-3 py-1.5 text-left text-xs ${
+                  dim === d.id
+                    ? "bg-background font-semibold"
+                    : "text-muted-foreground hover:bg-background/60"
+                }`}
               >
-                {task.name}
-              </Link>
-              <Badge variant="outline" className="w-fit font-mono text-[11px]">
-                v{task.current_version ?? "—"}
-              </Badge>
-            </div>
-          </div>
-          <div className="shrink-0 text-right">
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-              Last run
-            </div>
-            <div className="mt-1 text-xs">
-              {task.last_run_at ? formatRelativeTime(task.last_run_at) : "—"}
-            </div>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="px-5 pb-5">
-        {summaries.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border/60 px-3 py-3 text-center text-[11px] text-muted-foreground">
-            No trials yet for v{task.current_version ?? "—"}.
-          </div>
-        ) : (
-          <div className="flex flex-col">
-            {summaries.map((summary) => (
-              <AgentSummaryRow
-                key={summary.agent}
-                summary={summary}
-                active={activeAgent === summary.agent}
-                onClick={() =>
-                  onAgentClick(
-                    activeAgent === summary.agent ? "" : summary.agent,
-                  )
-                }
-              />
+                {d.label}
+              </button>
             ))}
           </div>
-        )}
-      </CardContent>
-    </Card>
+          <div className="space-y-2 p-3 text-xs">
+            {dim === "tag" ? (
+              <>
+                <Input
+                  value={tagDraft}
+                  onChange={(e) => setTagDraft(e.target.value)}
+                  placeholder="key=value"
+                  className="h-8 font-mono"
+                />
+                <div className="max-h-48 space-y-0.5 overflow-y-auto">
+                  {tagDraft.includes("=") ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onAddTag(tagDraft.trim());
+                        close();
+                      }}
+                      className="block w-full rounded-sm bg-foreground px-2 py-1 text-left font-mono text-background"
+                    >
+                      use {tagDraft.trim()}
+                    </button>
+                  ) : null}
+                  {tagSuggestions.length === 0 && !tagDraft.includes("=") ? (
+                    <p className="text-muted-foreground">
+                      No tags on the current page. Type a key=value pair to
+                      filter directly.
+                    </p>
+                  ) : null}
+                  {tagSuggestions.map(([chip, count]) => (
+                    <button
+                      key={chip}
+                      type="button"
+                      onClick={() => {
+                        onAddTag(chip);
+                        close();
+                      }}
+                      className="flex w-full items-center justify-between rounded-sm px-2 py-1 text-left font-mono hover:bg-muted/60"
+                    >
+                      <span>{chip}</span>
+                      <span className="text-muted-foreground">{count}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
+            {dim === "agent" ? (
+              <div className="max-h-56 space-y-0.5 overflow-y-auto">
+                {agentOptions.length === 0 ? (
+                  <p className="text-muted-foreground">
+                    No agents have run on the visible tasks yet.
+                  </p>
+                ) : null}
+                {agentOptions.map((a) => (
+                  <button
+                    key={a}
+                    type="button"
+                    onClick={() => {
+                      onSetAgent(a);
+                      close();
+                    }}
+                    className="block w-full rounded-sm px-2 py-1 text-left font-mono hover:bg-muted/60"
+                  >
+                    @{a}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {dim === "score" ? (
+              <div className="space-y-0.5">
+                {(
+                  [
+                    ["pass80", "≥ 80% pass rate"],
+                    ["pass35to80", "35–80% pass rate"],
+                    ["pass0to35", "< 35% pass rate"],
+                    ["untested", "Untested"],
+                  ] as [ScoreBucket, string][]
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => {
+                      onSetScore(value);
+                      close();
+                    }}
+                    className="block w-full rounded-sm px-2 py-1 text-left hover:bg-muted/60"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {dim === "experiment" ? (
+              <div className="max-h-56 space-y-0.5 overflow-y-auto">
+                {experimentOptions.length === 0 ? (
+                  <p className="text-muted-foreground">
+                    No experiments use the visible tasks yet.
+                  </p>
+                ) : null}
+                {experimentOptions.map(([id, name]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => {
+                      onSetExperiment(id);
+                      close();
+                    }}
+                    className="block w-full truncate rounded-sm px-2 py-1 text-left hover:bg-muted/60"
+                    title={name}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -374,7 +404,6 @@ export function TasksPageClient({
   const urlExperiment = searchParams.get("experiment") ?? "";
   const urlAgent = searchParams.get("agent") ?? "";
   const urlTags = useMemo(() => searchParams.getAll("tag"), [searchParams]);
-  const urlView = (searchParams.get("view") as ViewMode | null) ?? "cards";
   const urlOffset = Math.max(
     0,
     parseInt(searchParams.get("offset") ?? "0", 10) || 0,
@@ -532,21 +561,53 @@ export function TasksPageClient({
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   };
 
-  const scoreChips: { value: ScoreBucket; label: string }[] = [
-    { value: "all", label: "All" },
-    { value: "pass80", label: "≥ 80%" },
-    { value: "pass35to80", label: "35–80%" },
-    { value: "pass0to35", label: "< 35%" },
-    { value: "untested", label: "Untested" },
-  ];
+  const scoreLabels: Record<ScoreBucket, string> = {
+    all: "All",
+    pass80: "≥ 80%",
+    pass35to80: "35–80%",
+    pass0to35: "< 35%",
+    untested: "Untested",
+  };
+  const experimentNameById = new Map(experimentOptions);
+
+  // Active filters as a flat list of removable chips.
+  const activeFilterChips: { key: string; label: string; onRemove: () => void }[] = [];
+  for (const chip of urlTags) {
+    activeFilterChips.push({
+      key: `tag:${chip}`,
+      label: chip,
+      onRemove: () => toggleTag(chip),
+    });
+  }
+  if (urlScore !== "all") {
+    activeFilterChips.push({
+      key: `score:${urlScore}`,
+      label: `pass: ${scoreLabels[urlScore]}`,
+      onRemove: () => updateParam("score", null, { resetOffset: true }),
+    });
+  }
+  if (urlAgent) {
+    activeFilterChips.push({
+      key: `agent:${urlAgent}`,
+      label: `agent: @${urlAgent}`,
+      onRemove: () => updateParam("agent", null, { resetOffset: true }),
+    });
+  }
+  if (urlExperiment) {
+    activeFilterChips.push({
+      key: `experiment:${urlExperiment}`,
+      label: `experiment: ${experimentNameById.get(urlExperiment) ?? urlExperiment}`,
+      onRemove: () => updateParam("experiment", null, { resetOffset: true }),
+    });
+  }
 
   return (
     <TooltipProvider>
-      <div className="space-y-6">
+      <div className="space-y-4">
         <Card className="border-[#6f88b4]/20 shadow-xs">
           <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="space-y-1">
-              <CardTitle className="text-base">Recent Tasks</CardTitle>
+              <CardTitle className="text-base">Tasks</CardTitle>
               <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
                 <span>
                   Showing {items.length}
@@ -568,6 +629,23 @@ export function TasksPageClient({
                 placeholder="Search tasks"
                 className="h-8 w-full border-[#6f88b4]/20 sm:w-[260px]"
               />
+              <AddFilterPopover
+                tagChips={tagChips}
+                agentOptions={agentOptions}
+                experimentOptions={experimentOptions}
+                onAddTag={(chip) => toggleTag(chip)}
+                onSetScore={(b) =>
+                  updateParam("score", b === "all" ? null : b, {
+                    resetOffset: true,
+                  })
+                }
+                onSetAgent={(a) =>
+                  updateParam("agent", a || null, { resetOffset: true })
+                }
+                onSetExperiment={(id) =>
+                  updateParam("experiment", id || null, { resetOffset: true })
+                }
+              />
               <select
                 value={urlSort}
                 onChange={(e) =>
@@ -578,6 +656,7 @@ export function TasksPageClient({
                   )
                 }
                 className="h-8 rounded-sm border bg-background px-2 font-mono text-xs"
+                title="Sort"
               >
                 <option value="recent">Sort: recent</option>
                 <option value="name">Sort: name</option>
@@ -585,45 +664,65 @@ export function TasksPageClient({
                 <option value="trials">Sort: trials</option>
                 <option value="version">Sort: versions</option>
               </select>
-              {experimentOptions.length > 0 || urlExperiment ? (
-                <select
-                  value={urlExperiment}
-                  onChange={(e) =>
-                    updateParam("experiment", e.target.value || null, {
-                      resetOffset: true,
-                    })
-                  }
-                  className="h-8 max-w-[200px] truncate rounded-sm border bg-background px-2 font-mono text-xs"
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {activeFilterChips.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                {activeFilterChips.map((chip) => (
+                  <span
+                    key={chip.key}
+                    className="inline-flex items-center gap-1 rounded-sm border border-foreground bg-foreground px-1.5 py-0.5 font-mono text-background"
+                  >
+                    {chip.label}
+                    <button
+                      type="button"
+                      onClick={chip.onRemove}
+                      className="opacity-70 hover:opacity-100"
+                      aria-label={`Remove ${chip.label}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="ml-1 underline-offset-2 hover:underline"
                 >
-                  <option value="">All experiments</option>
-                  {experimentOptions.map(([id, name]) => (
-                    <option key={id} value={id}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-              ) : null}
-              {agentOptions.length > 0 || urlAgent ? (
-                <select
-                  value={urlAgent}
-                  onChange={(e) =>
-                    updateParam("agent", e.target.value || null, {
-                      resetOffset: true,
-                    })
-                  }
-                  className="h-8 max-w-[160px] truncate rounded-sm border bg-background px-2 font-mono text-xs"
-                >
-                  <option value="">All agents</option>
-                  {agentOptions.map((a) => (
-                    <option key={a} value={a}>
-                      @{a}
-                    </option>
-                  ))}
-                  {urlAgent && !agentOptions.includes(urlAgent) ? (
-                    <option value={urlAgent}>@{urlAgent}</option>
-                  ) : null}
-                </select>
-              ) : null}
+                  clear all
+                </button>
+              </div>
+            ) : null}
+
+            {error ? (
+              <Alert variant="destructive">
+                <AlertTitle>Failed to load tasks</AlertTitle>
+                <AlertDescription>
+                  Check the API connection and try again.
+                </AlertDescription>
+              </Alert>
+            ) : isLoading && items.length === 0 ? (
+              <TaskCardsSkeleton />
+            ) : items.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-[#6f88b4]/30 bg-card/60 px-6 py-10 text-center text-sm text-muted-foreground">
+                {filtersActive
+                  ? "No tasks match the current filters."
+                  : urlQuery
+                    ? "No tasks match the current search."
+                    : "No tasks have been created yet."}
+              </div>
+            ) : (
+              <TaskListView
+                tasks={items}
+                activeAgent={urlAgent}
+                onAgentClick={(a) =>
+                  updateParam("agent", a || null, { resetOffset: true })
+                }
+              />
+            )}
+
+            <div className="flex items-center justify-between gap-2">
               <select
                 value={String(urlPageSize)}
                 onChange={(e) =>
@@ -644,147 +743,6 @@ export function TasksPageClient({
                   </option>
                 ))}
               </select>
-              <div className="inline-flex h-8 items-center overflow-hidden rounded-sm border">
-                <button
-                  type="button"
-                  onClick={() =>
-                    updateParam("view", urlView === "cards" ? null : "cards")
-                  }
-                  className={`flex h-full items-center gap-1 px-2 text-xs ${
-                    urlView === "cards"
-                      ? "bg-foreground text-background"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                  title="Card view"
-                >
-                  <LayoutGrid className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => updateParam("view", "list")}
-                  className={`flex h-full items-center gap-1 border-l px-2 text-xs ${
-                    urlView === "list"
-                      ? "bg-foreground text-background"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                  title="List view"
-                >
-                  <List className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-              <span className="font-mono uppercase tracking-wide text-muted-foreground">
-                pass rate
-              </span>
-              {scoreChips.map(({ value, label }) => {
-                const active = urlScore === value;
-                return (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() =>
-                      updateParam("score", value === "all" ? null : value, {
-                        resetOffset: true,
-                      })
-                    }
-                    className={`inline-flex items-center rounded-sm border px-1.5 py-0.5 font-mono transition ${
-                      active
-                        ? "border-foreground bg-foreground text-background"
-                        : "border-border bg-muted/40 text-muted-foreground hover:border-foreground hover:text-foreground"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-              {tagChips.length > 0 ? (
-                <>
-                  <span className="ml-2 font-mono uppercase tracking-wide text-muted-foreground">
-                    tags
-                  </span>
-                  {tagChips.map(([chip, count]) => {
-                    const active = tagFilter.has(chip);
-                    return (
-                      <button
-                        key={chip}
-                        type="button"
-                        onClick={() => toggleTag(chip)}
-                        className={`inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono transition ${
-                          active
-                            ? "border-foreground bg-foreground text-background"
-                            : "border-border bg-muted/40 text-muted-foreground hover:border-foreground hover:text-foreground"
-                        }`}
-                      >
-                        {chip}
-                        <span className={active ? "opacity-70" : "opacity-60"}>
-                          {count}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </>
-              ) : null}
-              {filtersActive ? (
-                <button
-                  type="button"
-                  onClick={clearFilters}
-                  className="ml-1 underline-offset-2 hover:underline"
-                >
-                  clear
-                </button>
-              ) : null}
-            </div>
-
-            {error ? (
-              <Alert variant="destructive">
-                <AlertTitle>Failed to load tasks</AlertTitle>
-                <AlertDescription>
-                  Check the API connection and try again.
-                </AlertDescription>
-              </Alert>
-            ) : isLoading && items.length === 0 ? (
-              <TaskCardsSkeleton />
-            ) : items.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-[#6f88b4]/30 bg-card/60 px-6 py-10 text-center text-sm text-muted-foreground">
-                {filtersActive
-                  ? "No tasks match the current filters."
-                  : urlQuery
-                    ? "No tasks match the current search."
-                    : "No tasks have been created yet."}
-              </div>
-            ) : urlView === "cards" ? (
-              <div className="grid gap-4 md:grid-cols-2">
-                {items.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    activeAgent={urlAgent}
-                    onAgentClick={(a) =>
-                      updateParam("agent", a || null, { resetOffset: true })
-                    }
-                  />
-                ))}
-              </div>
-            ) : (
-              <TaskListView
-                tasks={items}
-                activeAgent={urlAgent}
-                onAgentClick={(a) =>
-                  updateParam("agent", a || null, { resetOffset: true })
-                }
-              />
-            )}
-
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-xs text-muted-foreground">
-                {items.length > 0
-                  ? `${urlOffset + 1}-${urlOffset + items.length}`
-                  : "0"}{" "}
-                shown
-              </div>
               <div className="flex items-center gap-2">
                 <Button
                   type="button"
