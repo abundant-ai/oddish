@@ -12,13 +12,15 @@ Layout:
             agent-{name}:{model}/{task_name}/attempt_{n}/...
 
     CLI-triggered:
-        {org_slug}/runs/run-{experiment_id}/
+        {org_slug}/runs/{experiment_id}/run-{experiment_id}/
             run-meta.json
             agent-{name}:{model}/{task_name}/attempt_{n}/...
 
-`run-meta.json` carries identity/metadata at the run root so sauron can
-render run headers without parsing the path or hitting GitHub. Aggregation
-(agents x tasks x attempts) is still derived from S3 listing.
+The CLI path uses the experiment_id literally as the grouping segment
+(not a synthetic pr-N) so sauron's existing 4-segment route renders it
+without modification. `run-meta.json` carries identity/metadata at the
+run root so sauron can render run headers without parsing the path or
+hitting GitHub.
 """
 
 from __future__ import annotations
@@ -118,7 +120,10 @@ class SauronS3Uploader:
                 f"pr-{github_meta.pr_number}/run-{experiment_id}/"
             )
         org = settings.sauron_s3_org or "oddish"
-        return f"{org}/runs/run-{experiment_id}/"
+        # 4-segment path so sauron's existing [org]/[repo]/[pr]/[run] route
+        # renders without modification. The experiment_id appears twice:
+        # once as the grouping ("pr") segment, once as the run identifier.
+        return f"{org}/runs/{experiment_id}/run-{experiment_id}/"
 
     # -- Manifest ------------------------------------------------------------
 
