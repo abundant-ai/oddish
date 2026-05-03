@@ -469,7 +469,7 @@ export interface ExperimentCellAgent {
   equivalence_key: string;
 }
 
-export interface CellAttempt {
+interface CellAttempt {
   id: string;
   status: string;
   reward: number | null;

@@ -217,75 +217,15 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
   );
 }
 
-function TrialGraphics({ task }: { task: TaskBrowseItem }) {
-  if (task.latest_trials.length === 0) {
-    return (
-      <div className="rounded-md border border-dashed border-border/70 px-3 py-3 text-center text-xs text-muted-foreground">
-        No latest-version trials yet.
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-wrap gap-1">
-      {task.latest_trials.map((trial) => {
-        const status = getMatrixStatus(
-          trial.status,
-          trial.reward,
-          trial.error_message,
-        );
-        const config = STATUS_CONFIG[status];
-        const badgeLabel =
-          status === "partial"
-            ? formatPartialRewardBadgeValue(trial.reward)
-            : null;
-
-        return (
-          <Tooltip key={trial.id}>
-            <TooltipTrigger asChild>
-              <div
-                className={`flex h-[18px] w-[18px] items-center justify-center rounded-[4px] border font-mono font-semibold leading-none ${config.matrixClass} ${status === "partial" ? "text-[7px] tracking-[-0.03em]" : ""}`}
-                style={getRewardStyle(trial.reward)}
-                aria-label={`${trial.name} ${config.shortLabel}`}
-              >
-                {badgeLabel}
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>
-              <div className="space-y-0.5">
-                <div className="font-medium">{trial.name}</div>
-                <div className="text-muted-foreground">{config.shortLabel}</div>
-                {trial.reward !== null && (
-                  <div className="text-muted-foreground">
-                    Score {formatRewardValue(trial.reward)} (
-                    {formatRewardPercent(trial.reward)})
-                  </div>
-                )}
-              </div>
-            </TooltipContent>
-          </Tooltip>
-        );
-      })}
-    </div>
-  );
-}
-
 function TaskCard({
   task,
-  activeTags,
   activeAgent,
-  onTagClick,
   onAgentClick,
 }: {
   task: TaskBrowseItem;
-  activeTags: Set<string>;
   activeAgent: string;
-  onTagClick: (chip: string) => void;
   onAgentClick: (agent: string) => void;
 }) {
-  const visibleTags = Object.entries(task.tags ?? {}).filter(
-    ([k]) => k !== "github_username" && !k.startsWith("github_"),
-  );
   const agents = task.agents_seen ?? [];
   return (
     <Card className="border-[#6f88b4]/20 bg-card/95 shadow-xs">
@@ -303,27 +243,8 @@ function TaskCard({
                 v{task.current_version ?? "—"}
               </Badge>
             </div>
-            {visibleTags.length > 0 || agents.length > 0 ? (
+            {agents.length > 0 ? (
               <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                {visibleTags.map(([k, v]) => {
-                  const chip = `${k}=${v}`;
-                  const active = activeTags.has(chip);
-                  return (
-                    <button
-                      key={k}
-                      type="button"
-                      onClick={() => onTagClick(chip)}
-                      title={`${active ? "Remove" : "Add"} filter ${chip}`}
-                      className={`inline-flex items-center rounded-sm border px-1.5 py-0.5 font-mono text-[10px] transition ${
-                        active
-                          ? "border-foreground bg-foreground text-background"
-                          : "border-border bg-muted/40 text-muted-foreground hover:border-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {chip}
-                    </button>
-                  );
-                })}
                 {agents.map((a) => {
                   const active = activeAgent === a;
                   return (
@@ -362,12 +283,6 @@ function TaskCard({
         </div>
       </CardHeader>
       <CardContent className="space-y-3 px-5 pb-5">
-        <div className="space-y-1.5">
-          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-            Latest trials
-          </div>
-          <TrialGraphics task={task} />
-        </div>
         <div className="grid gap-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)]">
           <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -412,7 +327,6 @@ function TaskListView({
             <TableHead>Agents</TableHead>
             <TableHead className="text-right">Last run</TableHead>
             <TableHead className="text-right">Used in</TableHead>
-            <TableHead>Tags</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -485,25 +399,6 @@ function TaskListView({
                 </TableCell>
                 <TableCell className="text-right font-mono text-xs">
                   {t.experiments?.length ?? 0}
-                </TableCell>
-                <TableCell>
-                  {t.tags && Object.keys(t.tags).length > 0 ? (
-                    <div className="flex flex-wrap gap-0.5">
-                      {Object.entries(t.tags)
-                        .filter(([k]) => !k.startsWith("github_"))
-                        .slice(0, 4)
-                        .map(([k, v]) => (
-                          <span
-                            key={k}
-                            className="rounded-sm bg-muted px-1 py-0 font-mono text-[9px] text-muted-foreground"
-                          >
-                            {k}={v}
-                          </span>
-                        ))}
-                    </div>
-                  ) : (
-                    <span className="text-[11px] text-muted-foreground">—</span>
-                  )}
                 </TableCell>
               </TableRow>
             );
@@ -892,9 +787,7 @@ export function TasksPageClient({
                   <TaskCard
                     key={task.id}
                     task={task}
-                    activeTags={tagFilter}
                     activeAgent={urlAgent}
-                    onTagClick={toggleTag}
                     onAgentClick={(a) =>
                       updateParam("agent", a || null, { resetOffset: true })
                     }
