@@ -42,6 +42,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TrajectoryViewer } from "@/components/trajectory-viewer";
+import { TrajectorySummary } from "@/components/trajectory-summary";
 import { TaskFilesPanel } from "@/components/task-files-panel";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { ArtifactsViewer } from "@/components/artifacts-viewer";
@@ -955,6 +956,12 @@ export function TrialDetailPanel({
             value="trajectory"
             className="m-0 h-full overflow-auto p-0"
           >
+            <TrajectorySummary
+              trialId={trial.id}
+              stepIdToIndex={() => -1}
+              onStepSelect={() => {}}
+              apiBaseUrl={apiBaseUrl}
+            />
             <TrajectoryViewer
               trialId={trial.id}
               hasTrajectory={trial.has_trajectory}
