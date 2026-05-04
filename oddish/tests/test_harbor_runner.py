@@ -157,6 +157,65 @@ def test_check_local_storage_preflight_skips_temp_root_when_not_requested(
     assert seen_paths == [jobs_dir.resolve()]
 
 
+def test_collect_claude_code_forwarded_env_only_for_claude_code(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000")
+    assert harbor_runner._collect_claude_code_forwarded_env("claude-code") == {
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000"
+    }
+    for other in ("nop", "oracle", "codex", "gemini-cli", "terminus-2"):
+        assert harbor_runner._collect_claude_code_forwarded_env(other) == {}
+
+
+def test_collect_claude_code_forwarded_env_skips_unset_and_empty(monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS", raising=False)
+    assert harbor_runner._collect_claude_code_forwarded_env("claude-code") == {}
+    monkeypatch.setenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "")
+    assert harbor_runner._collect_claude_code_forwarded_env("claude-code") == {}
+
+
+def test_build_agent_config_injects_claude_code_env_without_overriding_per_trial(
+    monkeypatch,
+):
+    monkeypatch.setenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000")
+    cfg = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="anthropic/claude-opus-4-7",
+        raw_harbor_config={
+            "agent_config": {
+                "name": "claude-code",
+                "model_name": "anthropic/claude-opus-4-7",
+                "env": {"FOO": "bar"},
+            }
+        },
+    )
+    assert cfg.env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "128000"
+    assert cfg.env["FOO"] == "bar"
+
+    # Per-trial value wins over the worker-process forwarded value.
+    cfg = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="anthropic/claude-opus-4-7",
+        raw_harbor_config={
+            "agent_config": {
+                "name": "claude-code",
+                "model_name": "anthropic/claude-opus-4-7",
+                "env": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "200000"},
+            }
+        },
+    )
+    assert cfg.env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "200000"
+
+
+def test_build_agent_config_does_not_inject_for_other_agents(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000")
+    cfg = harbor_runner._build_agent_config(
+        agent="codex",
+        model="openai/gpt-5.2",
+        raw_harbor_config={},
+    )
+    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in cfg.env
+
+
 def test_format_exception_message_includes_exception_group_children():
     exc = ExceptionGroup(
         "unhandled errors in a TaskGroup",
@@ -167,6 +226,72 @@ def test_format_exception_message_includes_exception_group_children():
 
     assert "ExceptionGroup: unhandled errors in a TaskGroup" in message
     assert "RuntimeError: modal image build failed" in message
+
+
+def test_run_harbor_trial_async_injects_claude_code_env_into_environment_config(
+    monkeypatch, tmp_path
+):
+    """Worker env CLAUDE_CODE_MAX_OUTPUT_TOKENS is forwarded into the
+    Harbor environment config so it lands in the Modal sandbox via
+    ``_persistent_env`` even when the inner agent.run() reads from a
+    stale ``os.environ``.
+    """
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text("", encoding="utf-8")
+    jobs_dir = tmp_path / "jobs"
+    monkeypatch.setenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000")
+
+    captured: dict[str, object] = {}
+
+    class _FakeJob:
+        def __init__(self, config):
+            captured["config"] = config
+            self.job_dir = config["jobs_dir"] / "job-1"
+
+        @classmethod
+        async def create(cls, config):
+            return cls(config)
+
+        async def run(self):
+            self.job_dir.mkdir(parents=True, exist_ok=True)
+            (self.job_dir / "result.json").write_text("{}\n", encoding="utf-8")
+            return object()
+
+    monkeypatch.setattr(
+        harbor_runner, "_check_local_storage_preflight", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        harbor_runner, "validate_task_timeout_config", lambda path: None
+    )
+    monkeypatch.setattr(harbor_runner, "TaskConfig", lambda path: path)
+    monkeypatch.setattr(harbor_runner, "JobConfig", lambda **kwargs: kwargs)
+    monkeypatch.setattr(harbor_runner, "Job", _FakeJob)
+    monkeypatch.setattr(
+        harbor_runner,
+        "_extract_outcome_from_job_result",
+        lambda **kwargs: harbor_runner.HarborOutcome(
+            reward=1.0,
+            error=None,
+            exit_code=0,
+            duration_sec=kwargs["duration_sec"],
+            job_result_path=kwargs["job_result_path"],
+            job_dir=kwargs["job_dir"],
+        ),
+    )
+
+    asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="claude-code",
+            jobs_dir=jobs_dir,
+            model="anthropic/claude-opus-4-7",
+        )
+    )
+
+    config = captured["config"]
+    assert config["environment"].env.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") == "128000"
+    assert config["agents"][0].env.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") == "128000"
 
 
 def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
