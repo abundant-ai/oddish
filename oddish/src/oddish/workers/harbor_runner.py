@@ -41,6 +41,19 @@ _BEDROCK_ENV_VARS: tuple[str, ...] = (
     "CLAUDE_CODE_USE_BEDROCK",
 )
 
+# Worker-process env vars that must reach claude-code inside the sandbox.
+# We re-inject them on every claude-code trial via Harbor's per-trial
+# ``agent.env`` (which becomes the agent's ``_extra_env`` and is merged
+# into every ``exec_as_agent`` call) and Harbor's ``environment.env``
+# (which becomes the Modal sandbox's persistent env via Secret.from_dict).
+# Doing it here makes the propagation independent of whether harbor's
+# ``ClaudeCode.run()`` happens to read the var from ``os.environ``, and
+# of whether Modal warm-cached a worker container that pre-dates a
+# secret update on ``oddish-prod``.
+_CLAUDE_CODE_FORWARDED_ENV_VARS: tuple[str, ...] = (
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+)
+
 
 def _looks_like_bedrock_model_id(model: str | None) -> bool:
     """Return True if *model* is a Bedrock-style id that should route through AWS.
@@ -565,6 +578,23 @@ def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
         config_path.write_text(task_config.model_dump_toml())
 
 
+def _collect_claude_code_forwarded_env(agent: str) -> dict[str, str]:
+    """Return claude-code-only env vars to forward from the worker process.
+
+    Returns an empty dict for non-claude-code agents and for vars that are
+    unset or empty in the worker process. Per-trial values in
+    ``agent_config.env`` always take precedence over what we inject here.
+    """
+    if agent != "claude-code":
+        return {}
+    forwarded: dict[str, str] = {}
+    for name in _CLAUDE_CODE_FORWARDED_ENV_VARS:
+        value = os.environ.get(name)
+        if value:
+            forwarded[name] = value
+    return forwarded
+
+
 def _build_agent_config(
     *,
     agent: str,
@@ -616,6 +646,10 @@ def _build_agent_config(
         agent_config.name = agent
     if model is not None:
         agent_config.model_name = model
+
+    forwarded_env = _collect_claude_code_forwarded_env(agent)
+    if forwarded_env:
+        agent_config.env = {**forwarded_env, **agent_config.env}
 
     return agent_config
 
@@ -689,6 +723,15 @@ async def run_harbor_trial_async(
     # ── Build Harbor configs ─────────────────────────────────────────────
     env_config = hc.environment.model_copy()
     env_config.type = environment
+
+    # Defense-in-depth: also expose the forwarded env vars at the
+    # environment level so they land in the sandbox process via Modal's
+    # ``Secret.from_dict(persistent_env)``. This covers the case where
+    # the inner agent.run() builds its env from a stale ``os.environ``.
+    forwarded_env = _collect_claude_code_forwarded_env(agent)
+    if forwarded_env:
+        existing_env = dict(env_config.env or {})
+        env_config.env = {**forwarded_env, **existing_env}
 
     agent_config = _build_agent_config(
         agent=agent,
