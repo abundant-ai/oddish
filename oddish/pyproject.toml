@@ -18,7 +18,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Testing",
 ]
@@ -101,7 +101,7 @@ packages = ["src/oddish"]
 include = ["src/oddish/analyze/*.txt"]
 
 [tool.mypy]
-python_version = "3.14"
+python_version = "3.13"
 mypy_path = ["src"]
 warn_return_any = true
 warn_unused_configs = true
