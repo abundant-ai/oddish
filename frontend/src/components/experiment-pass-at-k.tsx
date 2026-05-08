@@ -58,12 +58,19 @@ export function ExperimentPassAtKGraph({
 
   const { points, maxK } = useMemo(() => {
     const cellsByAgent = new Map<string, ResolvedExperimentCell[]>();
+    // Only count completed attempts (success + fail). Running and
+    // queued trials shouldn't shift pass@k -- they haven't produced
+    // evidence yet.
+    const completedFor = (c: ResolvedExperimentCell) =>
+      c.have_n_successful + c.have_n_failed;
+
     let globalN = 1;
     for (const c of cells) {
       const list = cellsByAgent.get(c.agent.equivalence_key) ?? [];
       list.push(c);
       cellsByAgent.set(c.agent.equivalence_key, list);
-      if (c.have_n_total > globalN) globalN = c.have_n_total;
+      const completed = completedFor(c);
+      if (completed > globalN) globalN = completed;
     }
 
     if (globalN < 2) return { points: [], maxK: 0 };
@@ -74,10 +81,12 @@ export function ExperimentPassAtKGraph({
       stats[a.equivalence_key] = {
         n: globalN,
         taskResults: list
-          .filter((c) => c.have_n_total > 0)
-          .map((c) => ({
-            task: c.task_version_id,
-            c: c.have_n_successful,
+          .map((c) => ({ cell: c, completed: completedFor(c) }))
+          .filter(({ completed }) => completed > 0)
+          .map(({ cell, completed }) => ({
+            task: cell.task_version_id,
+            n: completed,
+            c: cell.have_n_successful,
           })),
       };
     }
