@@ -17,8 +17,6 @@ interface Row {
   agent: ExperimentCellAgent;
   pass1: number;
   passBest: number;
-  taskCount: number;
-  attempts: number;
 }
 
 function formatAgent(a: ExperimentCellAgent): string {
@@ -53,13 +51,10 @@ export function ExperimentLeaderboard({ data }: Props) {
       const passBest =
         list.reduce((acc, c) => acc + (c.have_n_successful > 0 ? 1 : 0), 0) /
         list.length;
-      const attempts = list.reduce((acc, c) => acc + c.have_n_total, 0);
       out.push({
         agent: a,
         pass1,
         passBest,
-        taskCount: list.length,
-        attempts,
       });
     }
     return out.sort((x, y) => y.pass1 - x.pass1);
@@ -80,9 +75,7 @@ export function ExperimentLeaderboard({ data }: Props) {
             <tr className="text-left text-muted-foreground">
               <th className="py-1 pr-3 font-medium">Agent</th>
               <th className="py-1 px-3 text-right font-medium">pass@1</th>
-              <th className="py-1 px-3 text-right font-medium">best-of-n</th>
-              <th className="py-1 px-3 text-right font-medium">tasks</th>
-              <th className="py-1 pl-3 text-right font-medium">attempts</th>
+              <th className="py-1 pl-3 text-right font-medium">best-of-n</th>
             </tr>
           </thead>
           <tbody>
@@ -102,14 +95,8 @@ export function ExperimentLeaderboard({ data }: Props) {
                   <td className="py-1 px-3 text-right font-semibold">
                     {(r.pass1 * 100).toFixed(1)}%
                   </td>
-                  <td className="py-1 px-3 text-right">
+                  <td className="py-1 pl-3 text-right">
                     {(r.passBest * 100).toFixed(1)}%
-                  </td>
-                  <td className="py-1 px-3 text-right text-muted-foreground">
-                    {r.taskCount}
-                  </td>
-                  <td className="py-1 pl-3 text-right text-muted-foreground">
-                    {r.attempts}
                   </td>
                 </tr>
               );
