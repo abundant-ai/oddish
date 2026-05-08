@@ -73,12 +73,12 @@ function buildAgentStats(
 
   const agentStats: Record<string, AgentPassAtKStats> = {};
   for (const summary of agentSummaries) {
-    const taskResults: { task: string; c: number }[] = [];
+    const taskResults: { task: string; c: number; n: number }[] = [];
     for (const task of tasks) {
       const trials = taskAgentTrials[task.id]?.[summary.key] ?? [];
       if (trials.length === 0) continue;
       const c = trials.filter((t) => t.reward === 1).length;
-      taskResults.push({ task: task.id, c });
+      taskResults.push({ task: task.id, c, n: trials.length });
     }
     agentStats[summary.key] = { n: maxN, taskResults };
   }
