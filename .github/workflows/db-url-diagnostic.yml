@@ -1,0 +1,105 @@
+name: DB URL Diagnostic
+
+on:
+  push:
+    branches:
+      - codex/db-url-diagnostic-*
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ODDISH_DATABASE_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+    steps:
+      - name: Probe production database URL
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q asyncpg
+          python - <<'PY'
+          import asyncio
+          import os
+          import socket
+          import sys
+          from urllib.parse import urlsplit, urlunsplit
+
+          import asyncpg
+
+          raw = os.environ.get("ODDISH_DATABASE_URL", "")
+          if not raw:
+              print("ODDISH_DATABASE_URL is empty")
+              sys.exit(2)
+
+          url = raw.replace("postgresql+asyncpg://", "postgresql://", 1)
+          parts = urlsplit(url)
+          host = parts.hostname
+          port = parts.port or 5432
+          user = parts.username
+          password = parts.password or ""
+          redacted_netloc = f"{user or ''}:***@{host or ''}:{port}"
+          redacted = urlunsplit(
+              (parts.scheme, redacted_netloc, parts.path, parts.query, parts.fragment)
+          )
+
+          print(f"url={redacted}")
+          print(f"host={host}")
+          print(f"port={port}")
+          print(f"user={user}")
+          print(f"database={parts.path.lstrip('/') or 'postgres'}")
+
+          print("dns=")
+          try:
+              infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+          except Exception as exc:
+              print(f"  FAILED {type(exc).__name__}: {exc}")
+              sys.exit(1)
+          for family, _socktype, _proto, _canonname, sockaddr in infos:
+              family_name = "IPv6" if family == socket.AF_INET6 else "IPv4"
+              print(f"  {family_name} {sockaddr[0]}:{sockaddr[1]}")
+
+          print("tcp=")
+          try:
+              sock = socket.create_connection((host, port), timeout=12)
+          except Exception as exc:
+              print(f"  FAILED {type(exc).__name__}: {exc}")
+              sys.exit(1)
+          else:
+              print("  OK")
+              sock.close()
+
+          async def main() -> int:
+              try:
+                  conn = await asyncpg.connect(
+                      url,
+                      timeout=15,
+                      statement_cache_size=0,
+                  )
+              except Exception as exc:
+                  msg = str(exc).replace(raw, redacted).replace(url, redacted)
+                  if password:
+                      msg = msg.replace(password, "***")
+                  print("connect=FAILED")
+                  print(f"error_type={type(exc).__name__}")
+                  print(f"error={msg}")
+                  return 1
+
+              try:
+                  row = await conn.fetchrow(
+                      "select current_user as user_name, "
+                      "current_database() as db_name, "
+                      "inet_server_addr()::text as server_addr, "
+                      "inet_server_port() as server_port"
+                  )
+                  print("connect=OK")
+                  print(f"current_user={row['user_name']}")
+                  print(f"current_database={row['db_name']}")
+                  print(f"server_addr={row['server_addr']}")
+                  print(f"server_port={row['server_port']}")
+                  return 0
+              finally:
+                  await conn.close()
+
+          sys.exit(asyncio.run(main()))
+          PY
