@@ -81,6 +81,21 @@ runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
 )
 runtime_secrets = [runtime_secret]
+
+# AWS credentials for the sauron S3 mirror. Kept in a separate Modal
+# secret so it can be rotated independently of oddish-prod. Set
+# ODDISH_SAURON_AWS_SECRET_NAME to override the secret name, or to "" to
+# skip loading entirely (e.g. for envs without AWS access).
+SAURON_AWS_SECRET_NAME = os.environ.get(
+    "ODDISH_SAURON_AWS_SECRET_NAME", "aws-credentials"
+)
+if SAURON_AWS_SECRET_NAME:
+    runtime_secrets.append(
+        modal.Secret.from_name(
+            SAURON_AWS_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
+        )
+    )
+
 if LOCAL_DOTENV_VARS:
     runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 # Per-PR DB override created by the modal-preview workflow. Gating on
