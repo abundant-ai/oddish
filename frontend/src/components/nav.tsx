@@ -15,13 +15,10 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
-  Beaker,
   BookOpen,
   ChevronDown,
   FileText,
-  ListChecks,
   LogOut,
-  Plus,
   Shield,
   User,
 } from "lucide-react";
@@ -37,20 +34,27 @@ export function Nav() {
         <div className="flex w-full items-center justify-between">
           {/* Left side - primary nav */}
           <div className="flex items-center gap-4">
-            <Link
-              href="/tasks"
-              className="flex items-center gap-2 font-mono text-sm font-semibold tracking-tight"
-              aria-label="Oddish home"
+            <Button
+              variant={pathname === "/dashboard" ? "secondary" : "ghost"}
+              size="sm"
+              asChild
+              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
             >
-              <Image
-                src="/oddish.png"
-                alt="Oddish"
-                width={24}
-                height={24}
-                className="drop-shadow-xs"
-              />
-              <span className="hidden sm:inline">oddish</span>
-            </Link>
+              <Link
+                href="/dashboard"
+                className="flex items-center gap-2"
+                data-active={pathname === "/dashboard"}
+              >
+                <Image
+                  src="/oddish.png"
+                  alt="Oddish"
+                  width={24}
+                  height={24}
+                  className="drop-shadow-xs"
+                />
+                <span>Dashboard</span>
+              </Link>
+            </Button>
             <Button
               variant={pathname === "/tasks" ? "secondary" : "ghost"}
               size="sm"
@@ -66,55 +70,10 @@ export function Nav() {
                 <span>Tasks</span>
               </Link>
             </Button>
-            <Button
-              variant={
-                pathname?.startsWith("/experiments") ? "secondary" : "ghost"
-              }
-              size="sm"
-              asChild
-              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
-            >
-              <Link
-                href="/experiments"
-                className="flex items-center gap-2"
-                data-active={pathname?.startsWith("/experiments") ?? false}
-              >
-                <Beaker className="h-4 w-4" />
-                <span>Experiments</span>
-              </Link>
-            </Button>
-            <Button
-              variant={pathname?.startsWith("/jobs") ? "secondary" : "ghost"}
-              size="sm"
-              asChild
-              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
-            >
-              <Link
-                href="/jobs"
-                className="flex items-center gap-2"
-                data-active={pathname?.startsWith("/jobs") ?? false}
-              >
-                <ListChecks className="h-4 w-4" />
-                <span>Jobs</span>
-              </Link>
-            </Button>
           </div>
 
           {/* Right side - consolidated settings menu */}
           <div className="flex items-center gap-2">
-            <Show when="signed-in">
-              <Button
-                variant="default"
-                size="sm"
-                asChild
-                className="gap-2"
-              >
-                <Link href="/experiments/new" className="flex items-center gap-2">
-                  <Plus className="h-4 w-4" />
-                  <span className="hidden sm:inline">New experiment</span>
-                </Link>
-              </Button>
-            </Show>
             <ThemeToggle />
             <Show when="signed-in">
               <Button
@@ -198,7 +157,7 @@ export function Nav() {
               </DropdownMenu>
             </Show>
             <Show when="signed-out">
-              <SignInButton mode="modal" fallbackRedirectUrl="/tasks">
+              <SignInButton mode="modal" fallbackRedirectUrl="/dashboard">
                 <Button variant="outline" size="sm">
                   Sign in
                 </Button>

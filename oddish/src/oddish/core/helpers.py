@@ -682,11 +682,6 @@ def _build_task_status_response(
         verdict=task.verdict,
         verdict_error=task.verdict_error,
         jobs=list(jobs or []),
-        # Coerce values to strings so a bool/int slipping into the tags
-        # JSONB doesn't blow up dict[str, str] validation on the response.
-        tags={
-            str(k): str(v) for k, v in (task.tags or {}).items()
-        },
         created_at=task.created_at,
         started_at=task.started_at,
         finished_at=task.finished_at,
