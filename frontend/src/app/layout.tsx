@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Fraunces, Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Providers } from "./providers";
@@ -16,14 +16,6 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
   weight: ["400", "500", "600"],
   variable: "--font-geist-mono",
-  display: "swap",
-});
-
-const fraunces = Fraunces({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  style: ["normal", "italic"],
-  variable: "--font-fraunces",
   display: "swap",
 });
 
@@ -99,9 +91,9 @@ export default function RootLayout({
     >
       <html
         lang="en"
-        className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable}`}
+        className={`${geistSans.variable} ${geistMono.variable}`}
       >
-        <body className="flex min-h-screen flex-col bg-background font-sans text-foreground antialiased">
+        <body className="flex min-h-screen flex-col bg-background font-mono text-foreground antialiased">
           <Providers>
             <div className="flex flex-1 flex-col">{children}</div>
             <Footer />

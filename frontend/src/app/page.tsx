@@ -8,16 +8,16 @@ import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import Image from "next/image";
 
-function RedirectToDashboard() {
+function RedirectToTasks() {
   const router = useRouter();
 
   useEffect(() => {
-    router.replace("/dashboard");
+    router.replace("/tasks");
   }, [router]);
 
   return (
     <div className="flex flex-1 items-center justify-center bg-background">
-      <p className="text-muted-foreground">Redirecting to dashboard...</p>
+      <p className="text-muted-foreground">Redirecting to tasks...</p>
     </div>
   );
 }
@@ -82,7 +82,7 @@ export default function LandingPage() {
   return (
     <>
       <Show when="signed-in">
-        <RedirectToDashboard />
+        <RedirectToTasks />
       </Show>
 
       <Show when="signed-out">
@@ -102,7 +102,7 @@ export default function LandingPage() {
               </div>
               <div className="flex items-center gap-3">
                 <ThemeToggle />
-                <SignUpButton mode="modal" fallbackRedirectUrl="/dashboard">
+                <SignUpButton mode="modal" fallbackRedirectUrl="/tasks">
                   <Button
                     variant="outline"
                     size="sm"

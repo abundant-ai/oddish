@@ -273,3 +273,33 @@ async def get_trial_file_content_s3(
         return content, media_type
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
+
+
+async def presign_trial_file_s3(
+    trial: TrialModel,
+    file_path: str,
+    *,
+    expiration: int = 3600,
+) -> str | None:
+    """Return a presigned GET URL for a trial file in S3.
+
+    Returns ``None`` if the file isn't reachable in S3 (caller should
+    fall back to the bytes path). Lets the browser fetch directly from
+    S3 instead of streaming through Modal/Vercel.
+    """
+    from pathlib import PurePosixPath
+
+    raw = file_path.replace("\\", "/").strip()
+    if not raw or raw.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    parts = PurePosixPath(raw).parts
+    if ".." in parts:
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    normalized = str(PurePosixPath(*parts))
+
+    storage = get_storage_client()
+    s3_prefix = _get_trial_s3_prefix(trial)
+    s3_key = f"{s3_prefix}{normalized}"
+    if not await storage.object_exists(s3_key):
+        return None
+    return await storage.get_presigned_url(s3_key, expiration=expiration)

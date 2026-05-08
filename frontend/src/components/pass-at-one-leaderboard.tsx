@@ -105,7 +105,7 @@ export const PassAtOneLeaderboard = memo(function PassAtOneLeaderboard({
   return (
     <div className="flex h-full min-w-0 flex-col rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3">
       <div className="mb-2 flex items-baseline justify-between gap-3">
-        <h3 className="font-display text-[15px] font-medium tracking-[-0.01em] text-[color:var(--paper-ink)]">
+        <h3 className="font-mono text-[15px] font-medium tracking-[-0.01em] text-[color:var(--paper-ink)]">
           Leaderboard
         </h3>
         <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">

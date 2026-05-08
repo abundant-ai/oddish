@@ -43,14 +43,18 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.agent_identity import compute_agent_equivalence_key
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
+    JobKind,
+    JobModel,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
     TrialModel,
     TrialOrigin,
+    generate_id,
     get_session,
     utcnow,
 )
@@ -235,12 +239,29 @@ async def initialize_trial_import(
         else:
             idempotency_key = f"import-{uuid.uuid4()}"
 
+        # P1 dual-write: each import gets its own Job so the UI can
+        # group "trials I just imported" the same way it groups live
+        # submissions.
+        import_job = JobModel(
+            id=generate_id(),
+            kind=JobKind.AD_HOC,
+            name=task.name,
+            triggered_by_experiment_id=experiment.id,
+            org_id=task.org_id,
+        )
+        session.add(import_job)
+        await session.flush()
+
+        agent_equivalence_key = compute_agent_equivalence_key(agent, model, provider)
+
         trial_row = TrialModel(
             id=trial_id,
             name=f"{task.name}-{next_index}",
             task_id=task.id,
             task_version_id=task_version_id,
             experiment_id=experiment.id,
+            job_id=import_job.id,
+            agent_equivalence_key=agent_equivalence_key,
             org_id=task.org_id,
             idempotency_key=idempotency_key,
             agent=agent,

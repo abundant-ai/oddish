@@ -17,6 +17,12 @@ interface ResizableDrawerProps {
   hideCloseButton?: boolean;
   /** Keep drawer mounted in DOM when closed (for smoother transitions) */
   keepMounted?: boolean;
+  /**
+   * Suppress the dimming backdrop overlay so the page underneath stays
+   * fully interactive while the drawer is open. Useful for "inspect"
+   * surfaces that should sit alongside the page rather than blocking it.
+   */
+  noBackdrop?: boolean;
 }
 
 export function ResizableDrawer({
@@ -28,6 +34,7 @@ export function ResizableDrawer({
   maxWidth = 1200,
   className,
   hideCloseButton = false,
+  noBackdrop = false,
 }: ResizableDrawerProps) {
   const [width, setWidth] = React.useState(defaultWidth);
   const [isResizing, setIsResizing] = React.useState(false);
@@ -79,12 +86,15 @@ export function ResizableDrawer({
 
   return (
     <>
-      {/* Backdrop overlay - click to close */}
-      <div
-        className="fixed inset-0 z-30 bg-black/20 duration-300 animate-in fade-in"
-        style={{ top: "56px" }}
-        onClick={() => onOpenChange(false)}
-      />
+      {/* Backdrop overlay - click to close. Disabled when noBackdrop=true so
+          the drawer can sit alongside an interactive page. */}
+      {!noBackdrop ? (
+        <div
+          className="fixed inset-0 z-30 bg-black/20 duration-300 animate-in fade-in"
+          style={{ top: "56px" }}
+          onClick={() => onOpenChange(false)}
+        />
+      ) : null}
 
       {/* Drawer */}
       <div

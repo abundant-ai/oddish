@@ -1,7 +1,19 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, delete, func, nulls_last, or_, select, text, tuple_
+from sqlalchemy import (
+    Text,
+    and_,
+    case,
+    cast,
+    delete,
+    func,
+    nulls_last,
+    or_,
+    select,
+    text,
+    tuple_,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm import load_only, selectinload
@@ -38,6 +50,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.schemas import (
+    TaskAgentSummary,
     TaskBrowseExperiment,
     TaskBrowseItem,
     TaskBrowseResponse,
@@ -339,9 +352,30 @@ async def browse_tasks_core(
     limit: int = 25,
     offset: int = 0,
     query: str | None = None,
+    tags: list[str] | None = None,
+    score_bucket: str | None = None,
+    experiment_id: str | None = None,
+    agents: list[str] | None = None,
+    sort: str | None = None,
+    tag_match: str = "all",
     record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
-    """List latest-version task summaries for the task browser."""
+    """List latest-version task summaries for the task browser.
+
+    Filters:
+    - ``query`` -- name or tag substring match.
+    - ``tags`` -- list of ``"key=value"`` chips. ``tag_match`` picks
+      between ``all`` (AND, default; jsonb @>) and ``any`` (OR).
+    - ``score_bucket`` -- one of ``pass80`` / ``pass35to80`` /
+      ``pass0to35`` / ``untested``. Applied post-aggregate.
+    - ``experiment_id`` -- only tasks that have at least one trial
+      belonging to this experiment.
+    - ``agents`` -- list of harness names; tasks must have a trial
+      from at least one (OR semantics).
+
+    Sort keys: ``recent`` (default), ``name``, ``pass``, ``trials``,
+    ``version``.
+    """
 
     current_version = aliased(TaskVersionModel)
     normalized_query = query.strip() if query else None
@@ -353,6 +387,7 @@ async def browse_tasks_core(
             TaskModel.current_version_id.label("current_version_id"),
             current_version.version.label("current_version"),
             TaskModel.created_at.label("created_at"),
+            TaskModel.tags.label("tags"),
             func.row_number()
             .over(
                 partition_by=TaskModel.name,
@@ -370,7 +405,31 @@ async def browse_tasks_core(
     if org_id is not None:
         ranked_tasks = ranked_tasks.where(TaskModel.org_id == org_id)
     if normalized_query:
-        ranked_tasks = ranked_tasks.where(TaskModel.name.ilike(f"%{normalized_query}%"))
+        pattern = f"%{normalized_query}%"
+        ranked_tasks = ranked_tasks.where(
+            or_(
+                TaskModel.name.ilike(pattern),
+                # JSONB cast lets the same search box match tag keys
+                # and values, e.g. typing "swe-bench" finds every task
+                # tagged ``dataset=swe-bench`` or ``swe-bench: true``.
+                cast(TaskModel.tags, Text).ilike(pattern),
+            )
+        )
+    # Tag chips. Each chip is "key=value"; jsonb @> '{"k":"v"}' so a
+    # jsonb_path_ops index can serve it. ``tag_match`` controls
+    # whether chips are AND-ed (all match) or OR-ed (any match).
+    chip_clauses = []
+    for chip in tags or []:
+        if "=" not in chip:
+            continue
+        k, _, v = chip.partition("=")
+        if not k:
+            continue
+        chip_clauses.append(TaskModel.tags.contains({k: v}))
+    if chip_clauses:
+        ranked_tasks = ranked_tasks.where(
+            or_(*chip_clauses) if tag_match == "any" else and_(*chip_clauses)
+        )
     ranked_tasks_subquery = ranked_tasks.subquery()
 
     version_counts = (
@@ -408,12 +467,21 @@ async def browse_tasks_core(
         TrialModel.task_id, TrialModel.task_version_id
     ).subquery()
 
+    # Pass-rate expression we can both filter and sort on.
+    reward_total_col = func.coalesce(trial_aggregates.c.reward_total, 0)
+    reward_sum_col = func.coalesce(trial_aggregates.c.reward_sum, 0.0)
+    pass_rate_expr = case(
+        (reward_total_col > 0, reward_sum_col / reward_total_col),
+        else_=None,
+    )
+
     paged_rows = (
         select(
             ranked_tasks_subquery.c.task_id,
             ranked_tasks_subquery.c.name,
             ranked_tasks_subquery.c.current_version,
             ranked_tasks_subquery.c.current_version_id,
+            ranked_tasks_subquery.c.tags.label("tags"),
             func.coalesce(version_counts.c.version_count, 0).label("version_count"),
             func.coalesce(trial_aggregates.c.total_trials, 0).label("total_trials"),
             func.coalesce(trial_aggregates.c.completed_trials, 0).label(
@@ -421,8 +489,8 @@ async def browse_tasks_core(
             ),
             func.coalesce(trial_aggregates.c.failed_trials, 0).label("failed_trials"),
             func.coalesce(trial_aggregates.c.reward_success, 0).label("reward_success"),
-            func.coalesce(trial_aggregates.c.reward_sum, 0.0).label("reward_sum"),
-            func.coalesce(trial_aggregates.c.reward_total, 0).label("reward_total"),
+            reward_sum_col.label("reward_sum"),
+            reward_total_col.label("reward_total"),
             trial_aggregates.c.last_run_at.label("last_run_at"),
         )
         .select_from(ranked_tasks_subquery)
@@ -438,21 +506,128 @@ async def browse_tasks_core(
             ),
         )
         .where(ranked_tasks_subquery.c.name_rank == 1)
-        .order_by(
-            # Fresh "never run" tasks should appear near the top of the
-            # browser (ordered by upload time), not buried below every
-            # real experiment. Fall back to the task's created_at when
-            # no trials have finished yet.
-            func.coalesce(
-                trial_aggregates.c.last_run_at,
-                ranked_tasks_subquery.c.created_at,
-            ).desc(),
+    )
+
+    # Pass-rate bucket filter. "untested" matches reward_total == 0 so
+    # it surfaces tasks the user hasn't graded yet.
+    if score_bucket == "pass80":
+        paged_rows = paged_rows.where(pass_rate_expr >= 0.8)
+    elif score_bucket == "pass35to80":
+        paged_rows = paged_rows.where(
+            and_(pass_rate_expr >= 0.35, pass_rate_expr < 0.8)
+        )
+    elif score_bucket == "pass0to35":
+        paged_rows = paged_rows.where(pass_rate_expr < 0.35)
+    elif score_bucket == "untested":
+        paged_rows = paged_rows.where(reward_total_col == 0)
+
+    # "Tasks used in experiment X" -- correlated EXISTS so we don't
+    # multiply rows.
+    if experiment_id:
+        exp_subq = (
+            select(TrialModel.task_id)
+            .where(
+                TrialModel.experiment_id == experiment_id,
+                *([TrialModel.org_id == org_id] if org_id is not None else []),
+            )
+        )
+        paged_rows = paged_rows.where(
+            ranked_tasks_subquery.c.task_id.in_(exp_subq)
+        )
+
+    # "Tasks where any of the requested harnesses has run at least
+    # once". Multi-select: ``agent=foo&agent=bar`` -> tasks with
+    # trials from foo OR bar.
+    cleaned_agents = [a for a in (agents or []) if a]
+    if cleaned_agents:
+        agent_subq = (
+            select(TrialModel.task_id)
+            .where(
+                TrialModel.agent.in_(cleaned_agents),
+                *([TrialModel.org_id == org_id] if org_id is not None else []),
+            )
+        )
+        paged_rows = paged_rows.where(
+            ranked_tasks_subquery.c.task_id.in_(agent_subq)
+        )
+
+    # Sort. "recent" keeps the existing tie-breakers; the others swap
+    # the lead key but keep name as the final tie-break for stable
+    # pagination.
+    last_activity = func.coalesce(
+        trial_aggregates.c.last_run_at,
+        ranked_tasks_subquery.c.created_at,
+    )
+    if sort == "name":
+        paged_rows = paged_rows.order_by(ranked_tasks_subquery.c.name.asc())
+    elif sort == "pass":
+        paged_rows = paged_rows.order_by(
+            nulls_last(pass_rate_expr.desc()),
+            ranked_tasks_subquery.c.name.asc(),
+        )
+    elif sort == "trials":
+        paged_rows = paged_rows.order_by(
+            func.coalesce(trial_aggregates.c.total_trials, 0).desc(),
+            ranked_tasks_subquery.c.name.asc(),
+        )
+    elif sort == "version":
+        paged_rows = paged_rows.order_by(
+            func.coalesce(version_counts.c.version_count, 0).desc(),
+            ranked_tasks_subquery.c.name.asc(),
+        )
+    else:
+        # Default: fresh "never run" tasks should appear near the top
+        # of the browser (ordered by upload time), not buried below
+        # every real experiment. Fall back to the task's created_at
+        # when no trials have finished yet.
+        paged_rows = paged_rows.order_by(
+            last_activity.desc(),
             nulls_last(ranked_tasks_subquery.c.current_version.desc()),
             ranked_tasks_subquery.c.name.asc(),
         )
-        .limit(limit + 1)
-        .offset(offset)
+
+    # Aggregate over the entire filtered set (not just the page) so
+    # the FE can render "matching N tasks · M trials · K% pass" and
+    # seed an experiment from every match, not just the visible 25.
+    # Capped at MAX_FILTER_RESULTS via .limit so a wildcard filter
+    # can't drag back the whole DB.
+    filtered_sub = paged_rows.subquery()
+    aggregate_query = select(
+        func.count().label("total_count"),
+        func.coalesce(func.sum(filtered_sub.c.total_trials), 0).label(
+            "agg_trials"
+        ),
+        func.coalesce(func.sum(filtered_sub.c.reward_sum), 0.0).label(
+            "agg_reward_sum"
+        ),
+        func.coalesce(func.sum(filtered_sub.c.reward_total), 0).label(
+            "agg_reward_total"
+        ),
+    ).select_from(filtered_sub)
+    aggregate_row = (await session.execute(aggregate_query)).mappings().first()
+    total_count = int(aggregate_row["total_count"] or 0)
+    agg_trials = int(aggregate_row["agg_trials"] or 0)
+    agg_reward_sum = float(aggregate_row["agg_reward_sum"] or 0.0)
+    agg_reward_total = int(aggregate_row["agg_reward_total"] or 0)
+    aggregate_pass_rate = (
+        (agg_reward_sum / agg_reward_total) if agg_reward_total > 0 else None
     )
+
+    # Pull the matching task_version_ids (capped) so the FE can hand
+    # them to "create experiment from this filter" without a second
+    # round trip. Same filtered_sub, just project a single column.
+    MAX_FILTER_RESULTS = 1000
+    matching_ids_query = (
+        select(filtered_sub.c.current_version_id)
+        .where(filtered_sub.c.current_version_id.is_not(None))
+        .limit(MAX_FILTER_RESULTS)
+    )
+    matching_task_version_ids = [
+        str(r[0])
+        for r in (await session.execute(matching_ids_query)).all()
+    ]
+
+    paged_rows = paged_rows.limit(limit + 1).offset(offset)
 
     page_started_at = now()
     result = await session.execute(paged_rows)
@@ -468,6 +643,7 @@ async def browse_tasks_core(
 
     experiments_by_task: dict[str, list[TaskBrowseExperiment]] = {}
     latest_trials_by_task: dict[str, list[TaskBrowseTrial]] = {}
+    agents_by_task: dict[str, list[TaskAgentSummary]] = {}
     task_version_pairs = [
         (str(row["task_id"]), str(row["current_version_id"]))
         for row in visible_rows
@@ -558,6 +734,46 @@ async def browse_tasks_core(
                 )
             )
 
+        # Per-harness rollup for the task's current_version trials so
+        # the card can render "claude-code 4/5 · oracle 5/5" and the
+        # FE agent-filter dropdown is populated without another query.
+        agents_query = (
+            select(
+                TrialModel.task_id.label("task_id"),
+                TrialModel.agent.label("agent"),
+                func.count(TrialModel.id).label("attempts"),
+                func.count(case((TrialModel.reward == 1, 1))).label("passed"),
+                func.avg(TrialModel.reward).label("avg_reward"),
+                func.max(TrialModel.finished_at).label("last_run_at"),
+            )
+            .where(
+                tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
+                    task_version_pairs
+                ),
+                TrialModel.agent.is_not(None),
+            )
+            .group_by(TrialModel.task_id, TrialModel.agent)
+        )
+        if org_id is not None:
+            agents_query = agents_query.where(TrialModel.org_id == org_id)
+        agents_rows = await session.execute(agents_query)
+        for row in agents_rows.mappings():
+            agents_by_task.setdefault(str(row["task_id"]), []).append(
+                TaskAgentSummary(
+                    agent=str(row["agent"]),
+                    attempts=int(row["attempts"] or 0),
+                    passed=int(row["passed"] or 0),
+                    avg_reward=(
+                        float(row["avg_reward"])
+                        if row["avg_reward"] is not None
+                        else None
+                    ),
+                    last_run_at=row["last_run_at"],
+                )
+            )
+        for tid in agents_by_task:
+            agents_by_task[tid].sort(key=lambda s: s.agent)
+
     build_started_at = now()
     response = TaskBrowseResponse(
         items=[
@@ -584,12 +800,19 @@ async def browse_tasks_core(
                 last_run_at=row["last_run_at"],
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),
+                tags=dict(row["tags"] or {}),
+                agent_summaries=agents_by_task.get(str(row["task_id"]), []),
             )
             for row in visible_rows
         ],
         limit=limit,
         offset=offset,
         has_more=has_more,
+        total_count=total_count,
+        aggregate_trials=agg_trials,
+        aggregate_passed=int(round(agg_reward_sum)),
+        aggregate_pass_rate=aggregate_pass_rate,
+        matching_task_version_ids=matching_task_version_ids,
     )
     if record_timing is not None:
         record_timing(
