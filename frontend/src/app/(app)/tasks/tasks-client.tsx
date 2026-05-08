@@ -15,6 +15,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ImportDialog } from "@/components/import-dialog";
 import { fetcher } from "@/lib/api";
 import {
   formatPartialRewardBadgeValue,
@@ -332,10 +333,8 @@ export function TasksPageClient({
     return `/api/tasks/browse?${params.toString()}`;
   }, [debouncedQuery, offset]);
 
-  const { data, error, isLoading, isValidating } = useSWR<TaskBrowseResponse>(
-    swrKey,
-    fetcher,
-    {
+  const { data, error, isLoading, isValidating, mutate } =
+    useSWR<TaskBrowseResponse>(swrKey, fetcher, {
       refreshInterval: 60000,
       revalidateOnFocus: false,
       keepPreviousData: true,
@@ -343,8 +342,7 @@ export function TasksPageClient({
         offset === 0 && debouncedQuery.length === 0
           ? (initialData ?? undefined)
           : undefined,
-    },
-  );
+    });
 
   const items = data?.items ?? [];
   const hasMore = data?.has_more ?? false;
@@ -371,12 +369,15 @@ export function TasksPageClient({
                 ) : null}
               </div>
             </div>
-            <Input
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Search tasks"
-              className="h-8 w-full border-[#6f88b4]/20 sm:w-[260px]"
-            />
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search tasks"
+                className="h-8 w-full border-[#6f88b4]/20 sm:w-[260px]"
+              />
+              <ImportDialog onImported={() => mutate()} />
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             {error ? (
