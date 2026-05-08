@@ -357,7 +357,10 @@ function CreateExperimentFromFilterDialog({
       const chosen = (knownAgents ?? []).filter((a) =>
         picked.has(a.equivalence_key),
       );
-      const res = await fetch("/api/experiments", {
+      const createUrl = andBackfill
+        ? "/api/experiments"
+        : "/api/experiments?dry_run=true";
+      const res = await fetch(createUrl, {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
@@ -377,12 +380,6 @@ function CreateExperimentFromFilterDialog({
       }
       const created = await res.json();
       const expId = String(created.experiment_id);
-      if (andBackfill) {
-        await fetch(
-          `/api/experiments/${encodeURIComponent(expId)}/backfill`,
-          { method: "POST", credentials: "include" },
-        );
-      }
       router.push(`/experiments/${encodeURIComponent(expId)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

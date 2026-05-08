@@ -50,10 +50,6 @@ export function ExperimentsListClient() {
           <h1 className="font-mono text-[26px] font-semibold tracking-[-0.02em]">
             Experiments
           </h1>
-          <p className="text-sm text-muted-foreground">
-            Saved selections of task versions and agents. An experiment is
-            a view over evidence; clicking one opens its cell matrix.
-          </p>
         </div>
         <Button asChild>
           <Link href="/experiments/new" className="gap-2">

@@ -265,7 +265,10 @@ export function NewExperimentClient() {
           model: a.model,
           provider: a.provider,
         }));
-      const res = await fetch("/api/experiments", {
+      const createUrl = andBackfill
+        ? "/api/experiments"
+        : "/api/experiments?dry_run=true";
+      const res = await fetch(createUrl, {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
@@ -282,17 +285,6 @@ export function NewExperimentClient() {
       }
       const created = (await res.json()) as ResolvedExperiment;
       const encodedId = encodeExperimentRouteParam(created.experiment_id);
-
-      if (andBackfill) {
-        const bf = await fetch(`/api/experiments/${encodedId}/backfill`, {
-          method: "POST",
-          credentials: "include",
-        });
-        if (!bf.ok) {
-          const text = await bf.text();
-          throw new Error(text || `Backfill failed (${bf.status})`);
-        }
-      }
 
       router.push(`/experiments/${encodedId}`);
     } catch (err) {

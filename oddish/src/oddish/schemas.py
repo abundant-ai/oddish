@@ -739,6 +739,18 @@ class ExperimentBackfillResponse(BaseModel):
     enqueued_trial_count: int
 
 
+class ExperimentCreateResponse(ResolvedExperimentResponse):
+    """Resolved experiment plus optional backfill receipt.
+
+    ``POST /experiments`` enqueues a backfill in the same call by
+    default, restoring the pre-task-first ``submit-and-it-runs`` API
+    semantics. ``backfill`` is ``None`` when the caller passes
+    ``?dry_run=true`` to create the spec only.
+    """
+
+    backfill: ExperimentBackfillResponse | None = None
+
+
 class TaskBrowseExperiment(BaseModel):
     id: str
     name: str
