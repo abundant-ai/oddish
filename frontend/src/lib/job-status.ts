@@ -1,20 +1,26 @@
-import type { JobStatus, Task, VisibleWorkerJob } from "@/lib/types";
+import type { JobStatus, Task, Trial, VisibleWorkerJob } from "@/lib/types";
 
-const ACTIVE_TRIAL_STATUSES = [
+export const ACTIVE_TRIAL_STATUSES = [
   "running",
   "queued",
   "retrying",
   "pending",
 ] as const;
-const ACTIVE_PIPELINE_STATUSES = ["pending", "queued", "running"] as const;
-const ACTIVE_VISIBLE_JOB_STATUSES = [
+export const ACTIVE_PIPELINE_STATUSES = [
+  "pending",
+  "queued",
+  "running",
+] as const;
+export const ACTIVE_VISIBLE_JOB_STATUSES = [
   "queued",
   "running",
   "retrying",
   "blocked",
 ] as const;
 
-function isActiveTrialStatus(status: string | null | undefined): boolean {
+export function isActiveTrialStatus(
+  status: string | null | undefined,
+): boolean {
   return ACTIVE_TRIAL_STATUSES.includes(
     status as (typeof ACTIVE_TRIAL_STATUSES)[number],
   );
@@ -28,7 +34,7 @@ export function isActivePipelineStatus(
   );
 }
 
-function isActiveVisibleJob(job: VisibleWorkerJob): boolean {
+export function isActiveVisibleJob(job: VisibleWorkerJob): boolean {
   return ACTIVE_VISIBLE_JOB_STATUSES.includes(
     job.status as (typeof ACTIVE_VISIBLE_JOB_STATUSES)[number],
   );
@@ -50,9 +56,15 @@ export function taskHasCancellableWork(task: Task | null | undefined): boolean {
   );
 }
 
-function getActiveTrialCount(task: Task | null | undefined): number {
+export function getActiveTrialCount(task: Task | null | undefined): number {
   return (task?.trials ?? []).filter((trial) =>
     isActiveTrialStatus(trial.status),
+  ).length;
+}
+
+export function getActiveAnalysisCount(task: Task | null | undefined): number {
+  return (task?.trials ?? []).filter((trial) =>
+    isActivePipelineStatus(trial.analysis_status),
   ).length;
 }
 
@@ -66,4 +78,15 @@ export function getCancelActionLabel(task: Task | null | undefined): string {
     return "Cancel verdict";
   }
   return "Cancel analysis";
+}
+
+export function trialHasActiveAnalysis(trial: Trial): boolean {
+  return (
+    isActivePipelineStatus(trial.analysis_status) ||
+    Boolean(
+      trial.jobs?.some(
+        (job) => job.kind === "analysis" && isActiveVisibleJob(job),
+      ),
+    )
+  );
 }

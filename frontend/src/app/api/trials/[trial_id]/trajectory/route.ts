@@ -23,18 +23,14 @@ export async function GET(
     });
 
     const text = await res.text();
-    let data: unknown = null;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = null;
-    }
+    const data = text ? JSON.parse(text) : null;
+
     if (!res.ok) {
-      return NextResponse.json(
-        data ?? { error: text || `Upstream ${res.status}` },
-        { status: res.status },
-      );
+      return NextResponse.json(data ?? { error: "Upstream error" }, {
+        status: res.status,
+      });
     }
+
     // Return null as valid response if no trajectory exists
     return NextResponse.json(data);
   } catch (error) {

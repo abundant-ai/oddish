@@ -11,7 +11,7 @@
  * This is computed using the product form to avoid large factorials:
  * pass@k = 1 - ∏(i=0 to k-1) [(n-c-i)/(n-i)]
  */
-export function calculatePassAtK(n: number, c: number, k: number): number {
+function calculatePassAtK(n: number, c: number, k: number): number {
   // Edge cases
   if (k > n) return c > 0 ? 1 : 0;
   if (c === 0) return 0;

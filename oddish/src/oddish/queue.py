@@ -10,12 +10,9 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
-from oddish.core.agent_identity import compute_agent_equivalence_key
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
-    JobKind,
-    JobModel,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
@@ -328,7 +325,6 @@ async def enqueue_trial_worker_job(
     org_id: str | None,
     max_attempts: int,
     parent_job_id: str | None = None,
-    user_job_id: str | None = None,
 ) -> WorkerJobModel:
     return await enqueue_worker_job(
         session,
@@ -341,7 +337,6 @@ async def enqueue_trial_worker_job(
             org_id=org_id,
             max_attempts=max_attempts,
             parent_job_id=parent_job_id,
-            user_job_id=user_job_id,
         ),
     )
 
@@ -559,17 +554,6 @@ async def create_task(
     # Now safe to set the back-pointer and create trials.
     task.current_version_id = version_id
 
-    # P1 dual-write: every submission produces a Job (the user-visible
-    # batch). Trials carry both the legacy ``experiment_id`` and the new
-    # ``job_id``; the experiment link goes away in P5.
-    job = await _create_job_for_submission(
-        session,
-        name=task_name,
-        experiment_id=experiment.id,
-        user_id=None,
-        org_id=org_id,
-    )
-
     for i, spec in enumerate(submission.trials):
         model = settings.normalize_trial_model(spec.agent, spec.model)
         provider = settings.get_provider_for_trial(spec.agent, model)
@@ -578,9 +562,6 @@ async def create_task(
         trial_name = f"{task_name}-{i}"
 
         harbor_config = _build_harbor_config_for_trial(submission, spec)
-        agent_equivalence_key = compute_agent_equivalence_key(
-            spec.agent, model, provider
-        )
 
         trial = TrialModel(
             id=trial_id,
@@ -588,8 +569,6 @@ async def create_task(
             task_id=task_id,
             task_version_id=version_id,
             experiment_id=experiment.id,
-            job_id=job.id,
-            agent_equivalence_key=agent_equivalence_key,
             org_id=org_id,
             agent=spec.agent,
             provider=provider,
@@ -607,7 +586,6 @@ async def create_task(
             queue_key=queue_key,
             org_id=org_id,
             max_attempts=trial.max_attempts,
-            user_job_id=job.id,
         )
 
     await session.flush()
@@ -626,36 +604,6 @@ async def _link_task_to_experiment(
         .values(task_id=task_id, experiment_id=experiment_id)
         .on_conflict_do_nothing(index_elements=["task_id", "experiment_id"])
     )
-
-
-async def _create_job_for_submission(
-    session: AsyncSession,
-    *,
-    name: str | None,
-    experiment_id: str | None,
-    user_id: str | None,
-    org_id: str | None,
-    kind: JobKind = JobKind.AD_HOC,
-) -> JobModel:
-    """Create a Job row to group the trials produced by a submission.
-
-    A Job is the user-visible batch -- "I just launched some work". One
-    Job per ``submit_trials_to_task`` / ``append_trials_to_task`` /
-    ``initialize_trial_import`` call. ``experiment_id`` is recorded as
-    ``triggered_by_experiment_id`` for cosmetic backreference; the
-    experiment's evidence pool is *not* scoped by Job.
-    """
-    job = JobModel(
-        id=generate_id(),
-        kind=kind,
-        name=name,
-        triggered_by_experiment_id=experiment_id,
-        launched_by_user_id=user_id,
-        org_id=org_id,
-    )
-    session.add(job)
-    await session.flush()
-    return job
 
 
 async def append_trials_to_task(
@@ -697,17 +645,6 @@ async def append_trials_to_task(
             session, task_id=task.id, experiment_id=experiment_id
         )
 
-    # P1 dual-write: each append is its own Job (the user-visible
-    # batch). Carries the legacy ``experiment_id`` and the new
-    # ``job_id`` -- experiment link goes away in P5.
-    job = await _create_job_for_submission(
-        session,
-        name=task.name,
-        experiment_id=trial_experiment_id,
-        user_id=None,
-        org_id=task.org_id,
-    )
-
     new_trials: list[TrialModel] = []
     for spec in submission.trials:
         model = settings.normalize_trial_model(spec.agent, spec.model)
@@ -717,9 +654,6 @@ async def append_trials_to_task(
         trial_name = f"{task.name}-{next_index}"
 
         harbor_config = _build_harbor_config_for_trial(submission, spec)
-        agent_equivalence_key = compute_agent_equivalence_key(
-            spec.agent, model, provider
-        )
 
         trial = TrialModel(
             id=trial_id,
@@ -727,8 +661,6 @@ async def append_trials_to_task(
             task_id=task.id,
             task_version_id=current_version_id,
             experiment_id=trial_experiment_id,
-            job_id=job.id,
-            agent_equivalence_key=agent_equivalence_key,
             org_id=task.org_id,
             agent=spec.agent,
             provider=provider,
@@ -746,7 +678,6 @@ async def append_trials_to_task(
             queue_key=queue_key,
             org_id=task.org_id,
             max_attempts=trial.max_attempts,
-            user_job_id=job.id,
         )
         new_trials.append(trial)
         next_index += 1

@@ -171,18 +171,6 @@ class WorkerJobStatus(str, Enum):
     BLOCKED = "BLOCKED"
 
 
-class JobKind(str, Enum):
-    """User-visible categorization of a Job (a batch of trials).
-
-    Reporting metadata only -- the execution path is identical across
-    kinds. The label only affects how jobs surface in UI / CLI listings.
-    """
-
-    VALIDATION = "validation"
-    EXPERIMENT_BACKFILL = "experiment_backfill"
-    AD_HOC = "ad_hoc"
-
-
 # =============================================================================
 # SQLAlchemy Models (Database Tables)
 # =============================================================================
@@ -239,15 +227,6 @@ class ExperimentModel(TimestampedMixin, Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
-    # Experiment-level trial target. Newly-created cells default to this
-    # value; bulk "bump all targets" rewrites every cell to it. The cell
-    # row's own ``target_n_trials`` stays the source of truth for what
-    # the resolver counts gaps against, so per-cell overrides remain
-    # possible -- but the experiment-level field is what the UI surfaces.
-    target_n_trials: Mapped[int] = mapped_column(
-        Integer, default=3, server_default="3", nullable=False
-    )
-
     tasks: Mapped[list["TaskModel"]] = relationship(  # type: ignore[assignment]
         "TaskModel",
         secondary=task_experiments,
@@ -255,174 +234,6 @@ class ExperimentModel(TimestampedMixin, Base):
         lazy="selectin",
         passive_deletes=True,
     )
-
-
-class ExperimentCellModel(TimestampedMixin, Base):
-    """One cell of an experiment's selection.
-
-    An experiment is a set of cells; each cell declares "I want at
-    least ``target_n_trials`` of this agent against this specific task
-    version". Cells are *frozen at save*: the ``task_version_id`` never
-    silently shifts. The experiment as a whole is editable -- cells can
-    be added, removed, or have their target bumped.
-
-    Evidence is *not* owned by the cell -- the resolved view joins on
-    ``(task_version_id, agent_equivalence_key)`` against the trial table
-    at read time so any new trial against that pair improves every
-    experiment that contains it.
-    """
-
-    __tablename__ = "experiment_cells"
-    __table_args__ = (
-        Index(
-            "idx_experiment_cells_unique",
-            "experiment_id",
-            "task_version_id",
-            "agent_equivalence_key",
-            unique=True,
-        ),
-        Index(
-            "idx_experiment_cells_experiment",
-            "experiment_id",
-        ),
-        Index(
-            "idx_experiment_cells_task_version",
-            "task_version_id",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    experiment_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("experiments.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    task_version_id: Mapped[str] = mapped_column(
-        String(128),
-        ForeignKey("task_versions.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    agent_equivalence_key: Mapped[str] = mapped_column(
-        String(64), nullable=False
-    )
-    target_n_trials: Mapped[int] = mapped_column(Integer, nullable=False)
-
-    # Denormalized agent identity so the FE can render cells without
-    # joining the trial table to recover the (harness, model, provider)
-    # tuple. Kept in sync only at write time -- it's display metadata,
-    # not a join key. ``agent_equivalence_key`` is the load-bearing id.
-    agent_harness: Mapped[str] = mapped_column(String(64), nullable=False)
-    agent_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    agent_provider: Mapped[str] = mapped_column(String(64), nullable=False)
-
-
-class ExperimentTaskModel(Base):
-    """Task version that belongs to an experiment.
-
-    Independent of agents -- you can add a task to an experiment with
-    no agents on it yet (the column will render with empty cells until
-    agents are added). Cells are computed at read time as the cross
-    product of ``experiment_tasks`` and ``experiment_agents``.
-    """
-
-    __tablename__ = "experiment_tasks"
-
-    experiment_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("experiments.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    task_version_id: Mapped[str] = mapped_column(
-        String(128),
-        ForeignKey("task_versions.id"),
-        primary_key=True,
-    )
-    added_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
-    )
-
-
-class ExperimentAgentModel(Base):
-    """Agent identity that belongs to an experiment.
-
-    Independent of tasks. Denormalized ``(harness, model, provider)``
-    so we can render an agent column without joining the trial table.
-    """
-
-    __tablename__ = "experiment_agents"
-
-    experiment_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("experiments.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    agent_equivalence_key: Mapped[str] = mapped_column(
-        String(64), primary_key=True
-    )
-    agent_harness: Mapped[str] = mapped_column(String(64), nullable=False)
-    agent_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    agent_provider: Mapped[str] = mapped_column(String(64), nullable=False)
-    added_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
-    )
-
-
-class JobModel(TimestampedMixin, Base):
-    """User-visible batch of trials.
-
-    A Job is the unit of "I just launched some work". It groups the
-    trials produced together so the UI / CLI can show what was run side
-    by side, who launched it, and what kind of run it was (validation,
-    experiment backfill, ad-hoc).
-
-    Aggregate status is computed at read time by joining child
-    ``worker_jobs`` rows; we deliberately do not denormalize a status
-    column here -- there is no source of truth to point at, and lazy
-    aggregation is cheap.
-    """
-
-    __tablename__ = "jobs"
-    __table_args__ = (
-        Index("idx_jobs_org_launched_at", "org_id", "launched_at"),
-        Index(
-            "idx_jobs_triggered_by_experiment",
-            "triggered_by_experiment_id",
-            postgresql_where=text("triggered_by_experiment_id IS NOT NULL"),
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    kind: Mapped[JobKind] = mapped_column(
-        SQLEnum(
-            JobKind,
-            name="job_kind",
-            native_enum=False,
-            values_callable=lambda enum_cls: [member.value for member in enum_cls],
-        ),
-        nullable=False,
-    )
-    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-
-    # Cosmetic backreference: when a Job is enqueued by hitting "backfill"
-    # on an experiment, we record which experiment triggered it so the UI
-    # can surface "jobs for experiment X". Not load-bearing -- the
-    # experiment's evidence pool is a query over (task_version, agent),
-    # not over jobs.
-    triggered_by_experiment_id: Mapped[str | None] = mapped_column(
-        String(64),
-        ForeignKey("experiments.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-
-    launched_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    launched_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
-    )
-    finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
 
 class TaskModel(TimestampedMixin, Base):
@@ -524,16 +335,11 @@ class TaskModel(TimestampedMixin, Base):
     )
 
 
-class TaskVersionModel(Base):
+class TaskVersionModel(TimestampedMixin, Base):
     """Immutable snapshot of a task's content at a point in time.
 
     Each re-upload of a task bundle creates a new row.  Trials reference the
     specific version they ran against via ``task_version_id``.
-
-    Inherits ``Base`` (not ``TimestampedMixin``) because task versions are
-    write-once: there is no ``updated_at`` -- once created, a row is
-    immutable. Real write-protection at the DB layer (CHECK trigger /
-    role revoke) is set up in a follow-up migration.
     """
 
     __tablename__ = "task_versions"
@@ -547,12 +353,6 @@ class TaskVersionModel(Base):
     )
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
-    )
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
     task_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
     )
@@ -597,27 +397,11 @@ class TrialModel(TimestampedMixin, Base):
     task_version_id: Mapped[str | None] = mapped_column(
         String(128), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
     )
-    # P5 made this nullable; writers still populate it during the bake
-    # period so existing readers keep working. The column will be
-    # dropped (along with ``task_experiments``) in a follow-up
-    # migration once writers stop writing it.
-    experiment_id: Mapped[str | None] = mapped_column(
+    experiment_id: Mapped[str] = mapped_column(
         String(64),
         ForeignKey("experiments.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
         index=True,
-    )
-    # User-visible batch this trial was produced by. Nullable because it
-    # is added in P1 and backfilled. Will become the primary provenance
-    # link once ``experiment_id`` is dropped in P5.
-    job_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
-    )
-    # Canonical hash of (harness, model, provider) for evidence aggregation.
-    # See ``oddish.core.agent_identity.compute_agent_equivalence_key``.
-    # Nullable in P1 (backfill); planned NOT NULL after backfill bake.
-    agent_equivalence_key: Mapped[str | None] = mapped_column(
-        String(64), nullable=True
     )
 
     # -------------------------------------------------------------------------
@@ -794,19 +578,6 @@ class TrialModel(TimestampedMixin, Base):
             "model",
             "provider",
         ),
-        # Task-first read path: "evidence for (task_version, agent)".
-        # The cell-matrix experiment view and validation surfaces hit
-        # this composite -- it's the load-bearing index of P1.
-        Index(
-            "idx_trials_task_version_agent",
-            "task_version_id",
-            "agent_equivalence_key",
-        ),
-        Index(
-            "idx_trials_job_id",
-            "job_id",
-            postgresql_where=text("job_id IS NOT NULL"),
-        ),
     )
 
 
@@ -894,16 +665,6 @@ class WorkerJobModel(TimestampedMixin, Base):
         nullable=True,
     )
 
-    # User-visible batch (``jobs.id``) this work belongs to. Lets the UI
-    # show "what's currently running for Job X" without scanning all
-    # work. Nullable: predates this concept and is set by enqueue helpers
-    # going forward.
-    user_job_id: Mapped[str | None] = mapped_column(
-        String(64),
-        ForeignKey("jobs.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-
     payload: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
@@ -988,11 +749,5 @@ class WorkerJobModel(TimestampedMixin, Base):
             "org_id",
             "status",
             postgresql_where=text("org_id IS NOT NULL"),
-        ),
-        Index(
-            "idx_worker_jobs_user_job",
-            "user_job_id",
-            "status",
-            postgresql_where=text("user_job_id IS NOT NULL"),
         ),
     )

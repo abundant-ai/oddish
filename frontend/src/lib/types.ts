@@ -1,4 +1,5 @@
-type TaskStatus =
+// Task status (simplified - just tracks trial execution)
+export type TaskStatus =
   | "pending"
   | "running"
   | "analyzing"
@@ -6,7 +7,11 @@ type TaskStatus =
   | "completed"
   | "failed";
 
-type TrialStatus =
+// Trial/job status
+// - "success": Trial executed to completion (regardless of test result)
+// - "failed": Trial encountered an execution error (harness/infrastructure failure)
+// - Test results are stored separately in the `reward` field (0..1 score, null=no result)
+export type TrialStatus =
   | "pending"
   | "queued"
   | "running"
@@ -16,9 +21,9 @@ type TrialStatus =
 
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
-type VisibleJobKind = "trial" | "analysis" | "verdict";
+export type VisibleJobKind = "trial" | "analysis" | "verdict";
 
-type VisibleJobStatus =
+export type VisibleJobStatus =
   | "queued"
   | "running"
   | "retrying"
@@ -169,7 +174,6 @@ export interface Task {
   current_version?: number | null;
   current_version_id?: string | null;
   trials?: Trial[] | null;
-  tags?: Record<string, string>;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -188,14 +192,6 @@ interface TaskBrowseTrial {
   error_message?: string | null;
 }
 
-export interface TaskAgentSummary {
-  agent: string;
-  attempts: number;
-  passed: number;
-  avg_reward: number | null;
-  last_run_at: string | null;
-}
-
 export interface TaskBrowseItem {
   id: string;
   name: string;
@@ -211,8 +207,6 @@ export interface TaskBrowseItem {
   last_run_at?: string | null;
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
-  tags?: Record<string, string>;
-  agent_summaries?: TaskAgentSummary[];
 }
 
 export interface TaskBrowseResponse {
@@ -220,11 +214,102 @@ export interface TaskBrowseResponse {
   limit: number;
   offset: number;
   has_more: boolean;
-  total_count: number;
-  aggregate_trials: number;
-  aggregate_passed: number;
-  aggregate_pass_rate: number | null;
-  matching_task_version_ids: string[];
+}
+
+// Queue statistics keyed by queue key
+export interface QueueStats {
+  [queueKey: string]: {
+    pending: number;
+    queued: number;
+    running: number;
+    success: number;
+    failed: number;
+    retrying: number;
+    recommended_concurrency: number;
+  };
+}
+
+// Pipeline statistics (analysis/verdict progress)
+interface PipelineStats {
+  trials: Record<string, number>;
+  analyses: Record<string, number>;
+  verdicts: Record<string, number>;
+}
+
+// Per-model cost & token usage (aggregated from all trials)
+export interface ModelUsage {
+  model: string;
+  provider: string;
+  trial_count: number;
+  input_tokens: number;
+  cache_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  running: number;
+  queued: number;
+  succeeded: number;
+  failed: number;
+  avg_duration_s: number | null;
+}
+
+export interface JobUsage {
+  kind: string;
+  queue_key: string;
+  job_count: number;
+  queued: number;
+  running: number;
+  retrying: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  blocked: number;
+  avg_duration_s: number | null;
+}
+
+export interface DashboardExperimentAuthor {
+  name: string;
+  source: "github" | "api";
+}
+
+export interface DashboardExperiment {
+  id: string;
+  name: string;
+  is_public: boolean;
+  task_count: number;
+  total_trials: number;
+  completed_trials: number;
+  failed_trials: number;
+  active_trials: number;
+  reward_success: number;
+  reward_sum: number;
+  reward_total: number;
+  analysis_tasks: number;
+  verdict_good: number;
+  verdict_needs_review: number;
+  verdict_failed: number;
+  verdict_pending: number;
+  last_created_at: string | null;
+  last_author: DashboardExperimentAuthor | null;
+  last_pr_url: string | null;
+  last_pr_title: string | null;
+  last_pr_number: string | null;
+}
+
+// Combined dashboard response (single API call)
+export interface DashboardResponse {
+  queues: QueueStats;
+  pipeline: PipelineStats;
+  model_usage: ModelUsage[];
+  job_usage?: JobUsage[];
+  tasks: Task[];
+  experiments?: DashboardExperiment[];
+  tasks_limit?: number;
+  tasks_offset?: number;
+  has_more?: boolean;
+  experiments_limit?: number;
+  experiments_offset?: number;
+  experiments_has_more?: boolean;
+  cached: boolean;
 }
 
 // =============================================================================
@@ -447,78 +532,4 @@ export interface WorkerJobsResponse {
 export interface PublicExperimentInfo {
   name: string;
   public_token: string;
-}
-
-// =============================================================================
-// Task-first model (P1 / P3)
-// =============================================================================
-
-export interface JobSummary {
-  id: string;
-  kind: "validation" | "experiment_backfill" | "ad_hoc" | string;
-  name: string | null;
-  triggered_by_experiment_id: string | null;
-  launched_by_user_id: string | null;
-  launched_at: string;
-  finished_at: string | null;
-  org_id: string | null;
-  trial_count: number;
-  succeeded_trial_count: number;
-  failed_trial_count: number;
-  running_trial_count: number;
-}
-
-export interface JobListResponse {
-  items: JobSummary[];
-  limit: number;
-  offset: number;
-  has_more: boolean;
-}
-
-export interface ExperimentCellAgent {
-  harness: string;
-  model: string | null;
-  provider: string;
-  equivalence_key: string;
-}
-
-interface CellAttempt {
-  id: string;
-  status: string;
-  reward: number | null;
-}
-
-export interface ResolvedExperimentCell {
-  id: string;
-  task_version_id: string;
-  task_id: string;
-  task_name: string | null;
-  task_version: number | null;
-  target_n_trials: number;
-  agent: ExperimentCellAgent;
-  have_n_total: number;
-  have_n_successful: number;
-  have_n_failed: number;
-  have_n_running: number;
-  gap: number;
-  mean_reward: number | null;
-  last_run_at: string | null;
-  attempts: CellAttempt[];
-}
-
-export interface ExperimentTaskRef {
-  task_version_id: string;
-  task_id: string;
-  task_name: string | null;
-  task_version: number | null;
-}
-
-export interface ResolvedExperiment {
-  experiment_id: string;
-  experiment_name: string;
-  target_n_trials: number;
-  tasks: ExperimentTaskRef[];
-  agents: ExperimentCellAgent[];
-  cells: ResolvedExperimentCell[];
-  total_gap: number;
 }
