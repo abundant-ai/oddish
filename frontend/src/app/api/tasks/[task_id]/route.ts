@@ -25,12 +25,19 @@ export async function GET(
       headers: getAuthHeaders(token),
     });
 
-    if (!res.ok) {
-      const error = await res.json();
-      return NextResponse.json(error, { status: res.status });
+    const text = await res.text();
+    let data: unknown = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
     }
-
-    const data = await res.json();
+    if (!res.ok) {
+      return NextResponse.json(
+        data ?? { error: text || `Upstream ${res.status}` },
+        { status: res.status },
+      );
+    }
     return NextResponse.json(data);
   } catch (error) {
     return NextResponse.json(

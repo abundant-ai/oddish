@@ -413,10 +413,32 @@ async def browse_tasks(
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
     query: str | None = None,
+    tag: list[str] | None = Query(default=None),
+    tag_match: str = Query(
+        "all", regex="^(all|any)$", description="all = AND, any = OR"
+    ),
+    score_bucket: str | None = None,
+    experiment_id: str | None = None,
+    agent: list[str] | None = Query(
+        default=None,
+        description="Repeatable; tasks matching ANY listed harness.",
+    ),
+    sort: str | None = None,
 ) -> TaskBrowseResponse:
     """Browse latest task versions with aggregated trial stats."""
     async with get_session() as session:
-        return await browse_tasks_core(session, limit=limit, offset=offset, query=query)
+        return await browse_tasks_core(
+            session,
+            limit=limit,
+            offset=offset,
+            query=query,
+            tags=tag,
+            tag_match=tag_match,
+            score_bucket=score_bucket,
+            experiment_id=experiment_id,
+            agents=agent,
+            sort=sort,
+        )
 
 
 @api.get("/tasks/{task_id}", response_model=TaskStatusResponse)

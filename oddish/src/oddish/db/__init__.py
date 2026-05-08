@@ -1,6 +1,7 @@
 from oddish.db.models import (
     AnalysisStatus,
     Base,
+    JobKind,
     JobStatus,
     Priority,
     QueueSlotModel,
@@ -11,7 +12,11 @@ from oddish.db.models import (
     WorkerJobKind,
     WorkerJobStatus,
     # ORM Models
+    ExperimentAgentModel,
+    ExperimentCellModel,
     ExperimentModel,
+    ExperimentTaskModel,
+    JobModel,
     TaskModel,
     TaskVersionModel,
     TrialModel,
@@ -47,6 +52,7 @@ __all__ = [
     "Base",
     # Enums
     "TaskStatus",
+    "JobKind",
     "JobStatus",
     "TrialStatus",
     "TrialOrigin",
@@ -56,7 +62,11 @@ __all__ = [
     "WorkerJobKind",
     "WorkerJobStatus",
     # ORM Models
+    "ExperimentAgentModel",
+    "ExperimentCellModel",
     "ExperimentModel",
+    "ExperimentTaskModel",
+    "JobModel",
     "QueueSlotModel",
     "TaskModel",
     "TaskVersionModel",

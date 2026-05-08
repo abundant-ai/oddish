@@ -83,6 +83,11 @@ interface TrialDetailPanelProps {
   allowDelete?: boolean;
   /** Render content only without ResizableDrawer wrapper */
   contentOnly?: boolean;
+  /**
+   * Hide the "Files" tab. Use when the surrounding page already shows
+   * the task's file tree, so we don't duplicate the same UI affordance.
+   */
+  hideFilesTab?: boolean;
 }
 
 const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
@@ -160,19 +165,27 @@ export function TrialDetailPanel({
   apiBaseUrl = "/api",
   allowRetry = true,
   allowDelete = false,
+  hideFilesTab = false,
   contentOnly = false,
 }: TrialDetailPanelProps) {
   const searchParams = useSearchParams();
 
   const validTabs = useMemo(
-    () => new Set(["summary", "files", "trajectory", "artifacts"]),
-    [],
+    () =>
+      hideFilesTab
+        ? new Set(["summary", "trajectory", "artifacts"])
+        : new Set(["summary", "files", "trajectory", "artifacts"]),
+    [hideFilesTab],
   );
 
   const [activeTab, setActiveTab] = useState(() => {
     const urlTab = searchParams.get("tab");
     return urlTab && validTabs.has(urlTab) ? urlTab : "summary";
   });
+
+  useEffect(() => {
+    if (!validTabs.has(activeTab)) setActiveTab("summary");
+  }, [validTabs, activeTab]);
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -724,13 +737,15 @@ export function TrialDetailPanel({
               <FileText className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
               Summary
             </TabsTrigger>
-            <TabsTrigger
-              value="files"
-              className="rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
-            >
-              <FolderOpen className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
-              Files
-            </TabsTrigger>
+            {hideFilesTab ? null : (
+              <TabsTrigger
+                value="files"
+                className="rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
+              >
+                <FolderOpen className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
+                Files
+              </TabsTrigger>
+            )}
             <TabsTrigger
               value="trajectory"
               className="rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:border-primary data-[state=active]:bg-transparent sm:px-4 sm:text-sm"

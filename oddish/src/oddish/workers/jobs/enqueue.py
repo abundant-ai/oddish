@@ -34,6 +34,10 @@ class EnqueueRequest:
     max_attempts: int = 6
     org_id: str | None = None
     parent_job_id: str | None = None
+    # User-visible Job (``jobs.id``) this work belongs to. Lets the UI
+    # show "what's currently running for Job X" without scanning all
+    # work. Optional; not all enqueues are tied to a Job (yet).
+    user_job_id: str | None = None
 
 
 async def enqueue_worker_job(
@@ -68,6 +72,7 @@ async def enqueue_worker_job(
         subject_table=request.subject_table,
         subject_id=request.subject_id,
         parent_job_id=request.parent_job_id,
+        user_job_id=request.user_job_id,
         payload=payload,
         attempts=0,
         max_attempts=request.max_attempts,
