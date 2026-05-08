@@ -22,6 +22,7 @@ from oddish.schemas import (
     ExperimentCellResponse,
     ExperimentCellUpdateRequest,
     ExperimentCreateRequest,
+    ExperimentCreateResponse,
     ResolvedExperimentResponse,
 )
 
@@ -60,26 +61,50 @@ async def list_experiments(
 
 @router.post(
     "/experiments",
-    response_model=ResolvedExperimentResponse,
+    response_model=ExperimentCreateResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_experiment(
     payload: ExperimentCreateRequest,
     auth: Annotated[AuthContext, Depends(require_admin)],
-) -> ResolvedExperimentResponse:
-    """Create a new experiment with optional initial cells.
+    dry_run: bool = False,
+) -> ExperimentCreateResponse:
+    """Create a new experiment with optional initial cells, and start it.
 
-    Pure spec creation -- no trials are produced; call
-    ``POST /experiments/{id}/backfill`` afterwards to enqueue work.
+    By default, the experiment is created and a backfill is enqueued in
+    the same request -- a single ``POST /experiments`` call is enough to
+    spin up trials, matching the pre-task-first ``submit-and-it-runs``
+    API semantics that automation relies on.
+
+    Pass ``?dry_run=true`` to create the spec only (no trials enqueued);
+    call ``POST /experiments/{id}/backfill`` later to start the work.
     """
     async with get_session() as session:
-        return await create_experiment_core(
+        resolved = await create_experiment_core(
             session,
             name=payload.name,
             task_version_ids=payload.task_version_ids,
             agents=payload.agents,
             target_n_trials=payload.target_n_trials,
             org_id=auth.org_id,
+        )
+        backfill: ExperimentBackfillResponse | None = None
+        if not dry_run:
+            backfill = await backfill_experiment_core(
+                session,
+                experiment_id=resolved.experiment_id,
+                org_id=auth.org_id,
+                user_id=auth.user_id,
+            )
+            # Re-resolve so the returned cells reflect the freshly-queued trials.
+            resolved = await resolve_experiment_core(
+                session,
+                experiment_id=resolved.experiment_id,
+                org_id=auth.org_id,
+            )
+        return ExperimentCreateResponse(
+            **resolved.model_dump(),
+            backfill=backfill,
         )
 
 
