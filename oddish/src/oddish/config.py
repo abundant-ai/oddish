@@ -67,6 +67,10 @@ def normalize_model_id(model: str | None) -> str | None:
     normalized = "/".join(normalized_parts)
     if normalized in _MODEL_ABSENT_ALIASES:
         return None
+    if "/" in normalized:
+        provider_prefix, canonical = normalized.split("/", 1)
+        if provider_prefix in {"google", "palm"} and canonical.startswith("gemini"):
+            return f"gemini/{canonical}"
     return normalized
 
 
@@ -132,14 +136,6 @@ def _infer_provider_prefix(model_name: str) -> str | None:
         normalized = provider_prefix.strip().lower()
         return normalized or None
 
-    try:
-        _, llm_provider, _, _ = get_llm_provider(model=model_name)
-    except Exception:
-        llm_provider = None
-    if llm_provider:
-        normalized = str(llm_provider).strip().lower()
-        return normalized or None
-
     # Heuristic fallback for common bare model aliases.
     lowered = model_name.strip().lower()
     if lowered.startswith("gpt-") or lowered.startswith(
@@ -149,7 +145,15 @@ def _infer_provider_prefix(model_name: str) -> str | None:
     if lowered.startswith("claude"):
         return "anthropic"
     if lowered.startswith("gemini"):
-        return "google"
+        return "gemini"
+
+    try:
+        _, llm_provider, _, _ = get_llm_provider(model=model_name)
+    except Exception:
+        llm_provider = None
+    if llm_provider:
+        normalized = str(llm_provider).strip().lower()
+        return normalized or None
 
     return None
 
