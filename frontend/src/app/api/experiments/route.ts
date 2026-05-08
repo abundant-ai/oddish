@@ -61,7 +61,9 @@ export async function POST(request: Request) {
         { status: 401 },
       );
     }
-    const url = getBackendUrl("experiments", "");
+    const incoming = new URL(request.url);
+    const params = Object.fromEntries(incoming.searchParams.entries());
+    const url = getBackendUrl("experiments", "", params);
     const body = await request.text();
     const res = await fetch(url, {
       method: "POST",
