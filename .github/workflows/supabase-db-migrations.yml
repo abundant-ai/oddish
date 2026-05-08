@@ -39,17 +39,18 @@ jobs:
             exit 1
           fi
 
-      - name: Sync oddish dependencies
-        working-directory: oddish
+      # Sync only backend: it depends on `oddish[all]` (-> oddish[worker] ->
+      # oddish[server]), so the backend venv contains alembic + asyncpg +
+      # the oddish package itself. Syncing oddish/ separately would build a
+      # second venv that's missing alembic (it's in oddish's `server` extra,
+      # which `uv sync --frozen` does not install by default).
+      - name: Sync backend dependencies
+        working-directory: backend
         run: uv sync --frozen
 
       - name: Run oddish migrations
         working-directory: oddish
-        run: uv run alembic upgrade head
-
-      - name: Sync backend dependencies
-        working-directory: backend
-        run: uv sync --frozen
+        run: ../backend/.venv/bin/alembic upgrade head
 
       - name: Run backend migrations
         working-directory: backend
