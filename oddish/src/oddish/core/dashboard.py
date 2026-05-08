@@ -198,11 +198,9 @@ async def load_dashboard_experiments(
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
     trial_agg = trial_agg_query.group_by(TrialModel.experiment_id).subquery()
 
-    # Latest task author info per experiment (via task_experiments).
+    # Latest task github_meta per experiment (for last PR url/title).
     latest_task_query = select(
         task_experiments.c.experiment_id.label("experiment_id"),
-        TaskModel.user.label("last_user"),
-        TaskModel.tags["github_username"].astext.label("last_github_username"),
         TaskModel.tags["github_meta"].astext.label("last_github_meta"),
     ).select_from(
         task_experiments.join(TaskModel, TaskModel.id == task_experiments.c.task_id)  # type: ignore[arg-type]
@@ -214,6 +212,26 @@ async def load_dashboard_experiments(
             task_experiments.c.experiment_id.asc(),
             TaskModel.created_at.desc(),
             TaskModel.id.desc(),
+        )
+        .distinct(task_experiments.c.experiment_id)
+        .subquery()
+    )
+
+    # Original author per experiment: the earliest task that linked to it.
+    earliest_task_query = select(
+        task_experiments.c.experiment_id.label("experiment_id"),
+        TaskModel.user.label("author_user"),
+        TaskModel.tags["github_username"].astext.label("author_github_username"),
+    ).select_from(
+        task_experiments.join(TaskModel, TaskModel.id == task_experiments.c.task_id)  # type: ignore[arg-type]
+    )
+    if org_id is not None:
+        earliest_task_query = earliest_task_query.where(TaskModel.org_id == org_id)
+    earliest_task = (
+        earliest_task_query.order_by(
+            task_experiments.c.experiment_id.asc(),
+            TaskModel.created_at.asc(),
+            TaskModel.id.asc(),
         )
         .distinct(task_experiments.c.experiment_id)
         .subquery()
@@ -253,14 +271,17 @@ async def load_dashboard_experiments(
                 task_agg.c.last_task_created_at,
                 trial_agg.c.last_trial_created_at,
             ).label("last_created_at"),
-            latest_task.c.last_user,
-            latest_task.c.last_github_username,
+            earliest_task.c.author_user,
+            earliest_task.c.author_github_username,
             latest_task.c.last_github_meta,
         )
         .select_from(ExperimentModel)
         .outerjoin(task_agg, task_agg.c.experiment_id == ExperimentModel.id)
         .outerjoin(trial_agg, trial_agg.c.experiment_id == ExperimentModel.id)
         .outerjoin(latest_task, latest_task.c.experiment_id == ExperimentModel.id)
+        .outerjoin(
+            earliest_task, earliest_task.c.experiment_id == ExperimentModel.id
+        )
     )
     exp_filter = or_(
         task_agg.c.experiment_id.isnot(None),
@@ -279,11 +300,11 @@ async def load_dashboard_experiments(
             or_(
                 func.lower(experiment_rows.c.experiment_name).like(query_like),
                 func.lower(experiment_rows.c.experiment_id).like(query_like),
-                func.lower(func.coalesce(experiment_rows.c.last_user, "")).like(
+                func.lower(func.coalesce(experiment_rows.c.author_user, "")).like(
                     query_like
                 ),
                 func.lower(
-                    func.coalesce(experiment_rows.c.last_github_username, "")
+                    func.coalesce(experiment_rows.c.author_github_username, "")
                 ).like(query_like),
             )
         )
@@ -333,8 +354,8 @@ async def load_dashboard_experiments(
     build_started_at = now()
     for row in page_rows:
         github_meta = _parse_github_meta(row["last_github_meta"])
-        last_author_name = row["last_github_username"] or row["last_user"]
-        last_author_source = "github" if row["last_github_username"] else "api"
+        author_name = row["author_github_username"] or row["author_user"]
+        author_source = "github" if row["author_github_username"] else "api"
         total_trials = int(row["total_trials"] or 0)
         completed_trials = int(row["completed_trials"] or 0)
         failed_trials = int(row["failed_trials"] or 0)
@@ -363,9 +384,9 @@ async def load_dashboard_experiments(
                     if row["last_created_at"]
                     else None
                 ),
-                "last_author": (
-                    {"name": last_author_name, "source": last_author_source}
-                    if last_author_name
+                "author": (
+                    {"name": author_name, "source": author_source}
+                    if author_name
                     else None
                 ),
                 "last_pr_url": (

@@ -289,7 +289,7 @@ export interface DashboardExperiment {
   verdict_failed: number;
   verdict_pending: number;
   last_created_at: string | null;
-  last_author: DashboardExperimentAuthor | null;
+  author: DashboardExperimentAuthor | null;
   last_pr_url: string | null;
   last_pr_title: string | null;
   last_pr_number: string | null;

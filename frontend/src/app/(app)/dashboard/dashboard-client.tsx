@@ -1308,7 +1308,7 @@ function RecentTasksCard({
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                         <span className="text-foreground/80">
-                          {formatTaskAuthor(experiment.last_author)}
+                          {formatTaskAuthor(experiment.author)}
                         </span>
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-xs">
