@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import and_, case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -119,6 +119,13 @@ async def resolve_experiment_core(
     Per-pair ``target_n_trials`` overrides come from
     ``experiment_cells``; pairs without an override use the
     experiment's default ``target_n_trials``.
+
+    Evidence counts are scoped to trials with ``experiment_id ==
+    experiment_id``: each experiment reports its own attempts so the
+    leaderboard / pass@k chart match what users ran here, not a
+    cross-experiment equivalence pool. Trials still join on
+    ``(task_version_id, agent_equivalence_key)`` because the
+    membership tables are keyed that way.
     """
     exp = await _load_experiment(
         session, experiment_id=experiment_id, org_id=org_id
@@ -158,14 +165,31 @@ async def resolve_experiment_core(
     # filter to the membership set in Python -- the index on (tv, eq)
     # makes the wider scan cheap and avoids tuple_().in_() blowup for
     # large matrices.
+    #
+    # Trials are scoped to ``experiment_id`` so the matrix reflects
+    # *this* experiment's evidence, not a cross-experiment pool. The
+    # equivalence-key index still applies because the query filters
+    # by (experiment_id, task_version_id, agent_equivalence_key).
     tv_ids = [t.task_version_id for t in task_rows]
     eq_keys = [a.agent_equivalence_key for a in agent_rows]
 
     aggs: dict[tuple[str, str], dict[str, Any]] = {}
     if tv_ids and eq_keys:
-        succ_expr = case((TrialModel.status == TrialStatus.SUCCESS, 1), else_=0)
-        fail_expr = case((TrialModel.status == TrialStatus.FAILED, 1), else_=0)
-        run_expr = case((TrialModel.status.in_(_RUNNING_STATUSES), 1), else_=0)
+        # ``status == SUCCESS`` only means execution completed without a
+        # harness error -- a do-nothing baseline like ``nop`` runs to
+        # SUCCESS but never passes the task. For pass@k purposes the
+        # signal we want is ``reward == 1`` (the task's own pass
+        # criterion). Everything terminal that isn't a pass goes into
+        # ``failed`` so totals stay consistent (passed + failed + running
+        # == total).
+        is_pass = TrialModel.reward == 1
+        is_running = TrialModel.status.in_(_RUNNING_STATUSES)
+        succ_expr = case((is_pass, 1), else_=0)
+        fail_expr = case(
+            (and_(~is_running, func.coalesce(TrialModel.reward, 0) != 1), 1),
+            else_=0,
+        )
+        run_expr = case((is_running, 1), else_=0)
         agg_rows = (
             await session.execute(
                 select(
@@ -179,6 +203,7 @@ async def resolve_experiment_core(
                     func.max(TrialModel.finished_at).label("last_run_at"),
                 )
                 .where(
+                    TrialModel.experiment_id == experiment_id,
                     TrialModel.task_version_id.in_(tv_ids),
                     TrialModel.agent_equivalence_key.in_(eq_keys),
                 )
@@ -218,6 +243,7 @@ async def resolve_experiment_core(
                     TrialModel.created_at,
                 )
                 .where(
+                    TrialModel.experiment_id == experiment_id,
                     TrialModel.task_version_id.in_(tv_ids),
                     TrialModel.agent_equivalence_key.in_(eq_keys),
                 )
@@ -780,6 +806,7 @@ async def list_cell_trials_core(
                 TrialModel.provider,
             )
             .where(
+                TrialModel.experiment_id == experiment_id,
                 TrialModel.task_version_id == cell.task_version_id,
                 TrialModel.agent_equivalence_key == cell.agent_equivalence_key,
             )
