@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import and_, case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -175,9 +175,21 @@ async def resolve_experiment_core(
 
     aggs: dict[tuple[str, str], dict[str, Any]] = {}
     if tv_ids and eq_keys:
-        succ_expr = case((TrialModel.status == TrialStatus.SUCCESS, 1), else_=0)
-        fail_expr = case((TrialModel.status == TrialStatus.FAILED, 1), else_=0)
-        run_expr = case((TrialModel.status.in_(_RUNNING_STATUSES), 1), else_=0)
+        # ``status == SUCCESS`` only means execution completed without a
+        # harness error -- a do-nothing baseline like ``nop`` runs to
+        # SUCCESS but never passes the task. For pass@k purposes the
+        # signal we want is ``reward == 1`` (the task's own pass
+        # criterion). Everything terminal that isn't a pass goes into
+        # ``failed`` so totals stay consistent (passed + failed + running
+        # == total).
+        is_pass = TrialModel.reward == 1
+        is_running = TrialModel.status.in_(_RUNNING_STATUSES)
+        succ_expr = case((is_pass, 1), else_=0)
+        fail_expr = case(
+            (and_(~is_running, func.coalesce(TrialModel.reward, 0) != 1), 1),
+            else_=0,
+        )
+        run_expr = case((is_running, 1), else_=0)
         agg_rows = (
             await session.execute(
                 select(
