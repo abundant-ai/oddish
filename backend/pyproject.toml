@@ -2,7 +2,7 @@
 name = "oddish-app"
 version = "0.1.0"
 description = "Cloud deployment layer for Oddish - Modal API with multi-tenant auth"
-requires-python = ">=3.14"
+requires-python = ">=3.13,<3.14"
 
 # All direct runtime dependencies are pinned to exact versions for
 # supply-chain security.  Upgrades happen via ``uv lock --upgrade-package
@@ -46,3 +46,7 @@ dev = [
 
 [tool.uv.sources]
 oddish = { path = "../oddish", editable = true }
+# Mirror oddish's harbor source so the backend's own resolution also
+# pulls harbor from the rishidesai/harbor fork (uv does not inherit
+# sources from transitive dependencies).
+harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }

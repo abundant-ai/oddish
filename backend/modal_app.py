@@ -67,6 +67,13 @@ WORKER_MAX_CONTAINERS = _env_int(
     256,
 )  # High global cap so several queue keys can scale, but still not unbounded.
 
+# Mark single-job worker containers as non-preemptible so Modal does not
+# interrupt long-running trials / analyses / verdicts mid-execution. Modal
+# applies a 3x CPU+memory price multiplier when this is enabled
+# (https://modal.com/docs/guide/preemption); keep it env-flagged so previews
+# or experiments can opt out.
+WORKER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_WORKER_NONPREEMPTIBLE", True)
+
 # Max number of workers spawned per poll cycle (rate limiter, global across all queue_keys)
 MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 24)
 

@@ -73,6 +73,7 @@ async def initialize_task_upload(
     org_id: str | None = None,
     content_hash: str,
     message: str | None = None,
+    force_new_version: bool = False,
 ) -> TaskUploadInitResponse:
     """Prepare a task upload and return direct-upload details when supported."""
     normalized_name = _normalize_task_name(task_name)
@@ -86,7 +87,8 @@ async def initialize_task_upload(
         )
 
         if (
-            latest is not None
+            not force_new_version
+            and latest is not None
             and latest.content_hash
             and latest.content_hash == content_hash
         ):
