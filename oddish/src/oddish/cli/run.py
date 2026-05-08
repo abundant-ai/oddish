@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import getpass
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -160,7 +159,7 @@ def run(
         typer.Option(
             "--user",
             "-u",
-            help="User name (defaults to OS username)",
+            help="Override the task author (defaults to your authenticated identity).",
         ),
     ] = None,
     github_user: Annotated[
@@ -259,6 +258,17 @@ def run(
             help="Force rebuild the environment Docker image",
         ),
     ] = None,
+    force_new_version: Annotated[
+        bool,
+        typer.Option(
+            "--force-new-version",
+            help=(
+                "Allocate a new task version even when the local content is "
+                "unchanged from the latest existing version. Useful when "
+                "appending trials with a different run_analysis setting."
+            ),
+        ),
+    ] = False,
     agent_env: Annotated[
         Optional[list[str]],
         typer.Option(
@@ -458,10 +468,6 @@ def run(
     if not experiment_id and not existing_task_ids:
         experiment_id = generate_experiment_name()
 
-    # Default user to OS username
-    if not user:
-        user = getpass.getuser()
-
     if environment is None and not existing_task_ids:
         environment = EnvironmentType.MODAL if is_modal_api else EnvironmentType.DOCKER
     elif (
@@ -536,6 +542,7 @@ def run(
             quiet=quiet,
             json_output=json_output,
             progress_label="Uploading",
+            force_new_version=force_new_version,
         )
         for task_path, result in zip(task_paths, upload_results):
             is_existing = bool(result.get("existing_task", False))

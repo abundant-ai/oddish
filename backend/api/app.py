@@ -130,6 +130,7 @@ def create_app() -> FastAPI:
         dashboard,
         experiments,
         github_webhooks,
+        imports,
         jobs,
         orgs,
         public,
@@ -144,6 +145,7 @@ def create_app() -> FastAPI:
     api.include_router(github_webhooks.router)
     api.include_router(tasks.router)
     api.include_router(trials.router)
+    api.include_router(imports.router)
     api.include_router(jobs.router)
     api.include_router(experiments.router)
     api.include_router(public.router)

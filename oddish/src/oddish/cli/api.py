@@ -334,17 +334,41 @@ def _upload_to_presigned_url(
 ) -> None:
     upload_headers = dict(headers)
     upload_headers.setdefault("Content-Length", str(tarball_path.stat().st_size))
+    retry_status_codes = {408, 425, 429, 500, 502, 503, 504}
+    max_attempts = 3
+
     with httpx.Client(timeout=600.0, follow_redirects=True) as upload_client:
-        response = upload_client.put(
-            url,
-            headers=upload_headers,
-            content=tarball_path.read_bytes(),
-        )
-    if response.status_code not in {200, 201, 204}:
-        error_console.print(
-            f"[red]Failed to upload task directly to storage:[/red] {response.text}"
-        )
-        raise typer.Exit(1)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with tarball_path.open("rb") as tarball:
+                    response = upload_client.put(
+                        url,
+                        headers=upload_headers,
+                        content=tarball,
+                    )
+            except httpx.TransportError as exc:
+                if attempt >= max_attempts:
+                    error_console.print(
+                        "[red]Failed to upload task directly to storage after "
+                        f"{max_attempts} attempts:[/red] {exc}"
+                    )
+                    raise typer.Exit(1) from exc
+                time.sleep(min(2 ** (attempt - 1), 5))
+                continue
+
+            if response.status_code in {200, 201, 204}:
+                return
+
+            if (
+                response.status_code not in retry_status_codes
+                or attempt >= max_attempts
+            ):
+                error_console.print(
+                    f"[red]Failed to upload task directly to storage:[/red] {response.text}"
+                )
+                raise typer.Exit(1)
+
+            time.sleep(min(2 ** (attempt - 1), 5))
 
 
 def upload_task(
@@ -355,6 +379,7 @@ def upload_task(
     message: str | None = None,
     user: str | None = None,
     priority: str | None = None,
+    force_new_version: bool = False,
 ) -> dict:
     """Upload a task directory to the API.
 
@@ -380,6 +405,8 @@ def upload_task(
     }
     if message:
         init_body["message"] = message
+    if force_new_version:
+        init_body["force_new_version"] = True
 
     try:
         with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
@@ -457,6 +484,7 @@ def upload_tasks_with_progress(
     quiet: bool = False,
     json_output: bool = False,
     progress_label: str = "Uploading",
+    force_new_version: bool = False,
 ) -> list[dict]:
     """Upload a batch of task directories with a shared progress bar.
 
@@ -477,6 +505,7 @@ def upload_tasks_with_progress(
             message=message,
             user=user,
             priority=priority,
+            force_new_version=force_new_version,
         )
 
     show_progress = not quiet and not json_output
@@ -533,7 +562,7 @@ def submit_sweep(
     task_id: str,
     configs: list[dict],
     environment: EnvironmentType | None,
-    user: str,
+    user: str | None,
     priority: str,
     experiment_id: str | None,
     run_analysis: bool = False,
@@ -593,10 +622,11 @@ def submit_sweep(
     payload: dict = {
         "task_id": task_id,
         "configs": configs,
-        "user": user,
         "priority": priority,
         "run_analysis": run_analysis,
     }
+    if user:
+        payload["user"] = user
     if experiment_id:
         payload["experiment_id"] = experiment_id
     if env_value is not None:
@@ -735,6 +765,27 @@ def trial_result_to_import_spec(
     agent_info = trial_result.agent_info
     model_info = agent_info.model_info
 
+    # Prefer the fully-qualified ``provider/model`` string from the
+    # trial's harbor config so imported rows land in the same model
+    # bucket as live ones. ``ModelInfo.name`` is the canonical name
+    # *without* the provider prefix (Harbor splits provider into a
+    # separate field), so falling back to it would file
+    # ``anthropic/claude-opus-4-7`` under ``claude-opus-4-7`` and split
+    # it from the live trials in the dashboard.
+    config_agent = getattr(trial_result.config, "agent", None)
+    config_model_name = (
+        getattr(config_agent, "model_name", None) if config_agent else None
+    )
+    if config_model_name:
+        model_id: str | None = config_model_name
+    elif model_info is not None:
+        if model_info.provider:
+            model_id = f"{model_info.provider}/{model_info.name}"
+        else:
+            model_id = model_info.name
+    else:
+        model_id = None
+
     reward: float | None = None
     if trial_result.verifier_result and trial_result.verifier_result.rewards:
         raw = trial_result.verifier_result.rewards.get("reward")
@@ -784,7 +835,7 @@ def trial_result_to_import_spec(
 
     return {
         "agent": agent_info.name,
-        "model": model_info.name if model_info is not None else None,
+        "model": model_id,
         "status": status,
         "reward": reward,
         "error_message": error_message,

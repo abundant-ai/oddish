@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import RedirectResponse
 from oddish.core.endpoints import (
+    delete_trial_core,
     get_trial_by_index_core,
     get_task_for_org_core,
     get_trial_for_org_core,
@@ -28,7 +29,8 @@ from oddish.core.public_helpers import (
     list_trial_files_s3,
     presign_trial_file_s3,
 )
-from auth import APIKeyScope, AuthContext, require_auth
+from oddish.db.storage import delete_s3_prefixes
+from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from oddish.db import (
     TrialModel,
     get_session,
@@ -131,6 +133,40 @@ async def retry_trial(
 
     async with get_session() as session:
         return await retry_trial_core(session, trial_id=trial_id, org_id=auth.org_id)
+
+
+@router.delete("/trials/{trial_id}")
+async def delete_trial(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> dict:
+    """Delete a single trial (DB row + S3 artifacts).
+
+    Admin-only. Cancels in-flight worker_jobs for the trial and
+    invalidates the parent task's cached verdict so dashboards stop
+    reflecting the deleted row.
+    """
+    async with get_session() as session:
+        result = await delete_trial_core(session, trial_id=trial_id, org_id=auth.org_id)
+        await session.commit()
+
+    s3_prefixes = result.get("s3_prefixes", []) or []
+    s3_keys_deleted = 0
+    if s3_prefixes:
+        try:
+            s3_keys_deleted = await delete_s3_prefixes(s3_prefixes)
+        except Exception as exc:  # pragma: no cover - best-effort cleanup
+            logger.warning(
+                "Trial %s row deleted, but S3 cleanup failed: %s",
+                trial_id,
+                exc,
+            )
+
+    return {
+        "deleted": result.get("deleted", {"trial_id": trial_id}),
+        "s3_prefixes": s3_prefixes,
+        "s3_keys_deleted": s3_keys_deleted,
+    }
 
 
 @router.post("/trials/{trial_id}/analysis/retry")

@@ -27,7 +27,6 @@ upload a task first and import against it in one command.
 
 from __future__ import annotations
 
-import getpass
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -131,7 +130,7 @@ def upload(
         typer.Option(
             "--user",
             "-u",
-            help="User name to attribute the uploaded task to (defaults to OS username)",
+            help="Override the task author (defaults to your authenticated identity).",
         ),
     ] = None,
     priority: Annotated[
@@ -345,9 +344,6 @@ def _run_task_upload(
         quiet=quiet,
     )
 
-    if not user:
-        user = getpass.getuser()
-
     # Step 2 (shared with ``oddish run``): upload each archive and
     # register the TaskModel. ``oddish upload`` always uses
     # ``register=True`` so the task becomes browsable even without
@@ -453,8 +449,6 @@ def _run_trial_import(
 
     # One-shot: upload the task alongside the trial import.
     if path_option is not None:
-        if not user:
-            user = getpass.getuser()
         if not quiet:
             console.print(f"[dim]Uploading task from {path_option}...[/dim]")
         upload_result = upload_task(

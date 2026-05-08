@@ -161,7 +161,10 @@ class TaskSubmission(BaseModel):
         description="Human-readable task name (derived from task_path if not provided)",
     )
     trials: list[TrialSpec] = Field(..., description="List of trials to run")
-    user: str = Field(..., description="Submitting user")
+    user: str | None = Field(
+        None,
+        description="Submitting user (resolved server-side from auth when omitted)",
+    )
     priority: Priority = Field(Priority.LOW, description="Priority: 'high' or 'low'")
     experiment_id: str | None = Field(None, description="Optional experiment ID")
     tags: dict[str, str] = Field(default_factory=dict, description="Optional tags")
@@ -233,7 +236,10 @@ class TaskSweepSubmission(BaseModel):
     )
 
     # Common fields
-    user: str = Field(..., description="Submitting user")
+    user: str | None = Field(
+        None,
+        description="Submitting user (resolved server-side from auth when omitted)",
+    )
     priority: Priority = Field(Priority.LOW, description="Priority: 'high' or 'low'")
     experiment_id: str | None = Field(None, description="Optional experiment ID")
     tags: dict[str, str] = Field(default_factory=dict, description="Optional tags")
@@ -307,6 +313,14 @@ class TaskUploadInitRequest(BaseModel):
     )
     message: str | None = Field(
         None, description="Optional description of what changed in this version"
+    )
+    force_new_version: bool = Field(
+        False,
+        description=(
+            "Allocate a new task version even when the content hash matches the "
+            "latest existing version. Used when callers need a fresh version "
+            "stamp (e.g. to flip run_analysis on)."
+        ),
     )
 
 

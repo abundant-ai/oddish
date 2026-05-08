@@ -36,6 +36,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ImportDialog } from "@/components/import-dialog";
 import { fetcher } from "@/lib/api";
 import type {
   TaskAgentSummary,
@@ -732,10 +733,8 @@ export function TasksPageClient({
     urlTagMatch,
   ]);
 
-  const { data, error, isLoading, isValidating } = useSWR<TaskBrowseResponse>(
-    swrKey,
-    fetcher,
-    {
+  const { data, error, isLoading, isValidating, mutate } =
+    useSWR<TaskBrowseResponse>(swrKey, fetcher, {
       refreshInterval: 60000,
       revalidateOnFocus: false,
       keepPreviousData: true,
@@ -749,8 +748,7 @@ export function TasksPageClient({
         urlTags.length === 0
           ? (initialData ?? undefined)
           : undefined,
-    },
-  );
+    });
 
   const items = data?.items ?? [];
   const hasMore = data?.has_more ?? false;
@@ -937,6 +935,7 @@ export function TasksPageClient({
                 <option value="trials">Sort: trials</option>
                 <option value="version">Sort: versions</option>
               </select>
+              <ImportDialog onImported={() => mutate()} />
             </div>
           </CardHeader>
           <CardContent className="space-y-3">

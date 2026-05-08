@@ -69,8 +69,8 @@ oddish run ./my-task -c sweep.yaml
 - `--env`, `-e` - Execution environment: `docker`, `daytona`, `e2b`, `modal`, `runloop`, or `gke`
 - `--priority`, `-P TEXT` - Queue priority, typically `low` or `high`
 - `--experiment`, `-E TEXT` - Reuse or create an experiment ID/name
-- `--user`, `-u TEXT` - Override the user name attached to the run
-- `--github-user`, `-G TEXT` - GitHub user attribution for CI metadata
+- `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.
+- `--github-user`, `-G TEXT` - GitHub user attribution for CI metadata. When omitted, the backend auto-fills this from the authenticated user's Clerk-linked GitHub username (if any) so CI-style attribution still works.
 - `--github-meta TEXT` - JSON metadata blob to attach to the task
 - `--publish` - Publish the experiment for public read-only access
 - `--watch/--no-watch`, `-w` - Watch progress after submission; enabled by default
@@ -256,3 +256,32 @@ oddish delete --experiment <experiment_id>
 - `--api-url`, `-u TEXT` - Override the API URL
 
 </details>
+
+
+## Drag-and-drop import (UI)
+
+The dashboard's **Tasks** page has an **Import** button next to the
+search input that opens the same flow as `oddish upload`, but driven
+from the browser. Drop one or both of:
+
+- a Harbor task zip (e.g. `zip -r my-task.zip my-task`)
+- a Harbor run zip — either a single job dir (with `result.json`) or a
+  parent dir of job dirs
+
+The dialog accepts:
+
+- **Task only** → registers a new task version (or no-op when content
+  is unchanged).
+- **Run only** → imports every Harbor trial in the zip into the target
+  task ID you provide.
+- **Task + run** → uploads the task first, then imports the trials
+  against it (the UI equivalent of `oddish upload ./jobs --path
+  ./my-task`).
+
+The optional **Experiment name** field maps to `--experiment`; leaving
+it blank auto-generates a fresh experiment, matching the CLI default.
+**Skip artifacts** maps to `--skip-artifacts`. Re-uploading the same
+task content is idempotent — content-hash unchanged → no new version.
+
+For very large archives or scripted/CI flows, prefer the CLI: the UI
+caps each uploaded zip at 1 GiB.

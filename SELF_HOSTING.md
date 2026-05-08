@@ -24,7 +24,7 @@ jump to whichever workflow you need.
 
 ## Prerequisites
 
-- Python `3.14+` and [`uv`](https://docs.astral.sh/uv/)
+- Python `3.13` and [`uv`](https://docs.astral.sh/uv/)
 - Node.js `20+` and `pnpm`
 - [Modal](https://modal.com) account + CLI (`modal`)
 - A Postgres connection string

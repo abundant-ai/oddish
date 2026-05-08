@@ -268,6 +268,16 @@ class Settings(BaseSettings):
     s3_bucket: str = "data"
     s3_region: str = "us-east-1"
 
+    # Sauron S3 mirror (optional, disabled when bucket is empty).
+    # When configured, oddish workers also upload trial artifacts to sauron's
+    # AWS S3 bucket in sauron's expected directory layout, allowing sauron's
+    # frontend to render oddish-originated experiments natively.
+    # Uses AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY from environment for credentials.
+    sauron_s3_bucket: str = ""
+    # Org slug used as the top-level path segment for non-PR (CLI-triggered)
+    # experiments. PR-triggered runs derive owner/repo from task.tags.github_meta.
+    sauron_s3_org: str = "oddish"
+
     # Task upload limits (MB)
     max_task_upload_mb: int = 50
 
