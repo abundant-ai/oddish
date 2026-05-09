@@ -1,15 +1,16 @@
 # Oddish Backend
 
-Serverless API and worker orchestration for Oddish Cloud, deployed on [Modal](https://modal.com), with multi-tenant authentication and authorization.
+Worker orchestration for Oddish Cloud, deployed on [Modal](https://modal.com). The HTTP API source lives here under `api/` but is **deployed from Vercel** as a Python serverless function — see [`frontend/api/oddish.py`](../frontend/api/oddish.py) and [`frontend/vercel.json`](../frontend/vercel.json). Co-locating the API with the Next.js frontend on the same Vercel deployment is what makes frontend/API rollouts atomic; the prior split (Vercel frontend + Modal API) caused outages whenever one side deployed before the other.
 
 ## Overview
 
 The backend wraps the OSS `oddish` core with:
-- Multi-tenant API (`org_id`-scoped queries)
+- Multi-tenant API (`org_id`-scoped queries) — **served by Vercel Python function**
 - Dual auth (API keys + Clerk JWTs)
-- Modal-hosted API/workers/sandboxes, or Railway/Docker for standalone deployment
+- Modal-hosted **worker** containers and sandboxes (dispatcher + single-job)
 - Queue-key concurrency controls
 - Public token-based sharing endpoints
+- Railway/Docker for standalone (non-Vercel/non-Modal) self-hosting
 
 ## System Architecture
 
@@ -19,9 +20,10 @@ The backend wraps the OSS `oddish` core with:
 User (Dashboard, CLI, SDK)
   │
   ▼
-Modal API (FastAPI in `endpoints.py` and `api/routers/*`)
+Vercel Python function (FastAPI from `api/routers/*` via `frontend/api/oddish.py`)
   │  - Auth: API key or Clerk JWT
   │  - Enqueues trial / analysis / verdict work as worker_jobs rows
+  │  - Cancels in-flight Modal function calls via the Modal SDK
   ▼
 Postgres
   - worker_jobs   (unified queue; TRIAL / ANALYSIS / VERDICT)
@@ -30,7 +32,7 @@ Postgres
   + cloud tables  (orgs / users / api_keys)
   │
   ▼
-Worker dispatcher (`worker/functions.py::poll_queue`, every 180s)
+Worker dispatcher on Modal (`worker/functions.py::poll_queue`, every 180s)
   │  - Runs unified cleanup (stale-heartbeat + stage safety nets)
   │  - Discovers active queue keys from worker_jobs
   │  - Spawns single-job Modal containers per queue key
@@ -113,10 +115,11 @@ The API layer enforces this scope in all list/read/write queries.
 
 | Path | Purpose |
 |------|---------|
-| `deploy.py` | Modal app entrypoint (imports API + worker functions) |
+| `deploy.py` | Modal app entrypoint (registers worker functions; gated legacy API import behind `ODDISH_ENABLE_MODAL_API`) |
 | `modal_app.py` | Modal image, bucket mounts, and shared runtime setup |
-| `endpoints.py` | Modal ASGI app function with concurrency and secrets wiring |
-| `serve.py` | Railway/uvicorn entrypoint for non-Modal deployment |
+| `endpoints.py` | Legacy Modal ASGI app function — kept for one-flag rollback (`ODDISH_ENABLE_MODAL_API=1`); production traffic now hits Vercel |
+| `serve.py` | Railway/uvicorn entrypoint for non-Modal/non-Vercel self-hosting |
+| `../frontend/api/oddish.py` | **Vercel Python serverless function entrypoint** — imports `api.app.create_app()` from this directory and exposes it as the production API |
 | `Dockerfile` | Container image for Railway or standalone deployment |
 | `cloud_policy.py` | Hosted-only environment policy (allowed sandboxes, default cloud env) |
 | `api/app.py` | FastAPI app factory + startup/lifespan wiring |
@@ -180,11 +183,12 @@ Common optional settings:
 Modal runtime knobs are read directly by `modal_app.py`, including:
 
 - `ODDISH_ENABLE_MODAL_WORKERS`
-- `ODDISH_MODAL_API_MIN_CONTAINERS`
-- `ODDISH_MODAL_API_BUFFER_CONTAINERS`
-- `ODDISH_MODAL_API_MAX_CONTAINERS`
-- `ODDISH_MODAL_API_CONCURRENCY_TARGET`
-- `ODDISH_MODAL_API_CONCURRENCY_MAX`
+- `ODDISH_ENABLE_MODAL_API` — defaults to off post-migration; set to `1` to re-register the legacy Modal ASGI app for emergency rollback
+- `ODDISH_MODAL_API_MIN_CONTAINERS` (only honored when `ODDISH_ENABLE_MODAL_API=1`)
+- `ODDISH_MODAL_API_BUFFER_CONTAINERS` (ditto)
+- `ODDISH_MODAL_API_MAX_CONTAINERS` (ditto)
+- `ODDISH_MODAL_API_CONCURRENCY_TARGET` (ditto)
+- `ODDISH_MODAL_API_CONCURRENCY_MAX` (ditto)
 - `ODDISH_MODAL_WORKER_TIMEOUT_SECONDS`
 - `ODDISH_MODAL_WORKER_MIN_CONTAINERS`
 - `ODDISH_MODAL_WORKER_BUFFER_CONTAINERS`
@@ -320,29 +324,40 @@ cd backend
 uv sync
 ```
 
-```bash
-# Backend only (Modal local serve)
-cd backend
-uv run modal serve deploy.py
-```
-
-For full-stack local development, run the Modal backend and point the frontend at it:
+Three local options for the API now that production runs on Vercel:
 
 ```bash
-# Terminal 1 — backend
+# Option 1 — uvicorn (matches Railway / production-without-Vercel)
 cd backend
-uv run modal serve deploy.py
+uv run uvicorn serve:api --reload --port 8000
 
-# Terminal 2 — frontend
+# Option 2 — Vercel emulation (closest to production Vercel runtime)
 cd frontend
-pnpm dev
+vercel dev   # runs Next.js + frontend/api/oddish.py at http://localhost:3000
+
+# Option 3 — Modal local serve (only useful while the legacy Modal API
+#            is still around as the rollback path; gate it on
+#            ODDISH_ENABLE_MODAL_API=1 to actually register the ASGI fn)
+cd backend
+ODDISH_ENABLE_MODAL_API=1 uv run modal serve deploy.py
 ```
 
-Set `NEXT_PUBLIC_API_URL` in `frontend/.env.local` to the `modal serve` URL
-(printed by Terminal 1, e.g. `https://<workspace>--api-dev.modal.run`). See
-`frontend/env.example` for the full frontend env surface, and
-[`../SELF_HOSTING.md`](../SELF_HOSTING.md) for the HTTPS / production-Clerk
-variant of this loop.
+For Option 1, set `NEXT_PUBLIC_API_URL=http://localhost:8000` in `frontend/.env.local`. For Option 2, leave `NEXT_PUBLIC_API_URL` unset — the resolver in `frontend/src/lib/backend-config.ts` will route through `/py-api/*` automatically. See `frontend/env.example` for the full frontend env surface, and [`../SELF_HOSTING.md`](../SELF_HOSTING.md) for the HTTPS / production-Clerk variant of this loop.
+
+## Vercel migration & rollback
+
+The HTTP API moved from a Modal ASGI function to a Vercel Python serverless function so the frontend bundle and API ship as one atomic Vercel deployment. To roll out / roll back:
+
+**Roll out (operator checklist)**
+
+1. Enable *Project Settings → Build & Development → Include source files outside of the Root Directory* on the Vercel project (lets `frontend/vercel.json`'s `includeFiles` reach `../backend/**` and `../oddish/src/**`).
+2. Add the env vars listed in [`frontend/README.md` → Deployment → Vercel](../frontend/README.md#vercel-frontend--api-together) to the Vercel project (production scope; preview scope inherits).
+3. Push to `main`. Vercel auto-deploys frontend + API atomically; `.github/workflows/modal-deploy.yml` deploys workers; `.github/workflows/supabase-db-migrations.yml` applies Alembic.
+
+**Roll back (emergency)**
+
+1. Set `ODDISH_ENABLE_MODAL_API=1` in the Modal `oddish-prod` secret and rerun `.github/workflows/modal-deploy.yml`. This re-registers `endpoints.api_app` so the historical Modal API URL works again.
+2. Set `NEXT_PUBLIC_API_URL` on the Vercel project to the Modal API URL. The frontend's resolver prefers `NEXT_PUBLIC_API_URL` over `$VERCEL_URL/py-api`, so traffic flips to Modal on the next Vercel deploy (or via *Redeploy* on the existing one).
 
 ### Smoke tests
 

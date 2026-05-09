@@ -78,16 +78,26 @@ pnpm format:check  # Check Prettier formatting
 
 The frontend uses server-side route handlers in `src/app/api/*` as the boundary between browser code and the backend. Browser components call internal Next.js routes, and those handlers resolve the real backend URL and forward auth headers when needed.
 
-Request flow:
+Request flow (production, post-Vercel migration):
 
 ```text
 Browser UI
   -> Next.js pages and client components
   -> Next.js route handlers in src/app/api/*
-  -> backend API (FastAPI or Modal)
+  -> Vercel Python function at /py-api/* (api/oddish.py)
+     [same Vercel deployment -> deploys atomically with the SPA bundle]
+  -> Postgres / S3 / Modal worker queue (worker_jobs table)
 ```
 
-The backend URL is configured via a single `NEXT_PUBLIC_API_URL` env variable in `src/lib/backend-config.ts`. Set it to `http://localhost:8000` for local development or to a deployed API URL for staging/production.
+The HTTP API is the FastAPI app from `backend/api/`, deployed as a Vercel Python serverless function via [`api/oddish.py`](./api/oddish.py) and [`vercel.json`](./vercel.json). The Modal app continues to host the worker dispatcher and single-job worker containers (which can't run on Vercel); the API and workers communicate exclusively through the Postgres `worker_jobs` queue.
+
+The backend URL is resolved by `src/lib/backend-config.ts` in this priority order:
+
+1. `NEXT_PUBLIC_API_URL` (explicit override)
+2. `https://$VERCEL_URL/py-api` (auto on Vercel — keeps frontend/API on the same deployment)
+3. `http://localhost:8000` (local uvicorn fallback)
+
+Setting up `NEXT_PUBLIC_API_URL` is only necessary for local development or for pointing at a different backend (e.g. staging).
 
 Global client-side fetching defaults live in `src/app/providers.tsx`, which installs an `SWRConfig` with deduping and conservative revalidation settings for the entire app.
 
@@ -164,12 +174,40 @@ pnpm dev
 
 ## Deployment
 
-`next.config.ts` enables `output: "standalone"`, and the checked-in `Dockerfile` builds a production container around the generated standalone server:
+### Vercel (frontend + API together)
+
+The frontend and the Python API ship as a single Vercel deployment. Two pieces of one-time Vercel project config make this work:
+
+1. **Project root**: leave at `frontend/`.
+2. **Include source files outside of the Root Directory**: enable this in *Project Settings → General → Build & Development Settings*. The Python function's `includeFiles` glob in `vercel.json` reaches `../backend/**` and `../oddish/src/**`, which requires this toggle.
+
+Required env vars on the Vercel project (set under *Project Settings → Environment Variables*; mark DB / API keys as *Sensitive*):
+
+| Var                          | Notes                                                               |
+| ---------------------------- | ------------------------------------------------------------------- |
+| `ODDISH_DATABASE_URL`        | Production Supabase / Postgres URL (production scope only — preview is overridden per-PR by `modal-preview.yml`). |
+| `CLERK_DOMAIN`               | Same value backend used on Modal.                                   |
+| `CLERK_SECRET_KEY`           | Required for Clerk org / user provisioning.                         |
+| `CLERK_WEBHOOK_SECRET`       | Required if `/webhooks/clerk` is enabled.                           |
+| `CLERK_ISSUER`, `CLERK_JWT_AUDIENCE` | Optional Clerk overrides.                                   |
+| `ODDISH_S3_BUCKET`, `ODDISH_S3_REGION`, `ODDISH_S3_ACCESS_KEY`, `ODDISH_S3_SECRET_KEY`, `ODDISH_S3_ENDPOINT_URL` | S3 storage (full set required).                       |
+| `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | Used by `_cancel_modal_function_calls` in `tasks.py`.    |
+| `CORS_ALLOWED_ORIGINS`       | Comma-separated allowlist of dashboard origins.                     |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DAYTONA_API_KEY` | Provider keys (mirror Modal secret).                  |
+| `GITHUB_TOKEN`, `ODDISH_DASHBOARD_URL` | GitHub notifier integration.                              |
+
+Production deploys flow through Vercel's Git integration: pushing to `main` triggers a Vercel deploy automatically. Database migrations run independently in [`.github/workflows/supabase-db-migrations.yml`](../.github/workflows/supabase-db-migrations.yml) on the same push.
+
+### Frontend Docker image
+
+`next.config.ts` enables `output: "standalone"`, and the checked-in `Dockerfile` builds a production container around the generated standalone server (useful for Railway-style self-hosting where Vercel isn't an option):
 
 ```bash
 docker build -t oddish-frontend .
 docker run --rm -p 3000:3000 --env-file .env.local oddish-frontend
 ```
+
+When self-hosting outside Vercel, set `NEXT_PUBLIC_API_URL` explicitly to the backend URL (e.g. a Railway-deployed `serve:api` process) — `VERCEL_URL` is only set in the Vercel runtime.
 
 ### Use Clerk production keys locally
 

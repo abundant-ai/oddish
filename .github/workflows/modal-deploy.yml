@@ -1,5 +1,14 @@
 name: Modal Deploy
 
+# Post-migration scope: this workflow only deploys *worker* containers
+# (dispatcher + single-job workers) to Modal. The HTTP API now ships
+# from Vercel via ``frontend/api/oddish.py``; see
+# ``.github/workflows/vercel-deploy.yml`` for the API/frontend deploy.
+#
+# ``backend/deploy.py`` skips registering the legacy Modal ASGI
+# function unless ``ODDISH_ENABLE_MODAL_API=1`` is set, so the same
+# entrypoint stays usable as an emergency rollback.
+
 on:
   push:
     branches:
@@ -36,16 +45,17 @@ jobs:
       - name: Sync backend dependencies
         run: uv sync --frozen
 
-      - name: Deploy Modal backend
+      - name: Deploy Modal workers
         run: uv run modal deploy deploy.py
 
       - name: Summarize deployment
         run: |
           {
-            echo "## Modal deployment"
+            echo "## Modal worker deployment"
             echo
-            echo "- Backend entrypoint: \`backend/deploy.py\`"
+            echo "- Backend entrypoint: \`backend/deploy.py\` (workers only)"
             echo "- Modal environment: \`main\`"
             echo "- Trigger: push to \`main\`"
             echo "- Commit: \`${{ github.sha }}\`"
+            echo "- HTTP API now ships via Vercel; see \`vercel-deploy.yml\`."
           } >> "$GITHUB_STEP_SUMMARY"

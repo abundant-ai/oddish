@@ -12,6 +12,16 @@ concurrency:
   group: modal-preview-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Post-migration scope: this workflow only deploys *worker* containers
+# to Modal. The HTTP API now lives at ``frontend/api/oddish.py`` and is
+# served by the same Vercel preview as the Next.js frontend, so the
+# old "deploy API to Modal -> wait for /openapi.json -> override
+# NEXT_PUBLIC_API_URL on Vercel -> redeploy Vercel" dance is gone.
+#
+# The Vercel preview still needs the per-PR ``ODDISH_DATABASE_URL`` so
+# its Python function hits the correct Supabase preview branch; that's
+# what the "Point Vercel preview to preview DB" step does.
+
 jobs:
   deploy-preview:
     if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
@@ -31,9 +41,6 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
       VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
-      ODDISH_MODAL_API_MIN_CONTAINERS: "1"
-      ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
-      ODDISH_MODAL_API_MAX_CONTAINERS: "2"
       ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
@@ -89,84 +96,16 @@ jobs:
           SQL
 
       - name: Create per-PR Modal database secret
+        # Workers running on Modal still need the per-PR DB URL so they
+        # claim jobs from the preview Supabase branch, not prod.
         run: |
           uv run modal secret create \
             --env "$MODAL_ENVIRONMENT" --force \
             "$MODAL_APP_NAME-db" \
             "ODDISH_DATABASE_URL=$ODDISH_DATABASE_URL"
 
-      - name: Deploy preview backend
-        id: deploy_modal
-        run: |
-          deploy_log="$(mktemp)"
-          uv run modal deploy deploy.py 2>&1 | tee "$deploy_log"
-          modal_api_url="$(python - "$deploy_log" "$MODAL_APP_NAME" <<'PY'
-          import pathlib
-          import re
-          import sys
-
-          log_path = pathlib.Path(sys.argv[1])
-          app_name = sys.argv[2]
-          text = log_path.read_text()
-
-          candidates = []
-          for line in text.splitlines():
-              if "modal.run" not in line:
-                  continue
-              if "api" not in line.lower():
-                  continue
-              match = re.search(r"https://[^\s]+\.modal\.run", line)
-              if match:
-                  candidates.append(match.group(0))
-
-          if not candidates:
-              raise SystemExit(
-                  f"Could not determine Modal API URL for {app_name} from deploy output"
-              )
-          print(candidates[-1])
-          PY
-          )"
-          echo "modal_api_url=$modal_api_url" >> "$GITHUB_OUTPUT"
-
-      - name: Wait for preview backend readiness
-        id: readiness
-        run: |
-          python - "${{ steps.deploy_modal.outputs.modal_api_url }}" <<'PY'
-          import sys
-          import time
-          import urllib.error
-          import urllib.request
-
-          base_url = sys.argv[1].rstrip("/")
-          readiness_url = f"{base_url}/openapi.json"
-          deadline = time.time() + 180
-          last_error = "no readiness response yet"
-
-          while time.time() < deadline:
-              try:
-                  with urllib.request.urlopen(readiness_url, timeout=10) as response:
-                      payload = response.read(64)
-                  if response.status == 200 and payload:
-                      print(f"Modal preview ready at {readiness_url}")
-                      break
-                  last_error = f"unexpected response: {payload!r}"
-              except urllib.error.HTTPError as exc:
-                  last_error = f"http {exc.code}"
-              except Exception as exc:  # noqa: BLE001
-                  last_error = str(exc)
-              time.sleep(5)
-          else:
-              raise SystemExit(
-                  f"Modal preview never became ready at {readiness_url}: {last_error}"
-              )
-          PY
-
-      - name: Dump Modal preview logs on readiness failure
-        if: ${{ failure() && steps.readiness.conclusion == 'failure' }}
-        continue-on-error: true
-        # `modal app logs` streams forever; bound it. `--env` is needed
-        # because the CLI ignores MODAL_ENVIRONMENT for this subcommand.
-        run: timeout --preserve-status 45s uv run modal app logs --env "$MODAL_ENVIRONMENT" --timestamps "$MODAL_APP_NAME" 2>&1 | tail -300 || true
+      - name: Deploy preview workers
+        run: uv run modal deploy deploy.py
 
       - name: Install Node
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
@@ -183,15 +122,14 @@ jobs:
         working-directory: frontend
         run: vercel pull --yes --environment=preview --git-branch="$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
 
-      - name: Point Vercel preview to Modal preview
+      - name: Point Vercel preview to preview DB
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         working-directory: frontend
-        env:
-          MODAL_API_URL: ${{ steps.deploy_modal.outputs.modal_api_url }}
-        # NEXT_PUBLIC_API_URL is the only backend URL the frontend reads
-        # (frontend/src/lib/backend-config.ts). --no-sensitive keeps it
-        # visible in the dashboard for debugging.
-        run: printf '%s' "$MODAL_API_URL" | vercel env add NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --force --no-sensitive --token="$VERCEL_TOKEN"
+        # ``ODDISH_DATABASE_URL`` is the Supabase preview branch's
+        # connection string. The Vercel Python function reads it at
+        # request time via ``oddish.config.settings``. ``--sensitive``
+        # because it embeds the DB password.
+        run: printf '%s' "$ODDISH_DATABASE_URL" | vercel env add ODDISH_DATABASE_URL preview "$VERCEL_GIT_BRANCH" --force --sensitive --token="$VERCEL_TOKEN"
 
       - name: Redeploy Vercel preview with updated env
         id: redeploy_vercel
@@ -270,9 +208,9 @@ jobs:
           {
             echo "## Preview deployment"
             echo
-            echo "- Modal API: ${{ steps.deploy_modal.outputs.modal_api_url }}"
+            echo "- Modal workers: \`$MODAL_APP_NAME\` (env: \`$MODAL_ENVIRONMENT\`)"
             if [ -n "${{ steps.redeploy_vercel.outputs.preview_url }}" ]; then
-              echo "- Vercel preview: ${{ steps.redeploy_vercel.outputs.preview_url }}"
+              echo "- Vercel preview (frontend + API): ${{ steps.redeploy_vercel.outputs.preview_url }}"
             fi
             if [ -n "${{ steps.supabase_branch.outputs.branch_ref }}" ]; then
               echo "- Supabase branch: \`${{ steps.supabase_branch.outputs.branch_ref }}\` (host: ${{ steps.supabase_branch.outputs.db_host }})"
@@ -353,4 +291,4 @@ jobs:
       - name: Remove Vercel preview overrides
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         working-directory: frontend
-        run: vercel env rm NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+        run: vercel env rm ODDISH_DATABASE_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true

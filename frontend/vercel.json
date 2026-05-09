@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/oddish.py": {
+      "runtime": "@vercel/python@4.7.0",
+      "maxDuration": 60,
+      "memory": 1024,
+      "includeFiles": "../{backend/**/*.py,backend/**/*.ini,backend/**/*.toml,oddish/src/**/*.py,oddish/pyproject.toml}"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/py-api/:path*",
+      "destination": "/api/oddish"
+    }
+  ]
+}

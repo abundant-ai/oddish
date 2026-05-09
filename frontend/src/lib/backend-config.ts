@@ -1,4 +1,33 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Resolution order for the API base URL (server-side, in proxy routes):
+//
+//  1. ``NEXT_PUBLIC_API_URL`` -- explicit override. Local dev uses this to
+//     point at ``http://localhost:8000`` (uvicorn) or a Modal serve URL.
+//     Production may set this to the public ``/py-api`` URL on the
+//     custom domain (e.g. ``https://oddish.app/py-api``) so server-side
+//     ``fetch`` calls hit the same Vercel deployment as the SPA.
+//
+//  2. ``VERCEL_URL`` -- automatic fallback when running on Vercel and no
+//     override is configured. Each deployment gets its own ``VERCEL_URL``
+//     (e.g. ``oddish-abc123.vercel.app``); routing internal calls through
+//     it guarantees the proxy hits the *same* deployment as the frontend
+//     bundle that originated the request, which is what makes the
+//     migration's atomic-deploy guarantee actually hold.
+//
+//  3. ``http://localhost:8000`` -- legacy local default for ``uvicorn
+//     serve:api``.
+function resolveApiUrl(): string {
+  const explicit = process.env.NEXT_PUBLIC_API_URL;
+  if (explicit) {
+    return explicit.replace(/\/+$/, "");
+  }
+  const vercelUrl = process.env.VERCEL_URL;
+  if (vercelUrl) {
+    return `https://${vercelUrl}/py-api`;
+  }
+  return "http://localhost:8000";
+}
+
+const API_URL = resolveApiUrl();
 
 /**
  * Get the backend URL for a specific endpoint.

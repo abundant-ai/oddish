@@ -1,0 +1,50 @@
+# Python dependencies for the Vercel Python serverless function at
+# ``frontend/api/oddish.py``. Mirrors the runtime subset of
+# ``backend/pyproject.toml`` + ``oddish[server]`` (no worker / dev /
+# Modal-runtime extras).
+#
+# Pins are kept in lock-step with ``oddish/pyproject.toml`` and
+# ``backend/pyproject.toml``. When upgrading, bump in all three places
+# and re-run ``uv lock`` in the matching subproject.
+#
+# The local ``oddish`` and backend ``api/`` packages are NOT installed
+# from PyPI here -- they are bundled into the function image via
+# ``includeFiles`` in ``vercel.json`` and added to ``sys.path`` at
+# import time by ``api/oddish.py``.
+
+# --- Web framework -----------------------------------------------------
+fastapi==0.128.0
+python-multipart==0.0.21
+
+# --- Auth (Clerk JWT validation + webhook signature verification) -----
+python-jose[cryptography]==3.5.0
+svix==1.84.1
+
+# --- Database (SQLAlchemy + asyncpg, via Supavisor pooler) ------------
+sqlalchemy[asyncio]==2.0.46
+asyncpg==0.31.0
+
+# --- S3-compatible storage (presigned URLs + log streaming) -----------
+aioboto3==15.5.0
+
+# --- Modal SDK (used by /tasks cancel to terminate worker calls) ------
+modal==1.4.2
+
+# --- Generic HTTP client (JWKS fetch, GitHub webhooks, etc.) ----------
+httpx==0.28.1
+
+# --- Validation / settings (used transitively by oddish.config) -------
+pydantic==2.12.5
+pydantic-settings==2.12.0
+
+# --- Pricing table consumed by oddish.model_pricing -------------------
+litellm==1.83.14
+
+# --- Harbor (task models, agent config) ------------------------------
+# Tracked from the rishidesai/harbor fork's main branch, matching the
+# uv source declared in ``oddish/pyproject.toml``. Bump alongside
+# ``uv lock --upgrade-package harbor`` in oddish/.
+harbor @ git+https://github.com/rishidesai/harbor@main
+
+# --- pyparsing for pyiceberg compatibility (mirrors backend) ----------
+pyparsing==3.3.2
