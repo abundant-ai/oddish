@@ -1,25 +1,73 @@
+import asyncio
+import random
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import asyncpg
 
-from oddish.config import settings
+from oddish.db.connection import get_pool
+
+# Burst-tolerance for slot bookkeeping. Slot ops are the very first thing
+# every worker container does, so when Modal scales out many containers at
+# once they can hammer Supavisor's session-mode connection limit
+# simultaneously and bounce off with `MaxClientsInSessionMode`. These
+# numbers cap the wait at about 30s before bubbling the error.
+_CONNECT_RETRY_ATTEMPTS = 6
+_CONNECT_RETRY_BASE_DELAY = 0.5  # seconds
+_CONNECT_RETRY_MAX_DELAY = 8.0
+
+
+def _is_transient_connect_error(exc: BaseException) -> bool:
+    """Pool exhaustion / transient network errors that retrying may resolve."""
+    if isinstance(exc, asyncpg.exceptions.InternalServerError):
+        # Supavisor surfaces session-mode pool exhaustion as
+        # `MaxClientsInSessionMode`; treat it as transient.
+        return "MaxClientsInSessionMode" in str(exc)
+    if isinstance(
+        exc,
+        (
+            asyncpg.exceptions.TooManyConnectionsError,
+            asyncpg.exceptions.CannotConnectNowError,
+            asyncio.TimeoutError,
+            ConnectionError,
+            OSError,
+        ),
+    ):
+        return True
+    return False
 
 
 @asynccontextmanager
 async def _slot_connection() -> AsyncIterator[asyncpg.Connection]:
-    # Slot bookkeeping only needs short, one-off queries. Using direct
-    # connections here avoids keeping an extra asyncpg pool connection open for
-    # the full lifetime of every long-running Modal worker.
-    conn = await asyncpg.connect(
-        settings.asyncpg_url,
-        statement_cache_size=0,
-        server_settings=settings.asyncpg_server_settings(),
-    )
-    try:
-        yield conn
-    finally:
-        await conn.close()
+    # Acquire from the shared asyncpg pool instead of dialing a brand-new
+    # connection on every slot op. With ``ODDISH_ASYNCPG_POOL_MAX_SIZE=1``
+    # in Modal, this means one persistent connection per worker container
+    # gets reused across slot acquire/release/cleanup calls — no extra
+    # session-mode socket churn against Supavisor, and bursty cold starts
+    # no longer race to open N parallel sockets only to close them again.
+    pool = await get_pool()
+    last_exc: BaseException | None = None
+    for attempt in range(_CONNECT_RETRY_ATTEMPTS):
+        try:
+            async with pool.acquire() as conn:
+                yield conn
+                return
+        except BaseException as e:  # noqa: BLE001 — narrowed below
+            last_exc = e
+            if not _is_transient_connect_error(e):
+                raise
+            if attempt == _CONNECT_RETRY_ATTEMPTS - 1:
+                break
+            # Exponential backoff with jitter so a thundering herd of
+            # workers doesn't retry in lockstep.
+            delay = min(
+                _CONNECT_RETRY_MAX_DELAY,
+                _CONNECT_RETRY_BASE_DELAY * (2**attempt),
+            )
+            delay *= 0.5 + random.random()
+            await asyncio.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
 
 
 async def ensure_queue_slots(queue_key: str, limit: int) -> None:
