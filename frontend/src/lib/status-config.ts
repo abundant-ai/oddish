@@ -240,6 +240,20 @@ export function getRewardStyle(
 
 /**
  * Get the matrix status from a trial's status, reward, and error message.
+ *
+ * Classification rule of thumb: if the verifier ran to completion and
+ * produced a numeric reward, that reward IS the truth — even if the agent
+ * itself exited non-zero (e.g. a Claude/Gemini CLI returned exit 1 because
+ * the model refused the prompt under its Usage Policy, or hit an internal
+ * soft-timeout). Those are *agent* failures, not *harness* failures, and
+ * should land in the pass/partial/fail bucket based on the reward, not be
+ * lumped in with "container never came up" infra errors.
+ *
+ * harness-error (yellow) is reserved for cases where the trial machinery
+ * itself didn't get a clean read on the agent's work — typically:
+ *   - status === "failed" with no reward (worker crashed, image build
+ *     failed, container died before verification ran)
+ *   - status === "success" but somehow no reward came back
  */
 export function getMatrixStatus(
   trialStatus: string,
@@ -252,24 +266,36 @@ export function getMatrixStatus(
       errorMessage.includes("Agent execution timed out"));
   const hasReward = hasRewardValue(reward);
 
-  // If there's an error message, treat as harness error regardless of status,
-  // except for agent timeouts that still produced a reward.
-  if (errorMessage && !(isAgentTimeout && hasReward)) {
+  // The verifier ran and produced a reward — trust it. Any error_message
+  // attached at this point describes something that happened *during* the
+  // agent run (refusal, non-zero exit, soft timeout) but didn't prevent
+  // verification from completing.
+  if (trialStatus === "success" && hasReward) {
+    return getRewardMatrixStatus(reward);
+  }
+
+  // Agent timeout that nonetheless produced a reward: same idea — trust
+  // the reward even though the trial is marked failed.
+  if (trialStatus === "failed" && isAgentTimeout && hasReward) {
+    return getRewardMatrixStatus(reward);
+  }
+
+  // Anything else with an error message AND no usable reward = real
+  // harness/infra problem. Examples: image build failures, worker
+  // heartbeat stalled, container OOM before verifier ran, agent binary
+  // not found.
+  if (errorMessage) {
     return "harness-error";
   }
 
-  // Failed execution = harness error
+  // Failed without an error message (rare — typically cancelled): still
+  // harness-error since we have no reward to lean on.
   if (trialStatus === "failed") {
-    if (isAgentTimeout && hasReward) {
-      return getRewardMatrixStatus(reward);
-    }
     return "harness-error";
   }
 
-  // Success execution - check reward
+  // Success execution but no reward yet — still pending result.
   if (trialStatus === "success") {
-    if (hasReward) return getRewardMatrixStatus(reward);
-    // No reward yet (null/undefined) - still pending result
     return "pending";
   }
 

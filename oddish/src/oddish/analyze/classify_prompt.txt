@@ -101,6 +101,18 @@ The agent never ran properly:
 - Missing dependencies in test environment
 - Empty trajectory files
 
+**NOT HARNESS_ERROR** (these are the agent's behavior, classify as GOOD_FAILURE):
+- Agent CLI exited non-zero AFTER running (e.g. `NonZeroAgentExitCodeError`
+  with a populated trajectory — including model "Usage Policy" refusals
+  like "Claude Code is unable to respond to this request, which appears to
+  violate our Usage Policy"). The agent binary worked, the model decided
+  to refuse → `Premature Stop`.
+- Agent ran out of turns / hit its self-imposed step limit → `Premature Stop`.
+- Agent declared the task done without writing the expected artifact →
+  `Premature Stop`.
+- Agent timeout (`AgentTimeoutError`) when the verifier subsequently ran
+  → `Timeout` (under GOOD_FAILURE), not HARNESS_ERROR.
+
 ### GOOD_FAILURE (Agent's Fault - Task is Fine) ✓ DEFAULT FOR FAILURES
 Agent ran but couldn't solve it due to its own limitations. **This is the expected outcome for hard tasks.**
 - **Timeout**: Task requires many steps, agent ran out of time
