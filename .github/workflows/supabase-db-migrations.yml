@@ -41,7 +41,12 @@ jobs:
 
       - name: Sync oddish dependencies
         working-directory: oddish
-        run: uv sync --frozen
+        # alembic lives in [project.optional-dependencies] server, not the
+        # default deps; without --extra server, `uv run alembic upgrade head`
+        # below fails with "Failed to spawn: alembic". The modal-preview
+        # workflow already installs from backend/ which transitively pulls
+        # oddish[all], but this prod migration step syncs oddish/ directly.
+        run: uv sync --frozen --extra server
 
       - name: Run oddish migrations
         working-directory: oddish
