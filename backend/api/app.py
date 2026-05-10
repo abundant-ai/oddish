@@ -123,6 +123,13 @@ def create_app() -> FastAPI:
             response.headers["Server-Timing"] = combined
         return response
 
+    @api.get("/health", tags=["Health"])
+    async def health() -> dict[str, str]:
+        # Liveness probe used by the smoke-test cron and by agents that need
+        # a stable, unauthenticated, IO-free endpoint to confirm the ASGI
+        # process is up. Intentionally does not touch the DB.
+        return {"status": "ok"}
+
     from api.routers import (
         admin,
         api_keys,
