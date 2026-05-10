@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -138,3 +139,42 @@ async def test_list_experiment_trials_raises_404_for_missing_experiment():
     assert exc.value.status_code == 404
     assert "Experiment missing not found" in exc.value.detail
     assert session.statements == []
+
+
+@pytest.mark.asyncio
+async def test_list_experiment_trials_endpoint_delegates_to_core(monkeypatch):
+    from oddish import server as server_module
+
+    captured = {}
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield "session"
+
+    async def fake_list_experiment_trials_core(
+        session, *, experiment_id, limit, offset
+    ):
+        captured.update(
+            session=session,
+            experiment_id=experiment_id,
+            limit=limit,
+            offset=offset,
+        )
+        return ["trial"]
+
+    monkeypatch.setattr(server_module, "get_session", fake_get_session)
+    monkeypatch.setattr(
+        server_module,
+        "list_experiment_trials_core",
+        fake_list_experiment_trials_core,
+    )
+
+    result = await server_module.list_experiment_trials("exp-a", limit=2, offset=3)
+
+    assert result == ["trial"]
+    assert captured == {
+        "session": "session",
+        "experiment_id": "exp-a",
+        "limit": 2,
+        "offset": 3,
+    }
