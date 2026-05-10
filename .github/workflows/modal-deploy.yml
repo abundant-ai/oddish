@@ -39,6 +39,21 @@ jobs:
       - name: Deploy Modal backend
         run: uv run modal deploy deploy.py
 
+      - name: Smoke test deployed API
+        # `modal deploy` exiting 0 isn't enough — it can succeed while
+        # leaving cold-starts broken (function references a Modal secret
+        # that doesn't exist; warm containers keep serving but new ones
+        # crash). The /public/experiments/{token}/tasks call exercises
+        # the ORM cascade that today's schema-drift incident broke, so a
+        # 200 here proves: ASGI alive + DB reachable + schema matches.
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -e
+          sleep 10
+          URL=https://abundant-ai--api.modal.run
+          token=$(curl -fsS -m 10 "$URL/public/experiments?limit=1" | jq -r '.[0].public_token // ""')
+          [ -z "$token" ] || curl -fsS -m 30 "$URL/public/experiments/$token/tasks?limit=1" >/dev/null
+
       - name: Summarize deployment
         run: |
           {
