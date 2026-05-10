@@ -41,10 +41,18 @@ async function getInitialTaskBrowseData(): Promise<TaskBrowseResponse | null> {
   }
 }
 
-export default async function TasksPage() {
-  // SSR fetch is for the unfiltered first page; once URL params land on
-  // the client, it refetches against the matching key. URL state is the
-  // source of truth for everything else.
+export default async function TasksPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ query?: string | string[] }>;
+}) {
   const initialData = await getInitialTaskBrowseData();
-  return <TasksPageClient initialData={initialData} />;
+  const params = await searchParams;
+  const queryParam = params?.query;
+  const initialQuery = Array.isArray(queryParam)
+    ? (queryParam[0] ?? "")
+    : (queryParam ?? "");
+  return (
+    <TasksPageClient initialData={initialData} initialQuery={initialQuery} />
+  );
 }

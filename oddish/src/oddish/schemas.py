@@ -571,186 +571,6 @@ class ExperimentUpdateResponse(BaseModel):
     name: str
 
 
-class JobResponse(BaseModel):
-    """One row in the user-visible jobs list.
-
-    A Job groups the trials produced by a single submission. Aggregate
-    progress is computed on read by joining ``worker_jobs`` rows.
-    """
-
-    id: str
-    kind: str
-    name: str | None = None
-    triggered_by_experiment_id: str | None = None
-    launched_by_user_id: str | None = None
-    launched_at: datetime
-    finished_at: datetime | None = None
-    org_id: str | None = None
-
-    # Aggregate counts derived from joined trials. Cheap to compute; we
-    # don't denormalize because there's no single source of truth.
-    trial_count: int = 0
-    succeeded_trial_count: int = 0
-    failed_trial_count: int = 0
-    running_trial_count: int = 0
-
-
-class JobListResponse(BaseModel):
-    items: list[JobResponse]
-    limit: int
-    offset: int
-    has_more: bool
-
-
-class ExperimentCellAgent(BaseModel):
-    """Denormalized agent identity carried on each cell."""
-
-    harness: str
-    model: str | None = None
-    provider: str
-    equivalence_key: str
-
-
-class ExperimentCellResponse(BaseModel):
-    """One row of an experiment's selection."""
-
-    id: str
-    task_version_id: str
-    target_n_trials: int
-    agent: ExperimentCellAgent
-
-
-class CellAttempt(BaseModel):
-    """One trial attempt as it appears inside a matrix cell."""
-
-    id: str
-    status: str
-    reward: float | None = None
-
-
-class ResolvedExperimentCellResponse(BaseModel):
-    """A cell plus the trial counts currently matching it."""
-
-    id: str
-    task_version_id: str
-    task_id: str
-    task_name: str | None = None
-    task_version: int | None = None
-    target_n_trials: int
-    agent: ExperimentCellAgent
-
-    have_n_total: int
-    have_n_successful: int
-    have_n_failed: int
-    have_n_running: int
-    gap: int  # max(0, target - successful)
-
-    mean_reward: float | None = None
-    last_run_at: datetime | None = None
-    # Per-attempt pills shown in the matrix cell. Capped on the
-    # backend to avoid blowing up the response on very busy cells;
-    # the cell-trials drawer fetches the full list.
-    attempts: list[CellAttempt] = Field(default_factory=list)
-
-
-class ExperimentTaskRef(BaseModel):
-    """One task version in an experiment's membership list."""
-
-    task_version_id: str
-    task_id: str
-    task_name: str | None = None
-    task_version: int | None = None
-
-
-class ResolvedExperimentResponse(BaseModel):
-    experiment_id: str
-    experiment_name: str
-    target_n_trials: int = 3
-    # Membership lists. The matrix is the cross product; the FE
-    # renders headers from these even when the other side is empty
-    # (so an agent column shows up before any task is added, etc).
-    tasks: list[ExperimentTaskRef] = Field(default_factory=list)
-    agents: list[ExperimentCellAgent] = Field(default_factory=list)
-    # Materialized cross-product cells for the (tasks × agents)
-    # intersections. Empty when either membership list is empty.
-    cells: list[ResolvedExperimentCellResponse]
-    total_gap: int
-
-
-class ExperimentTargetUpdateRequest(BaseModel):
-    target_n_trials: int = Field(ge=1)
-
-
-class ExperimentTargetUpdateResponse(BaseModel):
-    experiment_id: str
-    target_n_trials: int
-    cells_changed: int
-
-
-class ExperimentBulkCellRequest(BaseModel):
-    """Membership change on an experiment.
-
-    Tasks and agents are independent lists; the matrix is the cross
-    product. ``op`` discriminates the action:
-
-    - ``add_agent`` -- insert into ``experiment_agents``.
-    - ``add_task`` -- insert into ``experiment_tasks``.
-    - ``delete_agent`` / ``delete_task`` -- remove from membership
-      and clean up any per-pair target overrides.
-    - ``set_default_target`` -- set ``experiments.target_n_trials``
-      and clear all per-pair overrides so the new default applies
-      everywhere.
-    """
-
-    op: str
-    target_n_trials: int = Field(ge=1)
-    agent_harness: str | None = None
-    agent_model: str | None = None
-    agent_provider: str | None = None
-    task_version_id: str | None = None
-
-
-class ExperimentBulkCellResponse(BaseModel):
-    op: str
-    cells_changed: int
-
-
-class ExperimentCellUpdateRequest(BaseModel):
-    target_n_trials: int = Field(ge=1)
-
-
-class ExperimentInitialAgent(BaseModel):
-    """Agent identity to seed an experiment with."""
-
-    harness: str
-    model: str | None = None
-    provider: str
-
-
-class ExperimentCreateRequest(BaseModel):
-    name: str
-    target_n_trials: int | None = None
-    task_version_ids: list[str] = Field(default_factory=list)
-    agents: list[ExperimentInitialAgent] = Field(default_factory=list)
-
-
-class ExperimentBackfillResponse(BaseModel):
-    job_id: str
-    enqueued_trial_count: int
-
-
-class ExperimentCreateResponse(ResolvedExperimentResponse):
-    """Resolved experiment plus optional backfill receipt.
-
-    ``POST /experiments`` enqueues a backfill in the same call by
-    default, restoring the pre-task-first ``submit-and-it-runs`` API
-    semantics. ``backfill`` is ``None`` when the caller passes
-    ``?dry_run=true`` to create the spec only.
-    """
-
-    backfill: ExperimentBackfillResponse | None = None
-
-
 class TaskBrowseExperiment(BaseModel):
     id: str
     name: str
@@ -762,14 +582,6 @@ class TaskBrowseTrial(BaseModel):
     status: TrialStatus
     reward: float | None = None
     error_message: str | None = None
-
-
-class TaskAgentSummary(BaseModel):
-    agent: str
-    attempts: int
-    passed: int
-    avg_reward: float | None = None
-    last_run_at: datetime | None = None
 
 
 class TaskBrowseItem(BaseModel):
@@ -786,13 +598,7 @@ class TaskBrowseItem(BaseModel):
     reward_total: int
     last_run_at: datetime | None = None
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
-    # Per-harness rollup over the task's current_version trials. Lets
-    # the FE render "claude-code 4/5 · oracle 5/5" rows on a card and
-    # filter to "tasks claude-code has run on" without a second
-    # round trip.
-    agent_summaries: list[TaskAgentSummary] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
-    tags: dict[str, str] = Field(default_factory=dict)
 
 
 class TaskBrowseResponse(BaseModel):
@@ -800,15 +606,6 @@ class TaskBrowseResponse(BaseModel):
     limit: int
     offset: int
     has_more: bool
-    # Counts + aggregates over EVERY task that matches the active
-    # filters (not just the current page). Lets the FE render a
-    # "matching N tasks · M trials · K% pass" stats strip and seed an
-    # experiment from the full filtered set, not the page.
-    total_count: int = 0
-    aggregate_trials: int = 0
-    aggregate_passed: int = 0
-    aggregate_pass_rate: float | None = None
-    matching_task_version_ids: list[str] = Field(default_factory=list)
 
 
 class TaskStatusResponse(BaseModel):
@@ -844,7 +641,6 @@ class TaskStatusResponse(BaseModel):
         description="Active/recent worker_jobs rows for this task and its trials",
     )
     trials: list[TrialResponse] | None = None
-    tags: dict[str, str] = Field(default_factory=dict)
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None

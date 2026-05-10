@@ -11,7 +11,7 @@
  * This is computed using the product form to avoid large factorials:
  * pass@k = 1 - ∏(i=0 to k-1) [(n-c-i)/(n-i)]
  */
-export function calculatePassAtK(n: number, c: number, k: number): number {
+function calculatePassAtK(n: number, c: number, k: number): number {
   // Edge cases
   if (k > n) return c > 0 ? 1 : 0;
   if (c === 0) return 0;
@@ -36,11 +36,8 @@ interface PassAtKDataPoint {
 }
 
 export interface AgentPassAtKStats {
-  // Upper bound for the chart's k axis; each task contributes its own
-  // n to the formula via ``taskResults[i].n`` and falls back to this
-  // value when omitted.
-  n: number;
-  taskResults: { task: string; c: number; n?: number }[];
+  n: number; // total attempts per task
+  taskResults: { task: string; c: number }[]; // correct count per task
 }
 
 /**
@@ -72,12 +69,9 @@ export function calculatePassAtKCurve(
         continue;
       }
 
-      // Calculate average pass@k across all tasks for this agent.
-      // Each task's n may differ (different attempts per cell) -- fall
-      // back to the agent's overall n only when the per-task n isn't
-      // given.
-      const passAtKValues = stats.taskResults.map(({ c, n }) =>
-        calculatePassAtK(n ?? stats.n, c, k),
+      // Calculate average pass@k across all tasks for this agent
+      const passAtKValues = stats.taskResults.map(({ c }) =>
+        calculatePassAtK(stats.n, c, k),
       );
 
       // Average across tasks
