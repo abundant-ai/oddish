@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from fastapi import HTTPException
 from sqlalchemy import and_, case, delete, func, nulls_last, or_, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,6 +50,21 @@ from oddish.schemas import (
     TrialResponse,
 )
 from oddish.timing import TimingRecorder, elapsed_ms, now
+
+
+def _finite_float_or_none(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _finite_float_or_zero(value: object) -> float:
+    parsed = _finite_float_or_none(value)
+    return parsed if parsed is not None else 0.0
 
 
 async def _primary_experiment_for_task_model(
@@ -553,7 +570,7 @@ async def browse_tasks_core(
                     id=str(trial_row["trial_id"]),
                     name=str(trial_row["trial_name"]),
                     status=trial_row["trial_status"],
-                    reward=trial_row["reward"],
+                    reward=_finite_float_or_none(trial_row["reward"]),
                     error_message=trial_row["error_message"],
                 )
             )
@@ -579,7 +596,7 @@ async def browse_tasks_core(
                 completed_trials=int(row["completed_trials"] or 0),
                 failed_trials=int(row["failed_trials"] or 0),
                 reward_success=int(row["reward_success"] or 0),
-                reward_sum=float(row["reward_sum"] or 0.0),
+                reward_sum=_finite_float_or_zero(row["reward_sum"]),
                 reward_total=int(row["reward_total"] or 0),
                 last_run_at=row["last_run_at"],
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
