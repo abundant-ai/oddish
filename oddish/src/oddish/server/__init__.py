@@ -20,6 +20,7 @@ from oddish.core.endpoints import (
     get_task_version_core,
     get_trial_by_index_core,
     get_trial_for_org_core,
+    list_experiment_trials_core,
     list_task_versions_core,
     list_tasks_core,
     rerun_task_analysis_core,
@@ -478,7 +479,6 @@ async def cancel_tasks(payload: TaskBatchCancelRequest):
 # the same prod S3 bucket.
 
 
-
 @api.patch("/experiments/{experiment_id}", response_model=ExperimentUpdateResponse)
 async def update_experiment(
     experiment_id: str, payload: ExperimentUpdateRequest
@@ -498,6 +498,22 @@ async def update_experiment(
         await session.commit()
 
     return ExperimentUpdateResponse(id=experiment_id, name=name)
+
+
+@api.get("/experiments/{experiment_id}/trials", response_model=list[TrialResponse])
+async def list_experiment_trials(
+    experiment_id: str,
+    limit: int = Query(1000, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
+) -> list[TrialResponse]:
+    """List trials for one experiment independent of task current version."""
+    async with get_session() as session:
+        return await list_experiment_trials_core(
+            session,
+            experiment_id=experiment_id,
+            limit=limit,
+            offset=offset,
+        )
 
 
 @api.get("/tasks/{task_id}/trials/{index}", response_model=TrialResponse)

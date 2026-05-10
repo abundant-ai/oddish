@@ -682,6 +682,45 @@ async def get_trial_by_index_core(
     )
 
 
+async def list_experiment_trials_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    limit: int = 1000,
+    offset: int = 0,
+) -> list[TrialResponse]:
+    """List trials belonging to an experiment without task-version filtering."""
+    experiment = await session.get(ExperimentModel, experiment_id)
+    if not experiment:
+        raise HTTPException(
+            status_code=404, detail=f"Experiment {experiment_id} not found"
+        )
+
+    result = await session.execute(
+        select(TrialModel, TaskModel.task_path)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .where(TrialModel.experiment_id == experiment_id)
+        .order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = result.all()
+    trials = [trial for trial, _ in rows]
+    queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
+    jobs_by_subject = await fetch_visible_worker_jobs(
+        session, trial_ids=[trial.id for trial in trials]
+    )
+    return [
+        build_trial_response(
+            trial,
+            task_path,
+            queue_info=queue_info_by_trial_id.get(trial.id),
+            jobs=jobs_by_subject.get(("trials", trial.id), []),
+        )
+        for trial, task_path in rows
+    ]
+
+
 async def get_trial_for_org_core(
     session: AsyncSession,
     *,
