@@ -408,12 +408,12 @@ function ExperimentSummaryBar({
   return (
     <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]">
       <KpiTile label="Avg score">
-        <span className="flex items-baseline gap-2 font-mono text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
+        <span className="flex items-baseline gap-2 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {scorePct != null ? `${scorePct.toFixed(1)}%` : "—"}
         </span>
       </KpiTile>
       <KpiTile label="Completion">
-        <span className="flex items-baseline gap-2 font-mono text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
+        <span className="flex items-baseline gap-2 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {summary.completedTrials}
           <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
             / {summary.totalTrials} trials
@@ -429,7 +429,7 @@ function ExperimentSummaryBar({
         </span>
       </KpiTile>
       <KpiTile label="Tasks">
-        <span className="flex items-baseline gap-2 font-mono text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
+        <span className="flex items-baseline gap-2 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {taskCount}
           <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
             tasks
@@ -438,7 +438,7 @@ function ExperimentSummaryBar({
       </KpiTile>
       <KpiTile label="Cost">
         <span
-          className="flex items-baseline gap-1 font-mono text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]"
+          className="flex items-baseline gap-1 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]"
           title={
             summary.costTrialCount > 0
               ? `Summed across ${summary.costTrialCount} trial${

@@ -73,12 +73,12 @@ function buildAgentStats(
 
   const agentStats: Record<string, AgentPassAtKStats> = {};
   for (const summary of agentSummaries) {
-    const taskResults: { task: string; c: number; n: number }[] = [];
+    const taskResults: { task: string; c: number }[] = [];
     for (const task of tasks) {
       const trials = taskAgentTrials[task.id]?.[summary.key] ?? [];
       if (trials.length === 0) continue;
       const c = trials.filter((t) => t.reward === 1).length;
-      taskResults.push({ task: task.id, c, n: trials.length });
+      taskResults.push({ task: task.id, c });
     }
     agentStats[summary.key] = { n: maxN, taskResults };
   }
@@ -230,7 +230,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   return (
     <div className="flex h-full min-w-0 flex-col rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3">
       <div className="mb-2 flex items-baseline justify-between gap-3">
-        <h3 className="font-mono text-[15px] font-medium tracking-[-0.01em] text-[color:var(--paper-ink)]">
+        <h3 className="font-display text-[15px] font-medium tracking-[-0.01em] text-[color:var(--paper-ink)]">
           Pass@k
         </h3>
         <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">

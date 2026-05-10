@@ -264,7 +264,7 @@ function SectionHeading({
 }) {
   return (
     <div className="space-y-1.5">
-      <h2 className="font-mono text-2xl font-medium tracking-tight text-[color:var(--paper-ink)]">
+      <h2 className="font-display text-2xl font-medium tracking-tight text-[color:var(--paper-ink)]">
         {title}
       </h2>
       {description ? (
@@ -779,7 +779,7 @@ function WorkspaceSwitcherPanel() {
                 Active workspace
               </div>
             ) : null}
-            <p className="truncate font-mono text-lg font-medium tracking-tight text-[color:var(--paper-ink)]">
+            <p className="truncate font-display text-lg font-medium tracking-tight text-[color:var(--paper-ink)]">
               {organization?.name ?? "No workspace selected"}
             </p>
             {role ? (
@@ -935,7 +935,7 @@ export default function SettingsPage() {
         <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
           Settings
         </p>
-        <h1 className="font-mono text-3xl font-medium tracking-tight text-[color:var(--paper-ink)] sm:text-4xl">
+        <h1 className="font-display text-3xl font-medium tracking-tight text-[color:var(--paper-ink)] sm:text-4xl">
           Account &amp; workspace
         </h1>
         <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">

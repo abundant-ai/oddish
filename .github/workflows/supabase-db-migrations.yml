@@ -41,7 +41,7 @@ jobs:
 
       - name: Sync oddish dependencies
         working-directory: oddish
-        run: uv sync --frozen --extra server
+        run: uv sync --frozen
 
       - name: Run oddish migrations
         working-directory: oddish
