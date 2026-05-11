@@ -96,6 +96,11 @@ export interface Trial {
   result?: Record<string, unknown> | null;
   analysis_status?: JobStatus | null;
   analysis?: TrialAnalysis | null;
+  // Set when a user-driven retry has replaced this trial with a new
+  // immutable row. Default list endpoints already hide superseded
+  // trials; this field is here so detail views deep-linked directly
+  // can render a "superseded by …" affordance.
+  superseded_by_trial_id?: string | null;
   jobs?: VisibleWorkerJob[];
   queue_info?: TrialQueueInfo | null;
   task_version?: number | null;

@@ -535,6 +535,19 @@ class TrialModel(TimestampedMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Immutable-trial rerun pointer. When a user retries a trial we
+    # don't reset this row; instead we insert a fresh trial that copies
+    # the spec, and set this column on the old row to point at the new
+    # one. UI listings and pipeline counts filter on
+    # ``superseded_by_trial_id IS NULL`` so superseded attempts stay in
+    # the DB (for history / direct deep-links) but stop cluttering
+    # default views, S3 file viewers, and verdict aggregation.
+    superseded_by_trial_id: Mapped[str | None] = mapped_column(
+        String(128),
+        ForeignKey("trials.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     # Relationships
     task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]
         "TaskModel", back_populates="trials", lazy="selectin"
@@ -577,6 +590,14 @@ class TrialModel(TimestampedMixin, Base):
             "created_at",
             "model",
             "provider",
+        ),
+        # Partial index that supports the default "non-superseded only"
+        # filter on hot list/aggregation paths without indexing every
+        # row (the superseded set is small relative to total trials).
+        Index(
+            "idx_trials_superseded_by",
+            "superseded_by_trial_id",
+            postgresql_where=text("superseded_by_trial_id IS NOT NULL"),
         ),
     )
 

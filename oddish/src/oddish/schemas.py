@@ -522,6 +522,16 @@ class TrialResponse(BaseModel):
         None,
         description="Error message if analysis failed",
     )
+    superseded_by_trial_id: str | None = Field(
+        None,
+        description=(
+            "Set when this trial has been replaced by a user-driven "
+            "retry that spawned a brand-new immutable trial. Default "
+            "list/aggregate endpoints filter superseded rows out; this "
+            "field lets the UI navigate the rerun chain when surfacing "
+            "history."
+        ),
+    )
     jobs: list[VisibleWorkerJob] = Field(
         default_factory=list,
         description="Active/recent worker_jobs rows for this trial",

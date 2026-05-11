@@ -308,6 +308,7 @@ async def cleanup_orphaned_queue_state(
                     FROM tasks t
                     JOIN trials tr ON tr.task_id = t.id
                     WHERE t.status = 'RUNNING'
+                      AND tr.superseded_by_trial_id IS NULL
                     GROUP BY t.id
                     HAVING COUNT(*) FILTER (
                         WHERE tr.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
@@ -332,6 +333,7 @@ async def cleanup_orphaned_queue_state(
                     FROM tasks t
                     JOIN trials tr ON tr.task_id = t.id
                     WHERE t.status = 'ANALYZING'
+                      AND tr.superseded_by_trial_id IS NULL
                     GROUP BY t.id
                     HAVING COUNT(*) FILTER (
                         WHERE tr.analysis_status IS NULL

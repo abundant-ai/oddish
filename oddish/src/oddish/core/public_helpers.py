@@ -133,11 +133,20 @@ async def get_task_status_counts(
 async def list_task_trials_for_task(
     session: AsyncSession, task_id: str
 ) -> list[TrialResponse]:
-    """List all trials for a task with their responses."""
+    """List all trials for a task with their responses.
+
+    Superseded trials (rows replaced by a user-driven retry) are
+    hidden by default so the public trial list collapses the rerun
+    chain down to the live attempt -- matching what
+    ``get_task_status_trials`` returns for the dashboard.
+    """
     result = await session.execute(
         select(TrialModel, TaskModel.task_path)
         .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .where(TrialModel.task_id == task_id)
+        .where(
+            TrialModel.task_id == task_id,
+            TrialModel.superseded_by_trial_id.is_(None),
+        )
         .order_by(TrialModel.created_at.asc())
     )
     rows = result.all()

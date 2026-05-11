@@ -132,6 +132,10 @@ async def list_tasks_core(
                 TrialModel.cache_tokens,
                 TrialModel.output_tokens,
                 TrialModel.cost_usd,
+                # Loaded eagerly so the compact builder can surface the
+                # rerun pointer without triggering a lazy-load outside
+                # the async greenlet (same reason ``origin`` is here).
+                TrialModel.superseded_by_trial_id,
                 TrialModel.created_at,
                 TrialModel.started_at,
                 TrialModel.finished_at,
@@ -401,7 +405,7 @@ async def browse_tasks_core(
         func.sum(TrialModel.reward).label("reward_sum"),
         func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
         func.max(trial_activity_at).label("last_run_at"),
-    )
+    ).where(TrialModel.superseded_by_trial_id.is_(None))
     if org_id is not None:
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
     trial_aggregates = trial_agg_query.group_by(
@@ -488,6 +492,7 @@ async def browse_tasks_core(
             .join(ExperimentModel, and_(*exp_join_condition))
             .where(
                 TrialModel.experiment_id.isnot(None),
+                TrialModel.superseded_by_trial_id.is_(None),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
@@ -527,6 +532,7 @@ async def browse_tasks_core(
                 TrialModel.error_message.label("error_message"),
             )
             .where(
+                TrialModel.superseded_by_trial_id.is_(None),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
@@ -720,50 +726,93 @@ async def retry_trial_core(
     trial_id: str,
     org_id: str | None = None,
 ) -> dict[str, str]:
-    """Reset and requeue a trial for another attempt."""
-    trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
-    task = await session.get(TaskModel, trial.task_id)
+    """Spawn a fresh immutable trial that replaces ``trial_id``.
+
+    Trials are append-only. A retry never resets the existing row;
+    instead it inserts a new trial that copies the spec, marks the
+    old row as superseded (so it disappears from default UI views and
+    no longer counts toward verdict / pipeline aggregation), and
+    enqueues a worker_job for the new trial.
+
+    Each trial therefore owns a unique S3 prefix
+    (``tasks/{task_id}/trials/{trial_id}/``), which keeps the file
+    viewer free of stale folders left over from previous attempts.
+    """
+    old_trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
+    task = await session.get(TaskModel, old_trial.task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+
+    if old_trial.superseded_by_trial_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This trial has already been superseded by another retry "
+                f"({old_trial.superseded_by_trial_id}); retry that one instead"
+            ),
+        )
 
     # Allow retrying terminal states OR stuck trials.
     # A trial is "stuck" if running/retrying with error or completed harbor stage.
     terminal_states = {TrialStatus.FAILED, TrialStatus.SUCCESS}
-    is_stuck = trial.status in {TrialStatus.RUNNING, TrialStatus.RETRYING} and (
-        trial.error_message or trial.harbor_stage == "completed"
-    )
-    if trial.status not in terminal_states and not is_stuck:
+    is_stuck = old_trial.status in {
+        TrialStatus.RUNNING,
+        TrialStatus.RETRYING,
+    } and (old_trial.error_message or old_trial.harbor_stage == "completed")
+    if old_trial.status not in terminal_states and not is_stuck:
         raise HTTPException(
             status_code=400,
-            detail=f"Can only retry completed, failed, or stuck trials (current: {trial.status.value})",
+            detail=(
+                "Can only retry completed, failed, or stuck trials "
+                f"(current: {old_trial.status.value})"
+            ),
         )
 
-    trial.status = TrialStatus.QUEUED
-    trial.error_message = None
-    trial.reward = None
-    trial.result = None
-    trial.started_at = None
-    trial.finished_at = None
-    trial.harbor_stage = None
-    trial.harbor_result_path = None
-    trial.trial_s3_key = None
-    trial.attempts = 0
-    trial.idempotency_key = None
-    trial.current_worker_id = None
-    trial.current_queue_slot = None
+    # Imported lazily to avoid a circular import through
+    # ``oddish.queue`` -> ``oddish.workers.jobs.enqueue``.
+    from oddish.queue import enqueue_trial_worker_job, reserve_next_trial_index
 
-    # Move completed tasks back to running once a trial is requeued.
-    if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-        task.status = TaskStatus.RUNNING
-        task.finished_at = None
+    next_index = await reserve_next_trial_index(session, task_id=task.id)
+    new_trial_id = f"{task.id}-{next_index}"
+    new_trial_name = f"{task.name}-{next_index}"
 
-    # Cancel any in-flight TRIAL worker_job for this trial before
-    # enqueueing the new one. Without this, a "stuck RUNNING" retry
-    # leaves two non-terminal worker_jobs rows with the same
-    # ``subject_id`` -- the old stuck row still holds a queue_slot
-    # lease until cleanup reaps it, and when it does the handler's
-    # outcome can race with the new attempt. Same pattern as
-    # ``append_trials_to_task`` uses for superseded VERDICT rows.
+    new_trial = TrialModel(
+        id=new_trial_id,
+        name=new_trial_name,
+        task_id=old_trial.task_id,
+        task_version_id=old_trial.task_version_id,
+        experiment_id=old_trial.experiment_id,
+        org_id=old_trial.org_id,
+        agent=old_trial.agent,
+        provider=old_trial.provider,
+        queue_key=old_trial.queue_key,
+        model=old_trial.model,
+        timeout_minutes=old_trial.timeout_minutes,
+        environment=old_trial.environment,
+        harbor_config=old_trial.harbor_config,
+        max_attempts=old_trial.max_attempts,
+        status=TrialStatus.QUEUED,
+    )
+    session.add(new_trial)
+
+    # Mark the old row superseded so it stops showing up in the trial
+    # viewer, file viewer, and verdict / analysis aggregation. We also
+    # snap any non-terminal status to a terminal one so legacy queries
+    # that don't yet filter on ``superseded_by_trial_id`` (e.g. older
+    # dashboards, cleanup safety nets) don't mistake the dead row for
+    # active pending work.
+    old_trial.superseded_by_trial_id = new_trial_id
+    if old_trial.status not in terminal_states:
+        old_trial.status = TrialStatus.FAILED
+        old_trial.error_message = old_trial.error_message or "Superseded by user retry"
+        old_trial.finished_at = old_trial.finished_at or utcnow()
+        old_trial.current_worker_id = None
+        old_trial.current_queue_slot = None
+
+    # Cancel every live worker_jobs row anchored to the OLD trial id
+    # (TRIAL run + any in-flight ANALYSIS) so workers stop heart-beating
+    # against a superseded row and release their queue_slot lease
+    # before we enqueue work for the new trial.
     await session.execute(
         text(
             """
@@ -774,8 +823,7 @@ async def retry_trial_core(
                    current_worker_id = NULL,
                    current_queue_slot = NULL,
                    modal_function_call_id = NULL
-            WHERE  kind::text = 'TRIAL'
-              AND  subject_table = 'trials'
+            WHERE  subject_table = 'trials'
               AND  subject_id = :trial_id
               AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
             """
@@ -783,20 +831,47 @@ async def retry_trial_core(
         {"trial_id": trial_id},
     )
 
-    # Imported lazily to avoid a circular import through
-    # ``oddish.queue`` -> ``oddish.workers.jobs.enqueue``.
-    from oddish.queue import enqueue_trial_worker_job
+    # The task's cached verdict and any in-flight VERDICT row are
+    # computed across the trial set; superseding a member invalidates
+    # them. Cancel + reset so the verdict stage can re-run cleanly once
+    # the replacement trial's analysis completes.
+    if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+        task.status = TaskStatus.RUNNING
+        task.finished_at = None
+    _reset_task_verdict(task)
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = 'Superseded by user retry',
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  kind::text = 'VERDICT'
+              AND  subject_table = 'tasks'
+              AND  subject_id = :task_id
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        ),
+        {"task_id": task.id},
+    )
 
     await enqueue_trial_worker_job(
         session,
-        trial_id=trial_id,
-        queue_key=trial.queue_key,
-        org_id=trial.org_id,
-        max_attempts=trial.max_attempts,
+        trial_id=new_trial_id,
+        queue_key=new_trial.queue_key,
+        org_id=new_trial.org_id,
+        max_attempts=new_trial.max_attempts,
     )
 
     await session.commit()
-    return {"status": "queued", "trial_id": trial_id}
+    return {
+        "status": "queued",
+        "trial_id": new_trial_id,
+        "superseded_trial_id": trial_id,
+    }
 
 
 def _reset_task_verdict(task: TaskModel) -> None:
@@ -810,7 +885,8 @@ def _reset_task_verdict(task: TaskModel) -> None:
 
 def _task_has_active_analysis(task: TaskModel) -> bool:
     return any(
-        trial.analysis_status
+        trial.superseded_by_trial_id is None
+        and trial.analysis_status
         in (AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
         for trial in task.trials or []
     )
@@ -818,7 +894,8 @@ def _task_has_active_analysis(task: TaskModel) -> bool:
 
 def _task_has_active_trials(task: TaskModel) -> bool:
     return any(
-        trial.status
+        trial.superseded_by_trial_id is None
+        and trial.status
         in (
             TrialStatus.PENDING,
             TrialStatus.QUEUED,
@@ -842,7 +919,10 @@ def _clear_stale_task_pipeline_status(task: TaskModel) -> None:
     ):
         return
 
-    task.status = TaskStatus.COMPLETED if task.trials else TaskStatus.FAILED
+    live_trials = [
+        trial for trial in task.trials or [] if trial.superseded_by_trial_id is None
+    ]
+    task.status = TaskStatus.COMPLETED if live_trials else TaskStatus.FAILED
     task.finished_at = task.finished_at or utcnow()
 
 
@@ -856,7 +936,7 @@ def _reset_trial_analysis(trial: TrialModel) -> None:
 
 
 async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
-    """Count non-terminal trials for a task."""
+    """Count non-terminal, non-superseded trials for a task."""
     active_statuses = [
         TrialStatus.PENDING,
         TrialStatus.QUEUED,
@@ -866,6 +946,7 @@ async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
     count = await session.scalar(
         select(func.count(TrialModel.id)).where(
             TrialModel.task_id == task_id,
+            TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.status.in_(active_statuses),
         )
     )
@@ -883,6 +964,15 @@ async def rerun_trial_analysis_core(
     task = await session.get(TaskModel, trial.task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+
+    if trial.superseded_by_trial_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This trial has been superseded by another retry "
+                f"({trial.superseded_by_trial_id}); analyze that one instead"
+            ),
+        )
 
     if trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED):
         raise HTTPException(
@@ -959,6 +1049,14 @@ async def rerun_task_analysis_core(
     if not task.trials:
         raise HTTPException(status_code=400, detail="Task has no trials to analyze")
 
+    live_trials = [
+        trial for trial in task.trials if trial.superseded_by_trial_id is None
+    ]
+    if not live_trials:
+        raise HTTPException(
+            status_code=400, detail="Task has no live trials to analyze"
+        )
+
     active_trials = await _count_active_trials(session, task_id=task.id)
     if active_trials > 0:
         raise HTTPException(
@@ -969,7 +1067,7 @@ async def rerun_task_analysis_core(
     if any(
         trial.analysis_status
         in (AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
-        for trial in task.trials
+        for trial in live_trials
     ):
         raise HTTPException(
             status_code=400,
@@ -988,7 +1086,7 @@ async def rerun_task_analysis_core(
 
     from oddish.queue import enqueue_analysis_worker_job
 
-    for trial in task.trials:
+    for trial in live_trials:
         _reset_trial_analysis(trial)
         trial.analysis_status = AnalysisStatus.QUEUED
         await enqueue_analysis_worker_job(
@@ -1004,7 +1102,7 @@ async def rerun_task_analysis_core(
     return {
         "status": "queued",
         "task_id": task_id,
-        "trial_count": len(task.trials),
+        "trial_count": len(live_trials),
     }
 
 
@@ -1029,6 +1127,12 @@ async def rerun_task_verdict_core(
     if not task.trials:
         raise HTTPException(status_code=400, detail="Task has no trials")
 
+    live_trials = [
+        trial for trial in task.trials if trial.superseded_by_trial_id is None
+    ]
+    if not live_trials:
+        raise HTTPException(status_code=400, detail="Task has no live trials")
+
     active_trials = await _count_active_trials(session, task_id=task.id)
     if active_trials > 0:
         raise HTTPException(
@@ -1039,7 +1143,7 @@ async def rerun_task_verdict_core(
     if any(
         trial.analysis_status
         in (None, AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
-        for trial in task.trials
+        for trial in live_trials
     ):
         raise HTTPException(
             status_code=400,
