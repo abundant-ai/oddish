@@ -166,12 +166,6 @@ class Settings(BaseSettings):
     # ==========================================================================
 
     # Worker behavior
-    max_retries: int = 5
-    retry_backoff_base: int = 60  # seconds
-    retry_backoff_max: int = 3600  # seconds
-    worker_poll_interval: float = 10.0  # seconds
-    worker_batch_size: int = 1
-    trial_retry_timer_minutes: int = 60
     auto_start_workers: bool = True
 
     # Local execution scratch paths
@@ -187,8 +181,6 @@ class Settings(BaseSettings):
     # Database connection pools (constants — override on Settings class
     # in entry modules for different deployment targets)
     db_use_null_pool: ClassVar[bool] = False
-    db_pool_min_size: ClassVar[int] = 2
-    db_pool_max_size: ClassVar[int] = 20
     db_pool_max_overflow: ClassVar[int] = 10
     db_pool_size: ClassVar[int] = 5
 
@@ -277,9 +269,6 @@ class Settings(BaseSettings):
     # Org slug used as the top-level path segment for non-PR (CLI-triggered)
     # experiments. PR-triggered runs derive owner/repo from task.tags.github_meta.
     sauron_s3_org: str = "oddish"
-
-    # Task upload limits (MB)
-    max_task_upload_mb: int = 50
 
     # Task archive expansion (derived per-file layout for fast listings).
     # When enabled, uploading a new task version enqueues a
