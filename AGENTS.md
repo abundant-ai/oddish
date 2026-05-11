@@ -112,11 +112,14 @@ High-level flow:
 
 - core models and migrations, including `worker_jobs` and `queue_slots`
 - unified claim/dispatch SQL, one `run_single_worker_job` runner, and a
-  handler registry (`TrialJobHandler`, `AnalysisJobHandler`, `VerdictJobHandler`)
+ handler registry (`TrialJobHandler`, `AnalysisJobHandler`, `VerdictJobHandler`)
 - shared queue-slot leasing, per-queue-key concurrency limits, and
-  per-user fairness on `TRIAL` claims
+ per-user fairness on `TRIAL` claims
 - stale-heartbeat reaping, RETRYING → QUEUED mirror-back, and pipeline
-  stage reconciliation in one cleanup sweep
+ stage reconciliation in one cleanup sweep
+- soft-delete semantics on domain rows via the `deleted_at` column and
+ a session-level filter (`oddish.db.soft_delete`); every ORM read on a
+ registered model gets `WHERE deleted_at IS NULL` automatically
 
 `backend` wraps `oddish` with the hosted-only layer:
 
@@ -153,6 +156,38 @@ pip install oddish[all]       # everything including dev tools
 - Standalone worker: `python -m oddish.workers.queue.worker` (requires `oddish[worker]`)
 - DB helper CLI: `python -m oddish.db` (requires `oddish[server]`)
 - Queue key backfill: `python -m oddish.backfill_queue_keys`
+
+### Soft Delete
+
+Every model that mixes in `TimestampedMixin` has a `deleted_at` column,
+but only the classes registered through
+`oddish.db.soft_delete.register_soft_delete_models` participate in the
+session-level auto-filter:
+
+| Package | Soft-deletable models |
+|---------|------------------------|
+| `oddish.db.models` | `ExperimentModel`, `TaskModel`, `TrialModel` |
+| `backend.models` | `OrganizationModel`, `UserModel`, `APIKeyModel` |
+
+Behavior:
+
+- ORM `SELECT` / `UPDATE` / `DELETE` issued through a session pick up
+  `WHERE deleted_at IS NULL` automatically, including eager-loaded
+  relationships (`selectinload`, `joinedload`) and aliased subqueries.
+- The DELETE endpoints (`delete_task_core`, `delete_experiment_core`,
+  `delete_trial_core`) tombstone rows via `UPDATE ... SET deleted_at = NOW()`
+  and cancel any matching `worker_jobs` rows. They return an empty
+  `s3_prefixes` list so caller best-effort S3 cleanup is a no-op --
+  S3 data is preserved for restore.
+- Raw `text()` SQL doesn't run through the ORM listener; the dispatcher
+  claim path (`worker_job_single_job.py`), cleanup sweep, and admin
+  diagnostics each add `deleted_at IS NULL` inline.
+- The `(org_id, name)` uniqueness on `tasks` is a **partial** unique
+  index (`WHERE deleted_at IS NULL`) so a deleted task's name slot is
+  reusable.
+- To read or rewrite tombstoned rows (admin tooling, future restore
+  flows) opt out per statement:
+  `session.execute(stmt.execution_options(include_deleted=True))`.
 
 ### Worker Runtime (`oddish.workers.queue`)
 
@@ -237,14 +272,14 @@ uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/
 | GET | `/tasks` | List tasks |
 | GET | `/tasks/{task_id}` | Fetch a task with trials |
 | POST | `/tasks/cancel` | Cancel many tasks in one request |
-| DELETE | `/tasks/{task_id}` | Delete a task, its trials, and associated S3 artifacts when enabled |
+| DELETE | `/tasks/{task_id}` | Soft-delete a task and its trials (sets `deleted_at`; S3 artifacts are preserved for restore) |
 | POST | `/tasks/{task_id}/analysis/retry` | Queue or rerun task-wide analysis jobs |
 | POST | `/tasks/{task_id}/verdict/retry` | Queue or rerun a task verdict |
-| DELETE | `/experiments/{experiment_id}` | Delete an experiment, its tasks/trials, and associated S3 artifacts when enabled |
+| DELETE | `/experiments/{experiment_id}` | Soft-delete an experiment, its trials, and any now-orphaned tasks |
 | PATCH | `/experiments/{experiment_id}` | Update experiment metadata |
 | GET | `/tasks/{task_id}/trials/{index}` | Fetch a trial by 0-based index |
 | POST | `/trials/{trial_id}/analysis/retry` | Queue or rerun analysis for one trial |
-| DELETE | `/trials/{trial_id}` | Delete a single trial, cancel its in-flight jobs, and remove its S3 artifacts when enabled |
+| DELETE | `/trials/{trial_id}` | Soft-delete a single trial, cancel its in-flight jobs, and invalidate the parent task's cached verdict |
 | GET | `/trials/{trial_id}/logs` | Fetch logs for a trial |
 | GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
 

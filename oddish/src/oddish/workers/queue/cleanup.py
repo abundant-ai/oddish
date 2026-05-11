@@ -308,6 +308,8 @@ async def cleanup_orphaned_queue_state(
                     FROM tasks t
                     JOIN trials tr ON tr.task_id = t.id
                     WHERE t.status = 'RUNNING'
+                      AND t.deleted_at IS NULL
+                      AND tr.deleted_at IS NULL
                       AND tr.superseded_by_trial_id IS NULL
                     GROUP BY t.id
                     HAVING COUNT(*) FILTER (
@@ -333,6 +335,8 @@ async def cleanup_orphaned_queue_state(
                     FROM tasks t
                     JOIN trials tr ON tr.task_id = t.id
                     WHERE t.status = 'ANALYZING'
+                      AND t.deleted_at IS NULL
+                      AND tr.deleted_at IS NULL
                       AND tr.superseded_by_trial_id IS NULL
                     GROUP BY t.id
                     HAVING COUNT(*) FILTER (
@@ -362,6 +366,7 @@ async def cleanup_orphaned_queue_state(
                     SELECT id
                     FROM tasks
                     WHERE status = 'VERDICT_PENDING'
+                      AND deleted_at IS NULL
                       AND (
                           verdict_status IS NULL
                           OR verdict_status::text NOT IN ('QUEUED', 'RUNNING')
@@ -404,6 +409,7 @@ async def cleanup_orphaned_queue_state(
                     SET    current_worker_id = NULL,
                            current_queue_slot = NULL
                     WHERE  status::text IN ('SUCCESS', 'FAILED')
+                      AND  deleted_at IS NULL
                       AND  (
                           current_worker_id IS NOT NULL
                           OR current_queue_slot IS NOT NULL

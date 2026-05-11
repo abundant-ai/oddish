@@ -226,6 +226,20 @@ class APIKeyModel(TimestampedMixin, Base):
     )
 
 
+# ---------------------------------------------------------------------------
+# Soft-delete registration
+# ---------------------------------------------------------------------------
+#
+# The session-level filter is installed by ``oddish.db.connection`` and
+# only acts on models that have been explicitly registered. The oddish
+# core registers its domain models; the cloud layer registers its auth
+# models here so the filter covers them too without forcing oddish to
+# know about backend-only classes.
+from oddish.db.soft_delete import register_soft_delete_models
+
+register_soft_delete_models(OrganizationModel, UserModel, APIKeyModel)
+
+
 # =============================================================================
 # Helper functions
 # =============================================================================

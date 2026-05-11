@@ -942,6 +942,7 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
                 SELECT COALESCE(queue_key, provider) AS queue_key, status::text AS status, COUNT(*) AS count
                 FROM trials
                 WHERE org_id = :org_id
+                  AND deleted_at IS NULL
                 GROUP BY COALESCE(queue_key, provider), status
                 """
             ),
@@ -953,6 +954,7 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
                 """
                 SELECT COALESCE(queue_key, provider) AS queue_key, status::text AS status, COUNT(*) AS count
                 FROM trials
+                WHERE deleted_at IS NULL
                 GROUP BY COALESCE(queue_key, provider), status
                 """
             )

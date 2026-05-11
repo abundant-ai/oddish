@@ -11,7 +11,7 @@ from sqlalchemy import select
 from svix import Webhook, WebhookVerificationError
 
 from models import OrganizationModel, UserModel, UserRole, generate_id
-from oddish.db import get_session
+from oddish.db import get_session, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +252,12 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
             )
             user = result.scalar_one_or_none()
             if user:
+                # Clerk says the membership is gone; soft-delete the row
+                # so the session-level filter immediately hides it from
+                # list / auth paths in addition to the legacy
+                # ``is_active`` flag.
                 user.is_active = False
+                user.deleted_at = utcnow()
                 await session.commit()
             return {"status": "ok"}
 

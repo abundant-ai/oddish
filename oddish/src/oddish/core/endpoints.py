@@ -1,7 +1,18 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, delete, func, nulls_last, or_, select, text, tuple_
+from sqlalchemy import (
+    and_,
+    case,
+    delete,
+    func,
+    nulls_last,
+    or_,
+    select,
+    text,
+    tuple_,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm import load_only, selectinload
@@ -1275,16 +1286,24 @@ async def delete_task_core(
     org_id: str | None = None,
     experiment_id: str | None = None,
 ) -> dict:
-    """Delete a task and its trials, optionally scoped to one experiment.
+    """Soft-delete a task and its trials, optionally scoped to one experiment.
 
-    When ``experiment_id`` is ``None`` the task and all of its trials are
-    deleted unconditionally, along with every ``task_experiments`` row
-    (via ``ondelete=CASCADE``).
+    "Delete" here is a tombstone: rows are kept in the database with
+    ``deleted_at`` stamped to ``NOW()``, the session-level filter in
+    :mod:`oddish.db.soft_delete` hides them from normal reads, and S3
+    artifacts are *not* removed (the response carries an empty
+    ``s3_prefixes`` list so callers' best-effort S3 cleanup is a no-op).
+
+    When ``experiment_id`` is ``None`` the task and every one of its
+    trials are tombstoned. ``task_experiments`` link rows are left intact
+    so a future restore can recover the experiment membership.
 
     When ``experiment_id`` is given, only trials whose ``experiment_id``
-    matches are removed and the ``(task_id, experiment_id)`` join row is
-    deleted. The task itself is only dropped if no trials and no other
-    experiment links remain.
+    matches are tombstoned and the ``(task_id, experiment_id)`` join row
+    is hard-deleted (join rows don't carry a tombstone column and reads
+    that need to ignore "ghost" links can rely on the soft-delete filter
+    on the experiment / task sides). The task itself is only tombstoned
+    if no live trials and no other experiment links remain.
     """
     task_query = select(
         TaskModel.id,
@@ -1298,38 +1317,53 @@ async def delete_task_core(
     if not task_row:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-    resolved_task_id, task_s3_key, task_path = task_row
+    resolved_task_id, _task_s3_key, _task_path = task_row
 
-    from oddish.db.storage import collect_s3_prefixes_for_deletion
     from oddish.db import task_experiments
 
-    # Unscoped: legacy "delete everything" behavior and response shape.
+    # Unscoped: tombstone the task and all its trials.
     if experiment_id is None:
-        trial_rows_result = await session.execute(
-            select(TrialModel.id, TrialModel.trial_s3_key).where(
-                TrialModel.task_id == resolved_task_id
-            )
-        )
-        trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
+        scoped_trial_ids = [
+            row[0]
+            for row in (
+                await session.execute(
+                    select(TrialModel.id).where(TrialModel.task_id == resolved_task_id)
+                )
+            ).all()
+        ]
 
-        s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=[(task_s3_key, task_path)],
-            trials=trial_rows,
+        if scoped_trial_ids:
+            await _cancel_worker_jobs_for_trials(
+                session,
+                trial_ids=scoped_trial_ids,
+                reason="Task deleted by user",
+            )
+
+        await _cancel_worker_jobs_for_task(
+            session,
+            task_id=resolved_task_id,
+            reason="Task deleted by user",
         )
 
         await session.execute(
-            delete(TrialModel)
+            update(TrialModel)
             .where(TrialModel.task_id == resolved_task_id)
+            .values(deleted_at=utcnow())
             .execution_options(synchronize_session=False)
         )
         await session.execute(
-            delete(TaskModel)
+            update(TaskModel)
             .where(TaskModel.id == resolved_task_id)
+            .values(deleted_at=utcnow())
             .execution_options(synchronize_session=False)
         )
 
         return {
-            "s3_prefixes": s3_prefixes,
+            # Soft-delete preserves S3 artifacts for potential restore.
+            # The response key is kept so the API contract with callers
+            # (e.g. backend's ``delete_s3_prefixes`` best-effort cleanup)
+            # remains stable; the empty list makes that cleanup a no-op.
+            "s3_prefixes": [],
             "deleted": {"task_id": task_id},
         }
 
@@ -1361,31 +1395,22 @@ async def delete_task_core(
 
     # Cancel live worker_jobs for those trials so workers release slots.
     if scoped_trial_ids:
-        await session.execute(
-            text(
-                """
-                UPDATE worker_jobs
-                SET    status = 'CANCELLED',
-                       finished_at = NOW(),
-                       error_message = 'Task deleted by user',
-                       current_worker_id = NULL,
-                       current_queue_slot = NULL,
-                       modal_function_call_id = NULL
-                WHERE  subject_table = 'trials'
-                  AND  subject_id = ANY(:trial_ids)
-                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                """
-            ),
-            {"trial_ids": scoped_trial_ids},
+        await _cancel_worker_jobs_for_trials(
+            session,
+            trial_ids=scoped_trial_ids,
+            reason="Task deleted by user",
         )
 
         await session.execute(
-            delete(TrialModel)
+            update(TrialModel)
             .where(TrialModel.id.in_(scoped_trial_ids))
+            .values(deleted_at=utcnow())
             .execution_options(synchronize_session=False)
         )
 
-    # Remove the (task_id, experiment_id) association.
+    # The join row has no tombstone column; remove it so the experiment
+    # stops listing this task. If the task is later restored, callers
+    # re-link explicitly.
     await session.execute(
         delete(task_experiments).where(
             task_experiments.c.task_id == resolved_task_id,
@@ -1393,8 +1418,9 @@ async def delete_task_core(
         )
     )
 
-    # If the task has no remaining trials and no other experiment links, it
-    # is now orphaned — drop it outright so the S3 prefix gets cleaned up.
+    # If the task has no remaining live trials and no other experiment
+    # links, tombstone it too. Live = ``deleted_at IS NULL`` (the
+    # session-level filter handles this transparently for ORM queries).
     remaining_trials = int(
         await session.scalar(
             select(func.count(TrialModel.id)).where(
@@ -1414,43 +1440,25 @@ async def delete_task_core(
 
     task_removed = False
     if remaining_trials == 0 and remaining_links == 0:
-        await session.execute(
-            text(
-                """
-                UPDATE worker_jobs
-                SET    status = 'CANCELLED',
-                       finished_at = NOW(),
-                       error_message = 'Task deleted by user',
-                       current_worker_id = NULL,
-                       current_queue_slot = NULL,
-                       modal_function_call_id = NULL
-                WHERE  subject_table = 'tasks'
-                  AND  subject_id = :task_id
-                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                """
-            ),
-            {"task_id": resolved_task_id},
+        await _cancel_worker_jobs_for_task(
+            session,
+            task_id=resolved_task_id,
+            reason="Task deleted by user",
         )
         await session.execute(
-            delete(TaskModel)
+            update(TaskModel)
             .where(TaskModel.id == resolved_task_id)
+            .values(deleted_at=utcnow())
             .execution_options(synchronize_session=False)
-        )
-        s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=[(task_s3_key, task_path)],
-            trials=[(row[0], row[1]) for row in scoped_trial_rows],
         )
         task_removed = True
     else:
-        s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=[], trials=[(row[0], row[1]) for row in scoped_trial_rows]
-        )
         task = await session.get(TaskModel, resolved_task_id)
         if task is not None:
             _reset_task_verdict(task)
 
     return {
-        "s3_prefixes": s3_prefixes,
+        "s3_prefixes": [],
         "deleted": {
             "task_id": task_id,
             "experiment_id": experiment_id,
@@ -1460,22 +1468,85 @@ async def delete_task_core(
     }
 
 
+async def _cancel_worker_jobs_for_trials(
+    session: AsyncSession,
+    *,
+    trial_ids: Collection[str],
+    reason: str,
+) -> None:
+    """Cancel live worker_jobs whose subject is one of these trials.
+
+    Soft-deleting a trial doesn't kill its in-flight scheduling state.
+    Without this cancel the dispatcher could still claim the row (the
+    claim SQL guards against soft-deleted subjects defensively, but the
+    canonical signal is ``worker_jobs.status``) and a heart-beating
+    worker would keep holding a queue slot. Issued as raw SQL because
+    ``worker_jobs.status`` is a Postgres enum and the cast keeps the
+    statement portable across asyncpg / SQLAlchemy boundaries.
+    """
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = :reason,
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  subject_table = 'trials'
+              AND  subject_id = ANY(:trial_ids)
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        ),
+        {"trial_ids": list(trial_ids), "reason": reason},
+    )
+
+
+async def _cancel_worker_jobs_for_task(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    reason: str,
+) -> None:
+    """Cancel live worker_jobs whose subject is this task (e.g. VERDICT)."""
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = :reason,
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  subject_table = 'tasks'
+              AND  subject_id = :task_id
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        ),
+        {"task_id": task_id, "reason": reason},
+    )
+
+
 async def delete_experiment_core(
     session: AsyncSession,
     *,
     experiment_id: str,
     org_id: str | None = None,
 ) -> dict:
-    """Delete an experiment, its trials, and any now-orphaned tasks.
+    """Soft-delete an experiment, its trials, and any now-orphaned tasks.
 
-    Only trials whose ``experiment_id`` matches this experiment are
-    removed. Tasks linked to this experiment via ``task_experiments``
-    have that link removed (CASCADE does this when the experiment row is
-    dropped below); any task left without trials or other experiment
-    links is then deleted outright.
+    Like :func:`delete_task_core` this is tombstone-based: rows get
+    ``deleted_at`` stamped instead of being physically removed, and S3
+    artifacts are preserved. ``task_experiments`` link rows that pointed
+    at this experiment are hard-deleted so list views immediately stop
+    surfacing the membership; the experiment row itself is the only
+    canonical "this experiment used to contain this task" pointer once
+    it's tombstoned, and a restore flow re-creates the join rows
+    explicitly.
     """
     from oddish.db import task_experiments
-    from oddish.db.storage import collect_s3_prefixes_for_deletion
 
     exp_query = select(ExperimentModel).where(ExperimentModel.id == experiment_id)
     if org_id is not None:
@@ -1488,11 +1559,11 @@ async def delete_experiment_core(
             status_code=404, detail=f"Experiment {experiment_id} not found"
         )
 
-    # Tasks linked to this experiment — snapshot them now so we can check
-    # which ones orphan out after the scoped trial delete + link drop.
+    # Tasks linked to this experiment -- snapshot them now so we can check
+    # which ones orphan out after the scoped trial tombstone + link drop.
     linked_task_rows = (
         await session.execute(
-            select(TaskModel.id, TaskModel.task_s3_key, TaskModel.task_path)
+            select(TaskModel.id)
             .join(
                 task_experiments,
                 task_experiments.c.task_id == TaskModel.id,
@@ -1501,26 +1572,14 @@ async def delete_experiment_core(
         )
     ).all()
     linked_task_ids = [row[0] for row in linked_task_rows]
-    linked_task_s3 = {row[0]: (row[1], row[2]) for row in linked_task_rows}
 
     if linked_task_ids:
-        await session.execute(
-            text(
-                """
-                UPDATE worker_jobs
-                SET    status = 'CANCELLED',
-                       finished_at = NOW(),
-                       error_message = 'Experiment deleted by user',
-                       current_worker_id = NULL,
-                       current_queue_slot = NULL,
-                       modal_function_call_id = NULL
-                WHERE  subject_table = 'tasks'
-                  AND  subject_id = ANY(:task_ids)
-                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                """
-            ),
-            {"task_ids": linked_task_ids},
-        )
+        for tid in linked_task_ids:
+            await _cancel_worker_jobs_for_task(
+                session,
+                task_id=tid,
+                reason="Experiment deleted by user",
+            )
 
     # Trials scoped to this experiment.
     trial_where = [TrialModel.experiment_id == experiment_id]
@@ -1529,57 +1588,54 @@ async def delete_experiment_core(
             or_(TrialModel.org_id == org_id, TrialModel.org_id.is_(None))
         )
 
-    scoped_trial_rows = (
-        await session.execute(
-            select(TrialModel.id, TrialModel.trial_s3_key).where(*trial_where)
-        )
-    ).all()
-    scoped_trial_ids = [row[0] for row in scoped_trial_rows]
+    scoped_trial_ids = [
+        row[0]
+        for row in (
+            await session.execute(select(TrialModel.id).where(*trial_where))
+        ).all()
+    ]
 
-    # Cancel any live worker_jobs for the trials we're about to delete.
     if scoped_trial_ids:
-        await session.execute(
-            text(
-                """
-                UPDATE worker_jobs
-                SET    status = 'CANCELLED',
-                       finished_at = NOW(),
-                       error_message = 'Experiment deleted by user',
-                       current_worker_id = NULL,
-                       current_queue_slot = NULL,
-                       modal_function_call_id = NULL
-                WHERE  subject_table = 'trials'
-                  AND  subject_id = ANY(:trial_ids)
-                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                """
-            ),
-            {"trial_ids": scoped_trial_ids},
+        await _cancel_worker_jobs_for_trials(
+            session,
+            trial_ids=scoped_trial_ids,
+            reason="Experiment deleted by user",
         )
 
-        trials_del = await session.execute(
-            delete(TrialModel)
+        trials_upd = await session.execute(
+            update(TrialModel)
             .where(TrialModel.id.in_(scoped_trial_ids))
+            .values(deleted_at=utcnow())
             .execution_options(synchronize_session=False)
         )
-        deleted_trials = int(trials_del.rowcount or 0)  # type: ignore[attr-defined]
+        deleted_trials = int(trials_upd.rowcount or 0)  # type: ignore[attr-defined]
     else:
         deleted_trials = 0
 
-    # Drop the experiment row. CASCADE on ``task_experiments.experiment_id``
-    # automatically removes link rows pointing at this experiment.
-    experiments_del_query = delete(ExperimentModel).where(
-        ExperimentModel.id == experiment_id
+    # Drop the experiment->task link rows so list views stop pulling
+    # this experiment into the task's membership. The join table has no
+    # tombstone column.
+    await session.execute(
+        delete(task_experiments).where(
+            task_experiments.c.experiment_id == experiment_id
+        )
+    )
+
+    # Tombstone the experiment row.
+    experiments_upd_query = (
+        update(ExperimentModel)
+        .where(ExperimentModel.id == experiment_id)
+        .values(deleted_at=utcnow())
     )
     if org_id is not None:
-        experiments_del_query = experiments_del_query.where(
+        experiments_upd_query = experiments_upd_query.where(
             ExperimentModel.org_id == org_id
         )
-    experiments_result = await session.execute(experiments_del_query)
+    experiments_result = await session.execute(experiments_upd_query)
     deleted_experiments = int(experiments_result.rowcount or 0)  # type: ignore[attr-defined]
 
-    # Any of the previously-linked tasks that now have no trials and no
-    # other experiment links are orphaned — drop them + their S3 prefix.
-    task_s3_to_delete: list[tuple[str | None, str | None]] = []
+    # Any of the previously-linked tasks that now have no live trials
+    # and no other experiment links are orphaned -- tombstone them too.
     deleted_tasks = 0
 
     for tid in linked_task_ids:
@@ -1598,30 +1654,18 @@ async def delete_experiment_core(
             or 0
         )
         if remaining_trials == 0 and remaining_links == 0:
-            await session.execute(
-                text(
-                    """
-                    UPDATE worker_jobs
-                    SET    status = 'CANCELLED',
-                           finished_at = NOW(),
-                           error_message = 'Experiment deleted by user',
-                           current_worker_id = NULL,
-                           current_queue_slot = NULL,
-                           modal_function_call_id = NULL
-                    WHERE  subject_table = 'tasks'
-                      AND  subject_id = :task_id
-                      AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                    """
-                ),
-                {"task_id": tid},
+            await _cancel_worker_jobs_for_task(
+                session,
+                task_id=tid,
+                reason="Experiment deleted by user",
             )
-            task_del_result = await session.execute(
-                delete(TaskModel)
+            task_upd_result = await session.execute(
+                update(TaskModel)
                 .where(TaskModel.id == tid)
+                .values(deleted_at=utcnow())
                 .execution_options(synchronize_session=False)
             )
-            deleted_tasks += int(task_del_result.rowcount or 0)  # type: ignore[attr-defined]
-            task_s3_to_delete.append(linked_task_s3[tid])
+            deleted_tasks += int(task_upd_result.rowcount or 0)  # type: ignore[attr-defined]
         else:
             task_result = await session.execute(
                 select(TaskModel)
@@ -1633,13 +1677,8 @@ async def delete_experiment_core(
                 _reset_task_verdict(task)
                 _clear_stale_task_pipeline_status(task)
 
-    s3_prefixes = collect_s3_prefixes_for_deletion(
-        tasks=task_s3_to_delete,
-        trials=[(row[0], row[1]) for row in scoped_trial_rows],
-    )
-
     return {
-        "s3_prefixes": s3_prefixes,
+        "s3_prefixes": [],
         "deleted": {
             "trials": deleted_trials,
             "tasks": deleted_tasks,
@@ -1654,59 +1693,45 @@ async def delete_trial_core(
     trial_id: str,
     org_id: str | None = None,
 ) -> dict:
-    """Delete a single trial, cancel its in-flight jobs, and collect its S3 prefix.
+    """Soft-delete a single trial and cancel its in-flight worker_jobs.
 
-    Also invalidates the parent task's cached verdict so stale aggregates from
-    the now-deleted trial do not leak into the dashboard.
+    Sets ``deleted_at`` instead of issuing a SQL DELETE so the row stays
+    queryable via ``include_deleted=True`` for audit / restore flows.
+    The parent task's cached verdict is invalidated so dashboards stop
+    aggregating numbers from the now-hidden trial.
     """
     trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
 
-    from oddish.db.storage import collect_s3_prefixes_for_deletion
-
-    s3_prefixes = collect_s3_prefixes_for_deletion(
-        tasks=[],
-        trials=[(trial.id, trial.trial_s3_key)],
-    )
-
     # Cancel any live worker_jobs belonging to this trial (TRIAL runs and
-    # ANALYSIS jobs) so workers stop heart-beating and release slots before
-    # the domain row disappears underneath them.
-    await session.execute(
-        text(
-            """
-            UPDATE worker_jobs
-            SET    status = 'CANCELLED',
-                   finished_at = NOW(),
-                   error_message = 'Trial deleted by user',
-                   current_worker_id = NULL,
-                   current_queue_slot = NULL,
-                   modal_function_call_id = NULL
-            WHERE  subject_table = 'trials'
-              AND  subject_id = :trial_id
-              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-            """
-        ),
-        {"trial_id": trial_id},
+    # ANALYSIS jobs) so workers stop heart-beating and release slots
+    # before the domain row goes invisible under them.
+    await _cancel_worker_jobs_for_trials(
+        session,
+        trial_ids=[trial_id],
+        reason="Trial deleted by user",
     )
 
     task_id = trial.task_id
 
     await session.execute(
-        delete(TrialModel)
+        update(TrialModel)
         .where(TrialModel.id == trial_id)
+        .values(deleted_at=utcnow())
         .execution_options(synchronize_session=False)
     )
 
-    # Task aggregates (total/completed/failed) are derived from the remaining
-    # trials, but the cached verdict for the task may reference this trial.
-    # Clear it so the dashboard doesn't show stale data.
+    # Task aggregates (total/completed/failed) are derived from the
+    # remaining trials -- the soft-delete filter excludes this one
+    # automatically -- but the cached verdict on the task row may
+    # reference it directly. Clear it so the dashboard doesn't show
+    # stale data.
     if task_id:
         task = await session.get(TaskModel, task_id)
         if task is not None:
             _reset_task_verdict(task)
 
     return {
-        "s3_prefixes": s3_prefixes,
+        "s3_prefixes": [],
         "deleted": {"trial_id": trial_id, "task_id": task_id},
     }
 
