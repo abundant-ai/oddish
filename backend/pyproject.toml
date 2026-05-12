@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "oddish-app"
 version = "0.1.0"
@@ -50,3 +54,21 @@ oddish = { path = "../oddish", editable = true }
 # pulls harbor from the rishidesai/harbor fork (uv does not inherit
 # sources from transitive dependencies).
 harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
+
+# Backend is a flat-layout project: real packages live next to top-level
+# entrypoint modules. Spell out what setuptools should ship so it
+# doesn't trip on local-only directories (alembic migrations, the
+# gitignored jobs/ runtime cache, dist/, __pycache__/, etc.).
+[tool.setuptools]
+py-modules = [
+    "cloud_policy",
+    "deploy",
+    "endpoints",
+    "modal_app",
+    "models",
+    "serve",
+]
+
+[tool.setuptools.packages.find]
+include = ["api*", "auth*", "worker*"]
+namespaces = false

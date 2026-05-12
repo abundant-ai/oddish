@@ -1537,7 +1537,7 @@ dev = [
 [[package]]
 name = "oddish-app"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "modal" },
