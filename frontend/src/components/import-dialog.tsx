@@ -87,14 +87,16 @@ function DropSlot({
           {label}
         </Label>
         {file ? (
-          <button
+          <Button
             type="button"
-            className="text-[11px] text-muted-foreground hover:text-foreground"
+            variant="link"
+            size="sm"
+            className="h-auto p-0 text-[11px] font-normal text-muted-foreground hover:text-foreground"
             onClick={() => onChange(null)}
             disabled={disabled}
           >
             Clear
-          </button>
+          </Button>
         ) : null}
       </div>
       <label
