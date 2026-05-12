@@ -1,5 +1,4 @@
-// Task status (simplified - just tracks trial execution)
-export type TaskStatus =
+type TaskStatus =
   | "pending"
   | "running"
   | "analyzing"
@@ -11,7 +10,7 @@ export type TaskStatus =
 // - "success": Trial executed to completion (regardless of test result)
 // - "failed": Trial encountered an execution error (harness/infrastructure failure)
 // - Test results are stored separately in the `reward` field (0..1 score, null=no result)
-export type TrialStatus =
+type TrialStatus =
   | "pending"
   | "queued"
   | "running"
@@ -21,9 +20,9 @@ export type TrialStatus =
 
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
-export type VisibleJobKind = "trial" | "analysis" | "verdict";
+type VisibleJobKind = "trial" | "analysis" | "verdict";
 
-export type VisibleJobStatus =
+type VisibleJobStatus =
   | "queued"
   | "running"
   | "retrying"
