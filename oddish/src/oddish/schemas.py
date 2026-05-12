@@ -130,8 +130,9 @@ class TrialSpec(BaseModel):
         ):
             raise ValueError(
                 "timeout_minutes is no longer supported. "
-                "Set explicit [agent].timeout_sec, [verifier].timeout_sec, "
-                "and [environment].build_timeout_sec in task.toml."
+                "Set explicit [agent].timeout_sec, [verifier].timeout_sec "
+                "(or timeout_sec on every [[verifiers]] stage), and "
+                "[environment].build_timeout_sec in task.toml."
             )
         return self
 
@@ -287,8 +288,9 @@ class TaskSweepSubmission(BaseModel):
         ):
             raise ValueError(
                 "timeout_minutes is no longer supported. "
-                "Set explicit [agent].timeout_sec, [verifier].timeout_sec, "
-                "and [environment].build_timeout_sec in task.toml."
+                "Set explicit [agent].timeout_sec, [verifier].timeout_sec "
+                "(or timeout_sec on every [[verifiers]] stage), and "
+                "[environment].build_timeout_sec in task.toml."
             )
         return self
 
