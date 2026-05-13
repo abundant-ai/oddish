@@ -463,7 +463,9 @@ async def reserve_next_trial_index(session: AsyncSession, *, task_id: str) -> in
     """
     prefix = f"{task_id}-"
     rows = await session.execute(
-        select(TrialModel.id).where(TrialModel.task_id == task_id)
+        select(TrialModel.id)
+        .where(TrialModel.task_id == task_id)
+        .execution_options(include_deleted=True)
     )
     max_index = -1
     for (trial_id,) in rows.all():
@@ -650,10 +652,14 @@ async def append_trials_to_task(
     task is auto-linked to it via ``task_experiments`` (matching the
     implicit behavior of the old single-FK world).
     """
+    # ``include_deleted=True`` keeps soft-deleted trials in the suffix
+    # search so the next allocated ``{task_id}-{N}`` can never collide
+    # with a tombstoned row's primary key.
     trial_rows = await session.execute(
         select(TrialModel)
         .where(TrialModel.task_id == task.id)
         .order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
+        .execution_options(include_deleted=True)
     )
     existing_trials = list(trial_rows.scalars().all())
     next_index = _get_next_trial_index(task.id, existing_trials)
