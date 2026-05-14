@@ -37,11 +37,11 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-ANALYSIS_MODEL = "anthropic.claude-haiku-4-5-20251001-v1:0"
+ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 VERDICT_MODEL = "gpt-5.2"
 
 # Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
-# "us.anthropic.claude-opus-4-7-20250514-v1:0".
+# "global.anthropic.claude-haiku-4-5-20251001-v1:0".
 _BEDROCK_REGION_PREFIXES: tuple[str, ...] = ("us.", "eu.", "apac.", "apn.", "global.")
 
 # Environment variables that put Claude Code into Bedrock mode. The Modal image
@@ -78,53 +78,68 @@ def looks_like_bedrock_model_id(model: str | None) -> bool:
     return False
 
 
-# Anthropic-style Claude model ids mapped to their exact Bedrock-native ids.
-# oddish runs Claude exclusively through AWS Bedrock, and a Bedrock id carries
-# date + version suffixes that cannot be derived from the short Anthropic name,
-# so the mapping must be explicit. Keys are the lowercased model id with any
-# "provider/" prefix removed (e.g. "anthropic/claude-haiku-4-5" and bare
-# "claude-haiku-4-5" both look up "claude-haiku-4-5"); both the dated Claude
-# API id and its dateless alias are listed where they differ. An unmapped
-# Claude id raises in to_bedrock_model_id() rather than reaching Bedrock as
-# an unresolvable id.
+# Anthropic-style Claude model ids mapped to their invokable AWS Bedrock ids.
+# oddish runs Claude exclusively through AWS Bedrock. Claude Code invokes
+# Bedrock via the legacy InvokeModel API, which only accepts cross-region
+# inference profile ids (a "global."/"us."/... prefix) or ARNs — bare
+# "anthropic.claude-..." foundation-model ids are NOT invokable on-demand.
+# So every value below is a "global." inference profile id, except the two
+# legacy Opus models that have no global profile (they use "us.").
 #
-# Source: https://platform.claude.com/docs/en/about-claude/models/overview
+# Keys are the lowercased model id with any "provider/" prefix removed (e.g.
+# "anthropic/claude-haiku-4-5" and bare "claude-haiku-4-5" both look up
+# "claude-haiku-4-5"); both the dated Claude API id and its dateless alias
+# are listed where they differ. An unmapped Claude id raises in
+# to_bedrock_model_id() rather than reaching Bedrock as an uninvokable id.
+#
+# Sources:
+#   https://platform.claude.com/docs/en/about-claude/models/overview
+#   https://platform.claude.com/docs/en/build-with-claude/claude-on-amazon-bedrock-legacy
 _ANTHROPIC_TO_BEDROCK_MODEL_IDS: dict[str, str] = {
     # Current models
-    "claude-opus-4-7": "anthropic.claude-opus-4-7",
-    "claude-sonnet-4-6": "anthropic.claude-sonnet-4-6",
-    "claude-haiku-4-5": "anthropic.claude-haiku-4-5-20251001-v1:0",
-    "claude-haiku-4-5-20251001": "anthropic.claude-haiku-4-5-20251001-v1:0",
+    "claude-opus-4-7": "global.anthropic.claude-opus-4-7",
+    "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
+    "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "claude-haiku-4-5-20251001": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     # Legacy models
-    "claude-opus-4-6": "anthropic.claude-opus-4-6-v1",
-    "claude-sonnet-4-5": "anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "claude-sonnet-4-5-20250929": "anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "claude-opus-4-5": "anthropic.claude-opus-4-5-20251101-v1:0",
-    "claude-opus-4-5-20251101": "anthropic.claude-opus-4-5-20251101-v1:0",
-    "claude-opus-4-1": "anthropic.claude-opus-4-1-20250805-v1:0",
-    "claude-opus-4-1-20250805": "anthropic.claude-opus-4-1-20250805-v1:0",
-    "claude-sonnet-4-0": "anthropic.claude-sonnet-4-20250514-v1:0",
-    "claude-sonnet-4-20250514": "anthropic.claude-sonnet-4-20250514-v1:0",
-    "claude-opus-4-0": "anthropic.claude-opus-4-20250514-v1:0",
-    "claude-opus-4-20250514": "anthropic.claude-opus-4-20250514-v1:0",
+    "claude-opus-4-6": "global.anthropic.claude-opus-4-6-v1",
+    "claude-sonnet-4-5": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "claude-sonnet-4-5-20250929": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "claude-opus-4-5": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+    "claude-opus-4-5-20251101": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+    # Opus 4.1 / Opus 4 have no "global." inference profile — use "us.".
+    "claude-opus-4-1": "us.anthropic.claude-opus-4-1-20250805-v1:0",
+    "claude-opus-4-1-20250805": "us.anthropic.claude-opus-4-1-20250805-v1:0",
+    "claude-sonnet-4-0": "global.anthropic.claude-sonnet-4-20250514-v1:0",
+    "claude-sonnet-4-20250514": "global.anthropic.claude-sonnet-4-20250514-v1:0",
+    "claude-opus-4-0": "us.anthropic.claude-opus-4-20250514-v1:0",
+    "claude-opus-4-20250514": "us.anthropic.claude-opus-4-20250514-v1:0",
 }
 
 
 def to_bedrock_model_id(model: str | None) -> str | None:
-    """Normalize any Claude model reference to a Bedrock-native model id.
+    """Normalize any Claude model reference to an invokable AWS Bedrock id.
 
-    oddish routes Claude exclusively through AWS Bedrock. This is the single
-    chokepoint that guarantees whatever reaches Claude Code is a Bedrock id:
+    oddish routes Claude exclusively through AWS Bedrock. Claude Code invokes
+    Bedrock via the legacy InvokeModel API, which only accepts ids that are
+    directly invokable: ARNs and cross-region inference profile ids
+    (``global.``/``us.``/``eu.``/... prefixed). Bare ``anthropic.claude-...``
+    foundation-model ids are NOT invokable on-demand, so they get re-resolved
+    through the mapping table like any other Claude reference.
+
+    This is the single chokepoint that guarantees whatever reaches Claude Code
+    is an invokable Bedrock id:
 
       * ``None`` / blank -> returned unchanged
       * non-Claude models (``openai/...``, ``gemini-...``) -> returned unchanged
-      * already Bedrock-shaped ids -> returned as-is, minus any ``bedrock/``
-        prefix (``bedrock/anthropic.claude-...`` -> ``anthropic.claude-...``)
-      * Anthropic-style ids (``anthropic/claude-...``, bare ``claude-...``) ->
-        mapped via ``_ANTHROPIC_TO_BEDROCK_MODEL_IDS``
+      * ARNs and inference-profile ids -> returned as-is (minus any leading
+        ``bedrock/`` prefix)
+      * everything else containing "claude" (``anthropic/claude-...``, bare
+        ``claude-...``, bare ``anthropic.claude-...``) -> mapped via
+        ``_ANTHROPIC_TO_BEDROCK_MODEL_IDS``
 
     Raises ``ValueError`` for a Claude model id with no Bedrock mapping rather
-    than silently handing Bedrock an id it cannot resolve.
+    than silently handing Bedrock an id it cannot invoke.
     """
     if model is None:
         return None
@@ -132,16 +147,36 @@ def to_bedrock_model_id(model: str | None) -> str | None:
     if not stripped:
         return model
 
-    if looks_like_bedrock_model_id(stripped):
-        if stripped.lower().startswith("bedrock/"):
-            return stripped.split("/", 1)[1]
+    # Drop a redundant "bedrock/" prefix (bedrock/us.anthropic.* -> us.anthropic.*).
+    if stripped.lower().startswith("bedrock/"):
+        stripped = stripped.split("/", 1)[1]
+    lowered = stripped.lower()
+
+    # ARNs and cross-region inference profile ids are already invokable as-is.
+    if lowered.startswith("arn:aws:bedrock:"):
+        return stripped
+    if any(lowered.startswith(p) for p in _BEDROCK_REGION_PREFIXES) and (
+        ".anthropic." in lowered
+    ):
         return stripped
 
-    tail = stripped.split("/", 1)[-1].strip()
-    if not tail.lower().startswith("claude"):
+    # Resolve everything else through the table, keyed by the lowercased id
+    # with any "provider/" prefix removed. Non-Claude models route through
+    # their own providers untouched.
+    key = stripped.split("/", 1)[-1].strip().lower()
+    if "claude" not in key:
         return stripped
 
-    bedrock_id = _ANTHROPIC_TO_BEDROCK_MODEL_IDS.get(tail.lower())
+    # Bare Bedrock foundation-model ids (anthropic.claude-...-v1:0) are not
+    # invokable on-demand; reduce them to the table's Anthropic-style key.
+    if key.startswith("anthropic."):
+        key = key[len("anthropic.") :]
+        for version_suffix in ("-v1:0", "-v1"):
+            if key.endswith(version_suffix):
+                key = key[: -len(version_suffix)]
+                break
+
+    bedrock_id = _ANTHROPIC_TO_BEDROCK_MODEL_IDS.get(key)
     if bedrock_id is None:
         raise ValueError(
             f"No Bedrock model id mapping for Claude model {model!r}. "
