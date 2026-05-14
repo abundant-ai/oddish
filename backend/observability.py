@@ -44,7 +44,7 @@ def _resolve_environment() -> str:
 
     modal_app = os.environ.get("MODAL_APP_NAME", "")
     if modal_app == "oddish":
-        return "prod"
+        return "production"
     if modal_app.startswith("oddish-pr-"):
         pr = modal_app.removeprefix("oddish-pr-")
         if pr:
