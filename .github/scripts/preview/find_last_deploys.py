@@ -58,7 +58,7 @@ def find_last_deployed_shas(owner_repo, head_ref):
     branch = urllib.parse.quote(head_ref, safe="")
     runs = gh_api(
         f"/repos/{owner_repo}/actions/workflows/{WORKFLOW_FILE}/runs"
-        f"?branch=claude/optimize-deployment-triggers-nCbqW&event=pull_request&status=success&per_page=30"
+        f"?branch={branch}&event=pull_request&status=success&per_page=30"
     ).get("workflow_runs", [])
 
     found = {}
