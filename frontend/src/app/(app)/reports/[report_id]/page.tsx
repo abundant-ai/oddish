@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ReportBackfillBanner } from "@/components/report-backfill-banner";
 import { ReportBackfillHistory } from "@/components/report-backfill-history";
+import { ReportViewSpecDialog } from "@/components/report-view-spec-dialog";
 import { fetcher } from "@/lib/api";
 import type { Report, ReportShareResponse } from "@/lib/types";
 
@@ -93,6 +94,7 @@ export default function ReportDetailPage() {
 
   const headerRight = data ? (
     <div className="flex items-center gap-2">
+      <ReportViewSpecDialog reportId={data.id} />
       {data.is_public ? (
         <>
           {sharedUrl ? (
