@@ -10,12 +10,10 @@ from uuid import uuid4
 
 import modal
 
-from observability import configure_logfire
-
-# Configure Logfire as soon as the worker module loads so handlers,
-# DB queries, and outbound HTTP calls made inside the job body are
-# captured in the same trace as the Modal function call.
-configure_logfire(service_name="oddish-worker")
+# ``configure_logfire`` runs in ``worker/__init__.py`` (so auto-tracing
+# can patch our modules before they're imported); we just need the
+# ``span`` helper here to wrap entry points.
+from observability import span as _otel_span
 
 from modal_app import (
     MAX_WORKERS_PER_POLL,
@@ -107,18 +105,11 @@ async def process_single_job(queue_key: str):
     if fc_id:
         console.print(f"[dim]Modal function call: {fc_id}[/dim]")
 
-    try:
-        import logfire
-
-        job_span = logfire.span(
-            "worker.process_single_job",
-            queue_key=queue_key,
-            modal_function_call_id=fc_id,
-        )
-    except Exception:
-        from contextlib import nullcontext
-
-        job_span = nullcontext()
+    job_span = _otel_span(
+        "worker.process_single_job",
+        queue_key=queue_key,
+        modal_function_call_id=fc_id,
+    )
 
     worker_id = f"{queue_key}-{uuid4().hex[:12]}"
     lock_slot: int | None = None
@@ -213,6 +204,12 @@ async def poll_queue():
     console.print("[cyan]Queue dispatcher starting...[/cyan]")
     await configure_storage_paths()
 
+    # Wrap the whole dispatcher cycle in one named span so the
+    # cleanup + discovery + spawn queries it fires nest under a
+    # single ``worker.poll_queue_cycle`` parent instead of arriving
+    # as a bag of orphaned SQL spans on each tick.
+    cycle_span = _otel_span("worker.poll_queue_cycle")
+    cycle_span.__enter__()
     try:
         stale_cleared = await cleanup_stale_queue_slots()
         if stale_cleared > 0:
@@ -312,4 +309,10 @@ async def poll_queue():
         raise
     finally:
         await close_database_connections()
+        import sys as _sys
+
+        try:
+            cycle_span.__exit__(*_sys.exc_info())
+        except Exception:
+            pass
         console.print("[green]Dispatcher complete[/green]")

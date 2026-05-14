@@ -16,10 +16,13 @@
  * collapses into a single trace.
  */
 
+import { trace, type Span, SpanStatusCode } from "@opentelemetry/api";
 import { getWebAutoInstrumentations } from "@opentelemetry/auto-instrumentations-web";
 import * as logfire from "@pydantic/logfire-browser";
 
 let configured = false;
+
+const TRACER_NAME = "oddish-frontend";
 
 function resolveProxyUrl(apiUrl: string | undefined): string | null {
   // We point the SDK at the backend's `/logfire-proxy/v1/traces`. The
@@ -102,4 +105,58 @@ export function ensureLogfireConfigured(): void {
     // Never let observability take down the app.
     console.warn("Logfire browser configure failed", err);
   }
+}
+
+/**
+ * Wrap a user-meaningful action in a top-level span.
+ *
+ * Without this, every UI flow shows up in Logfire as a bag of
+ * disconnected auto-spans — a `click`, three `fetch`es, a re-render
+ * — with no shared root. Wrap the click handler (or the SWR mutate
+ * call, or the form submit) with `withUserAction("user.create_run")`
+ * and every fetch / DB query / worker job that gets pulled in nests
+ * neatly underneath that named root, so an observer can see the
+ * whole flow on a single trace.
+ *
+ * Attributes are flattened onto the span as `key=value`. Exceptions
+ * are recorded and re-thrown; the span is always closed.
+ *
+ * Usage:
+ *   await withUserAction("user.cancel_trial", { trial_id }, () =>
+ *     fetch(`/api/trials/${trial_id}/cancel`, { method: "POST" }),
+ *   );
+ */
+export async function withUserAction<T>(
+  name: string,
+  attributesOrFn: Record<string, string | number | boolean> | (() => Promise<T> | T),
+  maybeFn?: () => Promise<T> | T,
+): Promise<T> {
+  const attributes =
+    typeof attributesOrFn === "function" ? {} : attributesOrFn;
+  const fn = typeof attributesOrFn === "function" ? attributesOrFn : maybeFn!;
+
+  if (!configured) {
+    return await fn();
+  }
+
+  const tracer = trace.getTracer(TRACER_NAME);
+  return await tracer.startActiveSpan(name, async (span: Span) => {
+    for (const [k, v] of Object.entries(attributes)) {
+      span.setAttribute(k, v);
+    }
+    try {
+      const result = await fn();
+      span.setStatus({ code: SpanStatusCode.OK });
+      return result;
+    } catch (err) {
+      span.recordException(err as Error);
+      span.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    } finally {
+      span.end();
+    }
+  });
 }

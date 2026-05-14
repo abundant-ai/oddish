@@ -18,6 +18,7 @@
   ],
   "dependencies": {
     "@clerk/nextjs": "7.2.5",
+    "@opentelemetry/api": "1.9.1",
     "@opentelemetry/auto-instrumentations-web": "0.63.0",
     "@pydantic/logfire-browser": "0.15.1",
     "@lobehub/icons": "5.5.4",
