@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Show, SignInButton, useClerk, useUser } from "@clerk/nextjs";
+import { SignInButton, useClerk, useUser } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -25,7 +25,7 @@ import {
 
 export function Nav() {
   const pathname = usePathname();
-  const { user } = useUser();
+  const { user, isLoaded, isSignedIn } = useUser();
   const { signOut } = useClerk();
 
   return (
@@ -75,7 +75,8 @@ export function Nav() {
           {/* Right side - consolidated settings menu */}
           <div className="flex items-center gap-2">
             <ThemeToggle />
-            <Show when="signed-in">
+            {isLoaded && isSignedIn && (
+              <>
               <Button
                 variant="ghost"
                 size="sm"
@@ -155,14 +156,15 @@ export function Nav() {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-            </Show>
-            <Show when="signed-out">
+              </>
+            )}
+            {isLoaded && !isSignedIn && (
               <SignInButton mode="modal" fallbackRedirectUrl="/dashboard">
                 <Button variant="outline" size="sm">
                   Sign in
                 </Button>
               </SignInButton>
-            </Show>
+            )}
           </div>
         </div>
       </div>
