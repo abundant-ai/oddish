@@ -1221,7 +1221,7 @@ function RecentTasksCard({
             onClick={() => onMineOnlyChange(!mineOnly)}
             aria-pressed={mineOnly}
           >
-            Mine
+            My experiments
           </Button>
           <Input
             value={searchQuery}

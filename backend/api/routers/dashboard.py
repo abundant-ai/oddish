@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Request
 
 from auth import APIKeyScope, AuthContext, require_auth
+from models import UserModel
 from oddish.core.dashboard import get_dashboard_core
 from oddish.db import get_session
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
@@ -41,7 +42,9 @@ async def get_dashboard(
     """
     auth.require_scope(APIKeyScope.READ)
 
-    mine_user_id = auth.user_id if experiments_mine else None
+    mine_user_id: str | None = None
+    mine_email: str | None = None
+    mine_github_username: str | None = None
 
     async with get_session() as session:
         connect_started_at = now()
@@ -52,6 +55,16 @@ async def get_dashboard(
             elapsed_ms(connect_started_at),
             "Dashboard DB connect",
         )
+
+        if experiments_mine:
+            mine_user_id = auth.user_id
+            actor = auth.user
+            if actor is None and auth.user_id:
+                actor = await session.get(UserModel, auth.user_id)
+            if actor is not None:
+                mine_email = actor.email
+                mine_github_username = actor.github_username
+
         return await get_dashboard_core(
             session,
             org_id=auth.org_id,
@@ -62,6 +75,8 @@ async def get_dashboard(
             experiments_query=experiments_query,
             experiments_status=experiments_status,
             experiments_mine_user_id=mine_user_id,
+            experiments_mine_email=mine_email,
+            experiments_mine_github_username=mine_github_username,
             usage_minutes=usage_minutes,
             include_tasks=include_tasks,
             include_usage=include_usage,
