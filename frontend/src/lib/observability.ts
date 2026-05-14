@@ -7,13 +7,22 @@
  * load, click interactions, etc.) and ships spans to the backend
  * `/logfire-proxy/v1/traces` endpoint. The proxy attaches the
  * `LOGFIRE_TOKEN` server-side so the write token never ships to the
- * browser.
+ * browser. The `POST /logfire-proxy/v1/traces` calls you see in
+ * Logfire are exactly that — batched span uploads from the browser.
  *
- * Distributed tracing works automatically: the fetch instrumentation
- * injects W3C `traceparent` headers on outbound requests, which
- * FastAPI picks up via `logfire.instrument_fastapi`, so a click in
- * the dashboard → fetch → FastAPI handler → SQLAlchemy query
- * collapses into a single trace.
+ * Distributed tracing requires two prerequisites:
+ *
+ *   1. The browser fetch instrumentation INJECTS `traceparent` on the
+ *      outbound request. By default it only does this for SAME-ORIGIN
+ *      URLs, so our cross-origin API calls (Vercel → Modal) need
+ *      `propagateTraceHeaderCorsUrls` set permissively (see below).
+ *   2. FastAPI EXTRACTS `traceparent` and uses it as the parent of
+ *      its server span. `logfire.instrument_fastapi` does this via
+ *      OpenTelemetry's `OpenTelemetryMiddleware`.
+ *
+ * If either link is missing the browser fetch span and the FastAPI
+ * span end up with different `trace_id`s and Logfire shows them as
+ * unrelated traces.
  */
 
 import { trace, type Span, SpanStatusCode } from "@opentelemetry/api";
@@ -79,24 +88,27 @@ export function ensureLogfireConfigured(): void {
       environment: resolveEnvironment(),
       instrumentations: [
         getWebAutoInstrumentations({
-          // Default fetch instrumentation only propagates traceparent
-          // to same-origin URLs. Our API lives on a different origin
-          // (Modal / Railway), so we explicitly allow it.
+          // Default behaviour is "same-origin only" for `traceparent`
+          // injection — which silently breaks cross-service nesting
+          // for our Vercel→Modal calls. Allow propagation to ANY
+          // http(s) URL: the only thing that crosses the wire is the
+          // `traceparent` + `tracestate` headers (32-byte trace id +
+          // 16-byte span id), which are not sensitive. Keying off
+          // `NEXT_PUBLIC_API_URL` like we used to is fragile — it
+          // bakes the API origin into the bundle at build time and
+          // any drift (preview, local override, prod swap) silently
+          // disables propagation. A permissive regex avoids that
+          // entire class of bug.
           "@opentelemetry/instrumentation-fetch": {
-            propagateTraceHeaderCorsUrls: [
-              new RegExp(
-                (process.env.NEXT_PUBLIC_API_URL || "").replace(
-                  /[.*+?^${}()|[\]\\]/g,
-                  "\\$&",
-                ) || "^$",
-              ),
-            ],
+            propagateTraceHeaderCorsUrls: [/^https?:\/\//],
             clearTimingResources: true,
           },
-          // Skip the noisier built-ins; keep page load + user
-          // interaction + fetch which is what we actually want for
-          // full-stack traces.
-          "@opentelemetry/instrumentation-xml-http-request": { enabled: false },
+          // Same idea for XHR — anything still using XMLHttpRequest
+          // (some third-party SDKs do) should also propagate context
+          // so its server span links up to the browser trace.
+          "@opentelemetry/instrumentation-xml-http-request": {
+            propagateTraceHeaderCorsUrls: [/^https?:\/\//],
+          },
         }),
       ],
     });
