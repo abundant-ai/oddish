@@ -16,6 +16,8 @@ strip_driver() {
 prod_url=$(strip_driver "$PROD_DATABASE_URL")
 branch_url=$(strip_driver "$ODDISH_DATABASE_URL")
 
+# Skip FK enforcement and don't abort on a single bad row: prod has
+# stray dangling refs we don't care about for a throwaway preview.
 PGCONNECT_TIMEOUT=30 pg_dump \
   --format=custom \
   --data-only \
@@ -26,5 +28,5 @@ PGCONNECT_TIMEOUT=30 pg_dump \
   | pg_restore \
       --no-owner --no-acl \
       --data-only \
-      --exit-on-error \
+      --disable-triggers \
       --dbname="$branch_url"
