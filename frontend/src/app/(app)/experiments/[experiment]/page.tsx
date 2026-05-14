@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
 import { auth } from "@clerk/nextjs/server";
 import {
@@ -7,6 +8,7 @@ import {
 } from "@/lib/backend-config";
 import { decodeExperimentRouteParam } from "@/lib/utils";
 import { ExperimentClientPage } from "./experiment-client";
+import ExperimentDetailLoading from "./loading";
 import type { Task } from "@/lib/types";
 
 export async function generateMetadata({
@@ -72,6 +74,16 @@ async function getInitialTasks(experimentId: string): Promise<Task[] | null> {
   }
 }
 
+async function ExperimentData({ experimentId }: { experimentId: string }) {
+  const initialTasks = await getInitialTasks(experimentId);
+  return (
+    <ExperimentClientPage
+      experimentId={experimentId}
+      initialTasks={initialTasks}
+    />
+  );
+}
+
 export default async function ExperimentDetailPage({
   params,
 }: {
@@ -79,12 +91,11 @@ export default async function ExperimentDetailPage({
 }) {
   const { experiment } = await params;
   const experimentId = decodeExperimentRouteParam(experiment ?? "");
-  const initialTasks = await getInitialTasks(experimentId);
-
+  // Stream the skeleton immediately; the heavy tasks fetch (limit=2000)
+  // resolves in a later chunk instead of blocking TTFB.
   return (
-    <ExperimentClientPage
-      experimentId={experimentId}
-      initialTasks={initialTasks}
-    />
+    <Suspense fallback={<ExperimentDetailLoading />}>
+      <ExperimentData experimentId={experimentId} />
+    </Suspense>
   );
 }

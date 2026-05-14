@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { auth } from "@clerk/nextjs/server";
 import {
   getAuthHeaders,
@@ -10,6 +11,7 @@ import {
 } from "@/lib/dashboard-request";
 import type { DashboardResponse } from "@/lib/types";
 import { DashboardClient } from "./dashboard-client";
+import DashboardLoading from "./loading";
 
 async function getInitialDashboardData(): Promise<DashboardResponse | null> {
   try {
@@ -45,7 +47,18 @@ async function getInitialDashboardData(): Promise<DashboardResponse | null> {
   }
 }
 
-export default async function DashboardPage() {
+async function DashboardData() {
   const initialDashboardData = await getInitialDashboardData();
   return <DashboardClient initialDashboardData={initialDashboardData} />;
+}
+
+export default function DashboardPage() {
+  // Stream the skeleton immediately and resolve the hydrated client in a
+  // later chunk so TTFB isn't blocked on the backend assembling the full
+  // dashboard payload.
+  return (
+    <Suspense fallback={<DashboardLoading />}>
+      <DashboardData />
+    </Suspense>
+  );
 }

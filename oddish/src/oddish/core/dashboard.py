@@ -56,18 +56,22 @@ def _normalize_dashboard_model(model: str | None, provider: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 _dashboard_cache: dict[str, tuple[dict, float]] = {}
-_CACHE_TTL_SECONDS = 60
+# Stale-while-revalidate: hits younger than FRESH are served as-is; hits
+# between FRESH and STALE_MAX are served from cache while a background
+# task recomputes; older than STALE_MAX blocks on a fresh compute.
+_CACHE_FRESH_SECONDS = 10
+_CACHE_STALE_MAX_SECONDS = 300
 _CACHE_MAX_SIZE = 100
+_refresh_in_flight: set[str] = set()
 
 
-def _get_cached(cache_key: str) -> dict | None:
-    if cache_key not in _dashboard_cache:
+def _peek_cached(cache_key: str) -> tuple[dict, float] | None:
+    """Return (payload, age_seconds) without evicting on age."""
+    entry = _dashboard_cache.get(cache_key)
+    if entry is None:
         return None
-    cached, cached_at = _dashboard_cache[cache_key]
-    if time.time() - cached_at > _CACHE_TTL_SECONDS:
-        del _dashboard_cache[cache_key]
-        return None
-    return cached
+    cached, cached_at = entry
+    return cached, time.time() - cached_at
 
 
 def _set_cached(cache_key: str, data: dict) -> None:
@@ -616,36 +620,23 @@ async def get_worker_job_usage_core(
 # ---------------------------------------------------------------------------
 
 
-async def get_dashboard_core(
+async def _compute_dashboard_payload(
     session: AsyncSession,
     *,
-    org_id: str | None = None,
-    tasks_limit: int = 200,
-    tasks_offset: int = 0,
-    experiments_limit: int = 25,
-    experiments_offset: int = 0,
-    experiments_query: str | None = None,
-    experiments_status: str = "all",
-    usage_minutes: int | None = None,
-    include_tasks: bool = True,
-    include_usage: bool = True,
-    include_experiments: bool = True,
-    record_timing: TimingRecorder | None = None,
+    org_id: str | None,
+    tasks_limit: int,
+    tasks_offset: int,
+    experiments_limit: int,
+    experiments_offset: int,
+    experiments_query: str | None,
+    experiments_status: str,
+    usage_minutes: int | None,
+    include_tasks: bool,
+    include_usage: bool,
+    include_experiments: bool,
+    record_timing: TimingRecorder | None,
 ) -> dict:
-    """Combined dashboard data: queues, pipeline, usage, tasks, experiments."""
-
-    cache_key = (
-        f"dashboard:{org_id}:{tasks_limit}:{tasks_offset}:"
-        f"{experiments_limit}:{experiments_offset}:{experiments_query}:"
-        f"{experiments_status}:{usage_minutes}:{include_tasks}:{include_usage}:"
-        f"{include_experiments}"
-    )
-    cached = _get_cached(cache_key)
-    if cached:
-        if record_timing is not None:
-            record_timing("dashboard_cache", 0.0, "Dashboard cache hit")
-        return cached
-
+    """Build the dashboard payload from scratch.  No caching here."""
     is_usage_only_request = (
         include_usage and not include_tasks and not include_experiments
     )
@@ -798,11 +789,134 @@ async def get_dashboard_core(
         "cached": False,
     }
 
-    _set_cached(cache_key, {**response, "cached": True})
     if record_timing is not None:
         record_timing(
             "dashboard_total",
             elapsed_ms(dashboard_started_at),
             "Dashboard core total",
         )
+    return response
+
+
+async def _refresh_dashboard_in_background(
+    cache_key: str,
+    *,
+    org_id: str | None,
+    tasks_limit: int,
+    tasks_offset: int,
+    experiments_limit: int,
+    experiments_offset: int,
+    experiments_query: str | None,
+    experiments_status: str,
+    usage_minutes: int | None,
+    include_tasks: bool,
+    include_usage: bool,
+    include_experiments: bool,
+) -> None:
+    """Recompute the dashboard payload on a fresh session and update the cache.
+
+    Errors are swallowed -- a failed background refresh shouldn't poison
+    the cache or surface as a user-visible error.  The in-flight marker
+    is always cleared so subsequent stale hits can re-schedule.
+    """
+    try:
+        async with get_session() as bg_session:
+            fresh = await _compute_dashboard_payload(
+                bg_session,
+                org_id=org_id,
+                tasks_limit=tasks_limit,
+                tasks_offset=tasks_offset,
+                experiments_limit=experiments_limit,
+                experiments_offset=experiments_offset,
+                experiments_query=experiments_query,
+                experiments_status=experiments_status,
+                usage_minutes=usage_minutes,
+                include_tasks=include_tasks,
+                include_usage=include_usage,
+                include_experiments=include_experiments,
+                record_timing=None,
+            )
+        _set_cached(cache_key, {**fresh, "cached": True})
+    except Exception:
+        # Best-effort revalidation; leave the existing cache entry in place
+        # so the next request still gets fast served-from-cache behavior.
+        pass
+    finally:
+        _refresh_in_flight.discard(cache_key)
+
+
+async def get_dashboard_core(
+    session: AsyncSession,
+    *,
+    org_id: str | None = None,
+    tasks_limit: int = 200,
+    tasks_offset: int = 0,
+    experiments_limit: int = 25,
+    experiments_offset: int = 0,
+    experiments_query: str | None = None,
+    experiments_status: str = "all",
+    usage_minutes: int | None = None,
+    include_tasks: bool = True,
+    include_usage: bool = True,
+    include_experiments: bool = True,
+    record_timing: TimingRecorder | None = None,
+) -> dict:
+    """Combined dashboard data: queues, pipeline, usage, tasks, experiments.
+
+    Stale-while-revalidate cache:
+      * age <= FRESH                -> serve cached as-is
+      * FRESH < age <= STALE_MAX    -> serve cached, kick off background refresh
+      * no entry OR age > STALE_MAX -> block on a fresh compute
+    """
+    cache_key = (
+        f"dashboard:{org_id}:{tasks_limit}:{tasks_offset}:"
+        f"{experiments_limit}:{experiments_offset}:{experiments_query}:"
+        f"{experiments_status}:{usage_minutes}:{include_tasks}:{include_usage}:"
+        f"{include_experiments}"
+    )
+
+    peek = _peek_cached(cache_key)
+    if peek is not None:
+        cached, age = peek
+        if age <= _CACHE_STALE_MAX_SECONDS:
+            if age > _CACHE_FRESH_SECONDS and cache_key not in _refresh_in_flight:
+                # Mark before scheduling so concurrent requests don't all
+                # spawn refreshes for the same key.
+                _refresh_in_flight.add(cache_key)
+                asyncio.create_task(
+                    _refresh_dashboard_in_background(
+                        cache_key,
+                        org_id=org_id,
+                        tasks_limit=tasks_limit,
+                        tasks_offset=tasks_offset,
+                        experiments_limit=experiments_limit,
+                        experiments_offset=experiments_offset,
+                        experiments_query=experiments_query,
+                        experiments_status=experiments_status,
+                        usage_minutes=usage_minutes,
+                        include_tasks=include_tasks,
+                        include_usage=include_usage,
+                        include_experiments=include_experiments,
+                    )
+                )
+            if record_timing is not None:
+                record_timing("dashboard_cache", 0.0, "Dashboard cache hit")
+            return cached
+
+    response = await _compute_dashboard_payload(
+        session,
+        org_id=org_id,
+        tasks_limit=tasks_limit,
+        tasks_offset=tasks_offset,
+        experiments_limit=experiments_limit,
+        experiments_offset=experiments_offset,
+        experiments_query=experiments_query,
+        experiments_status=experiments_status,
+        usage_minutes=usage_minutes,
+        include_tasks=include_tasks,
+        include_usage=include_usage,
+        include_experiments=include_experiments,
+        record_timing=record_timing,
+    )
+    _set_cached(cache_key, {**response, "cached": True})
     return response
