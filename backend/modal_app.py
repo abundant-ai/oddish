@@ -119,6 +119,12 @@ ENV_VARS = {
     # Claude CLI refuses --dangerously-skip-permissions when running as root (Modal default).
     # Setting IS_SANDBOX=1 tells it we're in a sandboxed environment and bypasses this check.
     "IS_SANDBOX": "1",
+    # Route Claude Code through AWS Bedrock by default. The token itself lives
+    # in the runtime Modal secret (AWS_BEARER_TOKEN_BEDROCK); this flag just
+    # flips the default route. harbor_runner._scoped_bedrock_env still unsets
+    # this per-trial for non-Bedrock model ids so the ANTHROPIC_API_KEY path
+    # keeps working when an `anthropic/*` model is requested.
+    "CLAUDE_CODE_USE_BEDROCK": "1",
     # Baked into the image so the container sees the same identity the
     # deploy host did (the per-PR secret gate above depends on it).
     "MODAL_APP_NAME": MODAL_APP_NAME,
