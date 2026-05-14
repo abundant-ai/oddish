@@ -8,12 +8,16 @@
 # it never lands in a release/artifact/bucket, which matters because
 # the repo is public.
 #
-# Restore order is auth-data-first then public-schema-and-data, so
-# foreign keys from public.* into auth.users(id) validate.
-# Supabase provisions auth.* DDL on every new branch, so we only need
-# to load row data into it; the public schema is empty on the branch
-# (Supabase migrations dir is intentionally empty — Alembic is the
-# source of truth) so we restore both DDL and data.
+# Supabase branch creation already clones the project's full DDL
+# (public schema, types, indexes, constraints, triggers, etc.), so we
+# only dump and restore *data*. No --schema=auth: public.* tables
+# don't FK into auth.*, the postgres role on the branch isn't owner
+# of auth.audit_log_entries so --disable-triggers fails there, and
+# preview app flows don't need prod auth rows.
+#
+# Restore is single-threaded because pg_dump --data-only writes COPY
+# statements in FK-dependency order — parallel restore (--jobs >1)
+# would interleave them and trip foreign-key constraints.
 set -uo pipefail
 
 : "${PROD_DATABASE_URL:?PROD_DATABASE_URL not set}"
@@ -32,44 +36,24 @@ branch_url=$(strip_driver "$ODDISH_DATABASE_URL")
 dump_dir=$(mktemp -d)
 trap 'rm -rf "$dump_dir"' EXIT
 
-echo "dumping auth schema (data only) from prod..." >&2
+echo "dumping prod public-schema data..." >&2
 PGCONNECT_TIMEOUT=30 pg_dump \
   --format=custom \
-  --schema=auth \
   --data-only \
-  --no-owner --no-acl \
-  --no-publications --no-subscriptions \
-  --file="$dump_dir/auth.dump" \
-  "$prod_url"
-
-echo "dumping public schema (DDL + data) from prod..." >&2
-PGCONNECT_TIMEOUT=30 pg_dump \
-  --format=custom \
   --schema=public \
   --no-owner --no-acl \
   --no-publications --no-subscriptions \
-  --file="$dump_dir/public.dump" \
+  --file="$dump_dir/data.dump" \
   "$prod_url"
 
 ls -lh "$dump_dir" >&2
 
-# --disable-triggers needs superuser on the destination, which the
-# Supabase branch `postgres` role has. Without it, restoring rows
-# into auth.* tables that have internal triggers may fail.
-echo "restoring auth data to preview branch..." >&2
+echo "restoring data to preview branch..." >&2
 pg_restore \
   --no-owner --no-acl \
   --data-only \
-  --disable-triggers \
-  --single-transaction \
+  --exit-on-error \
   --dbname="$branch_url" \
-  "$dump_dir/auth.dump"
-
-echo "restoring public schema + data to preview branch..." >&2
-pg_restore \
-  --no-owner --no-acl \
-  --jobs=4 \
-  --dbname="$branch_url" \
-  "$dump_dir/public.dump"
+  "$dump_dir/data.dump"
 
 echo "restore complete" >&2
