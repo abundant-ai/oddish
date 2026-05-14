@@ -15,6 +15,11 @@ import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { TrialDetailPanel } from "@/components/trial-detail-panel";
 import { TaskFilesPanel } from "@/components/task-files-panel";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
+import { formatCostUsd } from "@/lib/format";
+import {
+  EMPTY_TRIAL_AGGREGATE,
+  accumulateTrial,
+} from "@/lib/trial-aggregation";
 import type { Task, Trial } from "@/lib/types";
 import { Loader2 } from "lucide-react";
 import {
@@ -92,99 +97,47 @@ type ExperimentSummary = {
 };
 
 function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
+  const acc = { ...EMPTY_TRIAL_AGGREGATE };
+  // ``rewardSuccess`` mirrors ``passCount`` from the trials path but folds in
+  // task-level fallbacks for tasks whose trials aren't loaded yet.
   let rewardSuccess = 0;
-  let rewardSum = 0;
-  let rewardTotal = 0;
-  let totalTrials = 0;
-  let completedTrials = 0;
-  let failedTrials = 0;
-
-  let passCount = 0;
-  let partialCount = 0;
-  let failCount = 0;
-  let harnessErrorCount = 0;
-  let pendingCount = 0;
-
-  let costUsd = 0;
-  let costTrialCount = 0;
-  let costHasEstimated = false;
-  let costHasNative = false;
+  let totalTrialsFallback = 0;
+  let completedFallback = 0;
+  let failedFallback = 0;
+  let rewardSumFallback = 0;
+  let rewardTotalFallback = 0;
 
   for (const task of tasksForExperiment) {
     const trials = task.trials ?? [];
     if (trials.length > 0) {
-      // Compute from the (already version-filtered) trials array
-      for (const trial of trials) {
-        if (trial.cost_usd != null) {
-          costUsd += trial.cost_usd;
-          costTrialCount += 1;
-          if (trial.cost_is_estimated === true) {
-            costHasEstimated = true;
-          } else {
-            costHasNative = true;
-          }
-        }
-        if (trial.status === "success" && trial.reward != null) {
-          rewardSum += trial.reward;
-          rewardTotal++;
-          if (trial.reward === 1) {
-            passCount++;
-            rewardSuccess++;
-          } else if (trial.reward === 0) {
-            failCount++;
-          } else {
-            partialCount++;
-          }
-        } else if (trial.status === "success" && trial.reward == null) {
-          // Completed but reward not yet set
-        } else if (trial.status === "failed") {
-          harnessErrorCount++;
-        } else {
-          pendingCount++;
-        }
-        if (trial.status === "success") {
-          completedTrials++;
-        } else if (trial.status === "failed") {
-          failedTrials++;
-        }
-      }
-      totalTrials += trials.length;
+      for (const trial of trials) accumulateTrial(acc, trial);
     } else {
-      // Trials not loaded yet — fall back to server-provided aggregates
       rewardSuccess += task.reward_success ?? 0;
-      rewardSum += task.reward_sum ?? task.reward_success ?? 0;
-      rewardTotal += task.reward_total ?? 0;
-      totalTrials += task.total;
-      completedTrials += task.completed;
-      failedTrials += task.failed;
+      rewardSumFallback += task.reward_sum ?? task.reward_success ?? 0;
+      rewardTotalFallback += task.reward_total ?? 0;
+      totalTrialsFallback += task.total;
+      completedFallback += task.completed;
+      failedFallback += task.failed;
     }
   }
 
   return {
-    rewardSuccess,
-    rewardSum,
-    rewardTotal,
-    totalTrials,
-    completedTrials,
-    failedTrials,
-    passCount,
-    partialCount,
-    failCount,
-    harnessErrorCount,
-    pendingCount,
-    costUsd,
-    costTrialCount,
-    costHasEstimated,
-    costHasNative,
+    rewardSuccess: rewardSuccess + acc.passCount,
+    rewardSum: acc.rewardSum + rewardSumFallback,
+    rewardTotal: acc.rewardTotal + rewardTotalFallback,
+    totalTrials: acc.trialCount + totalTrialsFallback,
+    completedTrials: acc.completed + completedFallback,
+    failedTrials: acc.failed + failedFallback,
+    passCount: acc.passCount,
+    partialCount: acc.partialCount,
+    failCount: acc.failCount,
+    harnessErrorCount: acc.harnessErrorCount,
+    pendingCount: acc.pendingCount,
+    costUsd: acc.costUsd,
+    costTrialCount: acc.costTrialCount,
+    costHasEstimated: acc.costHasEstimated,
+    costHasNative: acc.costHasNative,
   };
-}
-
-function formatCostUsd(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "$0.00";
-  if (value < 0.01) return `$${value.toFixed(4)}`;
-  if (value < 1) return `$${value.toFixed(3)}`;
-  if (value < 100) return `$${value.toFixed(2)}`;
-  return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
 function ExperimentHeaderMeta({
