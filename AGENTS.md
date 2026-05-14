@@ -311,7 +311,10 @@ ANTHROPIC_API_KEY=...
 OPENAI_API_KEY=...
 GEMINI_API_KEY=...
 
-# AWS Bedrock (alternate route for Claude models)
+# AWS Bedrock — the default route for Claude models on the Modal
+# deployment (the image sets CLAUDE_CODE_USE_BEDROCK=1). Provide the
+# bearer token here; ANTHROPIC_API_KEY above is used as the fallback
+# route for `anthropic/...` model ids.
 AWS_BEARER_TOKEN_BEDROCK=...
 
 # Optional sandbox credentials
@@ -323,14 +326,24 @@ MODAL_TOKEN_SECRET=...
 ### Claude model routing: Anthropic API vs Bedrock
 
 Claude models can be called either via the Anthropic API or via AWS Bedrock.
-The model string tells the provider layer which route to take:
+**On the Modal deployment, AWS Bedrock is the default route** — the image
+bakes in `CLAUDE_CODE_USE_BEDROCK=1`, and Claude Code decides its route by
+inspecting the environment, not the `--model` flag. The model id format is
+what flips an individual trial back to the Anthropic API:
 
-- `anthropic/claude-opus-4-7` — routes through the Anthropic API using
-  `ANTHROPIC_API_KEY`.
 - `bedrock/global.anthropic.claude-opus-4-7` — routes through AWS Bedrock
   using `AWS_BEARER_TOKEN_BEDROCK`. The `global.` prefix selects the
   cross-region inference profile; swap it for a region prefix
   (`us.`, `eu.`, `apac.`) if you need region-pinned inference.
+- `anthropic/claude-opus-4-7` — a non-Bedrock-style id. Oddish strips the
+  Bedrock env vars for that trial so it routes through the Anthropic API
+  using `ANTHROPIC_API_KEY` instead.
+
+This applies to both trial execution (`harbor_runner._scoped_bedrock_env`)
+and trial analysis (the `claude -p` classifier). Bedrock and the Anthropic
+API use different model id formats, so the id you pass must match the route:
+Bedrock needs the `anthropic.` / region-prefixed form, the Anthropic API
+needs the plain `claude-...` form.
 
 Pass these strings anywhere a model is accepted: `oddish run -m ...`, sweep
 configs (`model_name:`), or `--n-concurrent` overrides. Concurrency limits

@@ -40,6 +40,43 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 ANALYSIS_MODEL = "claude-haiku-4-5"
 VERDICT_MODEL = "gpt-5.2"
 
+# Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
+# "us.anthropic.claude-opus-4-7-20250514-v1:0".
+_BEDROCK_REGION_PREFIXES: tuple[str, ...] = ("us.", "eu.", "apac.", "apn.", "global.")
+
+# Environment variables that put Claude Code into Bedrock mode. The Modal image
+# sets these globally so Bedrock is the default route; callers that run Claude
+# against a non-Bedrock model id strip them so the request falls back to
+# ANTHROPIC_API_KEY (Anthropic and Bedrock use different model id formats).
+BEDROCK_ENV_VARS: tuple[str, ...] = (
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "CLAUDE_CODE_USE_BEDROCK",
+)
+
+
+def looks_like_bedrock_model_id(model: str | None) -> bool:
+    """Return True if *model* is a Bedrock-style id that should route through AWS.
+
+    Handles the three shapes AWS Bedrock accepts:
+      * ARNs: ``arn:aws:bedrock:...``
+      * Native ids: ``anthropic.claude-...``
+      * Cross-region inference profiles: ``us.anthropic.claude-...``
+    """
+    if not model:
+        return False
+    tail = model.split("/", 1)[-1].strip().lower()
+    if not tail:
+        return False
+    if tail.startswith("arn:aws:bedrock:"):
+        return True
+    if tail.startswith("anthropic."):
+        return True
+    if any(tail.startswith(p) for p in _BEDROCK_REGION_PREFIXES) and (
+        ".anthropic." in tail
+    ):
+        return True
+    return False
+
 
 def normalize_model_id(model: str | None) -> str | None:
     """Canonicalize model identifiers for storage and display.

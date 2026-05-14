@@ -10,7 +10,12 @@ from harbor.models.trial.result import TrialResult
 from openai import OpenAI
 from rich.console import Console
 
-from oddish.config import ANALYSIS_MODEL, VERDICT_MODEL
+from oddish.config import (
+    ANALYSIS_MODEL,
+    BEDROCK_ENV_VARS,
+    VERDICT_MODEL,
+    looks_like_bedrock_model_id,
+)
 from oddish.analyze._sdk_utils import Colors, print_process_stream
 
 from .models import (
@@ -246,12 +251,23 @@ class TrialClassifier:
                 flush=True,
             )
 
+        # The Modal image sets the Bedrock env vars globally so trials default
+        # to Bedrock. Claude Code only inspects the environment, not --model, to
+        # decide its route, so a non-Bedrock analysis model id (e.g. the default
+        # "claude-haiku-4-5") would otherwise be sent to Bedrock, which expects
+        # a different id format. Strip the Bedrock signals here so the analysis
+        # CLI falls back to ANTHROPIC_API_KEY for non-Bedrock model ids.
+        env = os.environ.copy()
+        if not looks_like_bedrock_model_id(self._model):
+            for name in BEDROCK_ENV_VARS:
+                env.pop(name, None)
+
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=str(trial_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=os.environ.copy(),
+            env=env,
         )
 
         try:

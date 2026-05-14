@@ -25,6 +25,7 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialHookEvent
 from harbor.models.job.result import JobResult
 
+from oddish.config import BEDROCK_ENV_VARS, looks_like_bedrock_model_id
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 
@@ -33,60 +34,28 @@ _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _MIN_REQUIRED_FREE_GB = 5.0
 _MIN_REQUIRED_FREE_INODES = 1024
 
-# Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
-# "us.anthropic.claude-opus-4-7-20250514-v1:0".
-_BEDROCK_REGION_PREFIXES: tuple[str, ...] = ("us.", "eu.", "apac.", "apn.", "global.")
-_BEDROCK_ENV_VARS: tuple[str, ...] = (
-    "AWS_BEARER_TOKEN_BEDROCK",
-    "CLAUDE_CODE_USE_BEDROCK",
-)
-
-
-def _looks_like_bedrock_model_id(model: str | None) -> bool:
-    """Return True if *model* is a Bedrock-style id that should route through AWS.
-
-    Handles the three shapes AWS Bedrock accepts:
-      * ARNs: ``arn:aws:bedrock:...``
-      * Native ids: ``anthropic.claude-...``
-      * Cross-region inference profiles: ``us.anthropic.claude-...``
-    """
-    if not model:
-        return False
-    tail = model.split("/", 1)[-1].strip().lower()
-    if not tail:
-        return False
-    if tail.startswith("arn:aws:bedrock:"):
-        return True
-    if tail.startswith("anthropic."):
-        return True
-    if any(tail.startswith(p) for p in _BEDROCK_REGION_PREFIXES) and (
-        ".anthropic." in tail
-    ):
-        return True
-    return False
-
 
 @contextlib.contextmanager
 def _scoped_bedrock_env(model: str | None) -> Iterator[None]:
     """Route a trial between Anthropic's API and AWS Bedrock by model id.
 
     Harbor's ``ClaudeCodeAgent._is_bedrock_mode()`` only inspects ``os.environ``,
-    so with ``AWS_BEARER_TOKEN_BEDROCK`` set globally every claude-code trial
-    defaults to Bedrock.  When the trial's model id does not look Bedrock-native
-    (ARNs, ``anthropic.*`` ids, or region-prefixed inference profiles), we
-    temporarily unset the Bedrock signals for the process so Harbor falls back
-    to ``ANTHROPIC_API_KEY``.
+    so with the Bedrock env vars set globally every claude-code trial defaults
+    to Bedrock.  When the trial's model id does not look Bedrock-native (ARNs,
+    ``anthropic.*`` ids, or region-prefixed inference profiles), we temporarily
+    unset the Bedrock signals for the process so Harbor falls back to
+    ``ANTHROPIC_API_KEY``.
 
     Safe on Modal single-job workers (one trial per container).  In the
     standalone local worker multiple trials can share a process, but local dev
     typically does not set ``AWS_BEARER_TOKEN_BEDROCK`` so the race does not
     manifest in practice.
     """
-    if _looks_like_bedrock_model_id(model):
+    if looks_like_bedrock_model_id(model):
         yield
         return
     previous: dict[str, str] = {
-        name: os.environ.pop(name) for name in _BEDROCK_ENV_VARS if name in os.environ
+        name: os.environ.pop(name) for name in BEDROCK_ENV_VARS if name in os.environ
     }
     try:
         yield
