@@ -37,7 +37,7 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-ANALYSIS_MODEL = "claude-haiku-4-5"
+ANALYSIS_MODEL = "anthropic.claude-haiku-4-5-20251001-v1:0"
 VERDICT_MODEL = "gpt-5.2"
 
 # Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
