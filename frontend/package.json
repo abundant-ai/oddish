@@ -18,6 +18,10 @@
   ],
   "dependencies": {
     "@clerk/nextjs": "7.2.5",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/auto-instrumentations-web": "0.63.0",
+    "@pydantic/logfire-browser": "0.15.1",
+    "@vercel/otel": "2.1.2",
     "@lobehub/icons": "5.5.4",
     "@radix-ui/react-accordion": "1.2.12",
     "@radix-ui/react-alert-dialog": "1.1.15",

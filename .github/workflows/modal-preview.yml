@@ -136,7 +136,7 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Install Supabase CLI
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@v2
         with:
           version: latest
 
@@ -155,7 +155,7 @@ jobs:
         continue-on-error: true
         # `|| true` so a fresh PR (no app to stop) is cleanly green
         # instead of red-with-continue-on-error.
-        run: uv run modal app stop --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME" || true
+        run: uv run modal app stop -y --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME" || true
 
       - name: Ensure Supabase preview branch with prod data
         id: supabase_branch
@@ -197,7 +197,13 @@ jobs:
       - name: Deploy preview backend
         id: deploy_modal
         if: ${{ needs.detect-changes.outputs.deploy_backend == 'true' || steps.supabase_branch.outputs.branch_was_created == 'true' }}
+        shell: bash
         run: |
+          # Without pipefail, `modal deploy ... | tee` masks deploy
+          # failures behind tee's exit code, leaving the job green
+          # while containers crashloop on import errors. The readiness
+          # step then times out 3 minutes later with no obvious cause.
+          set -euo pipefail
           deploy_log="$(mktemp)"
           uv run modal deploy deploy.py 2>&1 | tee "$deploy_log"
           modal_api_url="$(python "$GITHUB_WORKSPACE/.github/scripts/preview/extract_modal_api_url.py" "$deploy_log")"
@@ -300,20 +306,20 @@ jobs:
           python-version: "3.13"
 
       - name: Install Modal
-        run: python -m pip install modal
+        run: python -m pip install --quiet modal
 
       - name: Install Supabase CLI
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@v2
         with:
           version: latest
 
       - name: Stop preview backend
         continue-on-error: true
-        run: modal app stop oddish-pr-${{ github.event.pull_request.number }}
+        run: modal app stop -y "oddish-pr-${{ github.event.pull_request.number }}"
 
       - name: Delete per-PR Modal database secret
         continue-on-error: true
-        run: modal secret delete --env "$MODAL_ENVIRONMENT" oddish-pr-${{ github.event.pull_request.number }}-db
+        run: modal secret delete --env "$MODAL_ENVIRONMENT" "oddish-pr-${{ github.event.pull_request.number }}-db"
 
       - name: Delete Supabase preview branch
         continue-on-error: true

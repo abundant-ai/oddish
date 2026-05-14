@@ -40,6 +40,10 @@ dependencies = [
 
     # Environment loading
     "python-dotenv==1.2.2",
+
+    # Observability (Pydantic Logfire). Extras pull in the OpenTelemetry
+    # instrumentations we wire up in ``backend/observability.py``.
+    "logfire[asyncpg,fastapi,httpx,sqlalchemy,system-metrics]==4.33.0",
 ]
 
 [project.optional-dependencies]
@@ -66,6 +70,7 @@ py-modules = [
     "endpoints",
     "modal_app",
     "models",
+    "observability",
     "serve",
 ]
 
