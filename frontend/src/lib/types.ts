@@ -220,6 +220,42 @@ export interface TaskBrowseResponse {
   has_more: boolean;
 }
 
+export interface TaskVersionSummary {
+  id: string;
+  version: number;
+  message?: string | null;
+  created_at: string;
+  is_current: boolean;
+  trial_count: number;
+  completed_count: number;
+  failed_count: number;
+  pass_count: number;
+  partial_count: number;
+  fail_count: number;
+  pending_count: number;
+  reward_sum: number;
+  reward_total: number;
+  cost_usd: number;
+  cost_trial_count: number;
+  cost_has_estimated: boolean;
+  cost_has_native: boolean;
+  last_run_at?: string | null;
+}
+
+export interface TaskCostTotals {
+  cost_usd: number;
+  cost_trial_count: number;
+  cost_has_estimated: boolean;
+  cost_has_native: boolean;
+  total_trials: number;
+}
+
+export interface TaskDetailResponse {
+  task: Task;
+  versions: TaskVersionSummary[];
+  totals: TaskCostTotals;
+}
+
 // Queue statistics keyed by queue key
 export interface QueueStats {
   [queueKey: string]: {

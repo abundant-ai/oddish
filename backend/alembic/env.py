@@ -101,9 +101,14 @@ async def run_async_migrations() -> None:
     # Use the asyncpg URL to avoid psycopg2 dependency.
     connectable = create_async_engine(
         db_url,
-        # Disable prepared statement caching for compatibility with
-        # transaction/statement poolers (PgBouncer, Supavisor, etc).
-        connect_args={"statement_cache_size": 0},
+        connect_args={
+            # Disable prepared statement caching for compatibility with
+            # transaction/statement poolers (PgBouncer, Supavisor, etc).
+            "statement_cache_size": 0,
+            # Supabase preview pooler hands out backends with an empty
+            # search_path; pin it at connect time so the first DDL works.
+            "server_settings": {"search_path": "public"},
+        },
         poolclass=pool.NullPool,
     )
 

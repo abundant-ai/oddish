@@ -234,18 +234,17 @@ jobs:
         # because the CLI ignores MODAL_ENVIRONMENT for this subcommand.
         run: timeout --preserve-status 45s uv run modal app logs --env "$MODAL_ENVIRONMENT" --timestamps "$MODAL_APP_NAME" 2>&1 | tail -300 || true
 
-      # Vercel setup runs only on the first deploy (newly-created Supabase
-      # branch). MODAL_APP_NAME is keyed on the PR number, so the Modal URL
-      # is stable across subsequent pushes — Vercel's GitHub integration
-      # auto-deploys those with the already-set NEXT_PUBLIC_API_URL.
-      # Node + Vercel CLI are pre-installed in the base image.
+      # Run any time Modal redeployed (not just on first branch creation):
+      # if the first run failed before reaching here, every later push had
+      # branch_was_created=false and the preview kept serving prod. The
+      # vercel env add / redeploy below are idempotent.
       - name: Link Vercel project
-        if: ${{ steps.supabase_branch.outputs.branch_was_created == 'true' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
+        if: ${{ steps.deploy_modal.outputs.modal_api_url != '' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         working-directory: frontend
         run: vercel pull --yes --environment=preview --git-branch="$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
 
       - name: Point Vercel preview to Modal preview
-        if: ${{ steps.supabase_branch.outputs.branch_was_created == 'true' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
+        if: ${{ steps.deploy_modal.outputs.modal_api_url != '' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         working-directory: frontend
         env:
           MODAL_API_URL: ${{ steps.deploy_modal.outputs.modal_api_url }}
@@ -256,7 +255,7 @@ jobs:
 
       - name: Redeploy Vercel preview with updated env
         id: redeploy_vercel
-        if: ${{ steps.supabase_branch.outputs.branch_was_created == 'true' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
+        if: ${{ steps.deploy_modal.outputs.modal_api_url != '' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         run: python "$GITHUB_WORKSPACE/.github/scripts/preview/redeploy_vercel.py"
 
       - name: Summarize preview URLs
