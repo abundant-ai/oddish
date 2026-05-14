@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { SignInButton, useClerk, useUser } from "@clerk/nextjs";
+import { useClerk, useUser } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -25,7 +25,7 @@ import {
 
 export function Nav() {
   const pathname = usePathname();
-  const { user, isLoaded, isSignedIn } = useUser();
+  const { user } = useUser();
   const { signOut } = useClerk();
 
   return (
@@ -75,14 +75,12 @@ export function Nav() {
           {/* Right side - consolidated settings menu */}
           <div className="flex items-center gap-2">
             <ThemeToggle />
-            {isLoaded && isSignedIn && (
-              <>
-              <Button
-                variant="ghost"
-                size="sm"
-                asChild
-                className="gap-2 text-foreground hover:text-foreground"
-              >
+            <Button
+              variant="ghost"
+              size="sm"
+              asChild
+              className="gap-2 text-foreground hover:text-foreground"
+            >
                 <a
                   href="https://github.com/abundant-ai/oddish/blob/main/DOCS.md"
                   target="_blank"
@@ -156,15 +154,6 @@ export function Nav() {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-              </>
-            )}
-            {isLoaded && !isSignedIn && (
-              <SignInButton mode="modal" fallbackRedirectUrl="/dashboard">
-                <Button variant="outline" size="sm">
-                  Sign in
-                </Button>
-              </SignInButton>
-            )}
           </div>
         </div>
       </div>
