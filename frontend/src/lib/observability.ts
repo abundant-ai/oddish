@@ -86,6 +86,18 @@ export function ensureLogfireConfigured(): void {
         process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ||
         undefined,
       environment: resolveEnvironment(),
+      // Default `BatchSpanProcessor` buffers for 5s, which is fine
+      // for throughput but means backend spans (children) get
+      // exported by Modal long before the parent browser span
+      // leaves the SDK queue. Logfire then shows the trace as
+      // "missing its root" until the next flush. Tighten the
+      // interval so the parent reaches Logfire within a second of
+      // the child, and cap the batch size so a single tick can't
+      // hold the queue for the full interval.
+      batchSpanProcessorConfig: {
+        scheduledDelayMillis: 1000,
+        maxExportBatchSize: 64,
+      },
       // Tag every browser span with the deployment provenance so a
       // preview trace is filterable down to a single PR — without
       // this only the backend + Next.js edge spans carry `oddish.pr`
@@ -128,10 +140,47 @@ export function ensureLogfireConfigured(): void {
       ],
     });
     configured = true;
+    installFlushHandlers();
   } catch (err) {
     // Never let observability take down the app.
     console.warn("Logfire browser configure failed", err);
   }
+}
+
+/**
+ * Force-flush queued spans when the page is about to go away.
+ *
+ * Without this, a buffer of in-flight spans (the root browser-fetch
+ * span on a navigation, a click handler's `withUserAction` span,
+ * etc.) gets dropped when the user closes the tab or navigates,
+ * and Logfire ends up with permanently parentless backend spans.
+ *
+ * We listen for both `visibilitychange → hidden` (covers tab close,
+ * background, mobile-app switch) and `pagehide` (covers
+ * navigation, BFCache eviction). `forceFlush` is best-effort;
+ * we deliberately don't await it because the browser won't keep
+ * the page alive for us.
+ */
+function installFlushHandlers(): void {
+  if (typeof document === "undefined") return;
+
+  const flush = () => {
+    try {
+      const provider = trace.getTracerProvider() as {
+        forceFlush?: () => Promise<void>;
+      };
+      provider.forceFlush?.().catch(() => {
+        /* swallow; flushing is best-effort on unload */
+      });
+    } catch {
+      /* swallow */
+    }
+  };
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flush();
+  });
+  window.addEventListener("pagehide", flush);
 }
 
 /**
