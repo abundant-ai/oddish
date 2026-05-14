@@ -10,7 +10,7 @@ import logging
 from typing import Annotated
 
 import yaml
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -26,17 +26,18 @@ from oddish.core.reports import (
     build_report_response,
     build_share_response,
     compute_backfill_plan,
+    create_report_from_spec,
     ensure_report_public,
     execute_backfill,
     get_report_for_org,
     list_backfill_events,
     materialize_spec_into_report,
+    parse_spec_yaml,
     resolve_report_cells,
     serialize_report_to_spec,
 )
 from oddish.db import (
     ReportModel,
-    generate_id,
     get_session,
 )
 from oddish.schemas import (
@@ -88,42 +89,40 @@ async def create_report(
     spec: ReportSpec,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> ReportResponse:
-    """Create a report from a validated spec.
-
-    Unpacks the spec into the relational child tables in a single
-    transaction. The response includes the resolved cell grid so the
-    caller can immediately render it.
-    """
+    """Create a report from a JSON-encoded spec."""
     auth.require_scope(APIKeyScope.TASKS)
-
     async with get_session() as session:
-        report = ReportModel(
-            id=generate_id(),
-            name=spec.name,
-            description=spec.description,
+        report = await create_report_from_spec(
+            session,
+            spec,
             org_id=auth.org_id,
             created_by_user_id=auth.user_id,
-            spec_version=spec.version,
-            trials_per_cell=spec.trials_per_cell,
-            selection_strategy=spec.selection.strategy,
-            selection_seed=spec.selection.seed,
-            selection_tie_breaker=spec.selection.tie_breaker,
-            source_include_superseded=spec.source.include_superseded,
-            source_status=[str(s) for s in spec.source.status],
-            backfill_enabled=spec.backfill.enabled,
-            backfill_priority=spec.backfill.priority,
         )
-        session.add(report)
-        await session.flush()
+        rows, columns, cells = await resolve_report_cells(session, report)
+        return build_report_response(report, rows, columns, cells)
 
-        await materialize_spec_into_report(
-            session, report, spec, org_id=auth.org_id
-        )
-        await session.commit()
 
-        # Reload with eager-loaded relationships to render the response.
-        report = await get_report_for_org(
-            session, report_id=report.id, org_id=auth.org_id
+@router.post("/reports.yaml", response_model=ReportResponse)
+async def create_report_from_yaml(
+    request: Request,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> ReportResponse:
+    """Create a report from a raw YAML (or JSON) body.
+
+    Lets the UI's "Create report" form post the textarea verbatim
+    without a client-side YAML→JSON conversion step. Server-side
+    parsing means the error message comes from the same pydantic /
+    pyyaml stack the CLI uses, so the UI surfaces the same diagnostics.
+    """
+    auth.require_scope(APIKeyScope.TASKS)
+    body_bytes = await request.body()
+    spec = parse_spec_yaml(body_bytes.decode("utf-8"))
+    async with get_session() as session:
+        report = await create_report_from_spec(
+            session,
+            spec,
+            org_id=auth.org_id,
+            created_by_user_id=auth.user_id,
         )
         rows, columns, cells = await resolve_report_cells(session, report)
         return build_report_response(report, rows, columns, cells)

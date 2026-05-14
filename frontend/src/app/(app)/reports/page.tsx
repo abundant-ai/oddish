@@ -4,6 +4,7 @@ import Link from "next/link";
 import useSWR from "swr";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { ReportCreateDialog } from "@/components/report-create-dialog";
 import { fetcher } from "@/lib/api";
 import type { ReportListItem } from "@/lib/types";
 import { FileSpreadsheet } from "lucide-react";
@@ -18,9 +19,12 @@ export default function ReportsPage() {
     <div className="space-y-4">
       <Card>
         <CardHeader className="py-3">
-          <div className="flex items-center gap-2">
-            <FileSpreadsheet className="h-4 w-4 text-muted-foreground" />
-            <div className="text-sm font-medium">Reports</div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <FileSpreadsheet className="h-4 w-4 text-muted-foreground" />
+              <div className="text-sm font-medium">Reports</div>
+            </div>
+            <ReportCreateDialog />
           </div>
         </CardHeader>
         <CardContent>

@@ -50,6 +50,7 @@ from oddish.db import (
     TaskVersionModel,
     TrialModel,
     TrialStatus,
+    generate_id,
 )
 from oddish.schemas import (
     AgentModelPair,
@@ -217,6 +218,72 @@ async def _resolve_task_version_id(
             detail=f"task '{entry.task_id}' has no version {entry.version}",
         )
     return task_version.id, task_version, task
+
+
+def parse_spec_yaml(body: str) -> ReportSpec:
+    """Parse a YAML (or JSON) body into a validated ``ReportSpec``.
+
+    ``yaml.safe_load`` accepts JSON too, so callers can use either
+    serialization. Raises ``HTTPException(400)`` with the pydantic /
+    yaml error embedded so the UI can surface it inline.
+    """
+    import yaml as _yaml
+    from pydantic import ValidationError as _ValidationError
+
+    try:
+        payload = _yaml.safe_load(body)
+    except _yaml.YAMLError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid YAML: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Spec must be a YAML/JSON mapping at the top level",
+        )
+    try:
+        return ReportSpec.model_validate(payload)
+    except _ValidationError as exc:
+        raise HTTPException(status_code=400, detail=exc.errors()) from exc
+
+
+async def create_report_from_spec(
+    session: AsyncSession,
+    spec: ReportSpec,
+    *,
+    org_id: str | None,
+    created_by_user_id: str | None,
+) -> ReportModel:
+    """Create a report row and unpack the spec into child tables.
+
+    Shared by every entry point that creates a report (authed JSON,
+    authed YAML, OSS standalone). Commits the transaction so callers
+    only need to reload + render afterwards.
+    """
+    report = ReportModel(
+        id=generate_id(),
+        name=spec.name,
+        description=spec.description,
+        org_id=org_id,
+        created_by_user_id=created_by_user_id,
+        spec_version=spec.version,
+        trials_per_cell=spec.trials_per_cell,
+        selection_strategy=spec.selection.strategy,
+        selection_seed=spec.selection.seed,
+        selection_tie_breaker=spec.selection.tie_breaker,
+        source_include_superseded=spec.source.include_superseded,
+        source_status=[str(s) for s in spec.source.status],
+        backfill_enabled=spec.backfill.enabled,
+        backfill_priority=spec.backfill.priority,
+    )
+    session.add(report)
+    await session.flush()
+    await materialize_spec_into_report(session, report, spec, org_id=org_id)
+    await session.commit()
+    reloaded = await get_report_for_org(
+        session, report_id=report.id, org_id=org_id
+    )
+    return reloaded
 
 
 async def materialize_spec_into_report(

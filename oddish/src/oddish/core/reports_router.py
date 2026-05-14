@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import yaml
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -24,17 +24,18 @@ from oddish.core.reports import (
     build_report_response,
     build_share_response,
     compute_backfill_plan,
+    create_report_from_spec,
     ensure_report_public,
     execute_backfill,
     get_report_for_org,
     list_backfill_events,
     materialize_spec_into_report,
+    parse_spec_yaml,
     resolve_report_cells,
     serialize_report_to_spec,
 )
 from oddish.db import (
     ReportModel,
-    generate_id,
     get_session,
 )
 from oddish.schemas import (
@@ -60,30 +61,21 @@ _OSS_ORG_ID: str | None = None
 @router.post("/reports", response_model=ReportResponse)
 async def create_report(spec: ReportSpec) -> ReportResponse:
     async with get_session() as session:
-        report = ReportModel(
-            id=generate_id(),
-            name=spec.name,
-            description=spec.description,
-            org_id=_OSS_ORG_ID,
-            spec_version=spec.version,
-            trials_per_cell=spec.trials_per_cell,
-            selection_strategy=spec.selection.strategy,
-            selection_seed=spec.selection.seed,
-            selection_tie_breaker=spec.selection.tie_breaker,
-            source_include_superseded=spec.source.include_superseded,
-            source_status=[str(s) for s in spec.source.status],
-            backfill_enabled=spec.backfill.enabled,
-            backfill_priority=spec.backfill.priority,
+        report = await create_report_from_spec(
+            session, spec, org_id=_OSS_ORG_ID, created_by_user_id=None
         )
-        session.add(report)
-        await session.flush()
-        await materialize_spec_into_report(
-            session, report, spec, org_id=_OSS_ORG_ID
-        )
-        await session.commit()
+        rows, columns, cells = await resolve_report_cells(session, report)
+        return build_report_response(report, rows, columns, cells)
 
-        report = await get_report_for_org(
-            session, report_id=report.id, org_id=_OSS_ORG_ID
+
+@router.post("/reports.yaml", response_model=ReportResponse)
+async def create_report_from_yaml(request: Request) -> ReportResponse:
+    """Create a report from a raw YAML body (mirrors the authed endpoint)."""
+    body_bytes = await request.body()
+    spec = parse_spec_yaml(body_bytes.decode("utf-8"))
+    async with get_session() as session:
+        report = await create_report_from_spec(
+            session, spec, org_id=_OSS_ORG_ID, created_by_user_id=None
         )
         rows, columns, cells = await resolve_report_cells(session, report)
         return build_report_response(report, rows, columns, cells)
