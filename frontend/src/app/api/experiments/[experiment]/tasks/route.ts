@@ -11,6 +11,8 @@ import {
   ServerTimingCollector,
 } from "@/lib/server-timing";
 
+export const runtime = "edge";
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ experiment: string }> },
