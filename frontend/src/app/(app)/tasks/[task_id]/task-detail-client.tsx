@@ -646,6 +646,30 @@ export function TaskDetailClient({
     void mutate();
   }, [mutate]);
 
+  const [isRunningJudge, setIsRunningJudge] = useState(false);
+  const [judgeError, setJudgeError] = useState<string | null>(null);
+  const handleRunJudge = useCallback(async () => {
+    if (!task?.id || isRunningJudge) return;
+    setIsRunningJudge(true);
+    setJudgeError(null);
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/verdict/retry`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          data.detail || data.error || "Failed to queue judge",
+        );
+      }
+      void mutate();
+    } catch (err) {
+      setJudgeError(err instanceof Error ? err.message : "Failed to queue judge");
+    } finally {
+      setIsRunningJudge(false);
+    }
+  }, [task?.id, isRunningJudge, mutate]);
+
   const versionScopedScorePct =
     versionSummary.rewardTotal > 0
       ? (versionSummary.rewardSum / versionSummary.rewardTotal) * 100
@@ -681,7 +705,13 @@ export function TaskDetailClient({
       <div className="space-y-4">
         <TaskDetailHeader task={task} onOpenTaskFiles={handleOpenTaskFiles} />
 
-        <TaskVerdictBadge task={task} variant="inline" />
+        <TaskVerdictBadge
+          task={task}
+          variant="inline"
+          onRunJudge={handleRunJudge}
+          isRunning={isRunningJudge}
+          error={judgeError}
+        />
 
         <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-5">
           <KpiTile
