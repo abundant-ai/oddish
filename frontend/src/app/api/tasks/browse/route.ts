@@ -6,6 +6,8 @@ import {
   getClerkToken,
 } from "@/lib/backend-config";
 
+export const runtime = "edge";
+
 export async function GET(request: NextRequest) {
   try {
     const authObj = await auth();

@@ -10,6 +10,11 @@ import {
   ServerTimingCollector,
 } from "@/lib/server-timing";
 
+// Run on Vercel's Edge runtime: ~50ms cold starts vs ~1-2s for Node
+// serverless functions. This route only does Clerk auth + a fetch to
+// the backend, both of which are edge-compatible.
+export const runtime = "edge";
+
 export async function GET(request: NextRequest) {
   const timings = new ServerTimingCollector();
   const requestStartedAt = performance.now();
