@@ -126,8 +126,15 @@ jobs:
       # Picked up by `plengauer/opentelemetry-github`'s first step so
       # every subsequent step in this job is captured as an OTEL span
       # and shipped to Logfire under service.name = oddish-ci.
+      #
+      # `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` is REQUIRED — the
+      # OTEL spec default is gRPC, but Logfire only exposes OTLP/HTTP.
+      # Without this the underlying shell SDK silently fails to
+      # negotiate and zero spans reach Logfire.
       OTEL_SERVICE_NAME: oddish-ci
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
       OTEL_EXPORTER_OTLP_ENDPOINT: https://logfire-api.pydantic.dev
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: https://logfire-api.pydantic.dev/v1/traces
       OTEL_EXPORTER_OTLP_HEADERS: Authorization=${{ secrets.LOGFIRE_TOKEN }}
     defaults:
       run:
