@@ -347,6 +347,15 @@ async def list_tasks_core(
     return response
 
 
+BROWSE_TASKS_CANDIDATE_LIMIT = 500
+"""Upper bound on how many tasks the trial/version aggregations
+inspect per ``/tasks/browse`` request. Without this, ``version_counts``
+groups every TaskVersion in the database and ``trial_aggregates``
+groups every Trial in the org -- just to render the first 25 task
+cards. Pagination beyond this window is approximate.
+"""
+
+
 async def browse_tasks_core(
     session: AsyncSession,
     *,
@@ -388,14 +397,24 @@ async def browse_tasks_core(
         ranked_tasks = ranked_tasks.where(TaskModel.name.ilike(f"%{normalized_query}%"))
     ranked_tasks_subquery = ranked_tasks.subquery()
 
-    version_counts = (
-        select(
-            TaskVersionModel.task_id.label("task_id"),
-            func.count(TaskVersionModel.id).label("version_count"),
-        )
-        .group_by(TaskVersionModel.task_id)
-        .subquery()
+    # Bound the aggregation work to a window of recent tasks (by
+    # TaskModel.created_at). Without this the version_counts and
+    # trial_aggregates subqueries below scan every TaskVersion and
+    # Trial in the org just to render the first 25 rows.
+    candidate_task_ids_q = (
+        select(ranked_tasks_subquery.c.task_id)
+        .where(ranked_tasks_subquery.c.name_rank == 1)
+        .order_by(ranked_tasks_subquery.c.created_at.desc())
+        .limit(BROWSE_TASKS_CANDIDATE_LIMIT)
     )
+    candidate_task_ids = candidate_task_ids_q.subquery()
+    candidate_task_ids_select = select(candidate_task_ids.c.task_id)
+
+    version_counts_query = select(
+        TaskVersionModel.task_id.label("task_id"),
+        func.count(TaskVersionModel.id).label("version_count"),
+    ).where(TaskVersionModel.task_id.in_(candidate_task_ids_select))
+    version_counts = version_counts_query.group_by(TaskVersionModel.task_id).subquery()
 
     trial_activity_at = func.greatest(
         func.coalesce(TrialModel.finished_at, TrialModel.created_at),
@@ -416,7 +435,10 @@ async def browse_tasks_core(
         func.sum(TrialModel.reward).label("reward_sum"),
         func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
         func.max(trial_activity_at).label("last_run_at"),
-    ).where(TrialModel.superseded_by_trial_id.is_(None))
+    ).where(
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.task_id.in_(candidate_task_ids_select),
+    )
     if org_id is not None:
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
     trial_aggregates = trial_agg_query.group_by(
