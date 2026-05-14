@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { Task } from "@/lib/types";
 
@@ -75,26 +76,43 @@ function presentVerdict(task: Task, iconSizeClass: string): VerdictPresentation 
 export function TaskVerdictBadge({
   task,
   variant,
+  onRunJudge,
+  isRunning,
+  error,
 }: {
   task: Task;
   variant: "card" | "inline";
+  onRunJudge?: () => void;
+  isRunning?: boolean;
+  error?: string | null;
 }) {
-  if (!task.run_analysis && !task.verdict_status && !task.verdict) return null;
+  const hasAny =
+    Boolean(task.run_analysis) ||
+    Boolean(task.verdict_status) ||
+    Boolean(task.verdict);
+  if (!hasAny && !onRunJudge) return null;
 
   const iconSize = variant === "card" ? "h-5 w-5 mt-0.5" : "h-4 w-4";
   const p = presentVerdict(task, iconSize);
   const verdict = task.verdict ?? null;
+  const showRunButton =
+    onRunJudge != null && !p.pending && !isRunning && verdict?.is_good == null;
+  const runLabel = task.verdict_status || task.verdict ? "Rerun judge" : "Run judge";
 
   if (variant === "inline") {
     return (
       <div
         className={`flex items-start gap-2.5 rounded-[10px] border px-3 py-2 ${p.toneInline}`}
       >
-        {p.icon}
+        {isRunning ? (
+          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-blue-500" />
+        ) : (
+          p.icon
+        )}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2">
             <span className="font-mono text-[12px] font-semibold text-[color:var(--paper-ink)]">
-              {p.title}
+              {isRunning ? "Queuing LLM judge..." : p.title}
             </span>
             {verdict?.confidence ? (
               <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
@@ -107,7 +125,23 @@ export function TaskVerdictBadge({
               {p.detail}
             </p>
           ) : null}
+          {error ? (
+            <p className="font-mono mt-0.5 text-[11px] leading-snug text-red-500">
+              {error}
+            </p>
+          ) : null}
         </div>
+        {showRunButton ? (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onRunJudge}
+            disabled={isRunning}
+            className="font-mono h-7 shrink-0 rounded-[7px] px-3 text-[11px]"
+          >
+            {runLabel}
+          </Button>
+        ) : null}
       </div>
     );
   }
