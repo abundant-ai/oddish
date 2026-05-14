@@ -56,8 +56,8 @@ def _normalize_dashboard_model(model: str | None, provider: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 _dashboard_cache: dict[str, tuple[dict, float]] = {}
-_CACHE_TTL_SECONDS = 60
-_CACHE_MAX_SIZE = 100
+_CACHE_TTL_SECONDS = 120
+_CACHE_MAX_SIZE = 200
 
 
 def _get_cached(cache_key: str) -> dict | None:

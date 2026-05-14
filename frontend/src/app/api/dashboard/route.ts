@@ -102,7 +102,7 @@ export async function GET(request: NextRequest) {
     const response = NextResponse.json(data);
     response.headers.set(
       "Cache-Control",
-      "private, max-age=5, stale-while-revalidate=30",
+      "private, max-age=30, stale-while-revalidate=120",
     );
     const serverTiming = joinServerTimingHeaders(
       timings.toHeader(),

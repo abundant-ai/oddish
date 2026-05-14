@@ -117,14 +117,14 @@ function useDashboardUsage(
     fetcher,
     {
       refreshInterval: (latestData) => {
-        if (!latestData) return 5000;
+        if (!latestData) return 30000;
         const hasActiveQueue = Object.values(latestData.queues ?? {}).some(
           (stats) =>
             (Number(stats.running) || 0) > 0 ||
             (Number(stats.queued) || 0) > 0 ||
             (Number(stats.retrying) || 0) > 0,
         );
-        return hasActiveQueue ? 30000 : 90000;
+        return hasActiveQueue ? 60000 : 300000;
       },
       revalidateOnFocus: false,
       revalidateOnMount: !hasFallbackData,
@@ -170,11 +170,12 @@ function useDashboardExperiments(
     swrKey,
     fetcher,
     {
-      refreshInterval: 30000,
+      refreshInterval: 120000,
       revalidateOnFocus: false,
       revalidateOnMount: !hasFallbackData,
       revalidateIfStale: !hasFallbackData,
       keepPreviousData: true,
+      dedupingInterval: 30000,
       fallbackData: hasFallbackData ? (fallbackData ?? undefined) : undefined,
     },
   );

@@ -29,7 +29,7 @@ async function getInitialDashboardData(): Promise<DashboardResponse | null> {
       buildDashboardBackendParams(DEFAULT_DASHBOARD_REQUEST_PARAMS),
     );
     const response = await fetch(url, {
-      cache: "no-store",
+      next: { revalidate: 30 },
       headers: getAuthHeaders(token),
     });
     if (!response.ok) {
