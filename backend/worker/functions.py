@@ -94,17 +94,19 @@ async def process_single_job(queue_key: str):
 
     Each worker gets the full timeout budget for its single job.
     """
-    console.print(f"[cyan]Job worker starting (queue_key={queue_key})...[/cyan]")
-    await configure_storage_paths()
-
+    # Resolve the Modal function-call id BEFORE opening the span so
+    # it can ride as a span attribute. This is a pure in-process
+    # lookup, no I/O, so it's safe to do pre-span.
     fc_id: str | None = None
     try:
         fc_id = modal.current_function_call_id()
     except Exception:
         pass
-    if fc_id:
-        console.print(f"[dim]Modal function call: {fc_id}[/dim]")
 
+    # Open the span FIRST and run everything else inside it — the
+    # ``configure_storage_paths`` + Modal handshake + console prints
+    # used to fire ahead of the span and showed up as orphan top-
+    # level activity on every job worker container.
     job_span = _otel_span(
         "worker.process_single_job",
         queue_key=queue_key,
@@ -116,6 +118,11 @@ async def process_single_job(queue_key: str):
 
     job_span.__enter__()
     try:
+        console.print(f"[cyan]Job worker starting (queue_key={queue_key})...[/cyan]")
+        if fc_id:
+            console.print(f"[dim]Modal function call: {fc_id}[/dim]")
+        await configure_storage_paths()
+
         queue_limit = settings.get_model_concurrency(queue_key)
         if queue_limit <= 0:
             console.print(
@@ -201,16 +208,15 @@ async def poll_queue():
     3. Spawns up to ``MAX_WORKERS_PER_POLL`` ``process_single_job``
        workers, budgeted per queue_key against concurrency limits.
     """
-    console.print("[cyan]Queue dispatcher starting...[/cyan]")
-    await configure_storage_paths()
-
-    # Wrap the whole dispatcher cycle in one named span so the
-    # cleanup + discovery + spawn queries it fires nest under a
-    # single ``worker.poll_queue_cycle`` parent instead of arriving
-    # as a bag of orphaned SQL spans on each tick.
+    # Open the span FIRST so the storage-path setup, cleanup,
+    # discovery, and spawn-plan queries all nest under one named
+    # ``worker.poll_queue_cycle`` parent per tick.
     cycle_span = _otel_span("worker.poll_queue_cycle")
     cycle_span.__enter__()
     try:
+        console.print("[cyan]Queue dispatcher starting...[/cyan]")
+        await configure_storage_paths()
+
         stale_cleared = await cleanup_stale_queue_slots()
         if stale_cleared > 0:
             console.print(f"metric=queue_lock_stale_cleared count={stale_cleared}")
