@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { SignOutButton } from "@clerk/nextjs";
+import { useClerk } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -28,6 +28,7 @@ export function UserMenu({
   username,
   email,
 }: UserMenuProps) {
+  const { signOut } = useClerk();
   const displayName = firstName ?? fullName ?? "Account";
   const fallback = firstName?.[0] ?? "U";
 
@@ -83,12 +84,13 @@ export function UserMenu({
           </Link>
         </DropdownMenuItem>
         <DropdownMenuSeparator className="my-2" />
-        <SignOutButton>
-          <DropdownMenuItem className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-red-500 outline-hidden hover:bg-muted focus:bg-muted">
-            <LogOut className="h-4 w-4" />
-            Sign out
-          </DropdownMenuItem>
-        </SignOutButton>
+        <DropdownMenuItem
+          onSelect={() => signOut()}
+          className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-red-500 outline-hidden hover:bg-muted focus:bg-muted"
+        >
+          <LogOut className="h-4 w-4" />
+          Sign out
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
