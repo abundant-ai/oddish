@@ -49,7 +49,7 @@ backend/                        # Hosted cloud layer (Modal deployment)
 ├── deploy.py                   # Modal app entrypoint
 ├── modal_app.py                # Modal image, volumes, shared runtime
 ├── endpoints.py                # Modal ASGI app function with concurrency/volume wiring
-├── serve.py                    # Railway/uvicorn entrypoint for non-Modal deployment
+├── serve.py                    # Uvicorn entrypoint for non-Modal container deployment
 ├── cloud_policy.py             # Hosted-only environment policy
 ├── models.py                   # Cloud auth models (orgs/users/api keys)
 ├── alembic/                    # Cloud migrations (auth + cloud table extensions)
@@ -80,7 +80,7 @@ Next.js route handlers (frontend/src/app/api/*)
         |
         v
 FastAPI server — oddish standalone (python -m oddish.server)
-           or backend cloud layer (Modal / Railway)
+           or backend cloud layer (Modal)
         |
         v
 Postgres
@@ -485,7 +485,7 @@ uv run alembic upgrade head
 | `deploy.py` | Modal app entrypoint |
 | `modal_app.py` | Modal image, volumes, shared runtime |
 | `endpoints.py` | Modal ASGI app function |
-| `serve.py` | Railway/uvicorn entrypoint |
+| `serve.py` | Uvicorn entrypoint for non-Modal container deployment |
 | `cloud_policy.py` | Hosted-only environment policy |
 | `api/app.py` | FastAPI app factory |
 | `api/routers/tasks.py` | Task upload, browse, sweep, sharing, retries |
