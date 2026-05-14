@@ -46,6 +46,9 @@ export default clerkMiddleware(async (auth, request) => {
   if (!isPublicRoute(request)) {
     await auth.protect();
   }
+  if (request.nextUrl.pathname === "/" && (await auth()).userId) {
+    return NextResponse.redirect(new URL("/dashboard", request.url));
+  }
   return attachTraceparent(NextResponse.next());
 });
 
