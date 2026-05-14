@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import useSWR, { preload, useSWRConfig } from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import Link from "next/link";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -1646,24 +1646,6 @@ export function DashboardClient({
       revalidate: false,
     });
   }, [initialDashboardData, mutate]);
-
-  // Preload the alternate Mine view so toggling it doesn't wait on a
-  // round-trip the first time. Cheap because SWR dedupes if the user
-  // toggles before the prefetch settles.
-  useEffect(() => {
-    const altMineKey = buildDashboardApiPath({
-      experiments_limit: EXPERIMENTS_PAGE_SIZE,
-      experiments_offset: 0,
-      experiments_query: "",
-      experiments_status: "all",
-      experiments_mine: !filterState.mine,
-      include_tasks: false,
-      include_usage: false,
-    });
-    void preload(altMineKey, fetcher);
-    // Run once per mount with the initial Mine state.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const [timeRange, setTimeRange] = useState<TimeRangeKey>("24h");
   const usageMinutes = getMinutesFromTimeRange(timeRange);
