@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Vercel Speed Insights integration: `@vercel/speed-insights` dependency added and `<SpeedInsights />` component mounted in the root layout to track Core Web Vitals across all pages (#82)
+- `daytona>=0.165.0` added to the `oddish[worker]` extra so hosted workers can construct Harbor Daytona environments for Docker-in-Docker compose tasks (#86)
+- Daily changelog CI workflow (`.github/workflows/daily-changelog.yml`) that runs nightly at 00:00 UTC, uses Claude to summarize merged PRs from commits and diffs, and opens a `changelog/YYYY-MM-DD` PR with auto-merge enabled; `CHANGELOG.md` backfilled for all PRs to date (#84)
+
+### Changed
+- `oddish run --env daytona` now passes through to the Modal-hosted Oddish Cloud API instead of being forced to `--env modal`; warning message updated to reflect that both `modal` and `daytona` are supported cloud environments (#86)
 
 ---
 
