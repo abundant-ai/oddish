@@ -40,59 +40,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER_REPO: ${{ github.repository }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        run: |
-          python <<'PY'
-          import json
-          import os
-          import subprocess
-
-          owner_repo = os.environ["OWNER_REPO"]
-          head_ref = os.environ["HEAD_REF"]
-          workflow_file = "modal-preview.yml"
-
-          # Step name -> output key. We only look at steps inside the
-          # deploy-preview job.
-          STEPS_BY_COMPONENT = {
-              "Deploy preview backend": "backend_base",
-              "Apply Alembic migrations to preview branch": "migrations_base",
-          }
-
-          def gh_api(path):
-              result = subprocess.run(
-                  ["gh", "api", "-H", "Accept: application/vnd.github+json", path],
-                  capture_output=True, text=True, check=True,
-              )
-              return json.loads(result.stdout)
-
-          runs = gh_api(
-              f"/repos/{owner_repo}/actions/workflows/{workflow_file}/runs"
-              f"?branch={head_ref}&event=pull_request&per_page=30"
-          ).get("workflow_runs", [])
-
-          found = {}
-          for run in runs:
-              if len(found) == len(STEPS_BY_COMPONENT):
-                  break
-              run_id = run["id"]
-              sha = run["head_sha"]
-              jobs = gh_api(
-                  f"/repos/{owner_repo}/actions/runs/{run_id}/jobs?per_page=100"
-              ).get("jobs", [])
-              for job in jobs:
-                  if job.get("name") != "deploy-preview":
-                      continue
-                  for step in job.get("steps", []) or []:
-                      if step.get("conclusion") != "success":
-                          continue
-                      key = STEPS_BY_COMPONENT.get(step.get("name"))
-                      if key and key not in found:
-                          found[key] = sha
-
-          out_path = os.environ["GITHUB_OUTPUT"]
-          with open(out_path, "a") as f:
-              for key in STEPS_BY_COMPONENT.values():
-                  f.write(f"{key}={found.get(key, '')}\n")
-          PY
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/find_last_deploys.py"
 
       - name: Detect backend code changes since last successful backend deploy
         id: filter_backend
@@ -145,50 +93,7 @@ jobs:
           BACKEND_CHANGED: ${{ steps.filter_backend.outputs.changed }}
           MIGRATIONS_CHANGED: ${{ steps.filter_migrations.outputs.changed }}
           WORKFLOW_CHANGED: ${{ steps.filter_workflow.outputs.changed }}
-        run: |
-          set -euo pipefail
-          deploy_backend=false
-          run_migrations=false
-
-          if [ "$EVENT_ACTION" != "synchronize" ] || [ "$WORKFLOW_CHANGED" = "true" ]; then
-            deploy_backend=true
-            run_migrations=true
-          else
-            # No prior successful deploy on this branch -> deploy now.
-            if [ -z "$BACKEND_BASE" ] || [ "$BACKEND_CHANGED" = "true" ]; then
-              deploy_backend=true
-            fi
-            if [ -z "$MIGRATIONS_BASE" ] || [ "$MIGRATIONS_CHANGED" = "true" ]; then
-              run_migrations=true
-            fi
-            # New migrations imply schema change -> backend must redeploy.
-            if [ "$run_migrations" = "true" ]; then
-              deploy_backend=true
-            fi
-          fi
-
-          any_change=false
-          if [ "$deploy_backend" = "true" ] || [ "$run_migrations" = "true" ]; then
-            any_change=true
-          fi
-
-          {
-            echo "deploy_backend=$deploy_backend"
-            echo "run_migrations=$run_migrations"
-            echo "any_change=$any_change"
-          } >> "$GITHUB_OUTPUT"
-
-          {
-            echo "## Preview deployment plan"
-            echo
-            echo "- Event action: \`$EVENT_ACTION\`"
-            echo "- Last successful backend deploy: \`${BACKEND_BASE:-(none)}\`"
-            echo "- Last successful migration run: \`${MIGRATIONS_BASE:-(none)}\`"
-            echo "- Backend code changed since: \`${BACKEND_CHANGED:-n/a}\`"
-            echo "- Migrations changed since: \`${MIGRATIONS_CHANGED:-n/a}\`"
-            echo "- Workflow/scripts changed since previous push: \`${WORKFLOW_CHANGED:-n/a}\`"
-            echo "- Plan: deploy_backend=\`$deploy_backend\` run_migrations=\`$run_migrations\` any_change=\`$any_change\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/preview/compute_deployment_plan.sh"
 
   deploy-preview:
     needs: detect-changes
@@ -281,70 +186,19 @@ jobs:
         run: |
           deploy_log="$(mktemp)"
           uv run modal deploy deploy.py 2>&1 | tee "$deploy_log"
-          modal_api_url="$(python - "$deploy_log" "$MODAL_APP_NAME" <<'PY'
-          import pathlib
-          import re
-          import sys
-
-          log_path = pathlib.Path(sys.argv[1])
-          app_name = sys.argv[2]
-          text = log_path.read_text()
-
-          candidates = []
-          for line in text.splitlines():
-              if "modal.run" not in line:
-                  continue
-              if "api" not in line.lower():
-                  continue
-              match = re.search(r"https://[^\s]+\.modal\.run", line)
-              if match:
-                  candidates.append(match.group(0))
-
-          if not candidates:
-              raise SystemExit(
-                  f"Could not determine Modal API URL for {app_name} from deploy output"
-              )
-          print(candidates[-1])
-          PY
-          )"
+          modal_api_url="$(python "$GITHUB_WORKSPACE/.github/scripts/preview/extract_modal_api_url.py" "$deploy_log" "$MODAL_APP_NAME")"
           echo "modal_api_url=$modal_api_url" >> "$GITHUB_OUTPUT"
 
       - name: Wait for preview backend readiness
         id: readiness
         if: ${{ steps.deploy_modal.outcome == 'success' }}
-        run: |
-          python - "${{ steps.deploy_modal.outputs.modal_api_url }}" <<'PY'
-          import sys
-          import time
-          import urllib.error
-          import urllib.request
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/wait_for_modal_ready.py" "${{ steps.deploy_modal.outputs.modal_api_url }}"
 
-          base_url = sys.argv[1].rstrip("/")
-          readiness_url = f"{base_url}/openapi.json"
-          deadline = time.time() + 180
-          last_error = "no readiness response yet"
-
-          while time.time() < deadline:
-              try:
-                  with urllib.request.urlopen(readiness_url, timeout=10) as response:
-                      payload = response.read(64)
-                  if response.status == 200 and payload:
-                      print(f"Modal preview ready at {readiness_url}")
-                      break
-                  last_error = f"unexpected response: {payload!r}"
-              except urllib.error.HTTPError as exc:
-                  last_error = f"http {exc.code}"
-              except Exception as exc:  # noqa: BLE001
-                  last_error = str(exc)
-              time.sleep(5)
-          else:
-              raise SystemExit(
-                  f"Modal preview never became ready at {readiness_url}: {last_error}"
-              )
-          PY
-
-      - name: Dump Modal preview logs on readiness failure
-        if: ${{ failure() && steps.readiness.conclusion == 'failure' }}
+      - name: Dump Modal preview logs on deploy or readiness failure
+        # Also fire when `modal deploy` itself crashes — that's where
+        # the container-side stack trace lives, and it's the most
+        # diagnostic moment.
+        if: ${{ failure() && (steps.deploy_modal.conclusion == 'failure' || steps.readiness.conclusion == 'failure') }}
         continue-on-error: true
         # `modal app logs` streams forever; bound it. `--env` is needed
         # because the CLI ignores MODAL_ENVIRONMENT for this subcommand.
@@ -382,73 +236,7 @@ jobs:
       - name: Redeploy Vercel preview with updated env
         id: redeploy_vercel
         if: ${{ steps.supabase_branch.outputs.branch_was_created == 'true' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
-        working-directory: frontend
-        run: |
-          deployment_json="$(python <<'PY'
-          import json
-          import os
-          import time
-          import urllib.parse
-          import urllib.request
-
-          token = os.environ["VERCEL_TOKEN"]
-          project_id = os.environ["VERCEL_PROJECT_ID"]
-          team_id = os.environ["VERCEL_ORG_ID"]
-          branch = os.environ["VERCEL_GIT_BRANCH"]
-          commit_sha = os.environ["VERCEL_GIT_COMMIT_SHA"]
-
-          params = urllib.parse.urlencode(
-              {
-                  "projectId": project_id,
-                  "teamId": team_id,
-                  "limit": 20,
-                  "target": "preview",
-                  "branch": branch,
-              }
-          )
-          url = f"https://api.vercel.com/v6/deployments?{params}"
-          headers = {"Authorization": f"Bearer {token}"}
-
-          def deployment_commit_sha(deployment):
-              meta = deployment.get("meta") or {}
-              git_source = deployment.get("gitSource") or {}
-              candidates = [
-                  meta.get("githubCommitSha"),
-                  meta.get("githubCommitSHA"),
-                  meta.get("gitCommitSha"),
-                  git_source.get("sha"),
-              ]
-              for candidate in candidates:
-                  if candidate:
-                      return candidate
-              return None
-
-          for _ in range(18):
-              request = urllib.request.Request(url, headers=headers)
-              with urllib.request.urlopen(request) as response:
-                  payload = json.load(response)
-              deployments = payload.get("deployments", [])
-              for deployment in deployments:
-                  if deployment_commit_sha(deployment) == commit_sha:
-                      print(json.dumps(deployment))
-                      raise SystemExit(0)
-              time.sleep(10)
-          raise SystemExit(
-              "No Vercel preview deployment found yet for "
-              f"branch {branch!r} at commit {commit_sha!r}"
-          )
-          PY
-          )"
-          deployment_id="$(printf '%s' "$deployment_json" | python -c 'import json,sys; print(json.load(sys.stdin)["uid"])')"
-          project_name="$(printf '%s' "$deployment_json" | python -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
-          redeploy_json="$(curl --fail-with-body --silent --show-error \
-            -X POST \
-            -H "Authorization: Bearer $VERCEL_TOKEN" \
-            -H "Content-Type: application/json" \
-            "https://api.vercel.com/v13/deployments?teamId=$VERCEL_ORG_ID&forceNew=1" \
-            -d "{\"name\":\"$project_name\",\"deploymentId\":\"$deployment_id\"}")"
-          preview_url="$(printf '%s' "$redeploy_json" | python -c 'import json,sys; print("https://" + json.load(sys.stdin)["url"])')"
-          echo "preview_url=$preview_url" >> "$GITHUB_OUTPUT"
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/redeploy_vercel.py"
 
       - name: Summarize preview URLs
         if: ${{ always() }}
@@ -467,7 +255,7 @@ jobs:
               echo "- Vercel preview: handled by Vercel's git integration"
             fi
             if [ -n "${{ steps.supabase_branch.outputs.branch_ref }}" ]; then
-              echo "- Supabase branch: \`${{ steps.supabase_branch.outputs.branch_ref }}\` (host: ${{ steps.supabase_branch.outputs.db_host }})"
+              echo "- Supabase branch: \`${{ steps.supabase_branch.outputs.branch_ref }}\`"
             fi
             echo "- PR head SHA: ${{ github.event.pull_request.head.sha }}"
             echo "- Plan: deploy_backend=\`${{ needs.detect-changes.outputs.deploy_backend }}\` run_migrations=\`${{ needs.detect-changes.outputs.run_migrations }}\` branch_was_created=\`${{ steps.supabase_branch.outputs.branch_was_created }}\`"
