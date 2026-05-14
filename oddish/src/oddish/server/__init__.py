@@ -52,6 +52,8 @@ from oddish.core.admin import (
 )
 from oddish.core.dashboard import get_dashboard_core
 from oddish.core.public import router as public_router
+from oddish.core.reports_public_router import router as reports_public_router
+from oddish.core.reports_router import router as reports_router
 from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
@@ -218,6 +220,8 @@ api.add_middleware(
 )
 
 api.include_router(public_router)
+api.include_router(reports_router)
+api.include_router(reports_public_router)
 
 
 # =============================================================================

@@ -350,6 +350,73 @@ oddish delete <task_id>
 oddish delete --experiment <experiment_id>
 ```
 
+### `oddish reports`
+
+Reports are synthetic shareable runs. You declare a cartesian grid of
+`(task_version × agent)` in a YAML spec, and Oddish resolves the
+matching trials, lets you share the result as a public link, and can
+backfill missing cells via the normal sweep mechanism — with an
+estimated cost up front and an audit trail.
+
+```yaml
+# report.yaml — author this however you like; AI agents can write it too
+name: "claude-4 vs gpt-5 on swebench v3"
+description: "Headline eval comparison"
+agents:
+  - id: "claude-sonnet"
+    agent: claude-code
+    model: anthropic/claude-sonnet-4-5
+    backfill:
+      environment: modal
+  - id: "gpt-5"
+    agent: codex
+    model: openai/gpt-5.2
+    backfill:
+      environment: modal
+task_versions:
+  - task_version_id: tv_abc123-v3
+  - task_id: tv_def456            # version omitted → use current_version
+trials_per_cell: 5
+selection:
+  strategy: latest                 # latest | best_reward | first | random
+backfill:
+  enabled: true
+```
+
+Commands:
+
+```bash
+# Create a report from a YAML/JSON spec
+oddish reports create --spec report.yaml
+
+# List your org's reports
+oddish reports ls
+
+# Show the cell grid + missing-cell summary
+oddish reports get <report_id>
+
+# Download the canonical YAML so you can edit and re-submit
+oddish reports pull <report_id> -o report.yaml
+
+# Plan a backfill (cost estimate from historical trials); add --yes to submit
+oddish reports backfill <report_id>
+oddish reports backfill <report_id> --yes
+
+# See who's run backfills, when, and which trials they produced
+oddish reports backfill-history <report_id>
+
+# Publish or revoke a public share link
+oddish reports share <report_id>
+oddish reports share <report_id> --unpublish
+
+# Soft-delete (trials and audit history are preserved)
+oddish reports delete <report_id> --yes
+```
+
+The public share link follows sauron's pattern: viewers see only the
+rendered grid plus name / description / creator. The spec, source
+experiment ids, and audit history are not exposed.
+
 ## Typical Workflow
 
 ```bash

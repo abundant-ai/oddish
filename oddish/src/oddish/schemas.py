@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -887,3 +888,479 @@ class PublicExperimentListItem(BaseModel):
     public_token: str
     task_count: int
     created_at: str
+
+
+# =============================================================================
+# Reports (synthetic shareable runs)
+# =============================================================================
+#
+# A report is an org-scoped object that declares a cartesian grid of
+# (task_version, agent) and renders the matching trials as a table. The
+# spec is authored as YAML or JSON (typically by an AI agent) and served
+# back in either form. The DB stores the spec relationally (see the
+# Report* SQLAlchemy models in ``oddish.db.models``); this Pydantic
+# layer is the wire / authoring contract.
+
+
+REPORT_SPEC_VERSION = 1
+
+
+class ReportAgentBackfillConfig(BaseModel):
+    """Optional per-agent overrides applied when a report backfills missing trials.
+
+    Mirrors the sweep submission fields. Required only for columns that
+    actually need backfill — columns whose cells are always fully
+    populated never need this block.
+    """
+
+    environment: str | None = Field(
+        None,
+        description=(
+            "Execution backend override (docker, daytona, e2b, modal, runloop, gke). "
+            "Falls back to the server default when omitted."
+        ),
+    )
+    priority: Priority | None = Field(
+        None,
+        description="Priority override; falls back to backfill.priority when omitted.",
+    )
+    harbor: HarborConfig | None = Field(
+        None,
+        description="Harbor execution config passthrough (verifier, env, etc).",
+    )
+
+
+class ReportAgentEntry(BaseModel):
+    """One column of the report's cartesian grid."""
+
+    id: str = Field(
+        ...,
+        description=(
+            "Stable column key used by pins to refer to this column. Must "
+            "be unique within the report. Convention: 'agent/model'."
+        ),
+        min_length=1,
+        max_length=255,
+    )
+    agent: str = Field(..., description="Agent name (e.g. 'claude-code', 'nop')")
+    model: str | None = Field(
+        None,
+        description=(
+            "Model id (e.g. 'anthropic/claude-sonnet-4-5'). Required for "
+            "all agents except nop/oracle."
+        ),
+    )
+    backfill: ReportAgentBackfillConfig | None = Field(
+        None,
+        description=(
+            "Per-column backfill overrides. Required only when this column "
+            "actually gets backfilled — validated at execute time, not on "
+            "report create."
+        ),
+    )
+
+
+class ReportTaskVersionEntry(BaseModel):
+    """One row of the report's cartesian grid.
+
+    Identify the underlying task version via EITHER ``task_version_id``
+    (preferred when known) OR ``(task_id, version)``. If ``version`` is
+    omitted, the task's ``current_version`` at create time is used.
+    """
+
+    task_version_id: str | None = Field(
+        None, description="Direct reference to a TaskVersion row"
+    )
+    task_id: str | None = Field(
+        None, description="Task id; resolved with `version` or current_version"
+    )
+    version: int | None = Field(
+        None,
+        ge=1,
+        description="Task version number; if omitted, the task's current_version is used",
+    )
+    pins: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-cell explicit trial-id overrides keyed by ReportAgentEntry.id. "
+            "When present, that cell renders these trials verbatim and "
+            "ignores selection/source filters."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _require_identifier(self) -> "ReportTaskVersionEntry":
+        if not self.task_version_id and not self.task_id:
+            raise ValueError(
+                "Each task_versions[] entry must provide either task_version_id "
+                "or task_id"
+            )
+        if self.version is not None and not self.task_id:
+            raise ValueError(
+                "task_versions[].version is only valid when paired with task_id"
+            )
+        return self
+
+
+class ReportSourceFilter(BaseModel):
+    """Optional source-scoping for cell resolution.
+
+    Empty defaults mean: any matching trial in the report's org is
+    eligible. Set ``experiment_ids`` to restrict to specific experiments
+    (mirrors sauron's "sources" concept).
+    """
+
+    experiment_ids: list[str] = Field(
+        default_factory=list,
+        description="Optional whitelist of experiment ids; empty = any experiment in org",
+    )
+    include_superseded: bool = Field(
+        False,
+        description="Include trials that have been replaced by a user-driven retry",
+    )
+    status: list[Literal["success", "failed", "queued", "running", "retrying"]] = Field(
+        default_factory=lambda: ["success", "failed"],
+        description="Trial statuses that count toward a cell; default is terminal-only",
+    )
+
+
+ReportSelectionStrategy = Literal["latest", "best_reward", "first", "random"]
+
+
+class ReportSelection(BaseModel):
+    """How the backend picks trials when more match than ``trials_per_cell``."""
+
+    strategy: ReportSelectionStrategy = "latest"
+    seed: int | None = Field(
+        None, description="Seed for the 'random' strategy; ignored otherwise"
+    )
+    tie_breaker: str = Field(
+        "trial_id",
+        description="Deterministic secondary ordering on ties (currently only 'trial_id')",
+    )
+
+
+class ReportBackfillSettings(BaseModel):
+    """Global backfill settings for the report."""
+
+    enabled: bool = Field(
+        False,
+        description=(
+            "Gates the auto-suggestion banner. Backfill execution always "
+            "requires explicit confirmation regardless of this flag."
+        ),
+    )
+    priority: Priority = Field(
+        Priority.LOW, description="Default priority for backfill sweep submissions"
+    )
+
+
+class ReportSpec(BaseModel):
+    """Authoring contract: the YAML/JSON file an agent writes to define a report."""
+
+    version: int = Field(REPORT_SPEC_VERSION, ge=1, description="Spec schema version")
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str | None = None
+
+    agents: list[ReportAgentEntry] = Field(
+        ..., min_length=1, description="Columns of the cartesian grid"
+    )
+    task_versions: list[ReportTaskVersionEntry] = Field(
+        ..., min_length=1, description="Rows of the cartesian grid"
+    )
+    trials_per_cell: int = Field(..., ge=1)
+
+    source: ReportSourceFilter = Field(default_factory=ReportSourceFilter)
+    selection: ReportSelection = Field(default_factory=ReportSelection)
+    backfill: ReportBackfillSettings = Field(default_factory=ReportBackfillSettings)
+
+    @model_validator(mode="after")
+    def _unique_agent_ids(self) -> "ReportSpec":
+        seen: set[str] = set()
+        for entry in self.agents:
+            if entry.id in seen:
+                raise ValueError(
+                    f"Duplicate agents[].id '{entry.id}'; column keys must be unique"
+                )
+            seen.add(entry.id)
+        return self
+
+    @model_validator(mode="after")
+    def _pins_reference_known_columns(self) -> "ReportSpec":
+        agent_ids = {entry.id for entry in self.agents}
+        for row in self.task_versions:
+            for column_key in row.pins:
+                if column_key not in agent_ids:
+                    raise ValueError(
+                        f"pin references unknown column '{column_key}'; "
+                        f"must match one of agents[].id"
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def _require_models(self) -> "ReportSpec":
+        # Match the convention used by TaskSweepSubmission: nop/oracle
+        # are the only agents that may omit `model`.
+        allowed_missing = {"nop", "oracle"}
+        for entry in self.agents:
+            if entry.agent not in allowed_missing and not entry.model:
+                raise ValueError(
+                    f"agents[id='{entry.id}'] requires a model "
+                    f"(only nop/oracle may omit it)"
+                )
+        return self
+
+
+# -----------------------------------------------------------------------------
+# Response schemas (authed)
+# -----------------------------------------------------------------------------
+
+
+class ReportTrialSummary(BaseModel):
+    """Per-cell trial summary returned by the authed report endpoints."""
+
+    id: str
+    name: str
+    agent: str
+    model: str | None = None
+    status: TrialStatus
+    reward: float | None = None
+    cost_usd: float | None = None
+    cost_is_estimated: bool | None = None
+    error_message: str | None = None
+    task_id: str
+    task_version_id: str | None = None
+    experiment_id: str | None = None
+    superseded_by_trial_id: str | None = None
+    has_trajectory: bool = False
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_seconds: float | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ReportRowResolved(BaseModel):
+    """Row metadata for the rendered grid."""
+
+    position: int
+    task_version_id: str
+    task_id: str
+    version: int
+    task_name: str
+
+
+class ReportColumnResolved(BaseModel):
+    """Column metadata for the rendered grid."""
+
+    position: int
+    column_key: str
+    agent: str
+    model: str | None = None
+
+
+class ReportCellResolved(BaseModel):
+    """A single cell of the rendered grid."""
+
+    row_idx: int
+    col_idx: int
+    source: Literal["resolved", "pinned"]
+    have: int
+    need: int = Field(
+        0, description="Outstanding gap vs trials_per_cell (0 for pinned cells)"
+    )
+    trials: list[ReportTrialSummary] = Field(default_factory=list)
+
+
+class ReportResponse(BaseModel):
+    """Authed report detail response."""
+
+    id: str
+    name: str
+    description: str | None = None
+    org_id: str | None = None
+    created_by_user_id: str | None = None
+    spec: ReportSpec
+    is_public: bool
+    public_token: str | None = None
+    backfill_experiment_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    rows: list[ReportRowResolved]
+    columns: list[ReportColumnResolved]
+    cells: list[ReportCellResolved]
+    total_trials: int
+    total_missing: int
+
+
+class ReportListItem(BaseModel):
+    """Authed list-page item."""
+
+    id: str
+    name: str
+    description: str | None = None
+    rows_count: int
+    columns_count: int
+    is_public: bool
+    public_token: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReportPatchRequest(BaseModel):
+    """PATCH /reports/{id}. Replaces ``spec`` wholesale when provided."""
+
+    name: str | None = Field(None, min_length=1, max_length=255)
+    description: str | None = None
+    spec: ReportSpec | None = None
+
+
+class ReportShareResponse(BaseModel):
+    """Result of POST/DELETE /reports/{id}/share."""
+
+    id: str
+    name: str
+    is_public: bool
+    public_token: str | None = None
+
+
+# -----------------------------------------------------------------------------
+# Backfill (plan / execute / audit)
+# -----------------------------------------------------------------------------
+
+
+class BackfillCellPlan(BaseModel):
+    row_idx: int
+    col_idx: int
+    task_version_id: str
+    task_id: str
+    column_key: str
+    agent: str
+    model: str | None = None
+    have: int
+    need: int
+    est_cost_usd: float | None = None
+    cost_sample_size: int = 0
+    has_backfill_config: bool = True
+
+
+class BackfillPlan(BaseModel):
+    total_missing: int
+    total_est_cost_usd: float | None = None
+    total_cost_sample_size: int = 0
+    cells: list[BackfillCellPlan] = Field(default_factory=list)
+    columns_missing_backfill_config: list[str] = Field(
+        default_factory=list,
+        description="agents[].id values that need a backfill block before /execute will accept",
+    )
+
+
+class BackfillCellSelector(BaseModel):
+    row_idx: int
+    col_idx: int
+
+
+class BackfillExecuteRequest(BaseModel):
+    """POST /reports/{id}/backfill/execute body."""
+
+    cells: list[BackfillCellSelector] | None = Field(
+        None,
+        description="Optional filter; when None, execute all needy cells from the plan",
+    )
+    confirm: Literal[True] = Field(
+        ...,
+        description="Must be true; gates against accidental cost without explicit consent",
+    )
+    source: Literal["cli", "web", "api"] = "api"
+
+
+class BackfillExecuteCellResult(BaseModel):
+    row_idx: int
+    col_idx: int
+    column_key: str
+    queued: int
+
+
+class BackfillExecuteResponse(BaseModel):
+    event_id: str
+    submitted: int
+    total_est_cost_usd: float | None = None
+    backfill_experiment_id: str
+    by_cell: list[BackfillExecuteCellResult] = Field(default_factory=list)
+    trial_ids: list[str] = Field(default_factory=list)
+    status: Literal["submitted", "partial", "failed"] = "submitted"
+    error_message: str | None = None
+
+
+class BackfillEventResponse(BaseModel):
+    """One row of the backfill audit log."""
+
+    id: str
+    report_id: str
+    initiated_by_user_id: str | None = None
+    initiated_by_api_key_id: str | None = None
+    initiated_by_display: str | None = None
+    source: str
+    initiated_at: datetime
+    est_cost_usd_total: float | None = None
+    trials_submitted: int
+    status: str
+    error_message: str | None = None
+    trial_ids: list[str] = Field(default_factory=list)
+
+
+# -----------------------------------------------------------------------------
+# Public (anonymous) response shape
+# -----------------------------------------------------------------------------
+#
+# The shape is intentionally narrower than ReportResponse: no spec, no
+# selection strategy, no source-experiment ids, no audit events. Mirrors
+# sauron's public merged-run view — readers get the rendered grid plus
+# what they need to click into individual trials.
+
+
+class PublicReportTrialSummary(BaseModel):
+    id: str
+    agent: str
+    model: str | None = None
+    status: TrialStatus
+    reward: float | None = None
+    cost_usd: float | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_seconds: float | None = None
+    has_trajectory: bool = False
+
+
+class PublicReportRow(BaseModel):
+    position: int
+    task_version_id: str
+    task_id: str
+    version: int
+    task_name: str
+
+
+class PublicReportColumn(BaseModel):
+    position: int
+    column_key: str
+    agent: str
+    model: str | None = None
+
+
+class PublicReportCell(BaseModel):
+    row_idx: int
+    col_idx: int
+    trials: list[PublicReportTrialSummary] = Field(default_factory=list)
+
+
+class PublicReportResponse(BaseModel):
+    name: str
+    description: str | None = None
+    created_at: datetime
+    created_by_display: str | None = None
+    rows: list[PublicReportRow]
+    columns: list[PublicReportColumn]
+    cells: list[PublicReportCell]
+    total_trials: int

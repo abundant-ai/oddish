@@ -7,20 +7,23 @@ from uuid import uuid4
 from sqlalchemy import (
     and_,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     SmallInteger,
     String,
     Table,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs  # type: ignore[attr-defined]
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import DeclarativeBase, mapped_column  # type: ignore[attr-defined]
@@ -881,6 +884,333 @@ class WorkerJobModel(TimestampedMixin, Base):
     )
 
 
+# =============================================================================
+# Reports (synthetic shareable runs — see oddish.schemas.ReportSpec for the
+# authoring contract). Storage is relational: the spec is unpacked into a
+# parent ``reports`` row plus four child tables on create, and rebuilt
+# from rows on read. Free-form per-agent backfill config (HarborConfig,
+# env overrides) stays as JSONB on ``report_agents.backfill_config``.
+# =============================================================================
+
+
+class ReportModel(TimestampedMixin, Base):
+    """Synthetic shareable run.
+
+    A report curates a cartesian grid of (task_version × agent) and
+    renders matching trials as a table. Trials are not copied — the
+    matching set is resolved dynamically from the trial table on read.
+
+    Soft-delete: registered below via ``register_soft_delete_models``.
+    Child rows cascade on hard delete (via FK ON DELETE CASCADE); the
+    soft-delete filter on this row prevents reads on tombstoned reports
+    in normal traffic.
+    """
+
+    __tablename__ = "reports"
+    __table_args__ = (
+        Index("idx_reports_public_token", "public_token", unique=True),
+        Index("idx_reports_org_created_at", "org_id", "created_at"),
+        CheckConstraint("trials_per_cell >= 1", name="ck_reports_trials_per_cell_pos"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    spec_version: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=1, server_default="1"
+    )
+    trials_per_cell: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # selection.*
+    selection_strategy: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="latest", server_default="latest"
+    )
+    selection_seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    selection_tie_breaker: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="trial_id", server_default="trial_id"
+    )
+
+    # source.*
+    source_include_superseded: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    source_status: Mapped[list[str]] = mapped_column(
+        ARRAY(String(16)),
+        nullable=False,
+        default=lambda: ["success", "failed"],
+        server_default=text("ARRAY['success','failed']::varchar[]"),
+    )
+
+    # backfill.*
+    backfill_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    backfill_priority: Mapped[Priority] = mapped_column(
+        SQLEnum(Priority),
+        nullable=False,
+        default=Priority.LOW,
+    )
+
+    # Sharing
+    is_public: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # Server-managed side effect: auto-created experiment that holds
+    # trials submitted by /reports/{id}/backfill/execute. Lazy-created
+    # on first execute. Kept off the user-authored spec so re-POSTing
+    # the same YAML is idempotent.
+    backfill_experiment_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("experiments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Relationships
+    agents: Mapped[list["ReportAgentModel"]] = relationship(  # type: ignore[assignment]
+        "ReportAgentModel",
+        back_populates="report",
+        cascade="all, delete-orphan",
+        order_by="ReportAgentModel.position",
+        lazy="selectin",
+    )
+    task_versions: Mapped[list["ReportTaskVersionModel"]] = relationship(  # type: ignore[assignment]
+        "ReportTaskVersionModel",
+        back_populates="report",
+        cascade="all, delete-orphan",
+        order_by="ReportTaskVersionModel.position",
+        lazy="selectin",
+    )
+    source_experiments: Mapped[list["ReportSourceExperimentModel"]] = relationship(  # type: ignore[assignment]
+        "ReportSourceExperimentModel",
+        back_populates="report",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    cell_pins: Mapped[list["ReportCellPinModel"]] = relationship(  # type: ignore[assignment]
+        "ReportCellPinModel",
+        back_populates="report",
+        cascade="all, delete-orphan",
+        order_by="ReportCellPinModel.position",
+        lazy="selectin",
+    )
+    backfill_events: Mapped[list["ReportBackfillEventModel"]] = relationship(  # type: ignore[assignment]
+        "ReportBackfillEventModel",
+        back_populates="report",
+        cascade="all, delete-orphan",
+        order_by="ReportBackfillEventModel.initiated_at.desc()",
+        lazy="select",
+    )
+
+
+class ReportAgentModel(Base):
+    """One column of a report's cartesian grid."""
+
+    __tablename__ = "report_agents"
+    __table_args__ = (
+        UniqueConstraint("report_id", "column_key", name="uq_report_agents_column_key"),
+        Index("idx_report_agents_report_id", "report_id"),
+    )
+
+    report_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    column_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    agent: Mapped[str] = mapped_column(String(128), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    backfill_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    report: Mapped[ReportModel] = relationship(
+        "ReportModel", back_populates="agents"
+    )
+
+
+class ReportTaskVersionModel(Base):
+    """One row of a report's cartesian grid.
+
+    ``task_version_id`` is resolved at create time from the user-supplied
+    ``(task_id, version?)`` or ``task_version_id`` and pinned here. Hard
+    deletes of the underlying task_version are blocked by the FK so
+    reports cannot silently bit-rot; soft deletes don't trip the FK and
+    are surfaced as a missing cell.
+    """
+
+    __tablename__ = "report_task_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_id",
+            "task_version_id",
+            name="uq_report_task_versions_task_version_id",
+        ),
+        Index("idx_report_task_versions_report_id", "report_id"),
+        Index("idx_report_task_versions_task_version_id", "task_version_id"),
+    )
+
+    report_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_version_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("task_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    report: Mapped[ReportModel] = relationship(
+        "ReportModel", back_populates="task_versions"
+    )
+
+
+class ReportSourceExperimentModel(Base):
+    """Optional ``source.experiment_ids`` scope."""
+
+    __tablename__ = "report_source_experiments"
+
+    report_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    experiment_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("experiments.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    report: Mapped[ReportModel] = relationship(
+        "ReportModel", back_populates="source_experiments"
+    )
+
+
+class ReportCellPinModel(Base):
+    """Explicit per-cell trial-id override.
+
+    Composite FK ``(report_id, column_key)`` ties a pin to a real
+    ``report_agents`` row so deleting a column cascades the pins.
+    """
+
+    __tablename__ = "report_cell_pins"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["report_id", "column_key"],
+            ["report_agents.report_id", "report_agents.column_key"],
+            ondelete="CASCADE",
+            name="fk_report_cell_pins_column",
+        ),
+        Index("idx_report_cell_pins_trial_id", "trial_id"),
+    )
+
+    report_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    task_version_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("task_versions.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    column_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    trial_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("trials.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    report: Mapped[ReportModel] = relationship(
+        "ReportModel", back_populates="cell_pins"
+    )
+
+
+class ReportBackfillEventModel(TimestampedMixin, Base):
+    """Audit row: one per /reports/{id}/backfill/execute call.
+
+    Captures who initiated, when, the frozen plan snapshot at confirm
+    time, and the trials submitted. Written inside the same transaction
+    as the sweep calls so a partial failure still leaves a trace.
+    """
+
+    __tablename__ = "report_backfill_events"
+    __table_args__ = (
+        Index(
+            "idx_report_backfill_events_report_initiated",
+            "report_id",
+            "initiated_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    report_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    initiated_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    initiated_by_api_key_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    initiated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    plan_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    est_cost_usd_total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trials_submitted: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="submitted", server_default="submitted"
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    report: Mapped[ReportModel] = relationship(
+        "ReportModel", back_populates="backfill_events"
+    )
+    trials: Mapped[list["ReportBackfillEventTrialModel"]] = relationship(  # type: ignore[assignment]
+        "ReportBackfillEventTrialModel",
+        back_populates="event",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+
+class ReportBackfillEventTrialModel(Base):
+    """Join table: which trials each backfill event produced."""
+
+    __tablename__ = "report_backfill_event_trials"
+    __table_args__ = (
+        Index("idx_report_backfill_event_trials_trial_id", "trial_id"),
+    )
+
+    event_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("report_backfill_events.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    trial_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("trials.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    event: Mapped[ReportBackfillEventModel] = relationship(
+        "ReportBackfillEventModel", back_populates="trials"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Soft-delete registration
 # ---------------------------------------------------------------------------
@@ -900,4 +1230,4 @@ class WorkerJobModel(TimestampedMixin, Base):
 # themselves from ``backend/models.py`` so this module stays standalone.
 from oddish.db.soft_delete import register_soft_delete_models
 
-register_soft_delete_models(ExperimentModel, TaskModel, TrialModel)
+register_soft_delete_models(ExperimentModel, TaskModel, TrialModel, ReportModel)

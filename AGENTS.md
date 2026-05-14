@@ -287,6 +287,19 @@ uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/
 | DELETE | `/trials/{trial_id}` | Soft-delete a single trial, cancel its in-flight jobs, and invalidate the parent task's cached verdict |
 | GET | `/trials/{trial_id}/logs` | Fetch logs for a trial |
 | GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
+| POST | `/reports` | Create a report (synthetic shareable run) from a `ReportSpec` |
+| GET | `/reports` | List reports for the authenticated org |
+| GET | `/reports/{report_id}` | Fetch a report with its resolved cell grid |
+| GET | `/reports/{report_id}.yaml` | Download the canonical YAML spec for a report |
+| PATCH | `/reports/{report_id}` | Update name / description / spec (wholesale replace on spec) |
+| DELETE | `/reports/{report_id}` | Soft-delete a report (trials and audit history are preserved) |
+| POST | `/reports/{report_id}/share` | Publish a public share link |
+| DELETE | `/reports/{report_id}/share` | Unpublish (token preserved, public access stops) |
+| GET | `/reports/{report_id}/backfill/plan` | Compute the gap + USD cost estimate from historical trials |
+| POST | `/reports/{report_id}/backfill/execute` | Submit a sweep to fill missing cells; records an audit event |
+| GET | `/reports/{report_id}/backfill/events` | List backfill audit events (who, when, source, trials submitted) |
+| GET | `/public/reports/{token}` | Anonymous read of a shared report (name + description + grid only — no spec, no source ids) |
+| GET | `/public/reports/{token}/trials/{trial_id}/{logs\|trajectory\|files\|result}` | Trial deep links gated on the trial appearing in the report's resolved cells |
 
 ### Configuration (oddish)
 
@@ -545,7 +558,9 @@ uv run alembic upgrade head
     stale-RUNNING samples, recent failures/cancels, duration percentiles,
     plus `OrphanedStateCard`
   - **Concurrency**: `queue_slots` leases and per-queue-key health
+- `/reports` and `/reports/[report_id]` — authed report list + detail (rows × cols grid, backfill banner, backfill history)
 - `/share/[token]` — read-only public experiment view
+- `/share/reports/[token]` — read-only public report view (sauron-style: no spec, no source ids, no audit history)
 - `/datasets` and `/datasets/[token]` — public dataset listing and detail
 
 ### Request Flow

@@ -575,3 +575,227 @@ export interface PublicExperimentInfo {
   name: string;
   public_token: string;
 }
+
+// =============================================================================
+// Reports — synthetic shareable runs (see oddish.schemas.ReportSpec).
+// =============================================================================
+
+export type ReportSelectionStrategy =
+  | "latest"
+  | "best_reward"
+  | "first"
+  | "random";
+
+export interface ReportAgentEntry {
+  id: string;
+  agent: string;
+  model: string | null;
+  backfill?: {
+    environment?: string | null;
+    priority?: Priority | null;
+    harbor?: unknown;
+  } | null;
+}
+
+export interface ReportTaskVersionEntry {
+  task_version_id?: string | null;
+  task_id?: string | null;
+  version?: number | null;
+  pins?: Record<string, string[]>;
+}
+
+export interface ReportSpec {
+  version: number;
+  name: string;
+  description: string | null;
+  agents: ReportAgentEntry[];
+  task_versions: ReportTaskVersionEntry[];
+  trials_per_cell: number;
+  source: {
+    experiment_ids: string[];
+    include_superseded: boolean;
+    status: string[];
+  };
+  selection: {
+    strategy: ReportSelectionStrategy;
+    seed: number | null;
+    tie_breaker: string;
+  };
+  backfill: { enabled: boolean; priority: Priority };
+}
+
+export interface ReportTrialSummary {
+  id: string;
+  name: string;
+  agent: string;
+  model: string | null;
+  status: TrialStatus;
+  reward: number | null;
+  cost_usd: number | null;
+  cost_is_estimated: boolean | null;
+  error_message: string | null;
+  task_id: string;
+  task_version_id: string | null;
+  experiment_id: string | null;
+  superseded_by_trial_id: string | null;
+  has_trajectory: boolean;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_seconds: number | null;
+}
+
+export interface ReportRowResolved {
+  position: number;
+  task_version_id: string;
+  task_id: string;
+  version: number;
+  task_name: string;
+}
+
+export interface ReportColumnResolved {
+  position: number;
+  column_key: string;
+  agent: string;
+  model: string | null;
+}
+
+export interface ReportCellResolved {
+  row_idx: number;
+  col_idx: number;
+  source: "resolved" | "pinned";
+  have: number;
+  need: number;
+  trials: ReportTrialSummary[];
+}
+
+export interface Report {
+  id: string;
+  name: string;
+  description: string | null;
+  org_id: string | null;
+  created_by_user_id: string | null;
+  spec: ReportSpec;
+  is_public: boolean;
+  public_token: string | null;
+  backfill_experiment_id: string | null;
+  created_at: string;
+  updated_at: string;
+  rows: ReportRowResolved[];
+  columns: ReportColumnResolved[];
+  cells: ReportCellResolved[];
+  total_trials: number;
+  total_missing: number;
+}
+
+export interface ReportListItem {
+  id: string;
+  name: string;
+  description: string | null;
+  rows_count: number;
+  columns_count: number;
+  is_public: boolean;
+  public_token: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReportShareResponse {
+  id: string;
+  name: string;
+  is_public: boolean;
+  public_token: string | null;
+}
+
+export interface BackfillCellPlan {
+  row_idx: number;
+  col_idx: number;
+  task_version_id: string;
+  task_id: string;
+  column_key: string;
+  agent: string;
+  model: string | null;
+  have: number;
+  need: number;
+  est_cost_usd: number | null;
+  cost_sample_size: number;
+  has_backfill_config: boolean;
+}
+
+export interface BackfillPlan {
+  total_missing: number;
+  total_est_cost_usd: number | null;
+  total_cost_sample_size: number;
+  cells: BackfillCellPlan[];
+  columns_missing_backfill_config: string[];
+}
+
+export interface BackfillExecuteResponse {
+  event_id: string;
+  submitted: number;
+  total_est_cost_usd: number | null;
+  backfill_experiment_id: string;
+  by_cell: Array<{
+    row_idx: number;
+    col_idx: number;
+    column_key: string;
+    queued: number;
+  }>;
+  trial_ids: string[];
+  status: "submitted" | "partial" | "failed";
+  error_message: string | null;
+}
+
+export interface BackfillEvent {
+  id: string;
+  report_id: string;
+  initiated_by_user_id: string | null;
+  initiated_by_api_key_id: string | null;
+  initiated_by_display: string | null;
+  source: string;
+  initiated_at: string;
+  est_cost_usd_total: number | null;
+  trials_submitted: number;
+  status: string;
+  error_message: string | null;
+  trial_ids: string[];
+}
+
+export interface PublicReportTrialSummary {
+  id: string;
+  agent: string;
+  model: string | null;
+  status: TrialStatus;
+  reward: number | null;
+  cost_usd: number | null;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_seconds: number | null;
+  has_trajectory: boolean;
+}
+
+export interface PublicReport {
+  name: string;
+  description: string | null;
+  created_at: string;
+  created_by_display: string | null;
+  rows: Array<{
+    position: number;
+    task_version_id: string;
+    task_id: string;
+    version: number;
+    task_name: string;
+  }>;
+  columns: Array<{
+    position: number;
+    column_key: string;
+    agent: string;
+    model: string | null;
+  }>;
+  cells: Array<{
+    row_idx: number;
+    col_idx: number;
+    trials: PublicReportTrialSummary[];
+  }>;
+  total_trials: number;
+}
