@@ -101,6 +101,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Required by `plengauer/opentelemetry-github` to read the
+      # job's step list as it runs.
+      actions: read
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -120,10 +123,24 @@ jobs:
       ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
+      # Picked up by `plengauer/opentelemetry-github`'s first step so
+      # every subsequent step in this job is captured as an OTEL span
+      # and shipped to Logfire under service.name = oddish-ci.
+      OTEL_SERVICE_NAME: oddish-ci
+      OTEL_EXPORTER_OTLP_ENDPOINT: https://logfire-api.pydantic.dev
+      OTEL_EXPORTER_OTLP_HEADERS: Authorization=${{ secrets.LOGFIRE_TOKEN }}
     defaults:
       run:
         working-directory: backend
     steps:
+      - name: Instrument job with OpenTelemetry
+        uses: plengauer/opentelemetry-github/actions/instrument/job@v5
+        with:
+          # Redact every secret value from span attributes / logs so
+          # `OTEL_EXPORTER_OTLP_HEADERS=Authorization=…` doesn't leak
+          # into a public-readable trace.
+          secrets_to_redact: ${{ toJSON(secrets) }}
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -286,6 +303,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -296,7 +314,15 @@ jobs:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
+      OTEL_SERVICE_NAME: oddish-ci
+      OTEL_EXPORTER_OTLP_ENDPOINT: https://logfire-api.pydantic.dev
+      OTEL_EXPORTER_OTLP_HEADERS: Authorization=${{ secrets.LOGFIRE_TOKEN }}
     steps:
+      - name: Instrument job with OpenTelemetry
+        uses: plengauer/opentelemetry-github/actions/instrument/job@v5
+        with:
+          secrets_to_redact: ${{ toJSON(secrets) }}
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -355,25 +381,3 @@ jobs:
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         working-directory: frontend
         run: vercel env rm NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
-
-  export-trace:
-    # Fetches the workflow run's job/step tree from the GH Actions
-    # API and ships it to Logfire as one OTLP trace under the
-    # `oddish-ci` service. Runs in its own job with `if: always()` +
-    # `needs:` on every upstream job so it fires even when an
-    # upstream job failed or was skipped — that's the case where the
-    # trace actually matters.
-    needs: [detect-changes, deploy-preview, stop-preview]
-    if: always()
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - uses: corentinmusard/otel-cicd-action@v4
-        continue-on-error: true
-        with:
-          otlpEndpoint: https://logfire-api.pydantic.dev
-          otlpHeaders: Authorization=${{ secrets.LOGFIRE_TOKEN }}
-          githubToken: ${{ secrets.GITHUB_TOKEN }}
-          otelServiceName: oddish-ci
