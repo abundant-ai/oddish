@@ -4,9 +4,9 @@
 # Supabase's `branches create --with-data`, whose logical-replication
 # clone was the dominant cost (~20 min) of preview spin-up.
 #
-# The dump is written only to the runner's tmpfs and deleted on exit —
-# it never lands in a release/artifact/bucket, which matters because
-# the repo is public.
+# The dump is streamed through a pipe directly into pg_restore — it
+# never lands on disk, which matters because the repo is public and
+# also keeps us off the runner tmpfs ceiling as prod grows.
 #
 # Supabase branch creation already clones the project's full DDL
 # (public schema, types, indexes, constraints, triggers, etc.), so we
@@ -33,27 +33,18 @@ strip_driver() {
 prod_url=$(strip_driver "$PROD_DATABASE_URL")
 branch_url=$(strip_driver "$ODDISH_DATABASE_URL")
 
-dump_dir=$(mktemp -d)
-trap 'rm -rf "$dump_dir"' EXIT
-
-echo "dumping prod public-schema data..." >&2
+echo "streaming prod public-schema data into preview branch..." >&2
 PGCONNECT_TIMEOUT=30 pg_dump \
   --format=custom \
   --data-only \
   --schema=public \
   --no-owner --no-acl \
   --no-publications --no-subscriptions \
-  --file="$dump_dir/data.dump" \
-  "$prod_url"
-
-ls -lh "$dump_dir" >&2
-
-echo "restoring data to preview branch..." >&2
-pg_restore \
-  --no-owner --no-acl \
-  --data-only \
-  --exit-on-error \
-  --dbname="$branch_url" \
-  "$dump_dir/data.dump"
+  "$prod_url" \
+  | pg_restore \
+      --no-owner --no-acl \
+      --data-only \
+      --exit-on-error \
+      --dbname="$branch_url"
 
 echo "restore complete" >&2
