@@ -93,6 +93,7 @@ export default function RootLayout({
 
   return (
     <ClerkProvider
+      dynamic
       signInUrl={toAbsoluteUrl(signInUrl)}
       signUpUrl={toAbsoluteUrl(signUpUrl)}
       signInFallbackRedirectUrl={toAbsoluteUrl(afterSignInUrl)}
