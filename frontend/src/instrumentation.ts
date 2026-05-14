@@ -41,12 +41,19 @@ export function register() {
     process.env.LOGFIRE_OTLP_ENDPOINT ||
     "https://logfire-api.pydantic.dev/v1/traces";
 
-  const environment =
-    process.env.LOGFIRE_ENVIRONMENT ||
-    (process.env.VERCEL_ENV === "production" ? "prod" : "preview");
+  // Per-deployment env so a PR's edge spans land in their own Logfire
+  // environment instead of all PRs sharing a single "preview" bucket.
+  // Falls through to the explicit override or the generic "preview"
+  // label when no PR number is available (local dev, ad-hoc deploys).
+  const environment = (() => {
+    const explicit = process.env.LOGFIRE_ENVIRONMENT;
+    if (explicit) return explicit;
+    if (process.env.VERCEL_ENV === "production") return "prod";
+    const pr = process.env.VERCEL_GIT_PULL_REQUEST_ID;
+    return pr ? `preview-pr-${pr}` : "preview";
+  })();
 
-  const sha =
-    process.env.VERCEL_GIT_COMMIT_SHA || process.env.GIT_COMMIT_SHA;
+  const sha = process.env.VERCEL_GIT_COMMIT_SHA || process.env.GIT_COMMIT_SHA;
 
   registerOTel({
     // Distinct from the browser-side `oddish-frontend` so Logfire
