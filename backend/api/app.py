@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from observability import (
-    configure_logfire,
+    LogfireProxyCORSMiddleware,
     instrument_fastapi,
     mount_browser_proxy,
 )
@@ -93,11 +93,15 @@ async def lifespan(_api: FastAPI):
 
 
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application with all routers."""
-    configure_logfire(
-        service_name=os.environ.get("LOGFIRE_SERVICE_NAME", "oddish-backend"),
-    )
+    """Create and configure the FastAPI application with all routers.
 
+    ``configure_logfire()`` ran in ``api/__init__.py`` before any of
+    our handler modules were imported, which is what lets
+    ``logfire.install_auto_tracing`` actually patch ``api.routers`` /
+    ``oddish.core`` / ``oddish.queue`` / ``oddish.workers``. Calling
+    it again here would be a no-op (it's idempotent) but we leave
+    it out for clarity.
+    """
     api = FastAPI(
         title="Oddish Cloud",
         version="0.3.0",
@@ -119,6 +123,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         expose_headers=["Server-Timing", "traceparent", "tracestate"],
     )
+
+    # IMPORTANT: this must be added AFTER CORSMiddleware. Starlette's
+    # `add_middleware` inserts at the FRONT of the list and the stack
+    # is wrapped outer-to-inner from index 0, so the LAST-added
+    # middleware ends up outermost and runs first. We need this shim
+    # to intercept `/logfire-proxy/*` preflights before CORSMiddleware
+    # 400s them for an unrecognised Vercel preview origin.
+    api.add_middleware(LogfireProxyCORSMiddleware)
 
     @api.middleware("http")
     async def add_server_timing_header(request: Request, call_next):
