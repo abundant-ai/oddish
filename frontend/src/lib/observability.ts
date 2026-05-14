@@ -30,7 +30,7 @@ function resolveEnvironment(): string {
   // Per-PR bucket so previews don't all share one "preview" env. Keyed off
   // `NEXT_PUBLIC_VERCEL_ENV` not `NODE_ENV` — the latter is "production"
   // for PR-preview builds too.
-  if (process.env.NEXT_PUBLIC_VERCEL_ENV === "production") return "prod";
+  if (process.env.NEXT_PUBLIC_VERCEL_ENV === "production") return "production";
   const pr = process.env.NEXT_PUBLIC_VERCEL_GIT_PULL_REQUEST_ID;
   return pr ? `preview-pr-${pr}` : "preview";
 }

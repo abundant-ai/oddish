@@ -21,7 +21,7 @@ export function register() {
   const environment = (() => {
     const explicit = process.env.LOGFIRE_ENVIRONMENT;
     if (explicit) return explicit;
-    if (process.env.VERCEL_ENV === "production") return "prod";
+    if (process.env.VERCEL_ENV === "production") return "production";
     const pr = process.env.VERCEL_GIT_PULL_REQUEST_ID;
     return pr ? `preview-pr-${pr}` : "preview";
   })();
