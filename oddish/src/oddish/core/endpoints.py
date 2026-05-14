@@ -1244,9 +1244,13 @@ async def list_task_versions_core(
     *,
     task_id: str,
     org_id: str | None = None,
+    task: TaskModel | None = None,
 ) -> list[TaskVersionResponse]:
     """Return all versions of a task, newest first."""
-    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
+    if task is None:
+        task = await get_task_for_org_core(
+            session, task_id=task_id, org_id=org_id
+        )
 
     result = await session.execute(
         select(TaskVersionModel)
@@ -1334,21 +1338,46 @@ async def get_task_detail_core(
     ]
 
     version_rows = await list_task_versions_core(
-        session, task_id=task_id, org_id=org_id
+        session, task_id=task_id, org_id=org_id, task=task
     )
 
-    summary_by_version_id: dict[str, TaskVersionSummary] = {}
-    for v in version_rows:
-        summary_by_version_id[v.id] = TaskVersionSummary(
+    totals, versions_sorted = _aggregate_task_detail_rollups(
+        trials=task_status.trials or [],
+        version_rows=version_rows,
+        current_version_id=task_status.current_version_id,
+    )
+
+    return TaskDetailResponse(
+        task=task_status,
+        versions=versions_sorted,
+        totals=totals,
+    )
+
+
+def _aggregate_task_detail_rollups(
+    *,
+    trials,
+    version_rows,
+    current_version_id: str | None,
+) -> tuple[TaskCostTotals, list[TaskVersionSummary]]:
+    """Fold trials into a task-wide cost rollup + per-version summaries.
+
+    Pulled out so it's unit-testable without standing up the full
+    ``get_task_detail_core`` query stack.
+    """
+    summary_by_version_id: dict[str, TaskVersionSummary] = {
+        v.id: TaskVersionSummary(
             id=v.id,
             version=v.version,
             message=v.message,
             created_at=v.created_at,
-            is_current=(v.id == task_status.current_version_id),
+            is_current=(v.id == current_version_id),
         )
+        for v in version_rows
+    }
 
     totals = TaskCostTotals()
-    for trial in task_status.trials or []:
+    for trial in trials:
         totals.total_trials += 1
         if trial.cost_usd is not None:
             totals.cost_usd += trial.cost_usd
@@ -1398,12 +1427,7 @@ async def get_task_detail_core(
         key=lambda s: s.version,
         reverse=True,
     )
-
-    return TaskDetailResponse(
-        task=task_status,
-        versions=versions_sorted,
-        totals=totals,
-    )
+    return totals, versions_sorted
 
 
 async def delete_task_core(
