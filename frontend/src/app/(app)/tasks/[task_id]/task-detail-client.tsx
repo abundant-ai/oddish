@@ -1,19 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Tooltip,
@@ -22,6 +20,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { TaskFilesPanel } from "@/components/task-files-panel";
+import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { TrialDetailPanel } from "@/components/trial-detail-panel";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
@@ -30,6 +29,11 @@ import {
   getExperimentAgentKey,
 } from "@/lib/experiment-agent-grouping";
 import {
+  formatCostUsd,
+  formatDurationSec,
+  trialDurationSec,
+} from "@/lib/format";
+import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
   formatRewardValue,
@@ -37,6 +41,11 @@ import {
   getRewardStyle,
   STATUS_CONFIG,
 } from "@/lib/status-config";
+import {
+  EMPTY_TRIAL_AGGREGATE,
+  summarizeTrials,
+  type TrialAggregate,
+} from "@/lib/trial-aggregation";
 import type {
   Task,
   TaskDetailResponse,
@@ -44,44 +53,22 @@ import type {
   Trial,
 } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/utils";
-import {
-  AlertTriangle,
-  ArrowLeft,
-  CheckCircle2,
-  FileText,
-  Loader2,
-  Microscope,
-  XCircle,
-} from "lucide-react";
+import { ArrowLeft, ChevronDown, FileText, Loader2 } from "lucide-react";
 
-const ALL_VERSIONS_ID = "__all__";
-
-function formatCostUsd(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "$0.00";
-  if (value < 0.01) return `$${value.toFixed(4)}`;
-  if (value < 1) return `$${value.toFixed(3)}`;
-  if (value < 100) return `$${value.toFixed(2)}`;
-  return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+function readVersionFromQuery(): string | null {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get("version");
 }
 
-function formatDurationSec(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) return "—";
-  if (seconds < 1) return `${(seconds * 1000).toFixed(0)}ms`;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const m = Math.floor(seconds / 60);
-  const s = Math.round(seconds - m * 60);
-  if (m < 60) return s ? `${m}m ${s}s` : `${m}m`;
-  const h = Math.floor(m / 60);
-  const rem = m - h * 60;
-  return rem ? `${h}h ${rem}m` : `${h}h`;
-}
-
-function trialDurationSec(trial: Trial): number | null {
-  if (!trial.started_at || !trial.finished_at) return null;
-  const start = new Date(trial.started_at).getTime();
-  const end = new Date(trial.finished_at).getTime();
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
-  return (end - start) / 1000;
+function writeVersionToQuery(versionId: string | null, defaultId: string | null) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (versionId == null || versionId === defaultId) {
+    url.searchParams.delete("version");
+  } else {
+    url.searchParams.set("version", versionId);
+  }
+  window.history.replaceState(window.history.state, "", url.toString());
 }
 
 function CostBadge({
@@ -247,76 +234,7 @@ function TaskDetailHeader({
   );
 }
 
-type AggregateSummary = {
-  trialCount: number;
-  completed: number;
-  failed: number;
-  passCount: number;
-  partialCount: number;
-  failCount: number;
-  harnessErrorCount: number;
-  pendingCount: number;
-  rewardSum: number;
-  rewardTotal: number;
-  costUsd: number;
-  costTrialCount: number;
-  costHasEstimated: boolean;
-  costHasNative: boolean;
-  lastRunAt: string | null;
-};
-
-const EMPTY_SUMMARY: AggregateSummary = {
-  trialCount: 0,
-  completed: 0,
-  failed: 0,
-  passCount: 0,
-  partialCount: 0,
-  failCount: 0,
-  harnessErrorCount: 0,
-  pendingCount: 0,
-  rewardSum: 0,
-  rewardTotal: 0,
-  costUsd: 0,
-  costTrialCount: 0,
-  costHasEstimated: false,
-  costHasNative: false,
-  lastRunAt: null,
-};
-
-function summarizeTrials(trials: Trial[]): AggregateSummary {
-  const s: AggregateSummary = { ...EMPTY_SUMMARY };
-  for (const trial of trials) {
-    s.trialCount += 1;
-    if (trial.cost_usd != null) {
-      s.costUsd += trial.cost_usd;
-      s.costTrialCount += 1;
-      if (trial.cost_is_estimated === true) s.costHasEstimated = true;
-      else s.costHasNative = true;
-    }
-    if (trial.status === "success") s.completed += 1;
-    else if (trial.status === "failed") s.failed += 1;
-
-    if (trial.status === "success" && trial.reward != null) {
-      s.rewardSum += trial.reward;
-      s.rewardTotal += 1;
-      if (trial.reward === 1) s.passCount += 1;
-      else if (trial.reward === 0) s.failCount += 1;
-      else s.partialCount += 1;
-    } else if (trial.status === "failed") {
-      s.harnessErrorCount += 1;
-    } else if (trial.status !== "success") {
-      s.pendingCount += 1;
-    }
-
-    const candidate = trial.finished_at || trial.started_at || trial.created_at;
-    if (candidate && (s.lastRunAt == null || candidate > s.lastRunAt)) {
-      s.lastRunAt = candidate;
-    }
-  }
-  return s;
-}
-
-function summaryFromVersion(v: TaskVersionSummary): AggregateSummary {
+function summaryFromVersion(v: TaskVersionSummary): TrialAggregate {
   return {
     trialCount: v.trial_count,
     completed: v.completed_count,
@@ -342,130 +260,55 @@ function VersionSwitcher({
   onSelect,
 }: {
   versions: TaskVersionSummary[];
-  selectedVersionId: string;
+  selectedVersionId: string | null;
   onSelect: (id: string) => void;
 }) {
   if (versions.length === 0) return null;
-
-  const totalTrials = versions.reduce((a, v) => a + v.trial_count, 0);
   const selected = versions.find((v) => v.id === selectedVersionId);
-
-  const triggerLabel =
-    selectedVersionId === ALL_VERSIONS_ID
-      ? `All versions · ${totalTrials} trial${totalTrials === 1 ? "" : "s"}`
-      : selected
-        ? `v${selected.version}${selected.is_current ? " · current" : ""}`
-        : "Select version";
+  const triggerLabel = selected
+    ? `v${selected.version}${selected.is_current ? " · current" : ""}`
+    : "Select version";
 
   return (
-    <Select value={selectedVersionId} onValueChange={onSelect}>
-      <SelectTrigger className="font-mono h-8 w-[260px] rounded-[7px] border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] text-[color:var(--paper-ink)] hover:bg-[color:var(--paper-surface-2)]">
-        <SelectValue placeholder="Select version">{triggerLabel}</SelectValue>
-      </SelectTrigger>
-      <SelectContent className="font-mono w-[360px]">
-        <SelectItem value={ALL_VERSIONS_ID}>
-          <div className="flex w-full flex-col gap-0.5 py-0.5">
-            <span className="text-[12px] font-semibold text-[color:var(--paper-ink)]">
-              All versions
-            </span>
-            <span className="text-[10.5px] text-[color:var(--paper-ink-3)]">
-              {totalTrials} trial{totalTrials === 1 ? "" : "s"} across{" "}
-              {versions.length} version{versions.length === 1 ? "" : "s"}
-            </span>
-          </div>
-        </SelectItem>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          className="font-mono h-8 w-[220px] justify-between rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] text-[color:var(--paper-ink)] hover:bg-[color:var(--paper-surface-2)]"
+        >
+          <span className="truncate">{triggerLabel}</span>
+          <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-60" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="font-mono w-[320px]">
         {versions.map((v) => {
           const label = v.is_current ? `v${v.version} · current` : `v${v.version}`;
           const cost =
             v.cost_trial_count > 0
               ? `${v.cost_has_estimated && !v.cost_has_native ? "~" : ""}${formatCostUsd(v.cost_usd)}`
               : "$0";
+          const sub = `${v.trial_count} trial${v.trial_count === 1 ? "" : "s"} · ${cost}${v.message ? ` · ${v.message}` : ""}`;
+          const isActive = v.id === selectedVersionId;
           return (
-            <SelectItem key={v.id} value={v.id}>
-              <div className="flex w-full flex-col gap-0.5 py-0.5">
-                <span className="text-[12px] font-semibold text-[color:var(--paper-ink)]">
-                  {label}
-                </span>
-                <span className="text-[10.5px] text-[color:var(--paper-ink-3)]">
-                  {v.trial_count} trial{v.trial_count === 1 ? "" : "s"} · {cost}
-                  {v.message ? ` · ${v.message}` : ""}
-                </span>
-              </div>
-            </SelectItem>
+            <DropdownMenuItem
+              key={v.id}
+              onSelect={() => onSelect(v.id)}
+              className={`flex flex-col items-start gap-0.5 px-3 py-2 ${
+                isActive ? "bg-[color:var(--paper-surface-2)]" : ""
+              }`}
+            >
+              <span className="font-mono text-[12px] font-semibold text-[color:var(--paper-ink)]">
+                {label}
+              </span>
+              <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
+                {sub}
+              </span>
+            </DropdownMenuItem>
           );
         })}
-      </SelectContent>
-    </Select>
-  );
-}
-
-function VerdictBlock({ task }: { task: Task }) {
-  if (!task.run_analysis && !task.verdict_status && !task.verdict) return null;
-
-  const status = task.verdict_status;
-  const verdict = task.verdict;
-  const isPending =
-    status === "running" || status === "pending" || status === "queued";
-  const isFailed = status === "failed";
-
-  let icon: React.ReactNode;
-  let title: string;
-  let toneClass: string;
-
-  if (isPending) {
-    icon = <Loader2 className="h-4 w-4 shrink-0 animate-spin text-blue-500" />;
-    title = "Computing verdict...";
-    toneClass = "border-[color:var(--paper-line)]";
-  } else if (isFailed) {
-    icon = <XCircle className="h-4 w-4 shrink-0 text-red-500" />;
-    title = "Verdict failed";
-    toneClass = "border-red-500/40 bg-red-500/[0.04]";
-  } else if (verdict?.is_good === true) {
-    icon = <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />;
-    title = "Task is good";
-    toneClass = "border-emerald-500/40 bg-emerald-500/[0.04]";
-  } else if (verdict?.is_good === false) {
-    icon = <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />;
-    title = "Needs review";
-    toneClass = "border-amber-500/40 bg-amber-500/[0.04]";
-  } else {
-    icon = <Microscope className="h-4 w-4 shrink-0 text-slate-500" />;
-    title = "Verdict pending";
-    toneClass = "border-[color:var(--paper-line)]";
-  }
-
-  const detail =
-    isFailed && task.verdict_error
-      ? task.verdict_error
-      : verdict?.is_good === false
-        ? verdict.primary_issue ?? verdict.reasoning ?? null
-        : verdict?.is_good === true
-          ? verdict.reasoning ?? null
-          : null;
-
-  return (
-    <div
-      className={`flex items-start gap-2.5 rounded-[10px] border px-3 py-2 ${toneClass}`}
-    >
-      {icon}
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-baseline gap-x-2">
-          <span className="font-mono text-[12px] font-semibold text-[color:var(--paper-ink)]">
-            {title}
-          </span>
-          {verdict?.confidence ? (
-            <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
-              · {verdict.confidence} confidence
-            </span>
-          ) : null}
-        </div>
-        {detail ? (
-          <p className="font-mono mt-0.5 text-[11px] leading-snug text-[color:var(--paper-ink-2)]">
-            {detail}
-          </p>
-        ) : null}
-      </div>
-    </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -657,8 +500,6 @@ export function TaskDetailClient({
   initialDetail,
   initialVersionId,
 }: TaskDetailClientProps) {
-  const router = useRouter();
-  const searchParams = useSearchParams();
   const swrKey = `/api/tasks/${encodeURIComponent(taskId)}/detail`;
 
   const { data, error, isLoading, mutate } = useSWR<TaskDetailResponse>(
@@ -677,42 +518,39 @@ export function TaskDetailClient({
   const versions = useMemo(() => detail?.versions ?? [], [detail]);
   const totals = detail?.totals;
 
-  const queryVersionId = searchParams.get("version") ?? initialVersionId ?? null;
-  const defaultVersionId =
-    task?.current_version_id ?? versions[0]?.id ?? ALL_VERSIONS_ID;
-  const selectedVersionId = useMemo(() => {
-    if (!queryVersionId) return defaultVersionId;
-    if (queryVersionId === ALL_VERSIONS_ID) return ALL_VERSIONS_ID;
-    return versions.some((v) => v.id === queryVersionId)
-      ? queryVersionId
-      : defaultVersionId;
-  }, [queryVersionId, defaultVersionId, versions]);
+  const defaultVersionId = task?.current_version_id ?? versions[0]?.id ?? null;
+
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
+    () => initialVersionId ?? null,
+  );
+
+  useEffect(() => {
+    if (selectedVersionId != null && versions.some((v) => v.id === selectedVersionId)) {
+      return;
+    }
+    const fromUrl = readVersionFromQuery();
+    if (fromUrl && versions.some((v) => v.id === fromUrl)) {
+      setSelectedVersionId(fromUrl);
+      return;
+    }
+    if (defaultVersionId != null) setSelectedVersionId(defaultVersionId);
+  }, [versions, defaultVersionId, selectedVersionId]);
 
   const handleSelectVersion = useCallback(
     (id: string) => {
-      const next = new URLSearchParams(searchParams.toString());
-      if (id === defaultVersionId) {
-        next.delete("version");
-      } else {
-        next.set("version", id);
-      }
-      const qs = next.toString();
-      router.replace(qs ? `?${qs}` : `?`, { scroll: false });
+      setSelectedVersionId(id);
+      writeVersionToQuery(id, defaultVersionId);
     },
-    [searchParams, router, defaultVersionId],
+    [defaultVersionId],
   );
 
   const trialsForVersion = useMemo(() => {
-    if (!task?.trials) return [] as Trial[];
-    if (selectedVersionId === ALL_VERSIONS_ID) return task.trials;
+    if (!task?.trials || selectedVersionId == null) return [] as Trial[];
     return task.trials.filter((t) => t.task_version_id === selectedVersionId);
   }, [task, selectedVersionId]);
 
   const selectedVersion = versions.find((v) => v.id === selectedVersionId);
-  const versionSummary: AggregateSummary = useMemo(() => {
-    if (selectedVersionId === ALL_VERSIONS_ID) {
-      return summarizeTrials(task?.trials ?? []);
-    }
+  const versionSummary: TrialAggregate = useMemo(() => {
     if (selectedVersion) return summaryFromVersion(selectedVersion);
     return summarizeTrials(trialsForVersion);
   }, [selectedVersion, selectedVersionId, task, trialsForVersion]);
@@ -834,19 +672,16 @@ export function TaskDetailClient({
     );
   }
 
-  const versionLabel =
-    selectedVersionId === ALL_VERSIONS_ID
-      ? "All versions"
-      : selectedVersion
-        ? `v${selectedVersion.version}${selectedVersion.is_current ? " · current" : ""}`
-        : "Selected version";
+  const versionLabel = selectedVersion
+    ? `v${selectedVersion.version}${selectedVersion.is_current ? " · current" : ""}`
+    : "Selected version";
 
   return (
     <TooltipProvider>
       <div className="space-y-4">
         <TaskDetailHeader task={task} onOpenTaskFiles={handleOpenTaskFiles} />
 
-        <VerdictBlock task={task} />
+        <TaskVerdictBadge task={task} variant="inline" />
 
         <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-5">
           <KpiTile
