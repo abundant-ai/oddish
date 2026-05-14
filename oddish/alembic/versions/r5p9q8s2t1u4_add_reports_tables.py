@@ -30,6 +30,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 
 revision: str = "r5p9q8s2t1u4"
@@ -99,11 +100,18 @@ def upgrade() -> None:
         ),
         # ``priority`` is created by the earlier ``tasks.priority`` column
         # in the same Postgres enum. The labels are the member names
-        # (``HIGH`` / ``LOW``), so we reuse the existing type and skip
-        # ``create_type``. Python-side default handles inserts.
+        # (``HIGH`` / ``LOW``), so we reuse the existing type. Use
+        # ``postgresql.ENUM`` (not ``sa.Enum``) — the latter doesn't
+        # propagate ``create_type=False`` reliably when compiled inside
+        # ``op.create_table``, so SQLAlchemy emits a ``CREATE TYPE
+        # priority`` even though the type already exists, and the
+        # migration dies with DuplicateObjectError. Python-side default
+        # handles inserts.
         sa.Column(
             "backfill_priority",
-            sa.Enum("HIGH", "LOW", name="priority", create_type=False),
+            postgresql.ENUM(
+                "HIGH", "LOW", name="priority", create_type=False
+            ),
             nullable=False,
             server_default="LOW",
         ),
