@@ -652,8 +652,11 @@ export function TaskDetailClient({
     if (!task?.id || isRunningJudge) return;
     setIsRunningJudge(true);
     setJudgeError(null);
+    // analysis/retry queues per-trial classifications and flips
+    // task.run_analysis=True; the verdict auto-enqueues once they finish.
+    // verdict/retry alone 400s when no trial analyses exist yet.
     try {
-      const res = await fetch(`/api/tasks/${task.id}/verdict/retry`, {
+      const res = await fetch(`/api/tasks/${task.id}/analysis/retry`, {
         method: "POST",
       });
       if (!res.ok) {
