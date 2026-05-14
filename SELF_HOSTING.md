@@ -73,11 +73,9 @@ Provider keys (add the ones you plan to use):
 OPENAI_API_KEY=sk-...
 GEMINI_API_KEY=...
 
-# Claude models default to AWS Bedrock on the Modal deployment (the image
-# sets CLAUDE_CODE_USE_BEDROCK=1). Set AWS_BEARER_TOKEN_BEDROCK for that
-# route; ANTHROPIC_API_KEY is the fallback for `anthropic/...` model ids.
+# oddish runs Claude exclusively through AWS Bedrock. The Modal image sets
+# CLAUDE_CODE_USE_BEDROCK=1; provide the bearer token here.
 AWS_BEARER_TOKEN_BEDROCK=...
-ANTHROPIC_API_KEY=sk-...
 ```
 
 See `backend/.env.example` for the full list of optional knobs (CORS, GitHub

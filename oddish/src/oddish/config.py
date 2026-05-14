@@ -78,6 +78,60 @@ def looks_like_bedrock_model_id(model: str | None) -> bool:
     return False
 
 
+# Anthropic-style Claude model ids mapped to their exact Bedrock-native ids.
+# oddish runs Claude exclusively through AWS Bedrock, and a Bedrock id carries
+# date + version suffixes that cannot be derived from the short Anthropic name,
+# so the mapping must be explicit. Keys are the lowercased model id with any
+# "provider/" prefix removed (e.g. "anthropic/claude-haiku-4-5" and bare
+# "claude-haiku-4-5" both look up "claude-haiku-4-5"). Add an entry here for
+# every Claude model oddish runs — an unmapped Claude id raises in
+# to_bedrock_model_id() rather than reaching Bedrock as an unresolvable id.
+_ANTHROPIC_TO_BEDROCK_MODEL_IDS: dict[str, str] = {
+    "claude-haiku-4-5": "anthropic.claude-haiku-4-5-20251001-v1:0",
+}
+
+
+def to_bedrock_model_id(model: str | None) -> str | None:
+    """Normalize any Claude model reference to a Bedrock-native model id.
+
+    oddish routes Claude exclusively through AWS Bedrock. This is the single
+    chokepoint that guarantees whatever reaches Claude Code is a Bedrock id:
+
+      * ``None`` / blank -> returned unchanged
+      * non-Claude models (``openai/...``, ``gemini-...``) -> returned unchanged
+      * already Bedrock-shaped ids -> returned as-is, minus any ``bedrock/``
+        prefix (``bedrock/anthropic.claude-...`` -> ``anthropic.claude-...``)
+      * Anthropic-style ids (``anthropic/claude-...``, bare ``claude-...``) ->
+        mapped via ``_ANTHROPIC_TO_BEDROCK_MODEL_IDS``
+
+    Raises ``ValueError`` for a Claude model id with no Bedrock mapping rather
+    than silently handing Bedrock an id it cannot resolve.
+    """
+    if model is None:
+        return None
+    stripped = model.strip()
+    if not stripped:
+        return model
+
+    if looks_like_bedrock_model_id(stripped):
+        if stripped.lower().startswith("bedrock/"):
+            return stripped.split("/", 1)[1]
+        return stripped
+
+    tail = stripped.split("/", 1)[-1].strip()
+    if not tail.lower().startswith("claude"):
+        return stripped
+
+    bedrock_id = _ANTHROPIC_TO_BEDROCK_MODEL_IDS.get(tail.lower())
+    if bedrock_id is None:
+        raise ValueError(
+            f"No Bedrock model id mapping for Claude model {model!r}. "
+            "oddish runs Claude through AWS Bedrock only — add an entry to "
+            "_ANTHROPIC_TO_BEDROCK_MODEL_IDS in oddish.config."
+        )
+    return bedrock_id
+
+
 def normalize_model_id(model: str | None) -> str | None:
     """Canonicalize model identifiers for storage and display.
 
