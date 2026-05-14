@@ -1,17 +1,10 @@
 "use client";
 
-import { useEffect } from "react";
 import { SWRConfig } from "swr";
-import { ensureLogfireConfigured } from "@/lib/observability";
 
 export function Providers({ children }: { children: React.ReactNode }) {
-  // Boot Logfire browser tracing exactly once per client load. We do
-  // this in an effect (rather than at module scope) so it runs after
-  // hydration and never on the server.
-  useEffect(() => {
-    ensureLogfireConfigured();
-  }, []);
-
+  // Logfire browser tracing is booted from `instrumentation-client.ts`
+  // so `fetch` is patched before the first router prefetch fires.
   return (
     <SWRConfig
       value={{
