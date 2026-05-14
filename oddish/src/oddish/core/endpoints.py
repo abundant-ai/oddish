@@ -53,9 +53,12 @@ from oddish.schemas import (
     TaskBrowseItem,
     TaskBrowseResponse,
     TaskBrowseTrial,
+    TaskCostTotals,
+    TaskDetailResponse,
     TaskStatusResponse,
     TaskSweepSubmission,
     TaskVersionResponse,
+    TaskVersionSummary,
     TrialResponse,
 )
 from oddish.timing import TimingRecorder, elapsed_ms, now
@@ -1277,6 +1280,109 @@ async def get_task_version_core(
             detail=f"Version {version} not found for task {task_id}",
         )
     return TaskVersionResponse.model_validate(version_row)
+
+
+async def get_task_detail_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    org_id: str | None = None,
+) -> TaskDetailResponse:
+    """Bundle a task, its trials, and per-version + task-wide aggregates.
+
+    Powers the ``/tasks/{task_id}`` detail page (versions list, version
+    switcher, cost rollups). Reuses ``get_task_status_core`` for the
+    canonical task + trials payload and ``list_task_versions_core`` for
+    the version list, then layers cost / outcome aggregates on top by
+    grouping the in-memory trials (which are already non-superseded and
+    org-scoped via ``get_task_status_core``).
+    """
+    task_status = await get_task_status_core(
+        session,
+        task_id=task_id,
+        include_trials=True,
+        include_empty_rewards=True,
+        org_id=org_id,
+    )
+
+    version_rows = await list_task_versions_core(
+        session, task_id=task_id, org_id=org_id
+    )
+
+    # Pre-create a summary slot per version so versions with zero trials
+    # still show up in the switcher.
+    summary_by_version_id: dict[str, TaskVersionSummary] = {}
+    for v in version_rows:
+        summary_by_version_id[v.id] = TaskVersionSummary(
+            id=v.id,
+            version=v.version,
+            message=v.message,
+            created_at=v.created_at,
+            is_current=(v.id == task_status.current_version_id),
+        )
+
+    totals = TaskCostTotals()
+    for trial in task_status.trials or []:
+        totals.total_trials += 1
+        if trial.cost_usd is not None:
+            totals.cost_usd += trial.cost_usd
+            totals.cost_trial_count += 1
+            if trial.cost_is_estimated:
+                totals.cost_has_estimated = True
+            else:
+                totals.cost_has_native = True
+
+        bucket = summary_by_version_id.get(trial.task_version_id or "")
+        if bucket is None:
+            continue
+        bucket.trial_count += 1
+        if trial.status == TrialStatus.SUCCESS:
+            bucket.completed_count += 1
+        elif trial.status == TrialStatus.FAILED:
+            bucket.failed_count += 1
+
+        if trial.status == TrialStatus.SUCCESS and trial.reward is not None:
+            bucket.reward_sum += trial.reward
+            bucket.reward_total += 1
+            if trial.reward == 1:
+                bucket.pass_count += 1
+            elif trial.reward == 0:
+                bucket.fail_count += 1
+            else:
+                bucket.partial_count += 1
+        elif trial.status == TrialStatus.FAILED:
+            # Harness-style failure with no verifier result.
+            pass
+        else:
+            bucket.pending_count += 1
+
+        if trial.cost_usd is not None:
+            bucket.cost_usd += trial.cost_usd
+            bucket.cost_trial_count += 1
+            if trial.cost_is_estimated:
+                bucket.cost_has_estimated = True
+            else:
+                bucket.cost_has_native = True
+
+        # ``last_run_at`` uses the same precedence the browse query uses:
+        # finished_at → started_at → created_at, whichever is most recent.
+        candidate = trial.finished_at or trial.started_at or trial.created_at
+        if candidate is not None and (
+            bucket.last_run_at is None or candidate > bucket.last_run_at
+        ):
+            bucket.last_run_at = candidate
+
+    versions_sorted = sorted(
+        summary_by_version_id.values(),
+        key=lambda s: s.version,
+        reverse=True,
+    )
+
+    return TaskDetailResponse(
+        task=task_status,
+        versions=versions_sorted,
+        totals=totals,
+    )
 
 
 async def delete_task_core(
