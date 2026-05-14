@@ -101,6 +101,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
+    # Python 3.13, uv (with warm cache), Supabase CLI, Postgres 17 client,
+    # Node 20 + Vercel CLI are all baked in.  Image is refreshed weekly by
+    # .github/workflows/ci-base-image.yml.
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -114,6 +123,9 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
       VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+      # Reuse the .venv pre-built into the base image; `uv sync --frozen`
+      # below only patches the editable oddish path.
+      UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_API_MAX_CONTAINERS: "2"
@@ -127,35 +139,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Install Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
-
-      - name: Install Supabase CLI
-        uses: supabase/setup-cli@v2.0.0
-        with:
-          version: latest
-
-      - name: Install Postgres 17 client
-        # The runner image's stock pg_dump is older than the Supabase
-        # server. pg_dump refuses to dump from a newer server than its
-        # own version, so pull matching client tools from PGDG.
-        run: |
-          sudo install -d /usr/share/postgresql-common/pgdg
-          sudo curl -fsSLo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
-            https://www.postgresql.org/media/keys/ACCC4CF8.asc
-          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
-          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $codename-pgdg main" \
-            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-client-17
-          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
-
       - name: Sync backend dependencies
+        # Reuses the warm uv cache baked into the base image — only new or
+        # bumped wheels relative to the weekly image actually download.
         run: uv sync --frozen
 
       - name: Stop previous preview Modal app
@@ -252,16 +238,7 @@ jobs:
       # branch). MODAL_APP_NAME is keyed on the PR number, so the Modal URL
       # is stable across subsequent pushes — Vercel's GitHub integration
       # auto-deploys those with the already-set NEXT_PUBLIC_API_URL.
-      - name: Install Node
-        if: ${{ steps.supabase_branch.outputs.branch_was_created == 'true' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install Vercel CLI
-        if: ${{ steps.supabase_branch.outputs.branch_was_created == 'true' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
-        run: npm install --global vercel@latest
-
+      # Node + Vercel CLI are pre-installed in the base image.
       - name: Link Vercel project
         if: ${{ steps.supabase_branch.outputs.branch_was_created == 'true' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         working-directory: frontend
@@ -310,6 +287,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -324,19 +307,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Install Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Install Modal
-        run: python -m pip install --quiet modal
-
-      - name: Install Supabase CLI
-        uses: supabase/setup-cli@v2.0.0
-        with:
-          version: latest
-
+      # Modal CLI is pre-installed in the base image as a uv tool
+      # (/usr/local/bin/modal) so no per-job install is needed.
       - name: Stop preview backend
         continue-on-error: true
         run: modal app stop -y "oddish-pr-${{ github.event.pull_request.number }}"
@@ -360,16 +332,7 @@ jobs:
             supabase branches delete "$id" --project-ref "$SUPABASE_PROJECT_REF" || true
           done
 
-      - name: Install Node
-        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install Vercel CLI
-        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
-        run: npm install --global vercel@latest
-
+      # Node + Vercel CLI are pre-installed in the base image.
       - name: Link Vercel project
         if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         working-directory: frontend
