@@ -101,9 +101,18 @@ async def run_async_migrations() -> None:
     # Use the asyncpg URL to avoid psycopg2 dependency.
     connectable = create_async_engine(
         db_url,
-        # Disable prepared statement caching for compatibility with
-        # transaction/statement poolers (PgBouncer, Supavisor, etc).
-        connect_args={"statement_cache_size": 0},
+        connect_args={
+            # Disable prepared statement caching for compatibility with
+            # transaction/statement poolers (PgBouncer, Supavisor, etc).
+            "statement_cache_size": 0,
+            # Pin search_path at the protocol level. Supabase preview
+            # branches reached through the Supavisor session pooler can
+            # otherwise hand alembic a backend whose default search_path
+            # is empty, breaking the very first ``CREATE TABLE
+            # alembic_version_backend`` with ``no schema has been
+            # selected to create in``.
+            "server_settings": {"search_path": "public"},
+        },
         poolclass=pool.NullPool,
     )
 
