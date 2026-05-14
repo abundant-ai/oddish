@@ -9,12 +9,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [2026-05-14]
 
 ### Added
-- Vercel Speed Insights integration: `@vercel/speed-insights` dependency added and `<SpeedInsights />` component mounted in the root layout to track Core Web Vitals across all pages (#82)
+- Pydantic Logfire full-stack observability: backend auto-instruments FastAPI, SQLAlchemy, asyncpg, and httpx; browser spans tunnel through a server-mounted `/logfire-proxy/v1/traces` route so the write token never reaches the client; `Server-Timing: traceparent` header injected by middleware to fix document-load orphan spans; worker container init and per-job cycles wrapped in explicit `worker.container_init` / `worker.poll_queue_cycle` / `worker.process_single_job` spans; PR/SHA/branch/env resource attributes attached for per-deployment filtering in Logfire (#89)
+- Side-by-side task files + trial detail layout in the experiment drawer: `ResizablePanelGroup` with an adjustable 40/60 split, a toggle button, localStorage persistence (`oddish:trial-drawer-side-by-side`), auto-expand of drawer width on enable, and direct presigned-S3 artifact loading with backend-proxy fallback (#91)
+- `ghcr.io/abundant-ai/oddish-ci-base` prebuilt Docker image baking Python 3.13, uv, Node 20, Vercel CLI, Supabase CLI, PostgreSQL 17 client, Modal CLI, and pre-built project venvs at `/opt/venvs/{backend,oddish}`; published to GHCR weekly and on lockfile/Dockerfile changes via `.github/workflows/ci-base-image.yml` (#101)
 - `daytona>=0.165.0` added to the `oddish[worker]` extra so hosted workers can construct Harbor Daytona environments for Docker-in-Docker compose tasks (#86)
 - Daily changelog CI workflow (`.github/workflows/daily-changelog.yml`) that runs nightly at 00:00 UTC, uses Claude to summarize merged PRs from commits and diffs, and opens a `changelog/YYYY-MM-DD` PR with auto-merge enabled; `CHANGELOG.md` backfilled for all PRs to date (#84)
+- Vercel Speed Insights integration: `@vercel/speed-insights` dependency added and `<SpeedInsights />` component mounted in the root layout to track Core Web Vitals across all pages (#82)
 
 ### Changed
+- CI workflows (`modal-preview.yml`, `modal-deploy.yml`, `supabase-db-migrations.yml`) now run inside `ghcr.io/abundant-ai/oddish-ci-base`; `UV_PROJECT_ENVIRONMENT` points at the image's pre-built venvs, making `uv sync --frozen` a near-instant no-op instead of a full dependency install on every push (#100)
+- Preview branch data population switched from Supabase's `--with-data` logical-replication clone (~20 min) to a direct `pg_dump | pg_restore` stream (~5 min); empty branches are provisioned first and populated from prod only on first branch creation via `.github/scripts/preview/restore_prod_data.sh` (#96)
+- `modal-preview.yml` now has a `detect-changes` job that queries the GHA API for the last successful deploy of each component and uses `dorny/paths-filter` to skip unchanged backend/migration deploys, reducing unnecessary CI runs (#88)
+- Signed-in users are now redirected from `/` to `/dashboard` via `clerkMiddleware` at the edge; the dead client-side `<Show when="signed-in"><RedirectToDashboard /></Show>` wrapper in `page.tsx` removed (#97)
+- Nav account dropdown and sign-in button now driven by `isLoaded && isSignedIn` from `useUser()` directly, replacing the server-only `<Show>` component wrapper that caused incorrect client-side visibility (#99)
+- Observability environment label standardized to `"production"` (was `"prod"`) across `backend/observability.py`, `frontend/src/instrumentation.ts`, and `frontend/src/lib/observability.ts` (#93)
 - `oddish run --env daytona` now passes through to the Modal-hosted Oddish Cloud API instead of being forced to `--env modal`; warning message updated to reflect that both `modal` and `daytona` are supported cloud environments (#86)
+- Daily changelog workflow is now safe to re-run the same day: the date branch is force-pushed and an existing open PR is reused instead of failing with a non-fast-forward error (#106)
+- GitHub Actions versions bumped across all workflows: `actions/checkout` v4→v5, `actions/setup-python` v5→v6, `astral-sh/setup-uv` v4→v8.1.0, `supabase/setup-cli` v1→v2.0.0 (#90)
+
+### Fixed
+- Preview database restore now drops all public-schema FK constraints via `ALTER TABLE ... DROP CONSTRAINT` before running `pg_restore`, preventing prod's stray dangling refs from rolling back entire COPY operations for `tasks`, `task_versions`, `trials`, and related tables; `--disable-triggers` was not viable because Supabase's `postgres` role lacks superuser privileges (#99)
 
 ---
 
