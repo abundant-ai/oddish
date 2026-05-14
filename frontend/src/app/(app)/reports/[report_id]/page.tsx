@@ -10,7 +10,7 @@ import { ReportBackfillBanner } from "@/components/report-backfill-banner";
 import { ReportBackfillHistory } from "@/components/report-backfill-history";
 import { ReportViewSpecDialog } from "@/components/report-view-spec-dialog";
 import { fetcher } from "@/lib/api";
-import type { Report, ReportShareResponse } from "@/lib/types";
+import type { BackfillPlan, Report, ReportShareResponse } from "@/lib/types";
 
 export default function ReportDetailPage() {
   const params = useParams();
@@ -23,6 +23,15 @@ export default function ReportDetailPage() {
     reportId ? `/api/reports/${reportId}` : null,
     fetcher,
     { refreshInterval: 15_000 },
+  );
+  // Pulled alongside the report so the COST KPI tile can show "+ est.
+  // to complete" next to actual spent — matches the backfill banner's
+  // total and gives a one-glance "what will this report ultimately cost"
+  // read without opening the banner.
+  const { data: plan } = useSWR<BackfillPlan>(
+    reportId ? `/api/reports/${reportId}/backfill/plan` : null,
+    fetcher,
+    { refreshInterval: 30_000 },
   );
 
   const [shareBusy, setShareBusy] = useState(false);
@@ -183,6 +192,7 @@ export default function ReportDetailPage() {
             }
           : undefined
       }
+      costEstimateToComplete={plan?.total_est_cost_usd ?? null}
     />
   );
 }

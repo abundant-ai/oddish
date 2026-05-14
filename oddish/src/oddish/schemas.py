@@ -1253,6 +1253,8 @@ class BackfillCellPlan(BaseModel):
     col_idx: int
     task_version_id: str
     task_id: str
+    task_name: str
+    task_version: int | None = None
     column_key: str
     agent: str
     model: str | None = None

@@ -1034,11 +1034,7 @@ export function ExperimentTrialsTable({
         } else {
           // Show status for each trial, comma-separated
           const statuses = trials.map((trial) => {
-            const status = getMatrixStatus(
-              trial.status,
-              trial.reward,
-              trial.error_message,
-            );
+            const status = getMatrixStatus(trial.status, trial.reward, trial.error_message, trial.id);
             return STATUS_CONFIG[status].shortLabel;
           });
           rowCells.push(statuses.join(", "));
@@ -2259,11 +2255,7 @@ export function ExperimentTrialsTable({
                             ) : (
                               <div className="flex flex-wrap justify-center gap-[3px]">
                                 {trials.map((trial, trialIndex) => {
-                                  const status = getMatrixStatus(
-                                    trial.status,
-                                    trial.reward,
-                                    trial.error_message,
-                                  );
+                                  const status = getMatrixStatus(trial.status, trial.reward, trial.error_message, trial.id);
                                   const config = STATUS_CONFIG[status];
                                   const isDimmed = dimmedStatuses.has(status);
                                   const dimClass =

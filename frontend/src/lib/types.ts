@@ -716,6 +716,8 @@ export interface BackfillCellPlan {
   col_idx: number;
   task_version_id: string;
   task_id: string;
+  task_name: string;
+  task_version: number | null;
   column_key: string;
   agent: string;
   model: string | null;

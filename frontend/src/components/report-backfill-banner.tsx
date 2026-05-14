@@ -128,6 +128,7 @@ export function ReportBackfillBanner({ reportId, onSubmitted }: Props) {
           <table className="min-w-full text-xs">
             <thead className="bg-muted/40 text-left">
               <tr>
+                <th className="px-2 py-1">Task</th>
                 <th className="px-2 py-1">Column</th>
                 <th className="px-2 py-1">Have</th>
                 <th className="px-2 py-1">Need</th>
@@ -142,8 +143,19 @@ export function ReportBackfillBanner({ reportId, onSubmitted }: Props) {
                   className="border-t"
                 >
                   <td className="px-2 py-1">
-                    {c.column_key} ({c.agent}
-                    {c.model ? `/${c.model}` : ""})
+                    {c.task_name}
+                    {c.task_version != null ? (
+                      <span className="ml-1 text-muted-foreground">
+                        v{c.task_version}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="px-2 py-1">
+                    {c.column_key}
+                    <span className="ml-1 text-muted-foreground">
+                      ({c.agent}
+                      {c.model ? `/${c.model}` : ""})
+                    </span>
                   </td>
                   <td className="px-2 py-1">{c.have}</td>
                   <td className="px-2 py-1">{c.need}</td>
@@ -164,6 +176,24 @@ export function ReportBackfillBanner({ reportId, onSubmitted }: Props) {
                 </tr>
               ))}
             </tbody>
+            <tfoot className="border-t bg-muted/40 font-medium">
+              <tr>
+                <td className="px-2 py-1" colSpan={3}>
+                  Total
+                </td>
+                <td className="px-2 py-1">
+                  {plan.cells.reduce((acc, c) => acc + c.need, 0)}
+                </td>
+                <td className="px-2 py-1">
+                  {plan.total_est_cost_usd !== null
+                    ? `${lowSample ? "~" : ""}$${plan.total_est_cost_usd.toFixed(2)}`
+                    : "?"}
+                </td>
+                <td className="px-2 py-1">
+                  {plan.total_cost_sample_size}
+                </td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       ) : null}

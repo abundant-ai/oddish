@@ -1,4 +1,5 @@
 import {
+  Circle,
   CircleDashed,
   CheckCircle2,
   XCircle,
@@ -19,7 +20,8 @@ export type MatrixStatus =
   | "harness-error"
   | "pending"
   | "queued"
-  | "running";
+  | "running"
+  | "missing";
 
 /**
  * Status configuration for consistent styling across the UI.
@@ -133,6 +135,20 @@ export const STATUS_CONFIG: Record<
     bracketClass: "bg-blue-500 text-white animate-pulse",
     panelBadgeClass: "bg-blue-500/20 text-blue-400 border-blue-500/50",
   },
+  missing: {
+    icon: Circle,
+    label: "MISSING",
+    shortLabel: "Missing",
+    symbol: "∅",
+    description:
+      "Expected trial that doesn't exist yet — fill with a backfill run",
+    badgeClass:
+      "bg-gray-600/40 text-gray-300 border-gray-500/50 hover:bg-gray-600/60",
+    matrixClass:
+      "bg-paper-bg-2/40 text-paper-ink-3 border-dashed border-paper-line hover:opacity-90",
+    bracketClass: "bg-gray-600/40 text-gray-300",
+    panelBadgeClass: "bg-gray-500/20 text-gray-400 border-gray-500/50",
+  },
 };
 
 /**
@@ -241,11 +257,34 @@ export function getRewardStyle(
 /**
  * Get the matrix status from a trial's status, reward, and error message.
  */
+/**
+ * Sentinel prefix the report backend uses on synthetic placeholder
+ * trials it injects to represent cells that are short of
+ * ``trials_per_cell``. Mirrors sauron's first-class ``"missing"``
+ * state — these trials don't exist in the DB; they're shape-only so
+ * the matrix can render an expected-but-not-yet-filled cell as gray
+ * ∅ instead of pretending the cell is empty.
+ */
+export const MISSING_TRIAL_ID_PREFIX = "__missing__:";
+
+export function isMissingTrialId(id: string | null | undefined): boolean {
+  return !!id && id.startsWith(MISSING_TRIAL_ID_PREFIX);
+}
+
 export function getMatrixStatus(
   trialStatus: string,
   reward: number | null | undefined,
   errorMessage?: string | null,
+  trialId?: string | null,
 ): MatrixStatus {
+  // Placeholder trials representing cells the report expects but
+  // doesn't have actual data for yet. Short-circuit so they don't get
+  // mis-classified as harness errors via the error-message branch
+  // below.
+  if (isMissingTrialId(trialId)) {
+    return "missing";
+  }
+
   const isAgentTimeout =
     !!errorMessage &&
     (errorMessage.includes("AgentTimeoutError") ||

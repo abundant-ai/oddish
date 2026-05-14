@@ -131,6 +131,9 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   pending: "border-gray-500/30 bg-gray-500/10",
   queued: "border-purple-500/30 bg-purple-500/10",
   running: "border-blue-500/30 bg-blue-500/10",
+  // Report placeholder cells — same gray as ``pending`` since they
+  // share the "no result here yet" semantics from the panel's POV.
+  missing: "border-gray-500/30 bg-gray-500/10",
 };
 
 function buildOddishRunCommand(trial: Trial, task: Task): string {
@@ -461,6 +464,7 @@ export function TrialDetailPanel({
     trial.status,
     trial.reward,
     trial.error_message,
+    trial.id,
   );
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
   const TrialStatusIcon = trialStatusConfig.icon;

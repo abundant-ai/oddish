@@ -734,7 +734,9 @@ def _trials_for_row(
 
 
 def _row_task_responses(
-    rows: Sequence[_ResolvedRow], cells: Sequence[_CellMatch]
+    rows: Sequence[_ResolvedRow],
+    cells: Sequence[_CellMatch],
+    columns: Sequence[_ResolvedColumn] | None = None,
 ) -> list[TaskStatusResponse]:
     """Build a TaskStatusResponse per row, with trials = the cells' trials.
 
@@ -747,6 +749,7 @@ def _row_task_responses(
         _build_task_status_response,
         build_trial_response,
     )
+    from oddish.schemas import TrialResponse
 
     out: list[TaskStatusResponse] = []
     for row in rows:
@@ -755,10 +758,36 @@ def _row_task_responses(
             # mypy happy and to make the failure mode obvious.
             continue
         trials = _trials_for_row(row, cells)
-        trial_responses = [
+        trial_responses: list[TrialResponse] = [
             build_trial_response(t, row.task.task_path) for t in trials
         ]
-        total = len(trials)
+        # Inject placeholder ``missing`` trials for any cell short of
+        # ``trials_per_cell`` — mirrors sauron's first-class "missing"
+        # status. The frontend recognizes ``__missing__:`` ids and
+        # renders them as gray ∅ placeholders instead of treating the
+        # cell as empty (which buries the gap) or as a harness error
+        # (which is what happens when you fold null-reward into
+        # error-classified statuses).
+        if columns is not None:
+            for cell in cells:
+                if cell.row_idx != row.position or cell.need <= 0:
+                    continue
+                col = next(
+                    (c for c in columns if c.position == cell.col_idx),
+                    None,
+                )
+                if col is None:
+                    continue
+                for slot in range(cell.need):
+                    trial_responses.append(
+                        _placeholder_trial_response(
+                            task=row.task,
+                            task_version_id=row.task_version_id,
+                            column=col,
+                            slot=slot,
+                        )
+                    )
+        total = len(trial_responses)
         completed = sum(
             1 for t in trials if t.status == TrialStatus.SUCCESS
         )
@@ -781,6 +810,47 @@ def _row_task_responses(
             )
         )
     return out
+
+
+def _placeholder_trial_response(
+    *,
+    task: TaskModel,
+    task_version_id: str,
+    column: _ResolvedColumn,
+    slot: int,
+):
+    """Synthesize a placeholder ``TrialResponse`` for a missing cell.
+
+    The ``id`` follows the ``__missing__:<col>:<row_tv>:<slot>``
+    pattern the frontend uses to detect missing cells in
+    ``getMatrixStatus``. All other fields are nulled out — this is
+    shape-only, not a real trial.
+    """
+    from oddish.schemas import TrialResponse
+
+    return TrialResponse(
+        id=f"__missing__:{column.column_key}:{task_version_id}:{slot}",
+        name="missing",
+        task_id=task.id,
+        task_path=task.task_path,
+        task_version=None,
+        task_version_id=task_version_id,
+        experiment_id=None,
+        agent=column.agent,
+        provider="",
+        queue_key="",
+        model=column.model,
+        status=TrialStatus.QUEUED,  # frontend overrides via id pattern
+        attempts=0,
+        max_attempts=0,
+        harbor_stage=None,
+        reward=None,
+        error_message=None,
+        result=None,
+        created_at=task.created_at,
+        started_at=None,
+        finished_at=None,
+    )
 
 
 def _summarize_trial_public(trial: TrialModel) -> PublicReportTrialSummary:
@@ -825,7 +895,7 @@ def build_report_response(
         )
         for c in columns
     ]
-    tasks = _row_task_responses(rows, cells)
+    tasks = _row_task_responses(rows, cells, columns)
     total_trials = sum(len(c.trials) for c in cells)
     total_missing = sum(c.need for c in cells)
     return ReportResponse(
@@ -865,7 +935,7 @@ def build_public_report_response(
         )
         for c in columns
     ]
-    tasks = [_redact_task_for_public(t) for t in _row_task_responses(rows, cells)]
+    tasks = [_redact_task_for_public(t) for t in _row_task_responses(rows, cells, columns)]
     return PublicReportResponse(
         name=report.name,
         description=report.description,
@@ -1068,6 +1138,8 @@ async def compute_backfill_plan(
                 col_idx=cell.col_idx,
                 task_version_id=row.task_version_id,
                 task_id=row.task_id,
+                task_name=row.task_name,
+                task_version=row.version,
                 column_key=col.column_key,
                 agent=col.agent,
                 model=col.model,

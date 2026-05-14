@@ -104,11 +104,7 @@ function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
 function getLatestTrialStatusCounts(task: TaskBrowseItem) {
   return task.latest_trials.reduce(
     (counts, trial) => {
-      const status = getMatrixStatus(
-        trial.status,
-        trial.reward,
-        trial.error_message,
-      );
+      const status = getMatrixStatus(trial.status, trial.reward, trial.error_message, trial.id);
       counts[status] += 1;
       return counts;
     },
@@ -206,11 +202,7 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
   return (
     <div className="flex flex-wrap gap-1">
       {task.latest_trials.map((trial) => {
-        const status = getMatrixStatus(
-          trial.status,
-          trial.reward,
-          trial.error_message,
-        );
+        const status = getMatrixStatus(trial.status, trial.reward, trial.error_message, trial.id);
         const config = STATUS_CONFIG[status];
         const badgeLabel =
           status === "partial"

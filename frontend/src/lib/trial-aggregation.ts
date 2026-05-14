@@ -9,6 +9,11 @@ export type TrialAggregate = {
   failCount: number;
   harnessErrorCount: number;
   pendingCount: number;
+  // Report-injected placeholder trials (id prefix ``__missing__:``)
+  // representing cells short of ``trials_per_cell``. Counted as a
+  // first-class state instead of being folded into pending or harness
+  // error so headlining stats can show the gap.
+  missingCount: number;
   rewardSum: number;
   rewardTotal: number;
   costUsd: number;
@@ -27,6 +32,7 @@ export const EMPTY_TRIAL_AGGREGATE: TrialAggregate = {
   failCount: 0,
   harnessErrorCount: 0,
   pendingCount: 0,
+  missingCount: 0,
   rewardSum: 0,
   rewardTotal: 0,
   costUsd: 0,
@@ -37,6 +43,15 @@ export const EMPTY_TRIAL_AGGREGATE: TrialAggregate = {
 };
 
 export function accumulateTrial(acc: TrialAggregate, trial: Trial): void {
+  // Placeholder trials are shape-only — they have no real cost,
+  // reward, or timestamps. Bypass the normal aggregation paths so we
+  // don't accidentally pull them into "pending" or "harness error"
+  // counts via the status-fallback branches below.
+  if (typeof trial.id === "string" && trial.id.startsWith("__missing__:")) {
+    acc.trialCount += 1;
+    acc.missingCount += 1;
+    return;
+  }
   acc.trialCount += 1;
   if (trial.cost_usd != null) {
     acc.costUsd += trial.cost_usd;

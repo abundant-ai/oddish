@@ -97,6 +97,10 @@ interface ExperimentDetailViewProps {
    * authored by someone else and just curated into the report).
    */
   creationMeta?: { createdAt: string | null; author: string | null };
+  /** Forecast cost to complete (e.g. report's backfill plan total).
+   *  When provided, the COST tile shows it under "actual" as
+   *  ``+ ~$X.XX est. to complete``. */
+  costEstimateToComplete?: number | null;
   onTaskDelete?: (task: Task) => Promise<void>;
   onTrialDelete?: (trial: Trial, task: Task | null) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
@@ -126,6 +130,7 @@ type ExperimentSummary = {
   failCount: number;
   harnessErrorCount: number;
   pendingCount: number;
+  missingCount: number;
   costUsd: number;
   costTrialCount: number;
   costHasEstimated: boolean;
@@ -169,6 +174,7 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     failCount: acc.failCount,
     harnessErrorCount: acc.harnessErrorCount,
     pendingCount: acc.pendingCount,
+    missingCount: acc.missingCount,
     costUsd: acc.costUsd,
     costTrialCount: acc.costTrialCount,
     costHasEstimated: acc.costHasEstimated,
@@ -363,10 +369,15 @@ function ExperimentSummaryBar({
   taskCount,
   summary,
   isInitialLoading,
+  costEstimateToComplete,
 }: {
   taskCount: number;
   summary: ExperimentSummary;
   isInitialLoading: boolean;
+  /** Optional secondary "what it would cost to fill in the missing
+   *  cells" figure shown under actual spent. Report pages pass this
+   *  from the backfill plan; experiments leave it undefined. */
+  costEstimateToComplete?: number | null;
 }) {
   if (isInitialLoading) {
     return (
@@ -389,7 +400,8 @@ function ExperimentSummaryBar({
     summary.passCount +
     summary.partialCount +
     summary.failCount +
-    summary.harnessErrorCount;
+    summary.harnessErrorCount +
+    summary.missingCount;
   const passPct = outcomeTotal ? (summary.passCount / outcomeTotal) * 100 : 0;
   const partialPct = outcomeTotal
     ? (summary.partialCount / outcomeTotal) * 100
@@ -397,6 +409,9 @@ function ExperimentSummaryBar({
   const failPct = outcomeTotal ? (summary.failCount / outcomeTotal) * 100 : 0;
   const errPct = outcomeTotal
     ? (summary.harnessErrorCount / outcomeTotal) * 100
+    : 0;
+  const missingPct = outcomeTotal
+    ? (summary.missingCount / outcomeTotal) * 100
     : 0;
 
   return (
@@ -465,6 +480,14 @@ function ExperimentSummaryBar({
             <span className="text-[color:var(--paper-ink-3)]">—</span>
           )}
         </span>
+        {costEstimateToComplete != null && costEstimateToComplete > 0 ? (
+          <span
+            className="font-mono text-[10px] text-[color:var(--paper-ink-3)]"
+            title="Historical mean cost per (agent, model) × number of missing trials."
+          >
+            + ~{formatCostUsd(costEstimateToComplete)} est. to complete
+          </span>
+        ) : null}
       </KpiTile>
       <KpiTile
         label="Outcome distribution"
@@ -485,6 +508,12 @@ function ExperimentSummaryBar({
           />
           <span
             style={{ width: `${errPct}%`, background: "var(--paper-error)" }}
+          />
+          <span
+            style={{
+              width: `${missingPct}%`,
+              background: "color-mix(in oklch, var(--paper-ink-3), transparent 60%)",
+            }}
           />
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]">
@@ -512,6 +541,13 @@ function ExperimentSummaryBar({
               <span className="text-[color:var(--paper-ink-3)]">error</span>
             </span>
           )}
+          {summary.missingCount > 0 && (
+            <span className="inline-flex items-center gap-1.5">
+              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:color-mix(in_oklch,var(--paper-ink-3),transparent_60%)]" />
+              {summary.missingCount}
+              <span className="text-[color:var(--paper-ink-3)]">missing</span>
+            </span>
+          )}
         </div>
       </KpiTile>
     </div>
@@ -534,6 +570,7 @@ export function ExperimentDetailView({
   allowRetry = true,
   apiBaseUrl = "/api",
   creationMeta,
+  costEstimateToComplete,
   onTaskDelete,
   onTrialDelete,
   onRerun,
@@ -878,6 +915,7 @@ export function ExperimentDetailView({
             taskCount={tasksForExperiment.length}
             summary={summary}
             isInitialLoading={isInitialLoading}
+            costEstimateToComplete={costEstimateToComplete}
           />
 
           {hasError ? (
