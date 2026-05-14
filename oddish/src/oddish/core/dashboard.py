@@ -676,10 +676,14 @@ async def get_dashboard_core(
     is_usage_only_request = (
         include_usage and not include_tasks and not include_experiments
     )
+    is_experiments_only_request = (
+        include_experiments and not include_tasks and not include_usage
+    )
+    skip_queue_pipeline = is_usage_only_request or is_experiments_only_request
 
     async def _fetch_primary():
         """Queue stats, pipeline stats, usage, and tasks on the caller's session."""
-        if is_usage_only_request:
+        if skip_queue_pipeline:
             qs: dict = {}
             ps: dict[str, dict[str, int]] = {
                 "trials": {},
