@@ -9,7 +9,6 @@ import {
 } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1491,92 +1490,134 @@ type DashboardClientProps = {
   initialDashboardData?: DashboardResponse | null;
 };
 
+type FilterState = {
+  search: string;
+  status: string;
+  mine: boolean;
+  offset: number;
+};
+
+const DEFAULT_FILTER_STATE: FilterState = {
+  search: "",
+  status: "all",
+  mine: false,
+  offset: 0,
+};
+
+function readFilterStateFromUrl(): FilterState {
+  if (typeof window === "undefined") return DEFAULT_FILTER_STATE;
+  const params = new URLSearchParams(window.location.search);
+  return {
+    search: params.get("q") ?? "",
+    status: params.get("status") ?? "all",
+    mine: params.get("mine") === "1",
+    offset: Math.max(
+      0,
+      Number.parseInt(params.get("offset") ?? "0", 10) || 0,
+    ),
+  };
+}
+
+function buildFilterQuery(state: FilterState): string {
+  const params = new URLSearchParams();
+  const trimmed = state.search.trim();
+  if (trimmed) params.set("q", trimmed);
+  if (state.status !== "all") params.set("status", state.status);
+  if (state.mine) params.set("mine", "1");
+  if (state.offset > 0) params.set("offset", String(state.offset));
+  return params.toString();
+}
+
 export function DashboardClient({
   initialDashboardData = null,
 }: DashboardClientProps) {
   const { mutate } = useSWRConfig();
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
 
-  const urlSearchQuery = searchParams.get("q") ?? "";
-  const statusFilter = searchParams.get("status") ?? "all";
-  const mineOnly = searchParams.get("mine") === "1";
-  const experimentsOffset = Math.max(
-    0,
-    Number.parseInt(searchParams.get("offset") ?? "0", 10) || 0,
+  const [filterState, setFilterState] = useState<FilterState>(
+    readFilterStateFromUrl,
   );
+  const { status: statusFilter, mine: mineOnly, offset: experimentsOffset } =
+    filterState;
 
-  const [searchQuery, setSearchQuery] = useState(urlSearchQuery);
+  const [searchQuery, setSearchQuery] = useState(filterState.search);
   const deferredSearchQuery = useDeferredValue(searchQuery);
 
-  const updateSearchParams = useCallback(
-    (
-      updates: Record<string, string | null>,
-      { push = false }: { push?: boolean } = {},
-    ) => {
-      const next = new URLSearchParams(searchParams.toString());
-      for (const [key, value] of Object.entries(updates)) {
-        if (value === null || value === "") {
-          next.delete(key);
-        } else {
-          next.set(key, value);
-        }
-      }
-      const query = next.toString();
-      const href = query ? `${pathname}?${query}` : pathname;
-      if (push) {
-        router.push(href, { scroll: false });
-      } else {
-        router.replace(href, { scroll: false });
-      }
-    },
-    [pathname, router, searchParams],
-  );
-
-  // Adopt external URL changes (back/forward navigation, deep links).
+  // Push the (debounced) search input into committed filter state so it
+  // participates in URL syncing and SWR keying.
   useEffect(() => {
-    setSearchQuery(urlSearchQuery);
-  }, [urlSearchQuery]);
+    setFilterState((prev) =>
+      prev.search === deferredSearchQuery
+        ? prev
+        : { ...prev, search: deferredSearchQuery, offset: 0 },
+    );
+  }, [deferredSearchQuery]);
 
-  // Sync the (deferred) search input back into the URL.
+  // Mirror filter state into the URL via the History API. This avoids a
+  // Next.js route refresh (which would re-run the server component and
+  // double-fetch the dashboard) while keeping the URL shareable.
   useEffect(() => {
-    const trimmed = deferredSearchQuery.trim();
-    if (trimmed === urlSearchQuery) return;
-    updateSearchParams({
-      q: trimmed || null,
-      offset: null,
-    });
-  }, [deferredSearchQuery, urlSearchQuery, updateSearchParams]);
+    if (typeof window === "undefined") return;
+    const query = buildFilterQuery(filterState);
+    const target = `${window.location.pathname}${query ? `?${query}` : ""}`;
+    if (
+      `${window.location.pathname}${window.location.search}` === target
+    )
+      return;
+    // Search keystrokes shouldn't pollute history; discrete toggles already
+    // use pushState below.
+    window.history.replaceState(window.history.state, "", target);
+  }, [filterState]);
+
+  // Adopt external URL changes (back/forward, deep links).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handler = () => {
+      const next = readFilterStateFromUrl();
+      setFilterState(next);
+      setSearchQuery(next.search);
+    };
+    window.addEventListener("popstate", handler);
+    return () => window.removeEventListener("popstate", handler);
+  }, []);
+
+  const pushHistoryEntry = useCallback((next: FilterState) => {
+    if (typeof window === "undefined") return;
+    const query = buildFilterQuery(next);
+    const target = `${window.location.pathname}${query ? `?${query}` : ""}`;
+    window.history.pushState(window.history.state, "", target);
+  }, []);
 
   const setStatusFilter = useCallback(
     (value: string) => {
-      updateSearchParams(
-        { status: value === "all" ? null : value, offset: null },
-        { push: true },
-      );
+      setFilterState((prev) => {
+        const next = { ...prev, status: value, offset: 0 };
+        pushHistoryEntry(next);
+        return next;
+      });
     },
-    [updateSearchParams],
+    [pushHistoryEntry],
   );
 
   const setMineOnly = useCallback(
     (value: boolean) => {
-      updateSearchParams(
-        { mine: value ? "1" : null, offset: null },
-        { push: true },
-      );
+      setFilterState((prev) => {
+        const next = { ...prev, mine: value, offset: 0 };
+        pushHistoryEntry(next);
+        return next;
+      });
     },
-    [updateSearchParams],
+    [pushHistoryEntry],
   );
 
   const setExperimentsOffset = useCallback(
     (value: number) => {
-      updateSearchParams(
-        { offset: value > 0 ? String(value) : null },
-        { push: true },
-      );
+      setFilterState((prev) => {
+        const next = { ...prev, offset: Math.max(0, value) };
+        pushHistoryEntry(next);
+        return next;
+      });
     },
-    [updateSearchParams],
+    [pushHistoryEntry],
   );
 
   const [timeRange, setTimeRange] = useState<TimeRangeKey>("24h");
