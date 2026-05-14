@@ -35,32 +35,22 @@ _lock = Lock()
 
 
 def _resolve_environment() -> str:
-    """Coarse env label: ``production`` / ``preview`` / ``development``.
+    """Two-valued env label: ``prod`` or ``preview``.
 
-    PR-specific details (Modal app, git sha) ride on each span as
-    resource attributes via ``_extra_resource_attributes`` so
-    dashboards can filter ``deployment.environment == "preview"`` *and*
-    drill into ``oddish.pr`` for a single PR.
+    Only the canonical production Modal app (``MODAL_APP_NAME=oddish``)
+    is treated as ``prod``; everything else — PR previews, local
+    ``modal serve``, ad-hoc named deploys — collapses to ``preview``.
+    PR-specific details (Modal app, git sha) still ride on each span
+    as resource attributes via ``_extra_resource_attributes`` so a
+    single PR is filterable via ``oddish.pr``.
     """
     explicit = os.environ.get("LOGFIRE_ENVIRONMENT")
     if explicit:
         return explicit
 
-    modal_app = os.environ.get("MODAL_APP_NAME", "")
-    if modal_app.startswith("oddish-pr-"):
-        return "preview"
-    if modal_app == "oddish":
-        return "production"
-    if modal_app:
-        # Anything that isn't the canonical production Modal app but is
-        # still running on Modal is a preview / experiment by default.
-        return "preview"
-
-    oddish_env = os.environ.get("ODDISH_ENV")
-    if oddish_env:
-        return oddish_env
-
-    return "development"
+    if os.environ.get("MODAL_APP_NAME") == "oddish":
+        return "prod"
+    return "preview"
 
 
 def _extra_resource_attributes() -> dict[str, str]:

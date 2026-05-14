@@ -39,12 +39,14 @@ function resolveProxyUrl(apiUrl: string | undefined): string | null {
 function resolveEnvironment(): string {
   const explicit = process.env.NEXT_PUBLIC_LOGFIRE_ENVIRONMENT;
   if (explicit) return explicit;
-  const vercel = process.env.NEXT_PUBLIC_VERCEL_ENV;
-  if (vercel === "production") return "production";
-  if (vercel === "preview") return "preview";
-  if (vercel === "development") return "development";
-  if (process.env.NODE_ENV === "production") return "production";
-  return "development";
+  // Two buckets only: `prod` for the canonical production deploy
+  // (opt in via `NEXT_PUBLIC_VERCEL_ENV=production` or the explicit
+  // override above), `preview` for everything else — PR previews,
+  // local dev, ad-hoc deploys. We deliberately do NOT key off
+  // `NODE_ENV=production` because PR-preview builds set it too.
+  return process.env.NEXT_PUBLIC_VERCEL_ENV === "production"
+    ? "prod"
+    : "preview";
 }
 
 /**
