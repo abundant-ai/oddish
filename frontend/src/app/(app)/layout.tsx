@@ -4,10 +4,10 @@ import { Nav } from "@/components/nav";
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
-      <Show when="signedOut">
+      <Show when="signed-out">
         <RedirectToSignIn />
       </Show>
-      <Show when="signedIn">
+      <Show when="signed-in">
         <Nav />
         <main className="mx-auto w-full max-w-(--breakpoint-2xl) px-4 py-4">
           {children}
