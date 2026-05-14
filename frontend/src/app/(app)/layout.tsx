@@ -1,9 +1,9 @@
-import { RedirectToSignIn, Show } from "@clerk/nextjs";
+import { ClerkProvider, RedirectToSignIn, Show } from "@clerk/nextjs";
 import { Nav } from "@/components/nav";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
-    <>
+    <ClerkProvider dynamic>
       <Show when="signed-out">
         <RedirectToSignIn />
       </Show>
@@ -13,6 +13,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </Show>
-    </>
+    </ClerkProvider>
   );
 }
