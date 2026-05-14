@@ -1,22 +1,31 @@
 #!/usr/bin/env bash
-# Ensure the PR's Supabase preview branch (cloned from prod via
-# --with-data) exists and is healthy, and emit its DB URL.
+# Ensure the PR's Supabase preview branch exists and is healthy, and
+# emit its DB URL. The branch is created empty (no --with-data) —
+# prod data is loaded by the follow-up restore_prod_data.sh step,
+# which is ~5x faster than Supabase's logical-replication clone.
 #
-# On first invocation for a PR, creates the branch with prod data so
-# the subsequent `alembic upgrade head` runs against prod-shaped data
-# (the migration-safety check). On later pushes within the same PR
-# the existing branch is reused — append-only migrations apply
-# incrementally, which is the common case. If the dev rewrites
-# Alembic history mid-PR and the incremental upgrade can't handle it,
-# delete the branch via the Supabase dashboard (or close+reopen the
-# PR) to force a fresh prod clone.
+# On first invocation for a PR, creates a fresh empty branch. The
+# downstream restore step populates it from prod, then bootstrap runs
+# `alembic upgrade head` against prod-shaped data (the migration-
+# safety check). On later pushes within the same PR the existing
+# branch is reused — append-only migrations apply incrementally,
+# which is the common case. If the dev rewrites Alembic history
+# mid-PR and the incremental upgrade can't handle it, delete the
+# branch via the Supabase dashboard (or close+reopen the PR) to
+# force a fresh prod clone.
+#
+# If Supabase's branch provisioning fails for a transient reason
+# (MIGRATIONS_FAILED / FUNCTIONS_FAILED), the failed branch is torn
+# down and recreated once before giving up, so a flaky run doesn't
+# poison every subsequent push to the PR.
 #
 # Disable the Supabase GitHub integration's auto-branching for this
-# repo so it doesn't create a parallel data-less branch in the same
-# project on PR open.
+# repo so it doesn't create a parallel branch in the same project
+# on PR open.
 set -uo pipefail
 
 BRANCH_NAME="pr-${PR_NUMBER}"
+MAX_ATTEMPTS=2
 
 find_branch_json() {
   supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
@@ -24,46 +33,87 @@ find_branch_json() {
         first(.[] | select(.persistent != true) | select(.name == $name))'
 }
 
-existing=$(find_branch_json)
-if [ -z "$existing" ] || [ "$existing" = "null" ]; then
-  echo "creating $BRANCH_NAME with --with-data" >&2
-  supabase branches create "$BRANCH_NAME" \
-    --with-data \
-    --project-ref "$SUPABASE_PROJECT_REF"
-  branch_was_created=true
-else
-  echo "reusing existing branch $(echo "$existing" | jq -r '.id')" >&2
-  branch_was_created=false
-fi
+delete_branch_by_id() {
+  local id="$1"
+  echo "deleting Supabase branch $id" >&2
+  supabase branches delete "$id" --project-ref "$SUPABASE_PROJECT_REF" || true
+}
 
-# Wait until the branch is ready. First creation includes the prod
-# clone, so give it 20 min; subsequent runs short-circuit fast.
-deadline=$(($(date +%s) + 1200))
 ready=0
+branch_was_created=false
 branch_id="" branch_ref="" status="" preview=""
 
-while [ "$(date +%s)" -lt "$deadline" ]; do
-  branch_json=$(find_branch_json)
+for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+  existing=$(find_branch_json)
 
-  if [ -n "$branch_json" ] && [ "$branch_json" != "null" ]; then
-    read -r branch_id branch_ref status preview < <(
-      jq -r '[.id, .project_ref, .status, .preview_project_status] | @tsv' <<<"$branch_json"
-    )
-    case "$status" in
+  # If an existing branch is already in a known-failed state from a
+  # prior workflow run, tear it down so we can recreate cleanly.
+  if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+    cur_status=$(jq -r '.status' <<<"$existing")
+    cur_id=$(jq -r '.id' <<<"$existing")
+    case "$cur_status" in
       MIGRATIONS_FAILED|FUNCTIONS_FAILED)
-        echo "branch $branch_id failed: $status" >&2
-        exit 1
-        ;;
-      MIGRATIONS_PASSED|FUNCTIONS_DEPLOYED)
-        [ "$preview" = "ACTIVE_HEALTHY" ] && { ready=1; break; }
+        echo "existing branch $cur_id is $cur_status; recreating" >&2
+        delete_branch_by_id "$cur_id"
+        existing=""
         ;;
     esac
   fi
-  sleep 10
+
+  if [ -z "$existing" ] || [ "$existing" = "null" ]; then
+    echo "creating $BRANCH_NAME (attempt $attempt/$MAX_ATTEMPTS)" >&2
+    supabase branches create "$BRANCH_NAME" \
+      --project-ref "$SUPABASE_PROJECT_REF"
+    branch_was_created=true
+  else
+    echo "reusing existing branch $(jq -r '.id' <<<"$existing") ($(jq -r '.status' <<<"$existing"))" >&2
+    branch_was_created=false
+  fi
+
+  # Wait until the branch is ready. An empty branch is just project
+  # provisioning — usually <5 min — but allow 10 to absorb tail
+  # latency from Supabase's control plane.
+  deadline=$(($(date +%s) + 600))
+  branch_failed=0
+  branch_id="" branch_ref="" status="" preview=""
+
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    branch_json=$(find_branch_json)
+
+    if [ -n "$branch_json" ] && [ "$branch_json" != "null" ]; then
+      read -r branch_id branch_ref status preview < <(
+        jq -r '[.id, .project_ref, .status, .preview_project_status] | @tsv' <<<"$branch_json"
+      )
+      case "$status" in
+        MIGRATIONS_FAILED|FUNCTIONS_FAILED)
+          echo "branch $branch_id failed: $status" >&2
+          branch_failed=1
+          break
+          ;;
+        MIGRATIONS_PASSED|FUNCTIONS_DEPLOYED)
+          [ "$preview" = "ACTIVE_HEALTHY" ] && { ready=1; break; }
+          ;;
+      esac
+    fi
+    sleep 10
+  done
+
+  if [ "$ready" -eq 1 ]; then
+    break
+  fi
+
+  if [ "$branch_failed" -eq 1 ] && [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+    # Tear down the poisoned branch so the next attempt starts fresh.
+    [ -n "$branch_id" ] && delete_branch_by_id "$branch_id"
+    continue
+  fi
+
+  # Polling timed out, or we've exhausted retries on a failed clone.
+  break
 done
 
 if [ "$ready" -ne 1 ]; then
-  echo "timed out (status=$status preview=$preview)" >&2
+  echo "Supabase preview branch never became ready (status=$status preview=$preview)" >&2
   exit 1
 fi
 

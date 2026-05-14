@@ -192,9 +192,15 @@ async def initialize_trial_import(
         )
 
         # Load existing trial IDs for this task under the row lock so
-        # concurrent imports serialize on index allocation.
+        # concurrent imports serialize on index allocation. Use
+        # ``include_deleted=True`` so soft-deleted rows still consume
+        # their ``{task_id}-{N}`` index — otherwise the PK would collide
+        # when a previous trial at the same suffix was soft-deleted but
+        # never tombstoned out of the table.
         trial_id_rows = await session.execute(
-            select(TrialModel.id).where(TrialModel.task_id == task.id)
+            select(TrialModel.id)
+            .where(TrialModel.task_id == task.id)
+            .execution_options(include_deleted=True)
         )
         existing_ids = [row[0] for row in trial_id_rows.all()]
         next_index = _next_trial_index(existing_ids, task.id)

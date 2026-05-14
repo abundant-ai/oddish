@@ -200,6 +200,10 @@ async def fetch_trial_queue_info(
         .where(
             TrialModel.queue_key.in_(queue_keys),
             TrialModel.status.in_(tuple(_QUEUE_ACTIVE_STATUSES)),
+            # Superseded trials are abandoned -- their worker_jobs are
+            # already cancelled by ``retry_trial_core``. Don't count
+            # them against fairness or claim position.
+            TrialModel.superseded_by_trial_id.is_(None),
         )
     )
 
@@ -365,6 +369,7 @@ def build_trial_response(
         analysis_status=trial.analysis_status,
         analysis=trial.analysis,
         analysis_error=trial.analysis_error,
+        superseded_by_trial_id=trial.superseded_by_trial_id,
         jobs=list(jobs or []),
         queue_info=queue_info,
         created_at=trial.created_at,
@@ -431,6 +436,7 @@ def build_compact_trial_response(
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
         analysis_error=None,
+        superseded_by_trial_id=trial.superseded_by_trial_id,
         jobs=list(jobs or []),
         queue_info=queue_info,
         created_at=trial.created_at,
@@ -584,15 +590,23 @@ def get_task_status_trials(
     ``version_id`` (including ``None`` to disable filtering) to pivot on a
     different version — for example an experiment-scoped effective version
     computed by :func:`resolve_effective_version_id`.
+
+    Superseded trials (rows replaced by a user-driven retry) are always
+    filtered out: they remain in the DB so deep links / history queries
+    keep working, but they should never clutter the default trial
+    viewer, file viewer, or aggregated counts.
     """
     effective: str | None
     if version_id is _VERSION_ID_UNSET:
         effective = task.current_version_id
     else:
         effective = version_id  # type: ignore[assignment]
+    live_trials = [
+        trial for trial in task.trials if trial.superseded_by_trial_id is None
+    ]
     if effective is None:
-        return list(task.trials)
-    return [trial for trial in task.trials if trial.task_version_id == effective]
+        return live_trials
+    return [trial for trial in live_trials if trial.task_version_id == effective]
 
 
 def _primary_experiment_for_task(
@@ -837,7 +851,10 @@ async def fetch_trial_analysis_summaries(
     if trial_ids is None and not task_ids:
         return {}
 
-    filters = [TrialModel.analysis.isnot(None)]
+    filters = [
+        TrialModel.analysis.isnot(None),
+        TrialModel.superseded_by_trial_id.is_(None),
+    ]
     if trial_ids is not None:
         filters.append(TrialModel.id.in_(list(trial_ids)))
     else:
@@ -886,7 +903,14 @@ async def build_task_status_responses_from_counts(
     task_ids = [task.id for task in tasks]
     effective_map = effective_version_id_by_task_id or {}
 
-    stats_filters = [TrialModel.task_id.in_(task_ids)]
+    stats_filters = [
+        TrialModel.task_id.in_(task_ids),
+        # Default trial listings collapse the rerun history: every
+        # superseded attempt is hidden by the same filter applied in
+        # ``get_task_status_trials``. Mirror it here so the counts row
+        # behind every TaskStatusResponse matches what the UI shows.
+        TrialModel.superseded_by_trial_id.is_(None),
+    ]
     if effective_map:
         # Match (task_id, task_version_id) pairs so we only count trials at
         # each task's effective version.  Tasks without an effective version

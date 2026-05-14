@@ -13,6 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from sqlalchemy.ext.asyncio import async_sessionmaker  # type: ignore[attr-defined]
 from oddish.config import settings
 from oddish.db.models import Base
+from oddish.db.soft_delete import install_soft_delete_filter
+
+# Install the soft-delete auto-filter exactly once at module load. The
+# listener is keyed on the SQLAlchemy ``Session`` class, so every session
+# minted by the shared session maker -- in oddish *and* in the backend
+# (both packages reuse this engine) -- inherits the filter automatically.
+install_soft_delete_filter()
 
 # Ensure we use asyncpg driver explicitly (URL should already have +asyncpg).
 db_url = settings.database_url

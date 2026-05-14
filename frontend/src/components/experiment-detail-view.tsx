@@ -15,6 +15,11 @@ import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { TrialDetailPanel } from "@/components/trial-detail-panel";
 import { TaskFilesPanel } from "@/components/task-files-panel";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
+import { formatCostUsd } from "@/lib/format";
+import {
+  EMPTY_TRIAL_AGGREGATE,
+  accumulateTrial,
+} from "@/lib/trial-aggregation";
 import type { Task, Trial } from "@/lib/types";
 import { Loader2 } from "lucide-react";
 import {
@@ -64,12 +69,12 @@ interface ExperimentDetailViewProps {
 const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
 
 function getModelScopedAgentsFromSummaries(
-  summaries: ExperimentAgentSummary[],
+  summaries: ExperimentAgentSummary[]
 ): Set<string> {
   return new Set(
     summaries
       .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent),
+      .map((summary) => summary.agent)
   );
 }
 
@@ -92,99 +97,47 @@ type ExperimentSummary = {
 };
 
 function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
+  const acc = { ...EMPTY_TRIAL_AGGREGATE };
+  // ``rewardSuccess`` mirrors ``passCount`` from the trials path but folds in
+  // task-level fallbacks for tasks whose trials aren't loaded yet.
   let rewardSuccess = 0;
-  let rewardSum = 0;
-  let rewardTotal = 0;
-  let totalTrials = 0;
-  let completedTrials = 0;
-  let failedTrials = 0;
-
-  let passCount = 0;
-  let partialCount = 0;
-  let failCount = 0;
-  let harnessErrorCount = 0;
-  let pendingCount = 0;
-
-  let costUsd = 0;
-  let costTrialCount = 0;
-  let costHasEstimated = false;
-  let costHasNative = false;
+  let totalTrialsFallback = 0;
+  let completedFallback = 0;
+  let failedFallback = 0;
+  let rewardSumFallback = 0;
+  let rewardTotalFallback = 0;
 
   for (const task of tasksForExperiment) {
     const trials = task.trials ?? [];
     if (trials.length > 0) {
-      // Compute from the (already version-filtered) trials array
-      for (const trial of trials) {
-        if (trial.cost_usd != null) {
-          costUsd += trial.cost_usd;
-          costTrialCount += 1;
-          if (trial.cost_is_estimated === true) {
-            costHasEstimated = true;
-          } else {
-            costHasNative = true;
-          }
-        }
-        if (trial.status === "success" && trial.reward != null) {
-          rewardSum += trial.reward;
-          rewardTotal++;
-          if (trial.reward === 1) {
-            passCount++;
-            rewardSuccess++;
-          } else if (trial.reward === 0) {
-            failCount++;
-          } else {
-            partialCount++;
-          }
-        } else if (trial.status === "success" && trial.reward == null) {
-          // Completed but reward not yet set
-        } else if (trial.status === "failed") {
-          harnessErrorCount++;
-        } else {
-          pendingCount++;
-        }
-        if (trial.status === "success") {
-          completedTrials++;
-        } else if (trial.status === "failed") {
-          failedTrials++;
-        }
-      }
-      totalTrials += trials.length;
+      for (const trial of trials) accumulateTrial(acc, trial);
     } else {
-      // Trials not loaded yet — fall back to server-provided aggregates
       rewardSuccess += task.reward_success ?? 0;
-      rewardSum += task.reward_sum ?? task.reward_success ?? 0;
-      rewardTotal += task.reward_total ?? 0;
-      totalTrials += task.total;
-      completedTrials += task.completed;
-      failedTrials += task.failed;
+      rewardSumFallback += task.reward_sum ?? task.reward_success ?? 0;
+      rewardTotalFallback += task.reward_total ?? 0;
+      totalTrialsFallback += task.total;
+      completedFallback += task.completed;
+      failedFallback += task.failed;
     }
   }
 
   return {
-    rewardSuccess,
-    rewardSum,
-    rewardTotal,
-    totalTrials,
-    completedTrials,
-    failedTrials,
-    passCount,
-    partialCount,
-    failCount,
-    harnessErrorCount,
-    pendingCount,
-    costUsd,
-    costTrialCount,
-    costHasEstimated,
-    costHasNative,
+    rewardSuccess: rewardSuccess + acc.passCount,
+    rewardSum: acc.rewardSum + rewardSumFallback,
+    rewardTotal: acc.rewardTotal + rewardTotalFallback,
+    totalTrials: acc.trialCount + totalTrialsFallback,
+    completedTrials: acc.completed + completedFallback,
+    failedTrials: acc.failed + failedFallback,
+    passCount: acc.passCount,
+    partialCount: acc.partialCount,
+    failCount: acc.failCount,
+    harnessErrorCount: acc.harnessErrorCount,
+    pendingCount: acc.pendingCount,
+    costUsd: acc.costUsd,
+    costTrialCount: acc.costTrialCount,
+    costHasEstimated: acc.costHasEstimated,
+    costHasNative: acc.costHasNative,
   };
-}
-
-function formatCostUsd(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "$0.00";
-  if (value < 0.01) return `$${value.toFixed(4)}`;
-  if (value < 1) return `$${value.toFixed(3)}`;
-  if (value < 100) return `$${value.toFixed(2)}`;
-  return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
 function ExperimentHeaderMeta({
@@ -216,7 +169,7 @@ function ExperimentHeaderMeta({
         variant="ghost"
         onClick={onToggleShowPassAtK}
         aria-pressed={showPassAtK}
-        className={`h-8 select-none gap-[7px] rounded-[7px] border px-3 text-[12px] leading-none transition-colors ${
+        className={`h-8 gap-[7px] rounded-[7px] border px-3 text-[12px] leading-none transition-colors select-none ${
           showPassAtK
             ? "border-[color:var(--paper-ink)] bg-[color:var(--paper-ink)] text-[color:var(--paper-bg)] hover:bg-[color:color-mix(in_oklch,var(--paper-ink),white_12%)]"
             : "border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] text-[color:var(--paper-ink)] hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
@@ -357,7 +310,7 @@ function KpiTile({
     <div
       className={`flex flex-col gap-1.5 border-r border-[color:var(--paper-line-2)] px-4 py-3 last:border-r-0 ${className}`}
     >
-      <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.09em] text-[color:var(--paper-ink-3)]">
+      <span className="font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
         {label}
       </span>
       {children}
@@ -408,12 +361,12 @@ function ExperimentSummaryBar({
   return (
     <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]">
       <KpiTile label="Avg score">
-        <span className="flex items-baseline gap-2 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
+        <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {scorePct != null ? `${scorePct.toFixed(1)}%` : "—"}
         </span>
       </KpiTile>
       <KpiTile label="Completion">
-        <span className="flex items-baseline gap-2 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
+        <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {summary.completedTrials}
           <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
             / {summary.totalTrials} trials
@@ -429,7 +382,7 @@ function ExperimentSummaryBar({
         </span>
       </KpiTile>
       <KpiTile label="Tasks">
-        <span className="flex items-baseline gap-2 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
+        <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {taskCount}
           <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
             tasks
@@ -438,7 +391,7 @@ function ExperimentSummaryBar({
       </KpiTile>
       <KpiTile label="Cost">
         <span
-          className="flex items-baseline gap-1 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]"
+          className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
           title={
             summary.costTrialCount > 0
               ? `Summed across ${summary.costTrialCount} trial${
@@ -546,6 +499,55 @@ export function ExperimentDetailView({
   const searchParams = useSearchParams();
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
   const [showPassAtK, setShowPassAtK] = useState(false);
+  const [showTask, setShowTask] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      const stored = window.localStorage.getItem(
+        "oddish:trial-drawer-show-task"
+      );
+      // Default ON: only explicit "0" disables it.
+      return stored !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const [showTrial, setShowTrial] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      const stored = window.localStorage.getItem(
+        "oddish:trial-drawer-show-trial"
+      );
+      return stored !== "0";
+    } catch {
+      return true;
+    }
+  });
+
+  const handleShowTaskChange = useCallback((next: boolean) => {
+    setShowTask(next);
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        "oddish:trial-drawer-show-task",
+        next ? "1" : "0"
+      );
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleShowTrialChange = useCallback((next: boolean) => {
+    setShowTrial(next);
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        "oddish:trial-drawer-show-trial",
+        next ? "1" : "0"
+      );
+    } catch {
+      // ignore
+    }
+  }, []);
   const [cachedAgentSummaries, setCachedAgentSummaries] = useState<
     ExperimentAgentSummary[]
   >([]);
@@ -558,7 +560,7 @@ export function ExperimentDetailView({
     : null;
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(deferredTasksForDerivedData),
-    [deferredTasksForDerivedData],
+    [deferredTasksForDerivedData]
   );
   const displayAgentSummaries =
     agentSummaries.length > 0 ? agentSummaries : cachedAgentSummaries;
@@ -567,7 +569,7 @@ export function ExperimentDetailView({
       agentSummaries.length > 0
         ? modelScopedAgents
         : getModelScopedAgentsFromSummaries(cachedAgentSummaries),
-    [agentSummaries, modelScopedAgents, cachedAgentSummaries],
+    [agentSummaries, modelScopedAgents, cachedAgentSummaries]
   );
 
   useEffect(() => {
@@ -597,7 +599,7 @@ export function ExperimentDetailView({
     try {
       window.sessionStorage.setItem(
         agentSummaryStorageKey,
-        JSON.stringify(agentSummaries),
+        JSON.stringify(agentSummaries)
       );
     } catch {
       // Ignore storage failures; the live data still drives the table.
@@ -632,7 +634,7 @@ export function ExperimentDetailView({
       }
       return { trialGroups, orderedTrials };
     },
-    [displayModelScopedAgents],
+    [displayModelScopedAgents]
   );
 
   useEffect(() => {
@@ -717,7 +719,7 @@ export function ExperimentDetailView({
   useEffect(() => {
     if (!drawerState) return;
     const liveTask = tasksForExperiment.find(
-      (t) => t.id === drawerState.task.id,
+      (t) => t.id === drawerState.task.id
     );
     if (!liveTask) return;
     const liveTrialCount = liveTask.trials?.length ?? 0;
@@ -753,7 +755,7 @@ export function ExperimentDetailView({
 
   const summary = useMemo(
     () => buildExperimentSummary(deferredTasksForDerivedData),
-    [deferredTasksForDerivedData],
+    [deferredTasksForDerivedData]
   );
 
   const closeDrawer = () => {
@@ -856,7 +858,7 @@ export function ExperimentDetailView({
                 readOnly={readOnly}
                 onTrialSelect={(trial, task, context) => {
                   const taskIndex = tasksForExperiment.findIndex(
-                    (t) => t.id === task.id,
+                    (t) => t.id === task.id
                   );
                   setDrawerState({
                     isOpen: true,
@@ -872,14 +874,19 @@ export function ExperimentDetailView({
                 }}
                 onTaskSelect={(task, context) => {
                   const { trialGroups, orderedTrials } = buildTrialGroups(task);
+                  // If the task has trials, jump straight into the first one
+                  // so the user immediately sees results alongside the task
+                  // definition. They can navigate back to the task overview
+                  // with the in-drawer "View task" control.
+                  const firstTrial = orderedTrials[0] ?? null;
                   setDrawerState({
                     isOpen: true,
-                    mode: "task",
+                    mode: firstTrial ? "trial" : "task",
                     task,
                     taskIndex: context.taskIndex,
                     orderedTasks: context.orderedTasks,
-                    trial: null,
-                    trialIndex: null,
+                    trial: firstTrial,
+                    trialIndex: firstTrial ? 0 : null,
                     orderedTrials,
                     trialGroups,
                   });
@@ -895,6 +902,20 @@ export function ExperimentDetailView({
           open={drawerState.isOpen}
           onOpenChange={(open) => !open && closeDrawer()}
           mode={drawerState.mode}
+          showTask={showTask}
+          showTrial={showTrial}
+          onShowTaskChange={handleShowTaskChange}
+          onShowTrialChange={handleShowTrialChange}
+          sideBySideLeft={
+            <TaskFilesPanel
+              isOpen={true}
+              onClose={() => {}}
+              taskId={null}
+              filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
+              apiBaseUrl={apiBaseUrl}
+              contentOnly={true}
+            />
+          }
           taskContent={
             <TaskFilesPanel
               isOpen={true}
@@ -926,7 +947,7 @@ export function ExperimentDetailView({
               contentOnly={true}
             />
           }
-          trialContent={
+          renderTrial={(paneAction) =>
             drawerState.trial && (
               <TrialDetailPanel
                 isOpen={true}
@@ -944,6 +965,7 @@ export function ExperimentDetailView({
                 allowDelete={Boolean(onTrialDelete)}
                 apiBaseUrl={apiBaseUrl}
                 contentOnly={true}
+                paneAction={paneAction}
               />
             )
           }
