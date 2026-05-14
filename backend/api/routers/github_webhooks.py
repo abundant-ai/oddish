@@ -7,7 +7,6 @@ useful for testing and debugging the GitHub integration.
 
 from __future__ import annotations
 
-import logging
 import os
 from typing import Annotated
 
@@ -16,8 +15,6 @@ from pydantic import BaseModel
 
 from auth import AuthContext, require_auth, APIKeyScope
 from oddish.db import TaskModel, get_session
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/github", tags=["GitHub"])
 

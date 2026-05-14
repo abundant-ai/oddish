@@ -9,6 +9,12 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from observability import (
+    LogfireProxyCORSMiddleware,
+    instrument_fastapi,
+    mount_browser_proxy,
+    span as _otel_span,
+)
 from oddish.config import settings
 from oddish.db import close_database_connections
 from oddish.timing import (
@@ -31,14 +37,19 @@ async def _apply_role_defaults_bg() -> None:
     orphaned transactions left by SIGKILLed workers get auto-killed by
     Postgres itself, which is the server-side half of the fix for the
     incidents where zombies held trials locks for hours.
-    """
-    try:
-        from oddish.db.connection import apply_role_defaults
 
-        result = await apply_role_defaults()
-        logger.info("applied DB role defaults: %s", result)
-    except Exception:
-        logger.warning("could not apply DB role defaults", exc_info=True)
+    Wrapped in an ``app.startup.role_defaults`` span so the ALTER ROLE
+    + pool-warmup queries (SELECT current_user, BEGIN, COMMIT) it
+    triggers don't appear as orphaned spans on container cold start.
+    """
+    with _otel_span("app.startup.role_defaults"):
+        try:
+            from oddish.db.connection import apply_role_defaults
+
+            result = await apply_role_defaults()
+            logger.info("applied DB role defaults: %s", result)
+        except Exception:
+            logger.warning("could not apply DB role defaults", exc_info=True)
 
 
 def _get_cors_origins() -> list[str]:
@@ -68,32 +79,49 @@ async def lifespan(_api: FastAPI):
     Hosted environments should rely on Alembic migrations, not runtime
     `metadata.create_all()`. Avoiding a startup-time DB handshake keeps the
     ASGI app from hard-failing when the Supabase pooler is briefly unavailable.
-    """
-    Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
 
-    role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
+    Startup + shutdown work is wrapped in named spans so the file-system
+    + DB activity they fan out to (``mkdir``, ``ALTER ROLE``, pool warmup,
+    connection close) don't appear as orphan spans on container cold start
+    / cycle.
+    """
+    with _otel_span("app.startup"):
+        Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
+        role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
 
     yield
 
-    role_defaults_task.cancel()
-    try:
-        await role_defaults_task
-    except (asyncio.CancelledError, Exception):
-        pass
+    with _otel_span("app.shutdown"):
+        role_defaults_task.cancel()
+        try:
+            await role_defaults_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
-    try:
-        await close_database_connections()
-    except Exception:
-        pass
+        try:
+            await close_database_connections()
+        except Exception:
+            pass
 
 
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application with all routers."""
+    """Create and configure the FastAPI application with all routers.
+
+    ``configure_logfire()`` ran in ``api/__init__.py`` before any of
+    our handler modules were imported, which is what lets
+    ``logfire.install_auto_tracing`` actually patch ``api.routers`` /
+    ``oddish.core`` / ``oddish.queue`` / ``oddish.workers``. Calling
+    it again here would be a no-op (it's idempotent) but we leave
+    it out for clarity.
+    """
     api = FastAPI(
         title="Oddish Cloud",
         version="0.3.0",
         lifespan=lifespan,
     )
+
+    instrument_fastapi(api)
+    mount_browser_proxy(api)
 
     cors_origins = _get_cors_origins()
     api.add_middleware(
@@ -101,8 +129,20 @@ def create_app() -> FastAPI:
         allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
+        # Allow the W3C trace-context headers emitted by the browser SDK
+        # so a fetch from the front-end actually propagates its span id
+        # to FastAPI under our CORS policy.
         allow_headers=["*"],
+        expose_headers=["Server-Timing", "traceparent", "tracestate"],
     )
+
+    # IMPORTANT: this must be added AFTER CORSMiddleware. Starlette's
+    # `add_middleware` inserts at the FRONT of the list and the stack
+    # is wrapped outer-to-inner from index 0, so the LAST-added
+    # middleware ends up outermost and runs first. We need this shim
+    # to intercept `/logfire-proxy/*` preflights before CORSMiddleware
+    # 400s them for an unrecognised Vercel preview origin.
+    api.add_middleware(LogfireProxyCORSMiddleware)
 
     @api.middleware("http")
     async def add_server_timing_header(request: Request, call_next):

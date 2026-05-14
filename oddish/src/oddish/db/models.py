@@ -41,7 +41,16 @@ class Base(AsyncAttrs, DeclarativeBase):
 
 
 class TimestampedMixin:
-    """Common fields most domain tables share."""
+    """Common fields most domain tables share.
+
+    ``deleted_at`` is the soft-delete tombstone column. The session-level
+    filter in :mod:`oddish.db.soft_delete` auto-applies
+    ``WHERE deleted_at IS NULL`` to every ORM SELECT / UPDATE / DELETE on
+    every mapped class registered via ``register_soft_delete_models``,
+    so most call sites don't need to filter explicitly. Use
+    ``.execution_options(include_deleted=True)`` to opt out per statement
+    (admin tooling, restore flows).
+    """
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -212,6 +221,10 @@ class ExperimentModel(TimestampedMixin, Base):
     __tablename__ = "experiments"
     __table_args__ = (
         Index("idx_experiments_public_token", "public_token", unique=True),
+        # Mirror the partial-unique pattern used on ``tasks`` so a
+        # soft-deleted experiment doesn't take its name slot with it.
+        # Experiments don't currently have a name uniqueness constraint,
+        # but new code that adds one should follow the same convention.
     )
 
     # Override id to add auto-generation
@@ -242,11 +255,16 @@ class TaskModel(TimestampedMixin, Base):
     __tablename__ = "tasks"
     __table_args__ = (
         Index("idx_tasks_org_created_at", "org_id", "created_at"),
+        # Soft-deleted rows are excluded so a user can reuse a task name
+        # after deletion without hitting a "ghost" tombstone. The
+        # auto-filter in :mod:`oddish.db.soft_delete` keeps reads of those
+        # rows hidden from normal ORM traffic.
         Index(
             "idx_tasks_unique_org_name",
             text("COALESCE(org_id, '')"),
             "name",
             unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 
@@ -535,6 +553,19 @@ class TrialModel(TimestampedMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Immutable-trial rerun pointer. When a user retries a trial we
+    # don't reset this row; instead we insert a fresh trial that copies
+    # the spec, and set this column on the old row to point at the new
+    # one. UI listings and pipeline counts filter on
+    # ``superseded_by_trial_id IS NULL`` so superseded attempts stay in
+    # the DB (for history / direct deep-links) but stop cluttering
+    # default views, S3 file viewers, and verdict aggregation.
+    superseded_by_trial_id: Mapped[str | None] = mapped_column(
+        String(128),
+        ForeignKey("trials.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     # Relationships
     task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]
         "TaskModel", back_populates="trials", lazy="selectin"
@@ -577,6 +608,14 @@ class TrialModel(TimestampedMixin, Base):
             "created_at",
             "model",
             "provider",
+        ),
+        # Partial index that supports the default "non-superseded only"
+        # filter on hot list/aggregation paths without indexing every
+        # row (the superseded set is small relative to total trials).
+        Index(
+            "idx_trials_superseded_by",
+            "superseded_by_trial_id",
+            postgresql_where=text("superseded_by_trial_id IS NOT NULL"),
         ),
     )
 
@@ -751,3 +790,25 @@ class WorkerJobModel(TimestampedMixin, Base):
             postgresql_where=text("org_id IS NOT NULL"),
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Soft-delete registration
+# ---------------------------------------------------------------------------
+#
+# Register the oddish-owned mapped classes so the session-level filter in
+# ``soft_delete.py`` auto-applies ``deleted_at IS NULL`` to their reads.
+# ``TaskVersionModel`` and ``WorkerJobModel`` inherit ``deleted_at`` via
+# ``TimestampedMixin`` but are intentionally *not* soft-deletable:
+#
+# * ``TaskVersionModel`` rows are immutable history of a task; deletion
+#   is exclusively via the parent task's CASCADE.
+# * ``WorkerJobModel`` rows model scheduling state; the queue uses
+#   ``status = 'CANCELLED'`` to retire jobs (see ``delete_*_core``),
+#   not ``deleted_at``.
+#
+# Backend-only auth models (organizations / users / api_keys) register
+# themselves from ``backend/models.py`` so this module stays standalone.
+from oddish.db.soft_delete import register_soft_delete_models
+
+register_soft_delete_models(ExperimentModel, TaskModel, TrialModel)

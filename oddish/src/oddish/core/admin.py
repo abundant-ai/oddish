@@ -303,25 +303,30 @@ async def get_orphaned_state_core(
                     (
                         SELECT COUNT(*)
                         FROM tasks t
-                        WHERE (
-                            t.status = 'RUNNING'
-                            AND NOT EXISTS (
-                                SELECT 1 FROM trials tr
-                                WHERE tr.task_id = t.id
-                                  AND tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
+                        WHERE t.deleted_at IS NULL
+                          AND (
+                            (
+                                t.status = 'RUNNING'
+                                AND NOT EXISTS (
+                                    SELECT 1 FROM trials tr
+                                    WHERE tr.task_id = t.id
+                                      AND tr.deleted_at IS NULL
+                                      AND tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
+                                )
+                            ) OR (
+                                t.status = 'ANALYZING'
+                                AND NOT EXISTS (
+                                    SELECT 1 FROM trials tr
+                                    WHERE tr.task_id = t.id
+                                      AND tr.deleted_at IS NULL
+                                      AND tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
+                                )
+                            ) OR (
+                                t.status = 'VERDICT_PENDING'
+                                AND (t.verdict_status IS NULL
+                                     OR t.verdict_status::text NOT IN ('QUEUED', 'RUNNING'))
                             )
-                        ) OR (
-                            t.status = 'ANALYZING'
-                            AND NOT EXISTS (
-                                SELECT 1 FROM trials tr
-                                WHERE tr.task_id = t.id
-                                  AND tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
-                            )
-                        ) OR (
-                            t.status = 'VERDICT_PENDING'
-                            AND (t.verdict_status IS NULL
-                                 OR t.verdict_status::text NOT IN ('QUEUED', 'RUNNING'))
-                        )
+                          )
                     ) AS active_tasks_without_active_trials
                 """
             ),
@@ -352,6 +357,7 @@ async def get_orphaned_state_core(
                 JOIN trials tr ON wj.subject_table = 'trials' AND wj.subject_id = tr.id
                 WHERE wj.kind::text = 'TRIAL'
                   AND wj.status::text = 'RUNNING'
+                  AND tr.deleted_at IS NULL
                   AND (
                       wj.heartbeat_at IS NULL
                       OR wj.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
@@ -376,25 +382,30 @@ async def get_orphaned_state_core(
                     'active_task_without_active_trials'::text AS issue,
                     t.updated_at
                 FROM tasks t
-                WHERE (
-                    t.status = 'RUNNING'
-                    AND NOT EXISTS (
-                        SELECT 1 FROM trials tr
-                        WHERE tr.task_id = t.id
-                          AND tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
+                WHERE t.deleted_at IS NULL
+                  AND (
+                    (
+                        t.status = 'RUNNING'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM trials tr
+                            WHERE tr.task_id = t.id
+                              AND tr.deleted_at IS NULL
+                              AND tr.status IN ('QUEUED', 'RUNNING', 'RETRYING')
+                        )
+                    ) OR (
+                        t.status = 'ANALYZING'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM trials tr
+                            WHERE tr.task_id = t.id
+                              AND tr.deleted_at IS NULL
+                              AND tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
+                        )
+                    ) OR (
+                        t.status = 'VERDICT_PENDING'
+                        AND (t.verdict_status IS NULL
+                             OR t.verdict_status::text NOT IN ('QUEUED', 'RUNNING'))
                     )
-                ) OR (
-                    t.status = 'ANALYZING'
-                    AND NOT EXISTS (
-                        SELECT 1 FROM trials tr
-                        WHERE tr.task_id = t.id
-                          AND tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
-                    )
-                ) OR (
-                    t.status = 'VERDICT_PENDING'
-                    AND (t.verdict_status IS NULL
-                         OR t.verdict_status::text NOT IN ('QUEUED', 'RUNNING'))
-                )
+                  )
                 ORDER BY t.updated_at ASC NULLS FIRST
                 LIMIT 20
                 """

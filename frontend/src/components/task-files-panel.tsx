@@ -7,9 +7,9 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from "@/components/ui/resizable-drawer";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import {
   Folder,
   FolderOpen,
@@ -23,8 +23,6 @@ import {
   AlertCircle,
   Microscope,
   CheckCircle2,
-  AlertTriangle,
-  XCircle,
   Loader2,
   OctagonX,
   Eye,
@@ -1084,11 +1082,6 @@ export function TaskFilesPanel({
     }, 2000);
   };
 
-  const showVerdictCard =
-    Boolean(verdictSource) &&
-    Boolean(verdictSource?.verdict_status || verdictSource?.verdict);
-  const verdictReasoning = verdictSource?.verdict?.reasoning?.trim() || null;
-
   const isListingLoading = loading;
   const listingError = error;
 
@@ -1368,105 +1361,13 @@ export function TaskFilesPanel({
       </DrawerHeader>
 
       <div className="flex flex-1 flex-col overflow-hidden">
-        {showVerdictCard && (
+        {verdictSource ? (
           <div className="shrink-0 border-b border-border bg-muted/10">
             <div className="p-4 sm:p-6">
-              <Card
-                className={
-                  verdictSource?.verdict_status === "running" ||
-                  verdictSource?.verdict_status === "pending" ||
-                  verdictSource?.verdict_status === "queued"
-                    ? "border-blue-500/30 bg-blue-500/5"
-                    : verdictSource?.verdict?.is_good
-                      ? "border-emerald-500/30 bg-emerald-500/5"
-                      : verdictSource?.verdict?.is_good === false
-                        ? "border-amber-500/30 bg-amber-500/5"
-                        : verdictSource?.verdict_status === "failed"
-                          ? "border-red-500/30 bg-red-500/5"
-                          : "border-slate-500/30 bg-slate-500/5"
-                }
-              >
-                <CardHeader className="px-4 pb-1 pt-2">
-                  <CardTitle className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    <Microscope className="h-3 w-3" />
-                    QA Verdict
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="px-4 pb-3">
-                  <div className="flex items-start gap-3">
-                    {verdictSource?.verdict_status === "running" ||
-                    verdictSource?.verdict_status === "pending" ||
-                    verdictSource?.verdict_status === "queued" ? (
-                      <Loader2 className="mt-0.5 h-5 w-5 animate-spin text-blue-500" />
-                    ) : verdictSource?.verdict?.is_good ? (
-                      <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-500" />
-                    ) : verdictSource?.verdict?.is_good === false ? (
-                      <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-500" />
-                    ) : verdictSource?.verdict_status === "failed" ? (
-                      <XCircle className="mt-0.5 h-5 w-5 text-red-500" />
-                    ) : (
-                      <Microscope className="mt-0.5 h-5 w-5 text-slate-500" />
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-sm font-bold">
-                          {verdictSource?.verdict_status === "running" ||
-                          verdictSource?.verdict_status === "pending" ||
-                          verdictSource?.verdict_status === "queued"
-                            ? "Computing verdict..."
-                            : verdictSource?.verdict_status === "failed"
-                              ? "Verdict Failed"
-                              : verdictSource?.verdict?.is_good
-                                ? "Task is Good"
-                                : verdictSource?.verdict?.is_good === false
-                                  ? "Needs Review"
-                                  : "Verdict Pending"}
-                        </span>
-                        {verdictSource?.verdict?.confidence && (
-                          <span className="text-xs text-muted-foreground">
-                            · {verdictSource.verdict.confidence} confidence
-                          </span>
-                        )}
-                      </div>
-                      {verdictSource?.verdict?.is_good && verdictReasoning && (
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {verdictReasoning}
-                        </p>
-                      )}
-                      {verdictSource?.verdict?.primary_issue &&
-                        verdictSource?.verdict?.is_good === false && (
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            {verdictSource.verdict.primary_issue}
-                          </p>
-                        )}
-                      {verdictSource?.verdict?.recommendations &&
-                        verdictSource.verdict.recommendations.length > 0 && (
-                          <div className="mt-2 space-y-1">
-                            {verdictSource.verdict.recommendations.map(
-                              (rec: string, idx: number) => (
-                                <p
-                                  key={idx}
-                                  className="text-xs italic text-muted-foreground/80"
-                                >
-                                  💡 {rec}
-                                </p>
-                              ),
-                            )}
-                          </div>
-                        )}
-                      {verdictSource?.verdict_status === "failed" &&
-                        verdictSource.verdict_error && (
-                          <p className="mt-1 text-xs text-red-500">
-                            {verdictSource.verdict_error}
-                          </p>
-                        )}
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+              <TaskVerdictBadge task={verdictSource} variant="card" />
             </div>
           </div>
-        )}
+        ) : null}
 
         {fileTreeContent}
       </div>

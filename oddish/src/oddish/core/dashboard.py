@@ -193,7 +193,12 @@ async def load_dashboard_experiments(
         func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
         func.sum(TrialModel.reward).label("reward_sum"),
         func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
-    ).where(TrialModel.experiment_id.isnot(None))
+    ).where(
+        TrialModel.experiment_id.isnot(None),
+        # Mirror ``get_task_status_trials`` -- the dashboard's "trials"
+        # column should reflect live trials only, not the rerun chain.
+        TrialModel.superseded_by_trial_id.is_(None),
+    )
     if org_id is not None:
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
     trial_agg = trial_agg_query.group_by(TrialModel.experiment_id).subquery()
