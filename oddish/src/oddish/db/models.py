@@ -295,10 +295,21 @@ class TaskModel(TimestampedMixin, Base):
     )  # S3 prefix for task files (mirrors latest version)
     tags: Mapped[dict] = mapped_column(JSONB, default=dict)
 
-    # Versioning: points to the latest TaskVersionModel row
+    # Versioning: points to the latest TaskVersionModel row.
+    #
+    # DEFERRABLE INITIALLY DEFERRED because this FK closes a cycle with
+    # ``task_versions.task_id`` -> ``tasks.id``: without deferral a
+    # data-only pg_restore can't COPY ``tasks`` before its peer
+    # ``task_versions`` rows exist.
     current_version_id: Mapped[str | None] = mapped_column(
         String(128),
-        ForeignKey("task_versions.id", ondelete="SET NULL", use_alter=True),
+        ForeignKey(
+            "task_versions.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            deferrable=True,
+            initially="DEFERRED",
+        ),
         nullable=True,
     )
 
@@ -560,9 +571,17 @@ class TrialModel(TimestampedMixin, Base):
     # ``superseded_by_trial_id IS NULL`` so superseded attempts stay in
     # the DB (for history / direct deep-links) but stop cluttering
     # default views, S3 file viewers, and verdict aggregation.
+    # Self-referential, so pg_dump flags it as a circular FK. Marking
+    # it DEFERRABLE INITIALLY DEFERRED lets a data-only restore COPY
+    # rows in any order; the chain closes itself before commit.
     superseded_by_trial_id: Mapped[str | None] = mapped_column(
         String(128),
-        ForeignKey("trials.id", ondelete="SET NULL"),
+        ForeignKey(
+            "trials.id",
+            ondelete="SET NULL",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
         nullable=True,
     )
 
@@ -698,9 +717,17 @@ class WorkerJobModel(TimestampedMixin, Base):
     # Application-level parent pointer (see plan: "Dependencies").
     # v1 uses this only for audit trails; stage transitions are still
     # driven by enqueue helpers rather than a BLOCKED-state gate.
+    # Self-referential, so pg_dump flags it as a circular FK. Marking
+    # it DEFERRABLE INITIALLY DEFERRED lets a data-only restore COPY
+    # rows in any order; the chain closes itself before commit.
     parent_job_id: Mapped[str | None] = mapped_column(
         String(64),
-        ForeignKey("worker_jobs.id", ondelete="SET NULL"),
+        ForeignKey(
+            "worker_jobs.id",
+            ondelete="SET NULL",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
         nullable=True,
     )
 
