@@ -37,21 +37,7 @@ _lock = Lock()
 
 
 def _resolve_environment() -> str:
-    """Per-deployment env label.
-
-    - ``prod`` for the canonical production Modal app
-      (``MODAL_APP_NAME=oddish``).
-    - ``preview-pr-<n>`` for a PR-bound preview app whose name follows
-      the ``oddish-pr-<n>`` convention — each PR ends up in its own
-      Logfire environment, so a 500 on PR #89 doesn't drown in spans
-      from every other open preview.
-    - ``preview`` as the catch-all (local ``modal serve``, ad-hoc named
-      deploys without a PR number).
-
-    PR-specific details (Modal app, git sha) still ride on every span
-    as resource attributes via ``_extra_resource_attributes`` for cases
-    where one wants to filter inside an environment.
-    """
+    """Per-PR Logfire environment so previews don't share one bucket."""
     explicit = os.environ.get("LOGFIRE_ENVIRONMENT")
     if explicit:
         return explicit
