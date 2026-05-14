@@ -48,6 +48,17 @@ def upgrade() -> None:
     if bind.execute(
         sa.text("SELECT to_regclass('public.reports') IS NOT NULL")
     ).scalar():
+        # Tables already created by ``000_initial_schema`` /
+        # ``Base.metadata.create_all`` on a fresh DB, OR by a prior run
+        # of this migration. Either way, only patch in columns that
+        # were added to the model graph after this migration first
+        # landed — keeps preview / dev DBs from drifting when the
+        # report schema iterates pre-merge. Idempotent via
+        # ``ADD COLUMN IF NOT EXISTS``.
+        op.execute(
+            "ALTER TABLE report_task_versions "
+            "ADD COLUMN IF NOT EXISTS environment VARCHAR(32)"
+        )
         return
 
     # ---------------------------------------------------------------
