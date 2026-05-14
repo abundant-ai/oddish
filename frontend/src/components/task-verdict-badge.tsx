@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { isActivePipelineStatus } from "@/lib/job-status";
 import type { Task } from "@/lib/types";
 
 type VerdictPresentation = {
@@ -25,18 +26,33 @@ type VerdictPresentation = {
 function presentVerdict(task: Task, iconSizeClass: string): VerdictPresentation {
   const status = task.verdict_status;
   const verdict = task.verdict ?? null;
-  const pending =
+  const verdictPending =
     status === "running" || status === "pending" || status === "queued";
   const failed = status === "failed";
   const isGood = verdict?.is_good ?? null;
+  // Trial analyses run before the verdict can be synthesized; surface that
+  // separately so we don't render the neutral "Verdict pending" state while
+  // work is actually in flight.
+  const analysesInFlight =
+    !verdictPending &&
+    !failed &&
+    isGood == null &&
+    (task.status === "analyzing" ||
+      (task.trials ?? []).some((t) => isActivePipelineStatus(t.analysis_status)));
+  const pending = verdictPending || analysesInFlight;
 
   let icon: ReactNode;
   let title: string;
   let toneCard: string;
   let toneInline: string;
-  if (pending) {
+  if (verdictPending) {
     icon = <Loader2 className={`${iconSizeClass} shrink-0 animate-spin text-blue-500`} />;
     title = "Computing verdict...";
+    toneCard = "border-blue-500/30 bg-blue-500/5";
+    toneInline = "border-[color:var(--paper-line)]";
+  } else if (analysesInFlight) {
+    icon = <Loader2 className={`${iconSizeClass} shrink-0 animate-spin text-blue-500`} />;
+    title = "Analyzing trials...";
     toneCard = "border-blue-500/30 bg-blue-500/5";
     toneInline = "border-[color:var(--paper-line)]";
   } else if (failed) {
