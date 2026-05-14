@@ -83,6 +83,8 @@ interface TrialDetailPanelProps {
   allowDelete?: boolean;
   /** Render content only without ResizableDrawer wrapper */
   contentOnly?: boolean;
+  /** Slot rendered alongside the navigation row — e.g. a "hide task" toggle. */
+  paneAction?: React.ReactNode;
 }
 
 const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
@@ -161,6 +163,7 @@ export function TrialDetailPanel({
   allowRetry = true,
   allowDelete = false,
   contentOnly = false,
+  paneAction,
 }: TrialDetailPanelProps) {
   const searchParams = useSearchParams();
 
@@ -489,6 +492,7 @@ export function TrialDetailPanel({
         </DrawerDescription>
         <div className="text-muted-foreground flex flex-wrap items-stretch justify-between gap-2 pt-2 text-xs">
           <div className="flex items-center gap-1">
+            {paneAction}
             {hasNavigation && (
               <>
                 <Button
