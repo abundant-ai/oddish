@@ -25,6 +25,8 @@ import os
 from threading import Lock
 from typing import TYPE_CHECKING
 
+from fastapi import Request
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
@@ -311,7 +313,6 @@ def mount_browser_proxy(app: "FastAPI") -> None:
     if not _configured:
         return
     try:
-        from fastapi import Request
         from logfire.experimental.forwarding import logfire_proxy
     except Exception:
         logger.warning("logfire browser proxy unavailable", exc_info=True)
@@ -319,4 +320,13 @@ def mount_browser_proxy(app: "FastAPI") -> None:
 
     @app.post("/logfire-proxy/{path:path}", include_in_schema=False)
     async def _logfire_browser_proxy(request: Request, path: str):  # noqa: ARG001
+        # `Request` MUST resolve through module-level imports for
+        # FastAPI to recognise it as the special Starlette Request
+        # type. With `from __future__ import annotations` in this
+        # file, FastAPI's `typing.get_type_hints` can only resolve
+        # names in the module's globals — not function-local imports
+        # — so a stray `from fastapi import Request` inside this
+        # helper used to break the route with `422 missing field
+        # 'request'` (FastAPI fell back to treating it as a query
+        # parameter).
         return await logfire_proxy(request)
