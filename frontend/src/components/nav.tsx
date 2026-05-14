@@ -75,7 +75,7 @@ export function Nav() {
           {/* Right side - consolidated settings menu */}
           <div className="flex items-center gap-2">
             <ThemeToggle />
-            <Show when="signed-in">
+            <Show when="signedIn">
               <Button
                 variant="ghost"
                 size="sm"
@@ -156,7 +156,7 @@ export function Nav() {
                 </DropdownMenuContent>
               </DropdownMenu>
             </Show>
-            <Show when="signed-out">
+            <Show when="signedOut">
               <SignInButton mode="modal" fallbackRedirectUrl="/dashboard">
                 <Button variant="outline" size="sm">
                   Sign in
