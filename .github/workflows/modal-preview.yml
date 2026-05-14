@@ -140,6 +140,21 @@ jobs:
         with:
           version: latest
 
+      - name: Install Postgres 17 client
+        # The runner image's stock pg_dump is older than the Supabase
+        # server. pg_dump refuses to dump from a newer server than its
+        # own version, so pull matching client tools from PGDG.
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSLo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $codename-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+
       - name: Sync backend dependencies
         run: uv sync --frozen
 
@@ -157,12 +172,21 @@ jobs:
         # instead of red-with-continue-on-error.
         run: uv run modal app stop -y --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME" || true
 
-      - name: Ensure Supabase preview branch with prod data
+      - name: Ensure Supabase preview branch
         id: supabase_branch
         working-directory: ${{ github.workspace }}
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: .github/scripts/preview/wait_for_supabase_branch.sh
+
+      - name: Restore prod data into preview branch
+        # Replaces Supabase's --with-data clone. Only on first branch
+        # creation; subsequent pushes reuse the existing branch's data.
+        if: steps.supabase_branch.outputs.branch_was_created == 'true'
+        working-directory: ${{ github.workspace }}
+        env:
+          PROD_DATABASE_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+        run: .github/scripts/preview/restore_prod_data.sh
 
       - name: Apply Alembic migrations to preview branch
         if: ${{ needs.detect-changes.outputs.run_migrations == 'true' || steps.supabase_branch.outputs.branch_was_created == 'true' }}
