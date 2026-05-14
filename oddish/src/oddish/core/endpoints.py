@@ -1291,19 +1291,64 @@ async def get_task_detail_core(
     """Bundle a task, its trials, and per-version + task-wide aggregates.
 
     Powers the ``/tasks/{task_id}`` detail page (versions list, version
-    switcher, cost rollups). Reuses ``get_task_status_core`` for the
-    canonical task + trials payload and ``list_task_versions_core`` for
-    the version list, then layers cost / outcome aggregates on top by
-    grouping the in-memory trials (which are already non-superseded and
-    org-scoped via ``get_task_status_core``).
+    switcher, cost rollups). Loads every non-superseded trial regardless
+    of version — the frontend version switcher pivots client-side, and
+    the per-version + task-wide aggregates below need to see trials
+    that belong to non-current versions too. ``get_task_status_core``
+    can't be reused as-is because it scopes trials to
+    ``task.current_version_id`` (matches /tasks list semantics), which
+    would drop every v1/v2/v3 trial before we got to aggregate them.
     """
-    task_status = await get_task_status_core(
-        session,
-        task_id=task_id,
-        include_trials=True,
-        include_empty_rewards=True,
-        org_id=org_id,
+    query = (
+        select(TaskModel)
+        .options(
+            selectinload(TaskModel.experiments),
+            selectinload(TaskModel.trials),
+        )
+        .where(TaskModel.id == task_id)
     )
+    if org_id is not None:
+        query = query.where(TaskModel.org_id == org_id)
+    task = (await session.execute(query)).scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    queue_info_by_trial_id = await fetch_trial_queue_info(
+        session, trials=task.trials
+    )
+    jobs_by_subject = await fetch_visible_worker_jobs(
+        session,
+        task_ids=[task.id],
+        trial_ids=[trial.id for trial in task.trials],
+    )
+
+    # Build the canonical header (status, current_version metadata,
+    # total/completed/failed/reward_*) scoped to the task's current
+    # version so it matches /tasks list semantics, then overwrite
+    # ``trials`` below with the full cross-version, non-superseded set
+    # so the frontend version switcher can pivot client-side. Passing
+    # ``effective_version_id=None`` here would also null out
+    # ``current_version_id`` in the response (see
+    # ``_resolve_task_version_fields``), which the frontend relies on
+    # to pick the default-selected version.
+    task_status = build_task_status_response(
+        task,
+        include_empty_rewards=True,
+        queue_info_by_trial_id=queue_info_by_trial_id,
+        jobs_by_subject=jobs_by_subject,
+    )
+    all_trial_models = [
+        t for t in task.trials if t.superseded_by_trial_id is None
+    ]
+    task_status.trials = [
+        build_trial_response(
+            t,
+            task.task_path,
+            queue_info=queue_info_by_trial_id.get(t.id),
+            jobs=jobs_by_subject.get(("trials", t.id), []),
+        )
+        for t in all_trial_models
+    ]
 
     version_rows = await list_task_versions_core(
         session, task_id=task_id, org_id=org_id
