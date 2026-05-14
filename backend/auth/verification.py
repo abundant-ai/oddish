@@ -37,7 +37,11 @@ JWKS_CACHE_TTL = 3600  # 1 hour
 # Key: (clerk_user_id, clerk_org_id) for JWT or api_key_hash for API keys
 # Value: (CachedAuthData, timestamp)
 
-AUTH_CACHE_TTL = 60  # 60 seconds - short enough to pick up permission changes
+AUTH_CACHE_TTL = 600  # 10 min. Auth identity (clerk_user/org -> oddish ids,
+# role, scope) almost never changes. The cache is per-process in memory, so
+# permission changes still propagate when a container is recycled or when a
+# user explicitly re-auths via a new session. 60s was making every dashboard
+# nav cold-path through 10 SELECTs against orgs/users/api_keys.
 
 
 @dataclass

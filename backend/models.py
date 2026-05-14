@@ -92,11 +92,17 @@ class OrganizationModel(TimestampedMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     # Relationships
+    # `lazy="select"` (the default) instead of `lazy="selectin"` -- with
+    # selectin, loading a single Organization auto-fired a SELECT for every
+    # user and every api_key in that org on every auth check, and each of
+    # those then cascaded to their own org/created_by_user backrefs. That's
+    # what was making one auth context cost 10+ SELECTs. Callers that need
+    # the related rows should use selectinload(...) explicitly.
     users: Mapped[list["UserModel"]] = relationship(  # type: ignore[assignment]
-        "UserModel", back_populates="organization", lazy="selectin"
+        "UserModel", back_populates="organization"
     )
     api_keys: Mapped[list["APIKeyModel"]] = relationship(  # type: ignore[assignment]
-        "APIKeyModel", back_populates="organization", lazy="selectin"
+        "APIKeyModel", back_populates="organization"
     )
 
 
@@ -143,12 +149,13 @@ class UserModel(TimestampedMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
-    # Relationships
+    # Relationships -- default lazy loading; explicit selectinload for callers
+    # that need the related rows. See the OrganizationModel comment.
     organization: Mapped["OrganizationModel"] = relationship(  # type: ignore[assignment]
-        "OrganizationModel", back_populates="users", lazy="selectin"
+        "OrganizationModel", back_populates="users"
     )
     api_keys: Mapped[list["APIKeyModel"]] = relationship(  # type: ignore[assignment]
-        "APIKeyModel", back_populates="created_by_user", lazy="selectin"
+        "APIKeyModel", back_populates="created_by_user"
     )
 
     __table_args__ = (
@@ -212,12 +219,13 @@ class APIKeyModel(TimestampedMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
-    # Relationships
+    # Relationships -- default lazy loading; explicit selectinload for callers
+    # that need the related rows. See the OrganizationModel comment.
     organization: Mapped["OrganizationModel"] = relationship(  # type: ignore[assignment]
-        "OrganizationModel", back_populates="api_keys", lazy="selectin"
+        "OrganizationModel", back_populates="api_keys"
     )
     created_by_user: Mapped["UserModel | None"] = relationship(  # type: ignore[assignment]
-        "UserModel", back_populates="api_keys", lazy="selectin"
+        "UserModel", back_populates="api_keys"
     )
 
     __table_args__ = (
