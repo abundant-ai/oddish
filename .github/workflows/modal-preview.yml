@@ -97,7 +97,13 @@ jobs:
 
       - name: Deploy preview backend
         id: deploy_modal
+        shell: bash
         run: |
+          # Without pipefail, `modal deploy ... | tee` masks deploy
+          # failures behind tee's exit code, leaving the job green
+          # while containers crashloop on import errors. The readiness
+          # step then times out 3 minutes later with no obvious cause.
+          set -euo pipefail
           deploy_log="$(mktemp)"
           uv run modal deploy deploy.py 2>&1 | tee "$deploy_log"
           modal_api_url="$(python - "$deploy_log" "$MODAL_APP_NAME" <<'PY'
