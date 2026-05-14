@@ -546,11 +546,11 @@ export function ExperimentDetailView({
   const searchParams = useSearchParams();
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
   const [showPassAtK, setShowPassAtK] = useState(false);
-  const [sideBySide, setSideBySide] = useState<boolean>(() => {
+  const [showTask, setShowTask] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
     try {
       const stored = window.localStorage.getItem(
-        "oddish:trial-drawer-side-by-side"
+        "oddish:trial-drawer-show-task"
       );
       // Default ON: only explicit "0" disables it.
       return stored !== "0";
@@ -558,13 +558,37 @@ export function ExperimentDetailView({
       return true;
     }
   });
+  const [showTrial, setShowTrial] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      const stored = window.localStorage.getItem(
+        "oddish:trial-drawer-show-trial"
+      );
+      return stored !== "0";
+    } catch {
+      return true;
+    }
+  });
 
-  const handleSideBySideChange = useCallback((next: boolean) => {
-    setSideBySide(next);
+  const handleShowTaskChange = useCallback((next: boolean) => {
+    setShowTask(next);
     if (typeof window === "undefined") return;
     try {
       window.localStorage.setItem(
-        "oddish:trial-drawer-side-by-side",
+        "oddish:trial-drawer-show-task",
+        next ? "1" : "0"
+      );
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleShowTrialChange = useCallback((next: boolean) => {
+    setShowTrial(next);
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        "oddish:trial-drawer-show-trial",
         next ? "1" : "0"
       );
     } catch {
@@ -925,8 +949,10 @@ export function ExperimentDetailView({
           open={drawerState.isOpen}
           onOpenChange={(open) => !open && closeDrawer()}
           mode={drawerState.mode}
-          sideBySide={sideBySide}
-          onSideBySideChange={handleSideBySideChange}
+          showTask={showTask}
+          showTrial={showTrial}
+          onShowTaskChange={handleShowTaskChange}
+          onShowTrialChange={handleShowTrialChange}
           sideBySideLeft={
             <TaskFilesPanel
               isOpen={true}
