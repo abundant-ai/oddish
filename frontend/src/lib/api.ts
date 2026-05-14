@@ -1,4 +1,6 @@
 export const fetcher = async <T>(url: string): Promise<T> => {
+  const startedAt =
+    typeof performance !== "undefined" ? performance.now() : 0;
   const res = await fetch(url, { credentials: "include" });
   let data: unknown = null;
 
@@ -6,6 +8,27 @@ export const fetcher = async <T>(url: string): Promise<T> => {
     data = await res.json();
   } catch {
     data = null;
+  }
+
+  if (typeof window !== "undefined") {
+    const elapsedMs = performance.now() - startedAt;
+    const serverTiming = res.headers.get("server-timing");
+    if (elapsedMs > 1000 || serverTiming) {
+      const parts: string[] = [`total=${elapsedMs.toFixed(0)}ms`];
+      if (serverTiming) {
+        for (const entry of serverTiming.split(",")) {
+          const [name, ...rest] = entry.trim().split(";");
+          const dur = rest
+            .map((s) => s.trim())
+            .find((s) => s.startsWith("dur="));
+          if (name && dur) {
+            parts.push(`${name}=${dur.slice(4)}ms`);
+          }
+        }
+      }
+      // eslint-disable-next-line no-console
+      console.log(`[fetch ${url.split("?")[0]}] ${parts.join(" ")}`);
+    }
   }
 
   if (!res.ok) {
