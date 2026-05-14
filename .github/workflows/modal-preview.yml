@@ -140,15 +140,27 @@ jobs:
         with:
           version: latest
 
+      - name: Sync backend dependencies
+        run: uv sync --frozen
+
+      - name: Stop previous preview Modal app
+        # The Supabase branch step (next) rotates the per-PR DB password
+        # every deploy. If the previously-deployed Modal containers are
+        # still running with the prior password, their reconnects flood
+        # Supavisor with auth failures and trip its per-project circuit
+        # breaker — which then bounces our own smoke-test seconds later.
+        # Stop the old app first so the rotation only invalidates
+        # credentials nothing is using.
+        if: ${{ needs.detect-changes.outputs.deploy_backend == 'true' }}
+        continue-on-error: true
+        run: uv run modal app stop --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME"
+
       - name: Ensure Supabase preview branch with prod data
         id: supabase_branch
         working-directory: ${{ github.workspace }}
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: .github/scripts/preview/wait_for_supabase_branch.sh
-
-      - name: Sync backend dependencies
-        run: uv sync --frozen
 
       - name: Apply Alembic migrations to preview branch
         if: ${{ needs.detect-changes.outputs.run_migrations == 'true' || steps.supabase_branch.outputs.branch_was_created == 'true' }}
