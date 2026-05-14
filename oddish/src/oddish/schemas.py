@@ -1190,6 +1190,15 @@ class ReportResponse(BaseModel):
     description: str | None = None
     org_id: str | None = None
     created_by_user_id: str | None = None
+    created_by_display: str | None = Field(
+        None,
+        description=(
+            "Hydrated email / name of the user who created this report. "
+            "Distinct from any per-task ``user`` strings shown in trials — "
+            "those reflect who curated the underlying tasks, which can be "
+            "a different person from whoever assembled the report."
+        ),
+    )
     spec: ReportSpec
     is_public: bool
     public_token: str | None = None

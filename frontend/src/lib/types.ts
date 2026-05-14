@@ -675,6 +675,7 @@ export interface Report {
   description: string | null;
   org_id: string | null;
   created_by_user_id: string | null;
+  created_by_display: string | null;
   spec: ReportSpec;
   is_public: boolean;
   public_token: string | null;

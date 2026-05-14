@@ -806,6 +806,8 @@ def build_report_response(
     rows: Sequence[_ResolvedRow],
     columns: Sequence[_ResolvedColumn],
     cells: Sequence[_CellMatch],
+    *,
+    created_by_display: str | None = None,
 ) -> ReportResponse:
     """Return the same ``Task[]`` shape the experiment endpoints use.
 
@@ -832,6 +834,7 @@ def build_report_response(
         description=report.description,
         org_id=report.org_id,
         created_by_user_id=report.created_by_user_id,
+        created_by_display=created_by_display,
         spec=spec,
         is_public=report.is_public,
         public_token=report.public_token,
@@ -862,7 +865,7 @@ def build_public_report_response(
         )
         for c in columns
     ]
-    tasks = _row_task_responses(rows, cells)
+    tasks = [_redact_task_for_public(t) for t in _row_task_responses(rows, cells)]
     return PublicReportResponse(
         name=report.name,
         description=report.description,
@@ -871,6 +874,47 @@ def build_public_report_response(
         columns=resolved_cols,
         tasks=tasks,
         total_trials=sum(len(c.trials) for c in cells),
+    )
+
+
+def _redact_task_for_public(task: TaskStatusResponse) -> TaskStatusResponse:
+    """Strip internal fields a public viewer shouldn't see.
+
+    The public report endpoint reuses ``TaskStatusResponse`` so the
+    frontend can mount the same ``ExperimentDetailView``, but a public
+    share isn't an org-internal context — fields that leak attribution
+    or infra detail get masked out here.
+
+    Mirrors the sauron public share contract: name + status + reward +
+    grid stays; per-task author / GitHub metadata / on-disk paths /
+    worker-job state / internal verdict errors don't.
+    """
+    redacted_trials = [
+        trial.model_copy(
+            update={
+                "experiment_id": None,
+                "queue_key": "",
+                "error_message": None,
+                "result": None,
+                "analysis": None,
+                "analysis_error": None,
+                "jobs": [],
+            }
+        )
+        for trial in (task.trials or [])
+    ]
+    return task.model_copy(
+        update={
+            "user": "",
+            "github_username": None,
+            "github_meta": None,
+            "task_path": "",
+            "verdict": None,
+            "verdict_error": None,
+            "jobs": [],
+            "experiment_is_public": True,
+            "trials": redacted_trials,
+        }
     )
 
 

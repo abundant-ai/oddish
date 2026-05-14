@@ -79,6 +79,23 @@ async def _resolve_user_string(
     return "unknown"
 
 
+async def _display_for_report_creator(
+    session: AsyncSession, report
+) -> str | None:
+    """Look up name/email for the report's ``created_by_user_id``.
+
+    Used to populate ``ReportResponse.created_by_display`` so the UI
+    shows the report's actual author in the meta strip — distinct from
+    the task-author fallback the experiment view derives by default.
+    """
+    if not report.created_by_user_id:
+        return None
+    user = await session.get(UserModel, report.created_by_user_id)
+    if not user:
+        return None
+    return user.name or user.email
+
+
 # ---------------------------------------------------------------------------
 # CRUD
 # ---------------------------------------------------------------------------
@@ -99,7 +116,8 @@ async def create_report(
             created_by_user_id=auth.user_id,
         )
         rows, columns, cells = await resolve_report_cells(session, report)
-        return build_report_response(report, rows, columns, cells)
+        created_by_display = await _display_for_report_creator(session, report)
+        return build_report_response(report, rows, columns, cells, created_by_display=created_by_display)
 
 
 @router.post("/reports.yaml", response_model=ReportResponse)
@@ -125,7 +143,8 @@ async def create_report_from_yaml(
             created_by_user_id=auth.user_id,
         )
         rows, columns, cells = await resolve_report_cells(session, report)
-        return build_report_response(report, rows, columns, cells)
+        created_by_display = await _display_for_report_creator(session, report)
+        return build_report_response(report, rows, columns, cells, created_by_display=created_by_display)
 
 
 @router.get("/reports", response_model=list[ReportListItem])
@@ -206,7 +225,8 @@ async def get_report(
             session, report_id=report_id, org_id=auth.org_id
         )
         rows, columns, cells = await resolve_report_cells(session, report)
-        return build_report_response(report, rows, columns, cells)
+        created_by_display = await _display_for_report_creator(session, report)
+        return build_report_response(report, rows, columns, cells, created_by_display=created_by_display)
 
 
 @router.patch("/reports/{report_id}", response_model=ReportResponse)
@@ -243,7 +263,8 @@ async def patch_report(
             session, report_id=report.id, org_id=auth.org_id
         )
         rows, columns, cells = await resolve_report_cells(session, report)
-        return build_report_response(report, rows, columns, cells)
+        created_by_display = await _display_for_report_creator(session, report)
+        return build_report_response(report, rows, columns, cells, created_by_display=created_by_display)
 
 
 @router.delete("/reports/{report_id}")

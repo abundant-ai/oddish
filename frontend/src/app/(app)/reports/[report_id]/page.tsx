@@ -171,6 +171,18 @@ export default function ReportDetailPage() {
       inlineAlert={inlineAlert}
       allowRetry={false}
       readOnly={false}
+      // Override the experiment view's task-derived "by X" meta with
+      // the report's own author + created_at; the underlying tasks were
+      // curated separately and shouldn't masquerade as the report's
+      // origin.
+      creationMeta={
+        data
+          ? {
+              createdAt: data.created_at,
+              author: data.created_by_display,
+            }
+          : undefined
+      }
     />
   );
 }

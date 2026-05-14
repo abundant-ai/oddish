@@ -1,9 +1,11 @@
 """Anonymous (no-auth) read endpoints for shared reports.
 
-Mirrors sauron's merged-run share model: viewers see name + description
-+ created_at + creator-display + the rendered grid + trial detail
-deep-links. The spec, source experiment ids, selection strategy, audit
-history, and org metadata are deliberately *not* exposed.
+Viewers see name + description + created_at + creator-display + the
+rendered grid + trial detail deep-links. The YAML spec, audit history,
+source experiment ids, and org-internal task metadata (github_meta,
+task_path, worker jobs, verdict errors) are deliberately *not*
+exposed — public viewers see what was compared, not how it was
+authored.
 
 There is no public index — discovery is by link only.
 """

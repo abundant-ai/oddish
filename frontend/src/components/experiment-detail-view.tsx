@@ -89,6 +89,14 @@ interface ExperimentDetailViewProps {
   readOnly?: boolean;
   allowRetry?: boolean;
   apiBaseUrl?: string;
+  /**
+   * Override for the small "created X ago by Y" meta strip below the
+   * header. Defaults to deriving from the earliest task. Reports pass
+   * an override here so the strip reflects the report's own author /
+   * created_at, not the underlying tasks (which may have been
+   * authored by someone else and just curated into the report).
+   */
+  creationMeta?: { createdAt: string | null; author: string | null };
   onTaskDelete?: (task: Task) => Promise<void>;
   onTrialDelete?: (trial: Trial, task: Task | null) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
@@ -276,10 +284,12 @@ function ExperimentMetaStrip({
   tasks,
   isInitialLoading,
   experimentId,
+  override,
 }: {
   tasks: Task[];
   isInitialLoading: boolean;
   experimentId?: string;
+  override?: { createdAt: string | null; author: string | null };
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -295,7 +305,7 @@ function ExperimentMetaStrip({
   }, [experimentId]);
 
   if (isInitialLoading) return null;
-  const { createdAt, author } = pickExperimentCreationMeta(tasks);
+  const { createdAt, author } = override ?? pickExperimentCreationMeta(tasks);
   if (!createdAt && !author && !experimentId) return null;
 
   return (
@@ -523,6 +533,7 @@ export function ExperimentDetailView({
   readOnly = false,
   allowRetry = true,
   apiBaseUrl = "/api",
+  creationMeta,
   onTaskDelete,
   onTrialDelete,
   onRerun,
@@ -850,6 +861,7 @@ export function ExperimentDetailView({
                 tasks={tasksForExperiment}
                 isInitialLoading={isInitialLoading}
                 experimentId={experimentId}
+                override={creationMeta}
               />
             </div>
             <ExperimentHeaderMeta
