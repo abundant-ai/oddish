@@ -994,7 +994,7 @@ export function ExperimentDetailView({
               contentOnly={true}
             />
           }
-          trialContent={
+          renderTrial={(paneAction) =>
             drawerState.trial && (
               <TrialDetailPanel
                 isOpen={true}
@@ -1012,6 +1012,7 @@ export function ExperimentDetailView({
                 allowDelete={Boolean(onTrialDelete)}
                 apiBaseUrl={apiBaseUrl}
                 contentOnly={true}
+                paneAction={paneAction}
               />
             )
           }
