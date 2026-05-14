@@ -5,6 +5,7 @@ type DashboardRequestParams = {
   experiments_offset?: number;
   experiments_query?: string;
   experiments_status?: string;
+  experiments_mine?: boolean;
   usage_minutes?: number | null;
   include_tasks?: boolean;
   include_usage?: boolean;
@@ -53,6 +54,9 @@ function buildDashboardSearchParams(
   if (input.experiments_status) {
     params.set("experiments_status", input.experiments_status);
   }
+  if (input.experiments_mine) {
+    params.set("experiments_mine", "true");
+  }
 
   const trimmedQuery = input.experiments_query?.trim();
   if (trimmedQuery) {
@@ -85,6 +89,9 @@ export function isDefaultDashboardExperimentsView(
   offset: number,
   query: string,
   status: string,
+  mine: boolean,
 ): boolean {
-  return offset === 0 && query.trim().length === 0 && status === "all";
+  return (
+    offset === 0 && query.trim().length === 0 && status === "all" && !mine
+  );
 }
