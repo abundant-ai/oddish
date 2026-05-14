@@ -1,4 +1,4 @@
-"""Railway / vanilla uvicorn entrypoint."""
+"""Uvicorn entrypoint for non-Modal container deployments."""
 
 from __future__ import annotations
 
