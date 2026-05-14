@@ -7,7 +7,7 @@ Serverless API and worker orchestration for Oddish Cloud, deployed on [Modal](ht
 The backend wraps the OSS `oddish` core with:
 - Multi-tenant API (`org_id`-scoped queries)
 - Dual auth (API keys + Clerk JWTs)
-- Modal-hosted API/workers/sandboxes, or Railway/Docker for standalone deployment
+- Modal-hosted API/workers/sandboxes, or Docker for standalone deployment
 - Queue-key concurrency controls
 - Public token-based sharing endpoints
 
@@ -116,8 +116,8 @@ The API layer enforces this scope in all list/read/write queries.
 | `deploy.py` | Modal app entrypoint (imports API + worker functions) |
 | `modal_app.py` | Modal image, bucket mounts, and shared runtime setup |
 | `endpoints.py` | Modal ASGI app function with concurrency and secrets wiring |
-| `serve.py` | Railway/uvicorn entrypoint for non-Modal deployment |
-| `Dockerfile` | Container image for Railway or standalone deployment |
+| `serve.py` | Uvicorn entrypoint for non-Modal container deployment |
+| `Dockerfile` | Container image for standalone deployment |
 | `cloud_policy.py` | Hosted-only environment policy (allowed sandboxes, default cloud env) |
 | `api/app.py` | FastAPI app factory + startup/lifespan wiring |
 | `api/schemas.py` | Pydantic models for org/auth/share responses |
