@@ -1,0 +1,86 @@
+name: CI Base Image
+
+# Builds and publishes ghcr.io/abundant-ai/oddish-ci-base, the container
+# image used by modal-preview / modal-deploy / supabase-db-migrations to
+# skip per-run tool installs.  Refreshes weekly (so upstream tooling and
+# the warm uv cache stay current) and on demand when the Dockerfile or
+# any project lockfile changes.
+
+on:
+  schedule:
+    # Sundays at 06:17 UTC — off-peak, deliberately offset from the hour.
+    - cron: "17 6 * * 0"
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/docker/ci-base.Dockerfile"
+      - ".github/workflows/ci-base-image.yml"
+      - "backend/pyproject.toml"
+      - "backend/uv.lock"
+      - "oddish/pyproject.toml"
+      - "oddish/uv.lock"
+
+concurrency:
+  group: ci-base-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/oddish-ci-base"
+          short_sha="${GITHUB_SHA::12}"
+          {
+            echo "image=$image"
+            echo "short_sha=$short_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push base image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: .github/docker/ci-base.Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.tags.outputs.image }}:latest
+            ${{ steps.tags.outputs.image }}:${{ steps.tags.outputs.short_sha }}
+          # Registry-side buildcache survives across runs and isn't bounded
+          # by the GHA cache 10 GB / 7-day limits.  mode=max writes
+          # intermediate layers so weekly rebuilds reuse most of the apt
+          # layer even if a project lockfile changed.
+          cache-from: type=registry,ref=${{ steps.tags.outputs.image }}:buildcache
+          cache-to: type=registry,ref=${{ steps.tags.outputs.image }}:buildcache,mode=max
+          provenance: false
+
+      - name: Summarize
+        run: |
+          {
+            echo "## CI base image published"
+            echo
+            echo "- Image: \`${{ steps.tags.outputs.image }}:latest\`"
+            echo "- SHA tag: \`${{ steps.tags.outputs.image }}:${{ steps.tags.outputs.short_sha }}\`"
+            echo "- Trigger: \`${{ github.event_name }}\`"
+            echo "- Commit: \`${{ github.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

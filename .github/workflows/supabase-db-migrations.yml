@@ -18,19 +18,21 @@ jobs:
   migrate:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    # Python 3.13, uv, and a warm uv cache live in the base image —
+    # refreshed weekly by .github/workflows/ci-base-image.yml.
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     env:
       ODDISH_DATABASE_URL: ${{ secrets.ODDISH_DATABASE_URL }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: actions/checkout@v5
 
       - name: Validate production Supabase URL is configured
         run: |
@@ -39,20 +41,31 @@ jobs:
             exit 1
           fi
 
+      # UV_PROJECT_ENVIRONMENT points uv at the per-project .venv that was
+      # pre-built into the base image; `uv sync --frozen` then only needs
+      # to patch the editable install paths against the CI checkout.
       - name: Sync oddish dependencies
         working-directory: oddish
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
         run: uv sync --frozen --extra server
 
       - name: Run oddish migrations
         working-directory: oddish
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
         run: uv run alembic upgrade head
 
       - name: Sync backend dependencies
         working-directory: backend
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
         run: uv sync --frozen
 
       - name: Run backend migrations
         working-directory: backend
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
         run: uv run alembic upgrade head
 
       - name: Summarize migration run

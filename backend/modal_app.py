@@ -242,6 +242,7 @@ image = (
         "endpoints",
         "modal_app",
         "models",
+        "observability",
         "worker",
         copy=True,
     )

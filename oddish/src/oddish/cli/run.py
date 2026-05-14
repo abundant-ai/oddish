@@ -473,10 +473,10 @@ def run(
     elif (
         environment is not None
         and is_modal_api
-        and environment != EnvironmentType.MODAL
+        and environment not in {EnvironmentType.MODAL, EnvironmentType.DAYTONA}
     ):
         console.print(
-            "[yellow]Oddish Cloud runs on Modal (no Docker-in-Docker); forcing --env modal[/yellow]"
+            "[yellow]Oddish Cloud supports --env modal and --env daytona; forcing --env modal[/yellow]"
         )
         environment = EnvironmentType.MODAL
 

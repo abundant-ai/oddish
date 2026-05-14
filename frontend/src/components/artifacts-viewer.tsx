@@ -21,49 +21,73 @@ interface ArtifactFile {
 }
 
 function ArtifactContent({
-  filesUrl,
-  filePath,
+  proxyUrl,
+  presignedUrl,
   fileName,
   fileSize,
 }: {
-  filesUrl: string;
-  filePath: string;
+  proxyUrl: string;
+  presignedUrl?: string;
   fileName: string;
   fileSize?: number;
 }) {
-  const encodedPath = encodeURIComponent(filePath);
-  const url = `${filesUrl}/${encodedPath}`;
   const isBinary = isBinaryRendererFile(fileName);
+  // Binary renderers fetch the URL themselves (image src, pdf, etc.) — presigned
+  // works directly from the browser and skips the proxy.
+  const renderUrl = presignedUrl || proxyUrl;
 
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(!isBinary);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (isBinary) {
       setContent(null);
       setLoading(false);
+      setError(null);
       return;
     }
     let cancelled = false;
     setLoading(true);
-    fetch(url)
-      .then(async (res) => {
+    setError(null);
+
+    async function fetchText() {
+      try {
+        // Prefer presigned S3 URL (fast, direct). Fall back to backend proxy if
+        // the presigned URL is unavailable or fails (expired, CORS, etc.).
+        if (presignedUrl) {
+          try {
+            const res = await fetch(presignedUrl);
+            if (res.ok) {
+              const text = await res.text();
+              if (!cancelled) setContent(text);
+              return;
+            }
+          } catch {
+            // fall through to proxy
+          }
+        }
+        const res = await fetch(proxyUrl);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.text();
-      })
-      .then((text) => {
+        const text = await res.text();
         if (!cancelled) setContent(text);
-      })
-      .catch(() => {
-        if (!cancelled) setContent("");
-      })
-      .finally(() => {
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error ? err.message : "Failed to load artifact"
+          );
+          setContent("");
+        }
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    }
+
+    void fetchText();
     return () => {
       cancelled = true;
     };
-  }, [url, isBinary]);
+  }, [proxyUrl, presignedUrl, isBinary]);
 
   if (loading) {
     return (
@@ -75,10 +99,18 @@ function ArtifactContent({
     );
   }
 
+  if (error && !isBinary) {
+    return (
+      <div className="text-destructive p-4 text-sm">
+        Failed to load {fileName}: {error}
+      </div>
+    );
+  }
+
   return (
     <FileRenderer
       fileName={fileName}
-      url={url}
+      url={renderUrl}
       content={content}
       fileSize={fileSize}
     />
@@ -107,22 +139,22 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
 
   if (error) {
     return (
-      <div className="p-6 text-center text-sm text-muted-foreground">
+      <div className="text-muted-foreground p-6 text-center text-sm">
         Failed to load artifacts
       </div>
     );
   }
 
   const artifactFiles = (data?.files ?? []).filter((f) =>
-    f.path.startsWith("artifacts/"),
+    f.path.startsWith("artifacts/")
   );
 
   if (artifactFiles.length === 0) {
     return (
       <div className="p-6 text-center">
-        <Package className="mx-auto mb-2 h-8 w-8 text-muted-foreground/50" />
-        <p className="text-sm text-muted-foreground">No artifacts</p>
-        <p className="mt-1 text-xs text-muted-foreground/70">
+        <Package className="text-muted-foreground/50 mx-auto mb-2 h-8 w-8" />
+        <p className="text-muted-foreground text-sm">No artifacts</p>
+        <p className="text-muted-foreground/70 mt-1 text-xs">
           No artifacts were collected from the sandbox
         </p>
       </div>
@@ -135,19 +167,24 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
   const tabs = displayFiles.map((file) => {
     const relativePath = file.path.replace(/^artifacts\//, "");
     const fileName = relativePath.split("/").pop() ?? relativePath;
+    // Encode the path segment-by-segment so `/` separators in the path are
+    // preserved (encodeURIComponent would turn them into %2F, which the
+    // backend file route doesn't match).
+    const encodedPath = file.path.split("/").map(encodeURIComponent).join("/");
     return {
       id: file.path,
       label: fileName,
-      fullPath: file.path,
       fileName,
       fileSize: file.size,
+      proxyUrl: `${filesUrl}/${encodedPath}`,
+      presignedUrl: file.url,
     };
   });
 
   return (
     <div className="p-3">
       <Tabs defaultValue={tabs[0].id}>
-        <TabsList className="h-8 flex-wrap bg-muted/50">
+        <TabsList className="bg-muted/50 h-8 flex-wrap">
           {tabs.map((tab) => (
             <TabsTrigger
               key={tab.id}
@@ -161,8 +198,8 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
         {tabs.map((tab) => (
           <TabsContent key={tab.id} value={tab.id} className="mt-2">
             <ArtifactContent
-              filesUrl={filesUrl}
-              filePath={tab.fullPath}
+              proxyUrl={tab.proxyUrl}
+              presignedUrl={tab.presignedUrl}
               fileName={tab.fileName}
               fileSize={tab.fileSize}
             />
@@ -170,7 +207,7 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
         ))}
       </Tabs>
       {truncated && (
-        <p className="mt-2 text-xs text-muted-foreground">
+        <p className="text-muted-foreground mt-2 text-xs">
           Showing first {MAX_ARTIFACTS} of {artifactFiles.length} artifacts.
         </p>
       )}

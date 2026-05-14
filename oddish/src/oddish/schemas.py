@@ -426,6 +426,48 @@ class TaskVersionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class TaskVersionSummary(BaseModel):
+    """Per-version aggregates used by the task detail view."""
+
+    id: str
+    version: int
+    message: str | None = None
+    created_at: datetime
+    is_current: bool = False
+    trial_count: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    pass_count: int = 0
+    partial_count: int = 0
+    fail_count: int = 0
+    pending_count: int = 0
+    reward_sum: float = 0.0
+    reward_total: int = 0
+    cost_usd: float = 0.0
+    cost_trial_count: int = 0
+    cost_has_estimated: bool = False
+    cost_has_native: bool = False
+    last_run_at: datetime | None = None
+
+
+class TaskCostTotals(BaseModel):
+    """Task-wide cost rollup across every (non-superseded) trial."""
+
+    cost_usd: float = 0.0
+    cost_trial_count: int = 0
+    cost_has_estimated: bool = False
+    cost_has_native: bool = False
+    total_trials: int = 0
+
+
+class TaskDetailResponse(BaseModel):
+    """Task detail bundle for ``GET /tasks/{task_id}/detail``."""
+
+    task: "TaskStatusResponse"
+    versions: list[TaskVersionSummary] = Field(default_factory=list)
+    totals: TaskCostTotals = Field(default_factory=TaskCostTotals)
+
+
 class VisibleWorkerJob(BaseModel):
     id: str
     kind: str

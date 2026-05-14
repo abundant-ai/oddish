@@ -16,6 +16,7 @@ from rich.console import Console
 from oddish.core.endpoints import (
     browse_tasks_core,
     create_task_sweep_core,
+    get_task_detail_core,
     get_task_status_core,
     get_task_version_core,
     get_trial_by_index_core,
@@ -73,6 +74,7 @@ from oddish.schemas import (
     TaskBrowseResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
+    TaskDetailResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
     TaskUploadInitResponse,
@@ -429,6 +431,13 @@ async def get_task_status(task_id: str):
             include_trials=True,
             include_empty_rewards=False,
         )
+
+
+@api.get("/tasks/{task_id}/detail", response_model=TaskDetailResponse)
+async def get_task_detail(task_id: str):
+    """Task detail bundle: task + trials + per-version + cost rollups."""
+    async with get_session() as session:
+        return await get_task_detail_core(session, task_id=task_id)
 
 
 @api.get("/tasks/{task_id}/versions", response_model=list[TaskVersionResponse])
