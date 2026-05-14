@@ -37,9 +37,9 @@ _lock = Lock()
 def _resolve_environment() -> str:
     """Coarse env label: ``production`` / ``preview`` / ``development``.
 
-    PR-specific details (Modal app, Railway env name, git sha) ride on
-    each span as resource attributes via ``_extra_resource_attributes``
-    so dashboards can filter ``deployment.environment == "preview"`` *and*
+    PR-specific details (Modal app, git sha) ride on each span as
+    resource attributes via ``_extra_resource_attributes`` so
+    dashboards can filter ``deployment.environment == "preview"`` *and*
     drill into ``oddish.pr`` for a single PR.
     """
     explicit = os.environ.get("LOGFIRE_ENVIRONMENT")
@@ -49,23 +49,16 @@ def _resolve_environment() -> str:
     modal_app = os.environ.get("MODAL_APP_NAME", "")
     if modal_app.startswith("oddish-pr-"):
         return "preview"
-
-    railway_env = (os.environ.get("RAILWAY_ENVIRONMENT_NAME") or "").lower()
-    if railway_env in {"production", "prod"}:
+    if modal_app == "oddish":
         return "production"
-    if railway_env in {"preview", "staging"} or railway_env.startswith("pr-"):
+    if modal_app:
+        # Anything that isn't the canonical production Modal app but is
+        # still running on Modal is a preview / experiment by default.
         return "preview"
 
     oddish_env = os.environ.get("ODDISH_ENV")
     if oddish_env:
         return oddish_env
-
-    if modal_app and modal_app != "oddish":
-        # Anything that isn't the canonical production Modal app is a
-        # preview / experiment by default.
-        return "preview"
-    if modal_app == "oddish":
-        return "production"
 
     return "development"
 
@@ -85,22 +78,13 @@ def _extra_resource_attributes() -> dict[str, str]:
         if modal_app.startswith("oddish-pr-"):
             attrs["oddish.pr"] = modal_app.removeprefix("oddish-pr-")
 
-    for key, source in (
-        ("oddish.modal_environment", "MODAL_ENVIRONMENT"),
-        ("oddish.railway_environment", "RAILWAY_ENVIRONMENT_NAME"),
-        ("oddish.git_sha", "RAILWAY_GIT_COMMIT_SHA"),
-        ("oddish.git_branch", "RAILWAY_GIT_BRANCH"),
-    ):
-        value = os.environ.get(source)
-        if value:
-            attrs[key] = value
+    modal_env = os.environ.get("MODAL_ENVIRONMENT")
+    if modal_env:
+        attrs["oddish.modal_environment"] = modal_env
 
-    # Fallback git sha for non-Railway hosts (e.g. Modal images burn the
-    # commit into ``ODDISH_RELEASE`` / ``GIT_COMMIT_SHA``).
-    if "oddish.git_sha" not in attrs:
-        sha = os.environ.get("ODDISH_RELEASE") or os.environ.get("GIT_COMMIT_SHA")
-        if sha:
-            attrs["oddish.git_sha"] = sha
+    sha = os.environ.get("ODDISH_RELEASE") or os.environ.get("GIT_COMMIT_SHA")
+    if sha:
+        attrs["oddish.git_sha"] = sha
 
     return attrs
 
@@ -143,7 +127,6 @@ def configure_logfire(service_name: str) -> bool:
             logfire.configure(
                 service_name=service_name,
                 service_version=os.environ.get("ODDISH_RELEASE")
-                or os.environ.get("RAILWAY_GIT_COMMIT_SHA")
                 or os.environ.get("GIT_COMMIT_SHA"),
                 environment=_resolve_environment(),
                 send_to_logfire="if-token-present",

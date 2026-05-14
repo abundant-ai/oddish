@@ -179,9 +179,9 @@ Common optional settings:
 
 ### Observability (Pydantic Logfire)
 
-Optional but recommended. Provision a write token in Logfire and set the
-following on the backend (Railway env vars + the `oddish-prod` Modal
-secret so API containers and workers both pick it up):
+Optional but recommended. Provision a write token in Logfire and add
+it to the `oddish-prod` Modal secret so the API containers and workers
+both pick it up:
 
 - `LOGFIRE_TOKEN` — Logfire write token (the only required value).
 - `LOGFIRE_ENVIRONMENT` *(optional)* — overrides the auto-detected
