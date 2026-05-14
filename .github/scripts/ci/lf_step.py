@@ -28,6 +28,8 @@ changes behaviour for forks / self-hosters / clean CI bootstraps.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import os
 import subprocess
 import sys
@@ -46,6 +48,49 @@ def _split_argv(argv: list[str]) -> tuple[str, list[str]] | None:
     if not name or not cmd:
         return None
     return name, cmd
+
+
+def _job_traceparent() -> str | None:
+    """Stitch every wrapped step in the same GH job into one Logfire trace.
+
+    Each ``run:`` block is its own process, so by default each step
+    opens a fresh trace_id and Logfire shows them as separate rows.
+    We derive a deterministic W3C ``traceparent`` from
+    ``GITHUB_RUN_ID + GITHUB_RUN_ATTEMPT + GITHUB_JOB`` and attach it
+    as the remote parent context before opening the step span — every
+    step in the same job ends up under the same trace_id with the
+    same (virtual) parent span_id, so Logfire renders the whole job
+    as one trace. Re-running a workflow (attempt 2) gets a different
+    trace_id, which is what you want for diffing reruns.
+    """
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if not run_id:
+        return None
+    attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
+    job = os.environ.get("GITHUB_JOB", "")
+    seed = f"{run_id}/{attempt}/{job}".encode()
+    digest = hashlib.sha256(seed).digest()
+    trace_id = digest[:16].hex()
+    parent_span_id = digest[16:24].hex()
+    # ``-01`` flag = sampled. Without the sampled bit Logfire's exporter
+    # drops the span on the floor.
+    return f"00-{trace_id}-{parent_span_id}-01"
+
+
+def _attach_job_context() -> contextlib.AbstractContextManager:
+    """Return a ctx manager that pins the current OTEL context to the
+    deterministic job traceparent. Returns ``nullcontext()`` when the
+    traceparent can't be derived (no GITHUB_RUN_ID — local invocation)
+    or when ``logfire.propagate`` isn't available.
+    """
+    traceparent = _job_traceparent()
+    if not traceparent:
+        return contextlib.nullcontext()
+    try:
+        from logfire.propagate import attach_context
+    except ImportError:
+        return contextlib.nullcontext()
+    return attach_context({"traceparent": traceparent})
 
 
 def _resolve_pr() -> str:
@@ -131,7 +176,7 @@ def main() -> int:
         return _passthrough(cmd)
 
     try:
-        with logfire.span(
+        with _attach_job_context(), logfire.span(
             "ci.step {step_name}",
             step_name=step_name,
             cmd=" ".join(cmd),

@@ -210,7 +210,7 @@ jobs:
         if: ${{ needs.detect-changes.outputs.deploy_backend == 'true' || steps.supabase_branch.outputs.branch_was_created == 'true' }}
         run: |
           python "$GITHUB_WORKSPACE/.github/scripts/ci/lf_step.py" \
-            preview.modal.create_db_secret -- \
+            preview.modal.put_db_credential -- \
             uv run modal secret create \
               --env "$MODAL_ENVIRONMENT" --force \
               "$MODAL_APP_NAME-db" \
@@ -363,7 +363,7 @@ jobs:
         continue-on-error: true
         run: |
           python "$GITHUB_WORKSPACE/.github/scripts/ci/lf_step.py" \
-            stop_preview.modal.delete_db_secret -- \
+            stop_preview.modal.delete_db_credential -- \
             modal secret delete --env "$MODAL_ENVIRONMENT" "oddish-pr-$PR_NUMBER-db"
 
       - name: Delete Supabase preview branch
