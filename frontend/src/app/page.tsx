@@ -81,11 +81,11 @@ export default function LandingPage() {
 
   return (
     <>
-      <Show when="signed-in">
+      <Show when="signedIn">
         <RedirectToDashboard />
       </Show>
 
-      <Show when="signed-out">
+      <Show when="signedOut">
         <div className="flex flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(133,184,92,0.16),transparent_34%),radial-gradient(circle_at_80%_20%,rgba(111,136,180,0.12),transparent_28%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--background)))] text-foreground">
           {/* Header */}
           <header className="w-full border-b border-emerald-700/15 px-6 py-3 dark:border-emerald-400/10">
