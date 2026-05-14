@@ -18,20 +18,16 @@ const isPublicRoute = createRouteMatcher([
   "/api/public(.*)",
 ]);
 
-// Emit the active span as a `traceparent` value inside a Server-Timing
-// header so the browser's `@opentelemetry/instrumentation-document-load`
-// has something to attach its navigation span to. Without this, a fresh
-// document load arrives at Next.js with no `traceparent` header (browsers
-// don't propagate trace context for top-level navigations), the edge
-// runtime creates `middleware` + `GET /(...)/page` spans as roots, and
-// Logfire shows the trace as orphaned because no browser parent ever
-// joins it.
+// Emit the active edge span as a `traceparent` value inside Server-Timing
+// so the browser's `instrumentation-document-load` can attach its
+// navigation span as a child — browsers don't propagate trace context for
+// top-level navigations, so without this server spans land in Logfire
+// with no browser parent.
 function attachTraceparent(response: NextResponse): NextResponse {
   const span = trace.getActiveSpan();
   if (!span) return response;
   const ctx = span.spanContext();
-  // `00000…` ids mean the SDK handed us a non-recording span (sampler
-  // dropped, exporter disabled, etc.) — useless as a parent.
+  // All-zero ids = non-recording span; useless as a parent.
   if (!ctx.traceId || !ctx.spanId || /^0+$/.test(ctx.traceId)) {
     return response;
   }
@@ -47,7 +43,6 @@ function attachTraceparent(response: NextResponse): NextResponse {
 }
 
 export default clerkMiddleware(async (auth, request) => {
-  // Protect all routes except public ones
   if (!isPublicRoute(request)) {
     await auth.protect();
   }
