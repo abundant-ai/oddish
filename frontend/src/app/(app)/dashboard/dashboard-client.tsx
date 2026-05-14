@@ -146,6 +146,7 @@ function useDashboardExperiments(
   experimentsOffset: number,
   experimentsQuery: string,
   experimentsStatus: string,
+  experimentsMine: boolean,
   fallbackData?: DashboardResponse | null,
 ) {
   const swrKey = buildDashboardApiPath({
@@ -153,6 +154,7 @@ function useDashboardExperiments(
     experiments_offset: experimentsOffset,
     experiments_query: experimentsQuery,
     experiments_status: experimentsStatus,
+    experiments_mine: experimentsMine,
     include_tasks: false,
     include_usage: false,
   });
@@ -1128,6 +1130,8 @@ function RecentTasksCard({
   onSearchQueryChange,
   statusFilter,
   onStatusFilterChange,
+  mineOnly,
+  onMineOnlyChange,
   error,
   isLoading,
   hasMoreExperiments,
@@ -1142,6 +1146,8 @@ function RecentTasksCard({
   onSearchQueryChange: (value: string) => void;
   statusFilter: string;
   onStatusFilterChange: (value: string) => void;
+  mineOnly: boolean;
+  onMineOnlyChange: (value: boolean) => void;
   error: Error | undefined;
   isLoading: boolean;
   hasMoreExperiments: boolean;
@@ -1159,7 +1165,8 @@ function RecentTasksCard({
   } | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  const hasFilters = searchQuery.trim().length > 0 || statusFilter !== "all";
+  const hasFilters =
+    searchQuery.trim().length > 0 || statusFilter !== "all" || mineOnly;
   const statusFilterLabel =
     STATUS_FILTER_OPTIONS.find((option) => option.value === statusFilter)
       ?.label ?? "Filter status";
@@ -1206,6 +1213,16 @@ function RecentTasksCard({
           </div>
         </div>
         <div className="flex flex-1 flex-wrap gap-2 sm:justify-end">
+          <Button
+            type="button"
+            variant={mineOnly ? "default" : "outline"}
+            size="sm"
+            className="h-8 border-[#6f88b4]/20"
+            onClick={() => onMineOnlyChange(!mineOnly)}
+            aria-pressed={mineOnly}
+          >
+            Mine
+          </Button>
           <Input
             value={searchQuery}
             onChange={(event) => onSearchQueryChange(event.target.value)}
@@ -1475,6 +1492,7 @@ export function DashboardClient({
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [mineOnly, setMineOnly] = useState(false);
   const [timeRange, setTimeRange] = useState<TimeRangeKey>("24h");
   const usageMinutes = getMinutesFromTimeRange(timeRange);
   const usageFallbackData =
@@ -1485,6 +1503,7 @@ export function DashboardClient({
     experimentsOffset,
     deferredSearchQuery,
     statusFilter,
+    mineOnly,
   )
     ? initialDashboardData
     : null;
@@ -1507,6 +1526,7 @@ export function DashboardClient({
     experimentsOffset,
     deferredSearchQuery,
     statusFilter,
+    mineOnly,
     experimentsFallbackData,
   );
   const currentExperimentsPage =
@@ -1518,11 +1538,12 @@ export function DashboardClient({
     !experimentsError &&
     currentExperimentsPage === 1 &&
     deferredSearchQuery.trim().length === 0 &&
-    statusFilter === "all";
+    statusFilter === "all" &&
+    !mineOnly;
 
   useEffect(() => {
     setExperimentsOffset(0);
-  }, [deferredSearchQuery, statusFilter]);
+  }, [deferredSearchQuery, statusFilter, mineOnly]);
 
   const handlePreviousExperimentsPage = () => {
     setExperimentsOffset((prev) => Math.max(0, prev - EXPERIMENTS_PAGE_SIZE));
@@ -1556,6 +1577,8 @@ export function DashboardClient({
         onSearchQueryChange={setSearchQuery}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
+        mineOnly={mineOnly}
+        onMineOnlyChange={setMineOnly}
         error={experimentsError}
         isLoading={isExperimentsLoading}
         hasMoreExperiments={hasMoreExperiments}

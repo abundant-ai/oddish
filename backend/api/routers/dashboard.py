@@ -29,6 +29,7 @@ async def get_dashboard(
     experiments_offset: int = Query(0, ge=0),
     experiments_query: str | None = Query(None),
     experiments_status: str = Query("all"),
+    experiments_mine: bool = Query(False),
     usage_minutes: int | None = Query(None, ge=1, le=86400),
     include_tasks: bool = Query(True),
     include_usage: bool = Query(True),
@@ -39,6 +40,8 @@ async def get_dashboard(
     Response is cached for 10 seconds per organization.
     """
     auth.require_scope(APIKeyScope.READ)
+
+    mine_user_id = auth.user_id if experiments_mine else None
 
     async with get_session() as session:
         connect_started_at = now()
@@ -58,6 +61,7 @@ async def get_dashboard(
             experiments_offset=experiments_offset,
             experiments_query=experiments_query,
             experiments_status=experiments_status,
+            experiments_mine_user_id=mine_user_id,
             usage_minutes=usage_minutes,
             include_tasks=include_tasks,
             include_usage=include_usage,

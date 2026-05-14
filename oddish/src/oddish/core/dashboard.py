@@ -93,6 +93,7 @@ async def load_dashboard_experiments(
     experiments_offset: int,
     experiments_query: str | None,
     experiments_status: str,
+    mine_user_id: str | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Load experiment summaries for the dashboard."""
@@ -273,6 +274,17 @@ async def load_dashboard_experiments(
     )
     if org_id is not None:
         exp_filter = and_(exp_filter, ExperimentModel.org_id == org_id)
+    if mine_user_id is not None:
+        mine_subq = (
+            select(task_experiments.c.experiment_id)
+            .select_from(
+                task_experiments.join(
+                    TaskModel, TaskModel.id == task_experiments.c.task_id
+                )
+            )
+            .where(TaskModel.created_by_user_id == mine_user_id)
+        )
+        exp_filter = and_(exp_filter, ExperimentModel.id.in_(mine_subq))
     experiment_rows = exp_base.where(exp_filter).subquery()
 
     query = select(experiment_rows)
@@ -626,6 +638,7 @@ async def get_dashboard_core(
     experiments_offset: int = 0,
     experiments_query: str | None = None,
     experiments_status: str = "all",
+    experiments_mine_user_id: str | None = None,
     usage_minutes: int | None = None,
     include_tasks: bool = True,
     include_usage: bool = True,
@@ -637,8 +650,8 @@ async def get_dashboard_core(
     cache_key = (
         f"dashboard:{org_id}:{tasks_limit}:{tasks_offset}:"
         f"{experiments_limit}:{experiments_offset}:{experiments_query}:"
-        f"{experiments_status}:{usage_minutes}:{include_tasks}:{include_usage}:"
-        f"{include_experiments}"
+        f"{experiments_status}:{experiments_mine_user_id}:{usage_minutes}:"
+        f"{include_tasks}:{include_usage}:{include_experiments}"
     )
     cached = _get_cached(cache_key)
     if cached:
@@ -743,6 +756,7 @@ async def get_dashboard_core(
                 experiments_offset=experiments_offset,
                 experiments_query=experiments_query,
                 experiments_status=experiments_status,
+                mine_user_id=experiments_mine_user_id,
                 record_timing=record_timing,
             )
         if record_timing is not None:
