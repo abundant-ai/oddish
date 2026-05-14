@@ -2,30 +2,24 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Show, SignUpButton } from "@clerk/nextjs";
+import { SignUpButton, useUser } from "@clerk/nextjs";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import Image from "next/image";
 
-function RedirectToDashboard() {
-  const router = useRouter();
-
-  useEffect(() => {
-    router.replace("/dashboard");
-  }, [router]);
-
-  return (
-    <div className="flex flex-1 items-center justify-center bg-background">
-      <p className="text-muted-foreground">Redirecting to dashboard...</p>
-    </div>
-  );
-}
-
 export default function LandingPage() {
+  const router = useRouter();
+  const { isLoaded, isSignedIn } = useUser();
   const command = "oddish run -d terminal-bench@2.0 -c sweep.yaml";
   const [typedCommand, setTypedCommand] = useState("");
   const [cursorVisible, setCursorVisible] = useState(true);
+
+  useEffect(() => {
+    if (isLoaded && isSignedIn) {
+      router.replace("/dashboard");
+    }
+  }, [isLoaded, isSignedIn, router]);
 
   useEffect(() => {
     const intervalId = setInterval(() => {
@@ -79,14 +73,17 @@ export default function LandingPage() {
     };
   }, [command]);
 
+  if (!isLoaded || isSignedIn) {
+    return (
+      <div className="flex flex-1 items-center justify-center bg-background">
+        <p className="text-muted-foreground">Redirecting to dashboard...</p>
+      </div>
+    );
+  }
+
   return (
     <>
-      <Show when="signed-in">
-        <RedirectToDashboard />
-      </Show>
-
-      <Show when="signed-out">
-        <div className="flex flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(133,184,92,0.16),transparent_34%),radial-gradient(circle_at_80%_20%,rgba(111,136,180,0.12),transparent_28%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--background)))] text-foreground">
+      <div className="flex flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(133,184,92,0.16),transparent_34%),radial-gradient(circle_at_80%_20%,rgba(111,136,180,0.12),transparent_28%),linear-gradient(to_bottom,hsl(var(--background)),hsl(var(--background)))] text-foreground">
           {/* Header */}
           <header className="w-full border-b border-emerald-700/15 px-6 py-3 dark:border-emerald-400/10">
             <div className="mx-auto flex max-w-5xl items-center justify-between">
@@ -206,8 +203,7 @@ export default function LandingPage() {
               </div>
             </div>
           </main>
-        </div>
-      </Show>
+      </div>
     </>
   );
 }
