@@ -65,6 +65,8 @@ server = [
 ]
 worker = [
     "oddish[server]",
+    # Needed when hosted workers run Harbor with EnvironmentType.DAYTONA.
+    "daytona>=0.165.0",
     # LLM providers
     "anthropic==0.76.0",
     "openai==2.24.0",
