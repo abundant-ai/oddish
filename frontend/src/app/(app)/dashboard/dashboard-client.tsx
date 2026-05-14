@@ -1,8 +1,15 @@
 "use client";
 
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import useSWR, { useSWRConfig } from "swr";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1488,11 +1495,90 @@ export function DashboardClient({
   initialDashboardData = null,
 }: DashboardClientProps) {
   const { mutate } = useSWRConfig();
-  const [experimentsOffset, setExperimentsOffset] = useState(0);
-  const [searchQuery, setSearchQuery] = useState("");
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  const urlSearchQuery = searchParams.get("q") ?? "";
+  const statusFilter = searchParams.get("status") ?? "all";
+  const mineOnly = searchParams.get("mine") === "1";
+  const experimentsOffset = Math.max(
+    0,
+    Number.parseInt(searchParams.get("offset") ?? "0", 10) || 0,
+  );
+
+  const [searchQuery, setSearchQuery] = useState(urlSearchQuery);
   const deferredSearchQuery = useDeferredValue(searchQuery);
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [mineOnly, setMineOnly] = useState(false);
+
+  const updateSearchParams = useCallback(
+    (
+      updates: Record<string, string | null>,
+      { push = false }: { push?: boolean } = {},
+    ) => {
+      const next = new URLSearchParams(searchParams.toString());
+      for (const [key, value] of Object.entries(updates)) {
+        if (value === null || value === "") {
+          next.delete(key);
+        } else {
+          next.set(key, value);
+        }
+      }
+      const query = next.toString();
+      const href = query ? `${pathname}?${query}` : pathname;
+      if (push) {
+        router.push(href, { scroll: false });
+      } else {
+        router.replace(href, { scroll: false });
+      }
+    },
+    [pathname, router, searchParams],
+  );
+
+  // Adopt external URL changes (back/forward navigation, deep links).
+  useEffect(() => {
+    setSearchQuery(urlSearchQuery);
+  }, [urlSearchQuery]);
+
+  // Sync the (deferred) search input back into the URL.
+  useEffect(() => {
+    const trimmed = deferredSearchQuery.trim();
+    if (trimmed === urlSearchQuery) return;
+    updateSearchParams({
+      q: trimmed || null,
+      offset: null,
+    });
+  }, [deferredSearchQuery, urlSearchQuery, updateSearchParams]);
+
+  const setStatusFilter = useCallback(
+    (value: string) => {
+      updateSearchParams(
+        { status: value === "all" ? null : value, offset: null },
+        { push: true },
+      );
+    },
+    [updateSearchParams],
+  );
+
+  const setMineOnly = useCallback(
+    (value: boolean) => {
+      updateSearchParams(
+        { mine: value ? "1" : null, offset: null },
+        { push: true },
+      );
+    },
+    [updateSearchParams],
+  );
+
+  const setExperimentsOffset = useCallback(
+    (value: number) => {
+      updateSearchParams(
+        { offset: value > 0 ? String(value) : null },
+        { push: true },
+      );
+    },
+    [updateSearchParams],
+  );
+
   const [timeRange, setTimeRange] = useState<TimeRangeKey>("24h");
   const usageMinutes = getMinutesFromTimeRange(timeRange);
   const usageFallbackData =
@@ -1541,17 +1627,13 @@ export function DashboardClient({
     statusFilter === "all" &&
     !mineOnly;
 
-  useEffect(() => {
-    setExperimentsOffset(0);
-  }, [deferredSearchQuery, statusFilter, mineOnly]);
-
   const handlePreviousExperimentsPage = () => {
-    setExperimentsOffset((prev) => Math.max(0, prev - EXPERIMENTS_PAGE_SIZE));
+    setExperimentsOffset(Math.max(0, experimentsOffset - EXPERIMENTS_PAGE_SIZE));
   };
 
   const handleNextExperimentsPage = () => {
     if (!hasMoreExperiments) return;
-    setExperimentsOffset((prev) => prev + EXPERIMENTS_PAGE_SIZE);
+    setExperimentsOffset(experimentsOffset + EXPERIMENTS_PAGE_SIZE);
   };
 
   const handleRefreshCurrentPage = async () => {
