@@ -29,6 +29,7 @@ from oddish.core.helpers import (
     get_task_status_trials,
     resolve_effective_version_id,
 )
+from oddish.core.swr_cache import SWRCache
 from collections.abc import Collection
 from harbor.models.environment_type import EnvironmentType
 from oddish.core.trial_io import (
@@ -46,6 +47,7 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
     VerdictStatus,
+    get_session,
     utcnow,
 )
 from oddish.schemas import (
@@ -93,6 +95,18 @@ async def get_task_for_org_core(
     return task
 
 
+# Stale-while-revalidate cache for /tasks list responses.  The query
+# fan-out is heavy when ``experiment_id`` is set with a large ``limit``
+# (experiment detail page fetches ``limit=2000``), so even short-lived
+# caching cuts cold TTFB substantially for the common navigation pattern
+# of revisiting the same experiment.
+_tasks_cache: SWRCache[list[TaskStatusResponse]] = SWRCache(
+    fresh_seconds=10.0,
+    stale_max_seconds=300.0,
+    max_size=200,
+)
+
+
 async def list_tasks_core(
     session: AsyncSession,
     *,
@@ -109,7 +123,75 @@ async def list_tasks_core(
     include_empty_rewards: bool = True,
     record_timing: TimingRecorder | None = None,
 ) -> list[TaskStatusResponse]:
-    """List tasks with optional filters and aggregated trial stats."""
+    """List tasks with optional filters and SWR caching."""
+    cache_key = (
+        f"tasks:{org_id}:{status}:{user}:{experiment_id}:{include_trials}:"
+        f"{compact_trials}:{include_queue_info}:{include_worker_jobs}:"
+        f"{limit}:{offset}:{include_empty_rewards}"
+    )
+
+    async def _foreground() -> list[TaskStatusResponse]:
+        return await _compute_tasks_list(
+            session,
+            status=status,
+            user=user,
+            experiment_id=experiment_id,
+            include_trials=include_trials,
+            compact_trials=compact_trials,
+            include_queue_info=include_queue_info,
+            include_worker_jobs=include_worker_jobs,
+            limit=limit,
+            offset=offset,
+            org_id=org_id,
+            include_empty_rewards=include_empty_rewards,
+            record_timing=record_timing,
+        )
+
+    async def _background() -> list[TaskStatusResponse]:
+        # Owns its own session because the request's session is already
+        # closed by the time stale revalidation runs.
+        async with get_session() as bg_session:
+            return await _compute_tasks_list(
+                bg_session,
+                status=status,
+                user=user,
+                experiment_id=experiment_id,
+                include_trials=include_trials,
+                compact_trials=compact_trials,
+                include_queue_info=include_queue_info,
+                include_worker_jobs=include_worker_jobs,
+                limit=limit,
+                offset=offset,
+                org_id=org_id,
+                include_empty_rewards=include_empty_rewards,
+                record_timing=None,
+            )
+
+    value, hit = await _tasks_cache.get_or_compute(
+        cache_key, _foreground, background_compute=_background
+    )
+    if hit and record_timing is not None:
+        record_timing("tasks_cache", 0.0, "Tasks list cache hit")
+    return value
+
+
+async def _compute_tasks_list(
+    session: AsyncSession,
+    *,
+    status: str | None = None,
+    user: str | None = None,
+    experiment_id: str | None = None,
+    include_trials: bool = True,
+    compact_trials: bool = False,
+    include_queue_info: bool = True,
+    include_worker_jobs: bool = True,
+    limit: int = 100,
+    offset: int = 0,
+    org_id: str | None = None,
+    include_empty_rewards: bool = True,
+    record_timing: TimingRecorder | None = None,
+) -> list[TaskStatusResponse]:
+    """Build the tasks list response from scratch.  No caching here."""
     query = select(TaskModel).order_by(TaskModel.created_at.desc())
     if include_trials:
         trials_loader = selectinload(TaskModel.trials)
