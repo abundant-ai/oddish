@@ -681,9 +681,12 @@ export interface Report {
   backfill_experiment_id: string | null;
   created_at: string;
   updated_at: string;
-  rows: ReportRowResolved[];
+  // ``tasks`` mirrors the experiment endpoint shape so the same
+  // ``ExperimentDetailView`` / ``ExperimentTrialsTable`` renders both.
+  // Each task's ``trials`` are the report-resolved subset, not the
+  // underlying task's full trial list.
   columns: ReportColumnResolved[];
-  cells: ReportCellResolved[];
+  tasks: Task[];
   total_trials: number;
   total_missing: number;
 }
@@ -779,23 +782,7 @@ export interface PublicReport {
   description: string | null;
   created_at: string;
   created_by_display: string | null;
-  rows: Array<{
-    position: number;
-    task_version_id: string;
-    task_id: string;
-    version: number;
-    task_name: string;
-  }>;
-  columns: Array<{
-    position: number;
-    column_key: string;
-    agent: string;
-    model: string | null;
-  }>;
-  cells: Array<{
-    row_idx: number;
-    col_idx: number;
-    trials: PublicReportTrialSummary[];
-  }>;
+  columns: ReportColumnResolved[];
+  tasks: Task[];
   total_trials: number;
 }

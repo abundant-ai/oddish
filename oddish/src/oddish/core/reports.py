@@ -60,25 +60,20 @@ from oddish.schemas import (
     BackfillExecuteResponse,
     BackfillPlan,
     HarborConfig,
-    PublicReportCell,
-    PublicReportColumn,
     PublicReportResponse,
-    PublicReportRow,
     PublicReportTrialSummary,
     ReportAgentBackfillConfig,
     ReportAgentEntry,
     ReportBackfillSettings,
-    ReportCellResolved,
     ReportColumnResolved,
     ReportListItem,
     ReportResponse,
-    ReportRowResolved,
     ReportSelection,
     ReportShareResponse,
     ReportSourceFilter,
     ReportSpec,
     ReportTaskVersionEntry,
-    ReportTrialSummary,
+    TaskStatusResponse,
     TaskSweepSubmission,
 )
 
@@ -117,6 +112,11 @@ class _ResolvedRow:
     task_id: str
     version: int
     task_name: str
+    # The TaskModel (with experiments loaded) — kept so the response
+    # builder can hand the same object to ``_build_task_status_response``
+    # that the experiment endpoint uses, instead of reinventing trial
+    # aggregation. ``None`` only on legacy paths that don't need it.
+    task: TaskModel | None = None
 
 
 @dataclass
@@ -392,9 +392,14 @@ async def _fetch_rows(
     if not rows:
         return []
     tv_ids = [r.task_version_id for r in rows]
+    # ``selectinload(TaskModel.experiments)`` so the downstream
+    # ``_build_task_status_response`` call can derive experiment_id /
+    # experiment_name from the loaded relationship without firing a
+    # lazy load mid-async (which trips MissingGreenlet).
     result = await session.execute(
         select(TaskVersionModel, TaskModel)
         .join(TaskModel, TaskModel.id == TaskVersionModel.task_id)
+        .options(selectinload(TaskModel.experiments))
         .where(TaskVersionModel.id.in_(tv_ids))
     )
     by_id: dict[str, tuple[TaskVersionModel, TaskModel]] = {
@@ -416,6 +421,7 @@ async def _fetch_rows(
                 task_id=task.id,
                 version=tv.version,
                 task_name=task.name,
+                task=task,
             )
         )
     return resolved
@@ -654,30 +660,60 @@ async def resolve_report_cells(
     return rows, columns, cells
 
 
-def _summarize_trial(trial: TrialModel) -> ReportTrialSummary:
-    duration: float | None = None
-    if trial.started_at and trial.finished_at:
-        duration = (trial.finished_at - trial.started_at).total_seconds()
-    return ReportTrialSummary(
-        id=trial.id,
-        name=trial.name,
-        agent=trial.agent,
-        model=trial.model,
-        status=trial.status,
-        reward=trial.reward,
-        cost_usd=trial.cost_usd,
-        cost_is_estimated=None,
-        error_message=trial.error_message,
-        task_id=trial.task_id,
-        task_version_id=trial.task_version_id,
-        experiment_id=trial.experiment_id,
-        superseded_by_trial_id=trial.superseded_by_trial_id,
-        has_trajectory=trial.has_trajectory,
-        created_at=trial.created_at,
-        started_at=trial.started_at,
-        finished_at=trial.finished_at,
-        duration_seconds=duration,
+def _trials_for_row(
+    row: _ResolvedRow, cells: Sequence[_CellMatch]
+) -> list[TrialModel]:
+    return [t for c in cells if c.row_idx == row.position for t in c.trials]
+
+
+def _row_task_responses(
+    rows: Sequence[_ResolvedRow], cells: Sequence[_CellMatch]
+) -> list[TaskStatusResponse]:
+    """Build a TaskStatusResponse per row, with trials = the cells' trials.
+
+    Reuses the same builders the experiment endpoint uses, so the
+    response shape matches ``GET /experiments/{id}/tasks`` and the
+    frontend can render reports with the existing
+    ``ExperimentDetailView`` and its trials table / chart / drawer.
+    """
+    from oddish.core.helpers import (  # avoid import-time cycle
+        _build_task_status_response,
+        build_trial_response,
     )
+
+    out: list[TaskStatusResponse] = []
+    for row in rows:
+        if row.task is None:
+            # _fetch_rows always sets row.task; guard exists to keep
+            # mypy happy and to make the failure mode obvious.
+            continue
+        trials = _trials_for_row(row, cells)
+        trial_responses = [
+            build_trial_response(t, row.task.task_path) for t in trials
+        ]
+        total = len(trials)
+        completed = sum(
+            1 for t in trials if t.status == TrialStatus.SUCCESS
+        )
+        failed = sum(1 for t in trials if t.status == TrialStatus.FAILED)
+        reward_success = sum(1 for t in trials if t.reward == 1)
+        reward_sum = sum(t.reward for t in trials if t.reward is not None)
+        reward_total = sum(1 for t in trials if t.reward is not None)
+        out.append(
+            _build_task_status_response(
+                row.task,
+                total=total,
+                completed=completed,
+                failed=failed,
+                reward_success=reward_success,
+                reward_sum=reward_sum,
+                reward_total=reward_total,
+                include_empty_rewards=True,
+                trials=trial_responses,
+                effective_version_id=row.task_version_id,
+            )
+        )
+    return out
 
 
 def _summarize_trial_public(trial: TrialModel) -> PublicReportTrialSummary:
@@ -704,17 +740,13 @@ def build_report_response(
     columns: Sequence[_ResolvedColumn],
     cells: Sequence[_CellMatch],
 ) -> ReportResponse:
+    """Return the same ``Task[]`` shape the experiment endpoints use.
+
+    Lets the report detail page reuse ``ExperimentDetailView`` /
+    ``ExperimentTrialsTable`` / the trial drawer / the pass-at-k chart
+    instead of forking the whole render layer.
+    """
     spec = serialize_report_to_spec(report)
-    resolved_rows = [
-        ReportRowResolved(
-            position=r.position,
-            task_version_id=r.task_version_id,
-            task_id=r.task_id,
-            version=r.version,
-            task_name=r.task_name,
-        )
-        for r in rows
-    ]
     resolved_cols = [
         ReportColumnResolved(
             position=c.position,
@@ -724,19 +756,9 @@ def build_report_response(
         )
         for c in columns
     ]
-    resolved_cells = [
-        ReportCellResolved(
-            row_idx=c.row_idx,
-            col_idx=c.col_idx,
-            source="pinned" if c.pinned else "resolved",
-            have=c.have,
-            need=c.need,
-            trials=[_summarize_trial(t) for t in c.trials],
-        )
-        for c in cells
-    ]
-    total_trials = sum(len(c.trials) for c in resolved_cells)
-    total_missing = sum(c.need for c in resolved_cells)
+    tasks = _row_task_responses(rows, cells)
+    total_trials = sum(len(c.trials) for c in cells)
+    total_missing = sum(c.need for c in cells)
     return ReportResponse(
         id=report.id,
         name=report.name,
@@ -749,9 +771,8 @@ def build_report_response(
         backfill_experiment_id=report.backfill_experiment_id,
         created_at=report.created_at,
         updated_at=report.updated_at,
-        rows=resolved_rows,
         columns=resolved_cols,
-        cells=resolved_cells,
+        tasks=tasks,
         total_trials=total_trials,
         total_missing=total_missing,
     )
@@ -765,18 +786,8 @@ def build_public_report_response(
     *,
     created_by_display: str | None,
 ) -> PublicReportResponse:
-    public_rows = [
-        PublicReportRow(
-            position=r.position,
-            task_version_id=r.task_version_id,
-            task_id=r.task_id,
-            version=r.version,
-            task_name=r.task_name,
-        )
-        for r in rows
-    ]
-    public_cols = [
-        PublicReportColumn(
+    resolved_cols = [
+        ReportColumnResolved(
             position=c.position,
             column_key=c.column_key,
             agent=c.agent,
@@ -784,22 +795,14 @@ def build_public_report_response(
         )
         for c in columns
     ]
-    public_cells = [
-        PublicReportCell(
-            row_idx=c.row_idx,
-            col_idx=c.col_idx,
-            trials=[_summarize_trial_public(t) for t in c.trials],
-        )
-        for c in cells
-    ]
+    tasks = _row_task_responses(rows, cells)
     return PublicReportResponse(
         name=report.name,
         description=report.description,
         created_at=report.created_at,
         created_by_display=created_by_display,
-        rows=public_rows,
-        columns=public_cols,
-        cells=public_cells,
+        columns=resolved_cols,
+        tasks=tasks,
         total_trials=sum(len(c.trials) for c in cells),
     )
 

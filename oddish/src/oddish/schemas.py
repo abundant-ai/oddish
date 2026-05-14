@@ -1174,7 +1174,16 @@ class ReportCellResolved(BaseModel):
 
 
 class ReportResponse(BaseModel):
-    """Authed report detail response."""
+    """Authed report detail response.
+
+    The ``tasks`` field carries the same ``TaskStatusResponse`` shape
+    the experiment endpoint returns, so the frontend can drop the
+    payload straight into ``ExperimentDetailView`` and pick up its
+    trials table, drawer, pass-at-k chart and leaderboard for free.
+    Each task's ``trials`` reflect only the trials the report resolved
+    (filtered by source / selection / pins), not the underlying task's
+    full trial set.
+    """
 
     id: str
     name: str
@@ -1188,9 +1197,8 @@ class ReportResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    rows: list[ReportRowResolved]
     columns: list[ReportColumnResolved]
-    cells: list[ReportCellResolved]
+    tasks: list[TaskStatusResponse]
     total_trials: int
     total_missing: int
 
@@ -1356,11 +1364,17 @@ class PublicReportCell(BaseModel):
 
 
 class PublicReportResponse(BaseModel):
+    """Anonymous report read.
+
+    Same ``TaskStatusResponse`` shape as the experiment public endpoint
+    (``/public/experiments/{token}/tasks``) so the public report page
+    can mount ``ExperimentDetailView`` in ``readOnly`` mode.
+    """
+
     name: str
     description: str | None = None
     created_at: datetime
     created_by_display: str | None = None
-    rows: list[PublicReportRow]
-    columns: list[PublicReportColumn]
-    cells: list[PublicReportCell]
+    columns: list[ReportColumnResolved]
+    tasks: list[TaskStatusResponse]
     total_trials: int

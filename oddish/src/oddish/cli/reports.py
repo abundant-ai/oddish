@@ -87,7 +87,7 @@ def _print_report_summary(report: dict, api_url: str) -> None:
     name = report.get("name", "(unnamed)")
     rid = report.get("id", "")
     description = report.get("description") or ""
-    rows = len(report.get("rows", []))
+    rows = len(report.get("tasks", []))
     cols = len(report.get("columns", []))
     total_trials = report.get("total_trials", 0)
     total_missing = report.get("total_missing", 0)
@@ -113,33 +113,42 @@ def _print_report_summary(report: dict, api_url: str) -> None:
 
 
 def _print_cell_grid(report: dict) -> None:
-    rows = report.get("rows", [])
-    columns = report.get("columns", [])
-    cells = {(c["row_idx"], c["col_idx"]): c for c in report.get("cells", [])}
+    """Render the per-task / per-column trial counts as a quick grid.
 
-    if not rows or not columns:
+    The wire response carries one ``TaskStatusResponse`` per row (matching
+    the experiment endpoint), so we group its trials by the requested
+    column ``(agent, model)`` pairs to derive the per-cell counts the
+    CLI used to read directly off ``cells``.
+    """
+    tasks = report.get("tasks") or []
+    columns = report.get("columns") or []
+    if not tasks or not columns:
         return
+
+    def col_key(agent: str | None, model: str | None) -> tuple[str, str | None]:
+        return (agent or "", model)
+
+    expected = [col_key(c.get("agent"), c.get("model")) for c in columns]
 
     table = Table(title="Cells", show_lines=False)
     table.add_column("Task / Version", style="cyan", no_wrap=True)
     for col in columns:
         table.add_column(col["column_key"], no_wrap=True)
-    for row in rows:
-        row_label = f"{row['task_name']} v{row['version']}"
-        cells_row = [row_label]
-        for col in columns:
-            c = cells.get((row["position"], col["position"]))
-            if not c:
-                cells_row.append("-")
-                continue
-            have = c.get("have", 0)
-            need = c.get("need", 0)
-            if c.get("source") == "pinned":
-                cells_row.append(f"[blue]pinned[/blue] {have}")
-            elif need > 0:
-                cells_row.append(f"{have} [yellow]+{need} missing[/yellow]")
-            else:
-                cells_row.append(f"[green]{have}[/green]")
+
+    for task in tasks:
+        cur_v = task.get("current_version")
+        row_label = f"{task.get('name', '?')} v{cur_v}" if cur_v else task.get("name", "?")
+        counts: dict[tuple[str, str | None], int] = {}
+        for trial in task.get("trials") or []:
+            counts[col_key(trial.get("agent"), trial.get("model"))] = (
+                counts.get(col_key(trial.get("agent"), trial.get("model")), 0) + 1
+            )
+        cells_row: list[str] = [row_label]
+        for key in expected:
+            n = counts.get(key, 0)
+            cells_row.append(
+                f"[green]{n}[/green]" if n > 0 else "[dim]0[/dim]"
+            )
         table.add_row(*cells_row)
     console.print(table)
 
