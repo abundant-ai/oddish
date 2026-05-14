@@ -234,17 +234,10 @@ jobs:
         # because the CLI ignores MODAL_ENVIRONMENT for this subcommand.
         run: timeout --preserve-status 45s uv run modal app logs --env "$MODAL_ENVIRONMENT" --timestamps "$MODAL_APP_NAME" 2>&1 | tail -300 || true
 
-      # Vercel setup runs any time we redeployed Modal in this run (i.e.
-      # ``modal_api_url`` is non-empty). Gating on ``branch_was_created``
-      # alone was too narrow: when a fresh-branch run failed mid-flight
-      # (e.g. alembic flake on first push), the Vercel env was never
-      # pointed at the PR's Modal URL, and *every* subsequent push for
-      # the rest of the PR's lifetime had ``branch_was_created=false``,
-      # so the preview silently served prod for the entire PR. Tying the
-      # Vercel steps to Modal redeployment recovers automatically on the
-      # next push that redeploys the backend. ``vercel env add --force``
-      # is idempotent, so re-pointing to the same URL is a no-op.
-      # Node + Vercel CLI are pre-installed in the base image.
+      # Run any time Modal redeployed (not just on first branch creation):
+      # if the first run failed before reaching here, every later push had
+      # branch_was_created=false and the preview kept serving prod. The
+      # vercel env add / redeploy below are idempotent.
       - name: Link Vercel project
         if: ${{ steps.deploy_modal.outputs.modal_api_url != '' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
         working-directory: frontend
