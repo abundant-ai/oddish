@@ -16,9 +16,62 @@ import {
 } from "@/components/ui/alert-dialog";
 import { fetcher } from "@/lib/api";
 import type {
+  BackfillCellPlan,
   BackfillExecuteResponse,
   BackfillPlan,
 } from "@/lib/types";
+
+interface AggregatedColumnRow {
+  column_key: string;
+  agent: string;
+  model: string | null;
+  task_count: number;
+  need_total: number;
+  est_cost_total: number | null;
+  sample_min: number;
+  sample_max: number;
+}
+
+/** Collapse per-cell plan rows into one row per agent column.
+ *
+ * The plan API returns ``(task, agent)`` cells, but for backfill
+ * decision-making the unit is the column — "how many trials of agent
+ * X do I owe, and what will they cost in aggregate." Summing here
+ * keeps the table linear in agents (~7 rows) instead of linear in
+ * cells (~14+) without losing information; the breakdown by task is
+ * still in the spec.
+ */
+function aggregateByColumn(cells: BackfillCellPlan[]): AggregatedColumnRow[] {
+  const byKey = new Map<string, AggregatedColumnRow>();
+  for (const cell of cells) {
+    const existing = byKey.get(cell.column_key);
+    const cost = cell.est_cost_usd;
+    if (!existing) {
+      byKey.set(cell.column_key, {
+        column_key: cell.column_key,
+        agent: cell.agent,
+        model: cell.model,
+        task_count: 1,
+        need_total: cell.need,
+        est_cost_total: cost,
+        sample_min: cell.cost_sample_size,
+        sample_max: cell.cost_sample_size,
+      });
+      continue;
+    }
+    existing.task_count += 1;
+    existing.need_total += cell.need;
+    if (cost !== null) {
+      existing.est_cost_total =
+        existing.est_cost_total === null ? cost : existing.est_cost_total + cost;
+    }
+    existing.sample_min = Math.min(existing.sample_min, cell.cost_sample_size);
+    existing.sample_max = Math.max(existing.sample_max, cell.cost_sample_size);
+  }
+  return Array.from(byKey.values()).sort(
+    (a, b) => b.need_total - a.need_total,
+  );
+}
 
 interface Props {
   reportId: string;
@@ -128,57 +181,54 @@ export function ReportBackfillBanner({ reportId, onSubmitted }: Props) {
           <table className="min-w-full text-xs">
             <thead className="bg-muted/40 text-left">
               <tr>
-                <th className="px-2 py-1">Task</th>
-                <th className="px-2 py-1">Column</th>
-                <th className="px-2 py-1">Have</th>
+                <th className="px-2 py-1">Agent</th>
+                <th className="px-2 py-1" title="Tasks this column is short on">
+                  Tasks
+                </th>
                 <th className="px-2 py-1">Need</th>
                 <th className="px-2 py-1">Est $</th>
                 <th className="px-2 py-1">Sample n</th>
               </tr>
             </thead>
             <tbody>
-              {plan.cells.map((c) => (
-                <tr
-                  key={`${c.row_idx}-${c.col_idx}`}
-                  className="border-t"
-                >
+              {aggregateByColumn(plan.cells).map((row) => (
+                <tr key={row.column_key} className="border-t">
                   <td className="px-2 py-1">
-                    {c.task_name}
-                    {c.task_version != null ? (
-                      <span className="ml-1 text-muted-foreground">
-                        v{c.task_version}
-                      </span>
-                    ) : null}
-                  </td>
-                  <td className="px-2 py-1">
-                    {c.column_key}
+                    {row.column_key}
                     <span className="ml-1 text-muted-foreground">
-                      ({c.agent}
-                      {c.model ? `/${c.model}` : ""})
+                      ({row.agent}
+                      {row.model ? `/${row.model}` : ""})
                     </span>
                   </td>
-                  <td className="px-2 py-1">{c.have}</td>
-                  <td className="px-2 py-1">{c.need}</td>
+                  <td className="px-2 py-1">{row.task_count}</td>
+                  <td className="px-2 py-1">{row.need_total}</td>
                   <td className="px-2 py-1">
-                    {c.est_cost_usd !== null
-                      ? `$${c.est_cost_usd.toFixed(2)}`
+                    {row.est_cost_total !== null
+                      ? `$${row.est_cost_total.toFixed(2)}`
                       : "?"}
                   </td>
                   <td
                     className={
-                      c.cost_sample_size > 0 && c.cost_sample_size < 5
+                      row.sample_min > 0 && row.sample_min < 5
                         ? "px-2 py-1 text-yellow-300"
                         : "px-2 py-1"
                     }
+                    title={
+                      row.sample_min === row.sample_max
+                        ? `${row.sample_min} historical trials`
+                        : `${row.sample_min}–${row.sample_max} historical trials per task`
+                    }
                   >
-                    {c.cost_sample_size}
+                    {row.sample_min === row.sample_max
+                      ? row.sample_min
+                      : `${row.sample_min}–${row.sample_max}`}
                   </td>
                 </tr>
               ))}
             </tbody>
             <tfoot className="border-t bg-muted/40 font-medium">
               <tr>
-                <td className="px-2 py-1" colSpan={3}>
+                <td className="px-2 py-1" colSpan={2}>
                   Total
                 </td>
                 <td className="px-2 py-1">
