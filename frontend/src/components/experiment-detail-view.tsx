@@ -64,12 +64,12 @@ interface ExperimentDetailViewProps {
 const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
 
 function getModelScopedAgentsFromSummaries(
-  summaries: ExperimentAgentSummary[],
+  summaries: ExperimentAgentSummary[]
 ): Set<string> {
   return new Set(
     summaries
       .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent),
+      .map((summary) => summary.agent)
   );
 }
 
@@ -216,7 +216,7 @@ function ExperimentHeaderMeta({
         variant="ghost"
         onClick={onToggleShowPassAtK}
         aria-pressed={showPassAtK}
-        className={`h-8 select-none gap-[7px] rounded-[7px] border px-3 text-[12px] leading-none transition-colors ${
+        className={`h-8 gap-[7px] rounded-[7px] border px-3 text-[12px] leading-none transition-colors select-none ${
           showPassAtK
             ? "border-[color:var(--paper-ink)] bg-[color:var(--paper-ink)] text-[color:var(--paper-bg)] hover:bg-[color:color-mix(in_oklch,var(--paper-ink),white_12%)]"
             : "border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] text-[color:var(--paper-ink)] hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
@@ -357,7 +357,7 @@ function KpiTile({
     <div
       className={`flex flex-col gap-1.5 border-r border-[color:var(--paper-line-2)] px-4 py-3 last:border-r-0 ${className}`}
     >
-      <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.09em] text-[color:var(--paper-ink-3)]">
+      <span className="font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
         {label}
       </span>
       {children}
@@ -408,12 +408,12 @@ function ExperimentSummaryBar({
   return (
     <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]">
       <KpiTile label="Avg score">
-        <span className="flex items-baseline gap-2 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
+        <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {scorePct != null ? `${scorePct.toFixed(1)}%` : "—"}
         </span>
       </KpiTile>
       <KpiTile label="Completion">
-        <span className="flex items-baseline gap-2 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
+        <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {summary.completedTrials}
           <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
             / {summary.totalTrials} trials
@@ -429,7 +429,7 @@ function ExperimentSummaryBar({
         </span>
       </KpiTile>
       <KpiTile label="Tasks">
-        <span className="flex items-baseline gap-2 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]">
+        <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {taskCount}
           <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
             tasks
@@ -438,7 +438,7 @@ function ExperimentSummaryBar({
       </KpiTile>
       <KpiTile label="Cost">
         <span
-          className="flex items-baseline gap-1 font-display text-[26px] font-medium leading-none tracking-[-0.02em] text-[color:var(--paper-ink)]"
+          className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
           title={
             summary.costTrialCount > 0
               ? `Summed across ${summary.costTrialCount} trial${
@@ -546,6 +546,32 @@ export function ExperimentDetailView({
   const searchParams = useSearchParams();
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
   const [showPassAtK, setShowPassAtK] = useState(false);
+  const [sideBySide, setSideBySide] = useState(false);
+
+  // Persist side-by-side preference across the experiments view.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const stored = window.localStorage.getItem(
+        "oddish:trial-drawer-side-by-side"
+      );
+      if (stored === "1") setSideBySide(true);
+    } catch {
+      // ignore (storage may be unavailable in some browsers)
+    }
+  }, []);
+  const handleSideBySideChange = useCallback((next: boolean) => {
+    setSideBySide(next);
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        "oddish:trial-drawer-side-by-side",
+        next ? "1" : "0"
+      );
+    } catch {
+      // ignore
+    }
+  }, []);
   const [cachedAgentSummaries, setCachedAgentSummaries] = useState<
     ExperimentAgentSummary[]
   >([]);
@@ -558,7 +584,7 @@ export function ExperimentDetailView({
     : null;
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(deferredTasksForDerivedData),
-    [deferredTasksForDerivedData],
+    [deferredTasksForDerivedData]
   );
   const displayAgentSummaries =
     agentSummaries.length > 0 ? agentSummaries : cachedAgentSummaries;
@@ -567,7 +593,7 @@ export function ExperimentDetailView({
       agentSummaries.length > 0
         ? modelScopedAgents
         : getModelScopedAgentsFromSummaries(cachedAgentSummaries),
-    [agentSummaries, modelScopedAgents, cachedAgentSummaries],
+    [agentSummaries, modelScopedAgents, cachedAgentSummaries]
   );
 
   useEffect(() => {
@@ -597,7 +623,7 @@ export function ExperimentDetailView({
     try {
       window.sessionStorage.setItem(
         agentSummaryStorageKey,
-        JSON.stringify(agentSummaries),
+        JSON.stringify(agentSummaries)
       );
     } catch {
       // Ignore storage failures; the live data still drives the table.
@@ -632,7 +658,7 @@ export function ExperimentDetailView({
       }
       return { trialGroups, orderedTrials };
     },
-    [displayModelScopedAgents],
+    [displayModelScopedAgents]
   );
 
   useEffect(() => {
@@ -717,7 +743,7 @@ export function ExperimentDetailView({
   useEffect(() => {
     if (!drawerState) return;
     const liveTask = tasksForExperiment.find(
-      (t) => t.id === drawerState.task.id,
+      (t) => t.id === drawerState.task.id
     );
     if (!liveTask) return;
     const liveTrialCount = liveTask.trials?.length ?? 0;
@@ -753,7 +779,7 @@ export function ExperimentDetailView({
 
   const summary = useMemo(
     () => buildExperimentSummary(deferredTasksForDerivedData),
-    [deferredTasksForDerivedData],
+    [deferredTasksForDerivedData]
   );
 
   const closeDrawer = () => {
@@ -856,7 +882,7 @@ export function ExperimentDetailView({
                 readOnly={readOnly}
                 onTrialSelect={(trial, task, context) => {
                   const taskIndex = tasksForExperiment.findIndex(
-                    (t) => t.id === task.id,
+                    (t) => t.id === task.id
                   );
                   setDrawerState({
                     isOpen: true,
@@ -895,6 +921,17 @@ export function ExperimentDetailView({
           open={drawerState.isOpen}
           onOpenChange={(open) => !open && closeDrawer()}
           mode={drawerState.mode}
+          sideBySide={sideBySide}
+          sideBySideLeft={
+            <TaskFilesPanel
+              isOpen={true}
+              onClose={() => {}}
+              taskId={null}
+              filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
+              apiBaseUrl={apiBaseUrl}
+              contentOnly={true}
+            />
+          }
           taskContent={
             <TaskFilesPanel
               isOpen={true}
@@ -944,6 +981,8 @@ export function ExperimentDetailView({
                 allowDelete={Boolean(onTrialDelete)}
                 apiBaseUrl={apiBaseUrl}
                 contentOnly={true}
+                sideBySide={sideBySide}
+                onSideBySideChange={handleSideBySideChange}
               />
             )
           }
