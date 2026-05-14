@@ -210,6 +210,7 @@ def upgrade() -> None:
             sa.ForeignKey("task_versions.id", ondelete="RESTRICT"),
             nullable=False,
         ),
+        sa.Column("environment", sa.String(32), nullable=True),
         sa.UniqueConstraint(
             "report_id",
             "task_version_id",

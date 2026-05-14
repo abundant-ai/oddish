@@ -20,14 +20,16 @@ agents:
   - id: claude-sonnet
     agent: claude-code
     model: anthropic/claude-sonnet-4-5
-    backfill: { environment: modal }
   - id: gpt-5
     agent: codex
     model: openai/gpt-5.2
-    backfill: { environment: modal }
 task_versions:
+  # environment is a per-task infra requirement (GPU, base image,
+  # network) — agents can run anywhere; tasks can't. Set it per row.
   - task_id: <paste-task-id-here>      # version defaults to current
+    environment: modal
   - task_version_id: <or-paste-task_version_id-here>
+    environment: docker
 trials_per_cell: 3
 selection:
   strategy: latest                       # latest | best_reward | first | random

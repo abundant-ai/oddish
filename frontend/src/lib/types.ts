@@ -591,8 +591,6 @@ export interface ReportAgentEntry {
   agent: string;
   model: string | null;
   backfill?: {
-    environment?: string | null;
-    priority?: Priority | null;
     harbor?: unknown;
   } | null;
 }
@@ -601,6 +599,7 @@ export interface ReportTaskVersionEntry {
   task_version_id?: string | null;
   task_id?: string | null;
   version?: number | null;
+  environment?: string | null;
   pins?: Record<string, string[]>;
 }
 

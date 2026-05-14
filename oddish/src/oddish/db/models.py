@@ -1065,6 +1065,13 @@ class ReportTaskVersionModel(Base):
         ForeignKey("task_versions.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    # Execution backend the task needs. Per-task because the env is an
+    # infra property of the task (GPU, image base, network), not a
+    # choice that varies by agent — agents can run anywhere, tasks
+    # cannot.
+    environment: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
 
     report: Mapped[ReportModel] = relationship(
         "ReportModel", back_populates="task_versions"

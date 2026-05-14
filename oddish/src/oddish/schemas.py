@@ -906,27 +906,19 @@ REPORT_SPEC_VERSION = 1
 
 
 class ReportAgentBackfillConfig(BaseModel):
-    """Optional per-agent overrides applied when a report backfills missing trials.
+    """Optional per-agent Harbor overrides applied when a report backfills.
 
-    Mirrors the sweep submission fields. Required only for columns that
-    actually need backfill — columns whose cells are always fully
-    populated never need this block.
+    Use this only for things that genuinely vary by agent — agent env
+    vars (``ANTHROPIC_API_KEY`` vs ``GEMINI_API_KEY``), per-agent
+    timeouts, MCP servers needed by a specific agent. Things that
+    apply to the whole backfill *run* (execution environment,
+    priority) live in ``ReportBackfillSettings`` instead — they're a
+    choice about where to schedule, not what the agent needs.
     """
 
-    environment: str | None = Field(
-        None,
-        description=(
-            "Execution backend override (docker, daytona, e2b, modal, runloop, gke). "
-            "Falls back to the server default when omitted."
-        ),
-    )
-    priority: Priority | None = Field(
-        None,
-        description="Priority override; falls back to backfill.priority when omitted.",
-    )
     harbor: HarborConfig | None = Field(
         None,
-        description="Harbor execution config passthrough (verifier, env, etc).",
+        description="Harbor execution config passthrough (per-agent env, kwargs, etc).",
     )
 
 
@@ -978,6 +970,16 @@ class ReportTaskVersionEntry(BaseModel):
         None,
         ge=1,
         description="Task version number; if omitted, the task's current_version is used",
+    )
+    environment: str | None = Field(
+        None,
+        description=(
+            "Execution backend (docker, daytona, e2b, modal, runloop, gke) used "
+            "when this task is backfilled. Per-task because the environment is an "
+            "infra requirement of the task (GPU, network, image base), not a "
+            "choice that varies by agent or by run. Falls back to the server "
+            "default when omitted."
+        ),
     )
     pins: dict[str, list[str]] = Field(
         default_factory=dict,

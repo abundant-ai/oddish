@@ -38,7 +38,6 @@ from sqlalchemy.orm import selectinload
 
 from oddish.db import (
     ExperimentModel,
-    Priority,
     ReportAgentModel,
     ReportBackfillEventModel,
     ReportBackfillEventTrialModel,
@@ -362,6 +361,7 @@ async def materialize_spec_into_report(
                 report_id=report.id,
                 position=idx,
                 task_version_id=tv_id,
+                environment=tv_entry.environment,
             )
         )
 
@@ -418,6 +418,7 @@ def serialize_report_to_spec(report: ReportModel) -> ReportSpec:
         task_versions.append(
             ReportTaskVersionEntry(
                 task_version_id=tv_row.task_version_id,
+                environment=tv_row.environment,
                 pins=pins,
             )
         )
@@ -1192,12 +1193,29 @@ def _build_sweep_submissions(
             continue
         grouped.setdefault(cell_plan.task_id, []).append(cell_plan)
 
+    # Map task_id → per-task environment from the report's row config.
+    env_by_task_id = {
+        # ``report.task_versions`` rows carry the per-task ``environment``
+        # set in the spec. Look up by the task that owns the version.
+        tv.task_version_id: tv.environment for tv in report.task_versions
+    }
+
     submissions: list[TaskSweepSubmission] = []
     for task_id, cell_plans in grouped.items():
         configs: list[AgentModelPair] = []
         harbor_for_submission: HarborConfig | None = None
-        environment_for_submission: str | None = None
-        priority_for_submission: Priority | None = None
+
+        # Environment is a property of the task — agents can run
+        # anywhere, tasks can't. Resolve from the per-row environment
+        # set by the user in ``task_versions[].environment``, falling
+        # back to the server default (None passes through to the
+        # sweep API, which resolves at submit time).
+        task_version_id = next(
+            (cp.task_version_id for cp in cell_plans), None
+        )
+        environment_for_submission = (
+            env_by_task_id.get(task_version_id) if task_version_id else None
+        )
 
         for cell_plan in cell_plans:
             agent_row = cols_by_position.get(cell_plan.col_idx)
@@ -1209,10 +1227,6 @@ def _build_sweep_submissions(
             )
             if cfg.harbor is not None and harbor_for_submission is None:
                 harbor_for_submission = cfg.harbor
-            if cfg.environment is not None and environment_for_submission is None:
-                environment_for_submission = cfg.environment
-            if cfg.priority is not None and priority_for_submission is None:
-                priority_for_submission = cfg.priority
 
             configs.append(
                 AgentModelPair(
@@ -1229,7 +1243,7 @@ def _build_sweep_submissions(
             task_id=task_id,
             append_to_task=True,
             configs=configs,
-            priority=priority_for_submission or report.backfill_priority,
+            priority=report.backfill_priority,
             experiment_id=backfill_experiment_id,
             tags={"oddish.report_id": report.id},
             environment=environment_for_submission,  # type: ignore[arg-type]
