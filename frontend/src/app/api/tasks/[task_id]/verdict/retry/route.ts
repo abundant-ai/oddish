@@ -27,14 +27,23 @@ export async function POST(
     });
 
     const text = await res.text();
-    const data = text ? JSON.parse(text) : null;
+    let data: unknown = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        const snippet = text.length > 200 ? `${text.slice(0, 200)}…` : text;
+        return NextResponse.json(
+          { error: `Backend ${res.status}: ${snippet}` },
+          { status: res.status >= 400 ? res.status : 502 },
+        );
+      }
+    }
 
     if (!res.ok) {
       return NextResponse.json(
         data ?? { error: "Failed to queue task verdict" },
-        {
-          status: res.status,
-        },
+        { status: res.status },
       );
     }
 
