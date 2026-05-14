@@ -85,6 +85,19 @@ def _set_cached(cache_key: str, data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+CANDIDATE_EXPERIMENTS_LIMIT = 500
+"""Upper bound on how many experiments the aggregation subqueries
+inspect per request. The dashboard's experiments query previously
+group-aggregated every task and trial in the org before paginating;
+with a few thousand experiments that scaled to tens of seconds. We
+now pick the most recent ``CANDIDATE_EXPERIMENTS_LIMIT`` experiments
+(by ``ExperimentModel.created_at``) and constrain all aggregation
+subqueries to that set, keeping work proportional to the visible
+window. Pagination beyond this window is approximate but the
+dashboard's default view only shows the first page.
+"""
+
+
 async def load_dashboard_experiments(
     session: AsyncSession,
     *,
@@ -99,6 +112,45 @@ async def load_dashboard_experiments(
     record_timing: TimingRecorder | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Load experiment summaries for the dashboard."""
+
+    # Pick the candidate experiment window first so the heavy
+    # task/trial aggregations below only scan rows linked to these
+    # experiments. The ``mine`` filter is applied here too so its
+    # scan over ``tasks`` happens once instead of being repeated as a
+    # nested IN-subquery against every aggregation.
+    candidate_q = select(ExperimentModel.id)
+    if org_id is not None:
+        candidate_q = candidate_q.where(ExperimentModel.org_id == org_id)
+
+    mine_identity_clauses = []
+    if mine_user_id:
+        mine_identity_clauses.append(TaskModel.created_by_user_id == mine_user_id)
+    if mine_github_username:
+        mine_identity_clauses.append(
+            TaskModel.tags["github_username"].astext == mine_github_username
+        )
+    if mine_email:
+        mine_identity_clauses.append(TaskModel.user == mine_email)
+    if mine_identity_clauses:
+        mine_filter_subq = (
+            select(task_experiments.c.experiment_id)
+            .select_from(
+                task_experiments.join(
+                    TaskModel, TaskModel.id == task_experiments.c.task_id
+                )
+            )
+            .where(or_(*mine_identity_clauses))
+        )
+        if org_id is not None:
+            mine_filter_subq = mine_filter_subq.where(TaskModel.org_id == org_id)
+        candidate_q = candidate_q.where(ExperimentModel.id.in_(mine_filter_subq))
+
+    candidate_cte = (
+        candidate_q.order_by(ExperimentModel.created_at.desc())
+        .limit(CANDIDATE_EXPERIMENTS_LIMIT)
+        .cte("dashboard_experiment_candidates")
+    )
+    candidate_ids = select(candidate_cte.c.id)
 
     # Task-level aggregation (via task_experiments join table). A task
     # linked to multiple experiments contributes to each experiment's
@@ -162,6 +214,9 @@ async def load_dashboard_experiments(
     ).select_from(
         task_experiments.join(TaskModel, TaskModel.id == task_experiments.c.task_id)  # type: ignore[arg-type]
     )
+    task_agg_query = task_agg_query.where(
+        task_experiments.c.experiment_id.in_(candidate_ids)
+    )
     if org_id is not None:
         task_agg_query = task_agg_query.where(TaskModel.org_id == org_id)
     task_agg = task_agg_query.group_by(task_experiments.c.experiment_id).subquery()
@@ -198,6 +253,7 @@ async def load_dashboard_experiments(
         func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
     ).where(
         TrialModel.experiment_id.isnot(None),
+        TrialModel.experiment_id.in_(candidate_ids),
         # Mirror ``get_task_status_trials`` -- the dashboard's "trials"
         # column should reflect live trials only, not the rerun chain.
         TrialModel.superseded_by_trial_id.is_(None),
@@ -214,6 +270,9 @@ async def load_dashboard_experiments(
         TaskModel.tags["github_meta"].astext.label("last_github_meta"),
     ).select_from(
         task_experiments.join(TaskModel, TaskModel.id == task_experiments.c.task_id)  # type: ignore[arg-type]
+    )
+    latest_task_query = latest_task_query.where(
+        task_experiments.c.experiment_id.in_(candidate_ids)
     )
     if org_id is not None:
         latest_task_query = latest_task_query.where(TaskModel.org_id == org_id)
@@ -270,32 +329,17 @@ async def load_dashboard_experiments(
         .outerjoin(trial_agg, trial_agg.c.experiment_id == ExperimentModel.id)
         .outerjoin(latest_task, latest_task.c.experiment_id == ExperimentModel.id)
     )
-    exp_filter = or_(
-        task_agg.c.experiment_id.isnot(None),
-        trial_agg.c.experiment_id.isnot(None),
+    # Restrict the outer experiment set to the candidate window we
+    # computed above; ``mine`` and ``org_id`` were already applied
+    # there, so the OR-on-aggregates check below just hides rows that
+    # have no tasks/trials linked at all.
+    exp_filter = and_(
+        ExperimentModel.id.in_(candidate_ids),
+        or_(
+            task_agg.c.experiment_id.isnot(None),
+            trial_agg.c.experiment_id.isnot(None),
+        ),
     )
-    if org_id is not None:
-        exp_filter = and_(exp_filter, ExperimentModel.org_id == org_id)
-    mine_identity_clauses = []
-    if mine_user_id:
-        mine_identity_clauses.append(TaskModel.created_by_user_id == mine_user_id)
-    if mine_github_username:
-        mine_identity_clauses.append(
-            TaskModel.tags["github_username"].astext == mine_github_username
-        )
-    if mine_email:
-        mine_identity_clauses.append(TaskModel.user == mine_email)
-    if mine_identity_clauses:
-        mine_subq = (
-            select(task_experiments.c.experiment_id)
-            .select_from(
-                task_experiments.join(
-                    TaskModel, TaskModel.id == task_experiments.c.task_id
-                )
-            )
-            .where(or_(*mine_identity_clauses))
-        )
-        exp_filter = and_(exp_filter, ExperimentModel.id.in_(mine_subq))
     experiment_rows = exp_base.where(exp_filter).subquery()
 
     query = select(experiment_rows)
