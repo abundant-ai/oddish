@@ -330,28 +330,36 @@ bakes in `CLAUDE_CODE_USE_BEDROCK=1`, and Claude Code authenticates with
 `AWS_BEARER_TOKEN_BEDROCK` from the runtime Modal secret. There is no
 Anthropic API route — `ANTHROPIC_API_KEY` is not used for trials.
 
-Because Bedrock model ids differ from Anthropic ids (Bedrock carries
-date + version suffixes, e.g. `anthropic.claude-haiku-4-5-20251001-v1:0`),
-`harbor_runner` normalizes whatever model id a trial supplies to a
-Bedrock-native id via `oddish.config.to_bedrock_model_id` before handing
-it to Harbor. That normalizer accepts any of these forms:
+Claude Code invokes Bedrock via the legacy `InvokeModel` API, which only
+accepts **cross-region inference profile ids** (a `global.`/`us.`/... prefix)
+or ARNs. A bare `anthropic.claude-...` foundation-model id is *not* invokable
+on-demand — Bedrock rejects it with "Retry your request with the ID or ARN
+of an inference profile". So `harbor_runner` normalizes whatever model id a
+trial supplies via `oddish.config.to_bedrock_model_id` before handing it to
+Harbor. That normalizer accepts any of these forms:
 
-- already Bedrock-native (`anthropic.claude-...`, `us.`/`global.`-prefixed
-  inference profiles, `arn:aws:bedrock:...`) — passed through, minus any
-  redundant `bedrock/` prefix.
-- Anthropic-style (`anthropic/claude-opus-4-7` or bare `claude-opus-4-7`) —
-  mapped to its Bedrock id via the explicit `_ANTHROPIC_TO_BEDROCK_MODEL_IDS`
-  table in `oddish/config.py`. **A Claude model with no table entry raises
-  a `ValueError`** — add an entry there before running that model.
+- already invokable (`global.`/`us.`/... inference profiles,
+  `arn:aws:bedrock:...`) — passed through, minus any redundant `bedrock/`
+  prefix.
+- Anthropic-style (`anthropic/claude-opus-4-7`, bare `claude-opus-4-7`) **or**
+  a bare Bedrock foundation-model id (`anthropic.claude-opus-4-7`) — mapped to
+  an invokable inference profile id via the explicit
+  `_ANTHROPIC_TO_BEDROCK_MODEL_IDS` table in `oddish/config.py`. **A Claude
+  model with no table entry raises a `ValueError`** — add an entry there
+  before running that model.
 - non-Claude models (`openai/...`, `gemini-...`) — passed through untouched.
+
+The table maps to `global.` inference profiles (recommended by AWS, no
+pricing premium) except Opus 4.1 / Opus 4, which have no global profile and
+use `us.`. If you need regional data residency, change the prefixes there.
 
 You can pass any of those forms anywhere a model is accepted: `oddish run
 -m ...`, sweep configs (`model_name:`), or `--n-concurrent` overrides.
 Concurrency limits are keyed off the full `provider/model` string.
 
-> Trial *analysis* (the `claude -p` classifier) currently uses its own
-> already-Bedrock `ANALYSIS_MODEL` and is not yet wired through
-> `to_bedrock_model_id`.
+> Trial *analysis* (the `claude -p` classifier) uses its own `ANALYSIS_MODEL`
+> (`oddish/config.py`), which is already a `global.` inference profile id. It
+> is not wired through `to_bedrock_model_id`.
 
 Storage defaults:
 
