@@ -34,7 +34,7 @@ export function ReportViewSpecDialog({ reportId }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/reports/${reportId}.yaml`, {
+      const res = await fetch(`/api/reports/${reportId}/yaml`, {
         credentials: "include",
       });
       const text = await res.text();
