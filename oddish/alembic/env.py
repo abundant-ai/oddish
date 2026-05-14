@@ -90,6 +90,13 @@ async def run_async_migrations() -> None:
             "statement_cache_size": 0,
             "timeout": 30,
             "command_timeout": 120,
+            # Pin search_path at the protocol level. Supabase preview
+            # branches reached through the Supavisor session pooler can
+            # otherwise hand alembic a backend whose default search_path
+            # is empty, breaking the very first ``CREATE TABLE
+            # alembic_version_oddish`` with ``no schema has been
+            # selected to create in``.
+            "server_settings": {"search_path": "public"},
         },
         poolclass=pool.NullPool,
     )
