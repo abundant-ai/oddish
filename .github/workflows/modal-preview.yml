@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
     outputs:
       deploy_backend: ${{ steps.compute.outputs.deploy_backend }}
       run_migrations: ${{ steps.compute.outputs.run_migrations }}
@@ -26,28 +27,112 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # On synchronize we diff against the previous push (event.before).
-      # On opened/reopened we skip the filter and treat everything as
-      # changed in the compute step below.
-      - name: Detect changed paths since previous push
-        id: filter
+      # For each component (backend, migrations) we find the most recent
+      # workflow run on this PR branch whose corresponding step finished
+      # with conclusion=success, and use that run's head_sha as the diff
+      # base. If a prior push failed mid-deploy, its broken state is not
+      # recorded as a successful base, so the next push will still
+      # redeploy the affected component.
+      - name: Look up last-successful component SHAs
+        id: last_deployed
         if: github.event.action == 'synchronize'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          python <<'PY'
+          import json
+          import os
+          import subprocess
+
+          owner_repo = os.environ["OWNER_REPO"]
+          head_ref = os.environ["HEAD_REF"]
+          workflow_file = "modal-preview.yml"
+
+          # Step name -> output key. We only look at steps inside the
+          # deploy-preview job.
+          STEPS_BY_COMPONENT = {
+              "Deploy preview backend": "backend_base",
+              "Apply Alembic migrations to preview branch": "migrations_base",
+          }
+
+          def gh_api(path):
+              result = subprocess.run(
+                  ["gh", "api", "-H", "Accept: application/vnd.github+json", path],
+                  capture_output=True, text=True, check=True,
+              )
+              return json.loads(result.stdout)
+
+          runs = gh_api(
+              f"/repos/{owner_repo}/actions/workflows/{workflow_file}/runs"
+              f"?branch={head_ref}&event=pull_request&per_page=30"
+          ).get("workflow_runs", [])
+
+          found = {}
+          for run in runs:
+              if len(found) == len(STEPS_BY_COMPONENT):
+                  break
+              run_id = run["id"]
+              sha = run["head_sha"]
+              jobs = gh_api(
+                  f"/repos/{owner_repo}/actions/runs/{run_id}/jobs?per_page=100"
+              ).get("jobs", [])
+              for job in jobs:
+                  if job.get("name") != "deploy-preview":
+                      continue
+                  for step in job.get("steps", []) or []:
+                      if step.get("conclusion") != "success":
+                          continue
+                      key = STEPS_BY_COMPONENT.get(step.get("name"))
+                      if key and key not in found:
+                          found[key] = sha
+
+          out_path = os.environ["GITHUB_OUTPUT"]
+          with open(out_path, "a") as f:
+              for key in STEPS_BY_COMPONENT.values():
+                  f.write(f"{key}={found.get(key, '')}\n")
+          PY
+
+      - name: Detect backend code changes since last successful backend deploy
+        id: filter_backend
+        if: github.event.action == 'synchronize' && steps.last_deployed.outputs.backend_base != ''
         uses: dorny/paths-filter@v3
         with:
-          base: ${{ github.event.before }}
+          base: ${{ steps.last_deployed.outputs.backend_base }}
           ref: ${{ github.event.pull_request.head.sha }}
           filters: |
-            backend:
+            changed:
               - 'backend/**'
               - '!backend/alembic/**'
               - '!backend/**/*.md'
               - 'oddish/**'
               - '!oddish/alembic/**'
               - '!oddish/**/*.md'
-            migrations:
+
+      - name: Detect migration changes since last successful migration run
+        id: filter_migrations
+        if: github.event.action == 'synchronize' && steps.last_deployed.outputs.migrations_base != ''
+        uses: dorny/paths-filter@v3
+        with:
+          base: ${{ steps.last_deployed.outputs.migrations_base }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          filters: |
+            changed:
               - 'backend/alembic/**'
               - 'oddish/alembic/**'
-            workflow:
+
+      # Workflow / script changes are diffed against the previous push,
+      # not a per-component base, because they can affect any component.
+      - name: Detect workflow or preview-script changes since previous push
+        id: filter_workflow
+        if: github.event.action == 'synchronize'
+        uses: dorny/paths-filter@v3
+        with:
+          base: ${{ github.event.before }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          filters: |
+            changed:
               - '.github/workflows/modal-preview.yml'
               - '.github/scripts/preview/**'
 
@@ -55,40 +140,53 @@ jobs:
         id: compute
         env:
           EVENT_ACTION: ${{ github.event.action }}
-          BACKEND_CHANGED: ${{ steps.filter.outputs.backend }}
-          MIGRATIONS_CHANGED: ${{ steps.filter.outputs.migrations }}
-          WORKFLOW_CHANGED: ${{ steps.filter.outputs.workflow }}
+          BACKEND_BASE: ${{ steps.last_deployed.outputs.backend_base }}
+          MIGRATIONS_BASE: ${{ steps.last_deployed.outputs.migrations_base }}
+          BACKEND_CHANGED: ${{ steps.filter_backend.outputs.changed }}
+          MIGRATIONS_CHANGED: ${{ steps.filter_migrations.outputs.changed }}
+          WORKFLOW_CHANGED: ${{ steps.filter_workflow.outputs.changed }}
         run: |
           set -euo pipefail
+          deploy_backend=false
+          run_migrations=false
+
           if [ "$EVENT_ACTION" != "synchronize" ] || [ "$WORKFLOW_CHANGED" = "true" ]; then
             deploy_backend=true
             run_migrations=true
           else
-            deploy_backend=false
-            run_migrations=false
-            if [ "$BACKEND_CHANGED" = "true" ] || [ "$MIGRATIONS_CHANGED" = "true" ]; then
+            # No prior successful deploy on this branch -> deploy now.
+            if [ -z "$BACKEND_BASE" ] || [ "$BACKEND_CHANGED" = "true" ]; then
               deploy_backend=true
             fi
-            if [ "$MIGRATIONS_CHANGED" = "true" ]; then
+            if [ -z "$MIGRATIONS_BASE" ] || [ "$MIGRATIONS_CHANGED" = "true" ]; then
               run_migrations=true
             fi
+            # New migrations imply schema change -> backend must redeploy.
+            if [ "$run_migrations" = "true" ]; then
+              deploy_backend=true
+            fi
           fi
+
           any_change=false
           if [ "$deploy_backend" = "true" ] || [ "$run_migrations" = "true" ]; then
             any_change=true
           fi
+
           {
             echo "deploy_backend=$deploy_backend"
             echo "run_migrations=$run_migrations"
             echo "any_change=$any_change"
           } >> "$GITHUB_OUTPUT"
+
           {
             echo "## Preview deployment plan"
             echo
             echo "- Event action: \`$EVENT_ACTION\`"
-            echo "- Backend changed: \`${BACKEND_CHANGED:-n/a}\`"
-            echo "- Migrations changed: \`${MIGRATIONS_CHANGED:-n/a}\`"
-            echo "- Workflow changed: \`${WORKFLOW_CHANGED:-n/a}\`"
+            echo "- Last successful backend deploy: \`${BACKEND_BASE:-(none)}\`"
+            echo "- Last successful migration run: \`${MIGRATIONS_BASE:-(none)}\`"
+            echo "- Backend code changed since: \`${BACKEND_CHANGED:-n/a}\`"
+            echo "- Migrations changed since: \`${MIGRATIONS_CHANGED:-n/a}\`"
+            echo "- Workflow/scripts changed since previous push: \`${WORKFLOW_CHANGED:-n/a}\`"
             echo "- Plan: deploy_backend=\`$deploy_backend\` run_migrations=\`$run_migrations\` any_change=\`$any_change\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -361,7 +459,7 @@ jobs:
             if [ -n "${{ steps.deploy_modal.outputs.modal_api_url }}" ]; then
               echo "- Modal API: ${{ steps.deploy_modal.outputs.modal_api_url }} (redeployed)"
             else
-              echo "- Modal API: not redeployed this push (no backend changes)"
+              echo "- Modal API: not redeployed this push (no backend changes since last successful deploy)"
             fi
             if [ -n "${{ steps.redeploy_vercel.outputs.preview_url }}" ]; then
               echo "- Vercel preview: ${{ steps.redeploy_vercel.outputs.preview_url }} (force-redeployed)"
