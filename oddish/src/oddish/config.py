@@ -83,11 +83,30 @@ def looks_like_bedrock_model_id(model: str | None) -> bool:
 # date + version suffixes that cannot be derived from the short Anthropic name,
 # so the mapping must be explicit. Keys are the lowercased model id with any
 # "provider/" prefix removed (e.g. "anthropic/claude-haiku-4-5" and bare
-# "claude-haiku-4-5" both look up "claude-haiku-4-5"). Add an entry here for
-# every Claude model oddish runs — an unmapped Claude id raises in
-# to_bedrock_model_id() rather than reaching Bedrock as an unresolvable id.
+# "claude-haiku-4-5" both look up "claude-haiku-4-5"); both the dated Claude
+# API id and its dateless alias are listed where they differ. An unmapped
+# Claude id raises in to_bedrock_model_id() rather than reaching Bedrock as
+# an unresolvable id.
+#
+# Source: https://platform.claude.com/docs/en/about-claude/models/overview
 _ANTHROPIC_TO_BEDROCK_MODEL_IDS: dict[str, str] = {
+    # Current models
+    "claude-opus-4-7": "anthropic.claude-opus-4-7",
+    "claude-sonnet-4-6": "anthropic.claude-sonnet-4-6",
     "claude-haiku-4-5": "anthropic.claude-haiku-4-5-20251001-v1:0",
+    "claude-haiku-4-5-20251001": "anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Legacy models
+    "claude-opus-4-6": "anthropic.claude-opus-4-6-v1",
+    "claude-sonnet-4-5": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "claude-sonnet-4-5-20250929": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "claude-opus-4-5": "anthropic.claude-opus-4-5-20251101-v1:0",
+    "claude-opus-4-5-20251101": "anthropic.claude-opus-4-5-20251101-v1:0",
+    "claude-opus-4-1": "anthropic.claude-opus-4-1-20250805-v1:0",
+    "claude-opus-4-1-20250805": "anthropic.claude-opus-4-1-20250805-v1:0",
+    "claude-sonnet-4-0": "anthropic.claude-sonnet-4-20250514-v1:0",
+    "claude-sonnet-4-20250514": "anthropic.claude-sonnet-4-20250514-v1:0",
+    "claude-opus-4-0": "anthropic.claude-opus-4-20250514-v1:0",
+    "claude-opus-4-20250514": "anthropic.claude-opus-4-20250514-v1:0",
 }
 
 
