@@ -51,14 +51,16 @@ function resolveProxyUrl(apiUrl: string | undefined): string | null {
 function resolveEnvironment(): string {
   const explicit = process.env.NEXT_PUBLIC_LOGFIRE_ENVIRONMENT;
   if (explicit) return explicit;
-  // Two buckets only: `prod` for the canonical production deploy
-  // (opt in via `NEXT_PUBLIC_VERCEL_ENV=production` or the explicit
-  // override above), `preview` for everything else — PR previews,
-  // local dev, ad-hoc deploys. We deliberately do NOT key off
-  // `NODE_ENV=production` because PR-preview builds set it too.
-  return process.env.NEXT_PUBLIC_VERCEL_ENV === "production"
-    ? "prod"
-    : "preview";
+  // `prod` for the canonical production deploy (opt in via
+  // `NEXT_PUBLIC_VERCEL_ENV=production` or the explicit override above).
+  // We deliberately do NOT key off `NODE_ENV=production` because PR-preview
+  // builds set it too. Each PR preview gets its own `preview-pr-<n>`
+  // environment so a single PR's browser spans don't drown in every other
+  // open PR's traffic; falls back to `preview` for local dev / ad-hoc
+  // deploys without a PR number.
+  if (process.env.NEXT_PUBLIC_VERCEL_ENV === "production") return "prod";
+  const pr = process.env.NEXT_PUBLIC_VERCEL_GIT_PULL_REQUEST_ID;
+  return pr ? `preview-pr-${pr}` : "preview";
 }
 
 /**
@@ -107,7 +109,10 @@ export function ensureLogfireConfigured(): void {
           ? { "oddish.pr": process.env.NEXT_PUBLIC_VERCEL_GIT_PULL_REQUEST_ID }
           : {}),
         ...(process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_REF
-          ? { "oddish.git_branch": process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_REF }
+          ? {
+              "oddish.git_branch":
+                process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_REF,
+            }
           : {}),
         ...(process.env.NEXT_PUBLIC_VERCEL_ENV
           ? { "oddish.vercel_env": process.env.NEXT_PUBLIC_VERCEL_ENV }
@@ -204,11 +209,12 @@ function installFlushHandlers(): void {
  */
 export async function withUserAction<T>(
   name: string,
-  attributesOrFn: Record<string, string | number | boolean> | (() => Promise<T> | T),
-  maybeFn?: () => Promise<T> | T,
+  attributesOrFn:
+    | Record<string, string | number | boolean>
+    | (() => Promise<T> | T),
+  maybeFn?: () => Promise<T> | T
 ): Promise<T> {
-  const attributes =
-    typeof attributesOrFn === "function" ? {} : attributesOrFn;
+  const attributes = typeof attributesOrFn === "function" ? {} : attributesOrFn;
   const fn = typeof attributesOrFn === "function" ? attributesOrFn : maybeFn!;
 
   if (!configured) {
