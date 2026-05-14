@@ -16,6 +16,7 @@ from cloud_policy import (
 from oddish.core.endpoints import (
     browse_tasks_core,
     create_task_sweep_core,
+    get_task_detail_core,
     get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
@@ -52,6 +53,7 @@ from oddish.queue import (
 from oddish.schemas import (
     TaskBrowseResponse,
     TaskBatchCancelRequest,
+    TaskDetailResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
     TaskUploadInitResponse,
@@ -619,6 +621,20 @@ async def get_task_status(
             include_trials=include_trials,
             include_empty_rewards=True,
             org_id=auth.org_id,
+        )
+
+
+@router.get("/tasks/{task_id}/detail", response_model=TaskDetailResponse)
+async def get_task_detail(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> TaskDetailResponse:
+    """Task detail bundle: task + trials + per-version + cost rollups."""
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await get_task_detail_core(
+            session, task_id=task_id, org_id=auth.org_id
         )
 
 
