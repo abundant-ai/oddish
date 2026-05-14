@@ -546,20 +546,19 @@ export function ExperimentDetailView({
   const searchParams = useSearchParams();
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
   const [showPassAtK, setShowPassAtK] = useState(false);
-  const [sideBySide, setSideBySide] = useState(false);
-
-  // Persist side-by-side preference across the experiments view.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
+  const [sideBySide, setSideBySide] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
     try {
       const stored = window.localStorage.getItem(
         "oddish:trial-drawer-side-by-side"
       );
-      if (stored === "1") setSideBySide(true);
+      // Default ON: only explicit "0" disables it.
+      return stored !== "0";
     } catch {
-      // ignore (storage may be unavailable in some browsers)
+      return true;
     }
-  }, []);
+  });
+
   const handleSideBySideChange = useCallback((next: boolean) => {
     setSideBySide(next);
     if (typeof window === "undefined") return;
@@ -898,14 +897,19 @@ export function ExperimentDetailView({
                 }}
                 onTaskSelect={(task, context) => {
                   const { trialGroups, orderedTrials } = buildTrialGroups(task);
+                  // If the task has trials, jump straight into the first one
+                  // so the user immediately sees results alongside the task
+                  // definition. They can navigate back to the task overview
+                  // with the in-drawer "View task" control.
+                  const firstTrial = orderedTrials[0] ?? null;
                   setDrawerState({
                     isOpen: true,
-                    mode: "task",
+                    mode: firstTrial ? "trial" : "task",
                     task,
                     taskIndex: context.taskIndex,
                     orderedTasks: context.orderedTasks,
-                    trial: null,
-                    trialIndex: null,
+                    trial: firstTrial,
+                    trialIndex: firstTrial ? 0 : null,
                     orderedTrials,
                     trialGroups,
                   });
@@ -922,6 +926,7 @@ export function ExperimentDetailView({
           onOpenChange={(open) => !open && closeDrawer()}
           mode={drawerState.mode}
           sideBySide={sideBySide}
+          onSideBySideChange={handleSideBySideChange}
           sideBySideLeft={
             <TaskFilesPanel
               isOpen={true}
@@ -981,8 +986,6 @@ export function ExperimentDetailView({
                 allowDelete={Boolean(onTrialDelete)}
                 apiBaseUrl={apiBaseUrl}
                 contentOnly={true}
-                sideBySide={sideBySide}
-                onSideBySideChange={handleSideBySideChange}
               />
             )
           }

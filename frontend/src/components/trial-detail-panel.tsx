@@ -39,7 +39,6 @@ import {
   Route,
   Package,
   Trash2,
-  Columns2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TrajectoryViewer } from "@/components/trajectory-viewer";
@@ -84,10 +83,6 @@ interface TrialDetailPanelProps {
   allowDelete?: boolean;
   /** Render content only without ResizableDrawer wrapper */
   contentOnly?: boolean;
-  /** When true, the parent is rendering the task file viewer beside this panel. */
-  sideBySide?: boolean;
-  /** Toggle side-by-side mode (when omitted, the toggle button is hidden). */
-  onSideBySideChange?: (next: boolean) => void;
 }
 
 const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
@@ -166,8 +161,6 @@ export function TrialDetailPanel({
   allowRetry = true,
   allowDelete = false,
   contentOnly = false,
-  sideBySide = false,
-  onSideBySideChange,
 }: TrialDetailPanelProps) {
   const searchParams = useSearchParams();
 
@@ -639,23 +632,6 @@ export function TrialDetailPanel({
                 </div>
               </CardContent>
             </Card>
-            {onSideBySideChange && (
-              <Button
-                onClick={() => onSideBySideChange(!sideBySide)}
-                variant={sideBySide ? "default" : "outline"}
-                size="sm"
-                className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
-                aria-pressed={sideBySide}
-                title={
-                  sideBySide
-                    ? "Hide task files"
-                    : "Show task files side-by-side"
-                }
-              >
-                <Columns2 className="mr-1 h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Task files</span>
-              </Button>
-            )}
             {canRetry && (
               <Button
                 onClick={handleRetry}
