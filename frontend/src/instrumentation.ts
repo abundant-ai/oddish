@@ -66,6 +66,22 @@ export function register() {
         ? { "oddish.git_branch": process.env.VERCEL_GIT_COMMIT_REF }
         : {}),
     },
+    instrumentationConfig: {
+      fetch: {
+        // `@vercel/otel`'s fetch instrumentation defaults to
+        // "propagate context ONLY to Vercel-generated URLs", which
+        // means our outbound fetches from /api/* routes to Modal
+        // (`*.modal.run`) ship without a `traceparent` header. That
+        // makes the FastAPI request look like a fresh trace and
+        // breaks Browser → Next.js route → Modal nesting.
+        //
+        // Open the allowlist to every http(s) URL. Trace ids /
+        // span ids aren't sensitive, so leaking them to whatever
+        // we fetch isn't a real concern; misrouting traces because
+        // someone added a new backend host IS.
+        propagateContextUrls: [/^https?:\/\//],
+      },
+    },
     traceExporter: new OTLPHttpJsonTraceExporter({
       url: endpoint,
       headers: {
