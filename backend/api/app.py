@@ -9,6 +9,11 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from observability import (
+    configure_logfire,
+    instrument_fastapi,
+    mount_browser_proxy,
+)
 from oddish.config import settings
 from oddish.db import close_database_connections
 from oddish.timing import (
@@ -89,11 +94,18 @@ async def lifespan(_api: FastAPI):
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application with all routers."""
+    configure_logfire(
+        service_name=os.environ.get("LOGFIRE_SERVICE_NAME", "oddish-backend"),
+    )
+
     api = FastAPI(
         title="Oddish Cloud",
         version="0.3.0",
         lifespan=lifespan,
     )
+
+    instrument_fastapi(api)
+    mount_browser_proxy(api)
 
     cors_origins = _get_cors_origins()
     api.add_middleware(
@@ -101,7 +113,11 @@ def create_app() -> FastAPI:
         allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
+        # Allow the W3C trace-context headers emitted by the browser SDK
+        # so a fetch from the front-end actually propagates its span id
+        # to FastAPI under our CORS policy.
         allow_headers=["*"],
+        expose_headers=["Server-Timing", "traceparent", "tracestate"],
     )
 
     @api.middleware("http")

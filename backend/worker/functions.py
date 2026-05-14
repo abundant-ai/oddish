@@ -10,6 +10,13 @@ from uuid import uuid4
 
 import modal
 
+from observability import configure_logfire
+
+# Configure Logfire as soon as the worker module loads so handlers,
+# DB queries, and outbound HTTP calls made inside the job body are
+# captured in the same trace as the Modal function call.
+configure_logfire(service_name="oddish-worker")
+
 from modal_app import (
     MAX_WORKERS_PER_POLL,
     POLL_INTERVAL_SECONDS,
@@ -100,9 +107,23 @@ async def process_single_job(queue_key: str):
     if fc_id:
         console.print(f"[dim]Modal function call: {fc_id}[/dim]")
 
+    try:
+        import logfire
+
+        job_span = logfire.span(
+            "worker.process_single_job",
+            queue_key=queue_key,
+            modal_function_call_id=fc_id,
+        )
+    except Exception:
+        from contextlib import nullcontext
+
+        job_span = nullcontext()
+
     worker_id = f"{queue_key}-{uuid4().hex[:12]}"
     lock_slot: int | None = None
 
+    job_span.__enter__()
     try:
         queue_limit = settings.get_model_concurrency(queue_key)
         if queue_limit <= 0:
@@ -158,6 +179,12 @@ async def process_single_job(queue_key: str):
                 worker_id=worker_id,
             )
         await close_database_connections()
+        import sys as _sys
+
+        try:
+            job_span.__exit__(*_sys.exc_info())
+        except Exception:
+            pass
         console.print("[green]Job worker complete[/green]")
 
 
