@@ -4,7 +4,6 @@ import { useMemo } from "react";
 import useSWR from "swr";
 import { useParams } from "next/navigation";
 import { DatasetDetailView } from "@/components/dataset-detail-view";
-import { Nav } from "@/components/nav";
 import type { Task, PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { PUBLIC_API_URL } from "@/lib/utils";
@@ -37,17 +36,13 @@ export default function PublicDatasetPage() {
   const hasError = Boolean(experimentError || error);
 
   return (
-    <>
-      <Nav />
-
-      <main className="mx-auto w-full max-w-(--breakpoint-2xl) px-4 py-4">
-        <DatasetDetailView
-          datasetName={datasetName}
-          tasks={tasks}
-          isLoading={isLoading}
-          hasError={hasError}
-        />
-      </main>
-    </>
+    <main className="mx-auto w-full max-w-(--breakpoint-2xl) px-4 py-4">
+      <DatasetDetailView
+        datasetName={datasetName}
+        tasks={tasks}
+        isLoading={isLoading}
+        hasError={hasError}
+      />
+    </main>
   );
 }
