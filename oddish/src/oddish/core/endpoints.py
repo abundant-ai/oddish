@@ -1288,17 +1288,6 @@ async def get_task_detail_core(
     task_id: str,
     org_id: str | None = None,
 ) -> TaskDetailResponse:
-    """Bundle a task, its trials, and per-version + task-wide aggregates.
-
-    Powers the ``/tasks/{task_id}`` detail page (versions list, version
-    switcher, cost rollups). Loads every non-superseded trial regardless
-    of version — the frontend version switcher pivots client-side, and
-    the per-version + task-wide aggregates below need to see trials
-    that belong to non-current versions too. ``get_task_status_core``
-    can't be reused as-is because it scopes trials to
-    ``task.current_version_id`` (matches /tasks list semantics), which
-    would drop every v1/v2/v3 trial before we got to aggregate them.
-    """
     query = (
         select(TaskModel)
         .options(
@@ -1322,15 +1311,9 @@ async def get_task_detail_core(
         trial_ids=[trial.id for trial in task.trials],
     )
 
-    # Build the canonical header (status, current_version metadata,
-    # total/completed/failed/reward_*) scoped to the task's current
-    # version so it matches /tasks list semantics, then overwrite
-    # ``trials`` below with the full cross-version, non-superseded set
-    # so the frontend version switcher can pivot client-side. Passing
-    # ``effective_version_id=None`` here would also null out
-    # ``current_version_id`` in the response (see
-    # ``_resolve_task_version_fields``), which the frontend relies on
-    # to pick the default-selected version.
+    # Header counts stay current-version-scoped (matches /tasks list);
+    # trials below are widened to span every version so the frontend
+    # switcher and per-version rollups see them all.
     task_status = build_task_status_response(
         task,
         include_empty_rewards=True,
@@ -1354,8 +1337,6 @@ async def get_task_detail_core(
         session, task_id=task_id, org_id=org_id
     )
 
-    # Pre-create a summary slot per version so versions with zero trials
-    # still show up in the switcher.
     summary_by_version_id: dict[str, TaskVersionSummary] = {}
     for v in version_rows:
         summary_by_version_id[v.id] = TaskVersionSummary(
@@ -1395,10 +1376,7 @@ async def get_task_detail_core(
                 bucket.fail_count += 1
             else:
                 bucket.partial_count += 1
-        elif trial.status == TrialStatus.FAILED:
-            # Harness-style failure with no verifier result.
-            pass
-        else:
+        elif trial.status != TrialStatus.FAILED:
             bucket.pending_count += 1
 
         if trial.cost_usd is not None:
@@ -1409,8 +1387,6 @@ async def get_task_detail_core(
             else:
                 bucket.cost_has_native = True
 
-        # ``last_run_at`` uses the same precedence the browse query uses:
-        # finished_at → started_at → created_at, whichever is most recent.
         candidate = trial.finished_at or trial.started_at or trial.created_at
         if candidate is not None and (
             bucket.last_run_at is None or candidate > bucket.last_run_at

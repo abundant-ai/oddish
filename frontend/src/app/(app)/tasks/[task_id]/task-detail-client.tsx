@@ -7,6 +7,13 @@ import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Tooltip,
@@ -37,7 +44,15 @@ import type {
   Trial,
 } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/utils";
-import { ArrowLeft, FileText, Loader2 } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  CheckCircle2,
+  FileText,
+  Loader2,
+  Microscope,
+  XCircle,
+} from "lucide-react";
 
 const ALL_VERSIONS_ID = "__all__";
 
@@ -47,6 +62,26 @@ function formatCostUsd(value: number): string {
   if (value < 1) return `$${value.toFixed(3)}`;
   if (value < 100) return `$${value.toFixed(2)}`;
   return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+}
+
+function formatDurationSec(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "—";
+  if (seconds < 1) return `${(seconds * 1000).toFixed(0)}ms`;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds - m * 60);
+  if (m < 60) return s ? `${m}m ${s}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m - h * 60;
+  return rem ? `${h}h ${rem}m` : `${h}h`;
+}
+
+function trialDurationSec(trial: Trial): number | null {
+  if (!trial.started_at || !trial.finished_at) return null;
+  const start = new Date(trial.started_at).getTime();
+  const end = new Date(trial.finished_at).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  return (end - start) / 1000;
 }
 
 function CostBadge({
@@ -312,54 +347,124 @@ function VersionSwitcher({
 }) {
   if (versions.length === 0) return null;
 
-  const renderItem = (
-    id: string,
-    label: string,
-    sub: string,
-    isActive: boolean,
-    title?: string,
-  ) => (
-    <button
-      key={id}
-      type="button"
-      onClick={() => onSelect(id)}
-      title={title}
-      className={`flex shrink-0 flex-col items-start gap-0.5 rounded-[7px] border px-3 py-1.5 text-left transition-colors ${
-        isActive
-          ? "border-[color:var(--paper-ink)] bg-[color:var(--paper-ink)] text-[color:var(--paper-bg)]"
-          : "border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] text-[color:var(--paper-ink)] hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
-      }`}
-    >
-      <span className="font-mono text-[12px] font-semibold leading-none">
-        {label}
-      </span>
-      <span
-        className={`font-mono text-[10px] leading-none ${
-          isActive ? "text-[color:var(--paper-bg)]/70" : "text-[color:var(--paper-ink-3)]"
-        }`}
-      >
-        {sub}
-      </span>
-    </button>
-  );
+  const totalTrials = versions.reduce((a, v) => a + v.trial_count, 0);
+  const selected = versions.find((v) => v.id === selectedVersionId);
+
+  const triggerLabel =
+    selectedVersionId === ALL_VERSIONS_ID
+      ? `All versions · ${totalTrials} trial${totalTrials === 1 ? "" : "s"}`
+      : selected
+        ? `v${selected.version}${selected.is_current ? " · current" : ""}`
+        : "Select version";
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      {renderItem(
-        ALL_VERSIONS_ID,
-        "All versions",
-        `${versions.reduce((a, v) => a + v.trial_count, 0)} trials`,
-        selectedVersionId === ALL_VERSIONS_ID,
-        "Aggregate every trial across every version",
-      )}
-      {versions.map((v) => {
-        const label = v.is_current ? `v${v.version} · current` : `v${v.version}`;
-        const sub = `${v.trial_count} trials · ${
-          v.cost_trial_count > 0 ? formatCostUsd(v.cost_usd) : "$0"
-        }`;
-        const title = v.message ? `${label} — ${v.message}` : label;
-        return renderItem(v.id, label, sub, selectedVersionId === v.id, title);
-      })}
+    <Select value={selectedVersionId} onValueChange={onSelect}>
+      <SelectTrigger className="font-mono h-8 w-[260px] rounded-[7px] border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] text-[color:var(--paper-ink)] hover:bg-[color:var(--paper-surface-2)]">
+        <SelectValue placeholder="Select version">{triggerLabel}</SelectValue>
+      </SelectTrigger>
+      <SelectContent className="font-mono w-[360px]">
+        <SelectItem value={ALL_VERSIONS_ID}>
+          <div className="flex w-full flex-col gap-0.5 py-0.5">
+            <span className="text-[12px] font-semibold text-[color:var(--paper-ink)]">
+              All versions
+            </span>
+            <span className="text-[10.5px] text-[color:var(--paper-ink-3)]">
+              {totalTrials} trial{totalTrials === 1 ? "" : "s"} across{" "}
+              {versions.length} version{versions.length === 1 ? "" : "s"}
+            </span>
+          </div>
+        </SelectItem>
+        {versions.map((v) => {
+          const label = v.is_current ? `v${v.version} · current` : `v${v.version}`;
+          const cost =
+            v.cost_trial_count > 0
+              ? `${v.cost_has_estimated && !v.cost_has_native ? "~" : ""}${formatCostUsd(v.cost_usd)}`
+              : "$0";
+          return (
+            <SelectItem key={v.id} value={v.id}>
+              <div className="flex w-full flex-col gap-0.5 py-0.5">
+                <span className="text-[12px] font-semibold text-[color:var(--paper-ink)]">
+                  {label}
+                </span>
+                <span className="text-[10.5px] text-[color:var(--paper-ink-3)]">
+                  {v.trial_count} trial{v.trial_count === 1 ? "" : "s"} · {cost}
+                  {v.message ? ` · ${v.message}` : ""}
+                </span>
+              </div>
+            </SelectItem>
+          );
+        })}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function VerdictBlock({ task }: { task: Task }) {
+  if (!task.run_analysis && !task.verdict_status && !task.verdict) return null;
+
+  const status = task.verdict_status;
+  const verdict = task.verdict;
+  const isPending =
+    status === "running" || status === "pending" || status === "queued";
+  const isFailed = status === "failed";
+
+  let icon: React.ReactNode;
+  let title: string;
+  let toneClass: string;
+
+  if (isPending) {
+    icon = <Loader2 className="h-4 w-4 shrink-0 animate-spin text-blue-500" />;
+    title = "Computing verdict...";
+    toneClass = "border-[color:var(--paper-line)]";
+  } else if (isFailed) {
+    icon = <XCircle className="h-4 w-4 shrink-0 text-red-500" />;
+    title = "Verdict failed";
+    toneClass = "border-red-500/40 bg-red-500/[0.04]";
+  } else if (verdict?.is_good === true) {
+    icon = <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />;
+    title = "Task is good";
+    toneClass = "border-emerald-500/40 bg-emerald-500/[0.04]";
+  } else if (verdict?.is_good === false) {
+    icon = <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />;
+    title = "Needs review";
+    toneClass = "border-amber-500/40 bg-amber-500/[0.04]";
+  } else {
+    icon = <Microscope className="h-4 w-4 shrink-0 text-slate-500" />;
+    title = "Verdict pending";
+    toneClass = "border-[color:var(--paper-line)]";
+  }
+
+  const detail =
+    isFailed && task.verdict_error
+      ? task.verdict_error
+      : verdict?.is_good === false
+        ? verdict.primary_issue ?? verdict.reasoning ?? null
+        : verdict?.is_good === true
+          ? verdict.reasoning ?? null
+          : null;
+
+  return (
+    <div
+      className={`flex items-start gap-2.5 rounded-[10px] border px-3 py-2 ${toneClass}`}
+    >
+      {icon}
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="font-mono text-[12px] font-semibold text-[color:var(--paper-ink)]">
+            {title}
+          </span>
+          {verdict?.confidence ? (
+            <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
+              · {verdict.confidence} confidence
+            </span>
+          ) : null}
+        </div>
+        {detail ? (
+          <p className="font-mono mt-0.5 text-[11px] leading-snug text-[color:var(--paper-ink-2)]">
+            {detail}
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -431,6 +536,20 @@ function AgentCard({
     summary.rewardTotal > 0
       ? (summary.rewardSum / summary.rewardTotal) * 100
       : null;
+  const avgCostUsd =
+    summary.costTrialCount > 0 ? summary.costUsd / summary.costTrialCount : null;
+  const avgDurationSec = useMemo(() => {
+    let sum = 0;
+    let count = 0;
+    for (const t of trials) {
+      const d = trialDurationSec(t);
+      if (d != null) {
+        sum += d;
+        count += 1;
+      }
+    }
+    return count > 0 ? sum / count : null;
+  }, [trials]);
   const sortedTrials = useMemo(
     () =>
       [...trials].sort((a, b) => {
@@ -467,11 +586,13 @@ function AgentCard({
           <span>
             <span className="text-[color:var(--paper-ink-3)]">avg score</span>{" "}
             <span className="text-[color:var(--paper-ink)]">
-              {scorePct != null ? `${scorePct.toFixed(0)}%` : "—"}
+              {scorePct != null
+                ? `${scorePct.toFixed(0)}% (${summary.passCount}/${summary.rewardTotal})`
+                : "—"}
             </span>
           </span>
           <span>
-            <span className="text-[color:var(--paper-ink-3)]">cost</span>{" "}
+            <span className="text-[color:var(--paper-ink-3)]">total cost</span>{" "}
             <CostBadge
               cost={summary.costUsd}
               trialCount={summary.costTrialCount}
@@ -479,6 +600,18 @@ function AgentCard({
               hasNative={summary.costHasNative}
               size="sm"
             />
+          </span>
+          <span title="Mean cost per priced trial">
+            <span className="text-[color:var(--paper-ink-3)]">avg cost</span>{" "}
+            <span className="text-[color:var(--paper-ink)]">
+              {avgCostUsd != null ? formatCostUsd(avgCostUsd) : "—"}
+            </span>
+          </span>
+          <span title="Mean wall-clock duration (started_at → finished_at)">
+            <span className="text-[color:var(--paper-ink-3)]">avg duration</span>{" "}
+            <span className="text-[color:var(--paper-ink)]">
+              {avgDurationSec != null ? formatDurationSec(avgDurationSec) : "—"}
+            </span>
           </span>
           {summary.lastRunAt ? (
             <span title={new Date(summary.lastRunAt).toLocaleString()}>
@@ -713,7 +846,8 @@ export function TaskDetailClient({
       <div className="space-y-4">
         <TaskDetailHeader task={task} onOpenTaskFiles={handleOpenTaskFiles} />
 
-        {/* KPI bar: task-wide totals (always) + version-scoped figures (right) */}
+        <VerdictBlock task={task} />
+
         <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-5">
           <KpiTile
             label="Total spent (all versions)"
@@ -771,6 +905,14 @@ export function TaskDetailClient({
               {versionScopedScorePct != null
                 ? `${versionScopedScorePct.toFixed(1)}%`
                 : "—"}
+              {versionSummary.rewardTotal > 0 ? (
+                <span
+                  className="font-mono text-[12px] text-[color:var(--paper-ink-3)]"
+                  title={`${versionSummary.passCount} of ${versionSummary.rewardTotal} scored trials passed (reward = 1)`}
+                >
+                  {versionSummary.passCount}/{versionSummary.rewardTotal} pass
+                </span>
+              ) : null}
             </span>
           </KpiTile>
           <KpiTile
@@ -789,7 +931,6 @@ export function TaskDetailClient({
           </KpiTile>
         </div>
 
-        {/* Version switcher */}
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
@@ -806,7 +947,6 @@ export function TaskDetailClient({
           />
         </div>
 
-        {/* Per-agent cards */}
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">
             <h2 className="font-mono text-[12px] font-semibold tracking-[0.06em] text-[color:var(--paper-ink-2)] uppercase">
