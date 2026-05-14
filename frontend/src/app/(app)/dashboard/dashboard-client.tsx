@@ -5,6 +5,7 @@ import {
   useDeferredValue,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import useSWR, { preload, useSWRConfig } from "swr";
@@ -1620,6 +1621,31 @@ export function DashboardClient({
     },
     [pushHistoryEntry],
   );
+
+  // Seed the SWR cache for the default-experiments key with the
+  // SSR-fetched payload. Without this, toggling Mine OFF would have no
+  // cached entry to fall back to and `keepPreviousData: true` would
+  // keep showing the Mine-filtered list forever (revalidation is
+  // disabled for the default view because we'd otherwise refetch what
+  // SSR already gave us).
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (seededRef.current) return;
+    if (!initialDashboardData) return;
+    seededRef.current = true;
+    const defaultExperimentsKey = buildDashboardApiPath({
+      experiments_limit: EXPERIMENTS_PAGE_SIZE,
+      experiments_offset: 0,
+      experiments_query: "",
+      experiments_status: "all",
+      experiments_mine: false,
+      include_tasks: false,
+      include_usage: false,
+    });
+    void mutate(defaultExperimentsKey, initialDashboardData, {
+      revalidate: false,
+    });
+  }, [initialDashboardData, mutate]);
 
   // Preload the alternate Mine view so toggling it doesn't wait on a
   // round-trip the first time. Cheap because SWR dedupes if the user
