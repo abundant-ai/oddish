@@ -86,6 +86,21 @@ export function ensureLogfireConfigured(): void {
         process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ||
         undefined,
       environment: resolveEnvironment(),
+      // Tag every browser span with the deployment provenance so a
+      // preview trace is filterable down to a single PR — without
+      // this only the backend + Next.js edge spans carry `oddish.pr`
+      // and the browser side is anonymous across all previews.
+      resourceAttributes: {
+        ...(process.env.NEXT_PUBLIC_VERCEL_GIT_PULL_REQUEST_ID
+          ? { "oddish.pr": process.env.NEXT_PUBLIC_VERCEL_GIT_PULL_REQUEST_ID }
+          : {}),
+        ...(process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_REF
+          ? { "oddish.git_branch": process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_REF }
+          : {}),
+        ...(process.env.NEXT_PUBLIC_VERCEL_ENV
+          ? { "oddish.vercel_env": process.env.NEXT_PUBLIC_VERCEL_ENV }
+          : {}),
+      },
       instrumentations: [
         getWebAutoInstrumentations({
           // Default behaviour is "same-origin only" for `traceparent`
