@@ -67,7 +67,7 @@ WORKER_SCALEDOWN_WINDOW_SECONDS = _env_int(
 )  # Keep idle workers warm for 5 minutes
 WORKER_MAX_CONTAINERS = _env_int(
     "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
-    256,
+    320,
 )  # High global cap so several queue keys can scale, but still not unbounded.
 
 # Mark single-job worker containers as non-preemptible so Modal does not
@@ -76,11 +76,12 @@ WORKER_MAX_CONTAINERS = _env_int(
 # (https://modal.com/docs/guide/preemption); keep it env-flagged so previews
 # or experiments can opt out.
 WORKER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_WORKER_NONPREEMPTIBLE", True)
+DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", True)
 
 # Queue-key concurrency default for Modal runtime.
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
-MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_MODEL_CONCURRENCY_DEFAULT", 32)
+MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 32)
 
 # Max number of workers spawned per poll cycle (rate limiter, global across all
 # queue_keys). Keep the default aligned to the default per-model concurrency so
@@ -128,6 +129,12 @@ ENV_VARS = {
     # Claude CLI refuses --dangerously-skip-permissions when running as root (Modal default).
     # Setting IS_SANDBOX=1 tells it we're in a sandboxed environment and bypasses this check.
     "IS_SANDBOX": "1",
+    # Route Claude Code through AWS Bedrock. oddish runs Claude exclusively
+    # via Bedrock: the token lives in the runtime Modal secret
+    # (AWS_BEARER_TOKEN_BEDROCK) and this flag selects the Bedrock route.
+    # harbor_runner normalizes every Claude model id to a Bedrock-native id
+    # (oddish.config.to_bedrock_model_id) so the route is never ambiguous.
+    "CLAUDE_CODE_USE_BEDROCK": "1",
     # Baked into the image so the container sees the same identity the
     # deploy host did (the per-PR secret gate above depends on it).
     "MODAL_APP_NAME": MODAL_APP_NAME,
@@ -251,6 +258,7 @@ image = (
         "endpoints",
         "modal_app",
         "models",
+        "observability",
         "worker",
         copy=True,
     )

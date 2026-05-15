@@ -30,12 +30,24 @@ async def _load_distinct_keys(
 ) -> set[str]:
     if not await _table_exists(session, table_name):
         return set()
+    # ``queue_slots`` is the only soft-delete-free table in
+    # ``_KEY_TABLES`` plus this helper, so the extra clause is gated on
+    # the table being a soft-deletable domain row. Including a deleted
+    # trial in the canonicalization pass is harmless but pulls
+    # tombstoned data into a write-back loop, which the project policy
+    # is to avoid.
+    extra_filter = (
+        " AND deleted_at IS NULL"
+        if table_name in {"trials", "tasks", "experiments"}
+        else ""
+    )
     rows = await session.execute(
         text(
             f"""
             SELECT DISTINCT {column_name}
             FROM {table_name}
             WHERE {column_name} IS NOT NULL
+            {extra_filter}
             """
         )
     )
@@ -56,6 +68,11 @@ async def _count_rows(
 ) -> int:
     if not await _table_exists(session, table_name):
         return 0
+    extra_filter = (
+        " AND deleted_at IS NULL"
+        if table_name in {"trials", "tasks", "experiments"}
+        else ""
+    )
     count = (
         await session.execute(
             text(
@@ -63,6 +80,7 @@ async def _count_rows(
                 SELECT COUNT(*)
                 FROM {table_name}
                 WHERE {column_name} = :value
+                {extra_filter}
                 """
             ),
             {"value": value},
@@ -78,6 +96,11 @@ async def _apply_simple_updates(
     for table_name, column_name in _KEY_TABLES:
         if not await _table_exists(session, table_name):
             continue
+        extra_filter = (
+            " AND deleted_at IS NULL"
+            if table_name in {"trials", "tasks", "experiments"}
+            else ""
+        )
         updated = 0
         for old_key, new_key in mapping.items():
             if old_key == new_key:
@@ -88,6 +111,7 @@ async def _apply_simple_updates(
                     UPDATE {table_name}
                     SET {column_name} = :new_key
                     WHERE {column_name} = :old_key
+                    {extra_filter}
                     """
                 ),
                 {"old_key": old_key, "new_key": new_key},
@@ -145,6 +169,7 @@ async def _count_nop_oracle_default_model_updates(session: AsyncSession) -> int:
             SELECT COUNT(*)
             FROM trials
             WHERE LOWER(COALESCE(agent, '')) IN ('nop', 'oracle')
+              AND deleted_at IS NULL
               AND (
                 model IS NULL
                 OR LOWER(BTRIM(model)) = ANY(:aliases)
@@ -165,6 +190,7 @@ async def _apply_nop_oracle_default_model_updates(session: AsyncSession) -> int:
             UPDATE trials
             SET model = 'default'
             WHERE LOWER(COALESCE(agent, '')) IN ('nop', 'oracle')
+              AND deleted_at IS NULL
               AND (
                 model IS NULL
                 OR LOWER(BTRIM(model)) = ANY(:aliases)

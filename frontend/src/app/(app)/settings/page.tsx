@@ -871,15 +871,16 @@ function SidebarNav({
         const Icon = entry.icon;
         const active = section === entry.id;
         return (
-          <button
+          <Button
             key={entry.id}
             type="button"
+            variant="ghost"
             onClick={() => onSelect(entry.id)}
             aria-current={active ? "page" : undefined}
             className={cn(
-              "group flex shrink-0 items-center gap-2.5 rounded-md border border-transparent px-3 py-2 text-left text-sm transition-colors lg:w-full",
+              "group h-auto shrink-0 justify-start gap-2.5 rounded-md border border-transparent px-3 py-2 text-left text-sm font-normal lg:w-full",
               active
-                ? "border-border bg-card text-foreground shadow-xs"
+                ? "border-border bg-card text-foreground shadow-xs hover:bg-card"
                 : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
             )}
           >
@@ -892,7 +893,7 @@ function SidebarNav({
               )}
             />
             <span className="whitespace-nowrap font-medium">{entry.label}</span>
-          </button>
+          </Button>
         );
       })}
     </nav>

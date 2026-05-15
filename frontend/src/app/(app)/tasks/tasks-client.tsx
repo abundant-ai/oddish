@@ -249,14 +249,17 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
 
 function TaskCard({ task }: { task: TaskBrowseItem }) {
   return (
-    <Card className="border-[#6f88b4]/20 bg-card/95 shadow-xs">
+    <Card className="border-[#6f88b4]/20 bg-card/95 shadow-xs transition-colors hover:border-[#6f88b4]/40">
       <CardHeader className="space-y-2 px-5 pt-5 pb-2">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <div className="font-mono text-sm font-semibold text-foreground">
+              <Link
+                href={`/tasks/${encodeURIComponent(task.id)}`}
+                className="font-mono text-sm font-semibold text-foreground transition-colors hover:text-[#5d77a5] dark:hover:text-[#a8b8d2]"
+              >
                 {task.name}
-              </div>
+              </Link>
               <Badge variant="outline" className="w-fit font-mono text-[11px]">
                 v{task.current_version ?? "—"}
               </Badge>

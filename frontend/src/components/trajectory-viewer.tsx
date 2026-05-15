@@ -12,7 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { Route, ChevronRight, ImageOff } from "lucide-react";
+import { Route, ChevronRight, Download, ImageOff } from "lucide-react";
 import { CodeBlock } from "@/components/code-block";
 import {
   Tooltip,
@@ -85,6 +85,21 @@ function getFirstLine(
 ): string | null {
   const text = getTextFromContent(content);
   return text?.split("\n")[0] || null;
+}
+
+function downloadTrajectoryJson(trajectory: Trajectory, trialId: string) {
+  const blob = new Blob([JSON.stringify(trajectory, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = `trajectory-${trialId}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function ImageWithFallback({ src, path }: { src: string; path: string }) {
@@ -802,11 +817,23 @@ export function TrajectoryViewer({
               <Route className="h-4 w-4" />
               Trajectory
             </span>
-            <span className="text-xs font-normal text-muted-foreground">
-              {trajectory.steps.length} steps
-              {trajectory.final_metrics?.total_cost_usd && (
-                <> · ${trajectory.final_metrics.total_cost_usd.toFixed(4)}</>
-              )}
+            <span className="flex items-center gap-2">
+              <span className="text-xs font-normal text-muted-foreground">
+                {trajectory.steps.length} steps
+                {trajectory.final_metrics?.total_cost_usd && (
+                  <> · ${trajectory.final_metrics.total_cost_usd.toFixed(4)}</>
+                )}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => downloadTrajectoryJson(trajectory, trialId)}
+              >
+                <Download className="h-3.5 w-3.5" />
+                Export JSON
+              </Button>
             </span>
           </CardTitle>
         </CardHeader>

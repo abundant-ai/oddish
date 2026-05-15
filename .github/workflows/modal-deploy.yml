@@ -14,24 +14,29 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
+    # Python 3.13, uv, and a warm uv cache live in the base image —
+    # refreshed weekly by .github/workflows/ci-base-image.yml.
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       MODAL_ENVIRONMENT: main
+      # Point uv at the .venv pre-built into the base image.  `uv sync
+      # --frozen` then validates that venv against the current lockfile
+      # and only patches the editable oddish path — typically a no-op
+      # taking ~1s.
+      UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
     defaults:
       run:
         working-directory: backend
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: actions/checkout@v5
 
       - name: Sync backend dependencies
         run: uv sync --frozen

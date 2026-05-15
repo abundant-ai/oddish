@@ -17,6 +17,7 @@ def _trial(
     status: TrialStatus,
     reward: float | None,
     experiment_id: str | None = None,
+    superseded_by_trial_id: str | None = None,
 ):
     return SimpleNamespace(
         id=trial_id,
@@ -24,6 +25,7 @@ def _trial(
         status=status,
         reward=reward,
         experiment_id=experiment_id,
+        superseded_by_trial_id=superseded_by_trial_id,
     )
 
 
@@ -206,6 +208,43 @@ def test_get_task_status_trials_with_version_id_none_returns_all():
     visible = helpers.get_task_status_trials(task, version_id=None)
 
     assert [trial.id for trial in visible] == ["task-1-0", "task-1-1"]
+
+
+def test_get_task_status_trials_hides_superseded_trials():
+    """Reruns insert a fresh trial and mark the old row superseded.
+
+    The default listing must collapse the rerun chain so users only see
+    the live attempt -- otherwise the trial viewer "piles up" with
+    history rows on every retry click.
+    """
+    task = SimpleNamespace(
+        current_version_id="task-1-v1",
+        trials=[
+            _trial(
+                "task-1-0",
+                task_version_id="task-1-v1",
+                status=TrialStatus.FAILED,
+                reward=0,
+                superseded_by_trial_id="task-1-2",
+            ),
+            _trial(
+                "task-1-1",
+                task_version_id="task-1-v1",
+                status=TrialStatus.SUCCESS,
+                reward=1,
+            ),
+            _trial(
+                "task-1-2",
+                task_version_id="task-1-v1",
+                status=TrialStatus.QUEUED,
+                reward=None,
+            ),
+        ],
+    )
+
+    visible_trials = helpers.get_task_status_trials(task)
+
+    assert [trial.id for trial in visible_trials] == ["task-1-1", "task-1-2"]
 
 
 def test_resolve_effective_version_id_returns_global_without_experiment():
