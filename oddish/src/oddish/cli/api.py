@@ -19,6 +19,7 @@ import typer
 import yaml
 from rich.console import Console
 from rich.live import Live
+from rich.markup import escape
 from rich.progress import (
     BarColumn,
     Progress,
@@ -1156,6 +1157,7 @@ def format_trial_status(status: str, harbor_stage: str | None = None) -> str:
         "retrying": "yellow",
         "success": "green",
         "failed": "red",
+        "cancelled": "yellow",
     }
     style = style_map.get(status.lower(), "white")
 
@@ -1163,6 +1165,42 @@ def format_trial_status(status: str, harbor_stage: str | None = None) -> str:
         # Show harbor stage for running trials
         return f"[{style}]{harbor_stage}[/{style}]"
     return f"[{style}]{status}[/{style}]"
+
+
+def _format_status_detail_text(value: object, *, max_chars: int = 72) -> str:
+    text = " ".join(str(value or "").replace("_", " ").split())
+    if len(text) > max_chars:
+        return f"{text[: max_chars - 3]}..."
+    return text
+
+
+def format_trial_status_detail(trial: dict[str, Any]) -> str:
+    """Format the useful detail behind a trial status for CLI tables."""
+    status = str(trial.get("status") or "").lower()
+    harbor_stage = str(trial.get("harbor_stage") or "").strip()
+    harbor_stage_lower = harbor_stage.lower()
+    error_message = str(trial.get("error_message") or "").strip()
+    error_message_lower = error_message.lower()
+
+    if error_message_lower in {"cancelled by user", "canceled by user"}:
+        return "[yellow]cancelled by user[/yellow]"
+
+    if harbor_stage_lower in {"cancelled", "canceled"}:
+        return "[yellow]cancelled[/yellow]"
+
+    if status == "running" and harbor_stage:
+        detail = escape(_format_status_detail_text(harbor_stage))
+        return f"[blue]{detail}[/blue]"
+
+    if status == "failed" and error_message:
+        detail = escape(_format_status_detail_text(error_message))
+        return f"[red]{detail}[/red]"
+
+    if harbor_stage and harbor_stage_lower not in {"-", "completed"}:
+        detail = escape(_format_status_detail_text(harbor_stage))
+        return f"[dim]{detail}[/dim]"
+
+    return "-"
 
 
 def format_verdict_status(verdict_status: str) -> str:
@@ -1467,6 +1505,7 @@ def watch_task(
                 table.add_column("Agent")
                 table.add_column("Model")
                 table.add_column("Status")
+                table.add_column("Detail")
                 table.add_column("Reward", justify="center")
 
                 for trial in all_trials:
@@ -1484,6 +1523,7 @@ def watch_task(
                         trial["agent"],
                         trial.get("model") or "-",
                         status_display,
+                        format_trial_status_detail(trial),
                         reward_str,
                     )
 
@@ -1519,7 +1559,7 @@ def watch_task(
                         reward_summary.append(f"[red]{reward_fail}✗[/red]")
                     summary_parts.append("/".join(reward_summary))
 
-                table.add_row("", ", ".join(summary_parts), "", "", "")
+                table.add_row("", ", ".join(summary_parts), "", "", "", "")
 
                 # Show verdict status if in later pipeline stages
                 if task_status in ("analyzing", "verdict_pending", "completed"):
@@ -1532,7 +1572,7 @@ def watch_task(
                             "success": "[green]done[/green]",
                             "failed": "[red]failed[/red]",
                         }.get(verdict_status.lower(), verdict_status)
-                        table.add_row("", f"Verdict: {verdict_display}", "", "", "")
+                        table.add_row("", f"Verdict: {verdict_display}", "", "", "", "")
 
                 live.update(table)
 

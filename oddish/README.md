@@ -270,7 +270,8 @@ oddish ls --json
 
 Without arguments, `oddish status` shows recent experiments and API health. Use
 a task ID or `--experiment` to inspect a specific run, and `--watch` to resume
-live monitoring later.
+live monitoring later. Task status tables include a `Detail` column for the
+current Harbor stage or terminal reason, such as `cancelled by user`.
 
 Examples:
 
