@@ -325,9 +325,28 @@ def mount_browser_proxy(app: "FastAPI") -> None:
 
     The proxy reuses the server-side ``LOGFIRE_TOKEN`` to attach the
     Authorization header so it never has to ship to the client.
-    Without a token configured we simply don't mount the route.
+
+    **Opt-in only.** The proxy is OFF by default even when
+    ``LOGFIRE_TOKEN`` is set, because the browser SDK fires many
+    batched POSTs per page load and each one occupies a Modal container
+    concurrency slot for ~100-300ms while it forwards to Logfire. On
+    bursty front-ends this contends meaningfully with real API traffic.
+
+    Set ``ODDISH_LOGFIRE_BROWSER_PROXY=1`` to opt back in. Server-side
+    tracing (FastAPI / asyncpg) is unaffected -- those spans ship
+    directly from the backend container, not through this proxy.
     """
     if not _configured:
+        return
+    if os.environ.get("ODDISH_LOGFIRE_BROWSER_PROXY", "").lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        logger.info(
+            "logfire browser proxy NOT mounted "
+            "(set ODDISH_LOGFIRE_BROWSER_PROXY=1 to enable)"
+        )
         return
     try:
         from logfire.experimental.forwarding import logfire_proxy

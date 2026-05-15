@@ -179,9 +179,9 @@ Common optional settings:
 
 ### Observability (Pydantic Logfire)
 
-Optional but recommended. Provision a write token in Logfire and add
-it to the `oddish-prod` Modal secret so the API containers and workers
-both pick it up:
+Optional. Provision a write token in Logfire and add it to the
+`oddish-prod` Modal secret so the API containers and workers both
+pick it up:
 
 - `LOGFIRE_TOKEN` — Logfire write token (the only required value).
 - `LOGFIRE_ENVIRONMENT` *(optional)* — overrides the auto-detected
@@ -190,10 +190,22 @@ both pick it up:
   as a span attribute, so you can filter `deployment.environment ==
   "preview"` across all PRs and drill into one with `oddish.pr`.
 - `LOGFIRE_SERVICE_NAME` *(optional)* — defaults to `oddish-backend`.
+- `ODDISH_LOGFIRE_INSTRUMENT_SQLA` *(optional, default `0`)* — set to
+  `1` to also wrap SQLAlchemy executes with span instrumentation. We
+  already wrap asyncpg one layer down, and the SQLA wrapper walks
+  every statement's expression tree, which is meaningful overhead on
+  hot paths.
+- `ODDISH_LOGFIRE_BROWSER_PROXY` *(optional, default `0`)* — set to
+  `1` to mount the `/logfire-proxy/{path}` route so the browser SDK
+  can ship spans through the backend. **Off by default**: each batch
+  POST occupies a Modal container concurrency slot for ~100-300ms
+  while it forwards to Logfire, and the browser auto-fetch
+  instrumentation can fire dozens of POSTs per page load. Server-side
+  tracing is unaffected when this is off — only browser spans stop.
 
-The frontend ships traces through the backend's
-`/logfire-proxy/v1/traces`, so the browser never sees the token. The
-proxy is mounted automatically when `LOGFIRE_TOKEN` is configured.
+The frontend browser SDK is also opt-in
+(`NEXT_PUBLIC_LOGFIRE_ENABLED=true`) and disabled by default for the
+same reason.
 
 Modal runtime knobs are read directly by `modal_app.py`, including:
 

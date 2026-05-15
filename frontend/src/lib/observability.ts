@@ -39,14 +39,23 @@ function resolveEnvironment(): string {
  * Idempotently configure Logfire browser tracing.
  *
  * Safe to call from React effects: subsequent calls short-circuit.
- * Honours an explicit `NEXT_PUBLIC_LOGFIRE_ENABLED=false` opt-out so
- * self-hosters running without an observability stack can skip it
- * entirely.
+ *
+ * **Opt-in only.** The browser SDK is OFF by default because every
+ * batch of spans posts to the backend's ``/logfire-proxy/v1/traces``
+ * route, which on Modal eats one container concurrency slot per
+ * request. With aggressive 1s flush + auto-fetch instrumentation a
+ * single page load can fire dozens of POSTs, contending with real
+ * API traffic. Server-side Logfire (FastAPI/asyncpg auto-instrumentation)
+ * keeps working independently and does NOT route through the browser
+ * SDK, so disabling this does not blind the backend.
+ *
+ * Set ``NEXT_PUBLIC_LOGFIRE_ENABLED=true`` to opt back in for local
+ * debugging or short observability sessions.
  */
 export function ensureLogfireConfigured(): void {
   if (configured) return;
   if (typeof window === "undefined") return;
-  if (process.env.NEXT_PUBLIC_LOGFIRE_ENABLED === "false") return;
+  if (process.env.NEXT_PUBLIC_LOGFIRE_ENABLED !== "true") return;
 
   const proxyUrl = resolveProxyUrl(process.env.NEXT_PUBLIC_API_URL);
   if (!proxyUrl) return;
@@ -144,7 +153,7 @@ export async function withUserAction<T>(
   attributesOrFn:
     | Record<string, string | number | boolean>
     | (() => Promise<T> | T),
-  maybeFn?: () => Promise<T> | T
+  maybeFn?: () => Promise<T> | T,
 ): Promise<T> {
   const attributes = typeof attributesOrFn === "function" ? {} : attributesOrFn;
   const fn = typeof attributesOrFn === "function" ? attributesOrFn : maybeFn!;
