@@ -4,6 +4,7 @@ import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Providers } from "./providers";
 import { Footer } from "@/components/footer";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 
 const geistSans = Geist({
   subsets: ["latin"],
@@ -106,6 +107,7 @@ export default function RootLayout({
             <div className="flex flex-1 flex-col">{children}</div>
             <Footer />
           </Providers>
+          <SpeedInsights />
         </body>
       </html>
     </ClerkProvider>

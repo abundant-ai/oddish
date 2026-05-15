@@ -4,7 +4,7 @@ import heapq
 import json
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
 from sqlalchemy import case, func, or_, select
@@ -215,6 +215,10 @@ async def fetch_trial_queue_info(
                     & (WorkerJobModel.available_after <= func.now())
                 ),
             ),
+            # Superseded trials are abandoned -- their worker_jobs are
+            # already cancelled by ``retry_trial_core``. Don't count
+            # them against fairness or claim position.
+            TrialModel.superseded_by_trial_id.is_(None),
         )
     )
 
@@ -282,6 +286,14 @@ def build_visible_worker_job(job: WorkerJobModel) -> VisibleWorkerJob:
     )
 
 
+# Default lookback for the "recent terminal" branch. Anything older
+# than this isn't surfaced in the live UI columns -- those views care
+# about "what just finished", not deep history -- and capping the
+# window keeps the query off the long tail of historical worker_jobs
+# rows that accumulate per task/trial over time.
+_RECENT_TERMINAL_WORKER_JOB_WINDOW = timedelta(hours=24)
+
+
 async def fetch_visible_worker_jobs(
     session: AsyncSession,
     *,
@@ -290,7 +302,31 @@ async def fetch_visible_worker_jobs(
     include_recent_terminal: bool = True,
     recent_limit: int = 250,
 ) -> dict[tuple[str, str], list[VisibleWorkerJob]]:
-    """Fetch active/recent worker_jobs keyed by ``(subject_table, subject_id)``."""
+    """Fetch active/recent worker_jobs keyed by ``(subject_table, subject_id)``.
+
+    Splits the work into two narrowly-scoped queries instead of a single
+    ``(active OR finished)`` selection sorted then truncated:
+
+    1. **Active jobs** (QUEUED / RUNNING / RETRYING / BLOCKED) for the
+       given subjects. The active set is bounded by the dispatcher's
+       concurrency limits, so no time window or limit is needed.
+    2. **Recent terminal jobs** for the given subjects, capped by
+       ``finished_at >= now() - _RECENT_TERMINAL_WORKER_JOB_WINDOW`` and
+       ``LIMIT recent_limit``. The window keeps the planner off the
+       full per-subject history, which can be hundreds of rows per
+       trial after many retries.
+
+    Backed by ``idx_worker_jobs_subject`` for the active branch and
+    ``idx_worker_jobs_subject_finished_recent`` for the terminal branch.
+
+    A previous attempt collapsed these into a single ``UNION ALL`` to
+    save a round trip; the ``select(aliased(WorkerJobModel, subq))``
+    pattern doesn't reliably re-map back to ORM entities under
+    ``CompoundSelect``, which silently broke the trial-cell rendering
+    on the experiment page (returned rows but no entity instances).
+    The two-query shape is cheap enough on a warm pool that the safety
+    is worth more than the saved round trip.
+    """
     subject_predicates = []
     if task_ids:
         subject_predicates.append(
@@ -305,36 +341,46 @@ async def fetch_visible_worker_jobs(
     if not subject_predicates:
         return {}
 
-    status_predicate = WorkerJobModel.status.in_(
-        tuple(_VISIBLE_ACTIVE_WORKER_JOB_STATUSES)
-    )
-    if include_recent_terminal:
-        status_predicate = or_(
-            status_predicate, WorkerJobModel.finished_at.is_not(None)
-        )
+    subject_filter = or_(*subject_predicates)
 
-    query = (
+    active_query = (
         select(WorkerJobModel)
-        .where(or_(*subject_predicates), status_predicate)
-        .order_by(
-            case(
-                (
-                    WorkerJobModel.status.in_(
-                        tuple(_VISIBLE_ACTIVE_WORKER_JOB_STATUSES)
-                    ),
-                    0,
-                ),
-                else_=1,
-            ),
-            WorkerJobModel.finished_at.desc().nulls_last(),
-            WorkerJobModel.created_at.desc(),
+        .where(
+            subject_filter,
+            WorkerJobModel.status.in_(tuple(_VISIBLE_ACTIVE_WORKER_JOB_STATUSES)),
         )
-        .limit(recent_limit)
+        .order_by(WorkerJobModel.created_at.desc())
     )
+    active_result = await session.execute(active_query)
+    active_jobs = list(active_result.scalars().all())
 
-    result = await session.execute(query)
+    terminal_jobs: list[WorkerJobModel] = []
+    if include_recent_terminal:
+        cutoff = datetime.now(timezone.utc) - _RECENT_TERMINAL_WORKER_JOB_WINDOW
+        terminal_query = (
+            select(WorkerJobModel)
+            .where(
+                subject_filter,
+                WorkerJobModel.finished_at.is_not(None),
+                WorkerJobModel.finished_at >= cutoff,
+            )
+            .order_by(WorkerJobModel.finished_at.desc())
+            .limit(recent_limit)
+        )
+        terminal_result = await session.execute(terminal_query)
+        terminal_jobs = list(terminal_result.scalars().all())
+
     jobs_by_subject: dict[tuple[str, str], list[VisibleWorkerJob]] = defaultdict(list)
-    for job in result.scalars().all():
+    # Order: active first (matches the previous ORDER BY case() ranking),
+    # then most-recent terminal. ``recent_limit`` applies to terminal
+    # jobs only since active is naturally bounded by concurrency.
+    for job in active_jobs:
+        if not job.subject_table or not job.subject_id:
+            continue
+        jobs_by_subject[(job.subject_table, job.subject_id)].append(
+            build_visible_worker_job(job)
+        )
+    for job in terminal_jobs:
         if not job.subject_table or not job.subject_id:
             continue
         jobs_by_subject[(job.subject_table, job.subject_id)].append(
@@ -384,6 +430,7 @@ def build_trial_response(
         analysis_status=trial.analysis_status,
         analysis=trial.analysis,
         analysis_error=trial.analysis_error,
+        superseded_by_trial_id=trial.superseded_by_trial_id,
         jobs=list(jobs or []),
         queue_info=queue_info,
         created_at=trial.created_at,
@@ -450,6 +497,7 @@ def build_compact_trial_response(
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
         analysis_error=None,
+        superseded_by_trial_id=trial.superseded_by_trial_id,
         jobs=list(jobs or []),
         queue_info=queue_info,
         created_at=trial.created_at,
@@ -566,30 +614,44 @@ async def fetch_experiment_effective_version_ids(
     counts-only task list).  Returns a mapping of ``task_id`` → latest
     ``task_version_id`` among trials belonging to ``experiment_id`` (plus legacy
     ``NULL``-experiment trials).  Tasks with no scoped trials are omitted.
+
+    Uses ``DISTINCT ON (task_id)`` joined to ``task_versions`` so the
+    server returns at most one row per task -- ordered by the *integer*
+    version number, which lexicographic sorting on ``task_version_id``
+    (``"{task_id}-v9"`` vs ``"{task_id}-v10"``) gets wrong. Replaces
+    the previous "fetch every trial row, sort in Python" path that
+    transferred ``len(task_ids) * trials_per_task`` rows just to keep
+    one per task.
     """
     if not task_ids:
         return {}
 
-    result = await session.execute(
-        select(TrialModel.task_id, TrialModel.task_version_id).where(
-            TrialModel.task_id.in_(task_ids),
+    from oddish.db import TaskVersionModel  # local import: avoid cycle
+
+    stmt = (
+        select(TrialModel.task_id, TrialModel.task_version_id)
+        .join(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
+        .where(
+            TrialModel.task_id.in_(list(task_ids)),
             or_(
                 TrialModel.experiment_id == experiment_id,
                 TrialModel.experiment_id.is_(None),
             ),
             TrialModel.task_version_id.is_not(None),
         )
+        .order_by(
+            TrialModel.task_id.asc(),
+            TaskVersionModel.version.desc(),
+        )
+        .distinct(TrialModel.task_id)
     )
 
-    best: dict[str, tuple[int, str]] = {}
-    for task_id, version_id in result.all():
-        if not version_id:
-            continue
-        parsed = _parse_version_number(str(version_id))
-        existing = best.get(str(task_id))
-        if existing is None or parsed > existing[0]:
-            best[str(task_id)] = (parsed, str(version_id))
-    return {tid: v[1] for tid, v in best.items()}
+    result = await session.execute(stmt)
+    return {
+        str(task_id): str(version_id)
+        for task_id, version_id in result.all()
+        if version_id is not None
+    }
 
 
 def get_task_status_trials(
@@ -603,15 +665,23 @@ def get_task_status_trials(
     ``version_id`` (including ``None`` to disable filtering) to pivot on a
     different version — for example an experiment-scoped effective version
     computed by :func:`resolve_effective_version_id`.
+
+    Superseded trials (rows replaced by a user-driven retry) are always
+    filtered out: they remain in the DB so deep links / history queries
+    keep working, but they should never clutter the default trial
+    viewer, file viewer, or aggregated counts.
     """
     effective: str | None
     if version_id is _VERSION_ID_UNSET:
         effective = task.current_version_id
     else:
         effective = version_id  # type: ignore[assignment]
+    live_trials = [
+        trial for trial in task.trials if trial.superseded_by_trial_id is None
+    ]
     if effective is None:
-        return list(task.trials)
-    return [trial for trial in task.trials if trial.task_version_id == effective]
+        return live_trials
+    return [trial for trial in live_trials if trial.task_version_id == effective]
 
 
 def _primary_experiment_for_task(
@@ -856,7 +926,10 @@ async def fetch_trial_analysis_summaries(
     if trial_ids is None and not task_ids:
         return {}
 
-    filters = [TrialModel.analysis.isnot(None)]
+    filters = [
+        TrialModel.analysis.isnot(None),
+        TrialModel.superseded_by_trial_id.is_(None),
+    ]
     if trial_ids is not None:
         filters.append(TrialModel.id.in_(list(trial_ids)))
     else:
@@ -905,7 +978,14 @@ async def build_task_status_responses_from_counts(
     task_ids = [task.id for task in tasks]
     effective_map = effective_version_id_by_task_id or {}
 
-    stats_filters = [TrialModel.task_id.in_(task_ids)]
+    stats_filters = [
+        TrialModel.task_id.in_(task_ids),
+        # Default trial listings collapse the rerun history: every
+        # superseded attempt is hidden by the same filter applied in
+        # ``get_task_status_trials``. Mirror it here so the counts row
+        # behind every TaskStatusResponse matches what the UI shows.
+        TrialModel.superseded_by_trial_id.is_(None),
+    ]
     if effective_map:
         # Match (task_id, task_version_id) pairs so we only count trials at
         # each task's effective version.  Tasks without an effective version

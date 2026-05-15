@@ -452,6 +452,9 @@ export function ExperimentTrialsTable({
   >(new Set());
   const [rowFilterMode, setRowFilterMode] = useState<RowFilterMode>("none");
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
+  const [copiedTaskNameId, setCopiedTaskNameId] = useState<string | null>(
+    null,
+  );
   const [copiedAgentNameKey, setCopiedAgentNameKey] = useState<string | null>(
     null,
   );
@@ -952,6 +955,18 @@ export function ExperimentTrialsTable({
 
   const handleTaskSearchChange = (value: string) => {
     setTaskSearch(value);
+  };
+
+  const handleCopyTaskName = async (
+    event: ReactMouseEvent<HTMLButtonElement>,
+    task: Task,
+  ) => {
+    event.stopPropagation();
+    await navigator.clipboard.writeText(task.name);
+    setCopiedTaskNameId(task.id);
+    window.setTimeout(() => {
+      setCopiedTaskNameId((prev) => (prev === task.id ? null : prev));
+    }, 2000);
   };
 
   const handleCopyAgentName = async (agentKey: string, agentName: string) => {
@@ -2122,24 +2137,60 @@ export function ExperimentTrialsTable({
                             />
                           )}
                           <div className="flex min-w-0 flex-1 items-center gap-2">
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  onClick={() =>
-                                    onTaskSelect?.(task, {
-                                      orderedTasks: filteredTasks,
-                                      taskIndex: index,
-                                    })
-                                  }
-                                  className="h-auto min-w-0 flex-1 cursor-pointer justify-start truncate bg-transparent p-0 text-left font-mono text-[11.5px] font-normal text-[color:var(--paper-ink)] transition-colors hover:bg-transparent hover:text-[color:oklch(40%_0.1_240)]"
-                                >
-                                  {task.name}
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>View task files</TooltipContent>
-                            </Tooltip>
+                            <div className="group/task-name flex min-w-0 flex-1 items-center gap-1.5">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    onClick={() =>
+                                      onTaskSelect?.(task, {
+                                        orderedTasks: filteredTasks,
+                                        taskIndex: index,
+                                      })
+                                    }
+                                    className="h-auto min-w-0 flex-1 cursor-pointer justify-start truncate bg-transparent p-0 text-left font-mono text-[11.5px] font-normal text-[color:var(--paper-ink)] transition-colors hover:bg-transparent hover:text-[color:oklch(40%_0.1_240)]"
+                                  >
+                                    {task.name}
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>View task files</TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={(event) =>
+                                      handleCopyTaskName(event, task)
+                                    }
+                                    className={`h-5 w-5 shrink-0 rounded-sm bg-transparent text-[color:var(--paper-ink-3)] opacity-0 transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)] focus-visible:opacity-100 group-hover/task-name:opacity-100 ${
+                                      copiedTaskNameId === task.id
+                                        ? "opacity-100 text-emerald-600"
+                                        : ""
+                                    }`}
+                                    aria-label={`Copy task name ${task.name}`}
+                                    title={
+                                      copiedTaskNameId === task.id
+                                        ? "Copied"
+                                        : "Copy task name"
+                                    }
+                                  >
+                                    {copiedTaskNameId === task.id ? (
+                                      <Check className="h-3.5 w-3.5" />
+                                    ) : (
+                                      <Copy className="h-3.5 w-3.5" />
+                                    )}
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  {copiedTaskNameId === task.id
+                                    ? "Copied task name"
+                                    : "Copy task name"}
+                                </TooltipContent>
+                              </Tooltip>
+                            </div>
                             {task.current_version != null && (
                               <span className="inline-flex shrink-0 items-center rounded-[3px] bg-[color:var(--paper-bg-2)] px-1 py-px font-mono text-[9.5px] font-medium leading-none text-[color:var(--paper-ink-3)]">
                                 v{task.current_version}

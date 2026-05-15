@@ -15,7 +15,7 @@ from api.schemas import (
 )
 from auth import AuthContext, require_admin, require_auth
 from models import UserModel, UserRole
-from oddish.db import get_session
+from oddish.db import get_session, utcnow
 
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
 
@@ -157,7 +157,13 @@ async def remove_user(
     user_id: str,
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> dict:
-    """Remove a user from the organization."""
+    """Remove a user from the organization.
+
+    Soft-deletes the row (stamps ``deleted_at`` and clears ``is_active``)
+    so the session-level filter immediately hides the user from list /
+    auth paths. ``is_active=False`` is preserved alongside the tombstone
+    for any reader that hasn't migrated off the legacy flag.
+    """
 
     async with get_session() as session:
         result = await session.execute(
@@ -170,7 +176,10 @@ async def remove_user(
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Prevent removing the last owner
+        # Prevent removing the last owner. The owner count uses live rows
+        # only -- the auto-filter already excludes soft-deleted users, so
+        # the explicit ``is_active`` check just additionally ignores
+        # deactivated-but-not-removed owners.
         if user.role == UserRole.OWNER:
             owners = await session.execute(
                 select(UserModel)
@@ -185,6 +194,7 @@ async def remove_user(
                 )
 
         user.is_active = False
+        user.deleted_at = utcnow()
         await session.commit()
 
         return {"status": "removed", "user_id": user_id}
