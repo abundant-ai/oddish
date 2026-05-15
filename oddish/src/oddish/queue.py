@@ -622,6 +622,7 @@ async def create_task(
 
     await session.flush()
     await session.refresh(task, attribute_names=["trials"])
+    await bump_experiment_last_activity(session, experiment_ids=experiment.id)
     return task
 
 
@@ -636,6 +637,53 @@ async def _link_task_to_experiment(
         .values(task_id=task_id, experiment_id=experiment_id)
         .on_conflict_do_nothing(index_elements=["task_id", "experiment_id"])
     )
+
+
+async def bump_experiment_last_activity(
+    session: AsyncSession, *, experiment_ids: Any
+) -> None:
+    """Best-effort refresh of ``experiments.last_activity_at`` to NOW().
+
+    Maintains the denormalized sort key the dashboard "recent experiments"
+    query orders on. Failures here MUST NOT block the surrounding write,
+    so callers wrap this in try/except (or, equivalently, run it as the
+    last step before the surrounding transaction commits).
+
+    ``experiment_ids`` accepts a single id, a list, a set, or any other
+    iterable of ids. Empty / falsy values are no-ops.
+
+    Reconciliation: if a write path forgets to call this -- or the call
+    races with another write -- the cleanup sweep in
+    ``oddish.workers.queue.cleanup`` periodically reconciles drift by
+    rederiving the value from ``GREATEST(MAX(tasks.created_at),
+    MAX(trials.created_at))``.
+    """
+    if isinstance(experiment_ids, str):
+        ids: list[str] = [experiment_ids]
+    else:
+        try:
+            ids = [str(x) for x in experiment_ids if x]
+        except TypeError:
+            return
+    if not ids:
+        return
+    try:
+        await session.execute(
+            text(
+                """
+                UPDATE experiments
+                SET last_activity_at = NOW()
+                WHERE id = ANY(:experiment_ids)
+                  AND deleted_at IS NULL
+                """
+            ),
+            {"experiment_ids": ids},
+        )
+    except Exception:  # noqa: BLE001
+        # Denormalized maintenance must never block the user's write.
+        logger.warning(
+            "bump_experiment_last_activity failed for ids=%s", ids, exc_info=True
+        )
 
 
 async def append_trials_to_task(
@@ -759,6 +807,9 @@ async def append_trials_to_task(
 
     await session.flush()
     await session.refresh(task, attribute_names=["trials"])
+    bump_ids = {trial_experiment_id}
+    bump_ids.update(t.experiment_id for t in new_trials if t.experiment_id)
+    await bump_experiment_last_activity(session, experiment_ids=bump_ids)
     return new_trials
 
 

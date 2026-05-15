@@ -84,9 +84,19 @@ async def get_task_for_org_core(
     *,
     task_id: str,
     org_id: str | None = None,
+    load_current_version: bool = False,
 ) -> TaskModel:
-    """Fetch a task by ID with optional org scoping."""
+    """Fetch a task by ID with optional org scoping.
+
+    Pass ``load_current_version=True`` from callers that read
+    ``task.current_version.version`` (e.g. the file-serving routes).
+    Default is False so the common path doesn't pay for an extra
+    ``task_versions`` round trip it never consumes -- ``current_version``
+    is now lazy on TaskModel itself.
+    """
     query = select(TaskModel).where(TaskModel.id == task_id)
+    if load_current_version:
+        query = query.options(selectinload(TaskModel.current_version))
     if org_id is not None:
         query = query.where(TaskModel.org_id == org_id)
     result = await session.execute(query)
@@ -104,6 +114,7 @@ async def list_tasks_core(
     experiment_id: str | None = None,
     include_trials: bool = True,
     compact_trials: bool = False,
+    compact_tasks: bool = False,
     include_queue_info: bool = True,
     include_worker_jobs: bool = True,
     limit: int = 100,
@@ -112,7 +123,18 @@ async def list_tasks_core(
     include_empty_rewards: bool = True,
     record_timing: TimingRecorder | None = None,
 ) -> list[TaskStatusResponse]:
-    """List tasks with optional filters and aggregated trial stats."""
+    """List tasks with optional filters and aggregated trial stats.
+
+    ``compact_tasks=True`` is a shortcut path used by the experiment
+    page first paint (``limit=2000&include_trials=False``). It drops
+    the per-task ``visible_worker_jobs`` fetch, the experiment-scoped
+    ``effective_version_ids`` lookup, and the ``selectinload(experiments)``
+    fan-out -- none of which are read by the lightweight task-shell view
+    that consumes this path. It implies ``include_trials=False``.
+    """
+    if compact_tasks:
+        include_trials = False
+        include_worker_jobs = False
     query = select(TaskModel).order_by(TaskModel.created_at.desc())
     if include_trials:
         trials_loader = selectinload(TaskModel.trials)
@@ -183,6 +205,12 @@ async def list_tasks_core(
         else:
             query = query.options(trials_loader, experiments_loader)
     else:
+        # ``selectinload`` here is one batched round trip even on the
+        # compact path -- ``_build_task_status_response`` reads
+        # ``task.experiments`` for the primary-experiment lookup. The
+        # bigger compact-mode wins are skipping
+        # ``fetch_experiment_effective_version_ids`` (an IN-list of up
+        # to 2000 task ids) and ``fetch_visible_worker_jobs``.
         query = query.options(selectinload(TaskModel.experiments))
 
     if org_id is not None:
@@ -319,7 +347,12 @@ async def list_tasks_core(
 
     build_started_at = now()
     effective_version_id_by_task_id: dict[str, str] = {}
-    if experiment_id and tasks:
+    if experiment_id and tasks and not compact_tasks:
+        # Skipped on the compact path: the experiment page uses the
+        # task version baked into each trial row when it later loads
+        # the trial pages, so the lightweight first-paint shell doesn't
+        # need this lookup. Phase 4B folds it into the main task list
+        # query via a window function for the non-compact path.
         effective_version_id_by_task_id = await fetch_experiment_effective_version_ids(
             session,
             experiment_id=experiment_id,
@@ -1248,9 +1281,7 @@ async def list_task_versions_core(
 ) -> list[TaskVersionResponse]:
     """Return all versions of a task, newest first."""
     if task is None:
-        task = await get_task_for_org_core(
-            session, task_id=task_id, org_id=org_id
-        )
+        task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
 
     result = await session.execute(
         select(TaskVersionModel)
@@ -1306,9 +1337,7 @@ async def get_task_detail_core(
     if not task:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-    queue_info_by_trial_id = await fetch_trial_queue_info(
-        session, trials=task.trials
-    )
+    queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=task.trials)
     jobs_by_subject = await fetch_visible_worker_jobs(
         session,
         task_ids=[task.id],
@@ -1324,9 +1353,7 @@ async def get_task_detail_core(
         queue_info_by_trial_id=queue_info_by_trial_id,
         jobs_by_subject=jobs_by_subject,
     )
-    all_trial_models = [
-        t for t in task.trials if t.superseded_by_trial_id is None
-    ]
+    all_trial_models = [t for t in task.trials if t.superseded_by_trial_id is None]
     task_status.trials = [
         build_trial_response(
             t,

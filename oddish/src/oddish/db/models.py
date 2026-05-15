@@ -221,6 +221,15 @@ class ExperimentModel(TimestampedMixin, Base):
     __tablename__ = "experiments"
     __table_args__ = (
         Index("idx_experiments_public_token", "public_token", unique=True),
+        # Backs the dashboard "recent experiments" sort. Partial on
+        # ``deleted_at IS NULL`` so the soft-delete listener can ride
+        # the index. ``DESC NULLS LAST`` matches the SQL ORDER BY.
+        Index(
+            "idx_experiments_org_last_activity_live",
+            "org_id",
+            "last_activity_at",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         # Mirror the partial-unique pattern used on ``tasks`` so a
         # soft-deleted experiment doesn't take its name slot with it.
         # Experiments don't currently have a name uniqueness constraint,
@@ -236,15 +245,30 @@ class ExperimentModel(TimestampedMixin, Base):
     # -------------------------------------------------------------------------
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
+    # Denormalized "last activity" timestamp for the dashboard recent
+    # experiments sort. Updated best-effort by ``create_task``, the
+    # task version insert path, and trial inserts/finishes. Falling
+    # back to ``NULL`` is fine -- the dashboard query treats NULL as
+    # "no activity" and orders it last. A periodic reconciliation job
+    # in the cleanup sweep (``oddish.workers.queue.cleanup``) refreshes
+    # any drift from missed write-path updates.
+    last_activity_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Public sharing (nullable until published)
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # ``lazy="select"`` (the default): no production read path actually
+    # touches ``experiment.tasks``. Loading an experiment used to fan
+    # out into a task fetch via ``task_experiments`` on every access;
+    # callers that genuinely need the task list should add
+    # ``selectinload(ExperimentModel.tasks)`` explicitly.
     tasks: Mapped[list["TaskModel"]] = relationship(  # type: ignore[assignment]
         "TaskModel",
         secondary=task_experiments,
         back_populates="experiments",
-        lazy="selectin",
         passive_deletes=True,
     )
 
@@ -255,6 +279,17 @@ class TaskModel(TimestampedMixin, Base):
     __tablename__ = "tasks"
     __table_args__ = (
         Index("idx_tasks_org_created_at", "org_id", "created_at"),
+        # Partial mirror of ``idx_tasks_org_created_at`` that matches
+        # the ``deleted_at IS NULL`` predicate the soft-delete listener
+        # appends to every read. Lets the dashboard recent-tasks list
+        # and experiment task list ordering use a tight index scan
+        # instead of filtering after a wider range scan.
+        Index(
+            "idx_tasks_org_created_at_live",
+            "org_id",
+            "created_at",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         # Soft-deleted rows are excluded so a user can reuse a task name
         # after deletion without hitting a "ghost" tombstone. The
         # auto-filter in :mod:`oddish.db.soft_delete` keeps reads of those
@@ -338,17 +373,27 @@ class TaskModel(TimestampedMixin, Base):
         lazy="selectin",
         passive_deletes=True,
     )
+    # ``lazy="select"``: only the explicit ``list_task_versions_core``
+    # path actually wants the full version history, and it already
+    # issues its own ``SELECT TaskVersionModel WHERE task_id = ...``.
+    # Eager-loading on every TaskModel fetch was charging every
+    # dashboard / experiment / files endpoint for a fan-out they did
+    # not consume.
     versions: Mapped[list["TaskVersionModel"]] = relationship(  # type: ignore[assignment]
         "TaskVersionModel",
         back_populates="task",
-        lazy="selectin",
         foreign_keys="TaskVersionModel.task_id",
         passive_deletes=True,
     )
+    # ``lazy="select"``: only the file-serving routes
+    # (``list_task_files`` / ``get_task_file_content`` and their public
+    # mirrors) read ``task.current_version.version``. Those call sites
+    # add ``selectinload(TaskModel.current_version)`` themselves, so the
+    # rest of the codebase stops paying for an extra round trip per
+    # TaskModel load.
     current_version: Mapped["TaskVersionModel | None"] = relationship(  # type: ignore[assignment]
         "TaskVersionModel",
         foreign_keys=[current_version_id],
-        lazy="selectin",
         uselist=False,
     )
 
@@ -617,6 +662,27 @@ class TrialModel(TimestampedMixin, Base):
             "superseded_by_trial_id",
             postgresql_where=text("superseded_by_trial_id IS NOT NULL"),
         ),
+        # Live + non-superseded composite for the dashboard experiment
+        # aggregation and experiment-scoped trial listings. Matches
+        # both predicates the soft-delete listener and the rerun-history
+        # collapse always pair.
+        Index(
+            "idx_trials_live_org_experiment_created",
+            "org_id",
+            "experiment_id",
+            "created_at",
+            postgresql_where=text(
+                "deleted_at IS NULL AND superseded_by_trial_id IS NULL"
+            ),
+        ),
+        # Live trials grouped by status -- backs the queue stats
+        # aggregation in ``oddish.queue.get_queue_stats``.
+        Index(
+            "idx_trials_live_org_status",
+            "org_id",
+            "status",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
     )
 
 
@@ -777,6 +843,17 @@ class WorkerJobModel(TimestampedMixin, Base):
             "idx_worker_jobs_subject",
             "subject_table",
             "subject_id",
+        ),
+        # Recent-terminal branch of ``fetch_visible_worker_jobs``: we
+        # filter by ``finished_at IS NOT NULL`` and ORDER BY
+        # ``finished_at DESC``, so the partial index gives us a tight
+        # range scan keyed on the subject pair.
+        Index(
+            "idx_worker_jobs_subject_finished_recent",
+            "subject_table",
+            "subject_id",
+            "finished_at",
+            postgresql_where=text("finished_at IS NOT NULL"),
         ),
         Index(
             "idx_worker_jobs_parent",

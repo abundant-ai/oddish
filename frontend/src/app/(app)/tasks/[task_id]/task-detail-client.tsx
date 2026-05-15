@@ -41,11 +41,7 @@ import {
   getRewardStyle,
   STATUS_CONFIG,
 } from "@/lib/status-config";
-import {
-  EMPTY_TRIAL_AGGREGATE,
-  summarizeTrials,
-  type TrialAggregate,
-} from "@/lib/trial-aggregation";
+import { summarizeTrials, type TrialAggregate } from "@/lib/trial-aggregation";
 import type {
   Task,
   TaskDetailResponse,
@@ -60,7 +56,10 @@ function readVersionFromQuery(): string | null {
   return new URLSearchParams(window.location.search).get("version");
 }
 
-function writeVersionToQuery(versionId: string | null, defaultId: string | null) {
+function writeVersionToQuery(
+  versionId: string | null,
+  defaultId: string | null,
+) {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
   if (versionId == null || versionId === defaultId) {
@@ -91,7 +90,11 @@ function CostBadge({
         ? "text-[20px]"
         : "text-[13px]";
   const prefixClass =
-    size === "lg" ? "text-[16px]" : size === "md" ? "text-[13px]" : "text-[10px]";
+    size === "lg"
+      ? "text-[16px]"
+      : size === "md"
+        ? "text-[13px]"
+        : "text-[10px]";
   const titleText =
     trialCount === 0
       ? "No cost data reported yet"
@@ -120,13 +123,17 @@ function CostBadge({
       title={titleText}
     >
       {hasEstimated && !hasNative && (
-        <span className={`font-mono ${prefixClass} text-[color:var(--paper-ink-3)]`}>
+        <span
+          className={`font-mono ${prefixClass} text-[color:var(--paper-ink-3)]`}
+        >
           ~
         </span>
       )}
       {formatCostUsd(cost)}
       {hasEstimated && hasNative && (
-        <span className={`font-mono ${prefixClass} text-[color:var(--paper-ink-3)]`}>
+        <span
+          className={`font-mono ${prefixClass} text-[color:var(--paper-ink-3)]`}
+        >
           *
         </span>
       )}
@@ -283,7 +290,9 @@ function VersionSwitcher({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="font-mono w-[320px]">
         {versions.map((v) => {
-          const label = v.is_current ? `v${v.version} · current` : `v${v.version}`;
+          const label = v.is_current
+            ? `v${v.version} · current`
+            : `v${v.version}`;
           const cost =
             v.cost_trial_count > 0
               ? `${v.cost_has_estimated && !v.cost_has_native ? "~" : ""}${formatCostUsd(v.cost_usd)}`
@@ -312,14 +321,12 @@ function VersionSwitcher({
   );
 }
 
-function TrialChip({
-  trial,
-  onClick,
-}: {
-  trial: Trial;
-  onClick: () => void;
-}) {
-  const status = getMatrixStatus(trial.status, trial.reward, trial.error_message);
+function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
+  const status = getMatrixStatus(
+    trial.status,
+    trial.reward,
+    trial.error_message,
+  );
   const config = STATUS_CONFIG[status];
   const badgeLabel =
     status === "partial" ? formatPartialRewardBadgeValue(trial.reward) : null;
@@ -331,7 +338,9 @@ function TrialChip({
           type="button"
           onClick={onClick}
           className={`flex h-[22px] w-[22px] items-center justify-center rounded-[4px] border font-mono font-semibold leading-none transition ${config.matrixClass} ${
-            status === "partial" ? "text-[8px] tracking-[-0.03em]" : "text-[10px]"
+            status === "partial"
+              ? "text-[8px] tracking-[-0.03em]"
+              : "text-[10px]"
           }`}
           style={getRewardStyle(trial.reward)}
           aria-label={`${trial.name} ${config.shortLabel}`}
@@ -380,7 +389,9 @@ function AgentCard({
       ? (summary.rewardSum / summary.rewardTotal) * 100
       : null;
   const avgCostUsd =
-    summary.costTrialCount > 0 ? summary.costUsd / summary.costTrialCount : null;
+    summary.costTrialCount > 0
+      ? summary.costUsd / summary.costTrialCount
+      : null;
   const avgDurationSec = useMemo(() => {
     let sum = 0;
     let count = 0;
@@ -424,7 +435,9 @@ function AgentCard({
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]">
           <span>
             <span className="text-[color:var(--paper-ink-3)]">trials</span>{" "}
-            <span className="text-[color:var(--paper-ink)]">{summary.trialCount}</span>
+            <span className="text-[color:var(--paper-ink)]">
+              {summary.trialCount}
+            </span>
           </span>
           <span>
             <span className="text-[color:var(--paper-ink-3)]">avg score</span>{" "}
@@ -451,7 +464,9 @@ function AgentCard({
             </span>
           </span>
           <span title="Mean wall-clock duration (started_at → finished_at)">
-            <span className="text-[color:var(--paper-ink-3)]">avg duration</span>{" "}
+            <span className="text-[color:var(--paper-ink-3)]">
+              avg duration
+            </span>{" "}
             <span className="text-[color:var(--paper-ink)]">
               {avgDurationSec != null ? formatDurationSec(avgDurationSec) : "—"}
             </span>
@@ -525,7 +540,10 @@ export function TaskDetailClient({
   );
 
   useEffect(() => {
-    if (selectedVersionId != null && versions.some((v) => v.id === selectedVersionId)) {
+    if (
+      selectedVersionId != null &&
+      versions.some((v) => v.id === selectedVersionId)
+    ) {
       return;
     }
     const fromUrl = readVersionFromQuery();
@@ -553,7 +571,7 @@ export function TaskDetailClient({
   const versionSummary: TrialAggregate = useMemo(() => {
     if (selectedVersion) return summaryFromVersion(selectedVersion);
     return summarizeTrials(trialsForVersion);
-  }, [selectedVersion, selectedVersionId, task, trialsForVersion]);
+  }, [selectedVersion, trialsForVersion]);
 
   const tasksForGrouping = useMemo<Task[]>(
     () =>
@@ -634,9 +652,7 @@ export function TaskDetailClient({
   const handleNavigateToTrial = useCallback(
     (trial: Trial, trialIndex: number) => {
       setDrawer((prev) =>
-        prev
-          ? { ...prev, mode: "trial", trial, trialIndex }
-          : prev,
+        prev ? { ...prev, mode: "trial", trial, trialIndex } : prev,
       );
     },
     [],
@@ -661,13 +677,13 @@ export function TaskDetailClient({
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(
-          data.detail || data.error || "Failed to queue judge",
-        );
+        throw new Error(data.detail || data.error || "Failed to queue judge");
       }
       void mutate();
     } catch (err) {
-      setJudgeError(err instanceof Error ? err.message : "Failed to queue judge");
+      setJudgeError(
+        err instanceof Error ? err.message : "Failed to queue judge",
+      );
     } finally {
       setIsRunningJudge(false);
     }
@@ -822,7 +838,8 @@ export function TaskDetailClient({
             </h2>
             <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
               {agentSummaries.length} agent
-              {agentSummaries.length === 1 ? "" : "s"} · {trialsForVersion.length} trial
+              {agentSummaries.length === 1 ? "" : "s"} ·{" "}
+              {trialsForVersion.length} trial
               {trialsForVersion.length === 1 ? "" : "s"}
             </span>
           </div>
@@ -901,7 +918,12 @@ export function TaskDetailClient({
                   onNavigateToTask={() =>
                     setDrawer((prev) =>
                       prev
-                        ? { ...prev, mode: "task", trial: null, trialIndex: null }
+                        ? {
+                            ...prev,
+                            mode: "task",
+                            trial: null,
+                            trialIndex: null,
+                          }
                         : prev,
                     )
                   }

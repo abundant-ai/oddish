@@ -91,7 +91,9 @@ def configure_logfire(service_name: str) -> bool:
 
         token = os.environ.get("LOGFIRE_TOKEN")
         if not token:
-            logger.info("LOGFIRE_TOKEN not set; skipping Logfire setup (%s)", service_name)
+            logger.info(
+                "LOGFIRE_TOKEN not set; skipping Logfire setup (%s)", service_name
+            )
             return False
 
         try:
@@ -128,36 +130,54 @@ def configure_logfire(service_name: str) -> bool:
         _safe_instrument(logfire.instrument_httpx)
         _safe_instrument(logfire.instrument_asyncpg)
         _safe_instrument(logfire.instrument_system_metrics)
-        # SQLAlchemy is wired per-engine in oddish.db; we instrument the
-        # SQLA library globally so all engines pick it up.
-        _safe_instrument(logfire.instrument_sqlalchemy)
+        # SQLAlchemy instrumentation walks the expression tree on every
+        # execute, which is meaningful overhead on hot paths like the
+        # dashboard aggregator. ``instrument_asyncpg`` already gives us
+        # query-level visibility one layer down, so the SQLA wrapper is
+        # gated behind an explicit opt-in env var. Set
+        # ``ODDISH_LOGFIRE_INSTRUMENT_SQLA=1`` in environments where
+        # the extra ORM-level detail is worth the cost (typically a
+        # debug session, not steady-state production).
+        if os.environ.get("ODDISH_LOGFIRE_INSTRUMENT_SQLA", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            _safe_instrument(logfire.instrument_sqlalchemy)
 
         # Give traces a meaningful shape: every function call inside our
         # own packages becomes a span (above the duration floor) so
         # the auto-instrumented HTTP / DB / httpx spans nest under
         # business-named parents like ``api.routers.trials.cancel`` or
-        # ``oddish.workers.queue.worker_job_single_job.run_single_worker_job``
-        # instead of floating at trace root with no context.
+        # ``worker.functions.process_single_job`` instead of floating
+        # at trace root with no context.
+        #
+        # We deliberately exclude ``oddish.core`` and ``oddish.queue``:
+        # those packages contain helpers (``_resolve_trial_cost``,
+        # ``_build_task_status_response``, ``_normalize_worker_job_kind``,
+        # ``fetch_visible_worker_jobs``, etc.) called many times per
+        # request. Auto-tracing wraps every call with span machinery
+        # regardless of ``min_duration``, so even when the span is
+        # discarded the wrapping overhead applies. Keep the entry-point
+        # surface (`api.routers`, `worker.functions`) instrumented for
+        # trace shape; rely on the auto-instrumented asyncpg/httpx
+        # spans for the inner work.
         #
         # ``check_imported_modules='ignore'`` is intentional: the
         # ``api`` / ``worker`` PACKAGE objects are inevitably already
         # in ``sys.modules`` by the time we're called (because this
         # call lives inside ``api/__init__.py`` / ``worker/__init__.py``).
         # The submodules we actually want to trace (``api.routers.*``,
-        # ``worker.functions``, ``oddish.*``) are NOT yet imported, so
-        # the import-hook still fires for them — but Logfire would
-        # otherwise spam a warning about the already-imported package
-        # roots.
+        # ``worker.functions``) are NOT yet imported, so the import-hook
+        # still fires for them — but Logfire would otherwise spam a
+        # warning about the already-imported package roots.
         try:
             logfire.install_auto_tracing(
                 modules=[
                     "api.routers",
-                    "oddish.core",
-                    "oddish.queue",
-                    "oddish.workers",
                     "worker.functions",
                 ],
-                min_duration=0.05,
+                min_duration=0.25,
                 check_imported_modules="ignore",
             )
         except Exception:

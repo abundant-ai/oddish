@@ -54,30 +54,46 @@ def _normalize_dashboard_model(model: str | None, provider: str | None) -> str:
 # ---------------------------------------------------------------------------
 # Response Caching
 # ---------------------------------------------------------------------------
+#
+# Two independent slices so that filter/page changes on one half don't
+# invalidate the other. The previous single-key cache forced an
+# all-or-nothing recompute every time a query / status filter / time
+# range changed, which made the cache TTL effectively zero in practice.
+#
+# The "experiments slice" carries the recent-experiments table; the
+# "primary slice" carries queue stats, pipeline stats, model usage,
+# worker_job usage, and the recent-tasks list. Both share the same
+# bucketed-LRU bookkeeping but live in their own dicts so eviction
+# pressure on one doesn't churn the other.
 
-_dashboard_cache: dict[str, tuple[dict, float]] = {}
-_CACHE_TTL_SECONDS = 60
 _CACHE_MAX_SIZE = 100
+_EXPERIMENTS_CACHE_TTL_SECONDS = 30
+_PRIMARY_CACHE_TTL_SECONDS = 60
+
+_dashboard_experiments_cache: dict[str, tuple[Any, float]] = {}
+_dashboard_primary_cache: dict[str, tuple[Any, float]] = {}
 
 
-def _get_cached(cache_key: str) -> dict | None:
-    if cache_key not in _dashboard_cache:
+def _slice_get_cached(
+    bucket: dict[str, tuple[Any, float]], cache_key: str, ttl_seconds: int
+) -> Any | None:
+    if cache_key not in bucket:
         return None
-    cached, cached_at = _dashboard_cache[cache_key]
-    if time.time() - cached_at > _CACHE_TTL_SECONDS:
-        del _dashboard_cache[cache_key]
+    cached, cached_at = bucket[cache_key]
+    if time.time() - cached_at > ttl_seconds:
+        del bucket[cache_key]
         return None
     return cached
 
 
-def _set_cached(cache_key: str, data: dict) -> None:
-    if len(_dashboard_cache) >= _CACHE_MAX_SIZE:
-        sorted_keys = sorted(
-            _dashboard_cache.keys(), key=lambda k: _dashboard_cache[k][1]
-        )
+def _slice_set_cached(
+    bucket: dict[str, tuple[Any, float]], cache_key: str, data: Any
+) -> None:
+    if len(bucket) >= _CACHE_MAX_SIZE:
+        sorted_keys = sorted(bucket.keys(), key=lambda k: bucket[k][1])
         for k in sorted_keys[: _CACHE_MAX_SIZE // 4]:
-            del _dashboard_cache[k]
-    _dashboard_cache[cache_key] = (data, time.time())
+            del bucket[k]
+    bucket[cache_key] = (data, time.time())
 
 
 # ---------------------------------------------------------------------------
@@ -85,85 +101,101 @@ def _set_cached(cache_key: str, data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def load_dashboard_experiments(
-    session: AsyncSession,
-    *,
-    org_id: str | None = None,
-    experiments_limit: int,
-    experiments_offset: int,
-    experiments_query: str | None,
-    experiments_status: str,
-    record_timing: TimingRecorder | None = None,
-) -> tuple[list[dict[str, Any]], bool]:
-    """Load experiment summaries for the dashboard."""
+# Status filters depend on aggregated trial/verdict counts that we
+# can't apply until after per-experiment aggregation. To make those
+# filters cheap we over-fetch a wider window of experiments by
+# ``last_activity_at`` and let the post-aggregation filter trim it.
+# The multiplier and ceiling are small enough to keep the page query
+# tight while still returning a full page in the common case.
+_STATUS_FILTER_OVERFETCH_MULTIPLIER = 4
+_STATUS_FILTER_OVERFETCH_CEILING = 200
 
-    # Task-level aggregation (via task_experiments join table). A task
-    # linked to multiple experiments contributes to each experiment's
-    # aggregation.
-    task_agg_query = select(
-        task_experiments.c.experiment_id.label("experiment_id"),
-        func.count(TaskModel.id).label("task_count"),
-        func.count(case((TaskModel.run_analysis.is_(True), 1))).label("analysis_tasks"),
-        func.count(
-            case(
-                (
-                    and_(
-                        TaskModel.verdict_status == VerdictStatus.SUCCESS,
-                        TaskModel.verdict["is_good"].astext == "true",
-                    ),
-                    1,
+
+def _build_aggregates_for_experiment_ids(
+    experiment_ids: list[str], *, org_id: str | None
+):
+    """Return (task_agg_subquery, trial_agg_subquery) scoped to a page.
+
+    Both subqueries restrict their FROM-side to the given experiment ids
+    so the planner walks only ``len(experiment_ids)`` rows worth of
+    tasks/trials instead of the org's full set. Org scoping is also
+    applied for defense in depth -- ``last_activity_at`` is denormalized
+    onto the experiment row so the page lookup already filters by org,
+    but any caller passing a stale page from a different org still sees
+    only their own data.
+    """
+    task_agg_query = (
+        select(
+            task_experiments.c.experiment_id.label("experiment_id"),
+            func.count(TaskModel.id).label("task_count"),
+            func.count(case((TaskModel.run_analysis.is_(True), 1))).label(
+                "analysis_tasks"
+            ),
+            func.count(
+                case(
+                    (
+                        and_(
+                            TaskModel.verdict_status == VerdictStatus.SUCCESS,
+                            TaskModel.verdict["is_good"].astext == "true",
+                        ),
+                        1,
+                    )
                 )
-            )
-        ).label("verdict_good"),
-        func.count(
-            case(
-                (
-                    and_(
-                        TaskModel.verdict_status == VerdictStatus.SUCCESS,
-                        TaskModel.verdict["is_good"].astext == "false",
-                    ),
-                    1,
+            ).label("verdict_good"),
+            func.count(
+                case(
+                    (
+                        and_(
+                            TaskModel.verdict_status == VerdictStatus.SUCCESS,
+                            TaskModel.verdict["is_good"].astext == "false",
+                        ),
+                        1,
+                    )
                 )
-            )
-        ).label("verdict_needs_review"),
-        func.count(case((TaskModel.verdict_status == VerdictStatus.FAILED, 1))).label(
-            "verdict_failed"
-        ),
-        func.count(
-            case(
-                (
-                    and_(
-                        TaskModel.run_analysis.is_(True),
-                        or_(
-                            TaskModel.verdict_status.is_(None),
-                            TaskModel.verdict_status.in_(
-                                [
-                                    VerdictStatus.PENDING,
-                                    VerdictStatus.QUEUED,
-                                    VerdictStatus.RUNNING,
-                                ]
-                            ),
-                            TaskModel.status.in_(
-                                [
-                                    TaskStatus.ANALYZING,
-                                    TaskStatus.VERDICT_PENDING,
-                                ]
+            ).label("verdict_needs_review"),
+            func.count(
+                case((TaskModel.verdict_status == VerdictStatus.FAILED, 1))
+            ).label("verdict_failed"),
+            func.count(
+                case(
+                    (
+                        and_(
+                            TaskModel.run_analysis.is_(True),
+                            or_(
+                                TaskModel.verdict_status.is_(None),
+                                TaskModel.verdict_status.in_(
+                                    [
+                                        VerdictStatus.PENDING,
+                                        VerdictStatus.QUEUED,
+                                        VerdictStatus.RUNNING,
+                                    ]
+                                ),
+                                TaskModel.status.in_(
+                                    [
+                                        TaskStatus.ANALYZING,
+                                        TaskStatus.VERDICT_PENDING,
+                                    ]
+                                ),
                             ),
                         ),
-                    ),
-                    1,
+                        1,
+                    )
                 )
+            ).label("verdict_pending"),
+            func.max(TaskModel.created_at).label("last_task_created_at"),
+        )
+        .select_from(
+            task_experiments.join(
+                TaskModel,  # type: ignore[arg-type]
+                TaskModel.id == task_experiments.c.task_id,
             )
-        ).label("verdict_pending"),
-        func.max(TaskModel.created_at).label("last_task_created_at"),
-    ).select_from(
-        task_experiments.join(TaskModel, TaskModel.id == task_experiments.c.task_id)  # type: ignore[arg-type]
+        )
+        .where(task_experiments.c.experiment_id.in_(experiment_ids))
     )
     if org_id is not None:
         task_agg_query = task_agg_query.where(TaskModel.org_id == org_id)
     task_agg = task_agg_query.group_by(task_experiments.c.experiment_id).subquery()
 
-    # Trial-level aggregation (via trial.experiment_id)
     trial_agg_query = select(
         TrialModel.experiment_id.label("experiment_id"),
         func.max(TrialModel.created_at).label("last_trial_created_at"),
@@ -194,48 +226,156 @@ async def load_dashboard_experiments(
         func.sum(TrialModel.reward).label("reward_sum"),
         func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
     ).where(
-        TrialModel.experiment_id.isnot(None),
-        # Mirror ``get_task_status_trials`` -- the dashboard's "trials"
-        # column should reflect live trials only, not the rerun chain.
+        TrialModel.experiment_id.in_(experiment_ids),
         TrialModel.superseded_by_trial_id.is_(None),
     )
     if org_id is not None:
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
     trial_agg = trial_agg_query.group_by(TrialModel.experiment_id).subquery()
 
-    # Latest task author info per experiment (via task_experiments).
-    latest_task_query = select(
-        task_experiments.c.experiment_id.label("experiment_id"),
-        TaskModel.user.label("last_user"),
-        TaskModel.tags["github_username"].astext.label("last_github_username"),
-        TaskModel.tags["github_meta"].astext.label("last_github_meta"),
-    ).select_from(
-        task_experiments.join(TaskModel, TaskModel.id == task_experiments.c.task_id)  # type: ignore[arg-type]
+    return task_agg, trial_agg
+
+
+def _experiment_row_passes_status_filter(row, *, status_filter: str) -> bool:
+    if status_filter == "active":
+        return int(row["active_trials"] or 0) > 0
+    if status_filter == "needs-review":
+        return int(row["verdict_needs_review"] or 0) > 0
+    if status_filter == "pending-verdict":
+        return int(row["verdict_pending"] or 0) > 0
+    if status_filter == "failed":
+        return int(row["verdict_failed"] or 0) > 0 or int(row["failed_trials"] or 0) > 0
+    if status_filter == "completed":
+        return int(row["active_trials"] or 0) == 0
+    return True
+
+
+async def load_dashboard_experiments(
+    session: AsyncSession,
+    *,
+    org_id: str | None = None,
+    experiments_limit: int,
+    experiments_offset: int,
+    experiments_query: str | None,
+    experiments_status: str,
+    record_timing: TimingRecorder | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Load experiment summaries for the dashboard.
+
+    Two-step query (much faster than the previous full-org aggregation):
+
+    1. Page experiments by the denormalized ``last_activity_at``
+       column (indexed via ``idx_experiments_org_last_activity_live``).
+       Optional text filter on ``experiment.name`` / ``experiment.id``
+       / latest-author fields runs against the same indexed scan.
+    2. Aggregate per-experiment task / trial counts only for the page
+       ids returned in step 1.
+
+    Status filters can't be applied until after the aggregates exist,
+    so when one is set we over-fetch a wider window in step 1 and
+    trim post-aggregation. The over-fetch ceiling caps worst-case
+    work even on huge orgs.
+    """
+
+    # ------------------------------------------------------------------
+    # Step 1: page experiment ids by ``last_activity_at`` (indexed).
+    # ------------------------------------------------------------------
+    needs_overfetch = experiments_status not in ("", "all")
+    page_size = experiments_limit + 1
+    if needs_overfetch:
+        page_size = min(
+            (experiments_limit + 1) * _STATUS_FILTER_OVERFETCH_MULTIPLIER,
+            _STATUS_FILTER_OVERFETCH_CEILING,
+        )
+
+    normalized_query = (experiments_query or "").strip().lower()
+
+    page_query = select(
+        ExperimentModel.id.label("experiment_id"),
+        ExperimentModel.name.label("experiment_name"),
+        ExperimentModel.is_public.label("experiment_is_public"),
+        ExperimentModel.last_activity_at.label("last_activity_at"),
+    )
+    if org_id is not None:
+        page_query = page_query.where(ExperimentModel.org_id == org_id)
+    if normalized_query:
+        # Author search has to wait until the latest_task lookup runs
+        # (step 1.5) -- the index-friendly fields are name and id.
+        query_like = f"%{normalized_query}%"
+        page_query = page_query.where(
+            or_(
+                func.lower(ExperimentModel.name).like(query_like),
+                func.lower(ExperimentModel.id).like(query_like),
+            )
+        )
+    page_query = (
+        page_query.order_by(
+            nulls_last(ExperimentModel.last_activity_at.desc()),
+            ExperimentModel.id.asc(),
+        )
+        .limit(page_size)
+        .offset(experiments_offset)
+    )
+
+    page_started_at = now()
+    page_rows = (await session.execute(page_query)).mappings().all()
+    if record_timing is not None:
+        record_timing(
+            "dashboard_experiments_page",
+            elapsed_ms(page_started_at),
+            "Dashboard experiments page lookup",
+        )
+
+    if not page_rows:
+        return [], False
+
+    experiment_ids = [str(row["experiment_id"]) for row in page_rows]
+
+    # ------------------------------------------------------------------
+    # Step 1.5: latest task author info, scoped to the page.
+    # ------------------------------------------------------------------
+    latest_task_query = (
+        select(
+            task_experiments.c.experiment_id.label("experiment_id"),
+            TaskModel.user.label("last_user"),
+            TaskModel.tags["github_username"].astext.label("last_github_username"),
+            TaskModel.tags["github_meta"].astext.label("last_github_meta"),
+        )
+        .select_from(
+            task_experiments.join(
+                TaskModel,  # type: ignore[arg-type]
+                TaskModel.id == task_experiments.c.task_id,
+            )
+        )
+        .where(task_experiments.c.experiment_id.in_(experiment_ids))
     )
     if org_id is not None:
         latest_task_query = latest_task_query.where(TaskModel.org_id == org_id)
-    latest_task = (
-        latest_task_query.order_by(
-            task_experiments.c.experiment_id.asc(),
-            TaskModel.created_at.desc(),
-            TaskModel.id.desc(),
-        )
-        .distinct(task_experiments.c.experiment_id)
-        .subquery()
+    latest_task_query = latest_task_query.order_by(
+        task_experiments.c.experiment_id.asc(),
+        TaskModel.created_at.desc(),
+        TaskModel.id.desc(),
+    ).distinct(task_experiments.c.experiment_id)
+
+    latest_task_rows = (await session.execute(latest_task_query)).mappings().all()
+    latest_task_by_id = {str(row["experiment_id"]): row for row in latest_task_rows}
+
+    # ------------------------------------------------------------------
+    # Step 2: aggregate task / trial counts for just this page.
+    # ------------------------------------------------------------------
+    task_agg, trial_agg = _build_aggregates_for_experiment_ids(
+        experiment_ids, org_id=org_id
     )
 
-    # Build experiment rows starting from ExperimentModel
-    exp_base = (
+    # Iterate the aggregates over the canonical page-id list (via the
+    # ``ExperimentModel`` table itself, restricted to the page) so an
+    # experiment that has trials but no ``task_experiments`` row still
+    # gets its trial counts. Outer-joining off ``task_experiments``
+    # would silently drop those.
+    agg_query = (
         select(
             ExperimentModel.id.label("experiment_id"),
-            ExperimentModel.name.label("experiment_name"),
-            case((ExperimentModel.is_public.is_(True), 1), else_=0).label(
-                "experiment_is_public"
-            ),
-            func.greatest(
-                func.coalesce(task_agg.c.task_count, 0),
-                func.coalesce(trial_agg.c.trial_task_count, 0),
-            ).label("task_count"),
+            func.coalesce(task_agg.c.task_count, 0).label("task_count"),
             func.coalesce(task_agg.c.analysis_tasks, 0).label("analysis_tasks"),
             func.coalesce(task_agg.c.verdict_good, 0).label("verdict_good"),
             func.coalesce(task_agg.c.verdict_needs_review, 0).label(
@@ -243,6 +383,7 @@ async def load_dashboard_experiments(
             ),
             func.coalesce(task_agg.c.verdict_failed, 0).label("verdict_failed"),
             func.coalesce(task_agg.c.verdict_pending, 0).label("verdict_pending"),
+            func.coalesce(trial_agg.c.trial_task_count, 0).label("trial_task_count"),
             func.coalesce(trial_agg.c.total_trials, 0).label("total_trials"),
             func.coalesce(trial_agg.c.completed_trials, 0).label("completed_trials"),
             func.coalesce(trial_agg.c.failed_trials, 0).label("failed_trials"),
@@ -250,123 +391,134 @@ async def load_dashboard_experiments(
             func.coalesce(trial_agg.c.reward_success, 0).label("reward_success"),
             func.coalesce(trial_agg.c.reward_sum, 0.0).label("reward_sum"),
             func.coalesce(trial_agg.c.reward_total, 0).label("reward_total"),
-            func.coalesce(
-                func.greatest(
-                    task_agg.c.last_task_created_at,
-                    trial_agg.c.last_trial_created_at,
-                ),
-                task_agg.c.last_task_created_at,
-                trial_agg.c.last_trial_created_at,
-            ).label("last_created_at"),
-            latest_task.c.last_user,
-            latest_task.c.last_github_username,
-            latest_task.c.last_github_meta,
+            task_agg.c.last_task_created_at,
+            trial_agg.c.last_trial_created_at,
         )
         .select_from(ExperimentModel)
         .outerjoin(task_agg, task_agg.c.experiment_id == ExperimentModel.id)
         .outerjoin(trial_agg, trial_agg.c.experiment_id == ExperimentModel.id)
-        .outerjoin(latest_task, latest_task.c.experiment_id == ExperimentModel.id)
+        .where(ExperimentModel.id.in_(experiment_ids))
     )
-    exp_filter = or_(
-        task_agg.c.experiment_id.isnot(None),
-        trial_agg.c.experiment_id.isnot(None),
-    )
-    if org_id is not None:
-        exp_filter = and_(exp_filter, ExperimentModel.org_id == org_id)
-    experiment_rows = exp_base.where(exp_filter).subquery()
 
-    query = select(experiment_rows)
-
-    normalized_query = (experiments_query or "").strip().lower()
-    if normalized_query:
-        query_like = f"%{normalized_query}%"
-        query = query.where(
-            or_(
-                func.lower(experiment_rows.c.experiment_name).like(query_like),
-                func.lower(experiment_rows.c.experiment_id).like(query_like),
-                func.lower(func.coalesce(experiment_rows.c.last_user, "")).like(
-                    query_like
-                ),
-                func.lower(
-                    func.coalesce(experiment_rows.c.last_github_username, "")
-                ).like(query_like),
-            )
-        )
-
-    if experiments_status == "active":
-        query = query.where(experiment_rows.c.active_trials > 0)
-    elif experiments_status == "needs-review":
-        query = query.where(experiment_rows.c.verdict_needs_review > 0)
-    elif experiments_status == "pending-verdict":
-        query = query.where(experiment_rows.c.verdict_pending > 0)
-    elif experiments_status == "failed":
-        query = query.where(
-            or_(
-                experiment_rows.c.verdict_failed > 0,
-                experiment_rows.c.failed_trials > 0,
-            )
-        )
-    elif experiments_status == "completed":
-        query = query.where(experiment_rows.c.active_trials == 0)
-
-    query_started_at = now()
-    paged_rows = (
-        (
-            await session.execute(
-                query.order_by(
-                    nulls_last(experiment_rows.c.last_created_at.desc()),
-                    experiment_rows.c.experiment_id.asc(),
-                )
-                .limit(experiments_limit + 1)
-                .offset(experiments_offset)
-            )
-        )
-        .mappings()
-        .all()
-    )
+    agg_started_at = now()
+    agg_rows = (await session.execute(agg_query)).mappings().all()
     if record_timing is not None:
         record_timing(
-            "dashboard_experiments_query",
-            elapsed_ms(query_started_at),
-            "Dashboard experiments query",
+            "dashboard_experiments_aggregate",
+            elapsed_ms(agg_started_at),
+            "Dashboard experiments aggregate",
         )
 
-    experiments_has_more = len(paged_rows) > experiments_limit
-    page_rows = paged_rows[:experiments_limit]
+    aggregates_by_id = {str(row["experiment_id"]): row for row in agg_rows}
 
-    experiments_response: list[dict[str, Any]] = []
+    # ------------------------------------------------------------------
+    # Step 3: stitch + post-filter, preserving page order.
+    # ------------------------------------------------------------------
     build_started_at = now()
-    for row in page_rows:
-        github_meta = _parse_github_meta(row["last_github_meta"])
-        last_author_name = row["last_github_username"] or row["last_user"]
-        last_author_source = "github" if row["last_github_username"] else "api"
-        total_trials = int(row["total_trials"] or 0)
-        completed_trials = int(row["completed_trials"] or 0)
-        failed_trials = int(row["failed_trials"] or 0)
-        active_trials = int(row["active_trials"] or 0)
+    experiments_response: list[dict[str, Any]] = []
+    has_more = False
+
+    for page_row in page_rows:
+        if len(experiments_response) >= experiments_limit:
+            has_more = True
+            break
+
+        exp_id = str(page_row["experiment_id"])
+        agg = aggregates_by_id.get(exp_id)
+        latest_task = latest_task_by_id.get(exp_id)
+
+        # Synthesise zero-valued aggregates when the experiment has no
+        # tasks / trials at all, so author-only matches still render.
+        merged: dict[str, Any] = {
+            "experiment_id": exp_id,
+            "experiment_name": page_row["experiment_name"],
+            "experiment_is_public": page_row["experiment_is_public"],
+            "task_count": int(agg["task_count"]) if agg else 0,
+            "analysis_tasks": int(agg["analysis_tasks"]) if agg else 0,
+            "verdict_good": int(agg["verdict_good"]) if agg else 0,
+            "verdict_needs_review": int(agg["verdict_needs_review"]) if agg else 0,
+            "verdict_failed": int(agg["verdict_failed"]) if agg else 0,
+            "verdict_pending": int(agg["verdict_pending"]) if agg else 0,
+            "total_trials": int(agg["total_trials"]) if agg else 0,
+            "completed_trials": int(agg["completed_trials"]) if agg else 0,
+            "failed_trials": int(agg["failed_trials"]) if agg else 0,
+            "active_trials": int(agg["active_trials"]) if agg else 0,
+            "reward_success": int(agg["reward_success"]) if agg else 0,
+            "reward_sum": float(agg["reward_sum"] or 0.0) if agg else 0.0,
+            "reward_total": int(agg["reward_total"]) if agg else 0,
+            "last_user": latest_task["last_user"] if latest_task else None,
+            "last_github_username": (
+                latest_task["last_github_username"] if latest_task else None
+            ),
+            "last_github_meta": (
+                latest_task["last_github_meta"] if latest_task else None
+            ),
+        }
+
+        # ``task_count`` mirrors the previous greatest(task, trial) shape
+        # so callers see at least the number of tasks linked via trials.
+        if agg:
+            merged["task_count"] = max(
+                int(agg["task_count"] or 0), int(agg["trial_task_count"] or 0)
+            )
+
+        # Author-search post-filter: name/id matches already passed in
+        # step 1, so any miss here means the user typed an author and
+        # this experiment's latest task didn't match.
+        if normalized_query and not (
+            normalized_query in str(merged["experiment_name"] or "").lower()
+            or normalized_query in exp_id.lower()
+            or normalized_query in str(merged["last_user"] or "").lower()
+            or normalized_query in str(merged["last_github_username"] or "").lower()
+        ):
+            continue
+
+        if not _experiment_row_passes_status_filter(
+            merged, status_filter=experiments_status
+        ):
+            continue
+
+        last_created_at = merged.get("last_activity_at") or page_row.get(
+            "last_activity_at"
+        )
+        if agg:
+            # Keep the response shape stable: ``last_created_at`` is
+            # what the FE renders. Prefer the freshly-aggregated value
+            # over ``last_activity_at`` so newly-created tasks show up
+            # immediately even before the maintenance pass runs.
+            agg_last_task = agg["last_task_created_at"]
+            agg_last_trial = agg["last_trial_created_at"]
+            candidates = [
+                ts
+                for ts in (agg_last_task, agg_last_trial, last_created_at)
+                if ts is not None
+            ]
+            last_created_at = max(candidates) if candidates else None
+
+        github_meta = _parse_github_meta(merged["last_github_meta"])
+        last_author_name = merged["last_github_username"] or merged["last_user"]
+        last_author_source = "github" if merged["last_github_username"] else "api"
 
         experiments_response.append(
             {
-                "id": row["experiment_id"],
-                "name": row["experiment_name"],
-                "is_public": bool(row["experiment_is_public"]),
-                "task_count": int(row["task_count"] or 0),
-                "total_trials": total_trials,
-                "completed_trials": completed_trials,
-                "failed_trials": failed_trials,
-                "active_trials": active_trials,
-                "reward_success": int(row["reward_success"] or 0),
-                "reward_sum": float(row["reward_sum"] or 0.0),
-                "reward_total": int(row["reward_total"] or 0),
-                "analysis_tasks": int(row["analysis_tasks"] or 0),
-                "verdict_good": int(row["verdict_good"] or 0),
-                "verdict_needs_review": int(row["verdict_needs_review"] or 0),
-                "verdict_failed": int(row["verdict_failed"] or 0),
-                "verdict_pending": int(row["verdict_pending"] or 0),
+                "id": merged["experiment_id"],
+                "name": merged["experiment_name"],
+                "is_public": bool(merged["experiment_is_public"]),
+                "task_count": int(merged["task_count"] or 0),
+                "total_trials": int(merged["total_trials"] or 0),
+                "completed_trials": int(merged["completed_trials"] or 0),
+                "failed_trials": int(merged["failed_trials"] or 0),
+                "active_trials": int(merged["active_trials"] or 0),
+                "reward_success": int(merged["reward_success"] or 0),
+                "reward_sum": float(merged["reward_sum"] or 0.0),
+                "reward_total": int(merged["reward_total"] or 0),
+                "analysis_tasks": int(merged["analysis_tasks"] or 0),
+                "verdict_good": int(merged["verdict_good"] or 0),
+                "verdict_needs_review": int(merged["verdict_needs_review"] or 0),
+                "verdict_failed": int(merged["verdict_failed"] or 0),
+                "verdict_pending": int(merged["verdict_pending"] or 0),
                 "last_created_at": (
-                    row["last_created_at"].isoformat()
-                    if row["last_created_at"]
-                    else None
+                    last_created_at.isoformat() if last_created_at else None
                 ),
                 "last_author": (
                     {"name": last_author_name, "source": last_author_source}
@@ -391,13 +543,22 @@ async def load_dashboard_experiments(
             }
         )
 
+    # If we filled the page exactly and the page query returned more
+    # rows than we consumed, signal there is more.
+    if (
+        not has_more
+        and len(page_rows) > len(experiments_response)
+        and (len(page_rows) >= page_size)
+    ):
+        has_more = True
+
     if record_timing is not None:
         record_timing(
             "dashboard_experiments_build",
             elapsed_ms(build_started_at),
             "Dashboard experiments response build",
         )
-    return experiments_response, experiments_has_more
+    return experiments_response, has_more
 
 
 # ---------------------------------------------------------------------------
@@ -632,19 +793,24 @@ async def get_dashboard_core(
     include_experiments: bool = True,
     record_timing: TimingRecorder | None = None,
 ) -> dict:
-    """Combined dashboard data: queues, pipeline, usage, tasks, experiments."""
+    """Combined dashboard data: queues, pipeline, usage, tasks, experiments.
 
-    cache_key = (
-        f"dashboard:{org_id}:{tasks_limit}:{tasks_offset}:"
-        f"{experiments_limit}:{experiments_offset}:{experiments_query}:"
-        f"{experiments_status}:{usage_minutes}:{include_tasks}:{include_usage}:"
-        f"{include_experiments}"
+    Uses two independent caches so a recent-experiments page change
+    doesn't blow away the queue / usage / recent-tasks slice (and vice
+    versa). The previous single-cache path forced a full recompute on
+    every filter or pagination tweak.
+    """
+
+    primary_cache_key = (
+        f"dashboard.primary:{org_id}:"
+        f"{tasks_limit}:{tasks_offset}:{usage_minutes}:"
+        f"{include_tasks}:{include_usage}"
     )
-    cached = _get_cached(cache_key)
-    if cached:
-        if record_timing is not None:
-            record_timing("dashboard_cache", 0.0, "Dashboard cache hit")
-        return cached
+    experiments_cache_key = (
+        f"dashboard.experiments:{org_id}:"
+        f"{experiments_limit}:{experiments_offset}:{experiments_query}:"
+        f"{experiments_status}"
+    )
 
     is_usage_only_request = (
         include_usage and not include_tasks and not include_experiments
@@ -730,13 +896,22 @@ async def get_dashboard_core(
                         "Dashboard tasks response build",
                     )
 
-        return qs, ps, mu, ju, tr, hm
+        return {
+            "queues": qs,
+            "pipeline": ps,
+            "model_usage": mu,
+            "job_usage": ju,
+            "tasks": tr,
+            "tasks_limit": tasks_limit,
+            "tasks_offset": tasks_offset,
+            "has_more": hm,
+        }
 
-    async def _fetch_experiments_parallel() -> tuple[list[dict[str, Any]], bool]:
+    async def _fetch_experiments_parallel() -> dict:
         """Experiments on a separate session so they run concurrently with primary."""
         experiments_started_at = now()
         async with get_session() as exp_session:
-            result = await load_dashboard_experiments(
+            response, has_more = await load_dashboard_experiments(
                 exp_session,
                 org_id=org_id,
                 experiments_limit=experiments_limit,
@@ -751,54 +926,70 @@ async def get_dashboard_core(
                 elapsed_ms(experiments_started_at),
                 "Dashboard experiments total",
             )
-        return result
+        return {
+            "experiments": response,
+            "experiments_limit": experiments_limit,
+            "experiments_offset": experiments_offset,
+            "experiments_has_more": has_more,
+        }
 
     dashboard_started_at = now()
-    if include_experiments:
-        # Run the heavy experiments aggregation in parallel with primary stats.
-        (
-            (
-                queue_stats,
-                pipeline_stats,
-                model_usage,
-                job_usage,
-                tasks_response,
-                has_more,
-            ),
-            (
-                experiments_response,
-                experiments_has_more,
-            ),
-        ) = await asyncio.gather(_fetch_primary(), _fetch_experiments_parallel())
+
+    primary_cached = _slice_get_cached(
+        _dashboard_primary_cache, primary_cache_key, _PRIMARY_CACHE_TTL_SECONDS
+    )
+    experiments_cached = (
+        _slice_get_cached(
+            _dashboard_experiments_cache,
+            experiments_cache_key,
+            _EXPERIMENTS_CACHE_TTL_SECONDS,
+        )
+        if include_experiments
+        else None
+    )
+
+    primary_task = (
+        asyncio.create_task(_fetch_primary()) if primary_cached is None else None
+    )
+    experiments_task = (
+        asyncio.create_task(_fetch_experiments_parallel())
+        if include_experiments and experiments_cached is None
+        else None
+    )
+
+    if primary_task is not None:
+        primary_payload = await primary_task
+        _slice_set_cached(_dashboard_primary_cache, primary_cache_key, primary_payload)
     else:
-        (
-            queue_stats,
-            pipeline_stats,
-            model_usage,
-            job_usage,
-            tasks_response,
-            has_more,
-        ) = await _fetch_primary()
-        experiments_response = []
-        experiments_has_more = False
+        primary_payload = primary_cached
+
+    if include_experiments:
+        if experiments_task is not None:
+            experiments_payload = await experiments_task
+            _slice_set_cached(
+                _dashboard_experiments_cache,
+                experiments_cache_key,
+                experiments_payload,
+            )
+        else:
+            experiments_payload = experiments_cached
+    else:
+        experiments_payload = {
+            "experiments": [],
+            "experiments_limit": experiments_limit,
+            "experiments_offset": experiments_offset,
+            "experiments_has_more": False,
+        }
 
     response = {
-        "queues": queue_stats,
-        "pipeline": pipeline_stats,
-        "model_usage": model_usage,
-        "job_usage": job_usage,
-        "tasks": tasks_response,
-        "tasks_limit": tasks_limit,
-        "tasks_offset": tasks_offset,
-        "has_more": has_more,
-        "experiments": experiments_response,
-        "experiments_limit": experiments_limit,
-        "experiments_offset": experiments_offset,
-        "experiments_has_more": experiments_has_more,
-        "cached": False,
+        **primary_payload,
+        **experiments_payload,
+        "cached": (
+            primary_task is None
+            and (experiments_task is None or not include_experiments)
+        ),
     }
 
-    _set_cached(cache_key, {**response, "cached": True})
     if record_timing is not None:
         record_timing(
             "dashboard_total",
