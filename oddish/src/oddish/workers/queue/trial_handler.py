@@ -13,6 +13,7 @@ from pathlib import Path
 from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
+from sqlalchemy import and_, select
 
 from oddish.config import settings
 from oddish.db import (
@@ -21,7 +22,11 @@ from oddish.db import (
     TaskModel,
     TaskStatus,
     TaskVersionModel,
+    TrialModel,
     TrialStatus,
+    WorkerJobKind,
+    WorkerJobModel,
+    WorkerJobStatus,
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
@@ -31,14 +36,46 @@ from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
+ORACLE_GATE_SKIP_MESSAGE = "Skipped because oracle failed for this task"
+_ORACLE_AGENT = "oracle"
+_ORACLE_GATE_EXEMPT_AGENTS = {_ORACLE_AGENT, "nop", "noop"}
 
 
 def _extract_trial_index(trial_id: str, task_id: str) -> int:
     """Extract the 0-based trial index from a trial ID like '{task_id}-{index}'."""
-    suffix = trial_id[len(task_id):]  # e.g., "-0", "-1", "-2"
+    suffix = trial_id[len(task_id) :]  # e.g., "-0", "-1", "-2"
     if suffix.startswith("-") and suffix[1:].isdigit():
         return int(suffix[1:])
     return 0
+
+
+def _normalize_agent_name(agent: str | None) -> str:
+    return (agent or "").strip().lower()
+
+
+def _is_oracle_agent(agent: str | None) -> bool:
+    return _normalize_agent_name(agent) == _ORACLE_AGENT
+
+
+def _is_oracle_gate_exempt(agent: str | None) -> bool:
+    return _normalize_agent_name(agent) in _ORACLE_GATE_EXEMPT_AGENTS
+
+
+def _oracle_trial_failed(trial: TrialModel) -> bool:
+    if trial.status == TrialStatus.FAILED:
+        return True
+    if trial.status == TrialStatus.SUCCESS:
+        return trial.reward != 1.0
+    return False
+
+
+def _oracle_trial_pending(trial: TrialModel) -> bool:
+    return trial.status in (
+        TrialStatus.PENDING,
+        TrialStatus.QUEUED,
+        TrialStatus.RUNNING,
+        TrialStatus.RETRYING,
+    )
 
 
 @dataclass(slots=True)
@@ -168,8 +205,7 @@ def _cleanup_trial_wrapper_dirs(trial_id: str) -> None:
                 )
         if removed:
             console.print(
-                f"[dim]Swept {len(removed)} Harbor wrapper dir(s) for "
-                f"{trial_id}[/dim]"
+                f"[dim]Swept {len(removed)} Harbor wrapper dir(s) for {trial_id}[/dim]"
             )
     except Exception as exc:
         console.print(
@@ -529,11 +565,105 @@ async def _store_trial_results(
                 )
                 console.print(f"[cyan]Queued analysis for {trial_id}[/cyan]")
 
+            gated_count = await _apply_oracle_failure_gate(session, trial)
+            if gated_count:
+                console.print(
+                    f"[yellow]Oracle gate updated {gated_count} trial(s) for "
+                    f"task {trial.task_id}[/yellow]"
+                )
+
             started = await maybe_start_analysis_stage(session, trial_id)
             if started:
                 console.print(
                     f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
                 )
+
+
+async def _apply_oracle_failure_gate(session, oracle_trial: TrialModel) -> int:
+    """Unblock or fail BLOCKED sibling trials after an oracle reaches terminal.
+
+    The gate is opt-in at enqueue time: non-oracle/non-nop worker_jobs are
+    inserted as BLOCKED only when the sweep requested
+    ``fail_all_if_oracle_fails`` and included an oracle. Seeing BLOCKED sibling
+    TRIAL jobs is therefore the persistent signal that this task is gated.
+    """
+    if not _is_oracle_agent(oracle_trial.agent):
+        return 0
+
+    blocked_rows = (
+        await session.execute(
+            select(TrialModel, WorkerJobModel)
+            .join(
+                WorkerJobModel,
+                and_(
+                    WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                    WorkerJobModel.subject_table == "trials",
+                    WorkerJobModel.subject_id == TrialModel.id,
+                ),
+            )
+            .where(
+                TrialModel.task_id == oracle_trial.task_id,
+                TrialModel.superseded_by_trial_id.is_(None),
+                WorkerJobModel.status == WorkerJobStatus.BLOCKED,
+            )
+            .with_for_update()
+        )
+    ).all()
+    gated_rows = [
+        (trial, job)
+        for trial, job in blocked_rows
+        if not _is_oracle_gate_exempt(trial.agent)
+    ]
+    if not gated_rows:
+        return 0
+
+    oracle_rows = (
+        await session.execute(
+            select(TrialModel)
+            .where(
+                TrialModel.task_id == oracle_trial.task_id,
+                TrialModel.superseded_by_trial_id.is_(None),
+                TrialModel.agent == _ORACLE_AGENT,
+            )
+            .with_for_update()
+        )
+    ).scalars()
+    oracle_trials = list(oracle_rows)
+
+    oracle_failed = any(_oracle_trial_failed(trial) for trial in oracle_trials)
+    if oracle_failed:
+        now = utcnow()
+        task = await session.get(TaskModel, oracle_trial.task_id)
+        for gated_trial, worker_job in gated_rows:
+            gated_trial.status = TrialStatus.FAILED
+            gated_trial.finished_at = now
+            gated_trial.error_message = ORACLE_GATE_SKIP_MESSAGE
+            gated_trial.harbor_stage = "skipped_oracle_failed"
+            gated_trial.current_worker_id = None
+            gated_trial.current_queue_slot = None
+            gated_trial.heartbeat_at = now
+            if task and task.run_analysis:
+                gated_trial.analysis_status = AnalysisStatus.FAILED
+                gated_trial.analysis_error = ORACLE_GATE_SKIP_MESSAGE
+                gated_trial.analysis_finished_at = now
+
+            worker_job.status = WorkerJobStatus.FAILED
+            worker_job.error_message = ORACLE_GATE_SKIP_MESSAGE
+            worker_job.finished_at = now
+            worker_job.heartbeat_at = now
+        await session.flush()
+        return len(gated_rows)
+
+    if any(_oracle_trial_pending(trial) for trial in oracle_trials):
+        return 0
+
+    now = utcnow()
+    for _, worker_job in gated_rows:
+        worker_job.status = WorkerJobStatus.QUEUED
+        worker_job.error_message = None
+        worker_job.available_after = now
+    await session.flush()
+    return len(gated_rows)
 
 
 async def _handle_harbor_event(
@@ -854,7 +984,9 @@ async def run_trial_job(
                         task_tags=prepared_trial.task_tags,
                     )
                     if sauron_prefix:
-                        console.print(f"[dim]Mirrored to sauron S3: {sauron_prefix}[/dim]")
+                        console.print(
+                            f"[dim]Mirrored to sauron S3: {sauron_prefix}[/dim]"
+                        )
             except Exception as e:
                 console.print(f"[yellow]Sauron mirror failed (non-fatal): {e}[/yellow]")
 

@@ -27,6 +27,7 @@ class EnqueueRequest:
 
     kind: WorkerJobKind
     queue_key: str
+    status: WorkerJobStatus = WorkerJobStatus.QUEUED
     payload: dict[str, Any] = field(default_factory=dict)
     subject_table: str | None = None
     subject_id: str | None = None
@@ -62,7 +63,7 @@ async def enqueue_worker_job(
     row = WorkerJobModel(
         id=generate_id(),
         kind=request.kind,
-        status=WorkerJobStatus.QUEUED,
+        status=request.status,
         queue_key=request.queue_key,
         priority=request.priority,
         subject_table=request.subject_table,

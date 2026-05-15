@@ -566,6 +566,7 @@ def submit_sweep(
     priority: str,
     experiment_id: str | None,
     run_analysis: bool = False,
+    fail_all_if_oracle_fails: bool = False,
     github_username: str | None = None,
     tags: dict[str, str] | None = None,
     publish_experiment: bool | None = False,
@@ -624,6 +625,7 @@ def submit_sweep(
         "configs": configs,
         "priority": priority,
         "run_analysis": run_analysis,
+        "fail_all_if_oracle_fails": fail_all_if_oracle_fails,
     }
     if user:
         payload["user"] = user
@@ -1034,6 +1036,7 @@ def load_sweep_config(config_path: Path) -> dict:
         environment: daytona            # execution environment
         priority: low
         experiment_id: exp_123
+        fail_all_if_oracle_fails: true  # gate other agents on oracle passing
     """
     if not config_path.exists():
         error_console.print(f"[red]Config file not found:[/red] {config_path}")
@@ -1067,6 +1070,14 @@ def load_sweep_config(config_path: Path) -> dict:
         error_console.print(
             "[red]Top-level 'timeout_minutes' is no longer supported.[/red]\n"
             "Declare explicit timeouts in task.toml instead."
+        )
+        raise typer.Exit(1)
+
+    if "fail_all_if_oracle_fails" in config and not isinstance(
+        config["fail_all_if_oracle_fails"], bool
+    ):
+        error_console.print(
+            "[red]Top-level 'fail_all_if_oracle_fails' must be true or false.[/red]"
         )
         raise typer.Exit(1)
 

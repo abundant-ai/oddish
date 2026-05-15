@@ -173,6 +173,14 @@ class TaskSubmission(BaseModel):
         False,
         description="If True, run LLM analysis on each trial after completion and compute task verdict",
     )
+    fail_all_if_oracle_fails: bool = Field(
+        False,
+        description=(
+            "If True and an oracle trial is present, hold non-nop/non-oracle "
+            "trials until the oracle completes; fail them without running if "
+            "the oracle does not receive full reward."
+        ),
+    )
     github_username: str | None = Field(
         None,
         description="GitHub username to attribute this task to (recorded as metadata)",
@@ -254,6 +262,14 @@ class TaskSweepSubmission(BaseModel):
     run_analysis: bool = Field(
         False,
         description="If True, run LLM analysis on each trial after completion and compute task verdict",
+    )
+    fail_all_if_oracle_fails: bool = Field(
+        False,
+        description=(
+            "If True and an oracle trial is present, hold non-nop/non-oracle "
+            "configs until the oracle completes; fail them without running if "
+            "the oracle does not receive full reward."
+        ),
     )
     github_username: str | None = Field(
         None,

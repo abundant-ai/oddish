@@ -104,10 +104,18 @@ agents:
     model_name: openai/gpt-5.3-codex
     n_trials: 3
   - name: nop
+    model_name: default
     n_trials: 3
   - name: oracle
+    model_name: default
     n_trials: 3
+
+fail_all_if_oracle_fails: true
 ```
+
+`fail_all_if_oracle_fails` is optional. When it is true and the sweep includes
+`oracle`, Oddish holds non-`nop` agents until oracle finishes; if oracle does
+not receive full reward, those held agents are marked failed without running.
 
 ## List Tasks
 
