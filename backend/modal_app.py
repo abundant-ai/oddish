@@ -50,7 +50,10 @@ WORKER_TASK_MOUNT_PATH = "/mnt/oddish-tasks"
 WORKER_TASK_MOUNT_KEY_PREFIX = "tasks/"
 
 # Worker configuration
-POLL_INTERVAL_SECONDS = 180  # How often to check for new jobs (3 minutes)
+POLL_INTERVAL_SECONDS = _env_int(
+    "ODDISH_MODAL_POLL_INTERVAL_SECONDS",
+    60,
+)  # How often to check for new jobs.
 # Allow ~12 hour trials.
 WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 43200)
 WORKER_MIN_CONTAINERS = _env_int(
@@ -74,8 +77,19 @@ WORKER_MAX_CONTAINERS = _env_int(
 # or experiments can opt out.
 WORKER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_WORKER_NONPREEMPTIBLE", True)
 
-# Max number of workers spawned per poll cycle (rate limiter, global across all queue_keys)
-MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 24)
+# Queue-key concurrency default for Modal runtime.
+# Example:
+# ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
+MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_MODEL_CONCURRENCY_DEFAULT", 32)
+
+# Max number of workers spawned per poll cycle (rate limiter, global across all
+# queue_keys). Keep the default aligned to the default per-model concurrency so
+# new model queues do not ramp harder than their rate-limit budget unless
+# operators explicitly raise this.
+MAX_WORKERS_PER_POLL = _env_int(
+    "ODDISH_MODAL_MAX_WORKERS_PER_POLL",
+    MODEL_CONCURRENCY_DEFAULT,
+)
 
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
@@ -108,11 +122,6 @@ if MODAL_APP_NAME.startswith("oddish-pr-"):
             environment_name=os.environ.get("MODAL_ENVIRONMENT", "preview"),
         )
     )
-
-# Queue-key concurrency default for Modal runtime.
-# Example:
-# ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
-MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_MODEL_CONCURRENCY_DEFAULT", 32)
 
 ENV_VARS = {
     "UV_LINK_MODE": "copy",

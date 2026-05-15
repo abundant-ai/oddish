@@ -276,7 +276,7 @@ async def poll_queue():
 
     except OSError as e:
         # Transient network/DNS errors (e.g. socket.gaierror) should not
-        # crash the scheduled function -- the next poll in 3 minutes will retry.
+        # crash the scheduled function -- the next scheduled poll will retry.
         console.print(
             f"[yellow]Dispatcher skipped (transient network error): {e}[/yellow]"
         )

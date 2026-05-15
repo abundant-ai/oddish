@@ -18,6 +18,7 @@ from oddish.db import (
     TaskStatus,
     TrialModel,
     TrialStatus,
+    WorkerJobKind,
     WorkerJobModel,
     WorkerJobStatus,
 )
@@ -173,7 +174,7 @@ def _build_trial_queue_info_snapshot(
 async def fetch_trial_queue_info(
     session: AsyncSession, *, trials: Sequence[TrialModel]
 ) -> dict[str, TrialQueueInfo]:
-    """Return live queue snapshots for queued/retrying trials."""
+    """Return live queue snapshots for runnable queued/retrying trial jobs."""
     queued_trials = [
         trial for trial in trials if trial.status in _QUEUE_PENDING_STATUSES
     ]
@@ -188,18 +189,32 @@ async def fetch_trial_queue_info(
     result = await session.execute(
         select(
             TrialModel.id,
-            TrialModel.queue_key,
-            TrialModel.status,
+            WorkerJobModel.queue_key,
+            WorkerJobModel.status.label("worker_job_status"),
             TrialModel.created_at,
             TaskModel.priority,
             func.coalesce(TaskModel.created_by_user_id, TaskModel.user).label(
                 "fairness_key"
             ),
         )
+        .join(
+            WorkerJobModel,
+            (WorkerJobModel.subject_table == "trials")
+            & (WorkerJobModel.subject_id == TrialModel.id)
+            & (WorkerJobModel.kind == WorkerJobKind.TRIAL),
+        )
         .join(TaskModel, TaskModel.id == TrialModel.task_id)
         .where(
-            TrialModel.queue_key.in_(queue_keys),
-            TrialModel.status.in_(tuple(_QUEUE_ACTIVE_STATUSES)),
+            WorkerJobModel.queue_key.in_(queue_keys),
+            or_(
+                WorkerJobModel.status == WorkerJobStatus.RUNNING,
+                (
+                    WorkerJobModel.status.in_(
+                        (WorkerJobStatus.QUEUED, WorkerJobStatus.RETRYING)
+                    )
+                    & (WorkerJobModel.available_after <= func.now())
+                ),
+            ),
         )
     )
 
@@ -207,7 +222,11 @@ async def fetch_trial_queue_info(
         _QueueSnapshotTrial(
             trial_id=row.id,
             queue_key=str(row.queue_key),
-            status=row.status,
+            status=(
+                TrialStatus.RUNNING
+                if row.worker_job_status == WorkerJobStatus.RUNNING
+                else TrialStatus.QUEUED
+            ),
             created_at=row.created_at,
             priority=row.priority,
             fairness_key=str(row.fairness_key),

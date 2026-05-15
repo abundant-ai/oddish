@@ -164,6 +164,28 @@ async def cleanup_orphaned_queue_state(
                                WHEN attempts < max_attempts THEN finished_at
                                ELSE NOW()
                            END,
+                           available_after = CASE
+                               WHEN attempts < max_attempts
+                                   THEN NOW() + (
+                                       LEAST(
+                                           CAST(:retry_backoff_max AS double precision),
+                                           CAST(:retry_backoff_base AS double precision)
+                                               * POWER(2, GREATEST(attempts - 1, 0))
+                                       )::double precision * INTERVAL '1 second'
+                                   )
+                               ELSE available_after
+                           END,
+                           next_retry_at = CASE
+                               WHEN attempts < max_attempts
+                                   THEN NOW() + (
+                                       LEAST(
+                                           CAST(:retry_backoff_max AS double precision),
+                                           CAST(:retry_backoff_base AS double precision)
+                                               * POWER(2, GREATEST(attempts - 1, 0))
+                                       )::double precision * INTERVAL '1 second'
+                                   )
+                               ELSE NULL
+                           END,
                            current_worker_id = NULL,
                            current_queue_slot = NULL,
                            modal_function_call_id = NULL,
@@ -194,7 +216,11 @@ async def cleanup_orphaned_queue_state(
                               error_message
                     """
                     ),
-                    {"stale_after_minutes": stale_after_minutes},
+                    {
+                        "stale_after_minutes": stale_after_minutes,
+                        "retry_backoff_base": max(0, int(settings.retry_backoff_base)),
+                        "retry_backoff_max": max(0, int(settings.retry_backoff_max)),
+                    },
                 )
             )
             .mappings()

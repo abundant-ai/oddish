@@ -36,6 +36,7 @@ from oddish.workers.jobs import (  # noqa: E402
     enqueue_worker_job,
     register,
 )
+from oddish.workers.queue import cleanup  # noqa: E402
 from oddish.workers.queue import worker_job_single_job  # noqa: E402
 from oddish.workers.queue.worker_job_single_job import (  # noqa: E402
     ClaimedWorkerJob,
@@ -253,6 +254,42 @@ def test_claim_sql_increments_attempts_and_stamps_claim_metadata():
         "modal_function_call_id = $4",
     ):
         assert needle in sql, f"missing: {needle}"
+
+
+def test_retry_delay_uses_capped_exponential_backoff(monkeypatch):
+    monkeypatch.setattr(worker_job_single_job.settings, "retry_backoff_base", 60)
+    monkeypatch.setattr(worker_job_single_job.settings, "retry_backoff_max", 300)
+
+    assert worker_job_single_job._retry_delay_seconds(1) == 60
+    assert worker_job_single_job._retry_delay_seconds(2) == 120
+    assert worker_job_single_job._retry_delay_seconds(3) == 240
+    assert worker_job_single_job._retry_delay_seconds(4) == 300
+
+
+def test_retry_delay_allows_backoff_cap_below_base(monkeypatch):
+    monkeypatch.setattr(worker_job_single_job.settings, "retry_backoff_base", 60)
+    monkeypatch.setattr(worker_job_single_job.settings, "retry_backoff_max", 30)
+
+    assert worker_job_single_job._retry_delay_seconds(1) == 30
+
+
+def test_retry_outcome_defers_next_claim_with_available_after():
+    import inspect
+
+    source = inspect.getsource(worker_job_single_job._record_outcome)
+    assert "available_after = NOW() +" in source
+    assert "next_retry_at = NOW() +" in source
+    assert "retry_delay_seconds" in source
+
+
+def test_stale_reap_retry_defers_next_claim_with_available_after():
+    import inspect
+
+    source = inspect.getsource(cleanup.cleanup_orphaned_queue_state)
+    assert "available_after = CASE" in source
+    assert "next_retry_at = CASE" in source
+    assert "retry_backoff_base" in source
+    assert "retry_backoff_max" in source
 
 
 # ---------------------------------------------------------------------------

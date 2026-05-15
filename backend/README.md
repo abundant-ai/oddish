@@ -30,7 +30,7 @@ Postgres
   + cloud tables  (orgs / users / api_keys)
   │
   ▼
-Worker dispatcher (`worker/functions.py::poll_queue`, every 180s)
+Worker dispatcher (`worker/functions.py::poll_queue`, configurable cadence)
   │  - Runs unified cleanup (stale-heartbeat + stage safety nets)
   │  - Discovers active queue keys from worker_jobs
   │  - Spawns single-job Modal containers per queue key
@@ -48,7 +48,7 @@ Modal sandboxes (Harbor execution, logs/artifacts to S3)
 
 Dispatcher + single-job pattern backed by the unified `worker_jobs` table:
 
-1. `poll_queue()` runs on a 180s Modal schedule. It calls
+1. `poll_queue()` runs on a configurable Modal schedule. It calls
    `cleanup_orphaned_queue_state` (zombie-txn reap, stale-heartbeat sweep,
    stage safety nets, orphaned-slot release), discovers active queue keys
    via `discover_active_worker_job_queue_keys`, and launches up to
@@ -190,6 +190,7 @@ Modal runtime knobs are read directly by `modal_app.py`, including:
 - `ODDISH_MODAL_WORKER_BUFFER_CONTAINERS`
 - `ODDISH_MODAL_WORKER_SCALEDOWN_WINDOW_SECONDS`
 - `ODDISH_MODAL_WORKER_MAX_CONTAINERS`
+- `ODDISH_MODAL_POLL_INTERVAL_SECONDS`
 - `ODDISH_MODAL_MAX_WORKERS_PER_POLL`
 - `ODDISH_MODEL_CONCURRENCY_DEFAULT`
 - `MODAL_APP_NAME`
