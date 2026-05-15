@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-05-15]
+
+### Added
+- Task detail page (`/tasks/[task_id]`) with KPI bar showing total cost, trial count, average score, and last run time; version switcher for per-version breakdown; per-agent stacked cards with trial-status chips that open existing task/trial drawers; new `GET /tasks/{task_id}/detail` endpoint bundles task, trials, per-version summaries, and cost rollups in one round-trip (#103)
+- Trajectory JSON export button on the trajectory viewer side-pane; downloads the loaded trajectory payload as `trajectory-<trialId>.json` client-side without additional API calls (#92)
+
+### Changed
+- Claude Code now routes through AWS Bedrock by default in the Modal deployment: `CLAUDE_CODE_USE_BEDROCK=1` baked into the Modal image; new `to_bedrock_model_id` normalizer in `oddish/config.py` converts Anthropic-style and bare Claude model ids to invokable Bedrock cross-region inference profile ids (`global.` prefix for most models, `us.` for Opus 4.1 / Opus 4 which have no global profile); trial analysis classifier strips Bedrock env vars when running against a non-Bedrock analysis model id (#108)
+
+### Fixed
+- Bedrock model id mapping table now emits `global.`/`us.` cross-region inference profile ids instead of bare `anthropic.claude-...` foundation-model ids; bare foundation-model ids are also re-resolved through the table rather than passed through, closing a gap that caused 400 "Invocation of model ID with on-demand throughput isn't supported" errors in production (#109)
+- Alembic migrations now pin `search_path=public` via asyncpg `server_settings` for both oddish and backend migration chains, fixing `InvalidSchemaNameError` on freshly-created Supabase preview branches where the Supavisor session pooler hands out backends with an empty `search_path` (#103)
+- Vercel preview environment now updated and redeployed whenever the Modal backend redeploys (not only on first Supabase branch creation), so previews that failed mid-flight on a prior push self-recover on the next push rather than silently serving the production API (#103)
+
+---
+
 ## [2026-05-14]
 
 ### Added
