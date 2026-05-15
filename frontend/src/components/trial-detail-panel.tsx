@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import {
   ResizableDrawer,
@@ -41,10 +42,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { TrajectoryViewer } from "@/components/trajectory-viewer";
-import { TaskFilesPanel } from "@/components/task-files-panel";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
-import { ArtifactsViewer } from "@/components/artifacts-viewer";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
 import {
@@ -61,6 +59,44 @@ import { HarborStageTimeline } from "@/components/harbor-stage-timeline";
 import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
+
+const TaskFilesPanel = dynamic(
+  () =>
+    import("@/components/task-files-panel").then((mod) => mod.TaskFilesPanel),
+  {
+    ssr: false,
+    loading: () => <DrawerPanelLoading label="Loading files..." />,
+  }
+);
+
+const ArtifactsViewer = dynamic(
+  () =>
+    import("@/components/artifacts-viewer").then((mod) => mod.ArtifactsViewer),
+  {
+    ssr: false,
+    loading: () => <DrawerPanelLoading label="Loading artifacts..." />,
+  }
+);
+
+const TrajectoryViewer = dynamic(
+  () =>
+    import("@/components/trajectory-viewer").then(
+      (mod) => mod.TrajectoryViewer
+    ),
+  {
+    ssr: false,
+    loading: () => <DrawerPanelLoading label="Loading trajectory..." />,
+  }
+);
+
+function DrawerPanelLoading({ label }: { label: string }) {
+  return (
+    <div className="text-muted-foreground flex h-full min-h-[160px] items-center justify-center gap-2 text-sm">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      <span>{label}</span>
+    </div>
+  );
+}
 
 interface TrialDetailPanelProps {
   isOpen: boolean;
