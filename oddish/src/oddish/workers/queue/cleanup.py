@@ -449,6 +449,65 @@ async def cleanup_orphaned_queue_state(
         )
         orphaned_active_slots_cleared = int(orphaned_slot_cleanup_result.rowcount or 0)
 
+        # -----------------------------------------------------------------
+        # 7. Reconcile drift on the denormalized
+        #    ``experiments.last_activity_at`` column. Application
+        #    write paths bump it best-effort on task/trial inserts,
+        #    so this pass only catches misses (process crash between
+        #    insert flush and bump, etc). Bounded by a 30-minute
+        #    lookback so it stays cheap on every sweep.
+        # -----------------------------------------------------------------
+        experiments_last_activity_reconciled = int(
+            (
+                cast(
+                    CursorResult,
+                    await session.execute(
+                        text(
+                            """
+                            UPDATE experiments e
+                            SET last_activity_at = derived.last_activity_at
+                            FROM (
+                                SELECT
+                                    sub.experiment_id,
+                                    GREATEST(
+                                        MAX(sub.task_created_at),
+                                        MAX(sub.trial_created_at)
+                                    ) AS last_activity_at
+                                FROM (
+                                    SELECT
+                                        te.experiment_id,
+                                        t.created_at AS task_created_at,
+                                        NULL::timestamptz AS trial_created_at
+                                    FROM task_experiments te
+                                    JOIN tasks t ON t.id = te.task_id
+                                    WHERE t.deleted_at IS NULL
+                                      AND t.created_at >= NOW() - INTERVAL '30 minutes'
+                                    UNION ALL
+                                    SELECT
+                                        tr.experiment_id,
+                                        NULL::timestamptz AS task_created_at,
+                                        tr.created_at AS trial_created_at
+                                    FROM trials tr
+                                    WHERE tr.deleted_at IS NULL
+                                      AND tr.superseded_by_trial_id IS NULL
+                                      AND tr.created_at >= NOW() - INTERVAL '30 minutes'
+                                ) sub
+                                GROUP BY sub.experiment_id
+                            ) derived
+                            WHERE e.id = derived.experiment_id
+                              AND e.deleted_at IS NULL
+                              AND (
+                                  e.last_activity_at IS NULL
+                                  OR e.last_activity_at < derived.last_activity_at
+                              )
+                            """
+                        )
+                    ),
+                )
+            ).rowcount
+            or 0
+        )
+
     return {
         "worker_jobs_retried": worker_jobs_retried,
         "worker_jobs_failed": worker_jobs_failed,
@@ -458,4 +517,5 @@ async def cleanup_orphaned_queue_state(
         "terminal_trial_runtime_refs_cleared": terminal_trial_runtime_refs_cleared,
         "orphaned_active_slots_cleared": orphaned_active_slots_cleared,
         "zombie_txn_reaped": zombie_txn_reaped,
+        "experiments_last_activity_reconciled": experiments_last_activity_reconciled,
     }

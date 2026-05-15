@@ -8,12 +8,11 @@ import {
   useRef,
   useState,
 } from "react";
+import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
-import { TrialDetailPanel } from "@/components/trial-detail-panel";
-import { TaskFilesPanel } from "@/components/task-files-panel";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { formatCostUsd } from "@/lib/format";
 import {
@@ -29,6 +28,35 @@ import {
 } from "@/lib/experiment-agent-grouping";
 
 type DrawerMode = "task" | "trial";
+
+const TrialDetailPanel = dynamic(
+  () =>
+    import("@/components/trial-detail-panel").then(
+      (mod) => mod.TrialDetailPanel
+    ),
+  {
+    ssr: false,
+    loading: () => <DrawerContentLoading label="Loading trial details..." />,
+  }
+);
+
+const TaskFilesPanel = dynamic(
+  () =>
+    import("@/components/task-files-panel").then((mod) => mod.TaskFilesPanel),
+  {
+    ssr: false,
+    loading: () => <DrawerContentLoading label="Loading task files..." />,
+  }
+);
+
+function DrawerContentLoading({ label }: { label: string }) {
+  return (
+    <div className="text-muted-foreground flex h-full min-h-[180px] items-center justify-center gap-2 text-sm">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      <span>{label}</span>
+    </div>
+  );
+}
 
 type DrawerState = {
   isOpen: boolean;

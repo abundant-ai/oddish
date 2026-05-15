@@ -66,6 +66,16 @@ export async function GET(
     ) {
       queryParams.include_queue_info = "false";
     }
+    // Auto-promote the lightweight first-paint fetch to ``compact_tasks``
+    // so the backend skips ``visible_worker_jobs`` + the
+    // ``effective_version_ids`` IN-list. The phase-2 batched trial
+    // fetch (``include_trials=true``) keeps the regular path.
+    if (
+      queryParams.include_trials !== "true" &&
+      queryParams.compact_tasks === undefined
+    ) {
+      queryParams.compact_tasks = "true";
+    }
     const url = getBackendUrl("tasks", "", {
       ...queryParams,
       experiment_id: experimentId,

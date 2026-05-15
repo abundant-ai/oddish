@@ -68,8 +68,19 @@ async def get_public_experiment(
     return result.scalar_one_or_none()
 
 
-async def get_public_task(session: AsyncSession, task_id: str) -> TaskModel | None:
-    """Get a task that belongs to at least one public experiment."""
+async def get_public_task(
+    session: AsyncSession,
+    task_id: str,
+    *,
+    load_current_version: bool = False,
+) -> TaskModel | None:
+    """Get a task that belongs to at least one public experiment.
+
+    Pass ``load_current_version=True`` from callers that read
+    ``task.current_version`` (the public file-serving routes).
+    Default is False so the public task-status path doesn't pay for
+    an extra ``task_versions`` round trip it never reads.
+    """
     public_link_exists = exists(
         select(1)
         .select_from(
@@ -83,9 +94,12 @@ async def get_public_task(session: AsyncSession, task_id: str) -> TaskModel | No
             ExperimentModel.is_public == True,  # noqa: E712
         )
     )
+    options = [selectinload(TaskModel.trials), selectinload(TaskModel.experiments)]
+    if load_current_version:
+        options.append(selectinload(TaskModel.current_version))
     result = await session.execute(
         select(TaskModel)
-        .options(selectinload(TaskModel.trials), selectinload(TaskModel.experiments))
+        .options(*options)
         .where(TaskModel.id == task_id)
         .where(public_link_exists)
     )

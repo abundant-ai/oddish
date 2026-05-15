@@ -269,6 +269,13 @@ async def complete_task_upload(
                 created_by_user_id=created_by_user_id,
             )
             session.add(version_row)
+            # Force the INSERT to land before we point ``tasks.current_version_id``
+            # at it. The unit of work otherwise emits the ``tasks`` UPDATE
+            # ahead of the ``task_versions`` INSERT during the next implicit
+            # flush (e.g. inside ``enqueue_task_expand_worker_job`` below),
+            # tripping ``fk_tasks_current_version_id``. Mirrors the
+            # explicit-flush pattern the new-task branch above already uses.
+            await session.flush()
 
         existing_task.task_path = task_path
         existing_task.task_s3_key = s3_key
