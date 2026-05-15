@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -19,9 +20,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { TaskFilesPanel } from "@/components/task-files-panel";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
-import { TrialDetailPanel } from "@/components/trial-detail-panel";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
 import {
@@ -50,6 +49,35 @@ import type {
 } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/utils";
 import { ArrowLeft, ChevronDown, FileText, Loader2 } from "lucide-react";
+
+const TaskFilesPanel = dynamic(
+  () =>
+    import("@/components/task-files-panel").then((mod) => mod.TaskFilesPanel),
+  {
+    ssr: false,
+    loading: () => <DrawerContentLoading label="Loading task files..." />,
+  }
+);
+
+const TrialDetailPanel = dynamic(
+  () =>
+    import("@/components/trial-detail-panel").then(
+      (mod) => mod.TrialDetailPanel
+    ),
+  {
+    ssr: false,
+    loading: () => <DrawerContentLoading label="Loading trial details..." />,
+  }
+);
+
+function DrawerContentLoading({ label }: { label: string }) {
+  return (
+    <div className="text-muted-foreground flex h-full min-h-[180px] items-center justify-center gap-2 text-sm">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      <span>{label}</span>
+    </div>
+  );
+}
 
 function readVersionFromQuery(): string | null {
   if (typeof window === "undefined") return null;
