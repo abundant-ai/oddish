@@ -279,6 +279,9 @@ function summaryFromVersion(v: TaskVersionSummary): TrialAggregate {
     failCount: v.fail_count,
     harnessErrorCount: 0,
     pendingCount: v.pending_count,
+    // ``missing`` is a report-specific concept (placeholder trials in
+    // cells short of trials_per_cell). Task versions don't carry it.
+    missingCount: 0,
     rewardSum: v.reward_sum,
     rewardTotal: v.reward_total,
     costUsd: v.cost_usd,
