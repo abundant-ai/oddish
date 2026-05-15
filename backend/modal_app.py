@@ -73,6 +73,7 @@ WORKER_MAX_CONTAINERS = _env_int(
 # (https://modal.com/docs/guide/preemption); keep it env-flagged so previews
 # or experiments can opt out.
 WORKER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_WORKER_NONPREEMPTIBLE", True)
+DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", True)
 
 # Max number of workers spawned per poll cycle (rate limiter, global across all queue_keys)
 MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 32)

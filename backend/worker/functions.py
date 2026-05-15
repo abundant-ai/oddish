@@ -16,6 +16,7 @@ import modal
 from observability import span as _otel_span
 
 from modal_app import (
+    DISPATCHER_NONPREEMPTIBLE,
     MAX_WORKERS_PER_POLL,
     POLL_INTERVAL_SECONDS,
     WORKER_BUFFER_CONTAINERS,
@@ -194,6 +195,7 @@ async def process_single_job(queue_key: str):
     min_containers=1,  # Keep one dispatcher container warm.
     max_containers=1,  # Keep the scheduled dispatcher singleton-ish.
     schedule=modal.Period(seconds=POLL_INTERVAL_SECONDS),
+    nonpreemptible=DISPATCHER_NONPREEMPTIBLE,
 )
 async def poll_queue():
     """
