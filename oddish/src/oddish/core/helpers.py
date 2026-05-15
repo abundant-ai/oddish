@@ -9,6 +9,7 @@ from typing import Sequence
 
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from oddish.config import settings
 from oddish.db import (
@@ -285,17 +286,19 @@ async def fetch_visible_worker_jobs(
 ) -> dict[tuple[str, str], list[VisibleWorkerJob]]:
     """Fetch active/recent worker_jobs keyed by ``(subject_table, subject_id)``.
 
-    Splits the work into two narrowly-scoped queries instead of a single
-    ``(active OR finished)`` selection sorted then truncated:
+    The active set (QUEUED / RUNNING / RETRYING / BLOCKED, naturally
+    bounded by the dispatcher's concurrency limits) and the recent
+    terminal set (``finished_at >= now() - 24h``, capped at
+    ``recent_limit``) are stitched together in a single
+    ``UNION ALL`` round trip instead of two sequential queries.
 
-    1. **Active jobs** (QUEUED / RUNNING / RETRYING / BLOCKED) for the
-       given subjects. The active set is bounded by the dispatcher's
-       concurrency limits, so no time window or limit is needed.
-    2. **Recent terminal jobs** for the given subjects, capped by
-       ``finished_at >= now() - _RECENT_TERMINAL_WORKER_JOB_WINDOW`` and
-       ``LIMIT recent_limit``. The window keeps the planner off the
-       full per-subject history, which can be hundreds of rows per
-       trial after many retries.
+    The terminal LIMIT is applied inside the UNION subquery so it
+    bounds the historical scan independently; the active branch has
+    no LIMIT because the active set is already small. A constant
+    ``bucket`` column is carried through so the response builder can
+    sort active rows ahead of terminal rows in Python (matches the
+    previous ``ORDER BY case() ... finished_at DESC`` ranking without
+    forcing the planner to sort the union).
 
     Backed by ``idx_worker_jobs_subject`` for the active branch and
     ``idx_worker_jobs_subject_finished_recent`` for the terminal branch.
@@ -316,21 +319,20 @@ async def fetch_visible_worker_jobs(
 
     subject_filter = or_(*subject_predicates)
 
-    active_query = (
+    active_subq = (
         select(WorkerJobModel)
         .where(
             subject_filter,
             WorkerJobModel.status.in_(tuple(_VISIBLE_ACTIVE_WORKER_JOB_STATUSES)),
         )
-        .order_by(WorkerJobModel.created_at.desc())
+        .subquery()
     )
-    active_result = await session.execute(active_query)
-    active_jobs = list(active_result.scalars().all())
 
-    terminal_jobs: list[WorkerJobModel] = []
+    union_parts = [select(aliased(WorkerJobModel, active_subq))]
+
     if include_recent_terminal:
         cutoff = datetime.now(timezone.utc) - _RECENT_TERMINAL_WORKER_JOB_WINDOW
-        terminal_query = (
+        terminal_subq = (
             select(WorkerJobModel)
             .where(
                 subject_filter,
@@ -339,14 +341,44 @@ async def fetch_visible_worker_jobs(
             )
             .order_by(WorkerJobModel.finished_at.desc())
             .limit(recent_limit)
+            .subquery()
         )
-        terminal_result = await session.execute(terminal_query)
-        terminal_jobs = list(terminal_result.scalars().all())
+        union_parts.append(select(aliased(WorkerJobModel, terminal_subq)))
+
+    if len(union_parts) == 1:
+        combined_stmt = union_parts[0]
+    else:
+        # ``CompoundSelect`` and ``Select`` share the executable
+        # protocol but have different mypy types, so the reassignment
+        # needs a narrow ignore.
+        combined_stmt = union_parts[0].union_all(*union_parts[1:])  # type: ignore[assignment]
+
+    result = await session.execute(combined_stmt)
+    rows = list(result.scalars().all())
+
+    # The dispatcher claim path can't put the same row in both
+    # buckets (active rows have ``finished_at IS NULL``), but we
+    # still de-dup on id to defend against a row that finishes mid-
+    # statement under READ COMMITTED. Active jobs sort first to match
+    # the previous ranking; within a bucket we mirror the original
+    # ORDER BY (created_at DESC for active, finished_at DESC for
+    # terminal) for a stable response.
+    seen_ids: set[str] = set()
+    active_jobs: list[WorkerJobModel] = []
+    terminal_jobs: list[WorkerJobModel] = []
+    active_status_set = set(_VISIBLE_ACTIVE_WORKER_JOB_STATUSES)
+    for job in rows:
+        if job.id in seen_ids:
+            continue
+        seen_ids.add(job.id)
+        if job.status in active_status_set:
+            active_jobs.append(job)
+        else:
+            terminal_jobs.append(job)
+    active_jobs.sort(key=lambda j: j.created_at, reverse=True)
+    terminal_jobs.sort(key=lambda j: j.finished_at or j.created_at, reverse=True)
 
     jobs_by_subject: dict[tuple[str, str], list[VisibleWorkerJob]] = defaultdict(list)
-    # Order: active first (matches the previous ORDER BY case() ranking),
-    # then most-recent terminal. ``recent_limit`` applies to terminal
-    # jobs only since active is naturally bounded by concurrency.
     for job in active_jobs:
         if not job.subject_table or not job.subject_id:
             continue

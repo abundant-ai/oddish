@@ -24,7 +24,6 @@ from oddish.core.helpers import (
     build_trial_response,
     fetch_experiment_effective_version_ids,
     fetch_trial_queue_info,
-    fetch_trial_analysis_summaries,
     fetch_visible_worker_jobs,
     get_task_status_trials,
     resolve_effective_version_id,
@@ -164,6 +163,14 @@ async def list_tasks_core(
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
+                # Eagerly load the analysis JSONB on the compact path so
+                # ``build_compact_trial_response`` can read
+                # ``classification`` / ``subtype`` / ``evidence`` without
+                # a follow-up ``fetch_trial_analysis_summaries`` round
+                # trip. The blob is small in practice (3 short fields)
+                # and skipping the extra query is one of the bigger
+                # wins on the experiment-page batched fetch.
+                TrialModel.analysis,
                 TrialModel.input_tokens,
                 TrialModel.cache_tokens,
                 TrialModel.output_tokens,
@@ -295,24 +302,19 @@ async def list_tasks_core(
                 "Trial queue info",
             )
         if compact_trials:
-            analysis_started_at = now()
-            analysis_summaries = await fetch_trial_analysis_summaries(
-                session,
-                task_ids=[task.id for task in tasks],
-                trial_ids=trial_ids,
-            )
-            if record_timing is not None:
-                record_timing(
-                    "tasks_analysis",
-                    elapsed_ms(analysis_started_at),
-                    "Trial analysis summaries",
-                )
+            # The analysis summary fields (classification / subtype /
+            # evidence) are now loaded inline on the trials selectinload
+            # via ``TrialModel.analysis`` in the compact load_only set.
+            # ``build_compact_trial_response`` falls through to read them
+            # from ``trial.analysis`` directly when no
+            # ``analysis_summaries`` mapping is passed, so we can skip
+            # the extra ``fetch_trial_analysis_summaries`` round trip
+            # entirely on this path.
             build_started_at = now()
             response = [
                 build_task_status_response_compact(
                     task,
                     include_empty_rewards=include_empty_rewards,
-                    analysis_summaries=analysis_summaries,
                     queue_info_by_trial_id=queue_info_by_trial_id,
                     jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
