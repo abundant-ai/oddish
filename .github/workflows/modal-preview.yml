@@ -158,45 +158,15 @@ jobs:
         # instead of red-with-continue-on-error.
         run: uv run modal app stop -y --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME" || true
 
-      - name: Ensure Supabase preview branch
+      - name: Ensure Supabase preview branch with prod data
         id: supabase_branch
         working-directory: ${{ github.workspace }}
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: .github/scripts/preview/wait_for_supabase_branch.sh
 
-      - name: Catch preview schema up to prod
-        # Supabase's branch creation snapshots prod's schema
-        # asynchronously, so a fresh branch can be missing columns
-        # added by very recent migrations. Query prod's alembic head
-        # for each project and upgrade the branch to it; the
-        # follow-up `Apply Alembic migrations` step then applies only
-        # this PR's net-new revisions, against the just-restored
-        # prod-shaped data (which is the destructive-migration safety
-        # check).
-        #
-        # `uv run` activates /opt/venvs/backend so `alembic` resolves;
-        # that venv has the `oddish` package installed editable so the
-        # oddish project's env.py can import it.
-        if: steps.supabase_branch.outputs.branch_was_created == 'true'
-        env:
-          PROD_DATABASE_URL: ${{ secrets.ODDISH_DATABASE_URL }}
-        run: uv run bash "$GITHUB_WORKSPACE/.github/scripts/preview/catch_up_to_prod_schema.sh"
-
-      - name: Restore prod data into preview branch
-        # Replaces Supabase's --with-data clone. Only on first branch
-        # creation; subsequent pushes reuse the existing branch's data.
-        if: steps.supabase_branch.outputs.branch_was_created == 'true'
-        working-directory: ${{ github.workspace }}
-        env:
-          PROD_DATABASE_URL: ${{ secrets.ODDISH_DATABASE_URL }}
-        run: .github/scripts/preview/restore_prod_data.sh
-
       - name: Apply Alembic migrations to preview branch
-        # Runs on every push so a half-finished previous deploy (e.g.
-        # branch created but restore failed before the per-PR migrate
-        # step ran) gets healed automatically. `alembic upgrade head`
-        # is a no-op when the branch is already at head.
+        if: ${{ needs.detect-changes.outputs.run_migrations == 'true' || steps.supabase_branch.outputs.branch_was_created == 'true' }}
         run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_preview_db.py"
 
       - name: Cancel cloned-prod in-flight work

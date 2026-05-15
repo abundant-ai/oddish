@@ -1,27 +1,24 @@
 #!/usr/bin/env bash
-# Ensure the PR's Supabase preview branch exists and is healthy, and
-# emit its DB URL. The branch is created empty (no --with-data) —
-# prod data is loaded by the follow-up restore_prod_data.sh step,
-# which is ~5x faster than Supabase's logical-replication clone.
+# Ensure the PR's Supabase preview branch (cloned from prod via
+# --with-data) exists and is healthy, and emit its DB URL.
 #
-# On first invocation for a PR, creates a fresh empty branch. The
-# downstream restore step populates it from prod, then bootstrap runs
-# `alembic upgrade head` against prod-shaped data (the migration-
-# safety check). On later pushes within the same PR the existing
-# branch is reused — append-only migrations apply incrementally,
-# which is the common case. If the dev rewrites Alembic history
-# mid-PR and the incremental upgrade can't handle it, delete the
-# branch via the Supabase dashboard (or close+reopen the PR) to
-# force a fresh prod clone.
+# On first invocation for a PR, creates the branch with prod data so
+# the subsequent `alembic upgrade head` runs against prod-shaped data
+# (the migration-safety check). On later pushes within the same PR
+# the existing branch is reused — append-only migrations apply
+# incrementally, which is the common case. If the dev rewrites
+# Alembic history mid-PR and the incremental upgrade can't handle it,
+# delete the branch via the Supabase dashboard (or close+reopen the
+# PR) to force a fresh prod clone.
 #
-# If Supabase's branch provisioning fails for a transient reason
+# If Supabase's clone+migrate fails for a transient reason
 # (MIGRATIONS_FAILED / FUNCTIONS_FAILED), the failed branch is torn
 # down and recreated once before giving up, so a flaky run doesn't
 # poison every subsequent push to the PR.
 #
 # Disable the Supabase GitHub integration's auto-branching for this
-# repo so it doesn't create a parallel branch in the same project
-# on PR open.
+# repo so it doesn't create a parallel data-less branch in the same
+# project on PR open.
 set -uo pipefail
 
 BRANCH_NAME="pr-${PR_NUMBER}"
@@ -61,8 +58,9 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   fi
 
   if [ -z "$existing" ] || [ "$existing" = "null" ]; then
-    echo "creating $BRANCH_NAME (attempt $attempt/$MAX_ATTEMPTS)" >&2
+    echo "creating $BRANCH_NAME with --with-data (attempt $attempt/$MAX_ATTEMPTS)" >&2
     supabase branches create "$BRANCH_NAME" \
+      --with-data \
       --project-ref "$SUPABASE_PROJECT_REF"
     branch_was_created=true
   else
@@ -70,10 +68,9 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     branch_was_created=false
   fi
 
-  # Wait until the branch is ready. An empty branch is just project
-  # provisioning — usually <5 min — but allow 10 to absorb tail
-  # latency from Supabase's control plane.
-  deadline=$(($(date +%s) + 600))
+  # Wait until the branch is ready. First creation includes the prod
+  # clone, so give it 20 min; subsequent runs short-circuit fast.
+  deadline=$(($(date +%s) + 1200))
   branch_failed=0
   branch_id="" branch_ref="" status="" preview=""
 
