@@ -195,17 +195,6 @@ pick it up:
   already wrap asyncpg one layer down, and the SQLA wrapper walks
   every statement's expression tree, which is meaningful overhead on
   hot paths.
-- `ODDISH_LOGFIRE_BROWSER_PROXY` *(optional, default `0`)* — set to
-  `1` to mount the `/logfire-proxy/{path}` route so the browser SDK
-  can ship spans through the backend. **Off by default**: each batch
-  POST occupies a Modal container concurrency slot for ~100-300ms
-  while it forwards to Logfire, and the browser auto-fetch
-  instrumentation can fire dozens of POSTs per page load. Server-side
-  tracing is unaffected when this is off — only browser spans stop.
-
-The frontend browser SDK is also opt-in
-(`NEXT_PUBLIC_LOGFIRE_ENABLED=true`) and disabled by default for the
-same reason.
 
 Modal runtime knobs are read directly by `modal_app.py`, including:
 

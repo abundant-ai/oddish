@@ -158,21 +158,12 @@ jobs:
         # instead of red-with-continue-on-error.
         run: uv run modal app stop -y --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME" || true
 
-      - name: Ensure Supabase preview branch
+      - name: Ensure Supabase preview branch with prod data
         id: supabase_branch
         working-directory: ${{ github.workspace }}
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: .github/scripts/preview/wait_for_supabase_branch.sh
-
-      - name: Restore prod data into preview branch
-        # Replaces Supabase's --with-data clone. Only on first branch
-        # creation; subsequent pushes reuse the existing branch's data.
-        if: steps.supabase_branch.outputs.branch_was_created == 'true'
-        working-directory: ${{ github.workspace }}
-        env:
-          PROD_DATABASE_URL: ${{ secrets.ODDISH_DATABASE_URL }}
-        run: .github/scripts/preview/restore_prod_data.sh
 
       - name: Apply Alembic migrations to preview branch
         if: ${{ needs.detect-changes.outputs.run_migrations == 'true' || steps.supabase_branch.outputs.branch_was_created == 'true' }}
@@ -183,6 +174,7 @@ jobs:
         # preview, their own pending work shouldn't get nuked on every
         # subsequent push.
         if: steps.supabase_branch.outputs.branch_was_created == 'true'
+        shell: bash
         run: |
           psql "${ODDISH_DATABASE_URL/+asyncpg/}" <<'SQL'
           UPDATE worker_jobs
