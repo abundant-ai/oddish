@@ -311,7 +311,10 @@ ANTHROPIC_API_KEY=...
 OPENAI_API_KEY=...
 GEMINI_API_KEY=...
 
-# AWS Bedrock (alternate route for Claude models)
+# AWS Bedrock — the default route for Claude models on the Modal
+# deployment (the image sets CLAUDE_CODE_USE_BEDROCK=1). Provide the
+# bearer token here; ANTHROPIC_API_KEY above is used as the fallback
+# route for `anthropic/...` model ids.
 AWS_BEARER_TOKEN_BEDROCK=...
 
 # Optional sandbox credentials
@@ -320,22 +323,43 @@ MODAL_TOKEN_ID=...
 MODAL_TOKEN_SECRET=...
 ```
 
-### Claude model routing: Anthropic API vs Bedrock
+### Claude model routing: AWS Bedrock only
 
-Claude models can be called either via the Anthropic API or via AWS Bedrock.
-The model string tells the provider layer which route to take:
+**oddish runs Claude exclusively through AWS Bedrock.** The Modal image
+bakes in `CLAUDE_CODE_USE_BEDROCK=1`, and Claude Code authenticates with
+`AWS_BEARER_TOKEN_BEDROCK` from the runtime Modal secret. There is no
+Anthropic API route — `ANTHROPIC_API_KEY` is not used for trials.
 
-- `anthropic/claude-opus-4-7` — routes through the Anthropic API using
-  `ANTHROPIC_API_KEY`.
-- `bedrock/global.anthropic.claude-opus-4-7` — routes through AWS Bedrock
-  using `AWS_BEARER_TOKEN_BEDROCK`. The `global.` prefix selects the
-  cross-region inference profile; swap it for a region prefix
-  (`us.`, `eu.`, `apac.`) if you need region-pinned inference.
+Claude Code invokes Bedrock via the legacy `InvokeModel` API, which only
+accepts **cross-region inference profile ids** (a `global.`/`us.`/... prefix)
+or ARNs. A bare `anthropic.claude-...` foundation-model id is *not* invokable
+on-demand — Bedrock rejects it with "Retry your request with the ID or ARN
+of an inference profile". So `harbor_runner` normalizes whatever model id a
+trial supplies via `oddish.config.to_bedrock_model_id` before handing it to
+Harbor. That normalizer accepts any of these forms:
 
-Pass these strings anywhere a model is accepted: `oddish run -m ...`, sweep
-configs (`model_name:`), or `--n-concurrent` overrides. Concurrency limits
-are keyed off the full `provider/model` string, so Anthropic API traffic
-and Bedrock traffic for the same Claude model are accounted separately.
+- already invokable (`global.`/`us.`/... inference profiles,
+  `arn:aws:bedrock:...`) — passed through, minus any redundant `bedrock/`
+  prefix.
+- Anthropic-style (`anthropic/claude-opus-4-7`, bare `claude-opus-4-7`) **or**
+  a bare Bedrock foundation-model id (`anthropic.claude-opus-4-7`) — mapped to
+  an invokable inference profile id via the explicit
+  `_ANTHROPIC_TO_BEDROCK_MODEL_IDS` table in `oddish/config.py`. **A Claude
+  model with no table entry raises a `ValueError`** — add an entry there
+  before running that model.
+- non-Claude models (`openai/...`, `gemini-...`) — passed through untouched.
+
+The table maps to `global.` inference profiles (recommended by AWS, no
+pricing premium) except Opus 4.1 / Opus 4, which have no global profile and
+use `us.`. If you need regional data residency, change the prefixes there.
+
+You can pass any of those forms anywhere a model is accepted: `oddish run
+-m ...`, sweep configs (`model_name:`), or `--n-concurrent` overrides.
+Concurrency limits are keyed off the full `provider/model` string.
+
+> Trial *analysis* (the `claude -p` classifier) uses its own `ANALYSIS_MODEL`
+> (`oddish/config.py`), which is already a `global.` inference profile id. It
+> is not wired through `to_bedrock_model_id`.
 
 Storage defaults:
 
