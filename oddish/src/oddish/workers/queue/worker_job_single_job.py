@@ -60,6 +60,14 @@ __all__ = [
 ]
 
 
+def _retry_delay_seconds(attempts: int) -> int:
+    """Return capped exponential backoff for the next retry."""
+    base = max(0, int(settings.retry_backoff_base))
+    cap = max(0, int(settings.retry_backoff_max))
+    exponent = max(0, attempts - 1)
+    return min(base * (2**exponent), cap)
+
+
 # ---------------------------------------------------------------------------
 # Claim SQL
 #
@@ -297,6 +305,7 @@ async def _record_outcome(
         assert outcome.failure is not None
         retry = outcome.failure.retryable and attempts < max_attempts
         if retry:
+            retry_delay_seconds = _retry_delay_seconds(attempts)
             # RETRYING is a scheduling state, not a terminal one. Leave
             # finished_at NULL so the claim SQL can clear it on the
             # next attempt without special-casing; the duration query
@@ -307,6 +316,8 @@ async def _record_outcome(
                 UPDATE worker_jobs
                 SET    status = 'RETRYING',
                        error_message = $2,
+                       available_after = NOW() + ($3::double precision * INTERVAL '1 second'),
+                       next_retry_at = NOW() + ($3::double precision * INTERVAL '1 second'),
                        current_worker_id = NULL,
                        current_queue_slot = NULL,
                        modal_function_call_id = NULL
@@ -314,10 +325,12 @@ async def _record_outcome(
                 """,
                 job_id,
                 outcome.failure.error_message,
+                retry_delay_seconds,
             )
             console.print(
                 f"metric=worker_job_retry_requeued id={job_id} "
-                f"attempts={attempts}/{max_attempts}"
+                f"attempts={attempts}/{max_attempts} "
+                f"retry_delay_seconds={retry_delay_seconds}"
             )
         else:
             await connection.execute(
