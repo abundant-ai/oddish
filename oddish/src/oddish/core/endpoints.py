@@ -1,7 +1,18 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, delete, func, nulls_last, or_, select, text, tuple_
+from sqlalchemy import (
+    and_,
+    case,
+    delete,
+    func,
+    nulls_last,
+    or_,
+    select,
+    text,
+    tuple_,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm import load_only, selectinload
@@ -13,7 +24,6 @@ from oddish.core.helpers import (
     build_trial_response,
     fetch_experiment_effective_version_ids,
     fetch_trial_queue_info,
-    fetch_trial_analysis_summaries,
     fetch_visible_worker_jobs,
     get_task_status_trials,
     resolve_effective_version_id,
@@ -42,9 +52,12 @@ from oddish.schemas import (
     TaskBrowseItem,
     TaskBrowseResponse,
     TaskBrowseTrial,
+    TaskCostTotals,
+    TaskDetailResponse,
     TaskStatusResponse,
     TaskSweepSubmission,
     TaskVersionResponse,
+    TaskVersionSummary,
     TrialResponse,
 )
 from oddish.timing import TimingRecorder, elapsed_ms, now
@@ -70,9 +83,19 @@ async def get_task_for_org_core(
     *,
     task_id: str,
     org_id: str | None = None,
+    load_current_version: bool = False,
 ) -> TaskModel:
-    """Fetch a task by ID with optional org scoping."""
+    """Fetch a task by ID with optional org scoping.
+
+    Pass ``load_current_version=True`` from callers that read
+    ``task.current_version.version`` (e.g. the file-serving routes).
+    Default is False so the common path doesn't pay for an extra
+    ``task_versions`` round trip it never consumes -- ``current_version``
+    is now lazy on TaskModel itself.
+    """
     query = select(TaskModel).where(TaskModel.id == task_id)
+    if load_current_version:
+        query = query.options(selectinload(TaskModel.current_version))
     if org_id is not None:
         query = query.where(TaskModel.org_id == org_id)
     result = await session.execute(query)
@@ -90,6 +113,7 @@ async def list_tasks_core(
     experiment_id: str | None = None,
     include_trials: bool = True,
     compact_trials: bool = False,
+    compact_tasks: bool = False,
     include_queue_info: bool = True,
     include_worker_jobs: bool = True,
     limit: int = 100,
@@ -98,7 +122,18 @@ async def list_tasks_core(
     include_empty_rewards: bool = True,
     record_timing: TimingRecorder | None = None,
 ) -> list[TaskStatusResponse]:
-    """List tasks with optional filters and aggregated trial stats."""
+    """List tasks with optional filters and aggregated trial stats.
+
+    ``compact_tasks=True`` is a shortcut path used by the experiment
+    page first paint (``limit=2000&include_trials=False``). It drops
+    the per-task ``visible_worker_jobs`` fetch, the experiment-scoped
+    ``effective_version_ids`` lookup, and the ``selectinload(experiments)``
+    fan-out -- none of which are read by the lightweight task-shell view
+    that consumes this path. It implies ``include_trials=False``.
+    """
+    if compact_tasks:
+        include_trials = False
+        include_worker_jobs = False
     query = select(TaskModel).order_by(TaskModel.created_at.desc())
     if include_trials:
         trials_loader = selectinload(TaskModel.trials)
@@ -128,10 +163,22 @@ async def list_tasks_core(
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
+                # Eagerly load the analysis JSONB on the compact path so
+                # ``build_compact_trial_response`` can read
+                # ``classification`` / ``subtype`` / ``evidence`` without
+                # a follow-up ``fetch_trial_analysis_summaries`` round
+                # trip. The blob is small in practice (3 short fields)
+                # and skipping the extra query is one of the bigger
+                # wins on the experiment-page batched fetch.
+                TrialModel.analysis,
                 TrialModel.input_tokens,
                 TrialModel.cache_tokens,
                 TrialModel.output_tokens,
                 TrialModel.cost_usd,
+                # Loaded eagerly so the compact builder can surface the
+                # rerun pointer without triggering a lazy-load outside
+                # the async greenlet (same reason ``origin`` is here).
+                TrialModel.superseded_by_trial_id,
                 TrialModel.created_at,
                 TrialModel.started_at,
                 TrialModel.finished_at,
@@ -165,6 +212,12 @@ async def list_tasks_core(
         else:
             query = query.options(trials_loader, experiments_loader)
     else:
+        # ``selectinload`` here is one batched round trip even on the
+        # compact path -- ``_build_task_status_response`` reads
+        # ``task.experiments`` for the primary-experiment lookup. The
+        # bigger compact-mode wins are skipping
+        # ``fetch_experiment_effective_version_ids`` (an IN-list of up
+        # to 2000 task ids) and ``fetch_visible_worker_jobs``.
         query = query.options(selectinload(TaskModel.experiments))
 
     if org_id is not None:
@@ -249,24 +302,19 @@ async def list_tasks_core(
                 "Trial queue info",
             )
         if compact_trials:
-            analysis_started_at = now()
-            analysis_summaries = await fetch_trial_analysis_summaries(
-                session,
-                task_ids=[task.id for task in tasks],
-                trial_ids=trial_ids,
-            )
-            if record_timing is not None:
-                record_timing(
-                    "tasks_analysis",
-                    elapsed_ms(analysis_started_at),
-                    "Trial analysis summaries",
-                )
+            # The analysis summary fields (classification / subtype /
+            # evidence) are now loaded inline on the trials selectinload
+            # via ``TrialModel.analysis`` in the compact load_only set.
+            # ``build_compact_trial_response`` falls through to read them
+            # from ``trial.analysis`` directly when no
+            # ``analysis_summaries`` mapping is passed, so we can skip
+            # the extra ``fetch_trial_analysis_summaries`` round trip
+            # entirely on this path.
             build_started_at = now()
             response = [
                 build_task_status_response_compact(
                     task,
                     include_empty_rewards=include_empty_rewards,
-                    analysis_summaries=analysis_summaries,
                     queue_info_by_trial_id=queue_info_by_trial_id,
                     jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
@@ -301,7 +349,12 @@ async def list_tasks_core(
 
     build_started_at = now()
     effective_version_id_by_task_id: dict[str, str] = {}
-    if experiment_id and tasks:
+    if experiment_id and tasks and not compact_tasks:
+        # Skipped on the compact path: the experiment page uses the
+        # task version baked into each trial row when it later loads
+        # the trial pages, so the lightweight first-paint shell doesn't
+        # need this lookup. Phase 4B folds it into the main task list
+        # query via a window function for the non-compact path.
         effective_version_id_by_task_id = await fetch_experiment_effective_version_ids(
             session,
             experiment_id=experiment_id,
@@ -401,7 +454,7 @@ async def browse_tasks_core(
         func.sum(TrialModel.reward).label("reward_sum"),
         func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
         func.max(trial_activity_at).label("last_run_at"),
-    )
+    ).where(TrialModel.superseded_by_trial_id.is_(None))
     if org_id is not None:
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
     trial_aggregates = trial_agg_query.group_by(
@@ -488,6 +541,7 @@ async def browse_tasks_core(
             .join(ExperimentModel, and_(*exp_join_condition))
             .where(
                 TrialModel.experiment_id.isnot(None),
+                TrialModel.superseded_by_trial_id.is_(None),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
@@ -527,6 +581,7 @@ async def browse_tasks_core(
                 TrialModel.error_message.label("error_message"),
             )
             .where(
+                TrialModel.superseded_by_trial_id.is_(None),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
@@ -759,50 +814,93 @@ async def retry_trial_core(
     trial_id: str,
     org_id: str | None = None,
 ) -> dict[str, str]:
-    """Reset and requeue a trial for another attempt."""
-    trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
-    task = await session.get(TaskModel, trial.task_id)
+    """Spawn a fresh immutable trial that replaces ``trial_id``.
+
+    Trials are append-only. A retry never resets the existing row;
+    instead it inserts a new trial that copies the spec, marks the
+    old row as superseded (so it disappears from default UI views and
+    no longer counts toward verdict / pipeline aggregation), and
+    enqueues a worker_job for the new trial.
+
+    Each trial therefore owns a unique S3 prefix
+    (``tasks/{task_id}/trials/{trial_id}/``), which keeps the file
+    viewer free of stale folders left over from previous attempts.
+    """
+    old_trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
+    task = await session.get(TaskModel, old_trial.task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+
+    if old_trial.superseded_by_trial_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This trial has already been superseded by another retry "
+                f"({old_trial.superseded_by_trial_id}); retry that one instead"
+            ),
+        )
 
     # Allow retrying terminal states OR stuck trials.
     # A trial is "stuck" if running/retrying with error or completed harbor stage.
     terminal_states = {TrialStatus.FAILED, TrialStatus.SUCCESS}
-    is_stuck = trial.status in {TrialStatus.RUNNING, TrialStatus.RETRYING} and (
-        trial.error_message or trial.harbor_stage == "completed"
-    )
-    if trial.status not in terminal_states and not is_stuck:
+    is_stuck = old_trial.status in {
+        TrialStatus.RUNNING,
+        TrialStatus.RETRYING,
+    } and (old_trial.error_message or old_trial.harbor_stage == "completed")
+    if old_trial.status not in terminal_states and not is_stuck:
         raise HTTPException(
             status_code=400,
-            detail=f"Can only retry completed, failed, or stuck trials (current: {trial.status.value})",
+            detail=(
+                "Can only retry completed, failed, or stuck trials "
+                f"(current: {old_trial.status.value})"
+            ),
         )
 
-    trial.status = TrialStatus.QUEUED
-    trial.error_message = None
-    trial.reward = None
-    trial.result = None
-    trial.started_at = None
-    trial.finished_at = None
-    trial.harbor_stage = None
-    trial.harbor_result_path = None
-    trial.trial_s3_key = None
-    trial.attempts = 0
-    trial.idempotency_key = None
-    trial.current_worker_id = None
-    trial.current_queue_slot = None
+    # Imported lazily to avoid a circular import through
+    # ``oddish.queue`` -> ``oddish.workers.jobs.enqueue``.
+    from oddish.queue import enqueue_trial_worker_job, reserve_next_trial_index
 
-    # Move completed tasks back to running once a trial is requeued.
-    if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-        task.status = TaskStatus.RUNNING
-        task.finished_at = None
+    next_index = await reserve_next_trial_index(session, task_id=task.id)
+    new_trial_id = f"{task.id}-{next_index}"
+    new_trial_name = f"{task.name}-{next_index}"
 
-    # Cancel any in-flight TRIAL worker_job for this trial before
-    # enqueueing the new one. Without this, a "stuck RUNNING" retry
-    # leaves two non-terminal worker_jobs rows with the same
-    # ``subject_id`` -- the old stuck row still holds a queue_slot
-    # lease until cleanup reaps it, and when it does the handler's
-    # outcome can race with the new attempt. Same pattern as
-    # ``append_trials_to_task`` uses for superseded VERDICT rows.
+    new_trial = TrialModel(
+        id=new_trial_id,
+        name=new_trial_name,
+        task_id=old_trial.task_id,
+        task_version_id=old_trial.task_version_id,
+        experiment_id=old_trial.experiment_id,
+        org_id=old_trial.org_id,
+        agent=old_trial.agent,
+        provider=old_trial.provider,
+        queue_key=old_trial.queue_key,
+        model=old_trial.model,
+        timeout_minutes=old_trial.timeout_minutes,
+        environment=old_trial.environment,
+        harbor_config=old_trial.harbor_config,
+        max_attempts=old_trial.max_attempts,
+        status=TrialStatus.QUEUED,
+    )
+    session.add(new_trial)
+
+    # Mark the old row superseded so it stops showing up in the trial
+    # viewer, file viewer, and verdict / analysis aggregation. We also
+    # snap any non-terminal status to a terminal one so legacy queries
+    # that don't yet filter on ``superseded_by_trial_id`` (e.g. older
+    # dashboards, cleanup safety nets) don't mistake the dead row for
+    # active pending work.
+    old_trial.superseded_by_trial_id = new_trial_id
+    if old_trial.status not in terminal_states:
+        old_trial.status = TrialStatus.FAILED
+        old_trial.error_message = old_trial.error_message or "Superseded by user retry"
+        old_trial.finished_at = old_trial.finished_at or utcnow()
+        old_trial.current_worker_id = None
+        old_trial.current_queue_slot = None
+
+    # Cancel every live worker_jobs row anchored to the OLD trial id
+    # (TRIAL run + any in-flight ANALYSIS) so workers stop heart-beating
+    # against a superseded row and release their queue_slot lease
+    # before we enqueue work for the new trial.
     await session.execute(
         text(
             """
@@ -813,8 +911,7 @@ async def retry_trial_core(
                    current_worker_id = NULL,
                    current_queue_slot = NULL,
                    modal_function_call_id = NULL
-            WHERE  kind::text = 'TRIAL'
-              AND  subject_table = 'trials'
+            WHERE  subject_table = 'trials'
               AND  subject_id = :trial_id
               AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
             """
@@ -822,20 +919,47 @@ async def retry_trial_core(
         {"trial_id": trial_id},
     )
 
-    # Imported lazily to avoid a circular import through
-    # ``oddish.queue`` -> ``oddish.workers.jobs.enqueue``.
-    from oddish.queue import enqueue_trial_worker_job
+    # The task's cached verdict and any in-flight VERDICT row are
+    # computed across the trial set; superseding a member invalidates
+    # them. Cancel + reset so the verdict stage can re-run cleanly once
+    # the replacement trial's analysis completes.
+    if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+        task.status = TaskStatus.RUNNING
+        task.finished_at = None
+    _reset_task_verdict(task)
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = 'Superseded by user retry',
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  kind::text = 'VERDICT'
+              AND  subject_table = 'tasks'
+              AND  subject_id = :task_id
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        ),
+        {"task_id": task.id},
+    )
 
     await enqueue_trial_worker_job(
         session,
-        trial_id=trial_id,
-        queue_key=trial.queue_key,
-        org_id=trial.org_id,
-        max_attempts=trial.max_attempts,
+        trial_id=new_trial_id,
+        queue_key=new_trial.queue_key,
+        org_id=new_trial.org_id,
+        max_attempts=new_trial.max_attempts,
     )
 
     await session.commit()
-    return {"status": "queued", "trial_id": trial_id}
+    return {
+        "status": "queued",
+        "trial_id": new_trial_id,
+        "superseded_trial_id": trial_id,
+    }
 
 
 def _reset_task_verdict(task: TaskModel) -> None:
@@ -849,7 +973,8 @@ def _reset_task_verdict(task: TaskModel) -> None:
 
 def _task_has_active_analysis(task: TaskModel) -> bool:
     return any(
-        trial.analysis_status
+        trial.superseded_by_trial_id is None
+        and trial.analysis_status
         in (AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
         for trial in task.trials or []
     )
@@ -857,7 +982,8 @@ def _task_has_active_analysis(task: TaskModel) -> bool:
 
 def _task_has_active_trials(task: TaskModel) -> bool:
     return any(
-        trial.status
+        trial.superseded_by_trial_id is None
+        and trial.status
         in (
             TrialStatus.PENDING,
             TrialStatus.QUEUED,
@@ -881,7 +1007,10 @@ def _clear_stale_task_pipeline_status(task: TaskModel) -> None:
     ):
         return
 
-    task.status = TaskStatus.COMPLETED if task.trials else TaskStatus.FAILED
+    live_trials = [
+        trial for trial in task.trials or [] if trial.superseded_by_trial_id is None
+    ]
+    task.status = TaskStatus.COMPLETED if live_trials else TaskStatus.FAILED
     task.finished_at = task.finished_at or utcnow()
 
 
@@ -895,7 +1024,7 @@ def _reset_trial_analysis(trial: TrialModel) -> None:
 
 
 async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
-    """Count non-terminal trials for a task."""
+    """Count non-terminal, non-superseded trials for a task."""
     active_statuses = [
         TrialStatus.PENDING,
         TrialStatus.QUEUED,
@@ -905,6 +1034,7 @@ async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
     count = await session.scalar(
         select(func.count(TrialModel.id)).where(
             TrialModel.task_id == task_id,
+            TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.status.in_(active_statuses),
         )
     )
@@ -922,6 +1052,15 @@ async def rerun_trial_analysis_core(
     task = await session.get(TaskModel, trial.task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+
+    if trial.superseded_by_trial_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This trial has been superseded by another retry "
+                f"({trial.superseded_by_trial_id}); analyze that one instead"
+            ),
+        )
 
     if trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED):
         raise HTTPException(
@@ -998,6 +1137,14 @@ async def rerun_task_analysis_core(
     if not task.trials:
         raise HTTPException(status_code=400, detail="Task has no trials to analyze")
 
+    live_trials = [
+        trial for trial in task.trials if trial.superseded_by_trial_id is None
+    ]
+    if not live_trials:
+        raise HTTPException(
+            status_code=400, detail="Task has no live trials to analyze"
+        )
+
     active_trials = await _count_active_trials(session, task_id=task.id)
     if active_trials > 0:
         raise HTTPException(
@@ -1008,7 +1155,7 @@ async def rerun_task_analysis_core(
     if any(
         trial.analysis_status
         in (AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
-        for trial in task.trials
+        for trial in live_trials
     ):
         raise HTTPException(
             status_code=400,
@@ -1027,7 +1174,7 @@ async def rerun_task_analysis_core(
 
     from oddish.queue import enqueue_analysis_worker_job
 
-    for trial in task.trials:
+    for trial in live_trials:
         _reset_trial_analysis(trial)
         trial.analysis_status = AnalysisStatus.QUEUED
         await enqueue_analysis_worker_job(
@@ -1043,7 +1190,7 @@ async def rerun_task_analysis_core(
     return {
         "status": "queued",
         "task_id": task_id,
-        "trial_count": len(task.trials),
+        "trial_count": len(live_trials),
     }
 
 
@@ -1068,6 +1215,12 @@ async def rerun_task_verdict_core(
     if not task.trials:
         raise HTTPException(status_code=400, detail="Task has no trials")
 
+    live_trials = [
+        trial for trial in task.trials if trial.superseded_by_trial_id is None
+    ]
+    if not live_trials:
+        raise HTTPException(status_code=400, detail="Task has no live trials")
+
     active_trials = await _count_active_trials(session, task_id=task.id)
     if active_trials > 0:
         raise HTTPException(
@@ -1078,7 +1231,7 @@ async def rerun_task_verdict_core(
     if any(
         trial.analysis_status
         in (None, AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
-        for trial in task.trials
+        for trial in live_trials
     ):
         raise HTTPException(
             status_code=400,
@@ -1165,9 +1318,11 @@ async def list_task_versions_core(
     *,
     task_id: str,
     org_id: str | None = None,
+    task: TaskModel | None = None,
 ) -> list[TaskVersionResponse]:
     """Return all versions of a task, newest first."""
-    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
+    if task is None:
+        task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
 
     result = await session.execute(
         select(TaskVersionModel)
@@ -1203,6 +1358,146 @@ async def get_task_version_core(
     return TaskVersionResponse.model_validate(version_row)
 
 
+async def get_task_detail_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    org_id: str | None = None,
+) -> TaskDetailResponse:
+    query = (
+        select(TaskModel)
+        .options(
+            selectinload(TaskModel.experiments),
+            selectinload(TaskModel.trials),
+        )
+        .where(TaskModel.id == task_id)
+    )
+    if org_id is not None:
+        query = query.where(TaskModel.org_id == org_id)
+    task = (await session.execute(query)).scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=task.trials)
+    jobs_by_subject = await fetch_visible_worker_jobs(
+        session,
+        task_ids=[task.id],
+        trial_ids=[trial.id for trial in task.trials],
+    )
+
+    # Header counts stay current-version-scoped (matches /tasks list);
+    # trials below are widened to span every version so the frontend
+    # switcher and per-version rollups see them all.
+    task_status = build_task_status_response(
+        task,
+        include_empty_rewards=True,
+        queue_info_by_trial_id=queue_info_by_trial_id,
+        jobs_by_subject=jobs_by_subject,
+    )
+    all_trial_models = [t for t in task.trials if t.superseded_by_trial_id is None]
+    task_status.trials = [
+        build_trial_response(
+            t,
+            task.task_path,
+            queue_info=queue_info_by_trial_id.get(t.id),
+            jobs=jobs_by_subject.get(("trials", t.id), []),
+        )
+        for t in all_trial_models
+    ]
+
+    version_rows = await list_task_versions_core(
+        session, task_id=task_id, org_id=org_id, task=task
+    )
+
+    totals, versions_sorted = _aggregate_task_detail_rollups(
+        trials=task_status.trials or [],
+        version_rows=version_rows,
+        current_version_id=task_status.current_version_id,
+    )
+
+    return TaskDetailResponse(
+        task=task_status,
+        versions=versions_sorted,
+        totals=totals,
+    )
+
+
+def _aggregate_task_detail_rollups(
+    *,
+    trials,
+    version_rows,
+    current_version_id: str | None,
+) -> tuple[TaskCostTotals, list[TaskVersionSummary]]:
+    """Fold trials into a task-wide cost rollup + per-version summaries.
+
+    Pulled out so it's unit-testable without standing up the full
+    ``get_task_detail_core`` query stack.
+    """
+    summary_by_version_id: dict[str, TaskVersionSummary] = {
+        v.id: TaskVersionSummary(
+            id=v.id,
+            version=v.version,
+            message=v.message,
+            created_at=v.created_at,
+            is_current=(v.id == current_version_id),
+        )
+        for v in version_rows
+    }
+
+    totals = TaskCostTotals()
+    for trial in trials:
+        totals.total_trials += 1
+        if trial.cost_usd is not None:
+            totals.cost_usd += trial.cost_usd
+            totals.cost_trial_count += 1
+            if trial.cost_is_estimated:
+                totals.cost_has_estimated = True
+            else:
+                totals.cost_has_native = True
+
+        bucket = summary_by_version_id.get(trial.task_version_id or "")
+        if bucket is None:
+            continue
+        bucket.trial_count += 1
+        if trial.status == TrialStatus.SUCCESS:
+            bucket.completed_count += 1
+        elif trial.status == TrialStatus.FAILED:
+            bucket.failed_count += 1
+
+        if trial.status == TrialStatus.SUCCESS and trial.reward is not None:
+            bucket.reward_sum += trial.reward
+            bucket.reward_total += 1
+            if trial.reward == 1:
+                bucket.pass_count += 1
+            elif trial.reward == 0:
+                bucket.fail_count += 1
+            else:
+                bucket.partial_count += 1
+        elif trial.status != TrialStatus.FAILED:
+            bucket.pending_count += 1
+
+        if trial.cost_usd is not None:
+            bucket.cost_usd += trial.cost_usd
+            bucket.cost_trial_count += 1
+            if trial.cost_is_estimated:
+                bucket.cost_has_estimated = True
+            else:
+                bucket.cost_has_native = True
+
+        candidate = trial.finished_at or trial.started_at or trial.created_at
+        if candidate is not None and (
+            bucket.last_run_at is None or candidate > bucket.last_run_at
+        ):
+            bucket.last_run_at = candidate
+
+    versions_sorted = sorted(
+        summary_by_version_id.values(),
+        key=lambda s: s.version,
+        reverse=True,
+    )
+    return totals, versions_sorted
+
+
 async def delete_task_core(
     session: AsyncSession,
     *,
@@ -1210,16 +1505,24 @@ async def delete_task_core(
     org_id: str | None = None,
     experiment_id: str | None = None,
 ) -> dict:
-    """Delete a task and its trials, optionally scoped to one experiment.
+    """Soft-delete a task and its trials, optionally scoped to one experiment.
 
-    When ``experiment_id`` is ``None`` the task and all of its trials are
-    deleted unconditionally, along with every ``task_experiments`` row
-    (via ``ondelete=CASCADE``).
+    "Delete" here is a tombstone: rows are kept in the database with
+    ``deleted_at`` stamped to ``NOW()``, the session-level filter in
+    :mod:`oddish.db.soft_delete` hides them from normal reads, and S3
+    artifacts are *not* removed (the response carries an empty
+    ``s3_prefixes`` list so callers' best-effort S3 cleanup is a no-op).
+
+    When ``experiment_id`` is ``None`` the task and every one of its
+    trials are tombstoned. ``task_experiments`` link rows are left intact
+    so a future restore can recover the experiment membership.
 
     When ``experiment_id`` is given, only trials whose ``experiment_id``
-    matches are removed and the ``(task_id, experiment_id)`` join row is
-    deleted. The task itself is only dropped if no trials and no other
-    experiment links remain.
+    matches are tombstoned and the ``(task_id, experiment_id)`` join row
+    is hard-deleted (join rows don't carry a tombstone column and reads
+    that need to ignore "ghost" links can rely on the soft-delete filter
+    on the experiment / task sides). The task itself is only tombstoned
+    if no live trials and no other experiment links remain.
     """
     task_query = select(
         TaskModel.id,
@@ -1233,38 +1536,53 @@ async def delete_task_core(
     if not task_row:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-    resolved_task_id, task_s3_key, task_path = task_row
+    resolved_task_id, _task_s3_key, _task_path = task_row
 
-    from oddish.db.storage import collect_s3_prefixes_for_deletion
     from oddish.db import task_experiments
 
-    # Unscoped: legacy "delete everything" behavior and response shape.
+    # Unscoped: tombstone the task and all its trials.
     if experiment_id is None:
-        trial_rows_result = await session.execute(
-            select(TrialModel.id, TrialModel.trial_s3_key).where(
-                TrialModel.task_id == resolved_task_id
-            )
-        )
-        trial_rows = [(row[0], row[1]) for row in trial_rows_result.all()]
+        scoped_trial_ids = [
+            row[0]
+            for row in (
+                await session.execute(
+                    select(TrialModel.id).where(TrialModel.task_id == resolved_task_id)
+                )
+            ).all()
+        ]
 
-        s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=[(task_s3_key, task_path)],
-            trials=trial_rows,
+        if scoped_trial_ids:
+            await _cancel_worker_jobs_for_trials(
+                session,
+                trial_ids=scoped_trial_ids,
+                reason="Task deleted by user",
+            )
+
+        await _cancel_worker_jobs_for_task(
+            session,
+            task_id=resolved_task_id,
+            reason="Task deleted by user",
         )
 
         await session.execute(
-            delete(TrialModel)
+            update(TrialModel)
             .where(TrialModel.task_id == resolved_task_id)
+            .values(deleted_at=utcnow())
             .execution_options(synchronize_session=False)
         )
         await session.execute(
-            delete(TaskModel)
+            update(TaskModel)
             .where(TaskModel.id == resolved_task_id)
+            .values(deleted_at=utcnow())
             .execution_options(synchronize_session=False)
         )
 
         return {
-            "s3_prefixes": s3_prefixes,
+            # Soft-delete preserves S3 artifacts for potential restore.
+            # The response key is kept so the API contract with callers
+            # (e.g. backend's ``delete_s3_prefixes`` best-effort cleanup)
+            # remains stable; the empty list makes that cleanup a no-op.
+            "s3_prefixes": [],
             "deleted": {"task_id": task_id},
         }
 
@@ -1296,31 +1614,22 @@ async def delete_task_core(
 
     # Cancel live worker_jobs for those trials so workers release slots.
     if scoped_trial_ids:
-        await session.execute(
-            text(
-                """
-                UPDATE worker_jobs
-                SET    status = 'CANCELLED',
-                       finished_at = NOW(),
-                       error_message = 'Task deleted by user',
-                       current_worker_id = NULL,
-                       current_queue_slot = NULL,
-                       modal_function_call_id = NULL
-                WHERE  subject_table = 'trials'
-                  AND  subject_id = ANY(:trial_ids)
-                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                """
-            ),
-            {"trial_ids": scoped_trial_ids},
+        await _cancel_worker_jobs_for_trials(
+            session,
+            trial_ids=scoped_trial_ids,
+            reason="Task deleted by user",
         )
 
         await session.execute(
-            delete(TrialModel)
+            update(TrialModel)
             .where(TrialModel.id.in_(scoped_trial_ids))
+            .values(deleted_at=utcnow())
             .execution_options(synchronize_session=False)
         )
 
-    # Remove the (task_id, experiment_id) association.
+    # The join row has no tombstone column; remove it so the experiment
+    # stops listing this task. If the task is later restored, callers
+    # re-link explicitly.
     await session.execute(
         delete(task_experiments).where(
             task_experiments.c.task_id == resolved_task_id,
@@ -1328,8 +1637,9 @@ async def delete_task_core(
         )
     )
 
-    # If the task has no remaining trials and no other experiment links, it
-    # is now orphaned — drop it outright so the S3 prefix gets cleaned up.
+    # If the task has no remaining live trials and no other experiment
+    # links, tombstone it too. Live = ``deleted_at IS NULL`` (the
+    # session-level filter handles this transparently for ORM queries).
     remaining_trials = int(
         await session.scalar(
             select(func.count(TrialModel.id)).where(
@@ -1349,43 +1659,25 @@ async def delete_task_core(
 
     task_removed = False
     if remaining_trials == 0 and remaining_links == 0:
-        await session.execute(
-            text(
-                """
-                UPDATE worker_jobs
-                SET    status = 'CANCELLED',
-                       finished_at = NOW(),
-                       error_message = 'Task deleted by user',
-                       current_worker_id = NULL,
-                       current_queue_slot = NULL,
-                       modal_function_call_id = NULL
-                WHERE  subject_table = 'tasks'
-                  AND  subject_id = :task_id
-                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                """
-            ),
-            {"task_id": resolved_task_id},
+        await _cancel_worker_jobs_for_task(
+            session,
+            task_id=resolved_task_id,
+            reason="Task deleted by user",
         )
         await session.execute(
-            delete(TaskModel)
+            update(TaskModel)
             .where(TaskModel.id == resolved_task_id)
+            .values(deleted_at=utcnow())
             .execution_options(synchronize_session=False)
-        )
-        s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=[(task_s3_key, task_path)],
-            trials=[(row[0], row[1]) for row in scoped_trial_rows],
         )
         task_removed = True
     else:
-        s3_prefixes = collect_s3_prefixes_for_deletion(
-            tasks=[], trials=[(row[0], row[1]) for row in scoped_trial_rows]
-        )
         task = await session.get(TaskModel, resolved_task_id)
         if task is not None:
             _reset_task_verdict(task)
 
     return {
-        "s3_prefixes": s3_prefixes,
+        "s3_prefixes": [],
         "deleted": {
             "task_id": task_id,
             "experiment_id": experiment_id,
@@ -1395,22 +1687,85 @@ async def delete_task_core(
     }
 
 
+async def _cancel_worker_jobs_for_trials(
+    session: AsyncSession,
+    *,
+    trial_ids: Collection[str],
+    reason: str,
+) -> None:
+    """Cancel live worker_jobs whose subject is one of these trials.
+
+    Soft-deleting a trial doesn't kill its in-flight scheduling state.
+    Without this cancel the dispatcher could still claim the row (the
+    claim SQL guards against soft-deleted subjects defensively, but the
+    canonical signal is ``worker_jobs.status``) and a heart-beating
+    worker would keep holding a queue slot. Issued as raw SQL because
+    ``worker_jobs.status`` is a Postgres enum and the cast keeps the
+    statement portable across asyncpg / SQLAlchemy boundaries.
+    """
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = :reason,
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  subject_table = 'trials'
+              AND  subject_id = ANY(:trial_ids)
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        ),
+        {"trial_ids": list(trial_ids), "reason": reason},
+    )
+
+
+async def _cancel_worker_jobs_for_task(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    reason: str,
+) -> None:
+    """Cancel live worker_jobs whose subject is this task (e.g. VERDICT)."""
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = :reason,
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  subject_table = 'tasks'
+              AND  subject_id = :task_id
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        ),
+        {"task_id": task_id, "reason": reason},
+    )
+
+
 async def delete_experiment_core(
     session: AsyncSession,
     *,
     experiment_id: str,
     org_id: str | None = None,
 ) -> dict:
-    """Delete an experiment, its trials, and any now-orphaned tasks.
+    """Soft-delete an experiment, its trials, and any now-orphaned tasks.
 
-    Only trials whose ``experiment_id`` matches this experiment are
-    removed. Tasks linked to this experiment via ``task_experiments``
-    have that link removed (CASCADE does this when the experiment row is
-    dropped below); any task left without trials or other experiment
-    links is then deleted outright.
+    Like :func:`delete_task_core` this is tombstone-based: rows get
+    ``deleted_at`` stamped instead of being physically removed, and S3
+    artifacts are preserved. ``task_experiments`` link rows that pointed
+    at this experiment are hard-deleted so list views immediately stop
+    surfacing the membership; the experiment row itself is the only
+    canonical "this experiment used to contain this task" pointer once
+    it's tombstoned, and a restore flow re-creates the join rows
+    explicitly.
     """
     from oddish.db import task_experiments
-    from oddish.db.storage import collect_s3_prefixes_for_deletion
 
     exp_query = select(ExperimentModel).where(ExperimentModel.id == experiment_id)
     if org_id is not None:
@@ -1423,11 +1778,11 @@ async def delete_experiment_core(
             status_code=404, detail=f"Experiment {experiment_id} not found"
         )
 
-    # Tasks linked to this experiment — snapshot them now so we can check
-    # which ones orphan out after the scoped trial delete + link drop.
+    # Tasks linked to this experiment -- snapshot them now so we can check
+    # which ones orphan out after the scoped trial tombstone + link drop.
     linked_task_rows = (
         await session.execute(
-            select(TaskModel.id, TaskModel.task_s3_key, TaskModel.task_path)
+            select(TaskModel.id)
             .join(
                 task_experiments,
                 task_experiments.c.task_id == TaskModel.id,
@@ -1436,26 +1791,14 @@ async def delete_experiment_core(
         )
     ).all()
     linked_task_ids = [row[0] for row in linked_task_rows]
-    linked_task_s3 = {row[0]: (row[1], row[2]) for row in linked_task_rows}
 
     if linked_task_ids:
-        await session.execute(
-            text(
-                """
-                UPDATE worker_jobs
-                SET    status = 'CANCELLED',
-                       finished_at = NOW(),
-                       error_message = 'Experiment deleted by user',
-                       current_worker_id = NULL,
-                       current_queue_slot = NULL,
-                       modal_function_call_id = NULL
-                WHERE  subject_table = 'tasks'
-                  AND  subject_id = ANY(:task_ids)
-                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                """
-            ),
-            {"task_ids": linked_task_ids},
-        )
+        for tid in linked_task_ids:
+            await _cancel_worker_jobs_for_task(
+                session,
+                task_id=tid,
+                reason="Experiment deleted by user",
+            )
 
     # Trials scoped to this experiment.
     trial_where = [TrialModel.experiment_id == experiment_id]
@@ -1464,57 +1807,54 @@ async def delete_experiment_core(
             or_(TrialModel.org_id == org_id, TrialModel.org_id.is_(None))
         )
 
-    scoped_trial_rows = (
-        await session.execute(
-            select(TrialModel.id, TrialModel.trial_s3_key).where(*trial_where)
-        )
-    ).all()
-    scoped_trial_ids = [row[0] for row in scoped_trial_rows]
+    scoped_trial_ids = [
+        row[0]
+        for row in (
+            await session.execute(select(TrialModel.id).where(*trial_where))
+        ).all()
+    ]
 
-    # Cancel any live worker_jobs for the trials we're about to delete.
     if scoped_trial_ids:
-        await session.execute(
-            text(
-                """
-                UPDATE worker_jobs
-                SET    status = 'CANCELLED',
-                       finished_at = NOW(),
-                       error_message = 'Experiment deleted by user',
-                       current_worker_id = NULL,
-                       current_queue_slot = NULL,
-                       modal_function_call_id = NULL
-                WHERE  subject_table = 'trials'
-                  AND  subject_id = ANY(:trial_ids)
-                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                """
-            ),
-            {"trial_ids": scoped_trial_ids},
+        await _cancel_worker_jobs_for_trials(
+            session,
+            trial_ids=scoped_trial_ids,
+            reason="Experiment deleted by user",
         )
 
-        trials_del = await session.execute(
-            delete(TrialModel)
+        trials_upd = await session.execute(
+            update(TrialModel)
             .where(TrialModel.id.in_(scoped_trial_ids))
+            .values(deleted_at=utcnow())
             .execution_options(synchronize_session=False)
         )
-        deleted_trials = int(trials_del.rowcount or 0)  # type: ignore[attr-defined]
+        deleted_trials = int(trials_upd.rowcount or 0)  # type: ignore[attr-defined]
     else:
         deleted_trials = 0
 
-    # Drop the experiment row. CASCADE on ``task_experiments.experiment_id``
-    # automatically removes link rows pointing at this experiment.
-    experiments_del_query = delete(ExperimentModel).where(
-        ExperimentModel.id == experiment_id
+    # Drop the experiment->task link rows so list views stop pulling
+    # this experiment into the task's membership. The join table has no
+    # tombstone column.
+    await session.execute(
+        delete(task_experiments).where(
+            task_experiments.c.experiment_id == experiment_id
+        )
+    )
+
+    # Tombstone the experiment row.
+    experiments_upd_query = (
+        update(ExperimentModel)
+        .where(ExperimentModel.id == experiment_id)
+        .values(deleted_at=utcnow())
     )
     if org_id is not None:
-        experiments_del_query = experiments_del_query.where(
+        experiments_upd_query = experiments_upd_query.where(
             ExperimentModel.org_id == org_id
         )
-    experiments_result = await session.execute(experiments_del_query)
+    experiments_result = await session.execute(experiments_upd_query)
     deleted_experiments = int(experiments_result.rowcount or 0)  # type: ignore[attr-defined]
 
-    # Any of the previously-linked tasks that now have no trials and no
-    # other experiment links are orphaned — drop them + their S3 prefix.
-    task_s3_to_delete: list[tuple[str | None, str | None]] = []
+    # Any of the previously-linked tasks that now have no live trials
+    # and no other experiment links are orphaned -- tombstone them too.
     deleted_tasks = 0
 
     for tid in linked_task_ids:
@@ -1533,30 +1873,18 @@ async def delete_experiment_core(
             or 0
         )
         if remaining_trials == 0 and remaining_links == 0:
-            await session.execute(
-                text(
-                    """
-                    UPDATE worker_jobs
-                    SET    status = 'CANCELLED',
-                           finished_at = NOW(),
-                           error_message = 'Experiment deleted by user',
-                           current_worker_id = NULL,
-                           current_queue_slot = NULL,
-                           modal_function_call_id = NULL
-                    WHERE  subject_table = 'tasks'
-                      AND  subject_id = :task_id
-                      AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                    """
-                ),
-                {"task_id": tid},
+            await _cancel_worker_jobs_for_task(
+                session,
+                task_id=tid,
+                reason="Experiment deleted by user",
             )
-            task_del_result = await session.execute(
-                delete(TaskModel)
+            task_upd_result = await session.execute(
+                update(TaskModel)
                 .where(TaskModel.id == tid)
+                .values(deleted_at=utcnow())
                 .execution_options(synchronize_session=False)
             )
-            deleted_tasks += int(task_del_result.rowcount or 0)  # type: ignore[attr-defined]
-            task_s3_to_delete.append(linked_task_s3[tid])
+            deleted_tasks += int(task_upd_result.rowcount or 0)  # type: ignore[attr-defined]
         else:
             task_result = await session.execute(
                 select(TaskModel)
@@ -1568,13 +1896,8 @@ async def delete_experiment_core(
                 _reset_task_verdict(task)
                 _clear_stale_task_pipeline_status(task)
 
-    s3_prefixes = collect_s3_prefixes_for_deletion(
-        tasks=task_s3_to_delete,
-        trials=[(row[0], row[1]) for row in scoped_trial_rows],
-    )
-
     return {
-        "s3_prefixes": s3_prefixes,
+        "s3_prefixes": [],
         "deleted": {
             "trials": deleted_trials,
             "tasks": deleted_tasks,
@@ -1589,59 +1912,45 @@ async def delete_trial_core(
     trial_id: str,
     org_id: str | None = None,
 ) -> dict:
-    """Delete a single trial, cancel its in-flight jobs, and collect its S3 prefix.
+    """Soft-delete a single trial and cancel its in-flight worker_jobs.
 
-    Also invalidates the parent task's cached verdict so stale aggregates from
-    the now-deleted trial do not leak into the dashboard.
+    Sets ``deleted_at`` instead of issuing a SQL DELETE so the row stays
+    queryable via ``include_deleted=True`` for audit / restore flows.
+    The parent task's cached verdict is invalidated so dashboards stop
+    aggregating numbers from the now-hidden trial.
     """
     trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
 
-    from oddish.db.storage import collect_s3_prefixes_for_deletion
-
-    s3_prefixes = collect_s3_prefixes_for_deletion(
-        tasks=[],
-        trials=[(trial.id, trial.trial_s3_key)],
-    )
-
     # Cancel any live worker_jobs belonging to this trial (TRIAL runs and
-    # ANALYSIS jobs) so workers stop heart-beating and release slots before
-    # the domain row disappears underneath them.
-    await session.execute(
-        text(
-            """
-            UPDATE worker_jobs
-            SET    status = 'CANCELLED',
-                   finished_at = NOW(),
-                   error_message = 'Trial deleted by user',
-                   current_worker_id = NULL,
-                   current_queue_slot = NULL,
-                   modal_function_call_id = NULL
-            WHERE  subject_table = 'trials'
-              AND  subject_id = :trial_id
-              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-            """
-        ),
-        {"trial_id": trial_id},
+    # ANALYSIS jobs) so workers stop heart-beating and release slots
+    # before the domain row goes invisible under them.
+    await _cancel_worker_jobs_for_trials(
+        session,
+        trial_ids=[trial_id],
+        reason="Trial deleted by user",
     )
 
     task_id = trial.task_id
 
     await session.execute(
-        delete(TrialModel)
+        update(TrialModel)
         .where(TrialModel.id == trial_id)
+        .values(deleted_at=utcnow())
         .execution_options(synchronize_session=False)
     )
 
-    # Task aggregates (total/completed/failed) are derived from the remaining
-    # trials, but the cached verdict for the task may reference this trial.
-    # Clear it so the dashboard doesn't show stale data.
+    # Task aggregates (total/completed/failed) are derived from the
+    # remaining trials -- the soft-delete filter excludes this one
+    # automatically -- but the cached verdict on the task row may
+    # reference it directly. Clear it so the dashboard doesn't show
+    # stale data.
     if task_id:
         task = await session.get(TaskModel, task_id)
         if task is not None:
             _reset_task_verdict(task)
 
     return {
-        "s3_prefixes": s3_prefixes,
+        "s3_prefixes": [],
         "deleted": {"trial_id": trial_id, "task_id": task_id},
     }
 

@@ -109,11 +109,22 @@ WHERE  id = (
         WHERE  wj2.kind::text = 'TRIAL'
           AND  wj2.status::text = 'RUNNING'
           AND  wj2.queue_key = $1
+          AND  tr2.deleted_at IS NULL
+          AND  tk2.deleted_at IS NULL
         GROUP  BY COALESCE(tk2.created_by_user_id, tk2.user)
     ) rpg ON rpg.fairness_key = COALESCE(tk.created_by_user_id, tk.user)
     WHERE  wj.queue_key = $1
       AND  wj.status::text IN ('QUEUED', 'RETRYING')
       AND  wj.available_after <= NOW()
+      -- Defense in depth: ``delete_*_core`` already cancels matching
+      -- worker_jobs when a trial / task is soft-deleted, so this
+      -- branch shouldn't trigger in practice. The guard is cheap and
+      -- keeps the queue correct if a cancel ever races a claim. ``tr``
+      -- and ``tk`` are populated only for TRIAL rows (via the LEFT
+      -- JOINs above); for other kinds they are NULL and the
+      -- ``IS NULL`` checks degenerate to TRUE.
+      AND  (tr.deleted_at IS NULL)
+      AND  (tk.deleted_at IS NULL)
     ORDER  BY wj.priority DESC,
               COALESCE(rpg.running_count, 0) ASC,
               wj.created_at ASC

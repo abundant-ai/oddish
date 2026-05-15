@@ -11,6 +11,7 @@ from auth import APIKeyScope, AuthContext, require_admin, require_owner
 from models import APIKeyModel, create_api_key
 from oddish.db import get_session, utcnow
 
+
 router = APIRouter(prefix="/api-keys", tags=["API Keys"])
 
 
@@ -97,7 +98,15 @@ async def revoke_api_key(
     key_id: str,
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> dict:
-    """Revoke an API key."""
+    """Revoke and soft-delete an API key.
+
+    ``is_active=False`` is the legacy "no longer usable" flag the auth
+    path already honors; ``deleted_at`` is the new tombstone that the
+    session-level filter uses to hide the row from list views. We set
+    both so existing readers that key off ``is_active`` keep working
+    while ``GET /api-keys`` (a plain ORM SELECT) immediately stops
+    surfacing the revoked row.
+    """
 
     async with get_session() as session:
         result = await session.execute(
@@ -111,6 +120,7 @@ async def revoke_api_key(
             raise HTTPException(status_code=404, detail="API key not found")
 
         api_key.is_active = False
+        api_key.deleted_at = utcnow()
         await session.commit()
 
         return {"status": "revoked", "key_id": key_id}

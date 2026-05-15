@@ -431,7 +431,12 @@ def _build_harbor_config_for_trial(
 
 
 def _get_next_trial_index(task_id: str, existing_trials: list[TrialModel]) -> int:
-    """Return the next numeric suffix for ``{task_id}-{index}`` trial IDs."""
+    """Return the next numeric suffix for ``{task_id}-{index}`` trial IDs.
+
+    Reruns count toward the index too: every immutable trial -- live
+    or superseded -- occupies a slot in the sequence so a freshly
+    inserted rerun cannot collide with a row already on disk.
+    """
     prefix = f"{task_id}-"
     max_index = -1
 
@@ -445,6 +450,33 @@ def _get_next_trial_index(task_id: str, existing_trials: list[TrialModel]) -> in
     if max_index >= 0:
         return max_index + 1
     return len(existing_trials)
+
+
+async def reserve_next_trial_index(session: AsyncSession, *, task_id: str) -> int:
+    """SQL-backed sibling of :func:`_get_next_trial_index` for rerun paths.
+
+    The retry path doesn't already have ``task.trials`` loaded and we
+    don't want to pull every trial just to compute the suffix. Instead
+    we scan ``trials.id`` directly for numeric ``{task_id}-{N}``
+    suffixes -- including superseded rows so the new id can never
+    collide with an existing prefix in S3.
+    """
+    prefix = f"{task_id}-"
+    rows = await session.execute(
+        select(TrialModel.id)
+        .where(TrialModel.task_id == task_id)
+        .execution_options(include_deleted=True)
+    )
+    max_index = -1
+    for (trial_id,) in rows.all():
+        if not isinstance(trial_id, str) or not trial_id.startswith(prefix):
+            continue
+        suffix = trial_id[len(prefix) :]
+        if suffix.isdigit():
+            value = int(suffix)
+            if value > max_index:
+                max_index = value
+    return max_index + 1 if max_index >= 0 else 0
 
 
 async def create_task(
@@ -590,6 +622,7 @@ async def create_task(
 
     await session.flush()
     await session.refresh(task, attribute_names=["trials"])
+    await bump_experiment_last_activity(session, experiment_ids=experiment.id)
     return task
 
 
@@ -606,6 +639,53 @@ async def _link_task_to_experiment(
     )
 
 
+async def bump_experiment_last_activity(
+    session: AsyncSession, *, experiment_ids: Any
+) -> None:
+    """Best-effort refresh of ``experiments.last_activity_at`` to NOW().
+
+    Maintains the denormalized sort key the dashboard "recent experiments"
+    query orders on. Failures here MUST NOT block the surrounding write,
+    so callers wrap this in try/except (or, equivalently, run it as the
+    last step before the surrounding transaction commits).
+
+    ``experiment_ids`` accepts a single id, a list, a set, or any other
+    iterable of ids. Empty / falsy values are no-ops.
+
+    Reconciliation: if a write path forgets to call this -- or the call
+    races with another write -- the cleanup sweep in
+    ``oddish.workers.queue.cleanup`` periodically reconciles drift by
+    rederiving the value from ``GREATEST(MAX(tasks.created_at),
+    MAX(trials.created_at))``.
+    """
+    if isinstance(experiment_ids, str):
+        ids: list[str] = [experiment_ids]
+    else:
+        try:
+            ids = [str(x) for x in experiment_ids if x]
+        except TypeError:
+            return
+    if not ids:
+        return
+    try:
+        await session.execute(
+            text(
+                """
+                UPDATE experiments
+                SET last_activity_at = NOW()
+                WHERE id = ANY(:experiment_ids)
+                  AND deleted_at IS NULL
+                """
+            ),
+            {"experiment_ids": ids},
+        )
+    except Exception:  # noqa: BLE001
+        # Denormalized maintenance must never block the user's write.
+        logger.warning(
+            "bump_experiment_last_activity failed for ids=%s", ids, exc_info=True
+        )
+
+
 async def append_trials_to_task(
     session: AsyncSession,
     *,
@@ -620,10 +700,14 @@ async def append_trials_to_task(
     task is auto-linked to it via ``task_experiments`` (matching the
     implicit behavior of the old single-FK world).
     """
+    # ``include_deleted=True`` keeps soft-deleted trials in the suffix
+    # search so the next allocated ``{task_id}-{N}`` can never collide
+    # with a tombstoned row's primary key.
     trial_rows = await session.execute(
         select(TrialModel)
         .where(TrialModel.task_id == task.id)
         .order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
+        .execution_options(include_deleted=True)
     )
     existing_trials = list(trial_rows.scalars().all())
     next_index = _get_next_trial_index(task.id, existing_trials)
@@ -723,6 +807,9 @@ async def append_trials_to_task(
 
     await session.flush()
     await session.refresh(task, attribute_names=["trials"])
+    bump_ids = {trial_experiment_id}
+    bump_ids.update(t.experiment_id for t in new_trials if t.experiment_id)
+    await bump_experiment_last_activity(session, experiment_ids=bump_ids)
     return new_trials
 
 
@@ -760,6 +847,7 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
         select(func.count(TrialModel.id)).where(
             and_(
                 TrialModel.task_id == task_id,
+                TrialModel.superseded_by_trial_id.is_(None),
                 TrialModel.status.in_(
                     [
                         TrialStatus.PENDING,
@@ -783,6 +871,7 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
             select(func.count(TrialModel.id)).where(
                 and_(
                     TrialModel.task_id == task_id,
+                    TrialModel.superseded_by_trial_id.is_(None),
                     or_(
                         TrialModel.analysis_status.is_(None),
                         TrialModel.analysis_status.in_(
@@ -836,6 +925,7 @@ async def maybe_start_verdict_stage(session: AsyncSession, trial_id: str) -> boo
         select(func.count(TrialModel.id)).where(
             and_(
                 TrialModel.task_id == task_id,
+                TrialModel.superseded_by_trial_id.is_(None),
                 or_(
                     TrialModel.analysis_status.is_(None),
                     TrialModel.analysis_status.in_(
@@ -909,6 +999,7 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
                 SELECT COALESCE(queue_key, provider) AS queue_key, status::text AS status, COUNT(*) AS count
                 FROM trials
                 WHERE org_id = :org_id
+                  AND deleted_at IS NULL
                 GROUP BY COALESCE(queue_key, provider), status
                 """
             ),
@@ -920,6 +1011,7 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
                 """
                 SELECT COALESCE(queue_key, provider) AS queue_key, status::text AS status, COUNT(*) AS count
                 FROM trials
+                WHERE deleted_at IS NULL
                 GROUP BY COALESCE(queue_key, provider), status
                 """
             )

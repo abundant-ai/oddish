@@ -98,11 +98,17 @@ async def run_verdict_job(
         task.verdict_status = VerdictStatus.RUNNING
         task.verdict_started_at = utcnow()
 
-        # Load trial classifications
+        # Load trial classifications. Filter out superseded rows so
+        # the verdict only synthesises over the currently-live trial
+        # set; old attempts that a user retried away from must not
+        # contribute classifications to the new verdict.
         from sqlalchemy import select
 
         trials_result = await session.execute(
-            select(TrialModel).where(TrialModel.task_id == task_id)
+            select(TrialModel).where(
+                TrialModel.task_id == task_id,
+                TrialModel.superseded_by_trial_id.is_(None),
+            )
         )
         trials = trials_result.scalars().all()
 

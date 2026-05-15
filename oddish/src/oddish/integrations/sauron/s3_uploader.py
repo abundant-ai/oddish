@@ -47,8 +47,15 @@ class SauronS3Uploader:
     """Best-effort mirror of trial artifacts to sauron's AWS S3 bucket."""
 
     def __init__(self) -> None:
-        self._client = None
-        self._session = None
+        self._client: aioboto3.Client | None = None
+        self._session: aioboto3.Session | None = None
+
+    @property
+    def _s3(self) -> aioboto3.Client:
+        # Narrow the optional attribute for callers that have already
+        # awaited ``_ensure_client``. Mirrors ``db.storage.StorageClient._s3``.
+        assert self._client is not None, "call _ensure_client() first"
+        return self._client  # type: ignore[return-value]
 
     def is_enabled(self) -> bool:
         return bool(
@@ -61,6 +68,7 @@ class SauronS3Uploader:
         if self._client is not None:
             return
         self._session = aioboto3.Session()
+        assert self._session is not None
         self._client = await self._session.client(
             "s3",
             aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
@@ -86,7 +94,9 @@ class SauronS3Uploader:
         if not self.is_enabled():
             return None
 
-        run_prefix = self._build_run_prefix(github_meta=github_meta, experiment_id=experiment_id)
+        run_prefix = self._build_run_prefix(
+            github_meta=github_meta, experiment_id=experiment_id
+        )
         attempt_prefix = (
             f"{run_prefix}agent-{agent}:{(model or 'default').replace('/', '-')}/"
             f"{task_name}/attempt_{attempt_number}/"
@@ -156,7 +166,7 @@ class SauronS3Uploader:
         body = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
 
         await self._ensure_client()
-        await self._client.put_object(
+        await self._s3.put_object(
             Bucket=settings.sauron_s3_bucket,
             Key=f"{run_prefix}run-meta.json",
             Body=body,
@@ -191,7 +201,7 @@ class SauronS3Uploader:
             key = f"{s3_prefix}{f.relative_to(local_dir).as_posix()}"
             async with sem:
                 await self._ensure_client()
-                await self._client.upload_file(str(f), settings.sauron_s3_bucket, key)
+                await self._s3.upload_file(str(f), settings.sauron_s3_bucket, key)
 
         await asyncio.gather(*(upload_one(f) for f in files), return_exceptions=True)
 

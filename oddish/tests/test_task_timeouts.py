@@ -31,6 +31,30 @@ build_timeout_sec = 300
     validate_task_timeout_config(tmp_path)
 
 
+def test_validate_task_timeout_config_accepts_multistage_verifier_timeouts(tmp_path):
+    (tmp_path / "task.toml").write_text(
+        """
+[agent]
+timeout_sec = 1800
+
+[[verifiers]]
+name = "correctness"
+type = "shell"
+timeout_sec = 300
+
+[[verifiers]]
+name = "ux"
+type = "cua"
+timeout_sec = 600
+
+[environment]
+build_timeout_sec = 300
+""".strip()
+    )
+
+    validate_task_timeout_config(tmp_path)
+
+
 def test_validate_task_timeout_config_requires_all_explicit_timeouts(tmp_path):
     (tmp_path / "task.toml").write_text(
         """
@@ -40,6 +64,32 @@ timeout_sec = 1800
     )
 
     with pytest.raises(TaskTimeoutValidationError, match=r"\[verifier\]\.timeout_sec"):
+        validate_task_timeout_config(tmp_path)
+
+
+def test_validate_task_timeout_config_requires_each_multistage_timeout(tmp_path):
+    (tmp_path / "task.toml").write_text(
+        """
+[agent]
+timeout_sec = 1800
+
+[[verifiers]]
+name = "correctness"
+type = "shell"
+timeout_sec = 300
+
+[[verifiers]]
+name = "ux"
+type = "cua"
+
+[environment]
+build_timeout_sec = 300
+""".strip()
+    )
+
+    with pytest.raises(
+        TaskTimeoutValidationError, match=r"\[\[verifiers\]\]\[1\]\.timeout_sec"
+    ):
         validate_task_timeout_config(tmp_path)
 
 
