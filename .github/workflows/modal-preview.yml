@@ -193,7 +193,10 @@ jobs:
         run: .github/scripts/preview/restore_prod_data.sh
 
       - name: Apply Alembic migrations to preview branch
-        if: ${{ needs.detect-changes.outputs.run_migrations == 'true' || steps.supabase_branch.outputs.branch_was_created == 'true' }}
+        # Runs on every push so a half-finished previous deploy (e.g.
+        # branch created but restore failed before the per-PR migrate
+        # step ran) gets healed automatically. `alembic upgrade head`
+        # is a no-op when the branch is already at head.
         run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_preview_db.py"
 
       - name: Cancel cloned-prod in-flight work
