@@ -174,6 +174,7 @@ jobs:
         # preview, their own pending work shouldn't get nuked on every
         # subsequent push.
         if: steps.supabase_branch.outputs.branch_was_created == 'true'
+        shell: bash
         run: |
           psql "${ODDISH_DATABASE_URL/+asyncpg/}" <<'SQL'
           UPDATE worker_jobs
