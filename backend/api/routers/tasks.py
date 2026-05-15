@@ -360,12 +360,20 @@ async def list_tasks(
     experiment_id: str | None = None,
     include_trials: bool = False,
     compact_trials: bool = False,
+    compact_tasks: bool = False,
     include_queue_info: bool = True,
     include_worker_jobs: bool = True,
     limit: int = 100,
     offset: int = 0,
 ) -> list[TaskStatusResponse]:
-    """List tasks for the authenticated organization."""
+    """List tasks for the authenticated organization.
+
+    ``compact_tasks=true`` is a fast-path used by the experiment page
+    first paint: it implies ``include_trials=false`` and skips the
+    per-task ``visible_worker_jobs`` and ``effective_version_ids``
+    lookups. The phase-2 batched fetch (``include_trials=true``) fills
+    those columns in afterwards.
+    """
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
@@ -384,6 +392,7 @@ async def list_tasks(
             experiment_id=experiment_id,
             include_trials=include_trials,
             compact_trials=compact_trials,
+            compact_tasks=compact_tasks,
             include_queue_info=include_queue_info,
             include_worker_jobs=include_worker_jobs,
             limit=limit,
@@ -633,9 +642,7 @@ async def get_task_detail(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
-        return await get_task_detail_core(
-            session, task_id=task_id, org_id=auth.org_id
-        )
+        return await get_task_detail_core(session, task_id=task_id, org_id=auth.org_id)
 
 
 # =============================================================================
@@ -711,7 +718,12 @@ async def list_task_files(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
-        task = await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
+        task = await get_task_for_org_core(
+            session,
+            task_id=task_id,
+            org_id=auth.org_id,
+            load_current_version=True,
+        )
         if version is None and task.current_version:
             version = task.current_version.version
 
@@ -746,7 +758,12 @@ async def get_task_file_content(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
-        task = await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
+        task = await get_task_for_org_core(
+            session,
+            task_id=task_id,
+            org_id=auth.org_id,
+            load_current_version=True,
+        )
         if version is None and task.current_version:
             version = task.current_version.version
 
