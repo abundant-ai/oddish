@@ -64,7 +64,7 @@ WORKER_SCALEDOWN_WINDOW_SECONDS = _env_int(
 )  # Keep idle workers warm for 5 minutes
 WORKER_MAX_CONTAINERS = _env_int(
     "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
-    256,
+    320,
 )  # High global cap so several queue keys can scale, but still not unbounded.
 
 # Mark single-job worker containers as non-preemptible so Modal does not
