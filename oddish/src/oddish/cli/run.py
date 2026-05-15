@@ -379,6 +379,9 @@ def run(
         # Config file mode - load agents from file
         sweep_config = load_sweep_config(config)
         configs = sweep_config["agents"]
+        fail_all_if_oracle_fails = bool(
+            sweep_config.get("fail_all_if_oracle_fails", False)
+        )
 
         # Config can override path, dataset, environment, priority, experiment ID
         if "path" in sweep_config and not path and not path_option and not dataset:
@@ -418,6 +421,7 @@ def run(
                 "when using --config"
             )
     else:
+        fail_all_if_oracle_fails = False
         # Simple CLI mode - default agent
         if not agent:
             agent = "claude-code"
@@ -505,6 +509,7 @@ def run(
             priority=priority,
             experiment_id=experiment_id,
             run_analysis=run_analysis,
+            fail_all_if_oracle_fails=fail_all_if_oracle_fails,
             github_username=github_user,
             tags=tags or None,
             publish_experiment=publish,

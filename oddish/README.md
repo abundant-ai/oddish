@@ -155,16 +155,24 @@ agents:
   - name: codex
     model_name: openai/gpt-5.2
     n_trials: 3
+  - name: nop
+    model_name: default
+  - name: oracle
+    model_name: default
 
 dataset: swebench@1.0
 n_tasks: 10
 priority: low
+fail_all_if_oracle_fails: true
 ```
 
 You can also set `path`, `exclude_task_names`, and `experiment_id` in the
 config file. Per-agent overrides use `env` and `kwargs`. Timeouts and
 per-provider concurrency are no longer configured in sweep files; declare task
 timeouts in `task.toml` and API concurrency at server startup.
+`fail_all_if_oracle_fails` is optional; when set and an `oracle` entry is
+present, Oddish waits for oracle before running non-`nop` agents and skips them
+if oracle does not receive full reward.
 
 ### `oddish upload`
 

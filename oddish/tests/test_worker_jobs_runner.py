@@ -138,6 +138,22 @@ async def test_enqueue_builds_row_with_expected_fields():
 
 
 @pytest.mark.asyncio
+async def test_enqueue_can_create_blocked_row():
+    session = _FakeSession()
+    row = await enqueue_worker_job(
+        session,
+        EnqueueRequest(
+            kind=WorkerJobKind.TRIAL,
+            queue_key="openai/gpt-5",
+            status=WorkerJobStatus.BLOCKED,
+            payload={"trial_id": "t-1"},
+        ),
+    )
+
+    assert row.status == WorkerJobStatus.BLOCKED
+
+
+@pytest.mark.asyncio
 async def test_enqueue_calls_handler_validate_when_registered():
     captured: list[Any] = []
 

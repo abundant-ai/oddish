@@ -21,6 +21,7 @@ from oddish.db import (
     VerdictStatus,
     WorkerJobKind,
     WorkerJobModel,
+    WorkerJobStatus,
     generate_id,
     utcnow,
 )
@@ -51,6 +52,29 @@ ACTIVE_TASK_STATUSES = (
     TaskStatus.ANALYZING,
     TaskStatus.VERDICT_PENDING,
 )
+_ORACLE_AGENT = "oracle"
+_ORACLE_GATE_EXEMPT_AGENTS = {_ORACLE_AGENT, "nop", "noop"}
+
+
+def _normalize_agent_name(agent: str | None) -> str:
+    return (agent or "").strip().lower()
+
+
+def _submission_has_oracle_failure_gate(submission: TaskSubmission) -> bool:
+    if not submission.fail_all_if_oracle_fails:
+        return False
+    return any(
+        _normalize_agent_name(spec.agent) == _ORACLE_AGENT for spec in submission.trials
+    )
+
+
+def _trial_starts_blocked_by_oracle_gate(
+    submission: TaskSubmission,
+    spec: TrialSpec,
+) -> bool:
+    if not _submission_has_oracle_failure_gate(submission):
+        return False
+    return _normalize_agent_name(spec.agent) not in _ORACLE_GATE_EXEMPT_AGENTS
 
 
 # =============================================================================
@@ -325,12 +349,14 @@ async def enqueue_trial_worker_job(
     org_id: str | None,
     max_attempts: int,
     parent_job_id: str | None = None,
+    initial_status: WorkerJobStatus = WorkerJobStatus.QUEUED,
 ) -> WorkerJobModel:
     return await enqueue_worker_job(
         session,
         EnqueueRequest(
             kind=WorkerJobKind.TRIAL,
             queue_key=queue_key,
+            status=initial_status,
             payload={"trial_id": trial_id},
             subject_table="trials",
             subject_id=trial_id,
@@ -612,12 +638,18 @@ async def create_task(
             status=TrialStatus.QUEUED,
         )
         session.add(trial)
+        initial_worker_job_status = (
+            WorkerJobStatus.BLOCKED
+            if _trial_starts_blocked_by_oracle_gate(submission, spec)
+            else WorkerJobStatus.QUEUED
+        )
         await enqueue_trial_worker_job(
             session,
             trial_id=trial_id,
             queue_key=queue_key,
             org_id=org_id,
             max_attempts=trial.max_attempts,
+            initial_status=initial_worker_job_status,
         )
 
     await session.flush()
@@ -708,12 +740,18 @@ async def append_trials_to_task(
             status=TrialStatus.QUEUED,
         )
         session.add(trial)
+        initial_worker_job_status = (
+            WorkerJobStatus.BLOCKED
+            if _trial_starts_blocked_by_oracle_gate(submission, spec)
+            else WorkerJobStatus.QUEUED
+        )
         await enqueue_trial_worker_job(
             session,
             trial_id=trial_id,
             queue_key=queue_key,
             org_id=task.org_id,
             max_attempts=trial.max_attempts,
+            initial_status=initial_worker_job_status,
         )
         new_trials.append(trial)
         next_index += 1

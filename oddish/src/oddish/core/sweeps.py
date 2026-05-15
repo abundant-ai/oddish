@@ -84,6 +84,7 @@ def build_task_submission_from_sweep(
         experiment_id=submission.experiment_id,
         tags=submission.tags,
         run_analysis=submission.run_analysis,
+        fail_all_if_oracle_fails=submission.fail_all_if_oracle_fails,
         github_username=submission.github_username,
         harbor=submission.harbor,
         content_hash=submission.content_hash,
