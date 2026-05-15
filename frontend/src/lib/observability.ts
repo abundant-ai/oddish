@@ -1,9 +1,5 @@
 "use client";
 
-// Pydantic Logfire browser tracing. Spans ship to the backend's
-// `/logfire-proxy/v1/traces`, which attaches `LOGFIRE_TOKEN` server-side
-// so the write token never reaches the client.
-
 import { trace, type Span, SpanStatusCode } from "@opentelemetry/api";
 import { getWebAutoInstrumentations } from "@opentelemetry/auto-instrumentations-web";
 import * as logfire from "@pydantic/logfire-browser";
@@ -12,17 +8,7 @@ let configured = false;
 
 const TRACER_NAME = "oddish-frontend";
 
-function resolveProxyUrl(apiUrl: string | undefined): string | null {
-  if (!apiUrl) return null;
-  try {
-    const url = new URL(apiUrl);
-    url.pathname = url.pathname.replace(/\/$/, "") + "/logfire-proxy/v1/traces";
-    url.search = "";
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
+const LOGFIRE_TRACE_URL = "https://logfire-api.pydantic.dev/v1/traces";
 
 function resolveEnvironment(): string {
   const explicit = process.env.NEXT_PUBLIC_LOGFIRE_ENVIRONMENT;
@@ -35,34 +21,17 @@ function resolveEnvironment(): string {
   return pr ? `preview-pr-${pr}` : "preview";
 }
 
-/**
- * Idempotently configure Logfire browser tracing.
- *
- * Safe to call from React effects: subsequent calls short-circuit.
- *
- * **Opt-in only.** The browser SDK is OFF by default because every
- * batch of spans posts to the backend's ``/logfire-proxy/v1/traces``
- * route, which on Modal eats one container concurrency slot per
- * request. With aggressive 1s flush + auto-fetch instrumentation a
- * single page load can fire dozens of POSTs, contending with real
- * API traffic. Server-side Logfire (FastAPI/asyncpg auto-instrumentation)
- * keeps working independently and does NOT route through the browser
- * SDK, so disabling this does not blind the backend.
- *
- * Set ``NEXT_PUBLIC_LOGFIRE_ENABLED=true`` to opt back in for local
- * debugging or short observability sessions.
- */
 export function ensureLogfireConfigured(): void {
   if (configured) return;
   if (typeof window === "undefined") return;
-  if (process.env.NEXT_PUBLIC_LOGFIRE_ENABLED !== "true") return;
 
-  const proxyUrl = resolveProxyUrl(process.env.NEXT_PUBLIC_API_URL);
-  if (!proxyUrl) return;
+  const token = process.env.NEXT_PUBLIC_LOGFIRE_TOKEN;
+  if (!token) return;
 
   try {
     logfire.configure({
-      traceUrl: proxyUrl,
+      traceUrl: LOGFIRE_TRACE_URL,
+      traceExporterHeaders: () => ({ Authorization: token }),
       serviceName: "oddish-frontend",
       serviceVersion:
         process.env.NEXT_PUBLIC_APP_VERSION ||
@@ -92,15 +61,8 @@ export function ensureLogfireConfigured(): void {
       },
       instrumentations: [
         getWebAutoInstrumentations({
-          // Propagate `traceparent` to any http(s) URL; the same-origin
-          // default silently breaks cross-service nesting for our
-          // Vercel→Modal calls. Trace ids are not sensitive.
           "@opentelemetry/instrumentation-fetch": {
-            propagateTraceHeaderCorsUrls: [/^https?:\/\//],
             clearTimingResources: true,
-          },
-          "@opentelemetry/instrumentation-xml-http-request": {
-            propagateTraceHeaderCorsUrls: [/^https?:\/\//],
           },
         }),
       ],

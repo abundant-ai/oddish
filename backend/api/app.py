@@ -10,9 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from observability import (
-    LogfireProxyCORSMiddleware,
     instrument_fastapi,
-    mount_browser_proxy,
     span as _otel_span,
 )
 from oddish.config import settings
@@ -121,7 +119,6 @@ def create_app() -> FastAPI:
     )
 
     instrument_fastapi(api)
-    mount_browser_proxy(api)
 
     cors_origins = _get_cors_origins()
     api.add_middleware(
@@ -129,20 +126,9 @@ def create_app() -> FastAPI:
         allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
-        # Allow the W3C trace-context headers emitted by the browser SDK
-        # so a fetch from the front-end actually propagates its span id
-        # to FastAPI under our CORS policy.
         allow_headers=["*"],
-        expose_headers=["Server-Timing", "traceparent", "tracestate"],
+        expose_headers=["Server-Timing"],
     )
-
-    # IMPORTANT: this must be added AFTER CORSMiddleware. Starlette's
-    # `add_middleware` inserts at the FRONT of the list and the stack
-    # is wrapped outer-to-inner from index 0, so the LAST-added
-    # middleware ends up outermost and runs first. We need this shim
-    # to intercept `/logfire-proxy/*` preflights before CORSMiddleware
-    # 400s them for an unrecognised Vercel preview origin.
-    api.add_middleware(LogfireProxyCORSMiddleware)
 
     @api.middleware("http")
     async def add_server_timing_header(request: Request, call_next):
