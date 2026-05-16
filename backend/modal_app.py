@@ -81,7 +81,14 @@ DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", 
 # Queue-key concurrency default for Modal runtime.
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
-MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 32)
+_model_concurrency_default_raw = os.environ.get("ODDISH_DEFAULT_MODEL_CONCURRENCY")
+if _model_concurrency_default_raw is None:
+    _model_concurrency_default_raw = os.environ.get("ODDISH_MODEL_CONCURRENCY_DEFAULT")
+MODEL_CONCURRENCY_DEFAULT = (
+    int(_model_concurrency_default_raw)
+    if _model_concurrency_default_raw is not None
+    else 32
+)
 
 # Max number of workers spawned per poll cycle (rate limiter, global across all
 # queue_keys). Keep the default aligned to the default per-model concurrency so
