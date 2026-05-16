@@ -114,6 +114,7 @@ if MODAL_APP_NAME.startswith("oddish-pr-"):
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
 MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 32)
+NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 64)
 
 ENV_VARS = {
     "UV_LINK_MODE": "copy",
@@ -138,6 +139,9 @@ ENV_VARS = {
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",
     "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
     "ODDISH_DEFAULT_MODEL_CONCURRENCY": str(MODEL_CONCURRENCY_DEFAULT),
+    # nop/oracle do not call model providers; this cap is for Modal/DB/S3
+    # pressure rather than provider rate limits.
+    "ODDISH_NOP_ORACLE_CONCURRENCY": str(NOP_ORACLE_CONCURRENCY),
 }
 
 
