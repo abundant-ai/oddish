@@ -62,7 +62,7 @@ oddish --help
 
 Available commands:
 
-- `oddish run` uploads a local task or dataset, downloads a registry dataset, or expands a sweep config into trials
+- `oddish run` uploads a local task or dataset, downloads a registry dataset, or expands a sweep manifest/config into trials
 - `oddish upload` registers task bundles (no trials) or uploads off-oddish Harbor trial results (logs, rewards, tokens) onto an existing task
 - `oddish ls` lists uploaded tasks with version, trial, reward, and experiment summaries
 - `oddish status` shows system, task, or experiment status
@@ -77,7 +77,7 @@ Use `oddish run` for:
 - a single local Harbor task directory
 - a local dataset directory containing multiple tasks
 - a Harbor registry dataset via `--dataset`
-- a YAML or JSON sweep config via `--config`
+- a YAML or JSON sweep manifest/config via `--manifest` or `--config`
 - appending trials to an existing task via `--task`
 
 Examples:
@@ -113,7 +113,7 @@ Common flags:
 - `--n-trials` runs multiple trials per task
 - `-d, --dataset` pulls tasks from the Harbor registry
 - `--task` appends trials to an existing task ID without re-uploading task files
-- `-c, --config` loads a YAML or JSON sweep config
+- `--manifest`, `-c, --config` loads a YAML or JSON sweep manifest/config
 - `-t, --task-name`, `-x, --exclude-task-name`, and `-l, --n-tasks` filter datasets
 - `-e, --env` selects the execution environment
 - `-P, --priority`, `-E, --experiment`, `-u, --user`, `-G, --github-user`, and `--github-meta` attach scheduling and attribution metadata
@@ -143,9 +143,10 @@ When `--env` is omitted:
 - other API URLs default to `docker`
 - `--task` preserves the existing task's environment unless you override it
 
-### Sweep Configs
+### Sweep Manifests
 
-`oddish run -c sweep.yaml` accepts YAML or JSON. A minimal config:
+`oddish run --manifest sweep.yaml` accepts YAML or JSON. `-c/--config` remains
+available as a backwards-compatible alias. A minimal manifest:
 
 ```yaml
 agents:
@@ -162,7 +163,7 @@ priority: low
 ```
 
 You can also set `path`, `exclude_task_names`, and `experiment_id` in the
-config file. Per-agent overrides use `env` and `kwargs`. Timeouts and
+manifest/config file. Per-agent overrides use `env` and `kwargs`. Timeouts and
 per-provider concurrency are no longer configured in sweep files; declare task
 timeouts in `task.toml` and API concurrency at server startup.
 

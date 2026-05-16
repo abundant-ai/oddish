@@ -1003,7 +1003,7 @@ def get_task_summary(api_url: str, task_id: str) -> dict | None:
 
 
 def load_sweep_config(config_path: Path) -> dict:
-    """Load and validate a sweep config file (YAML or JSON).
+    """Load and validate a sweep manifest/config file (YAML or JSON).
 
     Expected format::
 
@@ -1036,7 +1036,9 @@ def load_sweep_config(config_path: Path) -> dict:
         experiment_id: exp_123
     """
     if not config_path.exists():
-        error_console.print(f"[red]Config file not found:[/red] {config_path}")
+        error_console.print(
+            f"[red]Manifest/config file not found:[/red] {config_path}"
+        )
         raise typer.Exit(1)
 
     try:
@@ -1052,7 +1054,7 @@ def load_sweep_config(config_path: Path) -> dict:
             except Exception:
                 config = json.loads(content)
     except Exception as e:
-        error_console.print(f"[red]Failed to parse config file:[/red] {e}")
+        error_console.print(f"[red]Failed to parse manifest/config file:[/red] {e}")
         raise typer.Exit(1)
 
     # Validate required fields
