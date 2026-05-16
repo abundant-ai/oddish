@@ -76,7 +76,7 @@ WORKER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_WORKER_NONPREEMPTIBLE", True)
 DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", True)
 
 # Max number of workers spawned per poll cycle (rate limiter, global across all queue_keys)
-MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 32)
+MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 48)
 
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
