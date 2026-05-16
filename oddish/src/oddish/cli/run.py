@@ -75,8 +75,12 @@ def run(
         Optional[Path],
         typer.Option(
             "--config",
+            "--manifest",
             "-c",
-            help="Config file (YAML/JSON) for complex sweeps with multiple agents/models",
+            help=(
+                "YAML/JSON experiment manifest for sweeps with one or more "
+                "agents/models"
+            ),
         ),
     ] = None,
     agent: Annotated[
@@ -84,7 +88,7 @@ def run(
         typer.Option(
             "--agent",
             "-a",
-            help="Agent to run (use --config for multiple agents)",
+            help="Agent to run (use --config/--manifest for multiple agents)",
         ),
     ] = None,
     model: Annotated[
@@ -340,11 +344,11 @@ def run(
         # Limit number of tasks
         oddish run -d swebench@1.0 -l 10 -a claude-code
 
-    COMPLEX SWEEPS (config file):
+    COMPLEX SWEEPS (manifest file):
 
-        For multiple agents/models with different trial counts, use a config:
+        For multiple agents/models with different trial counts, use a manifest:
 
-        oddish run ./my-task -c sweep.yaml
+        oddish run ./my-task --manifest sweep.yaml
 
         Example sweep.yaml:
 
@@ -415,7 +419,7 @@ def run(
         if agent or model or n_trials != 1:
             console.print(
                 "[yellow]Warning:[/yellow] --agent, --model, --n-trials are ignored "
-                "when using --config"
+                "when using --config/--manifest"
             )
     else:
         # Simple CLI mode - default agent

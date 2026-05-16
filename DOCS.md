@@ -49,8 +49,8 @@ oddish run ./my-task -a claude-code -m anthropic/claude-sonnet-4-5 --n-trials 5
 # Append trials to an existing task
 oddish run --task <task_id> -a gemini-cli -m google/gemini-3.1-pro-preview
 
-# Complex sweep from config
-oddish run ./my-task -c sweep.yaml
+# Complex sweep from a manifest/config file
+oddish run ./my-task --manifest sweep.yaml
 ```
 
 <details>
@@ -59,7 +59,7 @@ oddish run ./my-task -c sweep.yaml
 - `--path`, `-p PATH` - Harbor-compatible path flag for a local task or dataset directory
 - `--dataset`, `-d TEXT` - Registry dataset such as `swebench@1.0`
 - `--task TEXT` - Append trials to an existing task ID instead of uploading task files
-- `--config`, `-c PATH` - YAML or JSON config for multi-agent sweeps
+- `--manifest PATH`, `--config`, `-c PATH` - YAML or JSON experiment manifest for multi-agent sweeps
 - `--agent`, `-a TEXT` - Agent name for simple single-agent runs (defaults to `claude-code`)
 - `--model`, `-m TEXT` - Model override for the selected agent
 - `--n-trials INTEGER` - Number of trials per task
@@ -91,9 +91,9 @@ oddish run ./my-task -c sweep.yaml
 
 </details>
 
-### Sweep Config
+### Sweep Manifest
 
-Use `oddish run -c sweep.yaml` to run multiple agents:
+Use `oddish run --manifest sweep.yaml` (or the existing `-c/--config` alias) to run multiple agents:
 
 ```yaml
 agents:
