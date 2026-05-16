@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-05-16]
+
+### Added
+- Copy-to-clipboard button beside task names in the experiment trials table: a copy icon appears on hover/focus and shows a brief check-mark confirmation after copying, without opening the task files panel (#114)
+
+### Changed
+- Drawer panels (`TaskFilesPanel`, `TrialDetailPanel`, `ArtifactsViewer`, `TrajectoryViewer`) in experiment and task detail views are now lazy-loaded via Next.js `dynamic()` imports, shrinking the initial page bundle (#113)
+- Browser Logfire/OpenTelemetry tracing is now deferred behind a conditional dynamic import in `instrumentation-client.ts`, keeping it off the critical bundle when disabled or unconfigured (#113)
+- Browser observability spans now export directly to Logfire's OTLP endpoint using a `NEXT_PUBLIC_LOGFIRE_TOKEN` write-only token, replacing the backend proxy route (`/logfire-proxy/*`) that consumed Modal container concurrency slots; `LogfireProxyCORSMiddleware` and `mount_browser_proxy()` removed from the backend (#111)
+- Preview branch provisioning switched back to Supabase's native `--with-data` clone; the custom `restore_prod_data.sh` `pg_dump | pg_restore` script is removed (#111)
+
+---
+
 ## [2026-05-15]
 
 ### Added
