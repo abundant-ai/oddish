@@ -22,6 +22,9 @@ from oddish.cli.config import (
 
 console = Console()
 
+SYSTEM_STATUS_TIMEOUT_SECONDS = 30.0
+RECENT_EXPERIMENTS_LIMIT = 8
+
 
 def _format_reward_display(reward: float | None) -> str:
     if reward is None:
@@ -31,6 +34,25 @@ def _format_reward_display(reward: float | None) -> str:
     if reward == 0:
         return "[red]✗[/red]"
     return f"[yellow]{reward:.2f}[/yellow]"
+
+
+def _fetch_dashboard_experiments(
+    client: httpx.Client,
+    api_url: str,
+    *,
+    experiments_status: str,
+) -> httpx.Response:
+    return client.get(
+        f"{api_url}/dashboard",
+        params={
+            "include_tasks": "false",
+            "include_usage": "false",
+            "include_experiments": "true",
+            "experiments_limit": RECENT_EXPERIMENTS_LIMIT,
+            "experiments_offset": 0,
+            "experiments_status": experiments_status,
+        },
+    )
 
 
 def status(
@@ -107,71 +129,51 @@ def status(
 
         console.print()
 
-        # Recent experiments
-        console.print("[bold cyan]Recent Experiments:[/bold cyan]")
+        # Active experiments first; recent history is only a fallback.
+        console.print("[bold cyan]Active Experiments:[/bold cyan]")
         try:
-            with httpx.Client(timeout=5.0, headers=get_auth_headers()) as client:
-                response = client.get(
-                    f"{api_url}/tasks", params={"limit": 200, "offset": 0}
+            with httpx.Client(
+                timeout=SYSTEM_STATUS_TIMEOUT_SECONDS,
+                headers=get_auth_headers(api_url),
+            ) as client:
+                response = _fetch_dashboard_experiments(
+                    client,
+                    api_url,
+                    experiments_status="active",
                 )
-
-            if response.status_code == 200:
-                tasks = response.json()
-                if not tasks:
-                    console.print("  [dim]No experiments yet[/dim]")
-                else:
-                    experiments: dict[str, dict] = {}
-                    for task in tasks:
-                        experiment_id = task.get("experiment_id") or "-"
-                        entry = experiments.setdefault(
-                            experiment_id,
-                            {
-                                "experiment_name": task.get("experiment_name") or "-",
-                                "tasks": [],
-                                "latest_created_at": task.get("created_at") or "",
-                            },
-                        )
-                        entry["tasks"].append(task)
-                        created_at = task.get("created_at") or ""
-                        if created_at > entry["latest_created_at"]:
-                            entry["latest_created_at"] = created_at
-
-                    sorted_experiments = sorted(
-                        experiments.items(),
-                        key=lambda item: item[1]["latest_created_at"],
-                        reverse=True,
+                using_recent_fallback = False
+                if response.status_code == 200 and not (
+                    response.json().get("experiments") or []
+                ):
+                    using_recent_fallback = True
+                    response = _fetch_dashboard_experiments(
+                        client,
+                        api_url,
+                        experiments_status="all",
                     )
 
+            if response.status_code == 200:
+                experiments = response.json().get("experiments") or []
+                if not experiments:
+                    console.print("  [dim]No active or recent experiments[/dim]")
+                else:
+                    if using_recent_fallback:
+                        console.print("  [dim]No active experiments; showing recent.[/dim]")
                     table = Table(show_header=True, box=None, padding=(0, 2))
                     table.add_column("Experiment", style="cyan")
                     table.add_column("Name")
                     table.add_column("Tasks", justify="right")
-                    table.add_column("Running", justify="right", style="blue")
-                    table.add_column("Done", justify="right", style="green")
+                    table.add_column("Active", justify="right", style="blue")
                     table.add_column("Trials", justify="right")
                     table.add_column("Rewards", justify="right")
 
-                    for experiment_id, entry in sorted_experiments[:8]:
-                        exp_tasks = entry["tasks"]
-                        total_tasks = len(exp_tasks)
-                        running_tasks = sum(
-                            1 for t in exp_tasks if t.get("status") == "running"
-                        )
-                        done_tasks = sum(
-                            1
-                            for t in exp_tasks
-                            if t.get("status") in ("completed", "failed")
-                        )
-                        total_trials = sum(t.get("total", 0) or 0 for t in exp_tasks)
-                        completed_trials = sum(
-                            t.get("completed", 0) or 0 for t in exp_tasks
-                        )
-                        reward_success = sum(
-                            t.get("reward_success", 0) or 0 for t in exp_tasks
-                        )
-                        reward_total = sum(
-                            t.get("reward_total", 0) or 0 for t in exp_tasks
-                        )
+                    for experiment in experiments:
+                        total_tasks = experiment.get("task_count", 0) or 0
+                        active_trials = experiment.get("active_trials", 0) or 0
+                        total_trials = experiment.get("total_trials", 0) or 0
+                        completed_trials = experiment.get("completed_trials", 0) or 0
+                        reward_success = experiment.get("reward_success", 0) or 0
+                        reward_total = experiment.get("reward_total", 0) or 0
 
                         trials_display = (
                             f"{completed_trials}/{total_trials}"
@@ -183,11 +185,10 @@ def status(
                         )
 
                         table.add_row(
-                            experiment_id,
-                            entry["experiment_name"],
+                            experiment.get("id") or "-",
+                            experiment.get("name") or "-",
                             str(total_tasks),
-                            str(running_tasks) if running_tasks else "-",
-                            str(done_tasks) if done_tasks else "-",
+                            str(active_trials) if active_trials else "-",
                             trials_display,
                             rewards_display,
                         )
@@ -197,9 +198,19 @@ def status(
                         "[dim]Tip: oddish status --experiment <id> --watch[/dim]"
                     )
             else:
-                console.print("  [red]Failed to fetch recent experiments[/red]")
-        except Exception:
-            console.print("  [red]Failed to connect to API[/red]")
+                console.print(
+                    "  [red]Failed to fetch experiment status:[/red] "
+                    f"HTTP {response.status_code}: {response.text}"
+                )
+                issues += 1
+        except httpx.TimeoutException as exc:
+            console.print(f"  [red]Timed out fetching experiment status:[/red] {exc}")
+            issues += 1
+        except httpx.HTTPError as exc:
+            console.print(f"  [red]Failed to fetch experiment status:[/red] {exc}")
+            issues += 1
+        except Exception as exc:
+            console.print(f"  [red]Failed to fetch experiment status:[/red] {exc}")
             issues += 1
 
         if verbose:
