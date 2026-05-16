@@ -9,6 +9,7 @@ from rich.table import Table
 
 from oddish.cli.api import (
     format_task_status,
+    format_trial_status_detail,
     format_trial_status,
     print_experiment_status,
     watch_experiment,
@@ -299,14 +300,13 @@ def status(
             table.add_column("Agent")
             table.add_column("Model")
             table.add_column("Status")
-            table.add_column("Stage", style="dim")
+            table.add_column("Detail")
             table.add_column("Reward", justify="center")
             table.add_column("Attempts", justify="center")
 
             for trial in trials:
                 trial_idx = trial["id"].split("-")[-1]
                 trial_status = trial["status"]
-                harbor_stage = trial.get("harbor_stage") or "-"
                 trial_status_display = format_trial_status(trial_status)
 
                 reward = trial.get("reward")
@@ -336,7 +336,7 @@ def status(
                     trial["agent"],
                     trial.get("model") or "-",
                     trial_status_display,
-                    harbor_stage if trial_status == "running" else "-",
+                    format_trial_status_detail(trial),
                     reward_str,
                     f"{attempts}/{max_attempts}",
                 )

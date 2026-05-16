@@ -135,6 +135,8 @@ oddish ls --json
 ## Check Progress
 
 Use `oddish status` to inspect the system, a task, or an experiment.
+Task status tables include a `Detail` column for the current Harbor stage or
+terminal reason, such as `cancelled by user`.
 
 ```bash
 # System overview
