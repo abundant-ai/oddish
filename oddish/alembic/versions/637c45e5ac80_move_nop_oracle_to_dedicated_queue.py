@@ -1,17 +1,18 @@
-"""move_nop_oracle_to_dedicated_queue
+"""move nop oracle to dedicated queue
 
-Revision ID: a4b5c6d7e8f9
-Revises: z3a4b5c6d7e8
-Create Date: 2026-05-16 00:00:00.000000
+Revision ID: 637c45e5ac80
+Revises: j2e3f4a5b6c7
+Create Date: 2026-05-16 13:32:41.242793
+
 """
-
 from typing import Sequence, Union
 
 from alembic import op
 
 
-revision: str = "a4b5c6d7e8f9"
-down_revision: Union[str, Sequence[str], None] = "z3a4b5c6d7e8"
+# revision identifiers, used by Alembic.
+revision: str = "637c45e5ac80"
+down_revision: Union[str, Sequence[str], None] = "j2e3f4a5b6c7"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
