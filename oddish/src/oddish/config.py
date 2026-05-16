@@ -312,7 +312,7 @@ class Settings(BaseSettings):
 
     # Worker behavior
     auto_start_workers: bool = True
-    retry_backoff_base: int = 60  # seconds
+    retry_backoff_base: int = 30  # seconds
     retry_backoff_max: int = 3600  # seconds
 
     # Local execution scratch paths
