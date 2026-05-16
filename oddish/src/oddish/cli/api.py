@@ -29,7 +29,6 @@ from rich.progress import (
 from rich.table import Table
 
 from harbor.models.environment_type import EnvironmentType
-from harbor.models.task.paths import TaskPaths
 from harbor.models.task.task import Task
 from harbor.models.trial.config import AgentConfig
 from harbor.models.trial.result import TrialResult
@@ -76,7 +75,11 @@ def resolve_task_path(path_arg: Path | None, path_option: Path | None) -> Path |
 
 def is_task_dir(path: Path) -> bool:
     """Check if a path is a valid Harbor task directory."""
-    return cast(bool, TaskPaths(path).is_valid(disable_verification=False))
+    try:
+        Task(path)
+    except Exception:
+        return False
+    return True
 
 
 def validate_tasks(task_paths: list[Path]) -> list[Path]:
@@ -131,7 +134,7 @@ def get_task_paths_from_local(
         task_paths = [
             path
             for path in dataset_path.iterdir()
-            if TaskPaths(path).is_valid(disable_verification=False)
+            if is_task_dir(path)
         ]
         if task_names:
             task_paths = [
