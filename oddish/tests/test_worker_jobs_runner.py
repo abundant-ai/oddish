@@ -320,9 +320,7 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
     async def fake_open_connection():
         return connection
 
-    monkeypatch.setattr(
-        worker_job_single_job, "_open_connection", fake_open_connection
-    )
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
     monkeypatch.setattr(worker_job_single_job.random, "uniform", lambda _a, _b: 0.0)
 
     before = datetime.now(timezone.utc)
@@ -349,16 +347,16 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
 
     retry_at = worker_args[2]
     assert retry_at is not None
-    assert (
-        before + timedelta(seconds=60)
-        <= retry_at
-        <= after + timedelta(seconds=60)
-    )
+    assert before + timedelta(seconds=60) <= retry_at <= after + timedelta(seconds=60)
 
     trial_sql, trial_args = connection.calls[1]
     assert "UPDATE trials" in trial_sql
-    assert "next_retry_at = $2" in trial_sql
-    assert trial_args == ("trial-1", retry_at)
+    assert "status = 'RETRYING'" in trial_sql
+    assert "error_message = $2" in trial_sql
+    assert "next_retry_at = $3" in trial_sql
+    assert "current_worker_id = NULL" in trial_sql
+    assert "current_queue_slot = NULL" in trial_sql
+    assert trial_args == ("trial-1", "HTTP 503 from agent", retry_at)
 
 
 # ---------------------------------------------------------------------------

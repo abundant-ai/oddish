@@ -112,9 +112,7 @@ def calculate_trial_retry_delay_seconds(
     exponential_delay = base_delay * (2 ** max(attempts - 1, 0))
     capped_delay = min(exponential_delay, TRIAL_RETRY_MAX_DELAY_SECONDS)
     jitter_value = (
-        random.uniform(0.0, TRIAL_RETRY_JITTER_FRACTION)
-        if jitter is None
-        else jitter
+        random.uniform(0.0, TRIAL_RETRY_JITTER_FRACTION) if jitter is None else jitter
     )
     jitter_value = max(0.0, min(jitter_value, TRIAL_RETRY_JITTER_FRACTION))
     return min(
@@ -384,9 +382,7 @@ async def _record_outcome(
                     attempts=attempts,
                     error_message=outcome.failure.error_message,
                 )
-                retry_at = datetime.now(timezone.utc) + timedelta(
-                    seconds=delay_seconds
-                )
+                retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
 
             # RETRYING is a scheduling state, not a terminal one. Leave
             # finished_at NULL so the claim SQL can clear it on the
@@ -418,12 +414,17 @@ async def _record_outcome(
                 await connection.execute(
                     """
                     UPDATE trials
-                    SET    next_retry_at = $2,
+                    SET    status = 'RETRYING',
+                           error_message = $2,
+                           next_retry_at = $3,
+                           current_worker_id = NULL,
+                           current_queue_slot = NULL,
                            heartbeat_at = NOW()
                     WHERE  id = $1
                       AND  deleted_at IS NULL
                     """,
                     subject_id,
+                    outcome.failure.error_message,
                     retry_at,
                 )
             console.print(
