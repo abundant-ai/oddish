@@ -314,6 +314,64 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
     assert "Image build for im-xyz789 failed" in trial.error_message
 
 
+def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
+    trial = SimpleNamespace(
+        task_id="task-1",
+        status=trial_handler.TrialStatus.FAILED,
+        attempts=1,
+        max_attempts=1,
+        error_message="Cancelled by user",
+        harbor_stage="cancelled",
+        reward=None,
+        harbor_result_path=None,
+        trial_s3_key=None,
+        input_tokens=None,
+        cache_tokens=None,
+        output_tokens=None,
+        cost_usd=None,
+        phase_timing=None,
+        has_trajectory=False,
+        current_worker_id=None,
+        current_queue_slot=None,
+        heartbeat_at=None,
+        finished_at=object(),
+    )
+    original_finished_at = trial.finished_at
+
+    class _Session:
+        async def get(self, model, obj_id):
+            return None
+
+    @asynccontextmanager
+    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+        yield _Session(), trial
+
+    monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="Harbor job execution failed: RuntimeError: Image build for im-usercancel failed",
+        exit_code=-1,
+        duration_sec=1.0,
+        job_result_path=None,
+        job_dir=None,
+    )
+
+    asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.harbor_stage == "cancelled"
+    assert trial.error_message == "Cancelled by user"
+    assert trial.finished_at is original_finished_at
+
+
 def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
     monkeypatch, tmp_path
 ):
