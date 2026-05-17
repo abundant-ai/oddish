@@ -207,6 +207,9 @@ def _build_aggregates_for_experiment_ids(
         func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
             "failed_trials"
         ),
+        func.count(case((TrialModel.status == TrialStatus.RETRYING, 1))).label(
+            "retrying_trials"
+        ),
         func.count(
             case(
                 (
@@ -239,6 +242,8 @@ def _build_aggregates_for_experiment_ids(
 def _experiment_row_passes_status_filter(row, *, status_filter: str) -> bool:
     if status_filter == "active":
         return int(row["active_trials"] or 0) > 0
+    if status_filter == "retrying":
+        return int(row["retrying_trials"] or 0) > 0
     if status_filter == "needs-review":
         return int(row["verdict_needs_review"] or 0) > 0
     if status_filter == "pending-verdict":
@@ -387,6 +392,7 @@ async def load_dashboard_experiments(
             func.coalesce(trial_agg.c.total_trials, 0).label("total_trials"),
             func.coalesce(trial_agg.c.completed_trials, 0).label("completed_trials"),
             func.coalesce(trial_agg.c.failed_trials, 0).label("failed_trials"),
+            func.coalesce(trial_agg.c.retrying_trials, 0).label("retrying_trials"),
             func.coalesce(trial_agg.c.active_trials, 0).label("active_trials"),
             func.coalesce(trial_agg.c.reward_success, 0).label("reward_success"),
             func.coalesce(trial_agg.c.reward_sum, 0.0).label("reward_sum"),
@@ -442,6 +448,7 @@ async def load_dashboard_experiments(
             "total_trials": int(agg["total_trials"]) if agg else 0,
             "completed_trials": int(agg["completed_trials"]) if agg else 0,
             "failed_trials": int(agg["failed_trials"]) if agg else 0,
+            "retrying_trials": int(agg["retrying_trials"]) if agg else 0,
             "active_trials": int(agg["active_trials"]) if agg else 0,
             "reward_success": int(agg["reward_success"]) if agg else 0,
             "reward_sum": float(agg["reward_sum"] or 0.0) if agg else 0.0,
@@ -508,6 +515,7 @@ async def load_dashboard_experiments(
                 "total_trials": int(merged["total_trials"] or 0),
                 "completed_trials": int(merged["completed_trials"] or 0),
                 "failed_trials": int(merged["failed_trials"] or 0),
+                "retrying_trials": int(merged["retrying_trials"] or 0),
                 "active_trials": int(merged["active_trials"] or 0),
                 "reward_success": int(merged["reward_success"] or 0),
                 "reward_sum": float(merged["reward_sum"] or 0.0),

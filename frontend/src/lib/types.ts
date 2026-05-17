@@ -319,6 +319,7 @@ export interface DashboardExperiment {
   total_trials: number;
   completed_trials: number;
   failed_trials: number;
+  retrying_trials: number;
   active_trials: number;
   reward_success: number;
   reward_sum: number;
