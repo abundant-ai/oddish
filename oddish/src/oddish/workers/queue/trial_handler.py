@@ -427,11 +427,15 @@ async def _store_trial_results(
         if not trial:
             return
 
+        is_modal_image_build_error = bool(
+            outcome and is_modal_image_build_failure(outcome.error)
+        )
+
         # If the trial was cancelled by the user while we were running,
         # don't overwrite its FAILED/"Cancelled by user" state.
         # The cancel API sets error_message and also max_attempts=attempts
         # as a reliable signal (survives even if this code is from an older deploy).
-        if (
+        if not is_modal_image_build_error and (
             trial.error_message == "Cancelled by user"
             or trial.harbor_stage == "cancelled"
             or (
@@ -492,7 +496,7 @@ async def _store_trial_results(
                 )
             else:
                 # No reward - trial encountered an error or didn't complete verification.
-                if is_modal_image_build_failure(outcome.error):
+                if is_modal_image_build_error:
                     trial.status = TrialStatus.FAILED
                     trial.harbor_stage = MODAL_IMAGE_BUILD_FAILED_STAGE
                     trial.finished_at = utcnow()
