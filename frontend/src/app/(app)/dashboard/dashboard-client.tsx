@@ -89,6 +89,7 @@ const EXPERIMENTS_PAGE_SIZE = DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT;
 const STATUS_FILTER_OPTIONS = [
   { value: "all", label: "All statuses" },
   { value: "active", label: "Active trials" },
+  { value: "retrying", label: "Retrying" },
   { value: "completed", label: "Completed" },
   { value: "needs-review", label: "Needs review" },
   { value: "pending-verdict", label: "Pending verdict" },
@@ -1285,6 +1286,7 @@ function RecentTasksCard({
                             100,
                         )
                       : null;
+                  const retryingTrials = Number(experiment.retrying_trials) || 0;
 
                   return (
                     <TableRow key={experiment.id}>
@@ -1332,6 +1334,12 @@ function RecentTasksCard({
                       <TableCell>{experiment.task_count}</TableCell>
                       <TableCell className="whitespace-nowrap font-mono text-xs">
                         {experiment.completed_trials}/{experiment.total_trials}
+                        {retryingTrials > 0 && (
+                          <span className="text-amber-500 dark:text-amber-300">
+                            {" "}
+                            ({retryingTrials}R)
+                          </span>
+                        )}
                         {experiment.failed_trials > 0 && (
                           <span className="text-rose-400">
                             {" "}
