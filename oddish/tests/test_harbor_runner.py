@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from builtins import ExceptionGroup
 from collections import namedtuple
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -167,6 +169,207 @@ def test_format_exception_message_includes_exception_group_children():
 
     assert "ExceptionGroup: unhandled errors in a TaskGroup" in message
     assert "RuntimeError: modal image build failed" in message
+
+
+def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatch):
+    trial = SimpleNamespace(
+        task_id="task-1",
+        status=trial_handler.TrialStatus.RUNNING,
+        attempts=1,
+        max_attempts=6,
+        error_message=None,
+        harbor_stage="starting",
+        reward=None,
+        harbor_result_path=None,
+        trial_s3_key=None,
+        input_tokens=None,
+        cache_tokens=None,
+        output_tokens=None,
+        cost_usd=None,
+        phase_timing=None,
+        has_trajectory=False,
+        current_worker_id="worker-1",
+        current_queue_slot=0,
+        heartbeat_at=None,
+    )
+
+    class _Session:
+        async def get(self, model, obj_id):
+            return None
+
+    @asynccontextmanager
+    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+        yield _Session(), trial
+
+    async def _fake_maybe_start_analysis_stage(session, trial_id: str) -> bool:
+        return False
+
+    async def _fake_enqueue_analysis_worker_job(*args, **kwargs) -> None:
+        return None
+
+    import oddish.queue as queue_module
+
+    monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
+    monkeypatch.setattr(
+        queue_module, "maybe_start_analysis_stage", _fake_maybe_start_analysis_stage
+    )
+    monkeypatch.setattr(
+        queue_module, "enqueue_analysis_worker_job", _fake_enqueue_analysis_worker_job
+    )
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="Harbor job execution failed: RuntimeError: Image build for im-abc123 failed",
+        exit_code=-1,
+        duration_sec=1.0,
+        job_result_path=None,
+        job_dir=None,
+    )
+
+    asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.harbor_stage == "image_build_failed"
+    assert trial.finished_at is not None
+    assert "Image build for im-abc123 failed" in trial.error_message
+
+
+def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeypatch):
+    trial = SimpleNamespace(
+        task_id="task-1",
+        status=trial_handler.TrialStatus.FAILED,
+        attempts=1,
+        max_attempts=6,
+        error_message=(
+            "Trial cancelled by the runtime. This is usually caused by a "
+            "worker restart or an environment startup failure. Check worker logs."
+        ),
+        harbor_stage="cancelled",
+        reward=None,
+        harbor_result_path=None,
+        trial_s3_key=None,
+        input_tokens=None,
+        cache_tokens=None,
+        output_tokens=None,
+        cost_usd=None,
+        phase_timing=None,
+        has_trajectory=False,
+        current_worker_id="worker-1",
+        current_queue_slot=0,
+        heartbeat_at=None,
+    )
+
+    class _Session:
+        async def get(self, model, obj_id):
+            return None
+
+    @asynccontextmanager
+    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+        yield _Session(), trial
+
+    async def _fake_maybe_start_analysis_stage(session, trial_id: str) -> bool:
+        return False
+
+    async def _fake_enqueue_analysis_worker_job(*args, **kwargs) -> None:
+        return None
+
+    import oddish.queue as queue_module
+
+    monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
+    monkeypatch.setattr(
+        queue_module, "maybe_start_analysis_stage", _fake_maybe_start_analysis_stage
+    )
+    monkeypatch.setattr(
+        queue_module, "enqueue_analysis_worker_job", _fake_enqueue_analysis_worker_job
+    )
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="Harbor job execution failed: RuntimeError: Image build for im-xyz789 failed",
+        exit_code=-1,
+        duration_sec=1.0,
+        job_result_path=None,
+        job_dir=None,
+    )
+
+    asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.harbor_stage == "image_build_failed"
+    assert trial.finished_at is not None
+    assert "Image build for im-xyz789 failed" in trial.error_message
+
+
+def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
+    trial = SimpleNamespace(
+        task_id="task-1",
+        status=trial_handler.TrialStatus.FAILED,
+        attempts=1,
+        max_attempts=1,
+        error_message="Cancelled by user",
+        harbor_stage="cancelled",
+        reward=None,
+        harbor_result_path=None,
+        trial_s3_key=None,
+        input_tokens=None,
+        cache_tokens=None,
+        output_tokens=None,
+        cost_usd=None,
+        phase_timing=None,
+        has_trajectory=False,
+        current_worker_id=None,
+        current_queue_slot=None,
+        heartbeat_at=None,
+        finished_at=object(),
+    )
+    original_finished_at = trial.finished_at
+
+    class _Session:
+        async def get(self, model, obj_id):
+            return None
+
+    @asynccontextmanager
+    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+        yield _Session(), trial
+
+    monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="Harbor job execution failed: RuntimeError: Image build for im-usercancel failed",
+        exit_code=-1,
+        duration_sec=1.0,
+        job_result_path=None,
+        job_dir=None,
+    )
+
+    asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.harbor_stage == "cancelled"
+    assert trial.error_message == "Cancelled by user"
+    assert trial.finished_at is original_finished_at
 
 
 def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(

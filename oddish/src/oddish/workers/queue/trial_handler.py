@@ -28,6 +28,10 @@ from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.workers.harbor_runner import HarborOutcome, run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
+from oddish.workers.queue.trial_failures import (
+    MODAL_IMAGE_BUILD_FAILED_STAGE,
+    is_modal_image_build_failure,
+)
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
@@ -423,18 +427,19 @@ async def _store_trial_results(
         if not trial:
             return
 
+        is_modal_image_build_error = bool(
+            outcome and is_modal_image_build_failure(outcome.error)
+        )
+
         # If the trial was cancelled by the user while we were running,
         # don't overwrite its FAILED/"Cancelled by user" state.
         # The cancel API sets error_message and also max_attempts=attempts
         # as a reliable signal (survives even if this code is from an older deploy).
-        if (
-            trial.error_message == "Cancelled by user"
-            or trial.harbor_stage == "cancelled"
-            or (
-                trial.status == TrialStatus.FAILED
-                and trial.max_attempts <= trial.attempts
-            )
-        ):
+        user_cancelled = trial.error_message == "Cancelled by user" or (
+            trial.status == TrialStatus.FAILED and trial.max_attempts <= trial.attempts
+        )
+        runtime_cancelled = trial.harbor_stage == "cancelled"
+        if user_cancelled or (runtime_cancelled and not is_modal_image_build_error):
             console.print(
                 f"[dim]Trial {trial_id} was cancelled by user, skipping result update[/dim]"
             )
@@ -488,7 +493,14 @@ async def _store_trial_results(
                 )
             else:
                 # No reward - trial encountered an error or didn't complete verification.
-                if trial.attempts < trial.max_attempts:
+                if is_modal_image_build_error:
+                    trial.status = TrialStatus.FAILED
+                    trial.harbor_stage = MODAL_IMAGE_BUILD_FAILED_STAGE
+                    trial.finished_at = utcnow()
+                    console.print(
+                        f"[red]Trial {trial_id} FAILED (Modal image build)[/red]"
+                    )
+                elif trial.attempts < trial.max_attempts:
                     trial.status = TrialStatus.RETRYING
                     console.print(
                         f"[yellow]Trial {trial_id} re-queued for retry "
