@@ -89,7 +89,7 @@ const EXPERIMENTS_PAGE_SIZE = DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT;
 const STATUS_FILTER_OPTIONS = [
   { value: "all", label: "All statuses" },
   { value: "active", label: "Active trials" },
-  { value: "retrying", label: "Retrying" },
+  { value: "retrying", label: "Retrying trials" },
   { value: "completed", label: "Completed" },
   { value: "needs-review", label: "Needs review" },
   { value: "pending-verdict", label: "Pending verdict" },
