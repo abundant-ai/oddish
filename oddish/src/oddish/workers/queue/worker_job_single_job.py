@@ -15,8 +15,11 @@ touches ``worker_jobs``.
 from __future__ import annotations
 
 import asyncio
+import random
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
@@ -36,6 +39,26 @@ from oddish.workers.queue.shared import console
 # GitHub notifications (trial / analysis / verdict) without pushing
 # backend-specific concerns into this module.
 PostSuccessHooks = dict[WorkerJobKind, Callable[[str], Awaitable[None]]]
+
+TRIAL_RETRY_BASE_DELAY_SECONDS = 30.0
+TRIAL_RATE_LIMIT_RETRY_BASE_DELAY_SECONDS = 300.0
+TRIAL_RETRY_MAX_DELAY_SECONDS = 1800.0
+TRIAL_RETRY_JITTER_FRACTION = 0.25
+
+_RATE_LIMIT_RE = re.compile(
+    r"\b("
+    r"429|"
+    r"too many requests|"
+    r"rate[\s_-]*limit(?:ed|s|ing)?|"
+    r"ratelimit(?:ed|s|ing)?|"
+    r"quota(?: exceeded)?|"
+    r"resource[_\s-]*exhausted|"
+    r"requests per minute|"
+    r"tokens per minute|"
+    r"throttl(?:ed|ing)?"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _ensure_handlers_registered() -> None:
@@ -58,6 +81,44 @@ __all__ = [
     "claim_single_worker_job",
     "run_single_worker_job",
 ]
+
+
+def classify_retry_reason(error_message: str | None) -> str:
+    """Return a coarse retry reason for scheduling/telemetry."""
+    if error_message and _RATE_LIMIT_RE.search(error_message):
+        return "rate_limit"
+    return "transient"
+
+
+def calculate_trial_retry_delay_seconds(
+    *,
+    attempts: int,
+    error_message: str | None,
+    jitter: float | None = None,
+) -> float:
+    """Return bounded exponential trial retry delay with multiplicative jitter.
+
+    ``attempts`` is the attempt that just failed. A first failed attempt gets
+    the base delay, the second gets 2x, and so on. Rate-limit-looking errors
+    start at a higher base because immediately retrying usually makes the
+    provider-side contention worse.
+    """
+    retry_reason = classify_retry_reason(error_message)
+    base_delay = (
+        TRIAL_RATE_LIMIT_RETRY_BASE_DELAY_SECONDS
+        if retry_reason == "rate_limit"
+        else TRIAL_RETRY_BASE_DELAY_SECONDS
+    )
+    exponential_delay = base_delay * (2 ** max(attempts - 1, 0))
+    capped_delay = min(exponential_delay, TRIAL_RETRY_MAX_DELAY_SECONDS)
+    jitter_value = (
+        random.uniform(0.0, TRIAL_RETRY_JITTER_FRACTION) if jitter is None else jitter
+    )
+    jitter_value = max(0.0, min(jitter_value, TRIAL_RETRY_JITTER_FRACTION))
+    return min(
+        capped_delay * (1.0 + jitter_value),
+        TRIAL_RETRY_MAX_DELAY_SECONDS,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +152,7 @@ SET    status = 'RUNNING',
        -- reflects only the last attempt.
        started_at = COALESCE(started_at, NOW()),
        finished_at = NULL,
+       next_retry_at = NULL,
        error_message = NULL
 WHERE  id = (
     SELECT wj.id
@@ -275,6 +337,9 @@ async def _record_outcome(
     outcome: JobOutcome,
     attempts: int,
     max_attempts: int,
+    kind: WorkerJobKind | None = None,
+    subject_table: str | None = None,
+    subject_id: str | None = None,
 ) -> None:
     """Transition the claimed `worker_jobs` row to its terminal state.
 
@@ -297,6 +362,7 @@ async def _record_outcome(
                        result_summary = $2::jsonb,
                        finished_at = NOW(),
                        heartbeat_at = NOW(),
+                       next_retry_at = NULL,
                        error_message = NULL
                 WHERE  id = $1
                 """,
@@ -308,6 +374,16 @@ async def _record_outcome(
         assert outcome.failure is not None
         retry = outcome.failure.retryable and attempts < max_attempts
         if retry:
+            retry_at: datetime | None = None
+            retry_reason = classify_retry_reason(outcome.failure.error_message)
+            delay_seconds: float | None = None
+            if kind == WorkerJobKind.TRIAL:
+                delay_seconds = calculate_trial_retry_delay_seconds(
+                    attempts=attempts,
+                    error_message=outcome.failure.error_message,
+                )
+                retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+
             # RETRYING is a scheduling state, not a terminal one. Leave
             # finished_at NULL so the claim SQL can clear it on the
             # next attempt without special-casing; the duration query
@@ -318,6 +394,8 @@ async def _record_outcome(
                 UPDATE worker_jobs
                 SET    status = 'RETRYING',
                        error_message = $2,
+                       next_retry_at = $3,
+                       available_after = COALESCE($3::timestamptz, NOW()),
                        current_worker_id = NULL,
                        current_queue_slot = NULL,
                        modal_function_call_id = NULL
@@ -325,10 +403,35 @@ async def _record_outcome(
                 """,
                 job_id,
                 outcome.failure.error_message,
+                retry_at,
             )
+            if (
+                kind == WorkerJobKind.TRIAL
+                and subject_table == "trials"
+                and subject_id
+                and retry_at is not None
+            ):
+                await connection.execute(
+                    """
+                    UPDATE trials
+                    SET    status = 'RETRYING',
+                           error_message = $2,
+                           next_retry_at = $3,
+                           current_worker_id = NULL,
+                           current_queue_slot = NULL,
+                           heartbeat_at = NOW()
+                    WHERE  id = $1
+                      AND  deleted_at IS NULL
+                    """,
+                    subject_id,
+                    outcome.failure.error_message,
+                    retry_at,
+                )
             console.print(
                 f"metric=worker_job_retry_requeued id={job_id} "
-                f"attempts={attempts}/{max_attempts}"
+                f"attempts={attempts}/{max_attempts} "
+                f"retry_reason={retry_reason} "
+                f"retry_delay_seconds={delay_seconds or 0:.2f}"
             )
         else:
             await connection.execute(
@@ -336,7 +439,8 @@ async def _record_outcome(
                 UPDATE worker_jobs
                 SET    status = 'FAILED',
                        error_message = $2,
-                       finished_at = NOW()
+                       finished_at = NOW(),
+                       next_retry_at = NULL
                 WHERE  id = $1
                 """,
                 job_id,
@@ -396,6 +500,9 @@ async def run_single_worker_job(
             ),
             attempts=job.attempts,
             max_attempts=job.max_attempts,
+            kind=job.kind,
+            subject_table=job.subject_table,
+            subject_id=job.subject_id,
         )
         return True
 
@@ -429,6 +536,9 @@ async def run_single_worker_job(
         outcome=outcome,
         attempts=job.attempts,
         max_attempts=job.max_attempts,
+        kind=job.kind,
+        subject_table=job.subject_table,
+        subject_id=job.subject_id,
     )
 
     if outcome.success is not None and post_success_hooks and job.subject_id:

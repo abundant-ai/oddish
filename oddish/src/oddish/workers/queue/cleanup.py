@@ -19,6 +19,7 @@ with all trials done can't get stuck if a single stage-transition
 flush failed at handler-commit time.
 """
 
+from datetime import timedelta
 from typing import cast
 
 from sqlalchemy import text
@@ -34,6 +35,10 @@ from oddish.db import (
     VerdictStatus,
     get_session,
     utcnow,
+)
+from oddish.workers.queue.worker_job_single_job import (
+    calculate_trial_retry_delay_seconds,
+    classify_retry_reason,
 )
 from oddish.workers.queue.shared import console
 
@@ -223,15 +228,38 @@ async def cleanup_orphaned_queue_state(
                 if trial is None:
                     continue
                 if row["new_status"] == "RETRYING":
+                    delay_seconds = calculate_trial_retry_delay_seconds(
+                        attempts=int(row["attempts"]),
+                        error_message=row["error_message"],
+                    )
+                    retry_at = utcnow() + timedelta(seconds=delay_seconds)
+                    await session.execute(
+                        text(
+                            """
+                            UPDATE worker_jobs
+                            SET    next_retry_at = :retry_at,
+                                   available_after = :retry_at
+                            WHERE  id = :job_id
+                            """
+                        ),
+                        {"job_id": row["id"], "retry_at": retry_at},
+                    )
                     # Domain row goes back to RETRYING so the UI
                     # reflects "waiting for another attempt". The new
                     # worker_jobs claim will bump trials.status back
                     # to RUNNING via ``_prepare_trial_run``.
                     trial.status = TrialStatus.RETRYING
                     trial.error_message = row["error_message"]
+                    trial.next_retry_at = retry_at
                     trial.current_worker_id = None
                     trial.current_queue_slot = None
                     trial.stale_reaped_at = utcnow()
+                    console.print(
+                        f"metric=worker_job_stale_retry_scheduled id={row['id']} "
+                        f"attempts={row['attempts']}/{row['max_attempts']} "
+                        f"retry_reason={classify_retry_reason(row['error_message'])} "
+                        f"retry_delay_seconds={delay_seconds:.2f}"
+                    )
                 else:
                     trial.status = TrialStatus.FAILED
                     trial.error_message = row["error_message"]
