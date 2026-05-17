@@ -39,6 +39,8 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 
 ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 VERDICT_MODEL = "gpt-5.2"
+NOP_ORACLE_QUEUE_KEY = "nop_oracle"
+_NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
 
 # Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
 # "global.anthropic.claude-haiku-4-5-20251001-v1:0".
@@ -332,6 +334,7 @@ class Settings(BaseSettings):
     # Queue limits — use ODDISH_MODEL_CONCURRENCY_OVERRIDES for per-model
     # values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
     default_model_concurrency: int = 8
+    nop_oracle_concurrency: int = 32
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
     verdict_model: str = VERDICT_MODEL
@@ -488,7 +491,7 @@ class Settings(BaseSettings):
         cleaned = normalize_model_id(model)
 
         normalized_agent = (agent or "").strip().lower()
-        if normalized_agent in {AgentName.NOP.value, AgentName.ORACLE.value}:
+        if normalized_agent in _NOP_ORACLE_AGENTS:
             return "default"
 
         return cleaned
@@ -521,6 +524,9 @@ class Settings(BaseSettings):
 
     def get_queue_key_for_trial(self, agent: str, model: str | None) -> str:
         """Resolve queue key from model first, fallback to provider bucket."""
+        normalized_agent = (agent or "").strip().lower()
+        if normalized_agent in _NOP_ORACLE_AGENTS:
+            return NOP_ORACLE_QUEUE_KEY
         normalized_model = self.normalize_trial_model(agent, model)
         if normalized_model:
             return self.normalize_queue_key(normalized_model)
@@ -546,10 +552,16 @@ class Settings(BaseSettings):
         override = self.model_concurrency_overrides.get(normalized)
         if override is not None:
             return max(int(override), 0)
+        if normalized == NOP_ORACLE_QUEUE_KEY:
+            return max(int(self.nop_oracle_concurrency), 0)
         return max(int(self.default_model_concurrency), 0)
 
     def get_known_queue_keys(self) -> set[str]:
-        keys = {self.get_analysis_queue_key(), self.get_verdict_queue_key()}
+        keys = {
+            NOP_ORACLE_QUEUE_KEY,
+            self.get_analysis_queue_key(),
+            self.get_verdict_queue_key(),
+        }
         keys.update(self.model_concurrency_overrides.keys())
         return keys
 
