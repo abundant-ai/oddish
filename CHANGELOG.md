@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-05-17]
+
+### Fixed
+- `oddish status` and `oddish status --watch` now show a `Detail` column with per-trial status context — `cancelled by user`, the active Harbor stage while running, or the terminal error message on failure — replacing the old `Stage` column that only populated during `running` state (#112)
+- CLI task discovery no longer calls the removed `TaskPaths.is_valid` API; `is_task_dir` and `get_task_paths_from_local` now validate candidate directories by constructing `Task(path)`, matching the path already used by `validate_tasks` and preventing submit failures on newer Harbor builds that dropped the compatibility helper (#119)
+
+---
+
 ## [2026-05-16]
 
 ### Added
