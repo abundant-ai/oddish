@@ -435,14 +435,11 @@ async def _store_trial_results(
         # don't overwrite its FAILED/"Cancelled by user" state.
         # The cancel API sets error_message and also max_attempts=attempts
         # as a reliable signal (survives even if this code is from an older deploy).
-        if not is_modal_image_build_error and (
-            trial.error_message == "Cancelled by user"
-            or trial.harbor_stage == "cancelled"
-            or (
-                trial.status == TrialStatus.FAILED
-                and trial.max_attempts <= trial.attempts
-            )
-        ):
+        user_cancelled = trial.error_message == "Cancelled by user" or (
+            trial.status == TrialStatus.FAILED and trial.max_attempts <= trial.attempts
+        )
+        runtime_cancelled = trial.harbor_stage == "cancelled"
+        if user_cancelled or (runtime_cancelled and not is_modal_image_build_error):
             console.print(
                 f"[dim]Trial {trial_id} was cancelled by user, skipping result update[/dim]"
             )
