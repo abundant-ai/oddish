@@ -96,6 +96,23 @@ def _slice_set_cached(
     bucket[cache_key] = (data, time.time())
 
 
+def invalidate_dashboard_cache(*, org_id: str | None = None) -> None:
+    """Clear cached dashboard slices after writes that change visible rows."""
+    if org_id is None:
+        _dashboard_primary_cache.clear()
+        _dashboard_experiments_cache.clear()
+        return
+
+    prefixes = (
+        f"dashboard.primary:{org_id}:",
+        f"dashboard.experiments:{org_id}:",
+    )
+    for bucket in (_dashboard_primary_cache, _dashboard_experiments_cache):
+        for key in list(bucket):
+            if key.startswith(prefixes):
+                del bucket[key]
+
+
 # ---------------------------------------------------------------------------
 # Experiment aggregation
 # ---------------------------------------------------------------------------
@@ -191,6 +208,7 @@ def _build_aggregates_for_experiment_ids(
             )
         )
         .where(task_experiments.c.experiment_id.in_(experiment_ids))
+        .where(task_experiments.c.deleted_at.is_(None))
     )
     if org_id is not None:
         task_agg_query = task_agg_query.where(TaskModel.org_id == org_id)
@@ -353,6 +371,7 @@ async def load_dashboard_experiments(
             )
         )
         .where(task_experiments.c.experiment_id.in_(experiment_ids))
+        .where(task_experiments.c.deleted_at.is_(None))
     )
     if org_id is not None:
         latest_task_query = latest_task_query.where(TaskModel.org_id == org_id)

@@ -100,7 +100,8 @@ High-level flow:
 1. Upload a task bundle directly to S3 via a presigned PUT URL.
 2. Submit a sweep of agent/model trials for that task; each trial, analysis,
    and verdict is enqueued as a row in `worker_jobs` in the same transaction
-   as its domain row.
+   as its domain row. Set `max_trial_attempts` on a sweep submission or sweep
+   config to override the total attempt budget for newly-created trials.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler (`TRIAL` / `ANALYSIS` / `VERDICT`), write heartbeats, and exit.
 4. Use the CLI or dashboard to watch progress and pull logs/artifacts
@@ -179,6 +180,10 @@ Behavior:
   and cancel any matching `worker_jobs` rows. They return an empty
   `s3_prefixes` list so caller best-effort S3 cleanup is a no-op --
   S3 data is preserved for restore.
+- The `task_experiments` join table also carries `deleted_at` so experiment
+  membership is preserved for audit/restore. Because it is a SQLAlchemy
+  `Table`, not a registered model, live membership queries and relationship
+  joins must explicitly include `task_experiments.deleted_at IS NULL`.
 - Raw `text()` SQL doesn't run through the ORM listener; the dispatcher
   claim path (`worker_job_single_job.py`), cleanup sweep, and admin
   diagnostics each add `deleted_at IS NULL` inline.
@@ -483,6 +488,7 @@ Modal runtime knobs (read by `modal_app.py`):
 ODDISH_ENABLE_MODAL_WORKERS=...
 ODDISH_MODAL_API_MIN_CONTAINERS=...
 ODDISH_MODAL_API_MAX_CONTAINERS=...
+ODDISH_MODAL_POLL_INTERVAL_SECONDS=...
 ODDISH_MODAL_WORKER_TIMEOUT_SECONDS=...
 ODDISH_MODAL_WORKER_NONPREEMPTIBLE=...
 ODDISH_MODAL_MAX_WORKERS_PER_POLL=...

@@ -609,6 +609,7 @@ async def create_task(
             timeout_minutes=spec.timeout_minutes,
             environment=spec.environment,
             harbor_config=harbor_config,
+            max_attempts=submission.max_trial_attempts,
             status=TrialStatus.QUEUED,
         )
         session.add(trial)
@@ -629,13 +630,16 @@ async def create_task(
 async def _link_task_to_experiment(
     session: AsyncSession, *, task_id: str, experiment_id: str
 ) -> None:
-    """Insert a ``task_experiments`` association row if missing."""
+    """Insert or restore a ``task_experiments`` association row."""
     from oddish.db import task_experiments
 
     await session.execute(
         pg_insert(task_experiments)
         .values(task_id=task_id, experiment_id=experiment_id)
-        .on_conflict_do_nothing(index_elements=["task_id", "experiment_id"])
+        .on_conflict_do_update(
+            index_elements=["task_id", "experiment_id"],
+            set_={"deleted_at": None},
+        )
     )
 
 
@@ -753,6 +757,7 @@ async def append_trials_to_task(
             timeout_minutes=spec.timeout_minutes,
             environment=spec.environment,
             harbor_config=harbor_config,
+            max_attempts=submission.max_trial_attempts,
             status=TrialStatus.QUEUED,
         )
         session.add(trial)

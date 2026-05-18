@@ -115,6 +115,7 @@ async def run_analysis_job(
         trial_s3_key = trial.trial_s3_key
         task_path = task.task_path
         trial_result_path = trial.harbor_result_path
+        trial_agent = trial.agent
 
         # Log storage locations for debugging
         console.print(f"[dim]Task S3 key: {task_s3_key or '(not set)'}[/dim]")
@@ -184,6 +185,7 @@ async def run_analysis_job(
         classification = await classifier.classify_trial(
             trial_dir=trial_dir_to_use,
             task_dir=task_dir_to_use,
+            trial_agent=trial_agent,
         )
 
         # Convert to dict for storage

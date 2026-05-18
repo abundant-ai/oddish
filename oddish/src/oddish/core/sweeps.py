@@ -81,6 +81,7 @@ def build_task_submission_from_sweep(
         trials=trials,
         user=submission.user,
         priority=submission.priority,
+        max_trial_attempts=submission.max_trial_attempts,
         experiment_id=submission.experiment_id,
         tags=submission.tags,
         run_analysis=submission.run_analysis,

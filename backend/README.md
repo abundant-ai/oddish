@@ -204,6 +204,7 @@ Modal runtime knobs are read directly by `modal_app.py`, including:
 - `ODDISH_MODAL_API_MAX_CONTAINERS`
 - `ODDISH_MODAL_API_CONCURRENCY_TARGET`
 - `ODDISH_MODAL_API_CONCURRENCY_MAX`
+- `ODDISH_MODAL_POLL_INTERVAL_SECONDS`
 - `ODDISH_MODAL_WORKER_TIMEOUT_SECONDS`
 - `ODDISH_MODAL_WORKER_MIN_CONTAINERS`
 - `ODDISH_MODAL_WORKER_BUFFER_CONTAINERS`
@@ -236,7 +237,7 @@ All routes require auth unless marked public.
 | POST | `/tasks/upload/complete` | Finalize a direct-to-S3 task upload after the client PUT succeeds |
 | POST | `/trials/import/init` | Register an off-oddish trial and return a presigned artifact URL |
 | POST | `/trials/import/complete` | Finalize an imported trial after the client PUT succeeds |
-| POST | `/tasks/sweep` | Expand one task into multiple trials |
+| POST | `/tasks/sweep` | Expand one task into multiple trials; accepts optional `max_trial_attempts` for newly-created trials |
 | GET | `/tasks` | List tasks (org-scoped, paginated/filtered) |
 | GET | `/tasks/browse` | Browse latest task versions with pagination and search |
 | GET | `/tasks/{task_id}` | Task details |

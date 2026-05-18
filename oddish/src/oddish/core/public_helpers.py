@@ -91,6 +91,7 @@ async def get_public_task(
         )
         .where(
             task_experiments.c.task_id == TaskModel.id,
+            task_experiments.c.deleted_at.is_(None),
             ExperimentModel.is_public == True,  # noqa: E712
         )
     )
@@ -133,6 +134,7 @@ async def get_task_status_counts(
             ExperimentModel,
             ExperimentModel.id == task_experiments.c.experiment_id,
         )
+        query = query.where(task_experiments.c.deleted_at.is_(None))
     for clause in filters:
         query = query.where(clause)
 

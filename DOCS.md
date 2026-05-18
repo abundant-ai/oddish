@@ -63,6 +63,7 @@ oddish run ./my-task -c sweep.yaml
 - `--agent`, `-a TEXT` - Agent name for simple single-agent runs (defaults to `claude-code`)
 - `--model`, `-m TEXT` - Model override for the selected agent
 - `--n-trials INTEGER` - Number of trials per task
+- `--max-trial-attempts INTEGER` - Override the maximum Oddish attempts per trial, including the initial run
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
 - `--exclude-task-name`, `-x TEXT` - Exclude task glob filter; can be passed multiple times
 - `--n-tasks`, `-l INTEGER` - Limit the number of selected tasks after filtering
@@ -109,11 +110,16 @@ agents:
   - name: oracle
     n_trials: 3
 
+max_trial_attempts: 3
 harbor:
   environment:
     kwargs:
       agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
 ```
+
+`max_trial_attempts` is optional. It is the total Oddish worker attempt budget
+per trial, including the initial run. When omitted, Oddish keeps its default
+retry behavior.
 
 ## List Tasks
 

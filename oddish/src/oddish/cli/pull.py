@@ -23,6 +23,11 @@ StatusCallback = Callable[[str], None]
 
 MAX_WORKERS = 8
 
+# Trial logs and artifacts can be hundreds of MB, so the read timeout has to be
+# generous enough to keep slow connections alive between chunks. Connect / write
+# / pool timeouts stay short so genuinely dead requests still fail fast.
+_PULL_TIMEOUT = httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=15.0)
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -56,7 +61,7 @@ def _write_bytes(path: Path, content: bytes) -> None:
 def _make_client(api_url: str) -> httpx.Client:
     return httpx.Client(
         base_url=api_url,
-        timeout=60.0,
+        timeout=_PULL_TIMEOUT,
         headers=get_auth_headers(),
         limits=httpx.Limits(
             max_connections=MAX_WORKERS + 2, max_keepalive_connections=MAX_WORKERS + 2
@@ -120,7 +125,7 @@ def _list_task_files(client: httpx.Client, task_id: str) -> dict | None:
 
 def _download_presigned_bytes(url: str) -> tuple[bytes | None, str | None]:
     try:
-        response = httpx.get(url, timeout=60.0, follow_redirects=True)
+        response = httpx.get(url, timeout=_PULL_TIMEOUT, follow_redirects=True)
     except Exception as exc:
         return None, str(exc)
     if response.status_code != 200:

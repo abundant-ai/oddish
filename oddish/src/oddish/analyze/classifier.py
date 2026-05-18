@@ -38,17 +38,58 @@ _VERDICT_PROMPT_PATH = Path(__file__).parent / "verdict_prompt.txt"
 _VERDICT_PROMPT = _VERDICT_PROMPT_PATH.read_text()
 
 
+_ORACLE_TRIAL_AGENT_CONTEXT = """
+## Oracle Trial Context
+
+This trial used the `oracle` agent. It is NOT a normal autonomous agent run.
+The oracle is intentionally allowed to use the reference solution from
+`solution/solve.sh` or `solution/fix.patch` to validate that the intended
+solution passes the verifier. This context overrides the generic normal-agent
+visibility guidance below.
+
+For this oracle trial:
+- Do NOT treat reading or applying `solution/` as cheating, oracle copying, test inspection, or suspicious agent behavior.
+- A passing oracle usually means the reference solution validates correctly; classify it as GOOD_SUCCESS unless you find a real harness/test defect.
+- A failing oracle is evidence that the reference solution, verifier, or task packaging is broken. Classify it as BAD_FAILURE when the failure is caused by the task artifacts, or HARNESS_ERROR only for infrastructure/runtime problems.
+- Do NOT classify an oracle failure as GOOD_FAILURE due to normal agent limitations, exploration mistakes, or reasoning errors.
+""".strip()
+
+_NOP_TRIAL_AGENT_CONTEXT = """
+## NoOp Trial Context
+
+This trial used the `nop`/NoOp agent. It is a baseline validation run, not a
+normal task-solving agent. The NoOp agent is expected to make no meaningful fix.
+
+For this NoOp trial:
+- A failing NoOp is normally GOOD_FAILURE because the task is not pre-solved.
+- A passing NoOp is suspicious and should usually be BAD_SUCCESS or HARNESS_ERROR, depending on whether tests are too permissive or the harness malfunctioned.
+- Do NOT judge NoOp behavior as though it attempted and failed to solve the task.
+""".strip()
+
+
+def _get_trial_agent_context(trial_agent: str | None) -> str:
+    normalized_agent = (trial_agent or "").strip().lower()
+    if normalized_agent == "oracle":
+        return f"\n{_ORACLE_TRIAL_AGENT_CONTEXT}\n"
+    if normalized_agent in {"nop", "noop", "no-op"}:
+        return f"\n{_NOP_TRIAL_AGENT_CONTEXT}\n"
+    return ""
+
+
 def classify_trial(
     trial_dir: str | Path,
     task_dir: str | Path,
     *,
+    trial_agent: str | None = None,
     model: str = ANALYSIS_MODEL,
     verbose: bool = False,
     timeout: int = 300,
 ) -> TrialClassification:
     """Classify a single trial outcome."""
     classifier = TrialClassifier(model=model, verbose=verbose, timeout=timeout)
-    return classifier.classify_trial_sync(Path(trial_dir), Path(task_dir))
+    return classifier.classify_trial_sync(
+        Path(trial_dir), Path(task_dir), trial_agent=trial_agent
+    )
 
 
 class TrialClassifier:
@@ -81,6 +122,8 @@ class TrialClassifier:
         self,
         trial_dir: Path,
         task_dir: Path,
+        *,
+        trial_agent: str | None = None,
     ) -> TrialClassification:
         """Classify a single trial outcome using Claude Code CLI."""
         result_path = trial_dir / "result.json"
@@ -151,6 +194,7 @@ class TrialClassifier:
             result=result_str,
             task_dir=str(task_dir),
             trial_dir=str(trial_dir),
+            trial_agent_context=_get_trial_agent_context(trial_agent),
         )
 
         try:
@@ -370,8 +414,12 @@ class TrialClassifier:
         self,
         trial_dir: Path,
         task_dir: Path,
+        *,
+        trial_agent: str | None = None,
     ) -> TrialClassification:
-        return asyncio.run(self.classify_trial(trial_dir, task_dir))
+        return asyncio.run(
+            self.classify_trial(trial_dir, task_dir, trial_agent=trial_agent)
+        )
 
     async def classify_trials(
         self,
