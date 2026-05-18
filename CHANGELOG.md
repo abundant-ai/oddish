@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-05-18]
+
+### Added
+- Dashboard status filter now includes a "Retrying trials" option; retrying trial counts shown as `(nR)` in amber in the Trials column (#125)
+- Dedicated `nop_oracle` queue for `nop` and `oracle` trial agents with a separate `ODDISH_NOP_ORACLE_CONCURRENCY` setting (default 32; 48 in Modal), preventing these lightweight trials from competing with model-provider queues; DB migration moves existing non-terminal nop/oracle jobs to the new queue key (#121)
+- Bounded exponential backoff for trial retries: 30 s base delay, up to 30 min cap, with ±25% jitter; rate-limit errors (429, quota exceeded, throttled, etc.) start at a 5 min base; retry delay persisted to `worker_jobs.available_after` and mirrored to `trials.next_retry_at` (#122)
+
+### Fixed
+- Modal image build failures (`Image build for im-... failed`) now permanently fail the trial instead of requeueing, preventing repeated retry burns on deterministic Dockerfile errors; user-cancelled trial state is preserved when a build failure and a user cancel race (#124)
+- Retry API proxy routes (trial retry, trial analysis retry, task analysis retry, task verdict retry) now surface the real upstream error when the backend returns non-JSON plain text, instead of a misleading JSON parse exception; shared `backend-response.ts` helper introduced for safe response reading (#126)
+
+---
+
 ## [2026-05-17]
 
 ### Fixed
