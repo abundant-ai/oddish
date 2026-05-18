@@ -158,8 +158,9 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
 ];
 
 // Row-level filter modes. Inspired by sauron's "any/all pass@k=0" toggle:
-// hide tasks where all / any selected agents failed to pass on any trial.
-type RowFilterMode = "none" | "allFail" | "anyFail";
+// hide tasks based on failures or harness/infrastructure errors across the
+// visible non-baseline agent columns.
+type RowFilterMode = "none" | "anyError" | "allFail" | "anyFail";
 
 const ROW_FILTER_MODES: Array<{
   value: RowFilterMode;
@@ -167,6 +168,12 @@ const ROW_FILTER_MODES: Array<{
   description: string;
 }> = [
   { value: "none", label: "All", description: "Show every task" },
+  {
+    value: "anyError",
+    label: "Any error",
+    description:
+      "Show tasks where at least one agent hit a harness or infrastructure error on any trial",
+  },
   {
     value: "anyFail",
     label: "Any failed",
@@ -183,6 +190,7 @@ const ROW_FILTER_MODES: Array<{
 
 const ROW_FILTER_VALUES = new Set<RowFilterMode>([
   "none",
+  "anyError",
   "allFail",
   "anyFail",
 ]);
@@ -204,6 +212,7 @@ function isBaselineAgentName(name: string): boolean {
 /**
  * Row-filter evaluation for a single (task, agent) cell.
  *
+ * - `hasError` — agent hit a harness/infrastructure error on any trial.
  * - `"failed"` — agent has ≥1 terminal trial AND every terminal trial scored
  *   exactly 0 reward. Partial credit (0 < reward < 1) is NOT considered failed.
  * - `"scored"` — agent has ≥1 terminal trial with any non-zero reward
@@ -211,19 +220,33 @@ function isBaselineAgentName(name: string): boolean {
  * - `null` — agent has no terminal trials yet; skip this cell so still-
  *   running tasks aren't hidden prematurely.
  */
-function agentRowFilterStatus(
+function summarizeAgentRowFilterState(
   trials: readonly Trial[] | undefined,
-): "failed" | "scored" | null {
-  if (!trials || trials.length === 0) return null;
+): {
+  hasError: boolean;
+  status: "failed" | "scored" | null;
+} {
+  if (!trials || trials.length === 0) {
+    return { hasError: false, status: null };
+  }
   let hasTerminal = false;
+  let hasError = false;
   for (const trial of trials) {
+    if (
+      getMatrixStatus(trial.status, trial.reward, trial.error_message) ===
+      "harness-error"
+    ) {
+      hasError = true;
+    }
     if (trial.status !== "success" && trial.status !== "failed") continue;
     hasTerminal = true;
     // Any positive reward — full or partial — disqualifies the agent
     // from counting as "failed" on this task.
-    if ((trial.reward ?? 0) > 0) return "scored";
+    if ((trial.reward ?? 0) > 0) {
+      return { hasError, status: "scored" };
+    }
   }
-  return hasTerminal ? "failed" : null;
+  return { hasError, status: hasTerminal ? "failed" : null };
 }
 
 /**
@@ -740,16 +763,24 @@ export function ExperimentTrialsTable({
               task.trials,
               modelScopedAgents,
             );
-            // Derive failed/scored per evaluated agent; skip agents that
-            // have no terminal trials yet so running tasks aren't hidden
-            // early. Partial credit (0 < reward < 1) counts as "scored".
-            const perAgent = rowFilterAgentKeys
-              .map((key) => agentRowFilterStatus(trialsByAgent.get(key)))
+            // Derive per-agent error/failure state; skip agents that have no
+            // terminal trials yet so running tasks aren't hidden early.
+            // Partial credit (0 < reward < 1) counts as "scored".
+            const perAgent = rowFilterAgentKeys.map((key) =>
+              summarizeAgentRowFilterState(trialsByAgent.get(key)),
+            );
+            if (rowFilterMode === "anyError") {
+              return perAgent.some((result) => result.hasError);
+            }
+            const terminalAgents = perAgent
+              .map((result) => result.status)
               .filter((r): r is "failed" | "scored" => r !== null);
-            if (perAgent.length === 0) return true;
-            const failCount = perAgent.filter((r) => r === "failed").length;
+            if (terminalAgents.length === 0) return true;
+            const failCount = terminalAgents.filter(
+              (r) => r === "failed",
+            ).length;
             if (rowFilterMode === "allFail") {
-              return failCount === perAgent.length;
+              return failCount === terminalAgents.length;
             }
             if (rowFilterMode === "anyFail") {
               return failCount > 0;
