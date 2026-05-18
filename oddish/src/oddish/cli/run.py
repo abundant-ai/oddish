@@ -258,6 +258,18 @@ def run(
             help="Force rebuild the environment Docker image",
         ),
     ] = None,
+    environment_kwargs: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--environment-kwarg",
+            "--harbor-environment-kwarg",
+            help=(
+                "Harbor environment kwarg in KEY=VALUE format, e.g. "
+                "agent_tools_image=ghcr.io/org/harbor-agent-tools:tag "
+                "(can be used multiple times)"
+            ),
+        ),
+    ] = None,
     force_new_version: Annotated[
         bool,
         typer.Option(
@@ -359,6 +371,10 @@ def run(
             # Optional filtering (same as CLI flags)
             task_names: ["django__*"]
             n_tasks: 10
+            harbor:
+              environment:
+                kwargs:
+                  agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
 
     OTHER OPTIONS:
 
@@ -379,6 +395,7 @@ def run(
         # Config file mode - load agents from file
         sweep_config = load_sweep_config(config)
         configs = sweep_config["agents"]
+        harbor_config = copy.deepcopy(sweep_config.get("harbor"))
 
         # Config can override path, dataset, environment, priority, experiment ID
         if "path" in sweep_config and not path and not path_option and not dataset:
@@ -410,6 +427,10 @@ def run(
             override_memory_mb = sweep_config["override_memory_mb"]
         if "override_gpus" in sweep_config and override_gpus is None:
             override_gpus = sweep_config["override_gpus"]
+        if "override_storage_mb" in sweep_config and override_storage_mb is None:
+            override_storage_mb = sweep_config["override_storage_mb"]
+        if "force_build" in sweep_config and force_build is None:
+            force_build = sweep_config["force_build"]
 
         # Warn if CLI agent/model/n_trials are also specified
         if agent or model or n_trials != 1:
@@ -430,6 +451,7 @@ def run(
                 "n_trials": n_trials,
             }
         ]
+        harbor_config = None
 
     # Determine task sources using Harbor's dataset models
     task_paths: list[Path] = []
@@ -514,6 +536,8 @@ def run(
             override_gpus=override_gpus,
             override_storage_mb=override_storage_mb,
             force_build=force_build,
+            harbor_config=harbor_config,
+            environment_kwargs=environment_kwargs,
             agent_env=agent_env,
             agent_kwargs=agent_kwargs,
             artifact_paths=artifact_paths,

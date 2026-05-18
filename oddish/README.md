@@ -124,7 +124,7 @@ Common flags:
 - `--run-analysis` runs post-trial analysis and task verdict generation
 - `--publish` publishes the experiment for public read-only access
 - `--disable-verification` skips task verification
-- `--override-cpus`, `--override-memory-mb`, `--override-gpus`, `--override-storage-mb`, and `--force-build` override environment settings
+- `--override-cpus`, `--override-memory-mb`, `--override-gpus`, `--override-storage-mb`, `--force-build`, and `--environment-kwarg KEY=VALUE` override environment settings
 - `--ae`/`--agent-env`, `--ak`/`--agent-kwarg`, and `--artifact` pass Harbor agent/env configuration through to every submitted config
 - `--api` overrides the API URL for a single invocation
 
@@ -162,9 +162,18 @@ priority: low
 ```
 
 You can also set `path`, `exclude_task_names`, and `experiment_id` in the
-config file. Per-agent overrides use `env` and `kwargs`. Timeouts and
-per-provider concurrency are no longer configured in sweep files; declare task
-timeouts in `task.toml` and API concurrency at server startup.
+config file. Per-agent overrides use `env` and `kwargs`. Harbor execution
+settings can be passed through with a top-level `harbor` block:
+
+```yaml
+harbor:
+  environment:
+    kwargs:
+      agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
+```
+
+Timeouts and per-provider concurrency are no longer configured in sweep files;
+declare task timeouts in `task.toml` and API concurrency at server startup.
 
 ### `oddish upload`
 

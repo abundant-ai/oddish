@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import shutil
@@ -561,6 +562,112 @@ def _parse_key_value_pairs(pairs: list[str] | None) -> dict[str, str]:
     return result
 
 
+def _parse_required_key_value_pairs(
+    pairs: list[str] | None,
+    *,
+    option_name: str,
+) -> dict[str, str]:
+    """Parse required 'key=value' CLI pairs, failing on malformed input."""
+    if not pairs:
+        return {}
+
+    result: dict[str, str] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            error_console.print(
+                f"[red]{option_name} values must use KEY=VALUE format:[/red] {pair}"
+            )
+            raise typer.Exit(1)
+        key, _, value = pair.partition("=")
+        key = key.strip()
+        if not key:
+            error_console.print(
+                f"[red]{option_name} values must include a non-empty key:[/red] {pair}"
+            )
+            raise typer.Exit(1)
+        result[key] = value.strip()
+    return result
+
+
+def _validate_json_serializable(value: Any, *, label: str) -> None:
+    try:
+        json.dumps(value)
+    except TypeError as exc:
+        error_console.print(f"[red]{label} must be JSON-serializable:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+def _build_harbor_payload(
+    raw_harbor: dict[str, Any] | None,
+    *,
+    env_overrides: dict[str, Any],
+    environment_kwargs: dict[str, Any],
+    disable_verification: bool,
+    artifact_paths: list[str] | None,
+) -> dict[str, Any]:
+    """Build the Harbor passthrough block for /tasks/sweep.
+
+    Start with config-file Harbor settings, then merge in explicit CLI
+    overrides. CLI values win when both sources set the same key.
+    """
+    if raw_harbor is None:
+        harbor: dict[str, Any] = {}
+    elif isinstance(raw_harbor, dict):
+        harbor = copy.deepcopy(raw_harbor)
+    else:
+        error_console.print("[red]Config field 'harbor' must be a mapping[/red]")
+        raise typer.Exit(1)
+
+    if env_overrides or environment_kwargs:
+        raw_environment = harbor.get("environment")
+        if raw_environment is None:
+            environment: dict[str, Any] = {}
+        elif isinstance(raw_environment, dict):
+            environment = raw_environment
+        else:
+            error_console.print(
+                "[red]Config field 'harbor.environment' must be a mapping[/red]"
+            )
+            raise typer.Exit(1)
+
+        if environment_kwargs:
+            raw_kwargs = environment.get("kwargs")
+            if raw_kwargs is None:
+                existing_kwargs: dict[str, Any] = {}
+            elif isinstance(raw_kwargs, dict):
+                existing_kwargs = raw_kwargs
+            else:
+                error_console.print(
+                    "[red]Config field 'harbor.environment.kwargs' must be a mapping[/red]"
+                )
+                raise typer.Exit(1)
+            environment["kwargs"] = {**existing_kwargs, **environment_kwargs}
+
+        environment.update(env_overrides)
+        harbor["environment"] = environment
+
+    if disable_verification:
+        raw_verifier = harbor.get("verifier")
+        if raw_verifier is None:
+            verifier: dict[str, Any] = {}
+        elif isinstance(raw_verifier, dict):
+            verifier = raw_verifier
+        else:
+            error_console.print(
+                "[red]Config field 'harbor.verifier' must be a mapping[/red]"
+            )
+            raise typer.Exit(1)
+        verifier["disable"] = True
+        harbor["verifier"] = verifier
+
+    if artifact_paths:
+        harbor["artifacts"] = artifact_paths
+
+    if harbor:
+        _validate_json_serializable(harbor, label="harbor")
+    return harbor
+
+
 def submit_sweep(
     api_url: str,
     task_id: str,
@@ -584,6 +691,8 @@ def submit_sweep(
     artifact_paths: list[str] | None = None,
     append_to_task: bool = False,
     content_hash: str | None = None,
+    harbor_config: dict[str, Any] | None = None,
+    environment_kwargs: list[str] | None = None,
 ) -> dict:
     """Submit a task sweep to the API."""
     env_value = environment.value if environment else None
@@ -592,8 +701,7 @@ def submit_sweep(
         for config in configs:
             config["environment"] = env_value
 
-    harbor: dict = {}
-    env_overrides: dict = {}
+    env_overrides: dict[str, Any] = {}
     if override_cpus is not None:
         env_overrides["override_cpus"] = override_cpus
     if override_memory_mb is not None:
@@ -604,12 +712,17 @@ def submit_sweep(
         env_overrides["override_storage_mb"] = override_storage_mb
     if force_build is not None:
         env_overrides["force_build"] = force_build
-    if env_overrides:
-        harbor["environment"] = env_overrides
-    if disable_verification:
-        harbor["verifier"] = {"disable": True}
-    if artifact_paths:
-        harbor["artifacts"] = artifact_paths
+    parsed_environment_kwargs = _parse_required_key_value_pairs(
+        environment_kwargs,
+        option_name="--environment-kwarg",
+    )
+    harbor = _build_harbor_payload(
+        harbor_config,
+        env_overrides=env_overrides,
+        environment_kwargs=parsed_environment_kwargs,
+        disable_verification=disable_verification,
+        artifact_paths=artifact_paths,
+    )
 
     # CLI --ae/--ak flags apply to all configs as default agent overrides
     parsed_env = _parse_key_value_pairs(agent_env)
@@ -1036,6 +1149,10 @@ def load_sweep_config(config_path: Path) -> dict:
 
         # Optional fields:
         environment: daytona            # execution environment
+        harbor:
+          environment:
+            kwargs:
+              agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
         priority: low
         experiment_id: exp_123
     """
