@@ -69,7 +69,16 @@ async def list_public_experiments(
                     "task_count"
                 ),
             )
-            .where(task_experiments.c.deleted_at.is_(None))
+            .select_from(
+                task_experiments.join(
+                    TaskModel,  # type: ignore[arg-type]
+                    TaskModel.id == task_experiments.c.task_id,
+                )
+            )
+            .where(
+                task_experiments.c.deleted_at.is_(None),
+                TaskModel.deleted_at.is_(None),
+            )
             .group_by(task_experiments.c.experiment_id)
             .subquery()
         )

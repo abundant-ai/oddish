@@ -1593,6 +1593,7 @@ async def delete_task_core(
         .where(
             task_experiments.c.task_id == resolved_task_id,
             task_experiments.c.experiment_id == experiment_id,
+            task_experiments.c.deleted_at.is_(None),
         )
         .values(deleted_at=utcnow())
     )
