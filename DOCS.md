@@ -84,6 +84,7 @@ oddish run ./my-task -c sweep.yaml
 - `--override-gpus INTEGER` - Override environment GPU count
 - `--override-storage-mb INTEGER` - Override environment storage
 - `--force-build/--no-force-build` - Force a rebuild of the environment image
+- `--environment-kwarg`, `--harbor-environment-kwarg TEXT` - Pass Harbor environment kwargs as `KEY=VALUE`; can be used multiple times
 - `--ae`, `--agent-env TEXT` - Pass agent env vars as `KEY=VALUE`; can be used multiple times
 - `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times
 - `--artifact TEXT` - Download an environment path as an artifact after the trial
@@ -110,6 +111,10 @@ agents:
     n_trials: 3
 
 max_trial_attempts: 3
+harbor:
+  environment:
+    kwargs:
+      agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
 ```
 
 `max_trial_attempts` is optional. It is the total Oddish worker attempt budget
