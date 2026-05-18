@@ -163,6 +163,7 @@ export interface Task {
   experiment_id: string;
   experiment_name: string;
   experiment_is_public: boolean;
+  experiment_created_at?: string | null;
   total: number;
   completed: number;
   failed: number;

@@ -560,7 +560,9 @@ already matches the default view. The route handlers for
 `src/app/api/experiments/[experiment]/tasks/route.ts` emit `Server-Timing`
 headers and forward upstream timing data for latency debugging. The backend
 dashboard aggregation now stays on a single DB session per request to avoid
-doubling connection pressure during bursts.
+doubling connection pressure during bursts. Experiment-scoped task responses
+include `experiment_created_at`, sourced from `ExperimentModel.created_at`, so
+the experiment header does not infer creation time from one of its tasks.
 
 ### Local Development
 

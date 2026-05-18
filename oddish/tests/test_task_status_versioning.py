@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -7,7 +8,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core import helpers
-from oddish.db import TrialStatus
+from oddish.db import Priority, TaskStatus, TrialStatus
 
 
 def _trial(
@@ -27,6 +28,50 @@ def _trial(
         experiment_id=experiment_id,
         superseded_by_trial_id=superseded_by_trial_id,
     )
+
+
+def test_task_status_response_includes_experiment_created_at():
+    experiment_created_at = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    task_created_at = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    experiment = SimpleNamespace(
+        id="exp-a",
+        name="demo experiment",
+        is_public=False,
+        created_at=experiment_created_at,
+    )
+    task = SimpleNamespace(
+        id="task-a",
+        name="demo task",
+        status=TaskStatus.PENDING,
+        priority=Priority.LOW,
+        user="alice",
+        tags={},
+        task_path="/tmp/demo-task",
+        current_version_id=None,
+        run_analysis=False,
+        verdict_status=None,
+        verdict=None,
+        verdict_error=None,
+        experiments=[experiment],
+        created_at=task_created_at,
+        started_at=None,
+        finished_at=None,
+    )
+
+    response = helpers._build_task_status_response(
+        task,
+        total=0,
+        completed=0,
+        failed=0,
+        reward_success=0,
+        reward_sum=0.0,
+        reward_total=0,
+        include_empty_rewards=True,
+        trials=None,
+    )
+
+    assert response.created_at == task_created_at
+    assert response.experiment_created_at == experiment_created_at
 
 
 def test_get_task_status_trials_filters_to_current_version():

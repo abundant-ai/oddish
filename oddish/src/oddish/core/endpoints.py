@@ -187,6 +187,7 @@ async def list_tasks_core(
                 ExperimentModel.id,
                 ExperimentModel.name,
                 ExperimentModel.is_public,
+                ExperimentModel.created_at,
             )
             query = query.options(
                 load_only(
