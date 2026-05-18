@@ -723,6 +723,9 @@ def _build_task_status_response(
     experiment_id = primary_experiment.id if primary_experiment else ""
     experiment_name = primary_experiment.name if primary_experiment else ""
     experiment_is_public = primary_experiment.is_public if primary_experiment else False
+    experiment_created_at = (
+        primary_experiment.created_at if primary_experiment else None
+    )
     return TaskStatusResponse(
         id=task.id,
         name=task.name,
@@ -737,6 +740,7 @@ def _build_task_status_response(
         experiment_id=experiment_id,
         experiment_name=experiment_name,
         experiment_is_public=experiment_is_public,
+        experiment_created_at=experiment_created_at,
         current_version=current_version,
         current_version_id=current_version_id,
         total=total,
