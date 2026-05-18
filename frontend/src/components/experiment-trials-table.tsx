@@ -158,8 +158,9 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
 ];
 
 // Row-level filter modes. Inspired by sauron's "any/all pass@k=0" toggle:
-// hide tasks where all / any selected agents failed to pass on any trial.
-type RowFilterMode = "none" | "allFail" | "anyFail";
+// hide tasks based on failures or harness/infrastructure errors across the
+// visible non-baseline agent columns.
+type RowFilterMode = "none" | "anyError" | "allFail" | "anyFail";
 
 const ROW_FILTER_MODES: Array<{
   value: RowFilterMode;
@@ -167,6 +168,12 @@ const ROW_FILTER_MODES: Array<{
   description: string;
 }> = [
   { value: "none", label: "All", description: "Show every task" },
+  {
+    value: "anyError",
+    label: "Any error",
+    description:
+      "Show tasks where at least one agent hit a harness or infrastructure error on any trial",
+  },
   {
     value: "anyFail",
     label: "Any failed",
@@ -183,6 +190,7 @@ const ROW_FILTER_MODES: Array<{
 
 const ROW_FILTER_VALUES = new Set<RowFilterMode>([
   "none",
+  "anyError",
   "allFail",
   "anyFail",
 ]);
@@ -204,6 +212,7 @@ function isBaselineAgentName(name: string): boolean {
 /**
  * Row-filter evaluation for a single (task, agent) cell.
  *
+ * - `hasError` — agent hit a harness/infrastructure error on any trial.
  * - `"failed"` — agent has ≥1 terminal trial AND every terminal trial scored
  *   exactly 0 reward. Partial credit (0 < reward < 1) is NOT considered failed.
  * - `"scored"` — agent has ≥1 terminal trial with any non-zero reward
@@ -211,19 +220,33 @@ function isBaselineAgentName(name: string): boolean {
  * - `null` — agent has no terminal trials yet; skip this cell so still-
  *   running tasks aren't hidden prematurely.
  */
-function agentRowFilterStatus(
+function summarizeAgentRowFilterState(
   trials: readonly Trial[] | undefined,
-): "failed" | "scored" | null {
-  if (!trials || trials.length === 0) return null;
+): {
+  hasError: boolean;
+  status: "failed" | "scored" | null;
+} {
+  if (!trials || trials.length === 0) {
+    return { hasError: false, status: null };
+  }
   let hasTerminal = false;
+  let hasError = false;
   for (const trial of trials) {
+    if (
+      getMatrixStatus(trial.status, trial.reward, trial.error_message) ===
+      "harness-error"
+    ) {
+      hasError = true;
+    }
     if (trial.status !== "success" && trial.status !== "failed") continue;
     hasTerminal = true;
     // Any positive reward — full or partial — disqualifies the agent
     // from counting as "failed" on this task.
-    if ((trial.reward ?? 0) > 0) return "scored";
+    if ((trial.reward ?? 0) > 0) {
+      return { hasError, status: "scored" };
+    }
   }
-  return hasTerminal ? "failed" : null;
+  return { hasError, status: hasTerminal ? "failed" : null };
 }
 
 /**
@@ -740,16 +763,24 @@ export function ExperimentTrialsTable({
               task.trials,
               modelScopedAgents,
             );
-            // Derive failed/scored per evaluated agent; skip agents that
-            // have no terminal trials yet so running tasks aren't hidden
-            // early. Partial credit (0 < reward < 1) counts as "scored".
-            const perAgent = rowFilterAgentKeys
-              .map((key) => agentRowFilterStatus(trialsByAgent.get(key)))
+            // Derive per-agent error/failure state; skip agents that have no
+            // terminal trials yet so running tasks aren't hidden early.
+            // Partial credit (0 < reward < 1) counts as "scored".
+            const perAgent = rowFilterAgentKeys.map((key) =>
+              summarizeAgentRowFilterState(trialsByAgent.get(key)),
+            );
+            if (rowFilterMode === "anyError") {
+              return perAgent.some((result) => result.hasError);
+            }
+            const terminalAgents = perAgent
+              .map((result) => result.status)
               .filter((r): r is "failed" | "scored" => r !== null);
-            if (perAgent.length === 0) return true;
-            const failCount = perAgent.filter((r) => r === "failed").length;
+            if (terminalAgents.length === 0) return true;
+            const failCount = terminalAgents.filter(
+              (r) => r === "failed",
+            ).length;
             if (rowFilterMode === "allFail") {
-              return failCount === perAgent.length;
+              return failCount === terminalAgents.length;
             }
             if (rowFilterMode === "anyFail") {
               return failCount > 0;
@@ -1599,37 +1630,42 @@ export function ExperimentTrialsTable({
   const renderRowFilterControl = () => {
     const hasAgentsToFilter = rowFilterAgentKeys.length > 0;
     return (
-      <div
-        role="group"
-        aria-label="Row filter"
-        className="inline-flex items-center rounded-md border border-border bg-background p-0.5"
-      >
-        {ROW_FILTER_MODES.map((mode) => {
-          const active = rowFilterMode === mode.value;
-          const disabled = !hasAgentsToFilter && mode.value !== "none";
-          return (
-            <Tooltip key={mode.value}>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={disabled}
-                  onClick={() => setRowFilterMode(mode.value)}
-                  className={`h-auto select-none rounded-sm px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition-colors ${
-                    active
-                      ? "bg-muted text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                  aria-pressed={active}
-                >
-                  {mode.label}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{mode.description}</TooltipContent>
-            </Tooltip>
-          );
-        })}
+      <div className="flex max-w-full items-center gap-2">
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[color:var(--paper-ink-3)]">
+          View
+        </span>
+        <div
+          role="group"
+          aria-label="Row filter"
+          className="inline-flex min-w-0 max-w-full items-center rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-0.5"
+        >
+          {ROW_FILTER_MODES.map((mode) => {
+            const active = rowFilterMode === mode.value;
+            const disabled = !hasAgentsToFilter && mode.value !== "none";
+            return (
+              <Tooltip key={mode.value}>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={disabled}
+                    onClick={() => setRowFilterMode(mode.value)}
+                    className={`h-auto whitespace-nowrap rounded-[5px] px-2.5 py-1.5 text-[11px] font-medium leading-none transition-colors ${
+                      active
+                        ? "bg-[color:var(--paper-surface-2)] text-[color:var(--paper-ink)] shadow-[inset_0_0_0_1px_var(--paper-line-2)]"
+                        : "text-[color:var(--paper-ink-3)] hover:bg-[color:var(--paper-surface)] hover:text-[color:var(--paper-ink)]"
+                    }`}
+                    aria-pressed={active}
+                  >
+                    {mode.label}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{mode.description}</TooltipContent>
+              </Tooltip>
+            );
+          })}
+        </div>
       </div>
     );
   };
@@ -1724,129 +1760,129 @@ export function ExperimentTrialsTable({
               </div>
               <div className="min-w-0 flex-1">{renderLegendBlock()}</div>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5 text-[11.5px] text-[color:var(--paper-ink-3)]">
-              {!readOnly && (
-                <>
-                  <span>{selectedTasks.size} selected</span>
-                  <InlineBtn
-                    onClick={clearSelection}
-                    disabled={selectedTasks.size === 0}
-                  >
-                    Clear
-                  </InlineBtn>
-                  <span className="select-none text-[color:var(--paper-line)]">
-                    │
-                  </span>
-                  {canRerun && (
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11.5px] text-[color:var(--paper-ink-3)]">
+                {!readOnly && (
+                  <>
+                    <span>{selectedTasks.size} selected</span>
                     <InlineBtn
-                      onClick={handleRerunSelectedTasks}
-                      disabled={
-                        isRerunning || selectedRetryableTrials.length === 0
-                      }
+                      onClick={clearSelection}
+                      disabled={selectedTasks.size === 0}
                     >
-                      {isRerunning ? "Rerunning" : "Rerun trials"}
-                      <InlineCount>
-                        {selectedRetryableTrials.length}
-                      </InlineCount>
+                      Clear
                     </InlineBtn>
-                  )}
-                  {canRerun && (
-                    <InlineBtn
-                      onClick={handleCancelSelectedTasks}
-                      disabled={
-                        isCancellingSelected ||
-                        selectedCancellableTasks.length === 0
-                      }
-                    >
-                      {isCancellingSelected ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <OctagonX className="h-3 w-3" />
-                      )}
-                      {isCancellingSelected ? "Cancelling" : "Cancel"}
-                      <InlineCount>
-                        {selectedCancellableTasks.length}
-                      </InlineCount>
-                    </InlineBtn>
-                  )}
-                  <span className="select-none text-[color:var(--paper-line)]">
-                    │
-                  </span>
-                  {canRerun && (
-                    <InlineBtn
-                      onClick={handleRunAnalysisForSelectedTasks}
-                      disabled={
-                        isRunningAnalysis ||
-                        selectedAnalysisRunnableTasks.length === 0
-                      }
-                    >
-                      {isRunningAnalysis ? "Queueing" : "Run analysis"}
-                      <InlineCount>
-                        {selectedAnalysisRunnableTasks.length}
-                      </InlineCount>
-                    </InlineBtn>
-                  )}
-                  {canRerun && (
-                    <InlineBtn
-                      onClick={handleRunVerdictForSelectedTasks}
-                      disabled={
-                        isRunningVerdict ||
-                        selectedVerdictRunnableTasks.length === 0
-                      }
-                    >
-                      {isRunningVerdict ? "Queueing" : "Run verdict"}
-                      <InlineCount>
-                        {selectedVerdictRunnableTasks.length}
-                      </InlineCount>
-                    </InlineBtn>
-                  )}
-                  {canDeleteTasks && (
-                    <>
-                      <span className="select-none text-[color:var(--paper-line)]">
-                        │
-                      </span>
+                    <span className="select-none text-[color:var(--paper-line)]">
+                      │
+                    </span>
+                    {canRerun && (
                       <InlineBtn
-                        onClick={() => {
-                          setDeleteTargets(selectedTaskList);
-                          setDeleteError(null);
-                        }}
-                        disabled={isDeleting || selectedTaskList.length === 0}
-                        style={
-                          selectedTaskList.length > 0 && !isDeleting
-                            ? { color: "var(--paper-fail)" }
-                            : undefined
+                        onClick={handleRerunSelectedTasks}
+                        disabled={
+                          isRerunning || selectedRetryableTrials.length === 0
                         }
                       >
-                        <Trash2 className="h-3 w-3" />
-                        Delete
+                        {isRerunning ? "Rerunning" : "Rerun trials"}
+                        <InlineCount>
+                          {selectedRetryableTrials.length}
+                        </InlineCount>
                       </InlineBtn>
-                    </>
-                  )}
-                </>
-              )}
-              {cancelError && (
-                <span className="text-[10px] text-[color:var(--paper-fail)]">
-                  {cancelError}
-                </span>
-              )}
-              {rerunError && (
-                <span className="text-[10px] text-[color:var(--paper-fail)]">
-                  {rerunError}
-                </span>
-              )}
-              {analysisError && (
-                <span className="text-[10px] text-[color:var(--paper-fail)]">
-                  {analysisError}
-                </span>
-              )}
-              {verdictError && (
-                <span className="text-[10px] text-[color:var(--paper-fail)]">
-                  {verdictError}
-                </span>
-              )}
-              <div
-                className={`flex flex-wrap items-center gap-1.5 ${readOnly ? "" : "ml-auto"}`}
-              >
+                    )}
+                    {canRerun && (
+                      <InlineBtn
+                        onClick={handleCancelSelectedTasks}
+                        disabled={
+                          isCancellingSelected ||
+                          selectedCancellableTasks.length === 0
+                        }
+                      >
+                        {isCancellingSelected ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <OctagonX className="h-3 w-3" />
+                        )}
+                        {isCancellingSelected ? "Cancelling" : "Cancel"}
+                        <InlineCount>
+                          {selectedCancellableTasks.length}
+                        </InlineCount>
+                      </InlineBtn>
+                    )}
+                    <span className="select-none text-[color:var(--paper-line)]">
+                      │
+                    </span>
+                    {canRerun && (
+                      <InlineBtn
+                        onClick={handleRunAnalysisForSelectedTasks}
+                        disabled={
+                          isRunningAnalysis ||
+                          selectedAnalysisRunnableTasks.length === 0
+                        }
+                      >
+                        {isRunningAnalysis ? "Queueing" : "Run analysis"}
+                        <InlineCount>
+                          {selectedAnalysisRunnableTasks.length}
+                        </InlineCount>
+                      </InlineBtn>
+                    )}
+                    {canRerun && (
+                      <InlineBtn
+                        onClick={handleRunVerdictForSelectedTasks}
+                        disabled={
+                          isRunningVerdict ||
+                          selectedVerdictRunnableTasks.length === 0
+                        }
+                      >
+                        {isRunningVerdict ? "Queueing" : "Run verdict"}
+                        <InlineCount>
+                          {selectedVerdictRunnableTasks.length}
+                        </InlineCount>
+                      </InlineBtn>
+                    )}
+                    {canDeleteTasks && (
+                      <>
+                        <span className="select-none text-[color:var(--paper-line)]">
+                          │
+                        </span>
+                        <InlineBtn
+                          onClick={() => {
+                            setDeleteTargets(selectedTaskList);
+                            setDeleteError(null);
+                          }}
+                          disabled={isDeleting || selectedTaskList.length === 0}
+                          style={
+                            selectedTaskList.length > 0 && !isDeleting
+                              ? { color: "var(--paper-fail)" }
+                              : undefined
+                          }
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          Delete
+                        </InlineBtn>
+                      </>
+                    )}
+                  </>
+                )}
+                {cancelError && (
+                  <span className="text-[10px] text-[color:var(--paper-fail)]">
+                    {cancelError}
+                  </span>
+                )}
+                {rerunError && (
+                  <span className="text-[10px] text-[color:var(--paper-fail)]">
+                    {rerunError}
+                  </span>
+                )}
+                {analysisError && (
+                  <span className="text-[10px] text-[color:var(--paper-fail)]">
+                    {analysisError}
+                  </span>
+                )}
+                {verdictError && (
+                  <span className="text-[10px] text-[color:var(--paper-fail)]">
+                    {verdictError}
+                  </span>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {renderRowFilterControl()}
                 {renderAgentFilterMenu()}
                 <Tooltip>
