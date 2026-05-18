@@ -101,6 +101,36 @@ harbor:
     )
 
 
+def test_sweep_config_loader_allows_oracle_without_model_name(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "sweep.yaml"
+    config_path.write_text(
+        f"""
+agents:
+  - name: oracle
+    n_trials: 1
+harbor:
+  environment:
+    kwargs:
+      agent_tools_image: {AGENT_TOOLS_IMAGE}
+""".strip()
+    )
+
+    config = cli_api.load_sweep_config(config_path)
+
+    assert config["agents"] == [
+        {
+            "agent": "oracle",
+            "model": None,
+            "n_trials": 1,
+        }
+    ]
+    assert config["harbor"]["environment"]["kwargs"]["agent_tools_image"] == (
+        AGENT_TOOLS_IMAGE
+    )
+
+
 def test_harbor_environment_kwargs_survive_trial_config_round_trip() -> None:
     submission = TaskSweepSubmission(
         task_id="task-123",

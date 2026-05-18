@@ -1201,7 +1201,8 @@ def load_sweep_config(config_path: Path) -> dict:
         if not agent_data["name"]:
             error_console.print(f"[red]Agent entry {i + 1} missing 'name' field[/red]")
             raise typer.Exit(1)
-        if agent_data["model_name"] is None:
+        allow_missing_model = agent_data["name"] in {"nop", "oracle"}
+        if agent_data["model_name"] is None and not allow_missing_model:
             error_console.print(
                 f"[red]Agent entry {i + 1} missing 'model_name' field[/red]"
             )
