@@ -100,7 +100,8 @@ High-level flow:
 1. Upload a task bundle directly to S3 via a presigned PUT URL.
 2. Submit a sweep of agent/model trials for that task; each trial, analysis,
    and verdict is enqueued as a row in `worker_jobs` in the same transaction
-   as its domain row.
+   as its domain row. Set `max_trial_attempts` on a sweep submission or sweep
+   config to override the total attempt budget for newly-created trials.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler (`TRIAL` / `ANALYSIS` / `VERDICT`), write heartbeats, and exit.
 4. Use the CLI or dashboard to watch progress and pull logs/artifacts

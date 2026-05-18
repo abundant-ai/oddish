@@ -167,6 +167,14 @@ class TaskSubmission(BaseModel):
         description="Submitting user (resolved server-side from auth when omitted)",
     )
     priority: Priority = Field(Priority.LOW, description="Priority: 'high' or 'low'")
+    max_trial_attempts: int = Field(
+        6,
+        ge=1,
+        description=(
+            "Maximum Oddish worker attempts per trial, including the initial "
+            "attempt. For example, 3 allows the initial run plus up to 2 retries."
+        ),
+    )
     experiment_id: str | None = Field(None, description="Optional experiment ID")
     tags: dict[str, str] = Field(default_factory=dict, description="Optional tags")
     run_analysis: bool = Field(
@@ -242,6 +250,14 @@ class TaskSweepSubmission(BaseModel):
         description="Submitting user (resolved server-side from auth when omitted)",
     )
     priority: Priority = Field(Priority.LOW, description="Priority: 'high' or 'low'")
+    max_trial_attempts: int = Field(
+        6,
+        ge=1,
+        description=(
+            "Maximum Oddish worker attempts per trial, including the initial "
+            "attempt. Applies to all trials created by this sweep submission."
+        ),
+    )
     experiment_id: str | None = Field(None, description="Optional experiment ID")
     tags: dict[str, str] = Field(default_factory=dict, description="Optional tags")
     timeout_minutes: int | None = Field(

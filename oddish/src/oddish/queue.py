@@ -609,6 +609,7 @@ async def create_task(
             timeout_minutes=spec.timeout_minutes,
             environment=spec.environment,
             harbor_config=harbor_config,
+            max_attempts=submission.max_trial_attempts,
             status=TrialStatus.QUEUED,
         )
         session.add(trial)
@@ -753,6 +754,7 @@ async def append_trials_to_task(
             timeout_minutes=spec.timeout_minutes,
             environment=spec.environment,
             harbor_config=harbor_config,
+            max_attempts=submission.max_trial_attempts,
             status=TrialStatus.QUEUED,
         )
         session.add(trial)
