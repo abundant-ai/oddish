@@ -102,6 +102,17 @@ def run(
             help="Number of trials per task (Oddish-specific; Harbor uses -k for retries)",
         ),
     ] = 1,
+    max_trial_attempts: Annotated[
+        Optional[int],
+        typer.Option(
+            "--max-trial-attempts",
+            min=1,
+            help=(
+                "Override maximum Oddish attempts per trial, including the initial run. "
+                "Can also be set in sweep config as max_trial_attempts."
+            ),
+        ),
+    ] = None,
     # Harbor-compatible filtering options
     task_names: Annotated[
         Optional[list[str]],
@@ -391,6 +402,8 @@ def run(
             priority = sweep_config["priority"]
         if "experiment_id" in sweep_config:
             experiment_id = sweep_config["experiment_id"]
+        if "max_trial_attempts" in sweep_config and max_trial_attempts is None:
+            max_trial_attempts = sweep_config["max_trial_attempts"]
         # Config can also specify filtering (Harbor-compatible)
         if "task_names" in sweep_config and task_names is None:
             task_names = sweep_config["task_names"]
@@ -504,6 +517,7 @@ def run(
             user=user,
             priority=priority,
             experiment_id=experiment_id,
+            max_trial_attempts=max_trial_attempts,
             run_analysis=run_analysis,
             github_username=github_user,
             tags=tags or None,

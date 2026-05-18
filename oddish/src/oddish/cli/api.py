@@ -569,6 +569,7 @@ def submit_sweep(
     user: str | None,
     priority: str,
     experiment_id: str | None,
+    max_trial_attempts: int | None = None,
     run_analysis: bool = False,
     github_username: str | None = None,
     tags: dict[str, str] | None = None,
@@ -633,6 +634,8 @@ def submit_sweep(
         payload["user"] = user
     if experiment_id:
         payload["experiment_id"] = experiment_id
+    if max_trial_attempts is not None:
+        payload["max_trial_attempts"] = max_trial_attempts
     if env_value is not None:
         payload["environment"] = env_value
 
@@ -1038,6 +1041,7 @@ def load_sweep_config(config_path: Path) -> dict:
         environment: daytona            # execution environment
         priority: low
         experiment_id: exp_123
+        max_trial_attempts: 3           # optional total Oddish attempts per trial
     """
     if not config_path.exists():
         error_console.print(f"[red]Config file not found:[/red] {config_path}")
@@ -1073,6 +1077,26 @@ def load_sweep_config(config_path: Path) -> dict:
             "Declare explicit timeouts in task.toml instead."
         )
         raise typer.Exit(1)
+    if "max_attempts" in config:
+        error_console.print(
+            "[red]Top-level 'max_attempts' is no longer supported.[/red]\n"
+            "Use 'max_trial_attempts' instead."
+        )
+        raise typer.Exit(1)
+    if "max_trial_attempts" in config:
+        try:
+            max_trial_attempts = int(config["max_trial_attempts"])
+        except (TypeError, ValueError):
+            error_console.print(
+                "[red]Top-level 'max_trial_attempts' must be an integer[/red]"
+            )
+            raise typer.Exit(1)
+        if max_trial_attempts < 1:
+            error_console.print(
+                "[red]Top-level 'max_trial_attempts' must be at least 1[/red]"
+            )
+            raise typer.Exit(1)
+        config["max_trial_attempts"] = max_trial_attempts
 
     normalized_agents = []
     for i, agent_entry in enumerate(config["agents"]):

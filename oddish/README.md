@@ -111,6 +111,7 @@ Common flags:
 - `-a, --agent` selects the agent
 - `-m, --model` selects the model
 - `--n-trials` runs multiple trials per task
+- `--max-trial-attempts` overrides the total Oddish attempt budget per trial, including the initial run
 - `-d, --dataset` pulls tasks from the Harbor registry
 - `--task` appends trials to an existing task ID without re-uploading task files
 - `-c, --config` loads a YAML or JSON sweep config
@@ -159,12 +160,15 @@ agents:
 dataset: swebench@1.0
 n_tasks: 10
 priority: low
+max_trial_attempts: 3
 ```
 
-You can also set `path`, `exclude_task_names`, and `experiment_id` in the
-config file. Per-agent overrides use `env` and `kwargs`. Timeouts and
-per-provider concurrency are no longer configured in sweep files; declare task
-timeouts in `task.toml` and API concurrency at server startup.
+You can also set `path`, `exclude_task_names`, `experiment_id`, and
+`max_trial_attempts` in the config file. `max_trial_attempts` is the total
+Oddish worker attempt budget per trial, including the initial run. When omitted,
+Oddish keeps its default retry behavior. Per-agent overrides use `env` and `kwargs`.
+Timeouts and per-provider concurrency are no longer configured in sweep files;
+declare task timeouts in `task.toml` and API concurrency at server startup.
 
 ### `oddish upload`
 
