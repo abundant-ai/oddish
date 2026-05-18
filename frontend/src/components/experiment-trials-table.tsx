@@ -1630,37 +1630,42 @@ export function ExperimentTrialsTable({
   const renderRowFilterControl = () => {
     const hasAgentsToFilter = rowFilterAgentKeys.length > 0;
     return (
-      <div
-        role="group"
-        aria-label="Row filter"
-        className="inline-flex items-center rounded-md border border-border bg-background p-0.5"
-      >
-        {ROW_FILTER_MODES.map((mode) => {
-          const active = rowFilterMode === mode.value;
-          const disabled = !hasAgentsToFilter && mode.value !== "none";
-          return (
-            <Tooltip key={mode.value}>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={disabled}
-                  onClick={() => setRowFilterMode(mode.value)}
-                  className={`h-auto select-none rounded-sm px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition-colors ${
-                    active
-                      ? "bg-muted text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                  aria-pressed={active}
-                >
-                  {mode.label}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{mode.description}</TooltipContent>
-            </Tooltip>
-          );
-        })}
+      <div className="flex max-w-full items-center gap-2">
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[color:var(--paper-ink-3)]">
+          View
+        </span>
+        <div
+          role="group"
+          aria-label="Row filter"
+          className="inline-flex min-w-0 max-w-full items-center rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-0.5"
+        >
+          {ROW_FILTER_MODES.map((mode) => {
+            const active = rowFilterMode === mode.value;
+            const disabled = !hasAgentsToFilter && mode.value !== "none";
+            return (
+              <Tooltip key={mode.value}>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={disabled}
+                    onClick={() => setRowFilterMode(mode.value)}
+                    className={`h-auto whitespace-nowrap rounded-[5px] px-2.5 py-1.5 text-[11px] font-medium leading-none transition-colors ${
+                      active
+                        ? "bg-[color:var(--paper-surface-2)] text-[color:var(--paper-ink)] shadow-[inset_0_0_0_1px_var(--paper-line-2)]"
+                        : "text-[color:var(--paper-ink-3)] hover:bg-[color:var(--paper-surface)] hover:text-[color:var(--paper-ink)]"
+                    }`}
+                    aria-pressed={active}
+                  >
+                    {mode.label}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{mode.description}</TooltipContent>
+              </Tooltip>
+            );
+          })}
+        </div>
       </div>
     );
   };
@@ -1755,129 +1760,129 @@ export function ExperimentTrialsTable({
               </div>
               <div className="min-w-0 flex-1">{renderLegendBlock()}</div>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5 text-[11.5px] text-[color:var(--paper-ink-3)]">
-              {!readOnly && (
-                <>
-                  <span>{selectedTasks.size} selected</span>
-                  <InlineBtn
-                    onClick={clearSelection}
-                    disabled={selectedTasks.size === 0}
-                  >
-                    Clear
-                  </InlineBtn>
-                  <span className="select-none text-[color:var(--paper-line)]">
-                    │
-                  </span>
-                  {canRerun && (
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11.5px] text-[color:var(--paper-ink-3)]">
+                {!readOnly && (
+                  <>
+                    <span>{selectedTasks.size} selected</span>
                     <InlineBtn
-                      onClick={handleRerunSelectedTasks}
-                      disabled={
-                        isRerunning || selectedRetryableTrials.length === 0
-                      }
+                      onClick={clearSelection}
+                      disabled={selectedTasks.size === 0}
                     >
-                      {isRerunning ? "Rerunning" : "Rerun trials"}
-                      <InlineCount>
-                        {selectedRetryableTrials.length}
-                      </InlineCount>
+                      Clear
                     </InlineBtn>
-                  )}
-                  {canRerun && (
-                    <InlineBtn
-                      onClick={handleCancelSelectedTasks}
-                      disabled={
-                        isCancellingSelected ||
-                        selectedCancellableTasks.length === 0
-                      }
-                    >
-                      {isCancellingSelected ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <OctagonX className="h-3 w-3" />
-                      )}
-                      {isCancellingSelected ? "Cancelling" : "Cancel"}
-                      <InlineCount>
-                        {selectedCancellableTasks.length}
-                      </InlineCount>
-                    </InlineBtn>
-                  )}
-                  <span className="select-none text-[color:var(--paper-line)]">
-                    │
-                  </span>
-                  {canRerun && (
-                    <InlineBtn
-                      onClick={handleRunAnalysisForSelectedTasks}
-                      disabled={
-                        isRunningAnalysis ||
-                        selectedAnalysisRunnableTasks.length === 0
-                      }
-                    >
-                      {isRunningAnalysis ? "Queueing" : "Run analysis"}
-                      <InlineCount>
-                        {selectedAnalysisRunnableTasks.length}
-                      </InlineCount>
-                    </InlineBtn>
-                  )}
-                  {canRerun && (
-                    <InlineBtn
-                      onClick={handleRunVerdictForSelectedTasks}
-                      disabled={
-                        isRunningVerdict ||
-                        selectedVerdictRunnableTasks.length === 0
-                      }
-                    >
-                      {isRunningVerdict ? "Queueing" : "Run verdict"}
-                      <InlineCount>
-                        {selectedVerdictRunnableTasks.length}
-                      </InlineCount>
-                    </InlineBtn>
-                  )}
-                  {canDeleteTasks && (
-                    <>
-                      <span className="select-none text-[color:var(--paper-line)]">
-                        │
-                      </span>
+                    <span className="select-none text-[color:var(--paper-line)]">
+                      │
+                    </span>
+                    {canRerun && (
                       <InlineBtn
-                        onClick={() => {
-                          setDeleteTargets(selectedTaskList);
-                          setDeleteError(null);
-                        }}
-                        disabled={isDeleting || selectedTaskList.length === 0}
-                        style={
-                          selectedTaskList.length > 0 && !isDeleting
-                            ? { color: "var(--paper-fail)" }
-                            : undefined
+                        onClick={handleRerunSelectedTasks}
+                        disabled={
+                          isRerunning || selectedRetryableTrials.length === 0
                         }
                       >
-                        <Trash2 className="h-3 w-3" />
-                        Delete
+                        {isRerunning ? "Rerunning" : "Rerun trials"}
+                        <InlineCount>
+                          {selectedRetryableTrials.length}
+                        </InlineCount>
                       </InlineBtn>
-                    </>
-                  )}
-                </>
-              )}
-              {cancelError && (
-                <span className="text-[10px] text-[color:var(--paper-fail)]">
-                  {cancelError}
-                </span>
-              )}
-              {rerunError && (
-                <span className="text-[10px] text-[color:var(--paper-fail)]">
-                  {rerunError}
-                </span>
-              )}
-              {analysisError && (
-                <span className="text-[10px] text-[color:var(--paper-fail)]">
-                  {analysisError}
-                </span>
-              )}
-              {verdictError && (
-                <span className="text-[10px] text-[color:var(--paper-fail)]">
-                  {verdictError}
-                </span>
-              )}
-              <div
-                className={`flex flex-wrap items-center gap-1.5 ${readOnly ? "" : "ml-auto"}`}
-              >
+                    )}
+                    {canRerun && (
+                      <InlineBtn
+                        onClick={handleCancelSelectedTasks}
+                        disabled={
+                          isCancellingSelected ||
+                          selectedCancellableTasks.length === 0
+                        }
+                      >
+                        {isCancellingSelected ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <OctagonX className="h-3 w-3" />
+                        )}
+                        {isCancellingSelected ? "Cancelling" : "Cancel"}
+                        <InlineCount>
+                          {selectedCancellableTasks.length}
+                        </InlineCount>
+                      </InlineBtn>
+                    )}
+                    <span className="select-none text-[color:var(--paper-line)]">
+                      │
+                    </span>
+                    {canRerun && (
+                      <InlineBtn
+                        onClick={handleRunAnalysisForSelectedTasks}
+                        disabled={
+                          isRunningAnalysis ||
+                          selectedAnalysisRunnableTasks.length === 0
+                        }
+                      >
+                        {isRunningAnalysis ? "Queueing" : "Run analysis"}
+                        <InlineCount>
+                          {selectedAnalysisRunnableTasks.length}
+                        </InlineCount>
+                      </InlineBtn>
+                    )}
+                    {canRerun && (
+                      <InlineBtn
+                        onClick={handleRunVerdictForSelectedTasks}
+                        disabled={
+                          isRunningVerdict ||
+                          selectedVerdictRunnableTasks.length === 0
+                        }
+                      >
+                        {isRunningVerdict ? "Queueing" : "Run verdict"}
+                        <InlineCount>
+                          {selectedVerdictRunnableTasks.length}
+                        </InlineCount>
+                      </InlineBtn>
+                    )}
+                    {canDeleteTasks && (
+                      <>
+                        <span className="select-none text-[color:var(--paper-line)]">
+                          │
+                        </span>
+                        <InlineBtn
+                          onClick={() => {
+                            setDeleteTargets(selectedTaskList);
+                            setDeleteError(null);
+                          }}
+                          disabled={isDeleting || selectedTaskList.length === 0}
+                          style={
+                            selectedTaskList.length > 0 && !isDeleting
+                              ? { color: "var(--paper-fail)" }
+                              : undefined
+                          }
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          Delete
+                        </InlineBtn>
+                      </>
+                    )}
+                  </>
+                )}
+                {cancelError && (
+                  <span className="text-[10px] text-[color:var(--paper-fail)]">
+                    {cancelError}
+                  </span>
+                )}
+                {rerunError && (
+                  <span className="text-[10px] text-[color:var(--paper-fail)]">
+                    {rerunError}
+                  </span>
+                )}
+                {analysisError && (
+                  <span className="text-[10px] text-[color:var(--paper-fail)]">
+                    {analysisError}
+                  </span>
+                )}
+                {verdictError && (
+                  <span className="text-[10px] text-[color:var(--paper-fail)]">
+                    {verdictError}
+                  </span>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {renderRowFilterControl()}
                 {renderAgentFilterMenu()}
                 <Tooltip>
