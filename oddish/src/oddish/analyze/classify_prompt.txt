@@ -50,6 +50,7 @@ This result is FINAL and has been verified by running the tests. Your job is to 
 **Classification constraints based on verified result:**
 - If result = 'pass' → classify as GOOD_SUCCESS or BAD_SUCCESS
 - If result = 'fail' → classify as GOOD_FAILURE, BAD_FAILURE, or HARNESS_ERROR
+{trial_agent_context}
 
 ## Where to Look — YOU Must Read Everything
 
