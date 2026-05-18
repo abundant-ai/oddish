@@ -26,6 +26,7 @@ from oddish.core.endpoints import (
     rerun_task_analysis_core,
     rerun_task_verdict_core,
 )
+from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.public_helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
@@ -511,6 +512,7 @@ async def delete_experiment(
             session, experiment_id=experiment_id, org_id=auth.org_id
         )
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
 
     return result
 

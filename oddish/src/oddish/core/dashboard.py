@@ -96,6 +96,23 @@ def _slice_set_cached(
     bucket[cache_key] = (data, time.time())
 
 
+def invalidate_dashboard_cache(*, org_id: str | None = None) -> None:
+    """Clear cached dashboard slices after writes that change visible rows."""
+    if org_id is None:
+        _dashboard_primary_cache.clear()
+        _dashboard_experiments_cache.clear()
+        return
+
+    prefixes = (
+        f"dashboard.primary:{org_id}:",
+        f"dashboard.experiments:{org_id}:",
+    )
+    for bucket in (_dashboard_primary_cache, _dashboard_experiments_cache):
+        for key in list(bucket):
+            if key.startswith(prefixes):
+                del bucket[key]
+
+
 # ---------------------------------------------------------------------------
 # Experiment aggregation
 # ---------------------------------------------------------------------------
