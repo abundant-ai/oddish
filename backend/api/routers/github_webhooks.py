@@ -99,6 +99,7 @@ async def refresh_experiment_pr_comment(
             .join(task_experiments, task_experiments.c.task_id == TaskModel.id)
             .where(
                 task_experiments.c.experiment_id == experiment_id,
+                task_experiments.c.deleted_at.is_(None),
                 TaskModel.org_id == auth.org_id,
             )
             .limit(1)

@@ -629,13 +629,16 @@ async def create_task(
 async def _link_task_to_experiment(
     session: AsyncSession, *, task_id: str, experiment_id: str
 ) -> None:
-    """Insert a ``task_experiments`` association row if missing."""
+    """Insert or restore a ``task_experiments`` association row."""
     from oddish.db import task_experiments
 
     await session.execute(
         pg_insert(task_experiments)
         .values(task_id=task_id, experiment_id=experiment_id)
-        .on_conflict_do_nothing(index_elements=["task_id", "experiment_id"])
+        .on_conflict_do_update(
+            index_elements=["task_id", "experiment_id"],
+            set_={"deleted_at": None},
+        )
     )
 
 

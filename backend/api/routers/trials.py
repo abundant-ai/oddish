@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.endpoints import (
     delete_trial_core,
     get_trial_by_index_core,
@@ -147,6 +148,7 @@ async def delete_trial(
     async with get_session() as session:
         result = await delete_trial_core(session, trial_id=trial_id, org_id=auth.org_id)
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
 
     s3_prefixes = result.get("s3_prefixes", []) or []
     s3_keys_deleted = 0
