@@ -66,7 +66,7 @@ const TaskFilesPanel = dynamic(
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading files..." />,
-  }
+  },
 );
 
 const ArtifactsViewer = dynamic(
@@ -75,18 +75,18 @@ const ArtifactsViewer = dynamic(
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading artifacts..." />,
-  }
+  },
 );
 
 const TrajectoryViewer = dynamic(
   () =>
     import("@/components/trajectory-viewer").then(
-      (mod) => mod.TrajectoryViewer
+      (mod) => mod.TrajectoryViewer,
     ),
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading trajectory..." />,
-  }
+  },
 );
 
 function DrawerPanelLoading({ label }: { label: string }) {
@@ -205,7 +205,7 @@ export function TrialDetailPanel({
 
   const validTabs = useMemo(
     () => new Set(["summary", "files", "trajectory", "artifacts"]),
-    []
+    [],
   );
 
   const [activeTab, setActiveTab] = useState(() => {
@@ -221,7 +221,7 @@ export function TrialDetailPanel({
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [filesTargetPath, setFilesTargetPath] = useState<string | null>(() =>
-    searchParams.get("file")
+    searchParams.get("file"),
   );
 
   const hydratedFromUrl = useRef(false);
@@ -315,7 +315,7 @@ export function TrialDetailPanel({
       onClose();
     } catch (err) {
       setDeleteError(
-        err instanceof Error ? err.message : "Failed to delete trial"
+        err instanceof Error ? err.message : "Failed to delete trial",
       );
     } finally {
       setDeleting(false);
@@ -332,13 +332,13 @@ export function TrialDetailPanel({
         `${apiBaseUrl}/trials/${trial.id}/analysis/retry`,
         {
           method: "POST",
-        }
+        },
       );
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue analysis"
+          data.detail || data.error || "Failed to queue analysis",
         );
       }
 
@@ -346,7 +346,7 @@ export function TrialDetailPanel({
       onClose();
     } catch (err) {
       setAnalysisError(
-        err instanceof Error ? err.message : "Failed to queue analysis"
+        err instanceof Error ? err.message : "Failed to queue analysis",
       );
     } finally {
       setAnalysisRunning(false);
@@ -387,7 +387,7 @@ export function TrialDetailPanel({
 
   const orderedList = useMemo(
     () => orderedTrials ?? task?.trials ?? [],
-    [orderedTrials, task?.trials]
+    [orderedTrials, task?.trials],
   );
   const resolvedIndex =
     typeof trialIndex === "number" && trialIndex >= 0
@@ -419,7 +419,7 @@ export function TrialDetailPanel({
       if (!nextTrial) return;
       onNavigate(nextTrial, nextIndex);
     },
-    [onNavigate, orderedList]
+    [onNavigate, orderedList],
   );
 
   useEffect(() => {
@@ -460,7 +460,7 @@ export function TrialDetailPanel({
   const trialStatus = getMatrixStatus(
     trial.status,
     trial.reward,
-    trial.error_message
+    trial.error_message,
   );
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
   const TrialStatusIcon = trialStatusConfig.icon;
@@ -478,13 +478,13 @@ export function TrialDetailPanel({
           },
         ];
   const currentGroupIndex = resolvedGroups.findIndex((group) =>
-    group.trials.some((groupTrial) => groupTrial.id === trial.id)
+    group.trials.some((groupTrial) => groupTrial.id === trial.id),
   );
   const currentGroup =
     currentGroupIndex >= 0 ? resolvedGroups[currentGroupIndex] : null;
   const currentGroupTrials = currentGroup?.trials ?? [];
   const currentGroupTrialIndex = currentGroupTrials.findIndex(
-    (groupTrial) => groupTrial.id === trial.id
+    (groupTrial) => groupTrial.id === trial.id,
   );
 
   const navigateToGroupTrial = (groupIndex: number) => {
@@ -566,7 +566,7 @@ export function TrialDetailPanel({
                   const groupStatus = getMatrixStatus(
                     groupTrial.status,
                     groupTrial.reward,
-                    groupTrial.error_message
+                    groupTrial.error_message,
                   );
                   const groupConfig = STATUS_CONFIG[groupStatus];
                   const isPartial = groupStatus === "partial";
@@ -590,7 +590,7 @@ export function TrialDetailPanel({
                           : "",
                         isActive
                           ? "ring-primary/60 ring-offset-background ring-2 ring-offset-1"
-                          : ""
+                          : "",
                       )}
                       style={getRewardStyle(groupTrial.reward)}
                       aria-label={`Trial ${index + 1} ${groupConfig.shortLabel}`}
@@ -623,7 +623,7 @@ export function TrialDetailPanel({
             <Card
               className={cn(
                 "min-w-[145px] border",
-                OUTCOME_CARD_TONE[trialStatus]
+                OUTCOME_CARD_TONE[trialStatus],
               )}
               style={getRewardStyle(trial.reward, "panel")}
             >
@@ -648,7 +648,7 @@ export function TrialDetailPanel({
                       (trialStatus === "pending" ||
                         trialStatus === "queued" ||
                         trialStatus === "running") &&
-                        "animate-spin"
+                        "animate-spin",
                     )}
                   />
                   <div className="min-w-0">
@@ -853,7 +853,7 @@ export function TrialDetailPanel({
                               ? "Analyzing..."
                               : trial.analysis?.classification?.replace(
                                   "_",
-                                  " "
+                                  " ",
                                 ) || "Analysis"}
                           </span>
                           {trial.analysis?.subtype && (
@@ -982,10 +982,7 @@ export function TrialDetailPanel({
             />
           </TabsContent>
 
-          <TabsContent
-            value="artifacts"
-            className="m-0 h-full overflow-auto p-0"
-          >
+          <TabsContent value="artifacts" className="m-0 h-full p-0">
             <ArtifactsViewer
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
             />
