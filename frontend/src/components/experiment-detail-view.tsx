@@ -254,6 +254,9 @@ function pickExperimentCreationMeta(tasks: Task[]): {
   author: string | null;
 } {
   if (tasks.length === 0) return { createdAt: null, author: null };
+  const experimentCreatedAt =
+    tasks.find((task) => task.experiment_created_at)?.experiment_created_at ??
+    null;
   let earliest: Task = tasks[0];
   for (const task of tasks) {
     if (
@@ -264,7 +267,7 @@ function pickExperimentCreationMeta(tasks: Task[]): {
     }
   }
   return {
-    createdAt: earliest.created_at,
+    createdAt: experimentCreatedAt ?? earliest.created_at,
     author: earliest.github_username || earliest.user || null,
   };
 }
