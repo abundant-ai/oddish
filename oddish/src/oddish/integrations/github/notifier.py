@@ -108,7 +108,10 @@ async def _get_experiment_tasks(
     result = await session.execute(
         select(TaskModel)
         .join(task_experiments, task_experiments.c.task_id == TaskModel.id)
-        .where(task_experiments.c.experiment_id == experiment_id)
+        .where(
+            task_experiments.c.experiment_id == experiment_id,
+            task_experiments.c.deleted_at.is_(None),
+        )
         .order_by(TaskModel.created_at)
     )
     return list(result.scalars().all())
@@ -134,7 +137,10 @@ async def _resolve_task_experiment(
     result = await session.execute(
         select(ExperimentModel)
         .join(task_experiments, task_experiments.c.experiment_id == ExperimentModel.id)
-        .where(task_experiments.c.task_id == task.id)
+        .where(
+            task_experiments.c.task_id == task.id,
+            task_experiments.c.deleted_at.is_(None),
+        )
         .order_by(task_experiments.c.created_at.asc())
         .limit(1)
     )

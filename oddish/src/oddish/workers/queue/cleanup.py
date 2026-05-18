@@ -508,7 +508,8 @@ async def cleanup_orphaned_queue_state(
                                         NULL::timestamptz AS trial_created_at
                                     FROM task_experiments te
                                     JOIN tasks t ON t.id = te.task_id
-                                    WHERE t.deleted_at IS NULL
+                                    WHERE te.deleted_at IS NULL
+                                      AND t.deleted_at IS NULL
                                       AND t.created_at >= NOW() - INTERVAL '30 minutes'
                                     UNION ALL
                                     SELECT

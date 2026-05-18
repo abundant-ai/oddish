@@ -155,7 +155,10 @@ async def _link_task_to_experiment(
     await session.execute(
         pg_insert(task_experiments)
         .values(task_id=task_id, experiment_id=experiment_id)
-        .on_conflict_do_nothing(index_elements=["task_id", "experiment_id"])
+        .on_conflict_do_update(
+            index_elements=["task_id", "experiment_id"],
+            set_={"deleted_at": None},
+        )
     )
 
 

@@ -4,7 +4,6 @@ from fastapi import HTTPException
 from sqlalchemy import (
     and_,
     case,
-    delete,
     func,
     nulls_last,
     or_,
@@ -1480,10 +1479,8 @@ async def delete_task_core(
 
     When ``experiment_id`` is given, only trials whose ``experiment_id``
     matches are tombstoned and the ``(task_id, experiment_id)`` join row
-    is hard-deleted (join rows don't carry a tombstone column and reads
-    that need to ignore "ghost" links can rely on the soft-delete filter
-    on the experiment / task sides). The task itself is only tombstoned
-    if no live trials and no other experiment links remain.
+    is tombstoned. The task itself is only tombstoned if no live trials
+    and no other live experiment links remain.
     """
     task_query = select(
         TaskModel.id,
@@ -1565,6 +1562,7 @@ async def delete_task_core(
         .where(
             task_experiments.c.task_id == resolved_task_id,
             task_experiments.c.experiment_id == experiment_id,
+            task_experiments.c.deleted_at.is_(None),
         )
     )
     if not link_exists and not scoped_trial_ids:
@@ -1588,14 +1586,15 @@ async def delete_task_core(
             .execution_options(synchronize_session=False)
         )
 
-    # The join row has no tombstone column; remove it so the experiment
-    # stops listing this task. If the task is later restored, callers
-    # re-link explicitly.
+    # Tombstone the join row so live views stop listing this membership
+    # without losing restore/audit history.
     await session.execute(
-        delete(task_experiments).where(
+        update(task_experiments)
+        .where(
             task_experiments.c.task_id == resolved_task_id,
             task_experiments.c.experiment_id == experiment_id,
         )
+        .values(deleted_at=utcnow())
     )
 
     # If the task has no remaining live trials and no other experiment
@@ -1613,7 +1612,10 @@ async def delete_task_core(
         await session.scalar(
             select(func.count())
             .select_from(task_experiments)
-            .where(task_experiments.c.task_id == resolved_task_id)
+            .where(
+                task_experiments.c.task_id == resolved_task_id,
+                task_experiments.c.deleted_at.is_(None),
+            )
         )
         or 0
     )
@@ -1720,11 +1722,8 @@ async def delete_experiment_core(
     Like :func:`delete_task_core` this is tombstone-based: rows get
     ``deleted_at`` stamped instead of being physically removed, and S3
     artifacts are preserved. ``task_experiments`` link rows that pointed
-    at this experiment are hard-deleted so list views immediately stop
-    surfacing the membership; the experiment row itself is the only
-    canonical "this experiment used to contain this task" pointer once
-    it's tombstoned, and a restore flow re-creates the join rows
-    explicitly.
+    at this experiment are tombstoned so list views immediately stop
+    surfacing the membership while keeping enough history for restore.
     """
     from oddish.db import task_experiments
 
@@ -1749,6 +1748,7 @@ async def delete_experiment_core(
                 task_experiments.c.task_id == TaskModel.id,
             )
             .where(task_experiments.c.experiment_id == experiment_id)
+            .where(task_experiments.c.deleted_at.is_(None))
         )
     ).all()
     linked_task_ids = [row[0] for row in linked_task_rows]
@@ -1792,13 +1792,15 @@ async def delete_experiment_core(
     else:
         deleted_trials = 0
 
-    # Drop the experiment->task link rows so list views stop pulling
-    # this experiment into the task's membership. The join table has no
-    # tombstone column.
+    # Tombstone experiment->task link rows so list views stop pulling
+    # this experiment into the task's membership.
     await session.execute(
-        delete(task_experiments).where(
-            task_experiments.c.experiment_id == experiment_id
+        update(task_experiments)
+        .where(
+            task_experiments.c.experiment_id == experiment_id,
+            task_experiments.c.deleted_at.is_(None),
         )
+        .values(deleted_at=utcnow())
     )
 
     # Tombstone the experiment row.
@@ -1829,7 +1831,10 @@ async def delete_experiment_core(
             await session.scalar(
                 select(func.count())
                 .select_from(task_experiments)
-                .where(task_experiments.c.task_id == tid)
+                .where(
+                    task_experiments.c.task_id == tid,
+                    task_experiments.c.deleted_at.is_(None),
+                )
             )
             or 0
         )

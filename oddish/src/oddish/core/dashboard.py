@@ -191,6 +191,7 @@ def _build_aggregates_for_experiment_ids(
             )
         )
         .where(task_experiments.c.experiment_id.in_(experiment_ids))
+        .where(task_experiments.c.deleted_at.is_(None))
     )
     if org_id is not None:
         task_agg_query = task_agg_query.where(TaskModel.org_id == org_id)
@@ -353,6 +354,7 @@ async def load_dashboard_experiments(
             )
         )
         .where(task_experiments.c.experiment_id.in_(experiment_ids))
+        .where(task_experiments.c.deleted_at.is_(None))
     )
     if org_id is not None:
         latest_task_query = latest_task_query.where(TaskModel.org_id == org_id)

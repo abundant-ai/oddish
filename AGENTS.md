@@ -179,6 +179,10 @@ Behavior:
   and cancel any matching `worker_jobs` rows. They return an empty
   `s3_prefixes` list so caller best-effort S3 cleanup is a no-op --
   S3 data is preserved for restore.
+- The `task_experiments` join table also carries `deleted_at` so experiment
+  membership is preserved for audit/restore. Because it is a SQLAlchemy
+  `Table`, not a registered model, live membership queries and relationship
+  joins must explicitly include `task_experiments.deleted_at IS NULL`.
 - Raw `text()` SQL doesn't run through the ORM listener; the dispatcher
   claim path (`worker_job_single_job.py`), cleanup sweep, and admin
   diagnostics each add `deleted_at IS NULL` inline.

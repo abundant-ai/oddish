@@ -5,6 +5,7 @@ from enum import Enum
 from uuid import uuid4
 
 from sqlalchemy import (
+    and_,
     Boolean,
     Column,
     DateTime,
@@ -210,6 +211,7 @@ task_experiments = Table(
         default=utcnow,
         nullable=False,
     ),
+    Column("deleted_at", DateTime(timezone=True), nullable=True),
     Index("idx_task_experiments_experiment_id", "experiment_id"),
     Index("idx_task_experiments_experiment_task", "experiment_id", "task_id"),
 )
@@ -268,6 +270,11 @@ class ExperimentModel(TimestampedMixin, Base):
     tasks: Mapped[list["TaskModel"]] = relationship(  # type: ignore[assignment]
         "TaskModel",
         secondary=task_experiments,
+        primaryjoin=lambda: and_(
+            ExperimentModel.id == task_experiments.c.experiment_id,
+            task_experiments.c.deleted_at.is_(None),
+        ),
+        secondaryjoin=lambda: TaskModel.id == task_experiments.c.task_id,
         back_populates="experiments",
         passive_deletes=True,
     )
@@ -364,6 +371,11 @@ class TaskModel(TimestampedMixin, Base):
     experiments: Mapped[list["ExperimentModel"]] = relationship(  # type: ignore[assignment]
         "ExperimentModel",
         secondary=task_experiments,
+        primaryjoin=lambda: and_(
+            TaskModel.id == task_experiments.c.task_id,
+            task_experiments.c.deleted_at.is_(None),
+        ),
+        secondaryjoin=lambda: ExperimentModel.id == task_experiments.c.experiment_id,
         back_populates="tasks",
         lazy="selectin",
     )

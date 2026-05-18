@@ -16,6 +16,7 @@ from cloud_policy import (
 from oddish.core.endpoints import (
     browse_tasks_core,
     create_task_sweep_core,
+    delete_experiment_core,
     get_task_detail_core,
     get_task_for_org_core,
     get_task_status_core,
@@ -491,6 +492,27 @@ async def update_experiment(
         await session.commit()
 
         return ExperimentUpdateResponse(id=experiment.id, name=experiment.name)
+
+
+@router.delete("/experiments/{experiment_id}")
+async def delete_experiment(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> dict:
+    """Soft-delete an experiment and its experiment-scoped data.
+
+    This tombstones the experiment plus its scoped trials and any tasks
+    orphaned by removing the experiment membership. Artifacts remain in
+    storage; the core path returns an empty ``s3_prefixes`` list so the
+    API layer performs no hard-deletion follow-up.
+    """
+    async with get_session() as session:
+        result = await delete_experiment_core(
+            session, experiment_id=experiment_id, org_id=auth.org_id
+        )
+        await session.commit()
+
+    return result
 
 
 @router.post(
