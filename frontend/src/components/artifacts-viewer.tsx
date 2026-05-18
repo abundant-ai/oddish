@@ -20,6 +20,33 @@ interface ArtifactFile {
   url?: string;
 }
 
+// Harbor writes artifacts inside the per-trial subdirectory of the job dir,
+// so the real S3 layout served by /trials/{id}/files is:
+//   <trial_name>/artifacts/...                  (single-step)
+//   <trial_name>/steps/<step_name>/artifacts/...  (multi-step)
+// Treat any file with an `artifacts` segment anywhere in its path as an
+// artifact, not just paths that literally begin with "artifacts/".
+function isArtifactPath(path: string): boolean {
+  return path.split("/").includes("artifacts");
+}
+
+// Drop everything up to and including the last `artifacts/` segment so the
+// tab label keeps any nested structure (e.g. `screenshots/foo.png`) without
+// leaking the Harbor trial-name wrapper dir.
+function artifactRelativePath(path: string): string {
+  const segments = path.split("/");
+  const lastIdx = segments.lastIndexOf("artifacts");
+  if (lastIdx === -1) return path;
+  return segments.slice(lastIdx + 1).join("/");
+}
+
+// Surface the step name for multi-step trials so artifacts collected per
+// step don't all collapse to the same basename in the tab list.
+function artifactStepName(path: string): string | null {
+  const match = path.match(/(?:^|\/)steps\/([^/]+)\/artifacts\//);
+  return match ? match[1] : null;
+}
+
 function ArtifactContent({
   proxyUrl,
   presignedUrl,
@@ -74,7 +101,7 @@ function ArtifactContent({
       } catch (err) {
         if (!cancelled) {
           setError(
-            err instanceof Error ? err.message : "Failed to load artifact"
+            err instanceof Error ? err.message : "Failed to load artifact",
           );
           setContent("");
         }
@@ -146,7 +173,7 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
   }
 
   const artifactFiles = (data?.files ?? []).filter((f) =>
-    f.path.startsWith("artifacts/")
+    isArtifactPath(f.path),
   );
 
   if (artifactFiles.length === 0) {
@@ -165,15 +192,17 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
   const displayFiles = artifactFiles.slice(0, MAX_ARTIFACTS);
 
   const tabs = displayFiles.map((file) => {
-    const relativePath = file.path.replace(/^artifacts\//, "");
+    const relativePath = artifactRelativePath(file.path);
     const fileName = relativePath.split("/").pop() ?? relativePath;
+    const stepName = artifactStepName(file.path);
+    const label = stepName ? `${stepName} / ${relativePath}` : relativePath;
     // Encode the path segment-by-segment so `/` separators in the path are
     // preserved (encodeURIComponent would turn them into %2F, which the
     // backend file route doesn't match).
     const encodedPath = file.path.split("/").map(encodeURIComponent).join("/");
     return {
       id: file.path,
-      label: fileName,
+      label,
       fileName,
       fileSize: file.size,
       proxyUrl: `${filesUrl}/${encodedPath}`,
