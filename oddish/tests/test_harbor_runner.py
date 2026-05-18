@@ -522,3 +522,227 @@ def test_cleanup_trial_wrapper_dirs_skips_missing_base(monkeypatch, tmp_path):
 
     # Should not raise even though the base directory never existed.
     trial_handler._cleanup_trial_wrapper_dirs("trial-missing")
+
+
+def _make_retry_decision_trial(*, attempts: int = 1, max_attempts: int = 6):
+    return SimpleNamespace(
+        task_id="task-retry-gate",
+        status=trial_handler.TrialStatus.RUNNING,
+        attempts=attempts,
+        max_attempts=max_attempts,
+        error_message=None,
+        harbor_stage="agent",
+        reward=None,
+        harbor_result_path=None,
+        trial_s3_key=None,
+        input_tokens=None,
+        cache_tokens=None,
+        output_tokens=None,
+        cost_usd=None,
+        phase_timing=None,
+        has_trajectory=False,
+        current_worker_id="worker-1",
+        current_queue_slot=0,
+        heartbeat_at=None,
+        finished_at=None,
+    )
+
+
+def _install_retry_decision_session_fakes(monkeypatch, trial):
+    class _Session:
+        async def get(self, model, obj_id):
+            return None
+
+    @asynccontextmanager
+    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+        yield _Session(), trial
+
+    async def _fake_maybe_start_analysis_stage(session, trial_id: str) -> bool:
+        return False
+
+    async def _fake_enqueue_analysis_worker_job(*args, **kwargs) -> None:
+        return None
+
+    import oddish.queue as queue_module
+
+    monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
+    monkeypatch.setattr(
+        queue_module, "maybe_start_analysis_stage", _fake_maybe_start_analysis_stage
+    )
+    monkeypatch.setattr(
+        queue_module, "enqueue_analysis_worker_job", _fake_enqueue_analysis_worker_job
+    )
+
+
+def test_store_trial_results_skips_retry_for_non_retryable_exception(monkeypatch):
+    """A dying-sandbox AddTestsDirError must NOT re-queue the trial: the
+    sandbox is gone and a fresh attempt would just hit the same wall after
+    burning another full agent timeout. Source of truth for the
+    "non-retryable" set is harbor.models.job.config.RetryConfig."""
+
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="AddTestsDirError: Failed to add tests directory to environment.",
+        exit_code=-1,
+        duration_sec=120.0,
+        job_result_path=None,
+        job_dir=None,
+        exception_type="AddTestsDirError",
+    )
+
+    asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.finished_at is not None
+    # attempts must NOT have been bumped — this is a permanent failure on
+    # the first attempt.
+    assert trial.attempts == 1
+
+
+def test_store_trial_results_still_retries_unknown_exception(monkeypatch):
+    """Exception types we don't explicitly mark as terminal still go through
+    the existing attempts < max_attempts retry path."""
+
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="ConnectionResetError: connection reset by peer",
+        exit_code=-1,
+        duration_sec=5.0,
+        job_result_path=None,
+        job_dir=None,
+        exception_type="ConnectionResetError",
+    )
+
+    asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.RETRYING
+    assert trial.finished_at is None
+
+
+def test_store_trial_results_retries_when_exception_type_is_missing(monkeypatch):
+    """Pre-fix HarborOutcome rows have exception_type=None; retry behavior
+    for those must match the previous default (re-queue while attempts
+    remain) — we only short-circuit when we positively identify the
+    failure as terminal."""
+
+    trial = _make_retry_decision_trial(attempts=1, max_attempts=6)
+    _install_retry_decision_session_fakes(monkeypatch, trial)
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=None,
+        error="some generic harness error with no exception_type",
+        exit_code=-1,
+        duration_sec=5.0,
+        job_result_path=None,
+        job_dir=None,
+        exception_type=None,
+    )
+
+    asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.RETRYING
+
+
+def test_non_retryable_set_includes_known_terminal_failures():
+    """Tripwire: if Harbor's RetryConfig defaults change, we want the test
+    to fail loudly so we can decide whether to track the new entry."""
+
+    expected = {
+        "AddTestsDirError",
+        "AgentTimeoutError",
+        "VerifierTimeoutError",
+        "RewardFileNotFoundError",
+        "RewardFileEmptyError",
+        "VerifierOutputParseError",
+    }
+    assert expected <= trial_handler._NON_RETRYABLE_EXCEPTION_TYPES
+
+
+def test_extract_outcome_from_job_result_carries_exception_type(monkeypatch):
+    """``HarborOutcome.exception_type`` must be sourced from
+    ``TrialResult.exception_info.exception_type`` so the retry gate can
+    consult it."""
+
+    trial_result = SimpleNamespace(
+        exception_info=SimpleNamespace(
+            exception_type="AddTestsDirError",
+            exception_message="Failed to add tests directory to environment.",
+        ),
+        agent_result=None,
+        verifier_result=None,
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+    )
+    job_result = SimpleNamespace(
+        trial_results=[trial_result],
+        stats=SimpleNamespace(evals={}),
+    )
+
+    outcome = harbor_runner._extract_outcome_from_job_result(
+        job_result=job_result,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp"),
+        duration_sec=1.0,
+    )
+
+    assert outcome.exception_type == "AddTestsDirError"
+    assert outcome.error and "Failed to add tests directory" in outcome.error
+
+
+def test_extract_outcome_from_job_result_exception_type_none_when_no_exc():
+    """A successful trial (no exception_info) must leave exception_type as
+    None so we don't accidentally surface a placeholder string into retry
+    logic."""
+
+    trial_result = SimpleNamespace(
+        exception_info=None,
+        agent_result=None,
+        verifier_result=SimpleNamespace(rewards={"reward": 1.0}),
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+    )
+    job_result = SimpleNamespace(
+        trial_results=[trial_result],
+        stats=SimpleNamespace(evals={}),
+    )
+
+    outcome = harbor_runner._extract_outcome_from_job_result(
+        job_result=job_result,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp"),
+        duration_sec=1.0,
+    )
+
+    assert outcome.exception_type is None
+    assert outcome.reward == 1.0

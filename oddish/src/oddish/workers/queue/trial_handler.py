@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 
 from harbor.models.environment_type import EnvironmentType
+from harbor.models.job.config import RetryConfig
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
 
@@ -39,7 +40,7 @@ TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
 
 def _extract_trial_index(trial_id: str, task_id: str) -> int:
     """Extract the 0-based trial index from a trial ID like '{task_id}-{index}'."""
-    suffix = trial_id[len(task_id):]  # e.g., "-0", "-1", "-2"
+    suffix = trial_id[len(task_id) :]  # e.g., "-0", "-1", "-2"
     if suffix.startswith("-") and suffix[1:].isdigit():
         return int(suffix[1:])
     return 0
@@ -76,6 +77,24 @@ def _is_agent_timeout_error_message(error: str | None) -> bool:
     if not error:
         return False
     return "AgentTimeoutError" in error or "Agent execution timed out" in error
+
+
+# Source of truth for "the trial finished with an error that retrying in a
+# fresh sandbox cannot fix" lives in Harbor's RetryConfig. We resolve the
+# default exclude set at import time and treat any HarborOutcome whose
+# exception_type lands in here as terminal — without this, a dying-sandbox
+# AddTestsDirError on a 10h ruby-rust-port trial gets re-queued up to
+# ``trial.max_attempts`` times against fresh sandboxes that hit the same
+# failure mode for the same upstream reason.
+_NON_RETRYABLE_EXCEPTION_TYPES: frozenset[str] = frozenset(
+    RetryConfig.model_fields["exclude_exceptions"].default_factory() or set()
+)
+
+
+def _is_non_retryable_outcome(outcome: HarborOutcome | None) -> bool:
+    if outcome is None or outcome.exception_type is None:
+        return False
+    return outcome.exception_type in _NON_RETRYABLE_EXCEPTION_TYPES
 
 
 def _verifier_ran_from_job_result(job_result_path: str | None) -> bool:
@@ -172,8 +191,7 @@ def _cleanup_trial_wrapper_dirs(trial_id: str) -> None:
                 )
         if removed:
             console.print(
-                f"[dim]Swept {len(removed)} Harbor wrapper dir(s) for "
-                f"{trial_id}[/dim]"
+                f"[dim]Swept {len(removed)} Harbor wrapper dir(s) for {trial_id}[/dim]"
             )
     except Exception as exc:
         console.print(
@@ -499,6 +517,15 @@ async def _store_trial_results(
                     trial.finished_at = utcnow()
                     console.print(
                         f"[red]Trial {trial_id} FAILED (Modal image build)[/red]"
+                    )
+                elif _is_non_retryable_outcome(outcome):
+                    # Re-queueing into a fresh sandbox cannot recover from this
+                    # error class (see ``_NON_RETRYABLE_EXCEPTION_TYPES``).
+                    trial.status = TrialStatus.FAILED
+                    trial.finished_at = utcnow()
+                    console.print(
+                        f"[red]Trial {trial_id} FAILED ({outcome.exception_type}; "
+                        "non-retryable)[/red]"
                     )
                 elif trial.attempts < trial.max_attempts:
                     trial.status = TrialStatus.RETRYING
@@ -866,7 +893,9 @@ async def run_trial_job(
                         task_tags=prepared_trial.task_tags,
                     )
                     if sauron_prefix:
-                        console.print(f"[dim]Mirrored to sauron S3: {sauron_prefix}[/dim]")
+                        console.print(
+                            f"[dim]Mirrored to sauron S3: {sauron_prefix}[/dim]"
+                        )
             except Exception as e:
                 console.print(f"[yellow]Sauron mirror failed (non-fatal): {e}[/yellow]")
 

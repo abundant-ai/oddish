@@ -98,6 +98,17 @@ class HarborOutcome:
     # Whether an ATIF trajectory file exists
     has_trajectory: bool = False
 
+    # The Python exception class name (e.g. "AddTestsDirError",
+    # "AgentTimeoutError") that ended this trial, sourced from
+    # ``TrialResult.exception_info.exception_type`` when Harbor produced one,
+    # or ``type(exc).__name__`` when ``run_harbor_trial_async`` itself caught
+    # an exception. Used by ``trial_handler._store_trial_results`` to skip
+    # trial-level retries on outcomes Harbor's own RetryConfig already marks
+    # as non-retryable (e.g. AddTestsDirError on a dying sandbox); without
+    # this, oddish re-queues those trials into fresh sandboxes for hours
+    # before exhausting ``max_attempts``.
+    exception_type: str | None = None
+
 
 def _extract_timing_info(trial_result: Any) -> dict[str, Any] | None:
     """Extract per-phase timing from a TrialResult's TimingInfo fields."""
@@ -342,8 +353,7 @@ def log_local_storage_snapshot(path: str | Path) -> None:
         )
     except Exception as exc:
         print(
-            f"[oddish] storage snapshot at {path} failed: "
-            f"{type(exc).__name__}: {exc}",
+            f"[oddish] storage snapshot at {path} failed: {type(exc).__name__}: {exc}",
             flush=True,
         )
 
@@ -379,14 +389,18 @@ def _extract_outcome_from_job_result(
     duration_sec: float,
 ) -> HarborOutcome:
     """Extract reward, error, token usage, timing, and trajectory from Harbor's JobResult."""
-    # Extract error from trial results
+    # Extract error and exception type from trial results
     error: str | None = None
+    exception_type: str | None = None
     for trial_result in job_result.trial_results:
         if trial_result.exception_info:
             exc = trial_result.exception_info
             msg = exc.exception_message or exc.exception_type
             if msg:
                 error = str(msg)
+            if exc.exception_type:
+                exception_type = str(exc.exception_type)
+            if error or exception_type:
                 break
 
     # Extract token usage & cost from the first trial's AgentContext
@@ -436,6 +450,7 @@ def _extract_outcome_from_job_result(
             cost_usd=cost_usd,
             phase_timing=phase_timing,
             has_trajectory=has_trajectory,
+            exception_type=exception_type,
         )
 
     # Method 1: Check reward_stats in job stats.
@@ -614,6 +629,7 @@ async def run_harbor_trial_async(
             duration_sec=0.0,
             job_result_path=None,
             job_dir=None,
+            exception_type="LocalStoragePreflightError",
         )
 
     # Create unique job directory
@@ -710,6 +726,7 @@ async def run_harbor_trial_async(
                 duration_sec=duration,
                 job_result_path=None,
                 job_dir=job_dir,
+                exception_type="JobResultMissingError",
             )
 
         # Extract reward/error directly from JobResult object (no file parsing needed)
@@ -747,6 +764,7 @@ async def run_harbor_trial_async(
             duration_sec=duration,
             job_result_path=debug_result_path,
             job_dir=actual_job_dir,
+            exception_type="CancelledError",
         )
     except Exception as e:
         duration = time.time() - start
@@ -766,6 +784,7 @@ async def run_harbor_trial_async(
             duration_sec=duration,
             job_result_path=debug_result_path,
             job_dir=actual_job_dir,
+            exception_type=type(e).__name__,
         )
     finally:
         if task_tmpdir is not None:
