@@ -412,74 +412,88 @@ def select_keep_and_prune(validated: list[ValidatedTrial]) -> tuple[list[Validat
 # -- Upload ------------------------------------------------------------------
 
 
-async def copy_object(src_s3, dest_s3, src_key: str, dest_key: str, *, override_body: bytes | None = None) -> None:
+async def copy_object(src_s3, dest_s3, src_key: str, dest_key: str, *, override_body: bytes | None = None, skip_existing_dest_keys: set[str] | None = None) -> int:
+    if skip_existing_dest_keys is not None and dest_key in skip_existing_dest_keys:
+        return 0
     if override_body is not None:
         await dest_s3.put_object(Bucket=DEST_BUCKET, Key=dest_key, Body=override_body)
-        return
+        return 1
     r = await src_s3.get_object(Bucket=SRC_BUCKET, Key=src_key)
     async with r["Body"] as body:
         data = await body.read()
     await dest_s3.put_object(Bucket=DEST_BUCKET, Key=dest_key, Body=data)
+    return 1
 
 
-async def upload_trial(src_s3, dest_s3, v: ValidatedTrial, task_meta: dict[str, str], dest_trial_prefix: str) -> int:
+async def upload_trial(src_s3, dest_s3, v: ValidatedTrial, task_meta: dict[str, str], dest_trial_prefix: str, *, existing_dest_keys: set[str] | None = None, file_concurrency: int = 8) -> int:
     """Upload one trial: 5 root files + canonical inner dir.
 
-    Returns number of objects uploaded.
+    Files already present in *existing_dest_keys* are skipped, making
+    re-runs cheap. Object copies for one trial run with bounded
+    concurrency.
     """
-    n_uploaded = 0
     canonical_name = v.canonical.inner_name
     inner_prefix_rel = f"{canonical_name}/"
 
-    # Load existing root config.json and result.json so we can patch in
-    # task_name/task_hash/task_version_id and re-upload.
+    # Patch root config.json + result.json with task_name/task_hash/task_version_id.
     root_config_key = f"{v.src_prefix}config.json"
     root_result_key = f"{v.src_prefix}result.json"
     root_config = await get_json(src_s3, root_config_key) or {}
     root_result = await get_json(src_s3, root_result_key) or {}
-    root_config["task_name"] = task_meta["task_name"]
-    root_config["task_hash"] = task_meta["task_hash"]
-    root_config["task_version_id"] = task_meta["task_version_id"]
-    root_result["task_name"] = task_meta["task_name"]
-    root_result["task_hash"] = task_meta["task_hash"]
-    root_result["task_version_id"] = task_meta["task_version_id"]
+    for d in (root_config, root_result):
+        d["task_name"] = task_meta["task_name"]
+        d["task_hash"] = task_meta["task_hash"]
+        d["task_version_id"] = task_meta["task_version_id"]
 
-    await dest_s3.put_object(
-        Bucket=DEST_BUCKET,
-        Key=f"{dest_trial_prefix}config.json",
-        Body=json.dumps(root_config, indent=4).encode("utf-8"),
-        ContentType="application/json",
-    )
-    n_uploaded += 1
-    await dest_s3.put_object(
-        Bucket=DEST_BUCKET,
-        Key=f"{dest_trial_prefix}result.json",
-        Body=json.dumps(root_result, indent=4).encode("utf-8"),
-        ContentType="application/json",
-    )
-    n_uploaded += 1
+    file_sem = asyncio.Semaphore(file_concurrency)
+    tasks: list[asyncio.Task[int]] = []
 
-    # Copy other required root files verbatim (job.log, lock.json,
-    # modal-output.log) -- plus any other files that live at the trial
-    # root directly (defensive; usually nothing else).
+    async def _put_body(dest_key: str, body: bytes, content_type: str = "application/json") -> int:
+        if existing_dest_keys is not None and dest_key in existing_dest_keys:
+            return 0
+        async with file_sem:
+            await dest_s3.put_object(Bucket=DEST_BUCKET, Key=dest_key, Body=body, ContentType=content_type)
+            return 1
+
+    async def _copy(src_key: str, dest_key: str) -> int:
+        if existing_dest_keys is not None and dest_key in existing_dest_keys:
+            return 0
+        async with file_sem:
+            r = await src_s3.get_object(Bucket=SRC_BUCKET, Key=src_key)
+            async with r["Body"] as body:
+                data = await body.read()
+            await dest_s3.put_object(Bucket=DEST_BUCKET, Key=dest_key, Body=data)
+            return 1
+
+    tasks.append(asyncio.create_task(_put_body(f"{dest_trial_prefix}config.json", json.dumps(root_config, indent=4).encode("utf-8"))))
+    tasks.append(asyncio.create_task(_put_body(f"{dest_trial_prefix}result.json", json.dumps(root_result, indent=4).encode("utf-8"))))
+
+    # Copy other root files (job.log, lock.json, modal-output.log, ...).
     for k in v.all_keys:
         rel = k["rel"]
-        if "/" in rel:
+        if "/" in rel or rel in ("config.json", "result.json"):
             continue
-        if rel in ("config.json", "result.json"):
-            continue
-        await copy_object(src_s3, dest_s3, k["key"], f"{dest_trial_prefix}{rel}")
-        n_uploaded += 1
+        tasks.append(asyncio.create_task(_copy(k["key"], f"{dest_trial_prefix}{rel}")))
 
     # Copy canonical inner dir.
     for k in v.all_keys:
         rel = k["rel"]
         if not rel.startswith(inner_prefix_rel):
             continue
-        await copy_object(src_s3, dest_s3, k["key"], f"{dest_trial_prefix}{rel}")
-        n_uploaded += 1
+        tasks.append(asyncio.create_task(_copy(k["key"], f"{dest_trial_prefix}{rel}")))
 
-    return n_uploaded
+    counts = await asyncio.gather(*tasks)
+    return sum(counts)
+
+
+async def list_existing_dest_keys(dest_s3, prefix: str) -> set[str]:
+    """Best-effort list of every object key already present under prefix."""
+    keys: set[str] = set()
+    paginator = dest_s3.get_paginator("list_objects_v2")
+    async for page in paginator.paginate(Bucket=DEST_BUCKET, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            keys.add(obj["Key"])
+    return keys
 
 
 # -- Manifest -----------------------------------------------------------------
@@ -600,34 +614,62 @@ async def main() -> None:
             if dry_run:
                 continue
 
-            # Upload kept trials
-            trials_section: dict[str, dict[str, Any]] = {}
-            for v in keep:
-                dest_dir_name = v.row.id  # already <task_name>-<task_hash>-<n>
-                dest_prefix = f"{task_name}/{dest_dir_name}/"
-                print(f"  -> uploading {dest_prefix} ({v.total_bytes/1e6:.2f} MB)")
-                n_uploaded = await upload_trial(src_s3, dest_s3, v, meta, dest_prefix)
-                print(f"     {n_uploaded} objects")
-                trials_section[dest_dir_name] = build_manifest_entry(v, dest_prefix, meta)
+            # Snapshot existing objects under task prefix for idempotency.
+            print(f"  scanning existing dest objects under {task_name}/ ...", flush=True)
+            existing_dest_keys = await list_existing_dest_keys(dest_s3, f"{task_name}/")
+            print(f"    {len(existing_dest_keys)} keys already present (will be skipped)", flush=True)
 
-            # Archive pruned trials under trash
-            for v in pruned + [e for e in excluded if e.canonical is not None and not (e.excluded and e.excluded.startswith("duplicate"))]:
-                # Only archive over-cap prunes (with full data) and BAD_SUCCESS exclusions
-                # to be polite. Skip data-incomplete excludes.
-                if v not in pruned and v.canonical is None:
-                    continue
-                if v not in pruned and (v.excluded or "") not in ("BAD_SUCCESS (reward-hacked)",):
-                    continue
+            # Upload kept trials with bounded trial-level concurrency.
+            trials_section: dict[str, dict[str, Any]] = {}
+            trial_sem = asyncio.Semaphore(6)
+
+            async def _upload_one(v: ValidatedTrial) -> tuple[str, dict[str, Any], int]:
                 dest_dir_name = v.row.id
-                reason = "over-cap" if v in pruned else (v.excluded or "excluded").lower().replace(" ", "-")
-                dest_prefix = f"trash/{task_name}/{run_ts}/{reason}/{dest_dir_name}/"
-                print(f"  -> archiving (trash) {dest_prefix}")
-                await upload_trial(src_s3, dest_s3, v, meta, dest_prefix)
+                dest_prefix = f"{task_name}/{dest_dir_name}/"
+                async with trial_sem:
+                    print(f"  -> {dest_prefix} ({v.total_bytes/1e6:.2f} MB)", flush=True)
+                    n_uploaded = await upload_trial(
+                        src_s3, dest_s3, v, meta, dest_prefix,
+                        existing_dest_keys=existing_dest_keys,
+                        file_concurrency=12,
+                    )
+                    print(f"     {dest_prefix} done ({n_uploaded} new objects)", flush=True)
+                return dest_dir_name, build_manifest_entry(v, dest_prefix, meta), n_uploaded
+
+            upload_results = await asyncio.gather(*(_upload_one(v) for v in keep))
+            for dest_dir_name, entry, _ in upload_results:
+                trials_section[dest_dir_name] = entry
+
+            # Archive pruned (over-cap) trials + BAD_SUCCESS exclusions
+            # under trash with a timestamped subprefix.
+            archive_list: list[tuple[ValidatedTrial, str]] = []
+            for v in pruned:
+                archive_list.append((v, "over-cap"))
+            for v in excluded:
+                if v.canonical is None:
+                    continue
+                if (v.excluded or "") == "BAD_SUCCESS (reward-hacked)":
+                    archive_list.append((v, "bad-success-reward-hacked"))
+
+            trash_root = f"trash/{task_name}/{run_ts}/"
+            print(f"  scanning existing dest objects under {trash_root} ...", flush=True)
+            existing_trash_keys = await list_existing_dest_keys(dest_s3, trash_root)
+
+            async def _archive_one(v: ValidatedTrial, reason: str) -> int:
+                dest_prefix = f"{trash_root}{reason}/{v.row.id}/"
+                async with trial_sem:
+                    print(f"  -> trash {dest_prefix}", flush=True)
+                    return await upload_trial(
+                        src_s3, dest_s3, v, meta, dest_prefix,
+                        existing_dest_keys=existing_trash_keys,
+                        file_concurrency=12,
+                    )
+
+            if archive_list:
+                await asyncio.gather(*(_archive_one(v, r) for v, r in archive_list))
 
             # Write README under the trash run prefix (if anything was archived)
-            archived = pruned + [e for e in excluded if (e.canonical is not None and (e in pruned or (e.excluded or "") == "BAD_SUCCESS (reward-hacked)"))]
-            if archived:
-                trash_root = f"trash/{task_name}/{run_ts}/"
+            if archive_list:
                 readme_lines = [
                     f"# Trash archive for {task_name}",
                     f"Run: {run_ts}",
