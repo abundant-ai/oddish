@@ -509,6 +509,11 @@ export function TrialDetailPanel({
 
   const content = (
     <>
+      {paneAction && (
+        <div className="border-border bg-muted/40 flex h-10 shrink-0 items-center gap-2 border-b px-2 sm:h-12 sm:px-3">
+          {paneAction}
+        </div>
+      )}
       <DrawerHeader className="border-border border-b px-4 py-3 sm:px-6 sm:py-4">
         <DrawerTitle className="flex min-w-0 items-center gap-2 pr-10 font-mono text-sm sm:text-base">
           <span className="min-w-0 truncate">{trial.name}</span>
@@ -535,7 +540,6 @@ export function TrialDetailPanel({
         </div>
         <div className="text-muted-foreground flex flex-wrap items-stretch justify-between gap-2 pt-2 text-xs">
           <div className="flex min-w-0 items-center gap-1.5">
-            {paneAction}
             {hasNavigation && (
               <div
                 role="group"
