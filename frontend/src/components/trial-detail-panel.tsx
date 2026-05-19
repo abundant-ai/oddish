@@ -47,6 +47,7 @@ import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
 import {
   formatPartialRewardBadgeValue,
+  formatRewardPercent,
   formatRewardValue,
   getMatrixStatus,
   getRewardStyle,
@@ -508,7 +509,7 @@ export function TrialDetailPanel({
         </DrawerTitle>
         <DrawerDescription>{trial.id}</DrawerDescription>
         <div className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pt-1 font-mono text-[11px]">
-          <span className="text-foreground/80 inline-flex shrink-0 items-center gap-1 font-semibold">
+          <span className="text-foreground inline-flex shrink-0 items-center gap-1 font-semibold">
             <QueueKeyIcon
               queueKey={trial.provider}
               model={trial.model}
@@ -525,7 +526,11 @@ export function TrialDetailPanel({
           <div className="flex items-center gap-1.5">
             {paneAction}
             {hasNavigation && (
-              <div className="border-border bg-muted/30 flex items-center gap-0.5 rounded-md border p-0.5">
+              <div
+                role="group"
+                aria-label="Trial navigation"
+                className="border-border bg-muted/30 flex items-center gap-0.5 rounded-md border p-0.5"
+              >
                 <Button
                   type="button"
                   variant="ghost"
@@ -616,7 +621,7 @@ export function TrialDetailPanel({
           </div>
           <div className="flex min-w-0 flex-wrap items-stretch gap-1.5">
             <Card
-              className={cn("border", OUTCOME_CARD_TONE[trialStatus])}
+              className={cn("min-w-[96px] border", OUTCOME_CARD_TONE[trialStatus])}
               style={getRewardStyle(trial.reward, "panel")}
             >
               <CardContent className="flex h-7 items-center gap-1.5 px-2 py-0">
@@ -645,6 +650,11 @@ export function TrialDetailPanel({
                 <span className="font-mono text-sm leading-none font-bold tabular-nums">
                   {formatRewardValue(trial.reward)}
                 </span>
+                {trialStatus === "partial" && trial.reward !== null && (
+                  <span className="text-muted-foreground font-mono text-[10px] leading-none tabular-nums">
+                    {formatRewardPercent(trial.reward)}
+                  </span>
+                )}
                 <span className="text-muted-foreground text-[10px] leading-none capitalize">
                   {trialStatusConfig.shortLabel}
                 </span>
