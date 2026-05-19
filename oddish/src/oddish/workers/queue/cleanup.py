@@ -37,7 +37,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.workers.queue.worker_job_single_job import (
-    calculate_trial_retry_delay_seconds,
+    calculate_worker_job_retry_delay_seconds,
     classify_retry_reason,
 )
 from oddish.workers.queue.shared import console
@@ -213,12 +213,37 @@ async def cleanup_orphaned_queue_state(
         # O(table).
         stale_trial_ids: list[str] = []
         for row in stale_rows:
+            kind = row["kind"]
+            retry_at = None
+            delay_seconds = None
             if row["new_status"] == "RETRYING":
                 worker_jobs_retried += 1
+                delay_seconds = calculate_worker_job_retry_delay_seconds(
+                    attempts=int(row["attempts"]),
+                    error_message=row["error_message"],
+                )
+                retry_at = utcnow() + timedelta(seconds=delay_seconds)
+                await session.execute(
+                    text(
+                        """
+                        UPDATE worker_jobs
+                        SET    next_retry_at = :retry_at,
+                               available_after = :retry_at
+                        WHERE  id = :job_id
+                        """
+                    ),
+                    {"job_id": row["id"], "retry_at": retry_at},
+                )
+                console.print(
+                    f"metric=worker_job_stale_retry_scheduled id={row['id']} "
+                    f"kind={kind} "
+                    f"attempts={row['attempts']}/{row['max_attempts']} "
+                    f"retry_reason={classify_retry_reason(row['error_message'])} "
+                    f"retry_delay_seconds={delay_seconds:.2f}"
+                )
             else:
                 worker_jobs_failed += 1
 
-            kind = row["kind"]
             subject_id = row["subject_id"]
             if not subject_id:
                 continue
@@ -228,22 +253,6 @@ async def cleanup_orphaned_queue_state(
                 if trial is None:
                     continue
                 if row["new_status"] == "RETRYING":
-                    delay_seconds = calculate_trial_retry_delay_seconds(
-                        attempts=int(row["attempts"]),
-                        error_message=row["error_message"],
-                    )
-                    retry_at = utcnow() + timedelta(seconds=delay_seconds)
-                    await session.execute(
-                        text(
-                            """
-                            UPDATE worker_jobs
-                            SET    next_retry_at = :retry_at,
-                                   available_after = :retry_at
-                            WHERE  id = :job_id
-                            """
-                        ),
-                        {"job_id": row["id"], "retry_at": retry_at},
-                    )
                     # Domain row goes back to RETRYING so the UI
                     # reflects "waiting for another attempt". The new
                     # worker_jobs claim will bump trials.status back
@@ -254,12 +263,6 @@ async def cleanup_orphaned_queue_state(
                     trial.current_worker_id = None
                     trial.current_queue_slot = None
                     trial.stale_reaped_at = utcnow()
-                    console.print(
-                        f"metric=worker_job_stale_retry_scheduled id={row['id']} "
-                        f"attempts={row['attempts']}/{row['max_attempts']} "
-                        f"retry_reason={classify_retry_reason(row['error_message'])} "
-                        f"retry_delay_seconds={delay_seconds:.2f}"
-                    )
                 else:
                     trial.status = TrialStatus.FAILED
                     trial.error_message = row["error_message"]

@@ -90,13 +90,13 @@ def classify_retry_reason(error_message: str | None) -> str:
     return "transient"
 
 
-def calculate_trial_retry_delay_seconds(
+def calculate_worker_job_retry_delay_seconds(
     *,
     attempts: int,
     error_message: str | None,
     jitter: float | None = None,
 ) -> float:
-    """Return bounded exponential trial retry delay with multiplicative jitter.
+    """Return bounded exponential worker-job retry delay with jitter.
 
     ``attempts`` is the attempt that just failed. A first failed attempt gets
     the base delay, the second gets 2x, and so on. Rate-limit-looking errors
@@ -118,6 +118,20 @@ def calculate_trial_retry_delay_seconds(
     return min(
         capped_delay * (1.0 + jitter_value),
         TRIAL_RETRY_MAX_DELAY_SECONDS,
+    )
+
+
+def calculate_trial_retry_delay_seconds(
+    *,
+    attempts: int,
+    error_message: str | None,
+    jitter: float | None = None,
+) -> float:
+    """Backward-compatible wrapper for the shared worker-job retry policy."""
+    return calculate_worker_job_retry_delay_seconds(
+        attempts=attempts,
+        error_message=error_message,
+        jitter=jitter,
     )
 
 
@@ -374,15 +388,12 @@ async def _record_outcome(
         assert outcome.failure is not None
         retry = outcome.failure.retryable and attempts < max_attempts
         if retry:
-            retry_at: datetime | None = None
             retry_reason = classify_retry_reason(outcome.failure.error_message)
-            delay_seconds: float | None = None
-            if kind == WorkerJobKind.TRIAL:
-                delay_seconds = calculate_trial_retry_delay_seconds(
-                    attempts=attempts,
-                    error_message=outcome.failure.error_message,
-                )
-                retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+            delay_seconds = calculate_worker_job_retry_delay_seconds(
+                attempts=attempts,
+                error_message=outcome.failure.error_message,
+            )
+            retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
 
             # RETRYING is a scheduling state, not a terminal one. Leave
             # finished_at NULL so the claim SQL can clear it on the
@@ -395,7 +406,7 @@ async def _record_outcome(
                 SET    status = 'RETRYING',
                        error_message = $2,
                        next_retry_at = $3,
-                       available_after = COALESCE($3::timestamptz, NOW()),
+                       available_after = $3,
                        current_worker_id = NULL,
                        current_queue_slot = NULL,
                        modal_function_call_id = NULL
@@ -409,7 +420,6 @@ async def _record_outcome(
                 kind == WorkerJobKind.TRIAL
                 and subject_table == "trials"
                 and subject_id
-                and retry_at is not None
             ):
                 await connection.execute(
                     """
@@ -431,7 +441,7 @@ async def _record_outcome(
                 f"metric=worker_job_retry_requeued id={job_id} "
                 f"attempts={attempts}/{max_attempts} "
                 f"retry_reason={retry_reason} "
-                f"retry_delay_seconds={delay_seconds or 0:.2f}"
+                f"retry_delay_seconds={delay_seconds:.2f}"
             )
         else:
             await connection.execute(

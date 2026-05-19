@@ -107,7 +107,7 @@ async def test_stale_trial_retry_cleanup_schedules_backoff(monkeypatch):
     monkeypatch.setattr("oddish.queue.maybe_start_verdict_stage", no_stage_transition)
     monkeypatch.setattr(
         cleanup,
-        "calculate_trial_retry_delay_seconds",
+        "calculate_worker_job_retry_delay_seconds",
         lambda *, attempts, error_message: 60.0,
     )
 

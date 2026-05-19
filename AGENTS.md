@@ -117,10 +117,13 @@ High-level flow:
 - shared queue-slot leasing, per-queue-key concurrency limits, and
  per-user fairness on `TRIAL` claims
 - stale-heartbeat reaping, RETRYING → QUEUED mirror-back, and pipeline
- stage reconciliation in one cleanup sweep
+  stage reconciliation in one cleanup sweep
+- retryable `worker_jobs` failures are rescheduled with bounded exponential
+  backoff for every kind (`TRIAL`, `ANALYSIS`, `VERDICT`, `TASK_EXPAND`), with
+  a longer base delay for rate-limit-looking provider errors
 - soft-delete semantics on domain rows via the `deleted_at` column and
- a session-level filter (`oddish.db.soft_delete`); every ORM read on a
- registered model gets `WHERE deleted_at IS NULL` automatically
+  a session-level filter (`oddish.db.soft_delete`); every ORM read on a
+  registered model gets `WHERE deleted_at IS NULL` automatically
 
 `backend` wraps `oddish` with the hosted-only layer:
 
