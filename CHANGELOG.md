@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-05-19]
+
+### Added
+- `max_trial_attempts` top-level field for sweep YAML/JSON configs and `TaskSubmission`/`TaskSweepSubmission` API schemas, plus `--max-trial-attempts` CLI flag on `oddish run`, to control the total Oddish worker attempt budget per trial including the initial run; old `max_attempts` config key is now rejected with a clear error (#134)
+- `ODDISH_MODAL_POLL_INTERVAL_SECONDS` env var to configure the Modal queue dispatcher poll cadence; preserves the existing 180-second default when unset (#133)
+- Baseline-specific context injected into the trial analysis classifier prompt for `oracle` and `nop`/`noop` agents: oracle trials are no longer penalized for reading reference solutions, and NoOp runs are evaluated as baseline checks; normal agents receive no extra context (#132)
+- `--environment-kwarg` / `--harbor-environment-kwarg` CLI flag and top-level `harbor.environment.kwargs` block in sweep YAML for passing arbitrary Harbor environment kwargs (primary use case: `agent_tools_image` for Modal closed-internet runs); CLI values override config-file values on collision (#131)
+- "Any error" row filter in the experiment trials table to show only tasks where at least one agent hit a harness or infrastructure error, complementing the existing "Any failed" / "All failed" filters (#130)
+- `DELETE /experiments/{experiment_id}` admin API endpoint for soft-deleting an experiment and its scoped trials; artifacts are preserved in S3 (#128)
+
+### Changed
+- `nop` and `oracle` sweep config entries no longer require a `model_name` field (#131)
+- Experiment table toolbar UI polished: filter buttons styled with updated tokens and tighter layout, toolbar reorganized into a responsive flex row (#130)
+
+### Fixed
+- Experiment detail page creation timestamp now uses the canonical `ExperimentModel.created_at` value (surfaced via new `experiment_created_at` field on task-status responses) instead of inferring creation time from the earliest task in the experiment (#129)
+- Experiment-to-task membership rows in `task_experiments` are now tombstoned (`deleted_at` set) instead of hard-deleted when an experiment or scoped task is removed; DB migration `k2l3m4n5o6p7` adds the column with partial indexes on live rows; dashboard cache is invalidated after experiment and trial deletions (#128)
+
+---
+
 ## [2026-05-18]
 
 ### Added
