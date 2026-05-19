@@ -225,6 +225,7 @@ export function TrialDetailPanel({
   );
 
   const hydratedFromUrl = useRef(false);
+  const activeGlyphRef = useRef<HTMLButtonElement | null>(null);
 
   // Hydrate from URL on first open
   useEffect(() => {
@@ -454,6 +455,16 @@ export function TrialDetailPanel({
     navigateTo,
   ]);
 
+  // Keep the active glyph visible when the navigation strip overflows.
+  // Declared before the early return so hook order stays stable.
+  useEffect(() => {
+    activeGlyphRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "center",
+    });
+  }, [trial?.id]);
+
   if (!trial || !task) {
     return null;
   }
@@ -523,13 +534,13 @@ export function TrialDetailPanel({
           <span className="truncate">{trial.model ?? "—"}</span>
         </div>
         <div className="text-muted-foreground flex flex-wrap items-stretch justify-between gap-2 pt-2 text-xs">
-          <div className="flex items-center gap-1.5">
+          <div className="flex min-w-0 items-center gap-1.5">
             {paneAction}
             {hasNavigation && (
               <div
                 role="group"
                 aria-label="Trial navigation"
-                className="border-border bg-muted/30 flex items-center gap-0.5 rounded-md border p-0.5"
+                className="border-border bg-muted/30 flex min-w-0 items-center gap-0.5 rounded-md border p-0.5"
               >
                 <Button
                   type="button"
@@ -543,7 +554,7 @@ export function TrialDetailPanel({
                     }
                   }}
                   disabled={!canGoPrev && !canGoToTask}
-                  className="h-6 w-6"
+                  className="h-6 w-6 shrink-0"
                   aria-label={
                     canGoPrev
                       ? "Previous trial"
@@ -562,55 +573,58 @@ export function TrialDetailPanel({
                   <ChevronLeft className="h-4 w-4" />
                 </Button>
 
-                {currentGroupTrials.map((groupTrial, index) => {
-                  const groupStatus = getMatrixStatus(
-                    groupTrial.status,
-                    groupTrial.reward,
-                    groupTrial.error_message,
-                  );
-                  const groupConfig = STATUS_CONFIG[groupStatus];
-                  const isPartial = groupStatus === "partial";
-                  const partialLabel = isPartial
-                    ? formatPartialRewardBadgeValue(groupTrial.reward)
-                    : null;
-                  const isActive = index === currentGroupTrialIndex;
-                  return (
-                    <Button
-                      key={groupTrial.id}
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => navigateToGroupTrial(index)}
-                      className={cn(
-                        "flex items-center justify-center p-0 leading-none transition hover:opacity-90",
-                        STATUS_GLYPH_BOX,
-                        groupConfig.matrixClass,
-                        isPartial
-                          ? "font-mono text-[9.5px] font-semibold tracking-[-0.02em] tabular-nums"
-                          : "",
-                        isActive
-                          ? "ring-primary/60 ring-offset-background ring-2 ring-offset-1"
-                          : "",
-                      )}
-                      style={getRewardStyle(groupTrial.reward)}
-                      aria-label={`Trial ${index + 1} ${groupConfig.shortLabel}`}
-                      title={`${groupConfig.shortLabel} • Trial ${index + 1}`}
-                    >
-                      {isPartial ? (
-                        partialLabel
-                      ) : (
-                        <StatusIcon status={groupStatus} />
-                      )}
-                    </Button>
-                  );
-                })}
+                <div className="flex min-w-0 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  {currentGroupTrials.map((groupTrial, index) => {
+                    const groupStatus = getMatrixStatus(
+                      groupTrial.status,
+                      groupTrial.reward,
+                      groupTrial.error_message,
+                    );
+                    const groupConfig = STATUS_CONFIG[groupStatus];
+                    const isPartial = groupStatus === "partial";
+                    const partialLabel = isPartial
+                      ? formatPartialRewardBadgeValue(groupTrial.reward)
+                      : null;
+                    const isActive = index === currentGroupTrialIndex;
+                    return (
+                      <Button
+                        key={groupTrial.id}
+                        ref={isActive ? activeGlyphRef : undefined}
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => navigateToGroupTrial(index)}
+                        className={cn(
+                          "flex shrink-0 items-center justify-center p-0 leading-none transition hover:opacity-90",
+                          STATUS_GLYPH_BOX,
+                          groupConfig.matrixClass,
+                          isPartial
+                            ? "font-mono text-[9.5px] font-semibold tracking-[-0.02em] tabular-nums"
+                            : "",
+                          isActive
+                            ? "ring-primary/60 ring-offset-background ring-2 ring-offset-1"
+                            : "",
+                        )}
+                        style={getRewardStyle(groupTrial.reward)}
+                        aria-label={`Trial ${index + 1} ${groupConfig.shortLabel}`}
+                        title={`${groupConfig.shortLabel} • Trial ${index + 1}`}
+                      >
+                        {isPartial ? (
+                          partialLabel
+                        ) : (
+                          <StatusIcon status={groupStatus} />
+                        )}
+                      </Button>
+                    );
+                  })}
+                </div>
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
                   onClick={() => navigateTo(resolvedIndex + 1)}
                   disabled={!canGoNext}
-                  className="h-6 w-6"
+                  className="h-6 w-6 shrink-0"
                   aria-label="Next trial"
                   title="Next trial"
                 >
