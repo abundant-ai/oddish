@@ -108,7 +108,7 @@ export function UnifiedDrawerWrapper({
       type="button"
       size="sm"
       variant="ghost"
-      className="text-muted-foreground hover:text-foreground h-7 gap-1 px-2 text-[10px] font-semibold tracking-wide uppercase"
+      className="text-muted-foreground hover:text-foreground h-7 gap-1 px-2 text-xs font-medium"
       onClick={() => onShowTrialChange(!showTrial)}
       disabled={showTrial && !showTask}
       aria-pressed={!showTrial}
@@ -131,7 +131,7 @@ export function UnifiedDrawerWrapper({
       type="button"
       size="sm"
       variant="ghost"
-      className="text-muted-foreground hover:text-foreground h-7 gap-1 px-2 text-[10px] font-semibold tracking-wide uppercase"
+      className="text-muted-foreground hover:text-foreground h-7 gap-1 px-2 text-xs font-medium"
       onClick={() => onShowTaskChange(!showTask)}
       disabled={showTask && !showTrial}
       aria-pressed={!showTask}
@@ -154,7 +154,7 @@ export function UnifiedDrawerWrapper({
   const taskFilesPane = (
     <div className="bg-background flex h-full flex-col overflow-hidden">
       <div className="border-border bg-muted/40 flex h-10 shrink-0 items-center justify-between gap-2 border-b px-2 sm:h-12 sm:px-3">
-        <span className="text-muted-foreground pl-2 text-[10px] font-semibold tracking-wider uppercase">
+        <span className="text-muted-foreground pl-2 text-xs font-semibold">
           Task definition
         </span>
         {trialsToggle}

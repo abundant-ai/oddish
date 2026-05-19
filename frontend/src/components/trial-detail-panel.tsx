@@ -47,7 +47,6 @@ import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
 import {
   formatPartialRewardBadgeValue,
-  formatRewardPercent,
   formatRewardValue,
   getMatrixStatus,
   getRewardStyle,
@@ -499,38 +498,34 @@ export function TrialDetailPanel({
   const content = (
     <>
       <DrawerHeader className="border-border border-b px-4 py-3 sm:px-6 sm:py-4">
-        <DrawerTitle className="flex min-w-0 items-center gap-2 pr-8 font-mono text-sm sm:text-base">
+        <DrawerTitle className="flex min-w-0 items-center gap-2 pr-10 font-mono text-sm sm:text-base">
           <span className="min-w-0 truncate">{trial.name}</span>
           {trial.task_version != null && (
             <span className="border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-medium">
               v{trial.task_version}
             </span>
           )}
-          <span className="text-muted-foreground/50">·</span>
-          <span className="text-muted-foreground flex min-w-0 flex-col items-center text-center leading-tight">
-            <span className="truncate text-[10px] font-bold sm:text-xs">
-              {trial.agent}
-            </span>
-            <span className="flex items-center gap-1 truncate font-mono text-[9px] font-normal sm:text-[10px]">
-              <QueueKeyIcon
-                queueKey={trial.provider}
-                model={trial.model}
-                agent={trial.agent}
-                size={11}
-                className="shrink-0"
-              />
-              {trial.model ?? "—"}
-            </span>
-          </span>
         </DrawerTitle>
-        <DrawerDescription className="text-muted-foreground font-mono">
-          <span className="truncate">{trial.id}</span>
-        </DrawerDescription>
+        <DrawerDescription>{trial.id}</DrawerDescription>
+        <div className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pt-1 font-mono text-[11px]">
+          <span className="text-foreground/80 inline-flex shrink-0 items-center gap-1 font-semibold">
+            <QueueKeyIcon
+              queueKey={trial.provider}
+              model={trial.model}
+              agent={trial.agent}
+              size={11}
+              className="shrink-0"
+            />
+            {trial.agent}
+          </span>
+          <span className="text-muted-foreground/40">·</span>
+          <span className="truncate">{trial.model ?? "—"}</span>
+        </div>
         <div className="text-muted-foreground flex flex-wrap items-stretch justify-between gap-2 pt-2 text-xs">
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
             {paneAction}
             {hasNavigation && (
-              <>
+              <div className="border-border bg-muted/30 flex items-center gap-0.5 rounded-md border p-0.5">
                 <Button
                   type="button"
                   variant="ghost"
@@ -543,7 +538,7 @@ export function TrialDetailPanel({
                     }
                   }}
                   disabled={!canGoPrev && !canGoToTask}
-                  className="h-7 w-7"
+                  className="h-6 w-6"
                   aria-label={
                     canGoPrev
                       ? "Previous trial"
@@ -610,66 +605,49 @@ export function TrialDetailPanel({
                   size="icon"
                   onClick={() => navigateTo(resolvedIndex + 1)}
                   disabled={!canGoNext}
-                  className="h-7 w-7"
+                  className="h-6 w-6"
                   aria-label="Next trial"
                   title="Next trial"
                 >
                   <ChevronRight className="h-4 w-4" />
                 </Button>
-              </>
+              </div>
             )}
           </div>
-          <div className="flex min-w-0 items-stretch gap-2">
+          <div className="flex min-w-0 flex-wrap items-stretch gap-1.5">
             <Card
-              className={cn(
-                "min-w-[145px] border",
-                OUTCOME_CARD_TONE[trialStatus],
-              )}
+              className={cn("border", OUTCOME_CARD_TONE[trialStatus])}
               style={getRewardStyle(trial.reward, "panel")}
             >
-              <CardContent className="px-2 py-1">
-                <div className="flex items-center gap-1.5">
-                  <TrialStatusIcon
-                    className={cn(
-                      "h-3.5 w-3.5 shrink-0",
-                      trialStatus === "pass"
-                        ? "text-emerald-500"
-                        : trialStatus === "partial"
-                          ? "text-amber-500"
-                          : trialStatus === "fail"
-                            ? "text-red-500"
-                            : trialStatus === "harness-error"
-                              ? "text-yellow-500"
-                              : trialStatus === "queued"
-                                ? "text-purple-500"
-                                : trialStatus === "running"
-                                  ? "text-blue-500"
-                                  : "text-gray-500",
-                      (trialStatus === "pending" ||
-                        trialStatus === "queued" ||
-                        trialStatus === "running") &&
-                        "animate-spin",
-                    )}
-                  />
-                  <div className="min-w-0">
-                    <div className="text-muted-foreground text-[8px] leading-none tracking-wider uppercase">
-                      Reward
-                    </div>
-                    <div className="flex items-baseline gap-1">
-                      <span className="font-mono text-sm leading-none font-bold">
-                        {formatRewardValue(trial.reward)}
-                      </span>
-                      {trial.reward !== null && (
-                        <span className="text-muted-foreground text-[9px] leading-none">
-                          {formatRewardPercent(trial.reward)}
-                        </span>
-                      )}
-                      <span className="text-muted-foreground text-[9px] leading-none capitalize">
-                        {trialStatusConfig.shortLabel}
-                      </span>
-                    </div>
-                  </div>
-                </div>
+              <CardContent className="flex h-7 items-center gap-1.5 px-2 py-0">
+                <TrialStatusIcon
+                  className={cn(
+                    "h-3.5 w-3.5 shrink-0",
+                    trialStatus === "pass"
+                      ? "text-emerald-500"
+                      : trialStatus === "partial"
+                        ? "text-amber-500"
+                        : trialStatus === "fail"
+                          ? "text-red-500"
+                          : trialStatus === "harness-error"
+                            ? "text-yellow-500"
+                            : trialStatus === "queued"
+                              ? "text-purple-500"
+                              : trialStatus === "running"
+                                ? "text-blue-500"
+                                : "text-gray-500",
+                    (trialStatus === "pending" ||
+                      trialStatus === "queued" ||
+                      trialStatus === "running") &&
+                      "animate-spin",
+                  )}
+                />
+                <span className="font-mono text-sm leading-none font-bold tabular-nums">
+                  {formatRewardValue(trial.reward)}
+                </span>
+                <span className="text-muted-foreground text-[10px] leading-none capitalize">
+                  {trialStatusConfig.shortLabel}
+                </span>
               </CardContent>
             </Card>
             {canRetry && (
@@ -678,17 +656,17 @@ export function TrialDetailPanel({
                 disabled={retrying}
                 variant="outline"
                 size="sm"
-                className="h-7 min-w-[128px] px-2 text-[10px] font-semibold tracking-wide uppercase"
+                className="h-7 gap-1 px-2.5 text-xs font-medium"
               >
                 {retrying ? (
                   <>
-                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                    Retrying...
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Retrying…
                   </>
                 ) : (
                   <>
-                    <RotateCcw className="mr-1 h-3.5 w-3.5" />
-                    Retry Trial
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    Retry trial
                   </>
                 )}
               </Button>
@@ -699,16 +677,16 @@ export function TrialDetailPanel({
                 disabled={analysisRunning}
                 variant="outline"
                 size="sm"
-                className="h-7 min-w-[148px] px-2 text-[10px] font-semibold tracking-wide uppercase"
+                className="h-7 gap-1 px-2.5 text-xs font-medium"
               >
                 {analysisRunning ? (
                   <>
-                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                    Queueing...
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Queueing…
                   </>
                 ) : (
                   <>
-                    <Microscope className="mr-1 h-3.5 w-3.5" />
+                    <Microscope className="h-3.5 w-3.5" />
                     {analysisLabel}
                   </>
                 )}
@@ -723,16 +701,16 @@ export function TrialDetailPanel({
                 disabled={deleting}
                 variant="outline"
                 size="sm"
-                className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 min-w-[112px] px-2 text-[10px] font-semibold tracking-wide uppercase"
+                className="text-destructive hover:bg-destructive/10 hover:text-destructive h-7 gap-1 px-2.5 text-xs font-medium"
               >
                 {deleting ? (
                   <>
-                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                    Deleting...
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Deleting…
                   </>
                 ) : (
                   <>
-                    <Trash2 className="mr-1 h-3.5 w-3.5" />
+                    <Trash2 className="h-3.5 w-3.5" />
                     Delete
                   </>
                 )}
