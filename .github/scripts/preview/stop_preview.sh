@@ -34,6 +34,13 @@ if is_configured_vercel; then
   (
     cd "$GITHUB_WORKSPACE/frontend"
     vercel pull --yes --environment=preview --git-branch="$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
-    vercel env rm NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+    for name in \
+      NEXT_PUBLIC_API_URL \
+      NEXT_PUBLIC_ODDISH_PREVIEW \
+      NEXT_PUBLIC_ODDISH_PREVIEW_BACKEND_LABEL \
+      NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_LABEL \
+      NEXT_PUBLIC_ODDISH_PREVIEW_COMMIT_SHA; do
+      vercel env rm "$name" preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+    done
   )
 fi

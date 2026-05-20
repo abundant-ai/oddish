@@ -23,6 +23,7 @@ jobs:
     outputs:
       deploy_backend: ${{ steps.compute.outputs.deploy_backend }}
       run_migrations: ${{ steps.compute.outputs.run_migrations }}
+      deploy_frontend: ${{ steps.compute.outputs.deploy_frontend }}
       any_change: ${{ steps.compute.outputs.any_change }}
     steps:
       - name: Checkout repository
@@ -71,6 +72,24 @@ jobs:
               - 'backend/alembic/**'
               - 'oddish/alembic/**'
 
+      - name: Detect PR component changes
+        id: filter_pr
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - '!backend/alembic/**'
+              - '!backend/**/*.md'
+              - 'oddish/**'
+              - '!oddish/alembic/**'
+              - '!oddish/**/*.md'
+            migrations:
+              - 'backend/alembic/**'
+              - 'oddish/alembic/**'
+            frontend:
+              - 'frontend/**'
+
       # Workflow / script changes are diffed against the previous push,
       # not a per-component base, because they can affect any component.
       - name: Detect workflow or preview-script changes since previous push
@@ -93,6 +112,9 @@ jobs:
           MIGRATIONS_BASE: ${{ steps.last_deployed.outputs.migrations_base }}
           BACKEND_CHANGED: ${{ steps.filter_backend.outputs.changed }}
           MIGRATIONS_CHANGED: ${{ steps.filter_migrations.outputs.changed }}
+          PR_BACKEND_CHANGED: ${{ steps.filter_pr.outputs.backend }}
+          PR_MIGRATIONS_CHANGED: ${{ steps.filter_pr.outputs.migrations }}
+          PR_FRONTEND_CHANGED: ${{ steps.filter_pr.outputs.frontend }}
           WORKFLOW_CHANGED: ${{ steps.filter_workflow.outputs.changed }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/preview/compute_deployment_plan.sh"
 
@@ -129,7 +151,10 @@ jobs:
     if: |
       always() &&
       needs.detect-changes.result == 'success' &&
-      needs.detect-changes.outputs.any_change == 'true' &&
+      (
+        needs.detect-changes.outputs.deploy_backend == 'true' ||
+        needs.detect-changes.outputs.run_migrations == 'true'
+      ) &&
       (
         needs.stop-previous-preview-backend.result == 'success' ||
         needs.stop-previous-preview-backend.result == 'skipped'
@@ -140,6 +165,7 @@ jobs:
       packages: read
     outputs:
       branch_ref: ${{ steps.prepare.outputs.branch_ref }}
+      branch_id: ${{ steps.prepare.outputs.branch_id }}
       branch_was_created: ${{ steps.prepare.outputs.branch_was_created }}
     container:
       image: ghcr.io/abundant-ai/oddish-ci-base:latest
@@ -224,8 +250,22 @@ jobs:
 
   update-vercel-preview:
     name: Update Vercel preview
-    needs: deploy-preview-backend
-    if: needs.deploy-preview-backend.outputs.modal_api_url != ''
+    needs:
+      - detect-changes
+      - prepare-preview-database
+      - deploy-preview-backend
+    if: |
+      always() &&
+      needs.detect-changes.result == 'success' &&
+      needs.detect-changes.outputs.deploy_frontend == 'true' &&
+      (
+        needs.prepare-preview-database.result == 'success' ||
+        needs.prepare-preview-database.result == 'skipped'
+      ) &&
+      (
+        needs.deploy-preview-backend.result == 'success' ||
+        needs.deploy-preview-backend.result == 'skipped'
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -242,12 +282,56 @@ jobs:
       VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
       VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
       MODAL_API_URL: ${{ needs.deploy-preview-backend.outputs.modal_api_url }}
+      MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
+      PROD_API_URL: ${{ vars.ODDISH_PROD_API_URL }}
+      SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}
+    outputs:
+      preview_url: ${{ steps.vercel.outputs.preview_url }}
+      backend_api_url: ${{ steps.vercel.outputs.backend_api_url }}
+      backend_label: ${{ steps.vercel.outputs.backend_label }}
+      database_label: ${{ steps.vercel.outputs.database_label }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
       - name: Update Vercel preview
+        id: vercel
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/update_vercel_preview.sh"
+
+  post-preview-links:
+    name: Post preview links
+    needs:
+      - detect-changes
+      - prepare-preview-database
+      - deploy-preview-backend
+      - update-vercel-preview
+    if: |
+      always() &&
+      needs.detect-changes.result == 'success' &&
+      needs.detect-changes.outputs.any_change == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PREVIEW_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+      DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
+      RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
+      DEPLOY_FRONTEND: ${{ needs.detect-changes.outputs.deploy_frontend }}
+      VERCEL_PREVIEW_URL: ${{ needs.update-vercel-preview.outputs.preview_url }}
+      MODAL_API_URL: ${{ needs.deploy-preview-backend.outputs.modal_api_url }}
+      PREVIEW_BACKEND_LABEL: ${{ needs.update-vercel-preview.outputs.backend_label }}
+      PREVIEW_DATABASE_LABEL: ${{ needs.update-vercel-preview.outputs.database_label }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Post preview links
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/post_preview_links.py"
 
   stop-preview:
     name: Stop preview

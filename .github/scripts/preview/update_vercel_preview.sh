@@ -1,15 +1,37 @@
 #!/usr/bin/env bash
-# Point the Vercel preview deployment at the PR-specific Modal backend.
+# Point the Vercel preview deployment at the selected backend target.
 set -euo pipefail
 
 : "${GITHUB_STEP_SUMMARY:?}"
 : "${GITHUB_WORKSPACE:?}"
-: "${MODAL_API_URL:?}"
 : "${VERCEL_GIT_BRANCH:?}"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 github_output="${GITHUB_OUTPUT:-}"
 preview_url=""
+backend_api_url="${MODAL_API_URL:-${PROD_API_URL:-}}"
+backend_label="${PREVIEW_BACKEND_LABEL:-}"
+database_label="${PREVIEW_DATABASE_LABEL:-}"
+
+if [ -z "$backend_label" ]; then
+  if [ -n "${MODAL_API_URL:-}" ]; then
+    backend_label="${MODAL_APP_NAME:-preview Modal backend}"
+  elif [ -n "$backend_api_url" ]; then
+    backend_label="production"
+  else
+    backend_label="Vercel project default"
+  fi
+fi
+
+if [ -z "$database_label" ]; then
+  if [ -n "${SUPABASE_BRANCH_REF:-}" ]; then
+    database_label="Supabase ${SUPABASE_BRANCH_REF}"
+  elif [ -n "${MODAL_API_URL:-}" ]; then
+    database_label="preview Supabase"
+  else
+    database_label="production"
+  fi
+fi
 
 is_configured_vercel() {
   [ -n "${VERCEL_TOKEN:-}" ] &&
@@ -34,8 +56,18 @@ summarize_vercel_phase() {
     else
       echo "- Vercel preview: skipped because Vercel credentials are not configured"
     fi
-    echo "- Modal API target: $MODAL_API_URL"
+    echo "- Backend target: $backend_label"
+    echo "- Database target: $database_label"
   } >> "$GITHUB_STEP_SUMMARY"
+}
+
+set_vercel_env() {
+  local name="$1"
+  local value="$2"
+
+  [ -n "$value" ] || return 0
+  printf '%s' "$value" \
+    | vercel env add "$name" preview "$VERCEL_GIT_BRANCH" --force --no-sensitive --token="$VERCEL_TOKEN"
 }
 
 trap summarize_vercel_phase EXIT
@@ -47,11 +79,25 @@ fi
 (
   cd "$GITHUB_WORKSPACE/frontend"
   vercel pull --yes --environment=preview --git-branch="$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
-  printf '%s' "$MODAL_API_URL" \
-    | vercel env add NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --force --no-sensitive --token="$VERCEL_TOKEN"
+  if [ -n "$backend_api_url" ]; then
+    set_vercel_env NEXT_PUBLIC_API_URL "$backend_api_url"
+  else
+    vercel env rm NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+  fi
+  set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW true
+  set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_BACKEND_LABEL "$backend_label"
+  set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_LABEL "$database_label"
+  set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_COMMIT_SHA "${VERCEL_GIT_COMMIT_SHA:-}"
 )
 
 vercel_output="$(mktemp)"
 GITHUB_OUTPUT="$vercel_output" python "$script_dir/redeploy_vercel.py"
 [ -z "$github_output" ] || cat "$vercel_output" >> "$github_output"
 preview_url="$(read_output_value "$vercel_output" preview_url)"
+if [ -n "$github_output" ]; then
+  {
+    echo "backend_api_url=$backend_api_url"
+    echo "backend_label=$backend_label"
+    echo "database_label=$database_label"
+  } >> "$github_output"
+fi

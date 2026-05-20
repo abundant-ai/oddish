@@ -36,7 +36,7 @@ summarize_database_phase() {
     echo "## Preview database"
     echo
     if [ -n "$branch_ref" ]; then
-      echo "- Supabase branch: \`$branch_ref\`"
+    echo "- Supabase branch: \`$branch_ref\`"
     fi
     echo "- Branch created: \`${branch_was_created:-unknown}\`"
     echo "- Migrations requested: \`$RUN_MIGRATIONS\`"
