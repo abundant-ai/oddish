@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-05-20]
+
+### Changed
+- `ODDISH_MODAL_MAX_WORKERS_PER_POLL` default raised from 48 to 64, allowing the dispatcher to ramp queued work faster when per-queue slot capacity is available; env override behavior unchanged (#138)
+
+---
+
 ## [2026-05-19]
 
 ### Added
