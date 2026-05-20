@@ -1,0 +1,370 @@
+name: PR Preview
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - closed
+
+concurrency:
+  group: pr-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    name: Detect preview changes
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      deploy_backend: ${{ steps.compute.outputs.deploy_backend }}
+      run_migrations: ${{ steps.compute.outputs.run_migrations }}
+      deploy_frontend: ${{ steps.compute.outputs.deploy_frontend }}
+      any_change: ${{ steps.compute.outputs.any_change }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      # For each component (backend, migrations) we find the most recent
+      # workflow run on this PR branch whose corresponding step finished
+      # with conclusion=success, and use that run's head_sha as the diff
+      # base. If a prior push failed mid-deploy, its broken state is not
+      # recorded as a successful base, so the next push will still
+      # redeploy the affected component.
+      - name: Look up last-successful component SHAs
+        id: last_deployed
+        if: github.event.action == 'synchronize'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/find_last_deploys.py"
+
+      - name: Detect backend code changes since last successful backend deploy
+        id: filter_backend
+        if: github.event.action == 'synchronize' && steps.last_deployed.outputs.backend_base != ''
+        uses: dorny/paths-filter@v3
+        with:
+          base: ${{ steps.last_deployed.outputs.backend_base }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          filters: |
+            changed:
+              - 'backend/**'
+              - '!backend/alembic/**'
+              - '!backend/**/*.md'
+              - 'oddish/**'
+              - '!oddish/alembic/**'
+              - '!oddish/**/*.md'
+
+      - name: Detect migration changes since last successful migration run
+        id: filter_migrations
+        if: github.event.action == 'synchronize' && steps.last_deployed.outputs.migrations_base != ''
+        uses: dorny/paths-filter@v3
+        with:
+          base: ${{ steps.last_deployed.outputs.migrations_base }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          filters: |
+            changed:
+              - 'backend/alembic/**'
+              - 'oddish/alembic/**'
+
+      - name: Detect PR component changes
+        id: filter_pr
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - '!backend/alembic/**'
+              - '!backend/**/*.md'
+              - 'oddish/**'
+              - '!oddish/alembic/**'
+              - '!oddish/**/*.md'
+            migrations:
+              - 'backend/alembic/**'
+              - 'oddish/alembic/**'
+            frontend:
+              - 'frontend/**'
+
+      # Workflow / script changes are diffed against the previous push,
+      # not a per-component base, because they can affect any component.
+      - name: Detect workflow or preview-script changes since previous push
+        id: filter_workflow
+        if: github.event.action == 'synchronize'
+        uses: dorny/paths-filter@v3
+        with:
+          base: ${{ github.event.before }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          filters: |
+            changed:
+              - '.github/workflows/pr-preview.yml'
+              - '.github/scripts/preview/**'
+
+      - name: Compute deployment plan
+        id: compute
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          BACKEND_BASE: ${{ steps.last_deployed.outputs.backend_base }}
+          MIGRATIONS_BASE: ${{ steps.last_deployed.outputs.migrations_base }}
+          BACKEND_CHANGED: ${{ steps.filter_backend.outputs.changed }}
+          MIGRATIONS_CHANGED: ${{ steps.filter_migrations.outputs.changed }}
+          PR_BACKEND_CHANGED: ${{ steps.filter_pr.outputs.backend }}
+          PR_MIGRATIONS_CHANGED: ${{ steps.filter_pr.outputs.migrations }}
+          PR_FRONTEND_CHANGED: ${{ steps.filter_pr.outputs.frontend }}
+          WORKFLOW_CHANGED: ${{ steps.filter_workflow.outputs.changed }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/preview/compute_deployment_plan.sh"
+
+  stop-previous-preview-backend:
+    name: Stop previous preview backend
+    needs: detect-changes
+    if: needs.detect-changes.outputs.any_change == 'true' && needs.detect-changes.outputs.deploy_backend == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: preview
+      MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Stop previous preview backend
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/stop_previous_preview_backend.sh"
+
+  prepare-preview-database:
+    name: Prepare preview database
+    needs:
+      - detect-changes
+      - stop-previous-preview-backend
+    if: |
+      always() &&
+      needs.detect-changes.result == 'success' &&
+      (
+        needs.detect-changes.outputs.deploy_backend == 'true' ||
+        needs.detect-changes.outputs.run_migrations == 'true'
+      ) &&
+      (
+        needs.stop-previous-preview-backend.result == 'success' ||
+        needs.stop-previous-preview-backend.result == 'skipped'
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      branch_ref: ${{ steps.prepare.outputs.branch_ref }}
+      branch_id: ${{ steps.prepare.outputs.branch_id }}
+      branch_was_created: ${{ steps.prepare.outputs.branch_was_created }}
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: preview
+      MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Sync backend dependencies
+        run: uv sync --frozen
+
+      - name: Prepare preview database
+        id: prepare
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
+          RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/prepare_preview_database.sh"
+
+  deploy-preview-backend:
+    name: Deploy preview backend
+    needs:
+      - detect-changes
+      - prepare-preview-database
+    if: |
+      always() &&
+      needs.prepare-preview-database.result == 'success' &&
+      (
+        needs.detect-changes.outputs.deploy_backend == 'true' ||
+        needs.prepare-preview-database.outputs.branch_was_created == 'true'
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      modal_api_url: ${{ steps.deploy.outputs.modal_api_url }}
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: preview
+      MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
+      MODAL_SECRET_ENVIRONMENT: main
+      UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+      ODDISH_MODAL_API_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
+      ODDISH_MODAL_API_MAX_CONTAINERS: "2"
+      ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
+      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Sync backend dependencies
+        run: uv sync --frozen
+
+      - name: Deploy preview backend
+        id: deploy
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/deploy_preview_backend.sh"
+
+  update-vercel-preview:
+    name: Update Vercel preview
+    needs:
+      - detect-changes
+      - prepare-preview-database
+      - deploy-preview-backend
+    if: |
+      always() &&
+      needs.detect-changes.result == 'success' &&
+      needs.detect-changes.outputs.deploy_frontend == 'true' &&
+      (
+        needs.prepare-preview-database.result == 'success' ||
+        needs.prepare-preview-database.result == 'skipped'
+      ) &&
+      (
+        needs.deploy-preview-backend.result == 'success' ||
+        needs.deploy-preview-backend.result == 'skipped'
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
+      VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+      MODAL_API_URL: ${{ needs.deploy-preview-backend.outputs.modal_api_url }}
+      MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
+      PROD_API_URL: ${{ vars.ODDISH_PROD_API_URL }}
+      SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}
+      PREVIEW_ALIAS_HOSTNAME: pr-${{ github.event.pull_request.number }}.oddish.app
+    outputs:
+      preview_url: ${{ steps.vercel.outputs.preview_url }}
+      preview_alias_url: ${{ steps.vercel.outputs.preview_alias_url }}
+      backend_api_url: ${{ steps.vercel.outputs.backend_api_url }}
+      backend_label: ${{ steps.vercel.outputs.backend_label }}
+      database_label: ${{ steps.vercel.outputs.database_label }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Update Vercel preview
+        id: vercel
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/update_vercel_preview.sh"
+
+  post-preview-links:
+    name: Post preview links
+    needs:
+      - detect-changes
+      - prepare-preview-database
+      - deploy-preview-backend
+      - update-vercel-preview
+    if: |
+      always() &&
+      needs.detect-changes.result == 'success' &&
+      needs.detect-changes.outputs.any_change == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PREVIEW_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+      DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
+      RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
+      DEPLOY_FRONTEND: ${{ needs.detect-changes.outputs.deploy_frontend }}
+      VERCEL_PREVIEW_URL: ${{ needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
+      VERCEL_DEPLOYMENT_URL: ${{ needs.update-vercel-preview.outputs.preview_url }}
+      MODAL_API_URL: ${{ needs.deploy-preview-backend.outputs.modal_api_url }}
+      PREVIEW_BACKEND_LABEL: ${{ needs.update-vercel-preview.outputs.backend_label }}
+      PREVIEW_DATABASE_LABEL: ${{ needs.update-vercel-preview.outputs.database_label }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Post preview links
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/post_preview_links.py"
+
+  stop-preview:
+    name: Stop preview
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: preview
+      MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PREVIEW_ALIAS_HOSTNAME: pr-${{ github.event.pull_request.number }}.oddish.app
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Stop preview
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/stop_preview.sh"

@@ -1,7 +1,7 @@
 name: CI Base Image
 
 # Builds and publishes ghcr.io/abundant-ai/oddish-ci-base, the container
-# image used by modal-preview / modal-deploy / supabase-db-migrations to
+# image used by pr-preview / modal-deploy / supabase-db-migrations to
 # skip per-run tool installs.  Refreshes weekly (so upstream tooling and
 # the warm uv cache stay current) and on demand when the Dockerfile or
 # any project lockfile changes.

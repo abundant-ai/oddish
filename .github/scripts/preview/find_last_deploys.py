@@ -24,18 +24,13 @@ import subprocess
 import sys
 import urllib.parse
 
-WORKFLOW_FILE = "modal-preview.yml"
-JOB_NAME = "deploy-preview"
+WORKFLOW_FILE = "pr-preview.yml"
 
-# Step name -> output key. Matched as exact strings against
-# job.steps[].name in the deploy-preview job. If you rename either
-# step in modal-preview.yml, rename it here too — silent breakage
-# otherwise (this script would always return empty bases, which
-# downgrades the workflow to "always full redeploy" rather than
-# erroring out visibly).
+# Step name -> output key. Matched as exact strings against job steps.
+# If you rename these steps in pr-preview.yml, rename them here too.
 STEPS_BY_COMPONENT = {
     "Deploy preview backend": "backend_base",
-    "Apply Alembic migrations to preview branch": "migrations_base",
+    "Prepare preview database": "migrations_base",
 }
 
 
@@ -69,8 +64,6 @@ def find_last_deployed_shas(owner_repo, head_ref):
             f"/repos/{owner_repo}/actions/runs/{run['id']}/jobs?per_page=100"
         ).get("jobs", [])
         for job in jobs:
-            if job.get("name") != JOB_NAME:
-                continue
             for step in job.get("steps", []) or []:
                 if step.get("conclusion") != "success":
                     continue
