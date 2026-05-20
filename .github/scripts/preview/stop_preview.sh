@@ -43,7 +43,7 @@ if is_configured_vercel; then
       vercel env rm "$name" preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
     done
     if [ -n "${PREVIEW_ALIAS_HOSTNAME:-}" ]; then
-      vercel alias rm "$PREVIEW_ALIAS_HOSTNAME" --yes --token="$VERCEL_TOKEN" || true
+      vercel alias rm "$PREVIEW_ALIAS_HOSTNAME" --scope "$VERCEL_ORG_ID" --yes --token="$VERCEL_TOKEN" || true
     fi
   )
 fi
