@@ -9,4 +9,4 @@ set -euo pipefail
 : "${MODAL_ENVIRONMENT:?}"
 : "${MODAL_APP_NAME:?}"
 
-uv run modal app stop -y --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME" || true
+modal app stop -y --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME" || true

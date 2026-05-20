@@ -14,6 +14,7 @@ concurrency:
 
 jobs:
   detect-changes:
+    name: Detect preview changes
     if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
@@ -95,16 +96,100 @@ jobs:
           WORKFLOW_CHANGED: ${{ steps.filter_workflow.outputs.changed }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/preview/compute_deployment_plan.sh"
 
-  deploy-preview:
+  stop-previous-preview-backend:
+    name: Stop previous preview backend
     needs: detect-changes
-    if: needs.detect-changes.outputs.any_change == 'true'
+    if: needs.detect-changes.outputs.any_change == 'true' && needs.detect-changes.outputs.deploy_backend == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: read
-    # Python 3.13, uv (with warm cache), Supabase CLI, Postgres 17 client,
-    # Node 20 + Vercel CLI are all baked in.  Image is refreshed weekly by
-    # .github/workflows/ci-base-image.yml.
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: preview
+      MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Stop previous preview backend
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/stop_previous_preview_backend.sh"
+
+  prepare-preview-database:
+    name: Prepare preview database
+    needs:
+      - detect-changes
+      - stop-previous-preview-backend
+    if: |
+      always() &&
+      needs.detect-changes.result == 'success' &&
+      needs.detect-changes.outputs.any_change == 'true' &&
+      (
+        needs.stop-previous-preview-backend.result == 'success' ||
+        needs.stop-previous-preview-backend.result == 'skipped'
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      branch_ref: ${{ steps.prepare.outputs.branch_ref }}
+      branch_was_created: ${{ steps.prepare.outputs.branch_was_created }}
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: preview
+      MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Sync backend dependencies
+        run: uv sync --frozen
+
+      - name: Prepare preview database
+        id: prepare
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
+          RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/prepare_preview_database.sh"
+
+  deploy-preview-backend:
+    name: Deploy preview backend
+    needs:
+      - detect-changes
+      - prepare-preview-database
+    if: |
+      always() &&
+      needs.prepare-preview-database.result == 'success' &&
+      (
+        needs.detect-changes.outputs.deploy_backend == 'true' ||
+        needs.prepare-preview-database.outputs.branch_was_created == 'true'
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      modal_api_url: ${{ steps.deploy.outputs.modal_api_url }}
     container:
       image: ghcr.io/abundant-ai/oddish-ci-base:latest
       credentials:
@@ -116,15 +201,6 @@ jobs:
       MODAL_ENVIRONMENT: preview
       MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
       MODAL_SECRET_ENVIRONMENT: main
-      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
-      VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
-      # Reuse the .venv pre-built into the base image; `uv sync --frozen`
-      # below only patches the editable oddish path.
       UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
@@ -140,18 +216,41 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Sync backend dependencies
-        # Reuses the warm uv cache baked into the base image — only new or
-        # bumped wheels relative to the weekly image actually download.
         run: uv sync --frozen
 
-      - name: Deploy preview
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
-          RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
-        run: "$GITHUB_WORKSPACE/.github/scripts/preview/deploy_preview.sh"
+      - name: Deploy preview backend
+        id: deploy
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/deploy_preview_backend.sh"
+
+  update-vercel-preview:
+    name: Update Vercel preview
+    needs: deploy-preview-backend
+    if: needs.deploy-preview-backend.outputs.modal_api_url != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
+      VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+      MODAL_API_URL: ${{ needs.deploy-preview-backend.outputs.modal_api_url }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Update Vercel preview
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/update_vercel_preview.sh"
 
   stop-preview:
+    name: Stop preview
     if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
