@@ -40,10 +40,6 @@ else
   if [ -z "$MIGRATIONS_BASE" ] || [ "$MIGRATIONS_CHANGED" = "true" ]; then
     run_migrations=true
   fi
-  # New migrations imply schema change -> backend must redeploy too.
-  if [ "$run_migrations" = "true" ]; then
-    deploy_backend=true
-  fi
 fi
 
 any_change=false

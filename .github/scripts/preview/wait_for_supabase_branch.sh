@@ -19,7 +19,7 @@
 # Disable the Supabase GitHub integration's auto-branching for this
 # repo so it doesn't create a parallel data-less branch in the same
 # project on PR open.
-set -uo pipefail
+set -euo pipefail
 
 BRANCH_NAME="pr-${PR_NUMBER}"
 MAX_ATTEMPTS=2

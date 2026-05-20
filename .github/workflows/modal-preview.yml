@@ -156,7 +156,7 @@ jobs:
         continue-on-error: true
         # `|| true` so a fresh PR (no app to stop) is cleanly green
         # instead of red-with-continue-on-error.
-        run: uv run modal app stop -y --env "$MODAL_ENVIRONMENT" "$MODAL_APP_NAME" || true
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/stop_modal_preview_app.sh"
 
       - name: Ensure Supabase preview branch with prod data
         id: supabase_branch
@@ -167,49 +167,23 @@ jobs:
 
       - name: Apply Alembic migrations to preview branch
         if: ${{ needs.detect-changes.outputs.run_migrations == 'true' || steps.supabase_branch.outputs.branch_was_created == 'true' }}
-        run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_preview_db.py"
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/run_preview_migrations.sh"
 
       - name: Cancel cloned-prod in-flight work
         # Only on a fresh branch — once the dev has interacted with the
         # preview, their own pending work shouldn't get nuked on every
         # subsequent push.
         if: steps.supabase_branch.outputs.branch_was_created == 'true'
-        shell: bash
-        run: |
-          psql "${ODDISH_DATABASE_URL/+asyncpg/}" <<'SQL'
-          UPDATE worker_jobs
-             SET status = 'CANCELLED'
-           WHERE status IN ('QUEUED', 'RUNNING', 'RETRYING', 'BLOCKED');
-          UPDATE tasks
-             SET status = 'failed'
-           WHERE status IN ('pending', 'running', 'analyzing', 'verdict_pending');
-          UPDATE trials
-             SET status = 'failed'
-           WHERE status IN ('pending', 'queued', 'running', 'retrying');
-          SQL
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/cancel_cloned_preview_work.sh"
 
       - name: Create per-PR Modal database secret
         if: ${{ needs.detect-changes.outputs.deploy_backend == 'true' || steps.supabase_branch.outputs.branch_was_created == 'true' }}
-        run: |
-          uv run modal secret create \
-            --env "$MODAL_ENVIRONMENT" --force \
-            "$MODAL_APP_NAME-db" \
-            "ODDISH_DATABASE_URL=$ODDISH_DATABASE_URL"
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/publish_modal_db_secret.sh"
 
       - name: Deploy preview backend
         id: deploy_modal
         if: ${{ needs.detect-changes.outputs.deploy_backend == 'true' || steps.supabase_branch.outputs.branch_was_created == 'true' }}
-        shell: bash
-        run: |
-          # Without pipefail, `modal deploy ... | tee` masks deploy
-          # failures behind tee's exit code, leaving the job green
-          # while containers crashloop on import errors. The readiness
-          # step then times out 3 minutes later with no obvious cause.
-          set -euo pipefail
-          deploy_log="$(mktemp)"
-          uv run modal deploy deploy.py 2>&1 | tee "$deploy_log"
-          modal_api_url="$(python "$GITHUB_WORKSPACE/.github/scripts/preview/extract_modal_api_url.py" "$deploy_log")"
-          echo "modal_api_url=$modal_api_url" >> "$GITHUB_OUTPUT"
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/deploy_modal_preview.sh"
 
       - name: Wait for preview backend readiness
         id: readiness
