@@ -313,6 +313,7 @@ jobs:
     permissions:
       contents: read
       issues: write
+      pull-requests: write
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR_NUMBER: ${{ github.event.pull_request.number }}

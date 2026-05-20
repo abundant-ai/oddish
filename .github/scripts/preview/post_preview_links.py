@@ -28,10 +28,14 @@ def gh_request(method: str, path: str, body: dict | None = None):
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with urllib.request.urlopen(request) as response:
-        if response.status == 204:
-            return None
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(request) as response:
+            if response.status == 204:
+                return None
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"GitHub API {method} {path} failed: {detail}") from exc
 
 
 def link_or_text(label: str, url: str) -> str:
