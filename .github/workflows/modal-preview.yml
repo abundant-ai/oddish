@@ -144,108 +144,12 @@ jobs:
         # bumped wheels relative to the weekly image actually download.
         run: uv sync --frozen
 
-      - name: Stop previous preview Modal app
-        # The Supabase branch step (next) rotates the per-PR DB password
-        # every deploy. If the previously-deployed Modal containers are
-        # still running with the prior password, their reconnects flood
-        # Supavisor with auth failures and trip its per-project circuit
-        # breaker — which then bounces our own smoke-test seconds later.
-        # Stop the old app first so the rotation only invalidates
-        # credentials nothing is using.
-        if: ${{ needs.detect-changes.outputs.deploy_backend == 'true' }}
-        continue-on-error: true
-        # `|| true` so a fresh PR (no app to stop) is cleanly green
-        # instead of red-with-continue-on-error.
-        run: "$GITHUB_WORKSPACE/.github/scripts/preview/stop_modal_preview_app.sh"
-
-      - name: Ensure Supabase preview branch with prod data
-        id: supabase_branch
-        working-directory: ${{ github.workspace }}
+      - name: Deploy preview
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: .github/scripts/preview/wait_for_supabase_branch.sh
-
-      - name: Apply Alembic migrations to preview branch
-        if: ${{ needs.detect-changes.outputs.run_migrations == 'true' || steps.supabase_branch.outputs.branch_was_created == 'true' }}
-        run: "$GITHUB_WORKSPACE/.github/scripts/preview/run_preview_migrations.sh"
-
-      - name: Cancel cloned-prod in-flight work
-        # Only on a fresh branch — once the dev has interacted with the
-        # preview, their own pending work shouldn't get nuked on every
-        # subsequent push.
-        if: steps.supabase_branch.outputs.branch_was_created == 'true'
-        run: "$GITHUB_WORKSPACE/.github/scripts/preview/cancel_cloned_preview_work.sh"
-
-      - name: Create per-PR Modal database secret
-        if: ${{ needs.detect-changes.outputs.deploy_backend == 'true' || steps.supabase_branch.outputs.branch_was_created == 'true' }}
-        run: "$GITHUB_WORKSPACE/.github/scripts/preview/publish_modal_db_secret.sh"
-
-      - name: Deploy preview backend
-        id: deploy_modal
-        if: ${{ needs.detect-changes.outputs.deploy_backend == 'true' || steps.supabase_branch.outputs.branch_was_created == 'true' }}
-        run: "$GITHUB_WORKSPACE/.github/scripts/preview/deploy_modal_preview.sh"
-
-      - name: Wait for preview backend readiness
-        id: readiness
-        if: ${{ steps.deploy_modal.outcome == 'success' }}
-        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/wait_for_modal_ready.py" "${{ steps.deploy_modal.outputs.modal_api_url }}"
-
-      - name: Dump Modal preview logs on deploy or readiness failure
-        # Also fire when `modal deploy` itself crashes — that's where
-        # the container-side stack trace lives, and it's the most
-        # diagnostic moment.
-        if: ${{ failure() && (steps.deploy_modal.conclusion == 'failure' || steps.readiness.conclusion == 'failure') }}
-        continue-on-error: true
-        # `modal app logs` streams forever; bound it. `--env` is needed
-        # because the CLI ignores MODAL_ENVIRONMENT for this subcommand.
-        run: timeout --preserve-status 45s uv run modal app logs --env "$MODAL_ENVIRONMENT" --timestamps "$MODAL_APP_NAME" 2>&1 | tail -300 || true
-
-      # Run any time Modal redeployed (not just on first branch creation):
-      # if the first run failed before reaching here, every later push had
-      # branch_was_created=false and the preview kept serving prod. The
-      # vercel env add / redeploy below are idempotent.
-      - name: Link Vercel project
-        if: ${{ steps.deploy_modal.outputs.modal_api_url != '' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
-        working-directory: frontend
-        run: vercel pull --yes --environment=preview --git-branch="$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
-
-      - name: Point Vercel preview to Modal preview
-        if: ${{ steps.deploy_modal.outputs.modal_api_url != '' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
-        working-directory: frontend
-        env:
-          MODAL_API_URL: ${{ steps.deploy_modal.outputs.modal_api_url }}
-        # NEXT_PUBLIC_API_URL is the only backend URL the frontend reads
-        # (frontend/src/lib/backend-config.ts). --no-sensitive keeps it
-        # visible in the dashboard for debugging.
-        run: printf '%s' "$MODAL_API_URL" | vercel env add NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --force --no-sensitive --token="$VERCEL_TOKEN"
-
-      - name: Redeploy Vercel preview with updated env
-        id: redeploy_vercel
-        if: ${{ steps.deploy_modal.outputs.modal_api_url != '' && env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
-        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/redeploy_vercel.py"
-
-      - name: Summarize preview URLs
-        if: ${{ always() }}
-        run: |
-          {
-            echo "## Preview deployment"
-            echo
-            if [ -n "${{ steps.deploy_modal.outputs.modal_api_url }}" ]; then
-              echo "- Modal API: ${{ steps.deploy_modal.outputs.modal_api_url }} (redeployed)"
-            else
-              echo "- Modal API: not redeployed this push (no backend changes since last successful deploy)"
-            fi
-            if [ -n "${{ steps.redeploy_vercel.outputs.preview_url }}" ]; then
-              echo "- Vercel preview: ${{ steps.redeploy_vercel.outputs.preview_url }} (force-redeployed)"
-            else
-              echo "- Vercel preview: handled by Vercel's git integration"
-            fi
-            if [ -n "${{ steps.supabase_branch.outputs.branch_ref }}" ]; then
-              echo "- Supabase branch: \`${{ steps.supabase_branch.outputs.branch_ref }}\`"
-            fi
-            echo "- PR head SHA: ${{ github.event.pull_request.head.sha }}"
-            echo "- Plan: deploy_backend=\`${{ needs.detect-changes.outputs.deploy_backend }}\` run_migrations=\`${{ needs.detect-changes.outputs.run_migrations }}\` branch_was_created=\`${{ steps.supabase_branch.outputs.branch_was_created }}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
+          RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/deploy_preview.sh"
 
   stop-preview:
     if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
@@ -262,48 +166,17 @@ jobs:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       MODAL_ENVIRONMENT: preview
+      MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      # Modal CLI is pre-installed in the base image as a uv tool
-      # (/usr/local/bin/modal) so no per-job install is needed.
-      - name: Stop preview backend
-        continue-on-error: true
-        run: modal app stop -y "oddish-pr-${{ github.event.pull_request.number }}"
-
-      - name: Delete per-PR Modal database secret
-        continue-on-error: true
-        run: modal secret delete --env "$MODAL_ENVIRONMENT" "oddish-pr-${{ github.event.pull_request.number }}-db"
-
-      - name: Delete Supabase preview branch
-        continue-on-error: true
-        env:
-          BRANCH_NAME: pr-${{ github.event.pull_request.number }}
-        run: |
-          ids=$(supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
-            | jq -r --arg name "$BRANCH_NAME" '
-                .[] | select(.persistent != true)
-                    | select(.name == $name)
-                    | .id')
-          for id in $ids; do
-            echo "deleting Supabase branch $id"
-            supabase branches delete "$id" --project-ref "$SUPABASE_PROJECT_REF" || true
-          done
-
-      # Node + Vercel CLI are pre-installed in the base image.
-      - name: Link Vercel project
-        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
-        working-directory: frontend
-        run: vercel pull --yes --environment=preview --git-branch="$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
-
-      - name: Remove Vercel preview overrides
-        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_ORG_ID != '' && env.VERCEL_PROJECT_ID != '' }}
-        working-directory: frontend
-        run: vercel env rm NEXT_PUBLIC_API_URL preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
+      - name: Stop preview
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/stop_preview.sh"
