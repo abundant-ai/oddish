@@ -46,6 +46,26 @@ read_output_value() {
   awk -F= -v key="$key" '$1 == key { value = substr($0, length(key) + 2) } END { print value }' "$file"
 }
 
+wait_for_url_ready() {
+  local url="$1"
+  local attempt
+  local status
+
+  for attempt in $(seq 1 60); do
+    status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 "$url" || true)"
+    case "$status" in
+      2*|3*|401|403)
+        return 0
+        ;;
+    esac
+    echo "Waiting for Vercel preview to answer at $url (attempt $attempt/60, status ${status:-none})"
+    sleep 5
+  done
+
+  echo "Vercel preview never became reachable at $url" >&2
+  return 1
+}
+
 summarize_vercel_phase() {
   {
     echo "## Vercel preview"
@@ -102,6 +122,9 @@ if [ -n "${PREVIEW_ALIAS_HOSTNAME:-}" ] && [ -n "$preview_url" ]; then
   vercel inspect "$preview_url" --wait --timeout=10m --scope "$VERCEL_ORG_ID" --token="$VERCEL_TOKEN" >/dev/null
   vercel alias set "$preview_url" "$PREVIEW_ALIAS_HOSTNAME" --scope "$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
   preview_alias_url="https://$PREVIEW_ALIAS_HOSTNAME"
+  wait_for_url_ready "$preview_alias_url"
+elif [ -n "$preview_url" ]; then
+  wait_for_url_ready "$preview_url"
 fi
 if [ -n "$github_output" ]; then
   {
