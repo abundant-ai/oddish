@@ -46,6 +46,7 @@ def build_body() -> str:
     commit_sha = env("PREVIEW_COMMIT_SHA")
     short_sha = commit_sha[:7] if commit_sha else "unknown"
     vercel_url = env("VERCEL_PREVIEW_URL")
+    vercel_deployment_url = env("VERCEL_DEPLOYMENT_URL")
     modal_api_url = env("MODAL_API_URL")
     backend_label = env("PREVIEW_BACKEND_LABEL", "unknown")
     database_label = env("PREVIEW_DATABASE_LABEL", "unknown")
@@ -78,12 +79,17 @@ def build_body() -> str:
             "| --- | --- | --- |",
             *rows,
             "",
+            *(
+                [f"Vercel deployment URL: {vercel_deployment_url}", ""]
+                if vercel_deployment_url and vercel_deployment_url != vercel_url
+                else []
+            ),
             "Plan:",
             f"- Frontend deploy: `{deploy_frontend}`",
             f"- Backend deploy: `{deploy_backend}`",
             f"- Migrations: `{run_migrations}`",
             "",
-            "_This comment is updated by the Modal Preview workflow._",
+            "_This comment is updated by the PR Preview workflow._",
         ]
     )
 

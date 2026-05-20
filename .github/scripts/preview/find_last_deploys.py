@@ -24,10 +24,10 @@ import subprocess
 import sys
 import urllib.parse
 
-WORKFLOW_FILE = "modal-preview.yml"
+WORKFLOW_FILE = "pr-preview.yml"
 
 # Step name -> output key. Matched as exact strings against job steps.
-# If you rename these steps in modal-preview.yml, rename them here too.
+# If you rename these steps in pr-preview.yml, rename them here too.
 STEPS_BY_COMPONENT = {
     "Deploy preview backend": "backend_base",
     "Prepare preview database": "migrations_base",

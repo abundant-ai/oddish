@@ -9,6 +9,7 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 github_output="${GITHUB_OUTPUT:-}"
 preview_url=""
+preview_alias_url=""
 backend_api_url="${MODAL_API_URL:-${PROD_API_URL:-}}"
 backend_label="${PREVIEW_BACKEND_LABEL:-}"
 database_label="${PREVIEW_DATABASE_LABEL:-}"
@@ -51,6 +52,9 @@ summarize_vercel_phase() {
     echo
     if [ -n "$preview_url" ]; then
       echo "- Vercel preview: $preview_url"
+      if [ -n "$preview_alias_url" ]; then
+        echo "- Stable alias: $preview_alias_url"
+      fi
     elif is_configured_vercel; then
       echo "- Vercel preview: redeploy did not produce a URL"
     else
@@ -94,8 +98,13 @@ vercel_output="$(mktemp)"
 GITHUB_OUTPUT="$vercel_output" python "$script_dir/redeploy_vercel.py"
 [ -z "$github_output" ] || cat "$vercel_output" >> "$github_output"
 preview_url="$(read_output_value "$vercel_output" preview_url)"
+if [ -n "${PREVIEW_ALIAS_HOSTNAME:-}" ] && [ -n "$preview_url" ]; then
+  vercel alias set "$preview_url" "$PREVIEW_ALIAS_HOSTNAME" --token="$VERCEL_TOKEN"
+  preview_alias_url="https://$PREVIEW_ALIAS_HOSTNAME"
+fi
 if [ -n "$github_output" ]; then
   {
+    echo "preview_alias_url=$preview_alias_url"
     echo "backend_api_url=$backend_api_url"
     echo "backend_label=$backend_label"
     echo "database_label=$database_label"

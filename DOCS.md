@@ -226,7 +226,7 @@ By default, files are written to `./.oddish/<target>`. Re-pulling is idempotent 
 
 Every open PR gets its own isolated preview stack: a Modal app
 (`oddish-pr-<N>`), a Supabase Postgres branch, and a Vercel preview build —
-provisioned automatically by `.github/workflows/modal-preview.yml`. To point
+provisioned automatically by `.github/workflows/pr-preview.yml`. To point
 the CLI at a preview from your laptop:
 
 ```bash

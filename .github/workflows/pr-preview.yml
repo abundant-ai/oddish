@@ -1,4 +1,4 @@
-name: Modal Preview
+name: PR Preview
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ on:
       - closed
 
 concurrency:
-  group: modal-preview-${{ github.event.pull_request.number }}
+  group: pr-preview-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -101,7 +101,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           filters: |
             changed:
-              - '.github/workflows/modal-preview.yml'
+              - '.github/workflows/pr-preview.yml'
               - '.github/scripts/preview/**'
 
       - name: Compute deployment plan
@@ -285,8 +285,10 @@ jobs:
       MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
       PROD_API_URL: ${{ vars.ODDISH_PROD_API_URL }}
       SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}
+      PREVIEW_ALIAS_HOSTNAME: pr-${{ github.event.pull_request.number }}.oddish.app
     outputs:
       preview_url: ${{ steps.vercel.outputs.preview_url }}
+      preview_alias_url: ${{ steps.vercel.outputs.preview_alias_url }}
       backend_api_url: ${{ steps.vercel.outputs.backend_api_url }}
       backend_label: ${{ steps.vercel.outputs.backend_label }}
       database_label: ${{ steps.vercel.outputs.database_label }}
@@ -321,7 +323,8 @@ jobs:
       DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
       RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
       DEPLOY_FRONTEND: ${{ needs.detect-changes.outputs.deploy_frontend }}
-      VERCEL_PREVIEW_URL: ${{ needs.update-vercel-preview.outputs.preview_url }}
+      VERCEL_PREVIEW_URL: ${{ needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
+      VERCEL_DEPLOYMENT_URL: ${{ needs.update-vercel-preview.outputs.preview_url }}
       MODAL_API_URL: ${{ needs.deploy-preview-backend.outputs.modal_api_url }}
       PREVIEW_BACKEND_LABEL: ${{ needs.update-vercel-preview.outputs.backend_label }}
       PREVIEW_DATABASE_LABEL: ${{ needs.update-vercel-preview.outputs.database_label }}
@@ -358,6 +361,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
+      PREVIEW_ALIAS_HOSTNAME: pr-${{ github.event.pull_request.number }}.oddish.app
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5

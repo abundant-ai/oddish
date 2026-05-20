@@ -3,7 +3,7 @@
 # Oddish CI base image.  Published weekly to
 # `ghcr.io/abundant-ai/oddish-ci-base:latest` by
 # `.github/workflows/ci-base-image.yml`.  Consumers reference it via the
-# `container:` field on a job — see `modal-preview.yml`, `modal-deploy.yml`
+# `container:` field on a job — see `pr-preview.yml`, `modal-deploy.yml`
 # and `supabase-db-migrations.yml`.
 #
 # Contents:

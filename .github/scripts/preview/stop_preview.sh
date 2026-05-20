@@ -42,5 +42,8 @@ if is_configured_vercel; then
       NEXT_PUBLIC_ODDISH_PREVIEW_COMMIT_SHA; do
       vercel env rm "$name" preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
     done
+    if [ -n "${PREVIEW_ALIAS_HOSTNAME:-}" ]; then
+      vercel alias rm "$PREVIEW_ALIAS_HOSTNAME" --yes --token="$VERCEL_TOKEN" || true
+    fi
   )
 fi
