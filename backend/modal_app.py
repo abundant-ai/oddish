@@ -107,7 +107,7 @@ _IS_PREVIEW = MODAL_APP_NAME.startswith("oddish-pr-")
 # instead of each worker opening its own asyncpg connection. Caps the
 # DB connection count at ~``DB_PROXY_POOL_SIZE * DB_PROXY_REPLICAS``
 # regardless of how many workers are concurrent.
-DB_PROXY_ENABLED = _env_flag("ODDISH_DB_PROXY_ENABLED", False)
+DB_PROXY_ENABLED = _env_flag("ODDISH_DB_PROXY_ENABLED", True)
 DB_PROXY_POOL_SIZE = _env_int("ODDISH_DB_PROXY_POOL_SIZE", 32)
 DB_PROXY_REPLICAS = _env_int("ODDISH_DB_PROXY_REPLICAS", 2)
 
