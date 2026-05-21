@@ -24,6 +24,9 @@ beyond ``limit - running`` for that queue_key.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from datetime import datetime
+
 from oddish.config import settings
 from oddish.db import get_pool
 
@@ -32,7 +35,12 @@ __all__ = [
     "build_spawn_plan",
     "discover_active_worker_job_queue_keys",
     "get_worker_job_org_queue_counts",
+    "next_retry_wake_at",
+    "plan_dispatch_cycle",
+    "run_dispatch_cycle",
 ]
+
+Spawner = Callable[[str], Awaitable[None]]
 
 
 async def discover_active_worker_job_queue_keys() -> tuple[str, ...]:
@@ -215,3 +223,82 @@ def build_spawn_plan(
             break
 
     return spawn_plan
+
+
+async def plan_dispatch_cycle(
+    max_workers: int,
+) -> tuple[list[str], dict[str, int], dict[str, int]]:
+    """Discover queue state and produce a spawn plan.
+
+    Returned tuple is ``(spawn_plan, queued_by_queue, running_by_queue)``;
+    the two count maps are aggregated per-queue_key for operator logging.
+    """
+    if max_workers <= 0:
+        return [], {}, {}
+
+    queue_keys = await discover_active_worker_job_queue_keys()
+    if not queue_keys:
+        return [], {}, {}
+
+    queued_by_org_queue, running_by_queue = await get_worker_job_org_queue_counts(
+        queue_keys
+    )
+    concurrency_limits = {
+        queue_key: settings.get_model_concurrency(queue_key) for queue_key in queue_keys
+    }
+    spawn_plan = build_spawn_plan(
+        queued_by_org_queue=queued_by_org_queue,
+        running_by_queue=running_by_queue,
+        concurrency_limits=concurrency_limits,
+        max_workers=max_workers,
+    )
+
+    queued_by_queue: dict[str, int] = {}
+    for (_org_id, queue_key), queued in queued_by_org_queue.items():
+        queued_by_queue[queue_key] = queued_by_queue.get(queue_key, 0) + queued
+
+    return spawn_plan, queued_by_queue, running_by_queue
+
+
+async def run_dispatch_cycle(
+    spawner: Spawner,
+    *,
+    max_workers: int,
+) -> list[str]:
+    """Plan a dispatch cycle and ``await spawner(queue_key)`` for each entry.
+
+    Returns the spawn plan that was executed so callers can log it. The
+    spawner is invoked sequentially via ``await``; callers that want
+    parallel spawn fan-out should pass a spawner that schedules without
+    blocking (e.g. wrap ``modal_function.spawn.aio`` in ``asyncio.gather``
+    at the call site).
+    """
+    spawn_plan, _, _ = await plan_dispatch_cycle(max_workers=max_workers)
+    for queue_key in spawn_plan:
+        await spawner(queue_key)
+    return spawn_plan
+
+
+async def next_retry_wake_at() -> datetime | None:
+    """Earliest ``available_after`` for a row not yet runnable.
+
+    The reactor uses this to compute how long to sleep when no notify is
+    pending: ``min(available_after) - NOW()`` is the longest it can wait
+    before a retry must be picked up, regardless of whether any NOTIFY
+    fires before then.
+    """
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT MIN(available_after) AS wake_at
+        FROM   worker_jobs
+        WHERE  status::text IN ('QUEUED', 'RETRYING')
+          AND  available_after > NOW()
+        """
+    )
+    if row is None:
+        return None
+    wake_at = row["wake_at"]
+    if wake_at is None:
+        return None
+    return wake_at
