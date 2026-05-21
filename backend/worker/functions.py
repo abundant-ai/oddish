@@ -16,9 +16,13 @@ import modal
 from observability import span as _otel_span
 
 from modal_app import (
+    _DISPATCH_PERIOD_SECONDS,
     DISPATCHER_NONPREEMPTIBLE,
     MAX_WORKERS_PER_POLL,
     POLL_INTERVAL_SECONDS,
+    REACTOR_DEADLINE_SECONDS,
+    REACTOR_ENABLED,
+    REACTOR_SAFETY_TICK_SECONDS,
     WORKER_BUFFER_CONTAINERS,
     WORKER_MAX_CONTAINERS,
     WORKER_MIN_CONTAINERS,
@@ -50,7 +54,16 @@ from oddish.workers.queue.worker_job_single_job import (
 )
 
 from .github import notify_github_analysis, notify_github_trial, notify_github_verdict
+from .reactor import install_modal_dispatch_waker, run_reactor
 from .runtime import configure_storage_paths, console
+
+# Install the Modal-Queue-backed dispatch waker as soon as the worker
+# module loads. ``enqueue_worker_job`` / ``release_queue_slot`` now go
+# through ``notify_dispatch`` which forwards here, so even legacy
+# polling deployments get free observability of dispatch wake events
+# in the Modal Queue dashboard. The reactor itself only consumes the
+# wakes when ``REACTOR_ENABLED`` is true.
+install_modal_dispatch_waker()
 
 # Register TRIAL / ANALYSIS / VERDICT handlers against the unified
 # registry as soon as this module loads in a worker container. The
@@ -191,32 +204,49 @@ async def process_single_job(queue_key: str):
     image=image,
     volumes=worker_volumes,
     secrets=runtime_secrets,
-    timeout=60,  # Dispatcher is lightweight, should complete quickly
+    # The reactor holds the dispatch loop open for nearly a full
+    # schedule period; the legacy poll runs and exits in seconds. Give
+    # the function enough headroom for both shapes -- a slightly long
+    # timeout when running in legacy mode is harmless because the body
+    # still returns quickly.
+    timeout=max(_DISPATCH_PERIOD_SECONDS + 30, 60),
     min_containers=1,  # Keep one dispatcher container warm.
     max_containers=1,  # Keep the scheduled dispatcher singleton-ish.
-    schedule=modal.Period(seconds=POLL_INTERVAL_SECONDS),
+    schedule=modal.Period(seconds=_DISPATCH_PERIOD_SECONDS),
     nonpreemptible=DISPATCHER_NONPREEMPTIBLE,
 )
 async def poll_queue():
     """
-    Queue-aware dispatcher that spawns ``process_single_job`` workers
-    based on per-queue-key depth in the unified ``worker_jobs`` table.
+    Queue-aware dispatcher for the unified ``worker_jobs`` table.
 
-    Runs every ``POLL_INTERVAL_SECONDS``:
-    1. Reaps orphaned ``queue_slots`` leases and stale ``worker_jobs``
-       rows so the queue can make forward progress.
-    2. Scans ``worker_jobs`` for active queue keys and their
-       queued/running counts.
-    3. Spawns up to ``MAX_WORKERS_PER_POLL`` ``process_single_job``
-       workers, budgeted per queue_key against concurrency limits.
+    Two execution shapes, selected by ``ODDISH_REACTOR_ENABLED``:
+
+    * **Reactor (event-driven).** The cleanup pass runs once at the
+      top of the invocation, then ``worker.reactor.run_reactor`` holds
+      the dispatch loop open until just before the next scheduled
+      tick. Wakes are driven by Modal Queue puts from
+      ``enqueue_worker_job`` / ``release_queue_slot``, so steady-state
+      latency from enqueue to spawn is sub-second.
+    * **Legacy poll.** One shot per tick: cleanup, discover, plan,
+      spawn, exit. Latency floor is ``POLL_INTERVAL_SECONDS``.
+
+    Cleanup (slot reap + orphaned-state reconciliation) is identical
+    in both shapes and runs once per invocation -- not on every
+    reactor wake -- so the steady-state path stays cheap.
     """
     # Open the span FIRST so the storage-path setup, cleanup,
     # discovery, and spawn-plan queries all nest under one named
     # ``worker.poll_queue_cycle`` parent per tick.
-    cycle_span = _otel_span("worker.poll_queue_cycle")
+    cycle_span = _otel_span(
+        "worker.poll_queue_cycle",
+        reactor_enabled=REACTOR_ENABLED,
+    )
     cycle_span.__enter__()
     try:
-        console.print("[cyan]Queue dispatcher starting...[/cyan]")
+        console.print(
+            f"[cyan]Queue dispatcher starting "
+            f"(mode={'reactor' if REACTOR_ENABLED else 'poll'})...[/cyan]"
+        )
         await configure_storage_paths()
 
         stale_cleared = await cleanup_stale_queue_slots()
@@ -240,6 +270,18 @@ async def poll_queue():
                     if value > 0
                 )
             )
+
+        if REACTOR_ENABLED:
+            async def _spawn(queue_key: str) -> None:
+                await process_single_job.spawn.aio(queue_key=queue_key)
+
+            await run_reactor(
+                _spawn,
+                max_workers=MAX_WORKERS_PER_POLL,
+                deadline_seconds=REACTOR_DEADLINE_SECONDS,
+                safety_tick_seconds=float(REACTOR_SAFETY_TICK_SECONDS),
+            )
+            return
 
         queue_keys = await discover_active_worker_job_queue_keys()
         queued_by_org_queue, running_by_queue = await get_worker_job_org_queue_counts(

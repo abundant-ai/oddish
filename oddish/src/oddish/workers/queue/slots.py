@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import asyncpg
 
 from oddish.config import settings
+from oddish.workers.queue.dispatch_signal import notify_dispatch
 
 
 @asynccontextmanager
@@ -102,6 +103,10 @@ async def release_queue_slot(
             slot,
             worker_id,
         )
+    # A freed slot may unblock a queued row for this queue_key.
+    # Best-effort wake of the dispatcher; reactor's safety-net poll
+    # covers any dropped signal.
+    await notify_dispatch(queue_key)
 
 
 async def cleanup_stale_queue_slots() -> int:

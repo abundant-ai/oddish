@@ -86,6 +86,21 @@ async def lifespan(_api: FastAPI):
     with _otel_span("app.startup"):
         Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
         role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
+        # Register the Modal-Queue-backed dispatch waker so API
+        # endpoints that enqueue work (task sweeps, admin actions,
+        # etc.) wake the reactor immediately instead of waiting for
+        # the safety-net poll. Import is lazy because the API package
+        # is also imported by tooling that doesn't have a Modal client
+        # configured -- and we don't want that import to fail just to
+        # register a best-effort optimisation.
+        try:
+            from worker.reactor import install_modal_dispatch_waker
+
+            install_modal_dispatch_waker()
+        except Exception:
+            logger.warning(
+                "could not install Modal dispatch waker", exc_info=True
+            )
 
     yield
 

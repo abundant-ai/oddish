@@ -9,7 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [2026-05-21]
 
 ### Added
+- Event-driven dispatch reactor (`worker.reactor.run_reactor`) replaces the 180-second poll loop when `ODDISH_REACTOR_ENABLED=true`. A persistent `modal.Queue` (`oddish-dispatch`) is fed by `enqueue_worker_job` and `release_queue_slot` via a new library-side `dispatch_signal` hook, so enqueueing work or freeing a slot wakes the dispatcher in sub-second time instead of waiting for the next tick. A safety-net loop (`ODDISH_MODAL_REACTOR_SAFETY_TICK_SECONDS`, default 30s) backstops dropped wake-ups and pending retry timers; the scheduled function period drops to `ODDISH_MODAL_REACTOR_TICK_SECONDS` (default 60s) when the flag is on, and the legacy 180s polling path is preserved verbatim for `ODDISH_REACTOR_ENABLED=false`
+- `worker_job_dispatcher.run_dispatch_cycle` / `plan_dispatch_cycle` / `next_retry_wake_at` helpers extracted from the inline polling body so both the reactor and the legacy path share a single dispatch surface
 - Sticky PR comment automatically posted (and updated on re-pushes) with preview environment links — Vercel frontend URL, stable `pr-NNN` Vercel alias, and Modal API URL — via new `post_preview_links.py` script (#141)
+
+### Changed
+- `ODDISH_MODAL_NOP_ORACLE_CONCURRENCY` default raised from 48 to 256 — nop/oracle never call a provider, so the cap exists only to bound infra pressure; sizing it close to `WORKER_MAX_CONTAINERS` makes it a non-binding ceiling in practice. Bursts of nop/oracle work are now the canary for whether queue overhead is hurting the product
+- `ODDISH_MODAL_MAX_WORKERS_PER_POLL` default raised from 64 to 256 so a single dispatch wake can saturate the nop/oracle ceiling; with the reactor enabled, "per poll" really means "per wake" and the cap behaves as a spawn-burst ceiling rather than a steady-state rate limit
 - In-app preview banner rendered when `NEXT_PUBLIC_IS_PREVIEW=true`, surfacing PR context to reviewers using the preview environment (#141)
 
 ### Changed

@@ -75,8 +75,47 @@ WORKER_MAX_CONTAINERS = _env_int(
 WORKER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_WORKER_NONPREEMPTIBLE", True)
 DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", True)
 
-# Max number of workers spawned per poll cycle (rate limiter, global across all queue_keys)
-MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 64)
+# Max number of workers spawned per dispatch cycle (rate limiter,
+# global across all queue_keys). With the reactor enabled, "per cycle"
+# really means "per wake" -- and wakes are event-driven, so the cap is
+# better understood as a spawn-burst ceiling than a steady-state rate.
+# Sized to match ``NOP_ORACLE_CONCURRENCY`` below so a single wake can
+# saturate the nop/oracle queue when the user submits a burst.
+MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
+
+# Event-driven dispatch reactor.
+#
+# When enabled, the scheduled ``poll_queue`` function runs the reactor
+# loop in :mod:`worker.reactor`: it listens on a Modal Queue for
+# wake-ups (pushed by ``enqueue_worker_job`` / ``release_queue_slot``
+# via the library-side dispatch_signal hooks) and runs a dispatch
+# cycle on each wake instead of waiting for the 180-second tick.
+#
+# The schedule period drops to ``REACTOR_TICK_SECONDS`` so the reactor
+# is recycled often enough to backstop dropped wake-ups, but each
+# invocation holds the listener open for almost the full period -- so
+# steady-state latency from enqueue to spawn is sub-second.
+#
+# Flip ``ODDISH_REACTOR_ENABLED=0`` to fall back to the legacy
+# poll-every-180s behaviour without redeploying any code.
+REACTOR_ENABLED = _env_flag("ODDISH_REACTOR_ENABLED", False)
+REACTOR_TICK_SECONDS = _env_int("ODDISH_MODAL_REACTOR_TICK_SECONDS", 60)
+# How long the safety-net loop will block on the wake queue before
+# re-planning anyway. Caps both dropped-wake latency and the gap
+# between ``next_retry_at`` and the reactor noticing.
+REACTOR_SAFETY_TICK_SECONDS = _env_int(
+    "ODDISH_MODAL_REACTOR_SAFETY_TICK_SECONDS", 30
+)
+# Effective schedule period for the dispatcher Modal function. When the
+# reactor is enabled the function is invoked far more often than the
+# legacy 180s tick because each invocation also holds the listener.
+_DISPATCH_PERIOD_SECONDS = (
+    REACTOR_TICK_SECONDS if REACTOR_ENABLED else POLL_INTERVAL_SECONDS
+)
+# Reactor must exit before the next scheduled tick to avoid Modal
+# refusing to start a second container (the function is pinned to
+# ``max_containers=1``). Leave a small margin.
+REACTOR_DEADLINE_SECONDS = max(REACTOR_TICK_SECONDS - 5, 5)
 
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
@@ -114,7 +153,15 @@ if MODAL_APP_NAME.startswith("oddish-pr-"):
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
 MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 32)
-NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 48)
+# nop/oracle never call a model provider, so the only reason to cap
+# their concurrency is to bound Modal/DB/S3 pressure. Setting it close
+# to ``WORKER_MAX_CONTAINERS`` makes it a non-binding ceiling in
+# practice: any time the cap actually limits a nop/oracle burst, the
+# bottleneck is Modal's container fleet, not the queue. This is also
+# the canary for whether queue overhead is hurting the product -- if a
+# nop/oracle burst doesn't run effectively in parallel, we still have
+# work to do.
+NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 256)
 
 ENV_VARS = {
     "UV_LINK_MODE": "copy",
