@@ -90,6 +90,16 @@ _DISPATCH_PERIOD_SECONDS = (
 # Exit before the next schedule fires; max_containers=1 prevents overlap.
 REACTOR_DEADLINE_SECONDS = max(REACTOR_RESTART_SECONDS - 30, 60)
 
+# Centralised DB proxy service. When enabled, workers route their
+# hot-path DB ops (claim, heartbeat, record_outcome, slot acquire/
+# release) through a small bounded pool held by a Modal Cls service
+# instead of each worker opening its own asyncpg connection. Caps the
+# DB connection count at ~``DB_PROXY_POOL_SIZE * DB_PROXY_REPLICAS``
+# regardless of how many workers are concurrent.
+DB_PROXY_ENABLED = _env_flag("ODDISH_DB_PROXY_ENABLED", False)
+DB_PROXY_POOL_SIZE = _env_int("ODDISH_DB_PROXY_POOL_SIZE", 32)
+DB_PROXY_REPLICAS = _env_int("ODDISH_DB_PROXY_REPLICAS", 2)
+
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
 )

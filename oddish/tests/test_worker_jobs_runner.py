@@ -38,9 +38,9 @@ from oddish.workers.jobs import (  # noqa: E402
     register,
 )
 from oddish.workers.queue import worker_job_single_job  # noqa: E402
+from oddish.workers.queue.queries import _CLAIM_WORKER_JOB_SQL  # noqa: E402
 from oddish.workers.queue.worker_job_single_job import (  # noqa: E402
     ClaimedWorkerJob,
-    _CLAIM_WORKER_JOB_SQL,
 )
 
 
@@ -299,28 +299,28 @@ def test_trial_retry_backoff_is_capped_after_jitter():
     assert delay == worker_job_single_job.TRIAL_RETRY_MAX_DELAY_SECONDS
 
 
-class _FakeConnection:
+class _RecordingProxy:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, tuple[Any, ...]]] = []
-        self.closed = False
+        self.calls: list[tuple[str, dict]] = []
 
-    async def execute(self, sql: str, *args: Any) -> None:
-        self.calls.append((sql, args))
+    async def record_success(self, **kwargs):
+        self.calls.append(("record_success", kwargs))
 
-    async def close(self) -> None:
-        self.closed = True
+    async def record_retry(self, **kwargs):
+        self.calls.append(("record_retry", kwargs))
+
+    async def record_failure(self, **kwargs):
+        self.calls.append(("record_failure", kwargs))
 
 
 @pytest.mark.asyncio
 async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry(
     monkeypatch,
 ):
-    connection = _FakeConnection()
+    from oddish.workers.queue import db_proxy
 
-    async def fake_open_connection():
-        return connection
-
-    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+    proxy = _RecordingProxy()
+    monkeypatch.setattr(db_proxy, "_proxy", proxy)
     monkeypatch.setattr(worker_job_single_job.random, "uniform", lambda _a, _b: 0.0)
 
     before = datetime.now(timezone.utc)
@@ -335,28 +335,17 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
     )
     after = datetime.now(timezone.utc)
 
-    assert connection.closed is True
-    assert len(connection.calls) == 2
+    assert len(proxy.calls) == 1
+    method, kwargs = proxy.calls[0]
+    assert method == "record_retry"
+    assert kwargs["job_id"] == "wj-1"
+    assert kwargs["error_message"] == "HTTP 503 from agent"
+    assert kwargs["mirror_to_trials"] is True
+    assert kwargs["subject_id"] == "trial-1"
 
-    worker_sql, worker_args = connection.calls[0]
-    assert "status = 'RETRYING'" in worker_sql
-    assert "next_retry_at = $3" in worker_sql
-    assert "available_after = COALESCE($3::timestamptz, NOW())" in worker_sql
-    assert worker_args[0] == "wj-1"
-    assert worker_args[1] == "HTTP 503 from agent"
-
-    retry_at = worker_args[2]
+    retry_at = kwargs["retry_at"]
     assert retry_at is not None
     assert before + timedelta(seconds=60) <= retry_at <= after + timedelta(seconds=60)
-
-    trial_sql, trial_args = connection.calls[1]
-    assert "UPDATE trials" in trial_sql
-    assert "status = 'RETRYING'" in trial_sql
-    assert "error_message = $2" in trial_sql
-    assert "next_retry_at = $3" in trial_sql
-    assert "current_worker_id = NULL" in trial_sql
-    assert "current_queue_slot = NULL" in trial_sql
-    assert trial_args == ("trial-1", "HTTP 503 from agent", retry_at)
 
 
 # ---------------------------------------------------------------------------

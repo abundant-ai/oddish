@@ -1,43 +1,11 @@
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-
-import asyncpg
-
-from oddish.config import settings
+from oddish.workers.queue.db_proxy import get_db_proxy
 from oddish.workers.queue.dispatch_signal import notify_dispatch
 
 
-@asynccontextmanager
-async def _slot_connection() -> AsyncIterator[asyncpg.Connection]:
-    # Slot bookkeeping only needs short, one-off queries. Using direct
-    # connections here avoids keeping an extra asyncpg pool connection open for
-    # the full lifetime of every long-running Modal worker.
-    conn = await asyncpg.connect(
-        settings.asyncpg_url,
-        statement_cache_size=0,
-        server_settings=settings.asyncpg_server_settings(),
-    )
-    try:
-        yield conn
-    finally:
-        await conn.close()
-
-
 async def ensure_queue_slots(queue_key: str, limit: int) -> None:
-    """Ensure queue slot rows exist up to the configured limit."""
     if limit <= 0:
         return
-    async with _slot_connection() as conn:
-        await conn.execute(
-            """
-            INSERT INTO queue_slots (queue_key, slot)
-            SELECT $1, slot
-            FROM generate_series(0, $2 - 1) AS slot
-            ON CONFLICT DO NOTHING
-            """,
-            queue_key,
-            limit,
-        )
+    await get_db_proxy().ensure_slots(queue_key=queue_key, limit=limit)
 
 
 async def acquire_queue_slot(
@@ -47,40 +15,15 @@ async def acquire_queue_slot(
     worker_id: str,
     lease_seconds: int,
 ) -> int | None:
-    """Acquire a queue slot lease without holding a session connection."""
     if limit <= 0:
         return None
     await ensure_queue_slots(queue_key, limit)
-    async with _slot_connection() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(
-                """
-                WITH candidate AS (
-                    SELECT queue_key, slot
-                    FROM queue_slots
-                    WHERE queue_key = $1
-                      AND slot < $2
-                      AND (locked_until IS NULL OR locked_until <= NOW())
-                    ORDER BY slot
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT 1
-                )
-                UPDATE queue_slots
-                SET locked_by = $3,
-                    locked_until = NOW() + make_interval(secs => $4)
-                FROM candidate
-                WHERE queue_slots.queue_key = candidate.queue_key
-                  AND queue_slots.slot = candidate.slot
-                RETURNING queue_slots.slot
-                """,
-                queue_key,
-                limit,
-                worker_id,
-                lease_seconds,
-            )
-    if row is None:
-        return None
-    return int(row["slot"])
+    return await get_db_proxy().acquire_slot(
+        queue_key=queue_key,
+        limit=limit,
+        worker_id=worker_id,
+        lease_seconds=lease_seconds,
+    )
 
 
 async def release_queue_slot(
@@ -89,38 +32,11 @@ async def release_queue_slot(
     slot: int,
     worker_id: str,
 ) -> None:
-    async with _slot_connection() as conn:
-        await conn.execute(
-            """
-            UPDATE queue_slots
-            SET locked_by = NULL,
-                locked_until = NULL
-            WHERE queue_key = $1
-              AND slot = $2
-              AND locked_by = $3
-            """,
-            queue_key,
-            slot,
-            worker_id,
-        )
+    await get_db_proxy().release_slot(
+        queue_key=queue_key, slot=slot, worker_id=worker_id
+    )
     await notify_dispatch(queue_key)
 
 
 async def cleanup_stale_queue_slots() -> int:
-    """Clear expired slot leases so admin views stay accurate."""
-    async with _slot_connection() as conn:
-        result = await conn.execute(
-            """
-            UPDATE queue_slots
-            SET locked_by = NULL,
-                locked_until = NULL
-            WHERE locked_by IS NOT NULL
-              AND locked_until IS NOT NULL
-              AND locked_until <= NOW()
-            """
-        )
-    # asyncpg returns command tag strings like: "UPDATE <n>"
-    try:
-        return int(str(result).split()[-1])
-    except Exception:
-        return 0
+    return await get_db_proxy().cleanup_stale_slots()

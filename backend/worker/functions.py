@@ -17,6 +17,7 @@ from observability import span as _otel_span
 
 from modal_app import (
     _DISPATCH_PERIOD_SECONDS,
+    DB_PROXY_ENABLED,
     DISPATCHER_NONPREEMPTIBLE,
     MAX_WORKERS_PER_POLL,
     POLL_INTERVAL_SECONDS,
@@ -57,6 +58,11 @@ from .reactor import install_modal_dispatch_waker, run_reactor
 from .runtime import configure_storage_paths, console
 
 install_modal_dispatch_waker()
+
+if DB_PROXY_ENABLED:
+    from .db_proxy_service import install_modal_db_proxy
+
+    install_modal_db_proxy()
 
 ensure_builtin_handlers_registered()
 
