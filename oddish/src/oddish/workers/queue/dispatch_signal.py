@@ -1,8 +1,10 @@
 """Best-effort dispatch wake-up signalling.
 
-Library calls ``notify_dispatch``; the backend registers a transport
-(see ``backend.worker.reactor.ModalQueueDispatchWaker``). Drops are
-swallowed -- the reactor's startup drain catches anything missed.
+Library calls ``notify_dispatch(queue_key)`` when an enqueue happens
+or a slot is released. The backend registers a transport that
+invokes the dispatcher function (see
+``backend.worker.functions.dispatcher_notify``). No transport
+registered = no-op (tests, library-only use).
 """
 
 from __future__ import annotations

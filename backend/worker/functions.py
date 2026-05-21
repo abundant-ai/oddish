@@ -14,8 +14,6 @@ from observability import span as _otel_span
 
 from modal_app import (
     DB_PROXY_ENABLED,
-    DISPATCHER_NONPREEMPTIBLE,
-    MAX_WORKERS_PER_POLL,
     WORKER_BUFFER_CONTAINERS,
     WORKER_MAX_CONTAINERS,
     WORKER_MIN_CONTAINERS,
@@ -30,10 +28,8 @@ from modal_app import (
 from oddish.config import settings
 from oddish.db import close_database_connections, WorkerJobKind
 from oddish.workers.jobs import ensure_builtin_handlers_registered
-from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
 from oddish.workers.queue.slots import (
     acquire_queue_slot,
-    cleanup_stale_queue_slots,
     release_queue_slot,
 )
 from oddish.workers.queue.worker_job_single_job import (
@@ -42,8 +38,8 @@ from oddish.workers.queue.worker_job_single_job import (
 )
 
 from .db_proxy_service import DBProxyService, install_modal_db_proxy  # noqa: F401
+from .dispatcher import dispatcher_notify, install_modal_dispatch_waker  # noqa: F401
 from .github import notify_github_analysis, notify_github_trial, notify_github_verdict
-from .reactor import install_modal_dispatch_waker, run_reactor_forever
 from .runtime import configure_storage_paths, console
 
 install_modal_dispatch_waker()
@@ -106,9 +102,6 @@ async def process_single_job(queue_key: str):
         else:
             queue_limit = settings.get_model_concurrency(queue_key)
             if queue_limit <= 0:
-                console.print(
-                    f"[dim]Queue limit is {queue_limit} (queue_key={queue_key}), exiting[/dim]"
-                )
                 return
             lock_slot = await acquire_queue_slot(
                 queue_key=queue_key,
@@ -163,130 +156,3 @@ async def process_single_job(queue_key: str):
         except Exception:
             pass
         console.print("[green]Job worker complete[/green]")
-
-
-@app.cls(
-    image=image,
-    volumes=worker_volumes,
-    secrets=runtime_secrets,
-    min_containers=1,
-    max_containers=1,
-    timeout=86400,
-    nonpreemptible=DISPATCHER_NONPREEMPTIBLE,
-)
-class Dispatcher:
-    """Always-on reactor container. ``@modal.enter`` fires once when the
-    container starts, launches the reactor loop as a background task,
-    and returns so the container is considered ready. Modal recycles
-    containers periodically; each recycle starts a fresh reactor."""
-
-    @modal.enter()
-    async def start(self) -> None:
-        await configure_storage_paths()
-        # Stale-slot reap on each container start: the only place this
-        # had a natural cadence in the old polling design. Cheap and
-        # one-shot now.
-        try:
-            cleared = await cleanup_stale_queue_slots()
-            if cleared:
-                console.print(
-                    f"metric=queue_lock_stale_cleared count={cleared}"
-                )
-        except Exception as exc:
-            console.print(
-                f"[yellow]dispatcher startup slot reap failed: {exc!r}[/yellow]"
-            )
-        try:
-            cleanup_counts = await cleanup_orphaned_queue_state()
-            if any(cleanup_counts.values()):
-                console.print(
-                    "metric=orphaned_queue_cleanup "
-                    + " ".join(f"{k}={v}" for k, v in cleanup_counts.items())
-                )
-        except Exception as exc:
-            console.print(
-                f"[yellow]dispatcher startup orphan cleanup failed: {exc!r}[/yellow]"
-            )
-
-        install_modal_dispatch_waker()
-
-        async def _spawn(queue_key: str) -> None:
-            await process_single_job.spawn.aio(queue_key=queue_key)
-
-        # Background task runs forever; do not await it here so the
-        # container becomes ready and Modal keeps it alive.
-        self._task = asyncio.create_task(
-            run_reactor_forever(_spawn, max_workers=MAX_WORKERS_PER_POLL)
-        )
-        console.print("[green]Dispatcher reactor task launched[/green]")
-
-    @modal.exit()
-    async def stop(self) -> None:
-        task = getattr(self, "_task", None)
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-        try:
-            await close_database_connections()
-        except Exception:
-            pass
-
-    @modal.method()
-    async def ping(self) -> str:
-        return "ok"
-
-    @modal.method()
-    async def status(self) -> dict:
-        task = getattr(self, "_task", None)
-        if task is None:
-            return {"task": None}
-        if task.done():
-            exc = task.exception()
-            if exc is not None:
-                import traceback
-
-                return {
-                    "task": "done",
-                    "exception": repr(exc),
-                    "traceback": "".join(
-                        traceback.format_exception(type(exc), exc, exc.__traceback__)
-                    ),
-                }
-            return {"task": "done", "result": "no exception"}
-        return {"task": "running"}
-
-    @modal.method()
-    async def force_dispatch(self) -> dict:
-        """Synchronously plan AND spawn one dispatch cycle."""
-        from oddish.workers.queue.worker_job_dispatcher import plan_dispatch_cycle
-
-        try:
-            spawn_plan, queued, running = await plan_dispatch_cycle(
-                max_workers=MAX_WORKERS_PER_POLL
-            )
-            if spawn_plan:
-                results = await asyncio.gather(
-                    *(
-                        process_single_job.spawn.aio(queue_key=qk)
-                        for qk in spawn_plan
-                    ),
-                    return_exceptions=True,
-                )
-                spawn_errors = [
-                    repr(r) for r in results if isinstance(r, BaseException)
-                ]
-            else:
-                spawn_errors = []
-            return {
-                "spawn_plan_len": len(spawn_plan),
-                "queued_by_queue": queued,
-                "running_by_queue": running,
-                "spawn_errors": spawn_errors,
-            }
-        except Exception as exc:
-            import traceback
-
-            return {"error": repr(exc), "traceback": traceback.format_exc()}

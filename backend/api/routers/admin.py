@@ -28,40 +28,13 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
 @router.post("/_dispatcher-kick")
 async def dispatcher_kick(
     auth: Annotated[AuthContext, Depends(require_admin)],
+    queue_key: str = "",
 ) -> dict:
+    """Manually invoke ``dispatcher_notify`` for diagnostics."""
     try:
-        from worker.functions import Dispatcher
+        from worker.dispatcher import dispatcher_notify
 
-        result = await Dispatcher().ping.remote.aio()
-        return {"result": result}
-    except Exception as exc:
-        import traceback
-
-        return {"error": repr(exc), "traceback": traceback.format_exc()}
-
-
-@router.get("/_dispatcher-status")
-async def dispatcher_status(
-    auth: Annotated[AuthContext, Depends(require_admin)],
-) -> dict:
-    try:
-        from worker.functions import Dispatcher
-
-        return await Dispatcher().status.remote.aio()
-    except Exception as exc:
-        import traceback
-
-        return {"error": repr(exc), "traceback": traceback.format_exc()}
-
-
-@router.post("/_dispatcher-force")
-async def dispatcher_force(
-    auth: Annotated[AuthContext, Depends(require_admin)],
-) -> dict:
-    try:
-        from worker.functions import Dispatcher
-
-        return await Dispatcher().force_dispatch.remote.aio()
+        return await dispatcher_notify.remote.aio(queue_key=queue_key)
     except Exception as exc:
         import traceback
 
