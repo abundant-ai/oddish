@@ -1,24 +1,23 @@
 """Event-driven dispatch reactor.
 
-Replaces the 180-second polling loop with a long-lived listener:
+A long-running service that replaces the polling dispatcher entirely.
+Two wake-up sources, both event-driven:
 
-1. **Initial drain.** Run one full dispatch cycle on startup so any
-   work queued while the reactor was down is picked up immediately.
-2. **Wait for a wake-up.** Block on a ``modal.Queue.get`` with a
-   timeout computed from the next pending retry's ``available_after``
-   (capped by ``safety_tick_seconds``). The library-side
-   :mod:`oddish.workers.queue.dispatch_signal` pushes wake-ups onto
-   this queue when ``enqueue_worker_job`` or ``release_queue_slot``
-   run, so the typical wake latency is sub-second.
-3. **Dispatch.** Drain any further pending wake-ups (one batch), then
-   run a full dispatch cycle. Any newly-runnable retries past their
-   ``available_after`` are caught even if no NOTIFY fired.
+* **Modal Queue NOTIFY.** ``enqueue_worker_job`` /
+  ``release_queue_slot`` push wake markers via
+  :mod:`oddish.workers.queue.dispatch_signal`; the reactor blocks on
+  ``modal.Queue.get`` and wakes within milliseconds.
+* **Pending retry timer.** When a job is in RETRYING with a future
+  ``available_after``, the reactor computes the exact seconds until
+  it becomes runnable and waits at most that long. No polling, no
+  safety tick -- the wake happens at the precise retry moment.
 
-The reactor exits when ``deadline_seconds`` elapses so the surrounding
-Modal scheduled function can be recycled on its next tick. Modal's
-``modal.Queue.from_name(..., create_if_missing=True)`` is the persistent
-wake-up channel; the same queue object is referenced by the producer
-hooks so puts and gets meet in the middle.
+When neither source has anything pending, the reactor blocks
+indefinitely (until ``deadline_seconds`` elapses or a NOTIFY arrives).
+Container restart hygiene (memory growth, stale pooler state, etc.)
+is handled at the Modal scheduler level, not by the reactor itself:
+the surrounding scheduled function runs the reactor until just before
+its next tick, then exits cleanly. Modal respawns at the next tick.
 
 The reactor is gated by ``ODDISH_REACTOR_ENABLED``. With the flag off,
 ``poll_queue`` falls back to its original cycle.
@@ -65,8 +64,8 @@ class ModalQueueDispatchWaker(DispatchWaker):
     """``DispatchWaker`` implementation backed by a ``modal.Queue``.
 
     Holds a single queue handle for the lifetime of the process. ``put``
-    is best-effort; the reactor's safety-net poll covers any dropped
-    wake-ups so callers do not need to retry.
+    is best-effort; if a wake-up is ever dropped, the next periodic
+    Modal container restart drains the backlog at startup.
     """
 
     def __init__(self, queue: modal.Queue | None = None) -> None:
@@ -91,18 +90,13 @@ def install_modal_dispatch_waker() -> ModalQueueDispatchWaker:
     return waker
 
 
-def _seconds_until(target: datetime | None, *, cap: float) -> float:
-    """Seconds from now until ``target``, clamped to ``[0, cap]``."""
-    if target is None:
-        return cap
-    now = datetime.now(timezone.utc)
-    delta = (target - now).total_seconds()
-    if delta < 0:
-        return 0.0
-    return min(delta, cap)
+def _seconds_until(target: datetime) -> float:
+    """Seconds from now until ``target``, clamped to non-negative."""
+    delta = (target - datetime.now(timezone.utc)).total_seconds()
+    return delta if delta > 0 else 0.0
 
 
-async def _drain_pending_wakes(queue: modal.Queue, *, max_items: int = 256) -> int:
+async def _drain_pending_wakes(queue: modal.Queue, *, max_items: int = 1024) -> int:
     """Pull every immediately-available wake marker off the queue.
 
     Returns the number drained for logging. Bounded by ``max_items`` to
@@ -166,23 +160,23 @@ async def run_reactor(
     *,
     max_workers: int,
     deadline_seconds: float,
-    safety_tick_seconds: float = 30.0,
 ) -> None:
     """Run the dispatch reactor until ``deadline_seconds`` elapses.
 
     ``spawner`` is invoked as ``await spawner(queue_key)`` per row in
-    the spawn plan. ``safety_tick_seconds`` is the maximum time the
-    reactor will block on the wake queue before re-planning anyway --
-    it backstops dropped wake-ups and pending retries whose
-    ``available_after`` falls inside the current wait window.
+    the spawn plan. The reactor wakes on (a) Modal Queue NOTIFY from
+    enqueue / slot-release, or (b) the exact moment a pending retry
+    becomes runnable. No polling cadence; if neither event source has
+    anything pending, the reactor blocks until ``deadline_seconds``.
     """
     install_modal_dispatch_waker()
     queue = _get_dispatch_queue()
     started_at = time.monotonic()
     deadline = started_at + deadline_seconds
 
-    # Initial drain catches anything that was queued while we were
-    # asleep between scheduled invocations.
+    # Initial drain catches anything that was queued between this
+    # reactor instance starting and the previous instance exiting --
+    # the only window where a NOTIFY can go to no listener.
     await _dispatch_once(spawner, max_workers=max_workers, reason="startup")
 
     while True:
@@ -191,27 +185,30 @@ async def run_reactor(
             console.print("[dim]reactor deadline reached, exiting[/dim]")
             return
 
+        # Compute exactly when the next pending retry becomes
+        # runnable. If there are no retries pending we block until the
+        # deadline or until a NOTIFY arrives -- no polling cadence.
         retry_wake_at = await next_retry_wake_at()
-        wait_for = min(
-            remaining,
-            _seconds_until(retry_wake_at, cap=safety_tick_seconds),
-        )
-        # ``modal.Queue.get`` raises ``queue.Empty`` on timeout. Use a
-        # tiny floor so a near-zero ``wait_for`` doesn't degenerate
-        # into a busy loop if the next retry just became runnable.
+        if retry_wake_at is not None:
+            wait_for = min(remaining, _seconds_until(retry_wake_at))
+        else:
+            wait_for = remaining
+        # ``modal.Queue.get`` rejects zero / negative timeouts; clamp
+        # to a tiny positive so a retry that just became runnable
+        # doesn't degenerate into a busy loop.
         wait_for = max(wait_for, 0.05)
 
         try:
             await queue.get.aio(block=True, timeout=wait_for)
             reason = "notify"
         except TimeoutError:
-            reason = "timer"
+            reason = "retry-timer" if retry_wake_at is not None else "deadline"
         except Exception:
             # ``queue.Empty`` is exposed from ``modal.queue`` as either
             # the stdlib ``queue.Empty`` or a Modal-side equivalent
             # depending on version. Treat any "no item" outcome as a
             # timer wake; real transport errors are caught below.
-            reason = "timer"
+            reason = "retry-timer" if retry_wake_at is not None else "deadline"
 
         # Whether we woke on a notify or a timer, drain any additional
         # pending wakes so a producer burst collapses into one

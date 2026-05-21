@@ -85,37 +85,39 @@ MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
 
 # Event-driven dispatch reactor.
 #
-# When enabled, the scheduled ``poll_queue`` function runs the reactor
-# loop in :mod:`worker.reactor`: it listens on a Modal Queue for
-# wake-ups (pushed by ``enqueue_worker_job`` / ``release_queue_slot``
-# via the library-side dispatch_signal hooks) and runs a dispatch
-# cycle on each wake instead of waiting for the 180-second tick.
+# When enabled, ``poll_queue`` becomes a long-running service that
+# blocks on a Modal Queue for wake-ups pushed by ``enqueue_worker_job``
+# / ``release_queue_slot`` via the library-side dispatch_signal hooks.
+# There is no polling cadence. Wakes come from two event sources:
 #
-# The schedule period drops to ``REACTOR_TICK_SECONDS`` so the reactor
-# is recycled often enough to backstop dropped wake-ups, but each
-# invocation holds the listener open for almost the full period -- so
-# steady-state latency from enqueue to spawn is sub-second.
+# 1. NOTIFY arriving on the Modal Queue (an enqueue or a slot release)
+# 2. A pending retry's ``available_after`` becoming runnable; the
+#    reactor sleeps for exactly the right number of seconds and wakes
+#    at the moment it matters.
+#
+# The Modal schedule only fires to restart the container for hygiene
+# (memory growth, stale DB pool, etc.). The reactor exits cleanly
+# just before each tick; Modal respawns and the next instance does an
+# initial dispatch to drain anything queued during the brief gap.
 #
 # Flip ``ODDISH_REACTOR_ENABLED=0`` to fall back to the legacy
 # poll-every-180s behaviour without redeploying any code.
 REACTOR_ENABLED = _env_flag("ODDISH_REACTOR_ENABLED", False)
-REACTOR_TICK_SECONDS = _env_int("ODDISH_MODAL_REACTOR_TICK_SECONDS", 60)
-# How long the safety-net loop will block on the wake queue before
-# re-planning anyway. Caps both dropped-wake latency and the gap
-# between ``next_retry_at`` and the reactor noticing.
-REACTOR_SAFETY_TICK_SECONDS = _env_int(
-    "ODDISH_MODAL_REACTOR_SAFETY_TICK_SECONDS", 30
-)
-# Effective schedule period for the dispatcher Modal function. When the
-# reactor is enabled the function is invoked far more often than the
-# legacy 180s tick because each invocation also holds the listener.
+# How long the reactor service stays up between Modal-level restarts.
+# This is hygiene only -- it does not gate dispatch latency, since
+# wakes are event-driven within the running container.
+REACTOR_RESTART_HOURS = _env_int("ODDISH_MODAL_REACTOR_RESTART_HOURS", 1)
+REACTOR_RESTART_SECONDS = REACTOR_RESTART_HOURS * 3600
+# Effective Modal schedule period for the dispatcher function. With
+# the reactor enabled this is restart hygiene; with it disabled this
+# is the legacy 180s poll cadence.
 _DISPATCH_PERIOD_SECONDS = (
-    REACTOR_TICK_SECONDS if REACTOR_ENABLED else POLL_INTERVAL_SECONDS
+    REACTOR_RESTART_SECONDS if REACTOR_ENABLED else POLL_INTERVAL_SECONDS
 )
 # Reactor must exit before the next scheduled tick to avoid Modal
 # refusing to start a second container (the function is pinned to
 # ``max_containers=1``). Leave a small margin.
-REACTOR_DEADLINE_SECONDS = max(REACTOR_TICK_SECONDS - 5, 5)
+REACTOR_DEADLINE_SECONDS = max(REACTOR_RESTART_SECONDS - 30, 60)
 
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT

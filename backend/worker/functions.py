@@ -22,7 +22,6 @@ from modal_app import (
     POLL_INTERVAL_SECONDS,
     REACTOR_DEADLINE_SECONDS,
     REACTOR_ENABLED,
-    REACTOR_SAFETY_TICK_SECONDS,
     WORKER_BUFFER_CONTAINERS,
     WORKER_MAX_CONTAINERS,
     WORKER_MIN_CONTAINERS,
@@ -229,14 +228,13 @@ async def process_single_job(queue_key: str):
     image=image,
     volumes=worker_volumes,
     secrets=runtime_secrets,
-    # The reactor holds the dispatch loop open for nearly a full
-    # schedule period; the legacy poll runs and exits in seconds. Give
-    # the function enough headroom for both shapes -- a slightly long
-    # timeout when running in legacy mode is harmless because the body
-    # still returns quickly.
-    timeout=max(_DISPATCH_PERIOD_SECONDS + 30, 60),
+    # With the reactor enabled the function is a long-running service
+    # that holds the listener open for nearly a full restart-hygiene
+    # cycle; with the reactor disabled it's the legacy 60s-or-less
+    # poll. ``timeout`` covers the long case with headroom.
+    timeout=max(_DISPATCH_PERIOD_SECONDS + 60, 60),
     min_containers=1,  # Keep one dispatcher container warm.
-    max_containers=1,  # Keep the scheduled dispatcher singleton-ish.
+    max_containers=1,  # Singleton dispatcher.
     schedule=modal.Period(seconds=_DISPATCH_PERIOD_SECONDS),
     nonpreemptible=DISPATCHER_NONPREEMPTIBLE,
 )
@@ -246,18 +244,20 @@ async def poll_queue():
 
     Two execution shapes, selected by ``ODDISH_REACTOR_ENABLED``:
 
-    * **Reactor (event-driven).** The cleanup pass runs once at the
-      top of the invocation, then ``worker.reactor.run_reactor`` holds
-      the dispatch loop open until just before the next scheduled
-      tick. Wakes are driven by Modal Queue puts from
-      ``enqueue_worker_job`` / ``release_queue_slot``, so steady-state
-      latency from enqueue to spawn is sub-second.
+    * **Reactor (event-driven, long-running).** Cleanup runs once at
+      startup, then ``worker.reactor.run_reactor`` blocks on the
+      Modal Queue waiting for wake-ups from ``enqueue_worker_job`` /
+      ``release_queue_slot``. There is no polling cadence; steady-
+      state submit-to-spawn latency is sub-second. The Modal schedule
+      fires only for periodic restart hygiene (``REACTOR_RESTART_HOURS``,
+      default 1h) -- the function exits cleanly just before the next
+      tick and Modal respawns it.
     * **Legacy poll.** One shot per tick: cleanup, discover, plan,
       spawn, exit. Latency floor is ``POLL_INTERVAL_SECONDS``.
 
-    Cleanup (slot reap + orphaned-state reconciliation) is identical
-    in both shapes and runs once per invocation -- not on every
-    reactor wake -- so the steady-state path stays cheap.
+    Cleanup (slot reap + orphaned-state reconciliation) runs once per
+    invocation -- at startup in the reactor case, once per tick in the
+    legacy case -- so the steady-state hot path stays cheap.
     """
     # Open the span FIRST so the storage-path setup, cleanup,
     # discovery, and spawn-plan queries all nest under one named
@@ -304,7 +304,6 @@ async def poll_queue():
                 _spawn,
                 max_workers=MAX_WORKERS_PER_POLL,
                 deadline_seconds=REACTOR_DEADLINE_SECONDS,
-                safety_tick_seconds=float(REACTOR_SAFETY_TICK_SECONDS),
             )
             return
 
