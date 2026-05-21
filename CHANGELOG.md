@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-05-21]
+
+### Added
+- Sticky PR comment automatically posted (and updated on re-pushes) with preview environment links — Vercel frontend URL, stable `pr-NNN` Vercel alias, and Modal API URL — via new `post_preview_links.py` script (#141)
+- In-app preview banner rendered when `NEXT_PUBLIC_IS_PREVIEW=true`, surfacing PR context to reviewers using the preview environment (#141)
+
+### Changed
+- PR preview workflow refactored from a monolithic `modal-preview.yml` into `pr-preview.yml` backed by focused per-phase shell scripts (`prepare_preview_database.sh`, `deploy_preview_backend.sh`, `update_vercel_preview.sh`, etc.), making migration-only and backend-only preview runs possible without triggering a full component redeploy (#141)
+- Deployment planning now tracks `deploy_frontend` as a separate output flag alongside `deploy_backend` and `run_migrations`; frontend-only PRs skip Supabase/Modal provisioning entirely, and non-`synchronize` events fall back to PR-wide path filters to decide which components need deploying (#141)
+- Newly created Supabase preview branches now cancel in-flight cloned production work (queued/running jobs, tasks, and trials) via `cancel_cloned_preview_work.sh` to prevent spurious activity from the data clone (#141)
+
+---
+
 ## [2026-05-20]
 
 ### Changed
