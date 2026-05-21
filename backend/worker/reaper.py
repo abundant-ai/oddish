@@ -19,6 +19,7 @@ from observability import span as _otel_span
 
 from modal_app import REAPER_PERIOD_SECONDS, app, image, runtime_secrets
 from oddish.db import close_database_connections, get_pool
+from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
 
 from .runtime import console
 
@@ -35,6 +36,24 @@ async def reaper() -> dict:
 
     with _otel_span("worker.reaper"):
         try:
+            # Pass 1: reap stale RUNNING rows (workers whose container died,
+            # most commonly during a deploy stop). Transitions them to
+            # RETRYING or FAILED; the next pass picks the RETRYING ones up.
+            try:
+                cleanup_counts = await cleanup_orphaned_queue_state()
+                if any(cleanup_counts.values()):
+                    console.print(
+                        "metric=reaper_orphan_cleanup "
+                        + " ".join(f"{k}={v}" for k, v in cleanup_counts.items())
+                    )
+            except Exception as exc:
+                console.print(
+                    f"[yellow]reaper orphan cleanup failed: {exc!r}[/yellow]"
+                )
+
+            # Pass 2: respawn rows in QUEUED/RETRYING with no active spawn.
+            # Filter by preview_epoch_at so we never resurrect cloned-from-
+            # prod work in preview environments.
             pool = await get_pool()
             rows = await pool.fetch(
                 """
