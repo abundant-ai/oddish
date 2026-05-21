@@ -29,6 +29,7 @@ from oddish.workers.queue.queries import (
 )
 
 from modal_app import (
+    DB_PROXY_ENABLED,
     DB_PROXY_POOL_SIZE,
     DB_PROXY_REPLICAS,
     app,
@@ -37,10 +38,13 @@ from modal_app import (
 )
 
 
+# Class is always registered with Modal so deploys include it; flag
+# only controls whether replicas actually run and whether workers
+# route through it.
 @app.cls(
     image=image,
     secrets=runtime_secrets,
-    min_containers=DB_PROXY_REPLICAS,
+    min_containers=DB_PROXY_REPLICAS if DB_PROXY_ENABLED else 0,
     max_containers=DB_PROXY_REPLICAS,
     timeout=86400,
 )

@@ -81,7 +81,11 @@ MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
 
 # Event-driven reactor. Off: 180s polling. On: long-running service,
 # wakes on Modal Queue puts from enqueue / slot-release.
-REACTOR_ENABLED = _env_flag("ODDISH_REACTOR_ENABLED", False)
+# Default ON in preview environments so PR deploys exercise the
+# event-driven path without manual secret edits. Prod stays OFF until
+# explicitly opted in via the runtime secret.
+_IS_PREVIEW = MODAL_APP_NAME.startswith("oddish-pr-")
+REACTOR_ENABLED = _env_flag("ODDISH_REACTOR_ENABLED", _IS_PREVIEW)
 REACTOR_RESTART_HOURS = _env_int("ODDISH_MODAL_REACTOR_RESTART_HOURS", 1)
 REACTOR_RESTART_SECONDS = REACTOR_RESTART_HOURS * 3600
 _DISPATCH_PERIOD_SECONDS = (
@@ -96,7 +100,7 @@ REACTOR_DEADLINE_SECONDS = max(REACTOR_RESTART_SECONDS - 30, 60)
 # instead of each worker opening its own asyncpg connection. Caps the
 # DB connection count at ~``DB_PROXY_POOL_SIZE * DB_PROXY_REPLICAS``
 # regardless of how many workers are concurrent.
-DB_PROXY_ENABLED = _env_flag("ODDISH_DB_PROXY_ENABLED", False)
+DB_PROXY_ENABLED = _env_flag("ODDISH_DB_PROXY_ENABLED", _IS_PREVIEW)
 DB_PROXY_POOL_SIZE = _env_int("ODDISH_DB_PROXY_POOL_SIZE", 32)
 DB_PROXY_REPLICAS = _env_int("ODDISH_DB_PROXY_REPLICAS", 2)
 
