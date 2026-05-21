@@ -1,16 +1,12 @@
 """Scheduled reaper: re-spawn worker_jobs rows that aren't actually running.
 
-Two failure modes the reaper handles:
-
-1. Enqueue inserted a row but the dispatcher spawn was lost (Modal
-   API hiccup, deploy churn, etc.). Row sits QUEUED forever.
-2. A worker claimed a row (RUNNING) but the container died without
-   updating status. Stale-heartbeat sweep covers this; we only
-   re-spawn QUEUED/RETRYING rows here.
-
-Runs on a slow schedule (default every 5 min). It is the ONLY
-periodic component in the new architecture; everything else is
-event-driven via notify_dispatch.
+Runs every ``REAPER_PERIOD_SECONDS``. In preview environments, the
+``cancel_cloned_preview_work`` script records ``preview_epoch_at`` in
+``oddish_runtime_config`` after cancelling all cloned-from-prod rows.
+The reaper filters on that timestamp so it can never resurrect cloned
+production work, while still respawning legitimate stranded preview
+rows enqueued after the cutover. In prod the row doesn't exist and
+the filter degenerates to a no-op.
 """
 
 from __future__ import annotations
@@ -21,37 +17,20 @@ import modal
 
 from observability import span as _otel_span
 
-from modal_app import (
-    REAPER_PERIOD_SECONDS,
-    _IS_PREVIEW,
-    app,
-    image,
-    runtime_secrets,
-)
+from modal_app import REAPER_PERIOD_SECONDS, app, image, runtime_secrets
 from oddish.db import close_database_connections, get_pool
 
 from .runtime import console
-
-
-# Reaper runs ONLY in non-preview environments. Preview Supabase
-# branches start as clones of production data, and even though the
-# cancel_cloned_preview_work script flips in-flight rows to CANCELLED
-# at branch creation, relying on that single sweep to never miss a
-# row is brittle. In previews, the reaper just doesn't run; if a row
-# strands, kick the wrapper manually via admin/_dispatcher-kick.
-_SCHEDULE = None if _IS_PREVIEW else modal.Period(seconds=REAPER_PERIOD_SECONDS)
 
 
 @app.function(
     image=image,
     secrets=runtime_secrets,
     timeout=300,
-    schedule=_SCHEDULE,
+    schedule=modal.Period(seconds=REAPER_PERIOD_SECONDS),
     max_containers=1,
 )
 async def reaper() -> dict:
-    """Re-spawn the wrapper for any QUEUED/RETRYING row whose
-    ``available_after`` is in the past and that isn't already RUNNING."""
     from .functions import get_wrapper_for_queue_key
 
     with _otel_span("worker.reaper"):
@@ -63,6 +42,12 @@ async def reaper() -> dict:
                 FROM   worker_jobs
                 WHERE  status::text IN ('QUEUED', 'RETRYING')
                   AND  available_after <= NOW()
+                  AND  created_at > COALESCE(
+                          (SELECT value::timestamptz
+                           FROM   oddish_runtime_config
+                           WHERE  key = 'preview_epoch_at'),
+                          '1970-01-01'::timestamptz
+                       )
                 """
             )
             queue_keys = [str(r["queue_key"]) for r in rows]
@@ -79,7 +64,7 @@ async def reaper() -> dict:
                 console.print(f"[red]reaper spawn errors: {errors[:3]}[/red]")
             console.print(
                 f"[green]reaper: respawned {len(queue_keys) - len(errors)} / "
-                f"{len(queue_keys)} queued rows[/green]"
+                f"{len(queue_keys)} stranded rows[/green]"
             )
             return {"respawned": len(queue_keys) - len(errors), "errors": errors[:5]}
         finally:
