@@ -79,6 +79,12 @@ DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", 
 # queues (nop / oracle) bypass it.
 MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
 
+# Reaper periodically respawns rows in QUEUED/RETRYING that have no
+# active spawn (lost to Modal API hiccups, deploy churn, etc.). Only
+# periodic component in the architecture; everything else is event-
+# driven via notify_dispatch.
+REAPER_PERIOD_SECONDS = _env_int("ODDISH_MODAL_REAPER_PERIOD_SECONDS", 300)
+
 # Per-provider worker concurrency caps. Each provider gets a dedicated
 # ``process_single_job_<provider>`` wrapper function whose
 # ``max_containers`` Modal-natively gates how many trials/analyses for

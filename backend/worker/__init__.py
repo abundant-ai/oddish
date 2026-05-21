@@ -28,6 +28,7 @@ with _otel_span("worker.container_init"):
         process_single_job_gemini,
         process_single_job_openai,
     )
+    from .reaper import reaper  # noqa: E402
 
 __all__ = [
     "process_single_job",
@@ -35,4 +36,5 @@ __all__ = [
     "process_single_job_claude",
     "process_single_job_gemini",
     "process_single_job_openai",
+    "reaper",
 ]
