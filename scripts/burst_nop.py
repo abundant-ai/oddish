@@ -44,7 +44,7 @@ async def submit_sweep(
         ],
         "priority": "low",
     }
-    r = await client.post("/tasks/sweep", json=payload, timeout=60.0)
+    r = await client.post("/tasks/sweep", json=payload, timeout=300.0)
     r.raise_for_status()
     body = r.json()
     trial_ids = body.get("new_trial_ids") or [
