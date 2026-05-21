@@ -47,47 +47,65 @@ async def submit_sweep(
     r = await client.post("/tasks/sweep", json=payload, timeout=60.0)
     r.raise_for_status()
     body = r.json()
-    trial_ids = [t["id"] for t in body.get("trials", [])]
-    return body.get("task_id", task_id), trial_ids
+    trial_ids = body.get("new_trial_ids") or [
+        t["id"] for t in body.get("trials") or []
+    ]
+    return body.get("id", task_id), trial_ids
 
 
-async def fetch_trial_status(
-    client: httpx.AsyncClient, *, trial_id: str
-) -> dict | None:
-    r = await client.get(f"/trials/{trial_id}", timeout=10.0)
-    if r.status_code != 200:
-        return None
-    return r.json()
+RUNNING_STATES = {"running", "succeeded", "failed", "cancelled"}
+TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
 
 
-async def watch_trial(
+async def fetch_trials_map(
+    client: httpx.AsyncClient, *, task_id: str
+) -> dict[str, dict]:
+    r = await client.get(f"/tasks/{task_id}/trials", timeout=30.0)
+    r.raise_for_status()
+    return {t["id"]: t for t in r.json()}
+
+
+async def watch_burst(
     client: httpx.AsyncClient,
     *,
-    trial_id: str,
+    task_id: str,
+    trial_ids: list[str],
     submitted_at: float,
     poll_interval: float,
     deadline: float,
-) -> dict:
-    running_at: float | None = None
-    terminal_at: float | None = None
-    terminal_status: str | None = None
-    while time.monotonic() < deadline:
-        status = await fetch_trial_status(client, trial_id=trial_id)
-        if status is not None:
-            s = status.get("status")
-            if running_at is None and s in {"RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"}:
-                running_at = time.monotonic()
-            if s in {"SUCCEEDED", "FAILED", "CANCELLED"}:
-                terminal_at = time.monotonic()
-                terminal_status = s
-                break
-        await asyncio.sleep(poll_interval)
-    return {
-        "trial_id": trial_id,
-        "submit_to_running_s": (running_at - submitted_at) if running_at else None,
-        "submit_to_terminal_s": (terminal_at - submitted_at) if terminal_at else None,
-        "terminal_status": terminal_status,
+) -> list[dict]:
+    state = {
+        tid: {
+            "trial_id": tid,
+            "submit_to_running_s": None,
+            "submit_to_terminal_s": None,
+            "terminal_status": None,
+        }
+        for tid in trial_ids
     }
+    remaining = set(trial_ids)
+    while remaining and time.monotonic() < deadline:
+        try:
+            trials = await fetch_trials_map(client, task_id=task_id)
+        except Exception:
+            await asyncio.sleep(poll_interval)
+            continue
+        now = time.monotonic()
+        for tid in list(remaining):
+            row = trials.get(tid)
+            if row is None:
+                continue
+            s = (row.get("status") or "").lower()
+            entry = state[tid]
+            if entry["submit_to_running_s"] is None and s in RUNNING_STATES:
+                entry["submit_to_running_s"] = now - submitted_at
+            if s in TERMINAL_STATES:
+                entry["submit_to_terminal_s"] = now - submitted_at
+                entry["terminal_status"] = s
+                remaining.discard(tid)
+        if remaining:
+            await asyncio.sleep(poll_interval)
+    return list(state.values())
 
 
 def summarize(samples: Iterable[float | None], label: str) -> None:
@@ -129,22 +147,19 @@ async def main() -> None:
     async with httpx.AsyncClient(base_url=api_url, headers=headers) as client:
         print(f"submitting {args.n}x nop + {args.n}x oracle against {args.task_id}...")
         t0 = time.monotonic()
-        _, trial_ids = await submit_sweep(client, task_id=args.task_id, n=args.n)
+        task_id, trial_ids = await submit_sweep(client, task_id=args.task_id, n=args.n)
         submit_elapsed = time.monotonic() - t0
         print(f"submitted {len(trial_ids)} trials in {submit_elapsed:.2f}s")
 
         deadline = time.monotonic() + args.deadline_seconds
-        watchers = [
-            watch_trial(
-                client,
-                trial_id=tid,
-                submitted_at=t0,
-                poll_interval=args.poll_interval,
-                deadline=deadline,
-            )
-            for tid in trial_ids
-        ]
-        results = await asyncio.gather(*watchers)
+        results = await watch_burst(
+            client,
+            task_id=task_id,
+            trial_ids=trial_ids,
+            submitted_at=t0,
+            poll_interval=args.poll_interval,
+            deadline=deadline,
+        )
 
     total_elapsed = time.monotonic() - t0
     print(f"\nwall-clock to last terminal: {total_elapsed:.2f}s")
