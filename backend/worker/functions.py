@@ -10,19 +10,12 @@ from uuid import uuid4
 
 import modal
 
-# ``configure_logfire`` runs in ``worker/__init__.py`` (so auto-tracing
-# can patch our modules before they're imported); we just need the
-# ``span`` helper here to wrap entry points.
 from observability import span as _otel_span
 
 from modal_app import (
-    _DISPATCH_PERIOD_SECONDS,
     DB_PROXY_ENABLED,
     DISPATCHER_NONPREEMPTIBLE,
     MAX_WORKERS_PER_POLL,
-    POLL_INTERVAL_SECONDS,
-    REACTOR_DEADLINE_SECONDS,
-    REACTOR_ENABLED,
     WORKER_BUFFER_CONTAINERS,
     WORKER_MAX_CONTAINERS,
     WORKER_MIN_CONTAINERS,
@@ -43,11 +36,6 @@ from oddish.workers.queue.slots import (
     cleanup_stale_queue_slots,
     release_queue_slot,
 )
-from oddish.workers.queue.worker_job_dispatcher import (
-    build_spawn_plan,
-    discover_active_worker_job_queue_keys,
-    get_worker_job_org_queue_counts,
-)
 from oddish.workers.queue.worker_job_single_job import (
     PostSuccessHooks,
     run_single_worker_job,
@@ -55,7 +43,7 @@ from oddish.workers.queue.worker_job_single_job import (
 
 from .db_proxy_service import DBProxyService, install_modal_db_proxy  # noqa: F401
 from .github import notify_github_analysis, notify_github_trial, notify_github_verdict
-from .reactor import install_modal_dispatch_waker, run_reactor
+from .reactor import install_modal_dispatch_waker, run_reactor_forever
 from .runtime import configure_storage_paths, console
 
 install_modal_dispatch_waker()
@@ -82,34 +70,17 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
     scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
     max_containers=WORKER_MAX_CONTAINERS,
     timeout=WORKER_TIMEOUT_SECONDS,
-    memory=1024,  # 1GB memory to prevent OOM issues
+    memory=1024,
     nonpreemptible=WORKER_NONPREEMPTIBLE,
 )
 async def process_single_job(queue_key: str):
-    """
-    Process exactly ONE ``worker_jobs`` row from the unified queue.
-
-    1. Acquires a queue-key concurrency slot (``queue_slots``)
-    2. Claims one row via ``FOR UPDATE SKIP LOCKED`` on ``worker_jobs``
-    3. Dispatches to the handler registered for the row's ``kind``
-    4. Records the terminal outcome on the ``worker_jobs`` row; the
-       handler mirrors it back to domain tables (``trials`` / ``tasks``)
-
-    Each worker gets the full timeout budget for its single job.
-    """
-    # Resolve the Modal function-call id BEFORE opening the span so
-    # it can ride as a span attribute. This is a pure in-process
-    # lookup, no I/O, so it's safe to do pre-span.
+    """Process exactly ONE ``worker_jobs`` row from the unified queue."""
     fc_id: str | None = None
     try:
         fc_id = modal.current_function_call_id()
     except Exception:
         pass
 
-    # Open the span FIRST and run everything else inside it — the
-    # ``configure_storage_paths`` + Modal handshake + console prints
-    # used to fire ahead of the span and showed up as orphan top-
-    # level activity on every job worker container.
     job_span = _otel_span(
         "worker.process_single_job",
         queue_key=queue_key,
@@ -149,16 +120,10 @@ async def process_single_job(queue_key: str):
                 console.print(
                     f"metric=queue_lock_contention queue_key={queue_key} limit={queue_limit}"
                 )
-                console.print(
-                    f"[dim]No queue slots available (queue_key={queue_key}), exiting[/dim]"
-                )
                 return
             console.print(
                 f"metric=queue_lock_acquired queue_key={queue_key} "
                 f"slot={lock_slot + 1} limit={queue_limit}"
-            )
-            console.print(
-                f"[dim]Acquired queue slot {lock_slot + 1}/{queue_limit} (queue_key={queue_key})[/dim]"
             )
 
         job_found = await run_single_worker_job(
@@ -187,8 +152,6 @@ async def process_single_job(queue_key: str):
                 worker_id=worker_id,
             )
         elif unmetered:
-            # Slot release is the wake signal on metered queues; with
-            # no slot to release, wake the reactor directly.
             from oddish.workers.queue.dispatch_signal import notify_dispatch
 
             await notify_dispatch(queue_key)
@@ -202,147 +165,75 @@ async def process_single_job(queue_key: str):
         console.print("[green]Job worker complete[/green]")
 
 
-@app.function(
+@app.cls(
     image=image,
     volumes=worker_volumes,
     secrets=runtime_secrets,
-    # With the reactor enabled the function is a long-running service
-    # that holds the listener open for nearly a full restart-hygiene
-    # cycle; with the reactor disabled it's the legacy 60s-or-less
-    # poll. ``timeout`` covers the long case with headroom.
-    timeout=max(_DISPATCH_PERIOD_SECONDS + 60, 60),
-    min_containers=1,  # Keep one dispatcher container warm.
-    max_containers=1,  # Singleton dispatcher.
-    schedule=modal.Period(seconds=_DISPATCH_PERIOD_SECONDS),
+    min_containers=1,
+    max_containers=1,
+    timeout=86400,
     nonpreemptible=DISPATCHER_NONPREEMPTIBLE,
 )
-async def poll_queue():
-    """Dispatcher entry point. Reactor when ``ODDISH_REACTOR_ENABLED``, else legacy poll."""
-    cycle_span = _otel_span(
-        "worker.poll_queue_cycle",
-        reactor_enabled=REACTOR_ENABLED,
-    )
-    cycle_span.__enter__()
-    try:
-        console.print(
-            f"[cyan]Queue dispatcher starting "
-            f"(mode={'reactor' if REACTOR_ENABLED else 'poll'})...[/cyan]"
-        )
+class Dispatcher:
+    """Always-on reactor container. ``@modal.enter`` fires once when the
+    container starts, launches the reactor loop as a background task,
+    and returns so the container is considered ready. Modal recycles
+    containers periodically; each recycle starts a fresh reactor."""
+
+    @modal.enter()
+    async def start(self) -> None:
         await configure_storage_paths()
-
-        stale_cleared = await cleanup_stale_queue_slots()
-        if stale_cleared > 0:
-            console.print(f"metric=queue_lock_stale_cleared count={stale_cleared}")
-            console.print(
-                f"[dim]Cleared {stale_cleared} stale queue slot lock(s)[/dim]"
-            )
-
-        cleanup_counts = await cleanup_orphaned_queue_state()
-        if any(cleanup_counts.values()):
-            console.print(
-                "metric=orphaned_queue_cleanup "
-                + " ".join(f"{key}={value}" for key, value in cleanup_counts.items())
-            )
-            console.print(
-                "[yellow]Reconciled orphaned queue state:[/yellow] "
-                + ", ".join(
-                    f"{key}={value}"
-                    for key, value in cleanup_counts.items()
-                    if value > 0
-                )
-            )
-
-        if REACTOR_ENABLED:
-            async def _spawn(queue_key: str) -> None:
-                await process_single_job.spawn.aio(queue_key=queue_key)
-
-            await run_reactor(
-                _spawn,
-                max_workers=MAX_WORKERS_PER_POLL,
-                deadline_seconds=REACTOR_DEADLINE_SECONDS,
-            )
-            return
-
-        queue_keys = await discover_active_worker_job_queue_keys()
-        queued_by_org_queue, running_by_queue = await get_worker_job_org_queue_counts(
-            queue_keys
-        )
-        concurrency_limits = {
-            queue_key: settings.get_model_concurrency(queue_key)
-            for queue_key in queue_keys
-        }
-
-        # Per-queue_key summary (aggregated across orgs) is still the
-        # useful operator-facing view.
-        queued_by_queue: dict[str, int] = {}
-        for (_org_id, queue_key), queued in queued_by_org_queue.items():
-            queued_by_queue[queue_key] = queued_by_queue.get(queue_key, 0) + queued
-        for queue_key in queue_keys:
-            queued = queued_by_queue.get(queue_key, 0)
-            running = running_by_queue.get(queue_key, 0)
-            limit = concurrency_limits.get(queue_key, 0)
-            console.print(
-                f"[dim]{queue_key}: queued={queued} running={running} limit={limit}[/dim]"
-            )
-
-        # Also log the per-(org, queue_key) breakdown so a lopsided
-        # fair-share allocation is debuggable from the poll log without
-        # digging into the DB.
-        if queued_by_org_queue:
-            org_buckets: dict[str, int] = {}
-            for (org_id, _queue_key), queued in queued_by_org_queue.items():
-                key = org_id or "<none>"
-                org_buckets[key] = org_buckets.get(key, 0) + queued
-            summary = ", ".join(
-                f"{org}={count}" for org, count in sorted(org_buckets.items())
-            )
-            console.print(f"[dim]queued_by_org: {summary}[/dim]")
-
-        console.print(f"[dim]Spawn cap per poll: {MAX_WORKERS_PER_POLL}[/dim]")
-
-        spawn_plan = build_spawn_plan(
-            queued_by_org_queue=queued_by_org_queue,
-            running_by_queue=running_by_queue,
-            concurrency_limits=concurrency_limits,
-            max_workers=MAX_WORKERS_PER_POLL,
-        )
-
-        if not spawn_plan:
-            console.print("[dim]No queue capacity available, exiting[/dim]")
-            return
-
-        console.print(f"[green]Spawning {len(spawn_plan)} job worker(s)...[/green]")
-
-        # Use Modal's async spawn interface inside this async function to avoid
-        # blocking the event loop and spurious AsyncUsageWarning noise.
-        await asyncio.gather(
-            *(
-                process_single_job.spawn.aio(queue_key=queue_key)
-                for queue_key in spawn_plan
-            )
-        )
-        for i, queue_key in enumerate(spawn_plan, start=1):
-            console.print(
-                f"[dim]Spawned worker {i}/{len(spawn_plan)} (queue_key={queue_key})[/dim]"
-            )
-
-        console.print(f"[green]Dispatched {len(spawn_plan)} workers[/green]")
-
-    except OSError as e:
-        # Transient network/DNS errors (e.g. socket.gaierror) should not
-        # crash the scheduled function -- the next poll in 3 minutes will retry.
-        console.print(
-            f"[yellow]Dispatcher skipped (transient network error): {e}[/yellow]"
-        )
-    except Exception as e:
-        console.print(f"[red]Dispatcher error: {e}[/red]")
-        raise
-    finally:
-        await close_database_connections()
-        import sys as _sys
-
+        # Stale-slot reap on each container start: the only place this
+        # had a natural cadence in the old polling design. Cheap and
+        # one-shot now.
         try:
-            cycle_span.__exit__(*_sys.exc_info())
+            cleared = await cleanup_stale_queue_slots()
+            if cleared:
+                console.print(
+                    f"metric=queue_lock_stale_cleared count={cleared}"
+                )
+        except Exception as exc:
+            console.print(
+                f"[yellow]dispatcher startup slot reap failed: {exc!r}[/yellow]"
+            )
+        try:
+            cleanup_counts = await cleanup_orphaned_queue_state()
+            if any(cleanup_counts.values()):
+                console.print(
+                    "metric=orphaned_queue_cleanup "
+                    + " ".join(f"{k}={v}" for k, v in cleanup_counts.items())
+                )
+        except Exception as exc:
+            console.print(
+                f"[yellow]dispatcher startup orphan cleanup failed: {exc!r}[/yellow]"
+            )
+
+        install_modal_dispatch_waker()
+
+        async def _spawn(queue_key: str) -> None:
+            await process_single_job.spawn.aio(queue_key=queue_key)
+
+        # Background task runs forever; do not await it here so the
+        # container becomes ready and Modal keeps it alive.
+        self._task = asyncio.create_task(
+            run_reactor_forever(_spawn, max_workers=MAX_WORKERS_PER_POLL)
+        )
+        console.print("[green]Dispatcher reactor task launched[/green]")
+
+    @modal.exit()
+    async def stop(self) -> None:
+        task = getattr(self, "_task", None)
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        try:
+            await close_database_connections()
         except Exception:
             pass
-        console.print("[green]Dispatcher complete[/green]")
+
+    @modal.method()
+    async def ping(self) -> str:
+        return "ok"
