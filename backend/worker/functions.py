@@ -129,6 +129,7 @@ async def process_single_job(queue_key: str):
 
     worker_id = f"{queue_key}-{uuid4().hex[:12]}"
     lock_slot: int | None = None
+    unmetered = settings.is_unmetered_queue_key(queue_key)
 
     job_span.__enter__()
     try:
@@ -137,33 +138,44 @@ async def process_single_job(queue_key: str):
             console.print(f"[dim]Modal function call: {fc_id}[/dim]")
         await configure_storage_paths()
 
-        queue_limit = settings.get_model_concurrency(queue_key)
-        if queue_limit <= 0:
+        if unmetered:
+            # nop / oracle: no provider rate to protect, no point in
+            # paying a DB roundtrip for a slot lease that exists only
+            # to gate model concurrency. ``queue_slot=None`` is a
+            # first-class value on ``worker_jobs.current_queue_slot``
+            # and everywhere downstream that touches it.
             console.print(
-                f"[dim]Queue limit is {queue_limit} (queue_key={queue_key}), exiting[/dim]"
+                f"[dim]Unmetered queue (queue_key={queue_key}), "
+                f"skipping queue_slot lease[/dim]"
             )
-            return
-        lock_slot = await acquire_queue_slot(
-            queue_key=queue_key,
-            limit=queue_limit,
-            worker_id=worker_id,
-            lease_seconds=WORKER_TIMEOUT_SECONDS + 30,
-        )
-        if lock_slot is None:
+        else:
+            queue_limit = settings.get_model_concurrency(queue_key)
+            if queue_limit <= 0:
+                console.print(
+                    f"[dim]Queue limit is {queue_limit} (queue_key={queue_key}), exiting[/dim]"
+                )
+                return
+            lock_slot = await acquire_queue_slot(
+                queue_key=queue_key,
+                limit=queue_limit,
+                worker_id=worker_id,
+                lease_seconds=WORKER_TIMEOUT_SECONDS + 30,
+            )
+            if lock_slot is None:
+                console.print(
+                    f"metric=queue_lock_contention queue_key={queue_key} limit={queue_limit}"
+                )
+                console.print(
+                    f"[dim]No queue slots available (queue_key={queue_key}), exiting[/dim]"
+                )
+                return
             console.print(
-                f"metric=queue_lock_contention queue_key={queue_key} limit={queue_limit}"
+                f"metric=queue_lock_acquired queue_key={queue_key} "
+                f"slot={lock_slot + 1} limit={queue_limit}"
             )
             console.print(
-                f"[dim]No queue slots available (queue_key={queue_key}), exiting[/dim]"
+                f"[dim]Acquired queue slot {lock_slot + 1}/{queue_limit} (queue_key={queue_key})[/dim]"
             )
-            return
-        console.print(
-            f"metric=queue_lock_acquired queue_key={queue_key} "
-            f"slot={lock_slot + 1} limit={queue_limit}"
-        )
-        console.print(
-            f"[dim]Acquired queue slot {lock_slot + 1}/{queue_limit} (queue_key={queue_key})[/dim]"
-        )
 
         job_found = await run_single_worker_job(
             queue_key=queue_key,
@@ -185,11 +197,23 @@ async def process_single_job(queue_key: str):
         raise
     finally:
         if lock_slot is not None:
+            # release_queue_slot fires notify_dispatch for the metered
+            # path, so the next queued job for this queue_key wakes
+            # the reactor as soon as capacity frees.
             await release_queue_slot(
                 queue_key=queue_key,
                 slot=lock_slot,
                 worker_id=worker_id,
             )
+        elif unmetered:
+            # Unmetered queues don't take a slot lease, so the slot-
+            # release wake-up path doesn't fire. Send the wake
+            # explicitly: if there are more queued nop/oracle jobs
+            # waiting because ``MAX_WORKERS_PER_POLL`` capped the last
+            # spawn wave, the reactor needs to know capacity opened.
+            from oddish.workers.queue.dispatch_signal import notify_dispatch
+
+            await notify_dispatch(queue_key)
         await close_database_connections()
         import sys as _sys
 

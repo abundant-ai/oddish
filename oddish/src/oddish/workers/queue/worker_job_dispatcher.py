@@ -175,7 +175,15 @@ def build_spawn_plan(
     all_queue_keys = set(concurrency_limits.keys()) | {
         qk for bucket in org_to_qk_queued.values() for qk in bucket
     }
+    # Use a value comfortably larger than any realistic ``max_workers``
+    # for unmetered queue keys so the per-key capacity check
+    # degenerates to a no-op; the only remaining bounds for those keys
+    # are the per-org queued count and ``max_workers``.
+    _UNMETERED_SENTINEL = 1 << 30
     for queue_key in all_queue_keys:
+        if settings.is_unmetered_queue_key(queue_key):
+            global_capacity[queue_key] = _UNMETERED_SENTINEL
+            continue
         limit = concurrency_limits.get(queue_key, 0)
         running = running_by_queue.get(queue_key, 0)
         global_capacity[queue_key] = max(limit - running, 0)
