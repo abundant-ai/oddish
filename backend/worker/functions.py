@@ -1,7 +1,6 @@
 from oddish.config import Settings
 
-# Worker containers process one job each; keep DB pools minimal to avoid
-# exhausting connection limits when Modal bursts many containers.
+# Worker containers process one job each; keep DB pools minimal.
 Settings.db_pool_size = 1
 Settings.db_pool_max_overflow = 0
 
@@ -14,9 +13,8 @@ from observability import span as _otel_span
 
 from modal_app import (
     DB_PROXY_ENABLED,
+    PROVIDER_WORKER_CAPS,
     WORKER_BUFFER_CONTAINERS,
-    WORKER_MAX_CONTAINERS,
-    WORKER_MIN_CONTAINERS,
     WORKER_NONPREEMPTIBLE,
     WORKER_SCALEDOWN_WINDOW_SECONDS,
     WORKER_TIMEOUT_SECONDS,
@@ -38,16 +36,14 @@ from oddish.workers.queue.worker_job_single_job import (
 )
 
 from .db_proxy_service import DBProxyService, install_modal_db_proxy  # noqa: F401
-from .dispatcher import dispatcher_notify, install_modal_dispatch_waker  # noqa: F401
+from .dispatcher import install_wrapper_dispatch_waker
 from .github import notify_github_analysis, notify_github_trial, notify_github_verdict
 from .runtime import configure_storage_paths, console
 
-install_modal_dispatch_waker()
+ensure_builtin_handlers_registered()
 
 if DB_PROXY_ENABLED:
     install_modal_db_proxy()
-
-ensure_builtin_handlers_registered()
 
 
 _POST_SUCCESS_HOOKS: PostSuccessHooks = {
@@ -57,20 +53,8 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
 }
 
 
-@app.function(
-    image=image,
-    volumes=worker_volumes,
-    secrets=runtime_secrets,
-    min_containers=WORKER_MIN_CONTAINERS,
-    buffer_containers=WORKER_BUFFER_CONTAINERS,
-    scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
-    max_containers=WORKER_MAX_CONTAINERS,
-    timeout=WORKER_TIMEOUT_SECONDS,
-    memory=1024,
-    nonpreemptible=WORKER_NONPREEMPTIBLE,
-)
-async def process_single_job(queue_key: str):
-    """Process exactly ONE ``worker_jobs`` row from the unified queue."""
+async def _do_single_job(queue_key: str) -> None:
+    """Inner worker body. Called by every ``process_single_job_*`` wrapper."""
     fc_id: str | None = None
     try:
         fc_id = modal.current_function_call_id()
@@ -94,12 +78,7 @@ async def process_single_job(queue_key: str):
             console.print(f"[dim]Modal function call: {fc_id}[/dim]")
         await configure_storage_paths()
 
-        if unmetered:
-            console.print(
-                f"[dim]Unmetered queue (queue_key={queue_key}), "
-                f"skipping queue_slot lease[/dim]"
-            )
-        else:
+        if not unmetered:
             queue_limit = settings.get_model_concurrency(queue_key)
             if queue_limit <= 0:
                 return
@@ -114,10 +93,6 @@ async def process_single_job(queue_key: str):
                     f"metric=queue_lock_contention queue_key={queue_key} limit={queue_limit}"
                 )
                 return
-            console.print(
-                f"metric=queue_lock_acquired queue_key={queue_key} "
-                f"slot={lock_slot + 1} limit={queue_limit}"
-            )
 
         job_found = await run_single_worker_job(
             queue_key=queue_key,
@@ -128,11 +103,10 @@ async def process_single_job(queue_key: str):
         )
         if not job_found:
             console.print(
-                f"[dim]No job available after slot acquisition (queue_key={queue_key})[/dim]"
+                f"[dim]No job available (queue_key={queue_key})[/dim]"
             )
 
     except asyncio.CancelledError:
-        console.print("[yellow]Worker cancelled[/yellow]")
         raise
     except Exception as e:
         console.print(f"[red]Worker error: {e}[/red]")
@@ -144,10 +118,6 @@ async def process_single_job(queue_key: str):
                 slot=lock_slot,
                 worker_id=worker_id,
             )
-        elif unmetered:
-            from oddish.workers.queue.dispatch_signal import notify_dispatch
-
-            await notify_dispatch(queue_key)
         await close_database_connections()
         import sys as _sys
 
@@ -155,4 +125,63 @@ async def process_single_job(queue_key: str):
             job_span.__exit__(*_sys.exc_info())
         except Exception:
             pass
-        console.print("[green]Job worker complete[/green]")
+
+
+def _make_wrapper(name: str, max_containers: int):
+    """Define an ``@app.function`` wrapper with provider-specific
+    ``max_containers``. Modal's per-function container cap is the
+    rate limit; no application-level queue needed."""
+
+    async def _wrapper(queue_key: str) -> None:
+        await _do_single_job(queue_key)
+
+    _wrapper.__name__ = name
+    return app.function(
+        image=image,
+        volumes=worker_volumes,
+        secrets=runtime_secrets,
+        min_containers=0,
+        buffer_containers=WORKER_BUFFER_CONTAINERS,
+        scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
+        max_containers=max_containers,
+        timeout=WORKER_TIMEOUT_SECONDS,
+        memory=1024,
+        nonpreemptible=WORKER_NONPREEMPTIBLE,
+        name=name,
+        serialized=True,
+    )(_wrapper)
+
+
+process_single_job_baseline = _make_wrapper(
+    "process_single_job_baseline", PROVIDER_WORKER_CAPS["baseline"]
+)
+process_single_job_openai = _make_wrapper(
+    "process_single_job_openai", PROVIDER_WORKER_CAPS["openai"]
+)
+process_single_job_claude = _make_wrapper(
+    "process_single_job_claude", PROVIDER_WORKER_CAPS["claude"]
+)
+process_single_job_gemini = _make_wrapper(
+    "process_single_job_gemini", PROVIDER_WORKER_CAPS["gemini"]
+)
+process_single_job = _make_wrapper(
+    "process_single_job", PROVIDER_WORKER_CAPS["default"]
+)
+
+
+PROVIDER_WRAPPERS: dict[str, modal.Function] = {
+    "baseline": process_single_job_baseline,
+    "openai": process_single_job_openai,
+    "claude": process_single_job_claude,
+    "gemini": process_single_job_gemini,
+    "default": process_single_job,
+}
+
+
+def get_wrapper_for_queue_key(queue_key: str) -> modal.Function:
+    provider = settings.get_provider_for_queue_key(queue_key)
+    return PROVIDER_WRAPPERS.get(provider, process_single_job)
+
+
+# Install the waker AFTER wrappers exist so dispatcher.py can route.
+install_wrapper_dispatch_waker(get_wrapper_for_queue_key)

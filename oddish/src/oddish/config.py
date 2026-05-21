@@ -551,6 +551,21 @@ class Settings(BaseSettings):
         """True for queue keys with no provider rate to protect (nop / oracle)."""
         return self.normalize_queue_key(queue_key) == NOP_ORACLE_QUEUE_KEY
 
+    def get_provider_for_queue_key(self, queue_key: str) -> str:
+        """Canonical provider name for a queue_key, used to route to the
+        right per-provider Modal wrapper function."""
+        normalized = self.normalize_queue_key(queue_key)
+        if normalized == NOP_ORACLE_QUEUE_KEY:
+            return "baseline"
+        if "/" in normalized:
+            prefix = normalized.split("/", 1)[0]
+            mapped = _MODEL_PROVIDER_ALIASES.get(prefix)
+            if mapped:
+                return mapped
+            return prefix
+        provider = _get_provider_from_model(normalized)
+        return provider or "default"
+
     def get_model_concurrency(self, queue_key: str) -> int:
         normalized = self.normalize_queue_key(queue_key)
         override = self.model_concurrency_overrides.get(normalized)

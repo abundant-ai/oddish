@@ -28,13 +28,15 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
 @router.post("/_dispatcher-kick")
 async def dispatcher_kick(
     auth: Annotated[AuthContext, Depends(require_admin)],
-    queue_key: str = "",
+    queue_key: str = "nop_oracle",
 ) -> dict:
-    """Manually invoke ``dispatcher_notify`` for diagnostics."""
+    """Spawn the wrapper for ``queue_key`` once. Diagnostic only."""
     try:
-        from worker.dispatcher import dispatcher_notify
+        from worker.functions import get_wrapper_for_queue_key
 
-        return await dispatcher_notify.remote.aio(queue_key=queue_key)
+        wrapper = get_wrapper_for_queue_key(queue_key)
+        await wrapper.spawn.aio(queue_key=queue_key)
+        return {"spawned": wrapper.tag if hasattr(wrapper, "tag") else str(wrapper)}
     except Exception as exc:
         import traceback
 

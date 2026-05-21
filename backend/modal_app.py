@@ -79,6 +79,18 @@ DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", 
 # queues (nop / oracle) bypass it.
 MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
 
+# Per-provider worker concurrency caps. Each provider gets a dedicated
+# ``process_single_job_<provider>`` wrapper function whose
+# ``max_containers`` Modal-natively gates how many trials/analyses for
+# that provider can be running at once. Tune per provider rate limit.
+PROVIDER_WORKER_CAPS = {
+    "baseline": _env_int("ODDISH_MAX_WORKERS_BASELINE", 1024),
+    "openai": _env_int("ODDISH_MAX_WORKERS_OPENAI", 64),
+    "claude": _env_int("ODDISH_MAX_WORKERS_CLAUDE", 64),
+    "gemini": _env_int("ODDISH_MAX_WORKERS_GEMINI", 64),
+    "default": _env_int("ODDISH_MAX_WORKERS_DEFAULT", 32),
+}
+
 _IS_PREVIEW = MODAL_APP_NAME.startswith("oddish-pr-")
 
 # Centralised DB proxy service. When enabled, workers route their

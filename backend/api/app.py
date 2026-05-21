@@ -86,12 +86,13 @@ async def lifespan(_api: FastAPI):
     with _otel_span("app.startup"):
         Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
         role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
-        # Lazy import: tooling that loads the API package may not have
-        # a Modal client configured.
+        # Importing worker.functions installs the wrapper-routing
+        # dispatch waker as a side effect, so library-side
+        # ``notify_dispatch`` calls route to per-provider Modal
+        # wrappers. Lazy because tooling that loads the API may not
+        # have Modal client config.
         try:
-            from worker.dispatcher import install_modal_dispatch_waker
-
-            install_modal_dispatch_waker()
+            import worker.functions  # noqa: F401
         except Exception:
             logger.warning(
                 "could not install Modal dispatch waker", exc_info=True
