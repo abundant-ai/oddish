@@ -25,6 +25,29 @@ from oddish.queue import enqueue_task_expand_worker_job
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
+@router.post("/_dispatcher-kick")
+async def dispatcher_kick(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> dict:
+    """Diagnostic: synchronously invoke the Dispatcher to verify it's alive.
+
+    Returns the ping result (should be ``{"result": "ok"}``) or the
+    exception text so we can see why the dispatcher isn't dispatching.
+    """
+    try:
+        from worker.functions import Dispatcher
+
+        result = await Dispatcher().ping.remote.aio()
+        return {"result": result}
+    except Exception as exc:
+        import traceback
+
+        return {
+            "error": repr(exc),
+            "traceback": traceback.format_exc(),
+        }
+
+
 @router.get("/slots", response_model=QueueSlotsResponse)
 async def get_queue_slots(
     auth: Annotated[AuthContext, Depends(require_admin)],
