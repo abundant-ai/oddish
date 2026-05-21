@@ -75,48 +75,19 @@ WORKER_MAX_CONTAINERS = _env_int(
 WORKER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_WORKER_NONPREEMPTIBLE", True)
 DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", True)
 
-# Max number of workers spawned per dispatch cycle (rate limiter,
-# global across all queue_keys). With the reactor enabled, "per cycle"
-# really means "per wake" -- and wakes are event-driven, so the cap is
-# better understood as a spawn-burst ceiling than a steady-state rate.
-# Sized to match ``NOP_ORACLE_CONCURRENCY`` below so a single wake can
-# saturate the nop/oracle queue when the user submits a burst.
+# Per-wake spawn-burst ceiling for metered queues only; unmetered
+# queues (nop / oracle) bypass it.
 MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
 
-# Event-driven dispatch reactor.
-#
-# When enabled, ``poll_queue`` becomes a long-running service that
-# blocks on a Modal Queue for wake-ups pushed by ``enqueue_worker_job``
-# / ``release_queue_slot`` via the library-side dispatch_signal hooks.
-# There is no polling cadence. Wakes come from two event sources:
-#
-# 1. NOTIFY arriving on the Modal Queue (an enqueue or a slot release)
-# 2. A pending retry's ``available_after`` becoming runnable; the
-#    reactor sleeps for exactly the right number of seconds and wakes
-#    at the moment it matters.
-#
-# The Modal schedule only fires to restart the container for hygiene
-# (memory growth, stale DB pool, etc.). The reactor exits cleanly
-# just before each tick; Modal respawns and the next instance does an
-# initial dispatch to drain anything queued during the brief gap.
-#
-# Flip ``ODDISH_REACTOR_ENABLED=0`` to fall back to the legacy
-# poll-every-180s behaviour without redeploying any code.
+# Event-driven reactor. Off: 180s polling. On: long-running service,
+# wakes on Modal Queue puts from enqueue / slot-release.
 REACTOR_ENABLED = _env_flag("ODDISH_REACTOR_ENABLED", False)
-# How long the reactor service stays up between Modal-level restarts.
-# This is hygiene only -- it does not gate dispatch latency, since
-# wakes are event-driven within the running container.
 REACTOR_RESTART_HOURS = _env_int("ODDISH_MODAL_REACTOR_RESTART_HOURS", 1)
 REACTOR_RESTART_SECONDS = REACTOR_RESTART_HOURS * 3600
-# Effective Modal schedule period for the dispatcher function. With
-# the reactor enabled this is restart hygiene; with it disabled this
-# is the legacy 180s poll cadence.
 _DISPATCH_PERIOD_SECONDS = (
     REACTOR_RESTART_SECONDS if REACTOR_ENABLED else POLL_INTERVAL_SECONDS
 )
-# Reactor must exit before the next scheduled tick to avoid Modal
-# refusing to start a second container (the function is pinned to
-# ``max_containers=1``). Leave a small margin.
+# Exit before the next schedule fires; max_containers=1 prevents overlap.
 REACTOR_DEADLINE_SECONDS = max(REACTOR_RESTART_SECONDS - 30, 60)
 
 runtime_secret = modal.Secret.from_name(
@@ -155,12 +126,8 @@ if MODAL_APP_NAME.startswith("oddish-pr-"):
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
 MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 32)
-# nop/oracle bypass the ``queue_slots`` lease entirely (see
-# ``Settings.is_unmetered_queue_key``) so this value is unused at the
-# worker. It survives only as the legacy advertised value for the
-# ``ODDISH_NOP_ORACLE_CONCURRENCY`` library setting; nothing checks it
-# on the dispatch hot path. Left as an env var so deploys that still
-# reference it don't fail on rollout.
+# Unused on the hot path (nop/oracle bypass the lease); kept for
+# deploy-time env-var compatibility.
 NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 256)
 
 ENV_VARS = {

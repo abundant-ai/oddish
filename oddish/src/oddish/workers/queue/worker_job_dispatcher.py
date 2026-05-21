@@ -24,7 +24,6 @@ beyond ``limit - running`` for that queue_key.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from datetime import datetime
 
 from oddish.config import settings
@@ -37,10 +36,7 @@ __all__ = [
     "get_worker_job_org_queue_counts",
     "next_retry_wake_at",
     "plan_dispatch_cycle",
-    "run_dispatch_cycle",
 ]
-
-Spawner = Callable[[str], Awaitable[None]]
 
 
 async def discover_active_worker_job_queue_keys() -> tuple[str, ...]:
@@ -137,40 +133,12 @@ def build_spawn_plan(
     concurrency_limits: dict[str, int],
     max_workers: int,
 ) -> list[str]:
-    """Decide which queue-specific workers to spawn this cycle.
-
-    **Unmetered queue keys** (``Settings.is_unmetered_queue_key`` --
-    currently just ``nop_oracle``) bypass every cap: every queued row
-    spawns in the same wave, no ``max_workers`` budget, no per-key
-    ``limit - running`` check. nop / oracle never call a provider, so
-    the only thing those caps were throttling was Modal-side fan-out,
-    which Modal is built to handle.
-
-    **Metered queue keys** then split a ``max_workers`` budget via a
-    two-level round-robin:
-
-    1. **Outer (orgs)** — strict round-robin across ``org_id`` so no
-       single org can consume the whole per-poll spawn budget just
-       because they enqueue across more models than their neighbour.
-    2. **Inner (queue_keys within an org)** — round-robin across that
-       org's queue_keys using a per-org cursor. Heavier models keep
-       getting spawns turn after turn because their queued count never
-       drops to zero, but lighter models still receive at least one
-       spawn per org-turn -- the "leeway" that prevents a small
-       secondary model from being completely starved behind a large
-       primary one.
-
-    Per-queue_key capacity for metered keys is ``limit - running``
-    and is decremented across orgs -- the global ``queue_slots``
-    concurrency cap continues to dominate, so one org cannot crowd out
-    another at the claim level just because the planner tried to
-    spawn more workers for it.
+    """Spawn plan: unmetered queues drain fully; metered queues share
+    ``max_workers`` via org-first round-robin under ``limit - running``.
     """
     if not queued_by_org_queue:
         return []
 
-    # Bucket queued work by org and compute remaining global capacity
-    # per queue_key once, up front; both get mutated as we allocate.
     org_to_qk_queued: dict[str | None, dict[str, int]] = {}
     for (org_id, queue_key), queued in queued_by_org_queue.items():
         if queued <= 0:
@@ -184,10 +152,6 @@ def build_spawn_plan(
 
     spawn_plan: list[str] = []
 
-    # ----- Pass 1: drain every unmetered queue completely. -----
-    # Iterate orgs in a stable order so the fan-out is reproducible
-    # under test, but do not budget across them -- unmetered means
-    # unmetered.
     for org_id in ordered_orgs:
         bucket = org_to_qk_queued[org_id]
         for queue_key in sorted(bucket.keys()):
@@ -199,7 +163,6 @@ def build_spawn_plan(
             spawn_plan.extend([queue_key] * queued)
             bucket[queue_key] = 0
 
-    # ----- Pass 2: budgeted round-robin for metered queues. -----
     if max_workers <= 0:
         return spawn_plan
 
@@ -271,11 +234,7 @@ def build_spawn_plan(
 async def plan_dispatch_cycle(
     max_workers: int,
 ) -> tuple[list[str], dict[str, int], dict[str, int]]:
-    """Discover queue state and produce a spawn plan.
-
-    Returned tuple is ``(spawn_plan, queued_by_queue, running_by_queue)``;
-    the two count maps are aggregated per-queue_key for operator logging.
-    """
+    """``(spawn_plan, queued_by_queue, running_by_queue)``."""
     if max_workers <= 0:
         return [], {}, {}
 
@@ -303,33 +262,8 @@ async def plan_dispatch_cycle(
     return spawn_plan, queued_by_queue, running_by_queue
 
 
-async def run_dispatch_cycle(
-    spawner: Spawner,
-    *,
-    max_workers: int,
-) -> list[str]:
-    """Plan a dispatch cycle and ``await spawner(queue_key)`` for each entry.
-
-    Returns the spawn plan that was executed so callers can log it. The
-    spawner is invoked sequentially via ``await``; callers that want
-    parallel spawn fan-out should pass a spawner that schedules without
-    blocking (e.g. wrap ``modal_function.spawn.aio`` in ``asyncio.gather``
-    at the call site).
-    """
-    spawn_plan, _, _ = await plan_dispatch_cycle(max_workers=max_workers)
-    for queue_key in spawn_plan:
-        await spawner(queue_key)
-    return spawn_plan
-
-
 async def next_retry_wake_at() -> datetime | None:
-    """Earliest ``available_after`` for a row not yet runnable.
-
-    The reactor uses this to compute how long to sleep when no notify is
-    pending: ``min(available_after) - NOW()`` is the longest it can wait
-    before a retry must be picked up, regardless of whether any NOTIFY
-    fires before then.
-    """
+    """Earliest ``available_after`` for a not-yet-runnable row, or None."""
     pool = await get_pool()
     row = await pool.fetchrow(
         """
