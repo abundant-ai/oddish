@@ -66,8 +66,13 @@ class TimestampedMixin:
 
 
 def generate_id() -> str:
-    """Generate a short unique ID."""
-    return str(uuid4())[:8]
+    """Generate a short unique ID.
+
+    16 hex chars = 64 bits. Birthday-paradox 50% collision around 5B
+    IDs; comfortable for tables that grow to millions of rows. The
+    schema column is String(64) so existing 8-char ids stay valid.
+    """
+    return uuid4().hex[:16]
 
 
 # =============================================================================
