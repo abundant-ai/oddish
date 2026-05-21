@@ -6,4 +6,4 @@ ALLOWED_CLOUD_ENVIRONMENTS = frozenset({EnvironmentType.MODAL, EnvironmentType.D
 
 
 def get_default_cloud_environment() -> EnvironmentType:
-    return EnvironmentType.MODAL
+    return EnvironmentType.DAYTONA

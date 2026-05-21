@@ -504,16 +504,16 @@ def run(
         experiment_id = generate_experiment_name()
 
     if environment is None and not existing_task_ids:
-        environment = EnvironmentType.MODAL if is_modal_api else EnvironmentType.DOCKER
+        environment = EnvironmentType.DAYTONA if is_modal_api else EnvironmentType.DOCKER
     elif (
         environment is not None
         and is_modal_api
         and environment not in {EnvironmentType.MODAL, EnvironmentType.DAYTONA}
     ):
         console.print(
-            "[yellow]Oddish Cloud supports --env modal and --env daytona; forcing --env modal[/yellow]"
+            "[yellow]Oddish Cloud supports --env modal and --env daytona; forcing --env daytona[/yellow]"
         )
-        environment = EnvironmentType.MODAL
+        environment = EnvironmentType.DAYTONA
 
     # Upload and submit all tasks
     all_results = []
