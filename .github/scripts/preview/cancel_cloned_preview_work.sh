@@ -19,4 +19,10 @@ UPDATE tasks
 UPDATE trials
    SET status = 'failed'
  WHERE status IN ('pending', 'queued', 'running', 'retrying');
+-- Record the preview cutover so the reaper (which runs in previews too)
+-- only respawns rows created AFTER this moment. Anything older is
+-- cloned-from-prod and must not be touched.
+INSERT INTO oddish_runtime_config (key, value)
+VALUES ('preview_epoch_at', NOW()::text)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();
 SQL
