@@ -208,9 +208,10 @@ async def process_single_job(queue_key: str):
         elif unmetered:
             # Unmetered queues don't take a slot lease, so the slot-
             # release wake-up path doesn't fire. Send the wake
-            # explicitly: if there are more queued nop/oracle jobs
-            # waiting because ``MAX_WORKERS_PER_POLL`` capped the last
-            # spawn wave, the reactor needs to know capacity opened.
+            # explicitly so any queued work that didn't make it into
+            # the first spawn wave (e.g. spawn-call failures, late
+            # enqueues that raced the dispatch) gets picked up
+            # without waiting for the safety-net timer.
             from oddish.workers.queue.dispatch_signal import notify_dispatch
 
             await notify_dispatch(queue_key)

@@ -139,7 +139,15 @@ def build_spawn_plan(
 ) -> list[str]:
     """Decide which queue-specific workers to spawn this cycle.
 
-    Two-level round-robin:
+    **Unmetered queue keys** (``Settings.is_unmetered_queue_key`` --
+    currently just ``nop_oracle``) bypass every cap: every queued row
+    spawns in the same wave, no ``max_workers`` budget, no per-key
+    ``limit - running`` check. nop / oracle never call a provider, so
+    the only thing those caps were throttling was Modal-side fan-out,
+    which Modal is built to handle.
+
+    **Metered queue keys** then split a ``max_workers`` budget via a
+    two-level round-robin:
 
     1. **Outer (orgs)** — strict round-robin across ``org_id`` so no
        single org can consume the whole per-poll spawn budget just
@@ -152,12 +160,13 @@ def build_spawn_plan(
        secondary model from being completely starved behind a large
        primary one.
 
-    Per-queue_key capacity is ``limit - running`` and is decremented
-    across orgs -- the global ``queue_slots`` concurrency cap continues
-    to dominate, so one org cannot crowd out another at the claim
-    level just because the planner tried to spawn more workers for it.
+    Per-queue_key capacity for metered keys is ``limit - running``
+    and is decremented across orgs -- the global ``queue_slots``
+    concurrency cap continues to dominate, so one org cannot crowd out
+    another at the claim level just because the planner tried to
+    spawn more workers for it.
     """
-    if max_workers <= 0 or not queued_by_org_queue:
+    if not queued_by_org_queue:
         return []
 
     # Bucket queued work by org and compute remaining global capacity
@@ -171,34 +180,60 @@ def build_spawn_plan(
     if not org_to_qk_queued:
         return []
 
+    ordered_orgs = sorted(org_to_qk_queued.keys(), key=_org_sort_key)
+
+    spawn_plan: list[str] = []
+
+    # ----- Pass 1: drain every unmetered queue completely. -----
+    # Iterate orgs in a stable order so the fan-out is reproducible
+    # under test, but do not budget across them -- unmetered means
+    # unmetered.
+    for org_id in ordered_orgs:
+        bucket = org_to_qk_queued[org_id]
+        for queue_key in sorted(bucket.keys()):
+            if not settings.is_unmetered_queue_key(queue_key):
+                continue
+            queued = bucket[queue_key]
+            if queued <= 0:
+                continue
+            spawn_plan.extend([queue_key] * queued)
+            bucket[queue_key] = 0
+
+    # ----- Pass 2: budgeted round-robin for metered queues. -----
+    if max_workers <= 0:
+        return spawn_plan
+
     global_capacity: dict[str, int] = {}
-    all_queue_keys = set(concurrency_limits.keys()) | {
-        qk for bucket in org_to_qk_queued.values() for qk in bucket
+    all_metered_keys = {
+        qk
+        for qk in concurrency_limits.keys()
+        if not settings.is_unmetered_queue_key(qk)
+    } | {
+        qk
+        for bucket in org_to_qk_queued.values()
+        for qk in bucket
+        if not settings.is_unmetered_queue_key(qk)
     }
-    # Use a value comfortably larger than any realistic ``max_workers``
-    # for unmetered queue keys so the per-key capacity check
-    # degenerates to a no-op; the only remaining bounds for those keys
-    # are the per-org queued count and ``max_workers``.
-    _UNMETERED_SENTINEL = 1 << 30
-    for queue_key in all_queue_keys:
-        if settings.is_unmetered_queue_key(queue_key):
-            global_capacity[queue_key] = _UNMETERED_SENTINEL
-            continue
+    for queue_key in all_metered_keys:
         limit = concurrency_limits.get(queue_key, 0)
         running = running_by_queue.get(queue_key, 0)
         global_capacity[queue_key] = max(limit - running, 0)
 
-    ordered_orgs = sorted(org_to_qk_queued.keys(), key=_org_sort_key)
     per_org_qks: dict[str | None, list[str]] = {
-        org_id: sorted(org_to_qk_queued[org_id].keys()) for org_id in ordered_orgs
+        org_id: sorted(
+            qk
+            for qk in org_to_qk_queued[org_id].keys()
+            if not settings.is_unmetered_queue_key(qk)
+        )
+        for org_id in ordered_orgs
     }
     per_org_cursor: dict[str | None, int] = {org_id: 0 for org_id in ordered_orgs}
 
-    spawn_plan: list[str] = []
-    while len(spawn_plan) < max_workers:
+    budget_start = len(spawn_plan)
+    while len(spawn_plan) - budget_start < max_workers:
         progressed = False
         for org_id in ordered_orgs:
-            if len(spawn_plan) >= max_workers:
+            if len(spawn_plan) - budget_start >= max_workers:
                 break
             qks = per_org_qks[org_id]
             if not qks:
