@@ -29,11 +29,6 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
 async def dispatcher_kick(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> dict:
-    """Diagnostic: synchronously invoke the Dispatcher to verify it's alive.
-
-    Returns the ping result (should be ``{"result": "ok"}``) or the
-    exception text so we can see why the dispatcher isn't dispatching.
-    """
     try:
         from worker.functions import Dispatcher
 
@@ -42,10 +37,35 @@ async def dispatcher_kick(
     except Exception as exc:
         import traceback
 
-        return {
-            "error": repr(exc),
-            "traceback": traceback.format_exc(),
-        }
+        return {"error": repr(exc), "traceback": traceback.format_exc()}
+
+
+@router.get("/_dispatcher-status")
+async def dispatcher_status(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> dict:
+    try:
+        from worker.functions import Dispatcher
+
+        return await Dispatcher().status.remote.aio()
+    except Exception as exc:
+        import traceback
+
+        return {"error": repr(exc), "traceback": traceback.format_exc()}
+
+
+@router.post("/_dispatcher-force")
+async def dispatcher_force(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> dict:
+    try:
+        from worker.functions import Dispatcher
+
+        return await Dispatcher().force_dispatch.remote.aio()
+    except Exception as exc:
+        import traceback
+
+        return {"error": repr(exc), "traceback": traceback.format_exc()}
 
 
 @router.get("/slots", response_model=QueueSlotsResponse)

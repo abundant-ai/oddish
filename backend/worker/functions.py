@@ -237,3 +237,46 @@ class Dispatcher:
     @modal.method()
     async def ping(self) -> str:
         return "ok"
+
+    @modal.method()
+    async def status(self) -> dict:
+        task = getattr(self, "_task", None)
+        if task is None:
+            return {"task": None}
+        if task.done():
+            exc = task.exception()
+            if exc is not None:
+                import traceback
+
+                return {
+                    "task": "done",
+                    "exception": repr(exc),
+                    "traceback": "".join(
+                        traceback.format_exception(type(exc), exc, exc.__traceback__)
+                    ),
+                }
+            return {"task": "done", "result": "no exception"}
+        return {"task": "running"}
+
+    @modal.method()
+    async def force_dispatch(self) -> dict:
+        """Synchronously run one dispatch cycle, return spawn plan."""
+        from oddish.workers.queue.worker_job_dispatcher import plan_dispatch_cycle
+
+        try:
+            spawn_plan, queued, running = await plan_dispatch_cycle(
+                max_workers=MAX_WORKERS_PER_POLL
+            )
+            return {
+                "spawn_plan_len": len(spawn_plan),
+                "queued_by_queue": queued,
+                "running_by_queue": running,
+                "spawn_plan_sample": spawn_plan[:5],
+            }
+        except Exception as exc:
+            import traceback
+
+            return {
+                "error": repr(exc),
+                "traceback": traceback.format_exc(),
+            }
