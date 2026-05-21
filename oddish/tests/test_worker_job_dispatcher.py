@@ -223,29 +223,27 @@ def test_zero_or_negative_queued_entries_ignored():
     assert plan == ["m1"] * 5
 
 
-def test_unmetered_queue_key_bypasses_per_key_capacity():
-    """``nop_oracle`` ignores the ``limit - running`` cap.
+def test_unmetered_queue_key_bypasses_every_cap():
+    """``nop_oracle`` ignores per-key capacity AND ``max_workers``.
 
-    The planner treats unmetered queue_keys as having effectively
-    unlimited capacity, so a burst of nop/oracle work is bounded only
-    by ``max_workers`` (per reactor wake) and the queued count.
+    Every queued unmetered row spawns in the same wave. The only
+    bounds are the queued count and Modal's container fleet.
     """
     queued_by_org_queue = {("org-a", "nop_oracle"): 500}
     plan = build_spawn_plan(
         queued_by_org_queue=queued_by_org_queue,
         # Pretend a lot are already running -- with a metered key this
-        # would gate the spawn count to ``limit - running``. Unmetered
-        # keys must ignore it.
+        # would gate spawns to ``limit - running``. Unmetered ignores it.
         running_by_queue={"nop_oracle": 500},
         concurrency_limits={"nop_oracle": 32},
-        max_workers=128,
+        max_workers=128,  # must NOT cap unmetered output
     )
-    assert len(plan) == 128
+    assert len(plan) == 500
     assert set(plan) == {"nop_oracle"}
 
 
-def test_metered_queue_key_still_respects_capacity_alongside_unmetered():
-    """Mixed unmetered + metered: only the metered key is gated."""
+def test_metered_queue_key_capped_independently_of_unmetered():
+    """Mixed unmetered + metered: budget applies only to metered keys."""
     queued_by_org_queue = {
         ("org-a", "nop_oracle"): 100,
         ("org-a", "m-real"): 100,
@@ -258,8 +256,8 @@ def test_metered_queue_key_still_respects_capacity_alongside_unmetered():
     )
     real_count = sum(1 for qk in plan if qk == "m-real")
     nop_count = sum(1 for qk in plan if qk == "nop_oracle")
-    # Real-model spawns are capped at 2 (32 - 30 running). The rest
-    # of the budget flows to nop_oracle, which is unmetered.
+    # Unmetered: every queued nop_oracle row spawns regardless of budget.
+    # Metered: m-real is capped at 2 (32 - 30 running); the remaining
+    # metered budget goes unused because that's the only metered key.
+    assert nop_count == 100
     assert real_count == 2
-    assert nop_count == 62
-    assert real_count + nop_count == 64
