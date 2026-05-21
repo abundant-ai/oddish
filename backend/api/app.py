@@ -96,6 +96,16 @@ async def lifespan(_api: FastAPI):
             logger.warning(
                 "could not install Modal dispatch waker", exc_info=True
             )
+        # Bootstrap the Dispatcher container. min_containers=1 keeps a
+        # container warm only AFTER first invocation, so we kick it
+        # here on every API startup. Cheap if the container is already
+        # running (ping just returns "ok").
+        try:
+            from worker.functions import Dispatcher
+
+            await Dispatcher().ping.spawn.aio()
+        except Exception:
+            logger.warning("could not bootstrap dispatcher", exc_info=True)
 
     yield
 
