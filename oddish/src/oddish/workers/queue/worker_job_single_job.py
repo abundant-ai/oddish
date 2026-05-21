@@ -22,15 +22,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import asyncpg
-
-from oddish.config import settings
 from oddish.db import WorkerJobKind, WorkerJobStatus
 from oddish.workers.jobs.registry import (
     JobOutcome,
     NoHandlerRegisteredError,
     get_handler,
 )
+from oddish.workers.queue.db_proxy import get_db_proxy
 from oddish.workers.queue.shared import console
 
 
@@ -121,94 +119,8 @@ def calculate_trial_retry_delay_seconds(
     )
 
 
-# ---------------------------------------------------------------------------
-# Claim SQL
-#
-# Single query replaces the three kind-specific claim SQLs in the
-# legacy ``single_job.py``. Fair-scheduling-across-users for the
-# TRIAL kind is expressed via a LEFT JOIN that degenerates to a no-op
-# for every other kind, so the query is genuinely kind-agnostic at
-# the surface:
-#
-#   - For TRIAL rows, the JOIN resolves the trial's fairness_key and
-#     the subquery counts per-user RUNNING trials for this queue_key;
-#     ORDER BY then prefers the least-loaded user.
-#   - For non-TRIAL rows the JOINs produce NULLs and rpg.running_count
-#     is 0 for every row, so ORDER BY collapses to
-#     ``priority DESC, created_at ASC`` (plain FIFO with priority).
-# ---------------------------------------------------------------------------
-_CLAIM_WORKER_JOB_SQL = """
-UPDATE worker_jobs
-SET    status = 'RUNNING',
-       claimed_at = NOW(),
-       heartbeat_at = NOW(),
-       attempts = attempts + 1,
-       current_worker_id = $2,
-       current_queue_slot = $3,
-       modal_function_call_id = $4,
-       -- started_at pins to the first attempt so "total elapsed
-       -- across retries" is still recoverable. finished_at clears on
-       -- re-claim so the duration query (finished_at - claimed_at)
-       -- reflects only the last attempt.
-       started_at = COALESCE(started_at, NOW()),
-       finished_at = NULL,
-       next_retry_at = NULL,
-       error_message = NULL
-WHERE  id = (
-    SELECT wj.id
-    FROM   worker_jobs wj
-    LEFT JOIN trials tr
-        ON  wj.kind::text = 'TRIAL'
-        AND wj.subject_table = 'trials'
-        AND wj.subject_id = tr.id
-    LEFT JOIN tasks tk ON tr.task_id = tk.id
-    LEFT JOIN (
-        SELECT COALESCE(tk2.created_by_user_id, tk2.user) AS fairness_key,
-               COUNT(*) AS running_count
-        FROM   worker_jobs wj2
-        JOIN   trials tr2  ON wj2.subject_id = tr2.id
-        JOIN   tasks  tk2  ON tr2.task_id = tk2.id
-        WHERE  wj2.kind::text = 'TRIAL'
-          AND  wj2.status::text = 'RUNNING'
-          AND  wj2.queue_key = $1
-          AND  tr2.deleted_at IS NULL
-          AND  tk2.deleted_at IS NULL
-        GROUP  BY COALESCE(tk2.created_by_user_id, tk2.user)
-    ) rpg ON rpg.fairness_key = COALESCE(tk.created_by_user_id, tk.user)
-    WHERE  wj.queue_key = $1
-      AND  wj.status::text IN ('QUEUED', 'RETRYING')
-      AND  wj.available_after <= NOW()
-      -- Defense in depth: ``delete_*_core`` already cancels matching
-      -- worker_jobs when a trial / task is soft-deleted, so this
-      -- branch shouldn't trigger in practice. The guard is cheap and
-      -- keeps the queue correct if a cancel ever races a claim. ``tr``
-      -- and ``tk`` are populated only for TRIAL rows (via the LEFT
-      -- JOINs above); for other kinds they are NULL and the
-      -- ``IS NULL`` checks degenerate to TRUE.
-      AND  (tr.deleted_at IS NULL)
-      AND  (tk.deleted_at IS NULL)
-    ORDER  BY wj.priority DESC,
-              COALESCE(rpg.running_count, 0) ASC,
-              wj.created_at ASC
-    LIMIT  1
-    FOR    UPDATE OF wj SKIP LOCKED
-)
-RETURNING id, kind::text AS kind, subject_table, subject_id, payload,
-          attempts, max_attempts, queue_key, org_id, parent_job_id;
-"""
-
-
 @dataclass(frozen=True)
 class ClaimedWorkerJob:
-    """Lightweight view of a claimed ``worker_jobs`` row.
-
-    Kept minimal so the handler can hydrate a full ORM row if it wants
-    more fields. The claim-metadata fields (``worker_id``,
-    ``queue_slot``, ``modal_function_call_id``) are populated from the
-    dispatcher's call-site values rather than read back from the DB --
-    they were just written by the claim UPDATE.
-    """
-
     id: str
     kind: WorkerJobKind
     queue_key: str
@@ -224,107 +136,45 @@ class ClaimedWorkerJob:
     modal_function_call_id: str | None = None
 
 
-async def _open_connection() -> asyncpg.Connection:
-    return await asyncpg.connect(
-        settings.asyncpg_url,
-        statement_cache_size=0,
-        server_settings=settings.asyncpg_server_settings(),
-    )
-
-
 async def heartbeat_worker_job(
     job_id: str,
     *,
     pending_failure_count: int = 0,
     pending_last_error: str | None = None,
 ) -> None:
-    """Update a RUNNING worker_job's heartbeat timestamp.
-
-    No-ops for terminal rows so a late heartbeat after SUCCESS / FAILED
-    / CANCELLED can't resurrect a row. Follows the same failure-folding
-    pattern as the trial heartbeat so a pooler blip produces a
-    diagnostic breadcrumb rather than a silent stale-reap.
-    """
-    connection = await _open_connection()
-    try:
-        if pending_failure_count > 0:
-            await connection.execute(
-                """
-                UPDATE worker_jobs
-                SET    heartbeat_at = NOW(),
-                       heartbeat_failure_count = heartbeat_failure_count + $2,
-                       last_heartbeat_error = $3,
-                       last_heartbeat_error_at = NOW()
-                WHERE  id = $1
-                  AND  status::text = 'RUNNING'
-                """,
-                job_id,
-                pending_failure_count,
-                (pending_last_error or "")[:500] or None,
-            )
-        else:
-            await connection.execute(
-                """
-                UPDATE worker_jobs
-                SET    heartbeat_at = NOW()
-                WHERE  id = $1
-                  AND  status::text = 'RUNNING'
-                """,
-                job_id,
-            )
-    finally:
-        await connection.close()
+    await get_db_proxy().heartbeat(
+        job_id=job_id,
+        pending_failure_count=pending_failure_count,
+        pending_last_error=pending_last_error,
+    )
 
 
 async def claim_single_worker_job(
     queue_key: str,
     *,
     worker_id: str,
-    queue_slot: int,
+    queue_slot: int | None,
     modal_function_call_id: str | None = None,
 ) -> ClaimedWorkerJob | None:
-    """Atomically claim at most one runnable ``worker_jobs`` row.
-
-    Returns ``None`` if no row was available. The returned row is in
-    ``RUNNING`` state with ``attempts`` incremented and claim metadata
-    stamped.
-    """
-    connection = await _open_connection()
-    try:
-        row = await connection.fetchrow(
-            _CLAIM_WORKER_JOB_SQL,
-            queue_key,
-            worker_id,
-            queue_slot,
-            modal_function_call_id,
-        )
-    finally:
-        await connection.close()
-
+    row = await get_db_proxy().claim_job(
+        queue_key=queue_key,
+        worker_id=worker_id,
+        queue_slot=queue_slot,
+        modal_function_call_id=modal_function_call_id,
+    )
     if row is None:
         return None
-
-    raw_payload = row["payload"]
-    if isinstance(raw_payload, str):
-        # asyncpg returns JSONB as str unless a codec is registered on
-        # this connection. Be defensive.
-        import json
-
-        payload = json.loads(raw_payload) if raw_payload else {}
-    else:
-        payload = dict(raw_payload or {})
-
     return ClaimedWorkerJob(
-        id=str(row["id"]),
-        kind=WorkerJobKind(row["kind"]),
-        queue_key=str(row["queue_key"]),
-        subject_table=row["subject_table"],
-        subject_id=row["subject_id"],
-        payload=payload,
-        attempts=int(row["attempts"]),
-        max_attempts=int(row["max_attempts"]),
-        org_id=row["org_id"],
-        parent_job_id=row["parent_job_id"],
+        id=row.id,
+        kind=row.kind,
+        queue_key=row.queue_key,
+        subject_table=row.subject_table,
+        subject_id=row.subject_id,
+        payload=row.payload,
+        attempts=row.attempts,
+        max_attempts=row.max_attempts,
+        org_id=row.org_id,
+        parent_job_id=row.parent_job_id,
         worker_id=worker_id,
         queue_slot=queue_slot,
         modal_function_call_id=modal_function_call_id,
@@ -349,105 +199,49 @@ async def _record_outcome(
     stamp ``error_message``, clear claim metadata.
     Non-retryable (or retries exhausted) → status=FAILED.
     """
-    connection = await _open_connection()
-    try:
-        if outcome.success is not None:
-            import json
+    proxy = get_db_proxy()
+    if outcome.success is not None:
+        import json
 
-            summary = outcome.success.result_summary
-            await connection.execute(
-                """
-                UPDATE worker_jobs
-                SET    status = 'SUCCESS',
-                       result_summary = $2::jsonb,
-                       finished_at = NOW(),
-                       heartbeat_at = NOW(),
-                       next_retry_at = NULL,
-                       error_message = NULL
-                WHERE  id = $1
-                """,
-                job_id,
-                json.dumps(summary) if summary is not None else None,
-            )
-            return
+        summary = outcome.success.result_summary
+        await proxy.record_success(
+            job_id=job_id,
+            summary_json=json.dumps(summary) if summary is not None else None,
+        )
+        return
 
-        assert outcome.failure is not None
-        retry = outcome.failure.retryable and attempts < max_attempts
-        if retry:
-            retry_at: datetime | None = None
-            retry_reason = classify_retry_reason(outcome.failure.error_message)
-            delay_seconds: float | None = None
-            if kind == WorkerJobKind.TRIAL:
-                delay_seconds = calculate_trial_retry_delay_seconds(
-                    attempts=attempts,
-                    error_message=outcome.failure.error_message,
-                )
-                retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+    assert outcome.failure is not None
+    retry = outcome.failure.retryable and attempts < max_attempts
+    if retry:
+        retry_at: datetime | None = None
+        retry_reason = classify_retry_reason(outcome.failure.error_message)
+        delay_seconds: float | None = None
+        if kind == WorkerJobKind.TRIAL:
+            delay_seconds = calculate_trial_retry_delay_seconds(
+                attempts=attempts,
+                error_message=outcome.failure.error_message,
+            )
+            retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
 
-            # RETRYING is a scheduling state, not a terminal one. Leave
-            # finished_at NULL so the claim SQL can clear it on the
-            # next attempt without special-casing; the duration query
-            # already filters to SUCCESS/FAILED so it doesn't observe
-            # RETRYING rows either way.
-            await connection.execute(
-                """
-                UPDATE worker_jobs
-                SET    status = 'RETRYING',
-                       error_message = $2,
-                       next_retry_at = $3,
-                       available_after = COALESCE($3::timestamptz, NOW()),
-                       current_worker_id = NULL,
-                       current_queue_slot = NULL,
-                       modal_function_call_id = NULL
-                WHERE  id = $1
-                """,
-                job_id,
-                outcome.failure.error_message,
-                retry_at,
-            )
-            if (
-                kind == WorkerJobKind.TRIAL
-                and subject_table == "trials"
-                and subject_id
-                and retry_at is not None
-            ):
-                await connection.execute(
-                    """
-                    UPDATE trials
-                    SET    status = 'RETRYING',
-                           error_message = $2,
-                           next_retry_at = $3,
-                           current_worker_id = NULL,
-                           current_queue_slot = NULL,
-                           heartbeat_at = NOW()
-                    WHERE  id = $1
-                      AND  deleted_at IS NULL
-                    """,
-                    subject_id,
-                    outcome.failure.error_message,
-                    retry_at,
-                )
-            console.print(
-                f"metric=worker_job_retry_requeued id={job_id} "
-                f"attempts={attempts}/{max_attempts} "
-                f"retry_reason={retry_reason} "
-                f"retry_delay_seconds={delay_seconds or 0:.2f}"
-            )
-        else:
-            await connection.execute(
-                """
-                UPDATE worker_jobs
-                SET    status = 'FAILED',
-                       error_message = $2,
-                       finished_at = NOW(),
-                       next_retry_at = NULL
-                WHERE  id = $1
-                """,
-                job_id,
-                outcome.failure.error_message,
-            )
-    finally:
-        await connection.close()
+        await proxy.record_retry(
+            job_id=job_id,
+            error_message=outcome.failure.error_message,
+            retry_at=retry_at,
+            mirror_to_trials=(
+                kind == WorkerJobKind.TRIAL and subject_table == "trials"
+            ),
+            subject_id=subject_id,
+        )
+        console.print(
+            f"metric=worker_job_retry_requeued id={job_id} "
+            f"attempts={attempts}/{max_attempts} "
+            f"retry_reason={retry_reason} "
+            f"retry_delay_seconds={delay_seconds or 0:.2f}"
+        )
+    else:
+        await proxy.record_failure(
+            job_id=job_id, error_message=outcome.failure.error_message
+        )
 
 
 async def run_single_worker_job(
