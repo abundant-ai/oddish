@@ -21,17 +21,32 @@ import modal
 
 from observability import span as _otel_span
 
-from modal_app import REAPER_PERIOD_SECONDS, app, image, runtime_secrets
+from modal_app import (
+    REAPER_PERIOD_SECONDS,
+    _IS_PREVIEW,
+    app,
+    image,
+    runtime_secrets,
+)
 from oddish.db import close_database_connections, get_pool
 
 from .runtime import console
+
+
+# Reaper runs ONLY in non-preview environments. Preview Supabase
+# branches start as clones of production data, and even though the
+# cancel_cloned_preview_work script flips in-flight rows to CANCELLED
+# at branch creation, relying on that single sweep to never miss a
+# row is brittle. In previews, the reaper just doesn't run; if a row
+# strands, kick the wrapper manually via admin/_dispatcher-kick.
+_SCHEDULE = None if _IS_PREVIEW else modal.Period(seconds=REAPER_PERIOD_SECONDS)
 
 
 @app.function(
     image=image,
     secrets=runtime_secrets,
     timeout=300,
-    schedule=modal.Period(seconds=REAPER_PERIOD_SECONDS),
+    schedule=_SCHEDULE,
     max_containers=1,
 )
 async def reaper() -> dict:

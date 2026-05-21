@@ -94,6 +94,8 @@ PROVIDER_WORKER_CAPS = {
     "openai": _env_int("ODDISH_MAX_WORKERS_OPENAI", 64),
     "claude": _env_int("ODDISH_MAX_WORKERS_CLAUDE", 64),
     "gemini": _env_int("ODDISH_MAX_WORKERS_GEMINI", 64),
+    "bedrock": _env_int("ODDISH_MAX_WORKERS_BEDROCK", 64),
+    "azure": _env_int("ODDISH_MAX_WORKERS_AZURE", 64),
     "default": _env_int("ODDISH_MAX_WORKERS_DEFAULT", 32),
 }
 

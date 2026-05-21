@@ -552,16 +552,27 @@ class Settings(BaseSettings):
         return self.normalize_queue_key(queue_key) == NOP_ORACLE_QUEUE_KEY
 
     def get_provider_for_queue_key(self, queue_key: str) -> str:
-        """Canonical provider name for a queue_key, used to route to the
-        right per-provider Modal wrapper function."""
+        """Canonical *rate-limit bucket* for a queue_key, used to route
+        to the right per-provider Modal wrapper. AWS Bedrock and Azure
+        OpenAI are their OWN buckets (separate quotas from direct
+        Anthropic / OpenAI), so this intentionally does NOT collapse
+        them via ``_MODEL_PROVIDER_ALIASES`` (which is for cost
+        attribution)."""
         normalized = self.normalize_queue_key(queue_key)
         if normalized == NOP_ORACLE_QUEUE_KEY:
             return "baseline"
         if "/" in normalized:
             prefix = normalized.split("/", 1)[0]
-            mapped = _MODEL_PROVIDER_ALIASES.get(prefix)
-            if mapped:
-                return mapped
+            if prefix in {"bedrock", "aws"}:
+                return "bedrock"
+            if prefix in {"azure", "azure_openai"}:
+                return "azure"
+            if prefix in {"anthropic", "claude"}:
+                return "claude"
+            if prefix in {"openai"}:
+                return "openai"
+            if prefix in {"gemini", "google", "vertex_ai", "palm"}:
+                return "gemini"
             return prefix
         provider = _get_provider_from_model(normalized)
         return provider or "default"

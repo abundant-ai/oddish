@@ -23,7 +23,9 @@ configure_logfire(service_name="oddish-worker")
 with _otel_span("worker.container_init"):
     from .functions import (  # noqa: E402
         process_single_job,
+        process_single_job_azure,
         process_single_job_baseline,
+        process_single_job_bedrock,
         process_single_job_claude,
         process_single_job_gemini,
         process_single_job_openai,
@@ -32,7 +34,9 @@ with _otel_span("worker.container_init"):
 
 __all__ = [
     "process_single_job",
+    "process_single_job_azure",
     "process_single_job_baseline",
+    "process_single_job_bedrock",
     "process_single_job_claude",
     "process_single_job_gemini",
     "process_single_job_openai",
