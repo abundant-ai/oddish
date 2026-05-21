@@ -100,13 +100,30 @@ async def _dispatch_once(spawner, *, max_workers: int, reason: str) -> None:
     await _spawn_workers(spawner, spawn_plan)
 
 
+async def _safe_dispatch(spawner, *, max_workers: int, reason: str) -> None:
+    """Wrap ``_dispatch_once`` so transient DB / Modal hiccups can't
+    kill the reactor task. Any exception is logged and swallowed."""
+    try:
+        await _dispatch_once(spawner, max_workers=max_workers, reason=reason)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        console.print(f"[red]reactor dispatch error ({reason}): {exc!r}[/red]")
+
+
 async def run_reactor_forever(spawner, *, max_workers: int) -> None:
     """Run the dispatch reactor indefinitely; caller cancels the task."""
     install_modal_dispatch_waker()
     queue = _get_dispatch_queue()
-    await _dispatch_once(spawner, max_workers=max_workers, reason="startup")
+    await _safe_dispatch(spawner, max_workers=max_workers, reason="startup")
     while True:
-        await _reactor_step(queue, spawner=spawner, max_workers=max_workers)
+        try:
+            await _reactor_step(queue, spawner=spawner, max_workers=max_workers)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            console.print(f"[red]reactor step error: {exc!r}[/red]")
+            await asyncio.sleep(1.0)
 
 
 async def _reactor_step(
@@ -116,7 +133,12 @@ async def _reactor_step(
     max_workers: int,
     max_wait: float | None = None,
 ) -> None:
-    retry_wake_at = await next_retry_wake_at()
+    try:
+        retry_wake_at = await next_retry_wake_at()
+    except Exception as exc:
+        console.print(f"[yellow]next_retry_wake_at failed: {exc!r}[/yellow]")
+        retry_wake_at = None
+
     if retry_wake_at is not None:
         secs = _seconds_until(retry_wake_at)
         wait_for = secs if max_wait is None else min(max_wait, secs)
@@ -133,7 +155,7 @@ async def _reactor_step(
     with contextlib.suppress(Exception):
         await _drain_pending_wakes(queue)
 
-    await _dispatch_once(spawner, max_workers=max_workers, reason=reason)
+    await _safe_dispatch(spawner, max_workers=max_workers, reason=reason)
 
 
 async def run_reactor(
