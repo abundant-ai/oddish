@@ -9,13 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [2026-05-21]
 
 ### Added
-- Event-driven dispatch reactor (`worker.reactor.run_reactor`) replaces the 180-second poll loop when `ODDISH_REACTOR_ENABLED=true`. The dispatcher becomes a long-running service that blocks on a persistent `modal.Queue` (`oddish-dispatch`), fed by `enqueue_worker_job` and `release_queue_slot` via a new library-side `dispatch_signal` hook. Two wake-up sources, both event-driven: NOTIFY puts from the producer hooks, and exact-time wake-ups computed from each pending retry's `available_after`. No polling cadence -- when neither source has anything pending, the reactor blocks until the next event. The Modal schedule only fires for periodic container restart hygiene (`ODDISH_MODAL_REACTOR_RESTART_HOURS`, default 1h); the function exits cleanly before each tick and Modal respawns. Legacy 180s polling path is preserved verbatim for `ODDISH_REACTOR_ENABLED=false`
-- `worker_job_dispatcher.run_dispatch_cycle` / `plan_dispatch_cycle` / `next_retry_wake_at` helpers extracted from the inline polling body so both the reactor and the legacy path share a single dispatch surface
 - Sticky PR comment automatically posted (and updated on re-pushes) with preview environment links — Vercel frontend URL, stable `pr-NNN` Vercel alias, and Modal API URL — via new `post_preview_links.py` script (#141)
-
-### Changed
-- nop / oracle now bypass every dispatch cap. A new `Settings.is_unmetered_queue_key` predicate marks the `nop_oracle` queue key as unmetered; the planner spawns every queued unmetered row in the same wave with no `max_workers` budget and no per-key `limit - running` check, and the worker skips `queue_slots` acquire / release entirely. nop / oracle never call a provider, so the only thing those caps were throttling was Modal-side fan-out, which Modal is built to handle. The legacy `ODDISH_MODAL_NOP_ORACLE_CONCURRENCY` env var is unused on the hot path but kept for deploy compatibility. Worker exit explicitly fires `notify_dispatch` for unmetered queues so any work that missed the first spawn wave (spawn-call failures, late enqueues) wakes the reactor without waiting for the safety-net timer
-- `ODDISH_MODAL_MAX_WORKERS_PER_POLL` default raised from 64 to 256 — this is now a per-wake spawn-burst ceiling for **metered** queues only; provider-rate-limited models continue to be gated by it, but nop / oracle ignore it
 - In-app preview banner rendered when `NEXT_PUBLIC_IS_PREVIEW=true`, surfacing PR context to reviewers using the preview environment (#141)
 
 ### Changed
