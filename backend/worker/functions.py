@@ -53,6 +53,7 @@ from oddish.workers.queue.worker_job_single_job import (
     run_single_worker_job,
 )
 
+from .db_proxy_service import DBProxyService, install_modal_db_proxy  # noqa: F401
 from .github import notify_github_analysis, notify_github_trial, notify_github_verdict
 from .reactor import install_modal_dispatch_waker, run_reactor
 from .runtime import configure_storage_paths, console
@@ -60,8 +61,6 @@ from .runtime import configure_storage_paths, console
 install_modal_dispatch_waker()
 
 if DB_PROXY_ENABLED:
-    from .db_proxy_service import install_modal_db_proxy
-
     install_modal_db_proxy()
 
 ensure_builtin_handlers_registered()
