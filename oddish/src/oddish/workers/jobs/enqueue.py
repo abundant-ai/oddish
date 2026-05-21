@@ -77,12 +77,6 @@ async def enqueue_worker_job(
     )
     session.add(row)
     await session.flush()
-    # Best-effort wake of the dispatch reactor. Fires on flush rather
-    # than commit, so a rolled-back transaction can cause a spurious
-    # wake -- but the reactor handles "wake, find nothing, sleep" as a
-    # no-op, and a dropped wake (e.g. transport failure) is caught by
-    # the safety-net poll. The trade-off favours simplicity over
-    # serialising the wake to commit time.
     await notify_dispatch(row.queue_key)
     return row
 

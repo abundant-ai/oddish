@@ -548,16 +548,7 @@ class Settings(BaseSettings):
         return "task_expand"
 
     def is_unmetered_queue_key(self, queue_key: str) -> bool:
-        """Queue keys that should never be rate-gated by the dispatcher.
-
-        nop / oracle never call a model provider; the only thing a
-        concurrency cap on them could throttle is Modal/DB pressure,
-        and Modal is elastic. Returning True here makes the planner
-        skip the per-queue_key capacity check and makes the worker
-        skip ``queue_slots`` acquisition entirely, so a burst of nop
-        or oracle trials is bounded only by ``MAX_WORKERS_PER_POLL``
-        (per reactor wake) and Modal's container fleet.
-        """
+        """True for queue keys with no provider rate to protect (nop / oracle)."""
         return self.normalize_queue_key(queue_key) == NOP_ORACLE_QUEUE_KEY
 
     def get_model_concurrency(self, queue_key: str) -> int:

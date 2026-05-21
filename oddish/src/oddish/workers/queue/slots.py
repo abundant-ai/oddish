@@ -103,9 +103,6 @@ async def release_queue_slot(
             slot,
             worker_id,
         )
-    # A freed slot may unblock a queued row for this queue_key.
-    # Best-effort wake of the dispatcher; reactor's safety-net poll
-    # covers any dropped signal.
     await notify_dispatch(queue_key)
 
 

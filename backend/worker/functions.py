@@ -56,26 +56,11 @@ from .github import notify_github_analysis, notify_github_trial, notify_github_v
 from .reactor import install_modal_dispatch_waker, run_reactor
 from .runtime import configure_storage_paths, console
 
-# Install the Modal-Queue-backed dispatch waker as soon as the worker
-# module loads. ``enqueue_worker_job`` / ``release_queue_slot`` now go
-# through ``notify_dispatch`` which forwards here, so even legacy
-# polling deployments get free observability of dispatch wake events
-# in the Modal Queue dashboard. The reactor itself only consumes the
-# wakes when ``REACTOR_ENABLED`` is true.
 install_modal_dispatch_waker()
 
-# Register TRIAL / ANALYSIS / VERDICT handlers against the unified
-# registry as soon as this module loads in a worker container. The
-# dispatcher and single-job runner also call this defensively, but
-# doing it here makes the startup order explicit for readers.
 ensure_builtin_handlers_registered()
 
 
-# Post-success hooks: fired after the worker_jobs row is in SUCCESS
-# state. Mirrors the ``on_trial_complete`` / ``on_analysis_complete`` /
-# ``on_verdict_complete`` hooks the legacy dispatcher passed through
-# ``run_single_job``. Hook exceptions are swallowed by the runner so a
-# GitHub API hiccup never corrupts scheduling state.
 _POST_SUCCESS_HOOKS: PostSuccessHooks = {
     WorkerJobKind.TRIAL: notify_github_trial,
     WorkerJobKind.ANALYSIS: notify_github_analysis,
@@ -138,11 +123,6 @@ async def process_single_job(queue_key: str):
         await configure_storage_paths()
 
         if unmetered:
-            # nop / oracle: no provider rate to protect, no point in
-            # paying a DB roundtrip for a slot lease that exists only
-            # to gate model concurrency. ``queue_slot=None`` is a
-            # first-class value on ``worker_jobs.current_queue_slot``
-            # and everywhere downstream that touches it.
             console.print(
                 f"[dim]Unmetered queue (queue_key={queue_key}), "
                 f"skipping queue_slot lease[/dim]"
@@ -196,21 +176,14 @@ async def process_single_job(queue_key: str):
         raise
     finally:
         if lock_slot is not None:
-            # release_queue_slot fires notify_dispatch for the metered
-            # path, so the next queued job for this queue_key wakes
-            # the reactor as soon as capacity frees.
             await release_queue_slot(
                 queue_key=queue_key,
                 slot=lock_slot,
                 worker_id=worker_id,
             )
         elif unmetered:
-            # Unmetered queues don't take a slot lease, so the slot-
-            # release wake-up path doesn't fire. Send the wake
-            # explicitly so any queued work that didn't make it into
-            # the first spawn wave (e.g. spawn-call failures, late
-            # enqueues that raced the dispatch) gets picked up
-            # without waiting for the safety-net timer.
+            # Slot release is the wake signal on metered queues; with
+            # no slot to release, wake the reactor directly.
             from oddish.workers.queue.dispatch_signal import notify_dispatch
 
             await notify_dispatch(queue_key)
@@ -239,29 +212,7 @@ async def process_single_job(queue_key: str):
     nonpreemptible=DISPATCHER_NONPREEMPTIBLE,
 )
 async def poll_queue():
-    """
-    Queue-aware dispatcher for the unified ``worker_jobs`` table.
-
-    Two execution shapes, selected by ``ODDISH_REACTOR_ENABLED``:
-
-    * **Reactor (event-driven, long-running).** Cleanup runs once at
-      startup, then ``worker.reactor.run_reactor`` blocks on the
-      Modal Queue waiting for wake-ups from ``enqueue_worker_job`` /
-      ``release_queue_slot``. There is no polling cadence; steady-
-      state submit-to-spawn latency is sub-second. The Modal schedule
-      fires only for periodic restart hygiene (``REACTOR_RESTART_HOURS``,
-      default 1h) -- the function exits cleanly just before the next
-      tick and Modal respawns it.
-    * **Legacy poll.** One shot per tick: cleanup, discover, plan,
-      spawn, exit. Latency floor is ``POLL_INTERVAL_SECONDS``.
-
-    Cleanup (slot reap + orphaned-state reconciliation) runs once per
-    invocation -- at startup in the reactor case, once per tick in the
-    legacy case -- so the steady-state hot path stays cheap.
-    """
-    # Open the span FIRST so the storage-path setup, cleanup,
-    # discovery, and spawn-plan queries all nest under one named
-    # ``worker.poll_queue_cycle`` parent per tick.
+    """Dispatcher entry point. Reactor when ``ODDISH_REACTOR_ENABLED``, else legacy poll."""
     cycle_span = _otel_span(
         "worker.poll_queue_cycle",
         reactor_enabled=REACTOR_ENABLED,
