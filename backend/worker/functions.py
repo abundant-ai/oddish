@@ -164,6 +164,12 @@ process_single_job_claude = _make_wrapper(
 process_single_job_gemini = _make_wrapper(
     "process_single_job_gemini", PROVIDER_WORKER_CAPS["gemini"]
 )
+process_single_job_bedrock = _make_wrapper(
+    "process_single_job_bedrock", PROVIDER_WORKER_CAPS["bedrock"]
+)
+process_single_job_azure = _make_wrapper(
+    "process_single_job_azure", PROVIDER_WORKER_CAPS["azure"]
+)
 process_single_job = _make_wrapper(
     "process_single_job", PROVIDER_WORKER_CAPS["default"]
 )
@@ -174,6 +180,8 @@ PROVIDER_WRAPPERS: dict[str, modal.Function] = {
     "openai": process_single_job_openai,
     "claude": process_single_job_claude,
     "gemini": process_single_job_gemini,
+    "bedrock": process_single_job_bedrock,
+    "azure": process_single_job_azure,
     "default": process_single_job,
 }
 
