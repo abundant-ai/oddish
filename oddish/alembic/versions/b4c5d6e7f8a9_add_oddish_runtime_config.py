@@ -7,7 +7,7 @@ cloned production rows, read by the reaper so it only respawns rows
 created after the preview branch started.
 
 Revision ID: b4c5d6e7f8a9
-Revises: z3a4b5c6d7e8
+Revises: k2l3m4n5o6p7
 Create Date: 2026-05-21 22:50:00.000000
 """
 
@@ -17,7 +17,7 @@ from alembic import op
 
 
 revision: str = "b4c5d6e7f8a9"
-down_revision: Union[str, Sequence[str], None] = "z3a4b5c6d7e8"
+down_revision: Union[str, Sequence[str], None] = "k2l3m4n5o6p7"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
