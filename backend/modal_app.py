@@ -86,8 +86,12 @@ MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
 # explicitly opted in via the runtime secret.
 _IS_PREVIEW = MODAL_APP_NAME.startswith("oddish-pr-")
 REACTOR_ENABLED = _env_flag("ODDISH_REACTOR_ENABLED", _IS_PREVIEW)
-REACTOR_RESTART_HOURS = _env_int("ODDISH_MODAL_REACTOR_RESTART_HOURS", 1)
-REACTOR_RESTART_SECONDS = REACTOR_RESTART_HOURS * 3600
+# How long the reactor service stays up between Modal-level restarts.
+# Doubles as the bootstrap interval after a deploy: the function won't
+# run until the first scheduled tick fires, so this caps the worst-
+# case "no dispatcher running" gap after a fresh deploy.
+REACTOR_RESTART_MINUTES = _env_int("ODDISH_MODAL_REACTOR_RESTART_MINUTES", 10)
+REACTOR_RESTART_SECONDS = REACTOR_RESTART_MINUTES * 60
 _DISPATCH_PERIOD_SECONDS = (
     REACTOR_RESTART_SECONDS if REACTOR_ENABLED else POLL_INTERVAL_SECONDS
 )
