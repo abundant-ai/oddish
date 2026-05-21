@@ -21,6 +21,6 @@ from observability import configure_logfire, span as _otel_span
 configure_logfire(service_name="oddish-worker")
 
 with _otel_span("worker.container_init"):
-    from .functions import poll_queue, process_single_job  # noqa: E402
+    from .functions import Dispatcher, process_single_job  # noqa: E402
 
-__all__ = ["poll_queue", "process_single_job"]
+__all__ = ["Dispatcher", "process_single_job"]

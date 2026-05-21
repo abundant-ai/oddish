@@ -100,6 +100,42 @@ async def _dispatch_once(spawner, *, max_workers: int, reason: str) -> None:
     await _spawn_workers(spawner, spawn_plan)
 
 
+async def run_reactor_forever(spawner, *, max_workers: int) -> None:
+    """Run the dispatch reactor indefinitely; caller cancels the task."""
+    install_modal_dispatch_waker()
+    queue = _get_dispatch_queue()
+    await _dispatch_once(spawner, max_workers=max_workers, reason="startup")
+    while True:
+        await _reactor_step(queue, spawner=spawner, max_workers=max_workers)
+
+
+async def _reactor_step(
+    queue: modal.Queue,
+    *,
+    spawner,
+    max_workers: int,
+    max_wait: float | None = None,
+) -> None:
+    retry_wake_at = await next_retry_wake_at()
+    if retry_wake_at is not None:
+        secs = _seconds_until(retry_wake_at)
+        wait_for = secs if max_wait is None else min(max_wait, secs)
+    else:
+        wait_for = max_wait if max_wait is not None else 3600.0
+    wait_for = max(wait_for, 0.05)
+
+    try:
+        await queue.get.aio(block=True, timeout=wait_for)
+        reason = "notify"
+    except Exception:
+        reason = "retry-timer" if retry_wake_at is not None else "idle-tick"
+
+    with contextlib.suppress(Exception):
+        await _drain_pending_wakes(queue)
+
+    await _dispatch_once(spawner, max_workers=max_workers, reason=reason)
+
+
 async def run_reactor(
     spawner,
     *,
@@ -110,8 +146,6 @@ async def run_reactor(
     queue = _get_dispatch_queue()
     deadline = time.monotonic() + deadline_seconds
 
-    # Drains anything queued during the gap between the previous
-    # reactor instance exiting and this one starting.
     await _dispatch_once(spawner, max_workers=max_workers, reason="startup")
 
     while True:
@@ -119,22 +153,9 @@ async def run_reactor(
         if remaining <= 0:
             console.print("[dim]reactor deadline reached, exiting[/dim]")
             return
-
-        retry_wake_at = await next_retry_wake_at()
-        if retry_wake_at is not None:
-            wait_for = min(remaining, _seconds_until(retry_wake_at))
-        else:
-            wait_for = remaining
-        # modal.Queue.get rejects non-positive timeouts.
-        wait_for = max(wait_for, 0.05)
-
-        try:
-            await queue.get.aio(block=True, timeout=wait_for)
-            reason = "notify"
-        except Exception:
-            reason = "retry-timer" if retry_wake_at is not None else "deadline"
-
-        with contextlib.suppress(Exception):
-            await _drain_pending_wakes(queue)
-
-        await _dispatch_once(spawner, max_workers=max_workers, reason=reason)
+        await _reactor_step(
+            queue,
+            spawner=spawner,
+            max_workers=max_workers,
+            max_wait=remaining,
+        )
