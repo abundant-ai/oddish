@@ -18,8 +18,8 @@ def make_src_client():
 
 def make_dst_client():
     return boto3.client('s3',
-        aws_access_key_id='AKIAQKPIMBRVS4B37MNG',
-        aws_secret_access_key='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',
+        aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+        aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
         region_name=DEST_REGION,
         config=Config(max_pool_connections=32, retries={'max_attempts':5,'mode':'standard'}))
 
