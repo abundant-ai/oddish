@@ -134,7 +134,7 @@ ENV_VARS = {
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
-    "ODDISH_HARBOR_ENVIRONMENT": "modal",
+    "ODDISH_HARBOR_ENVIRONMENT": "daytona",
     "ODDISH_AUTO_START_WORKERS": "false",
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",
     "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
