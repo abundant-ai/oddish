@@ -14,8 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Sticky PR comment automatically posted (and updated on re-pushes) with preview environment links — Vercel frontend URL, stable `pr-NNN` Vercel alias, and Modal API URL — via new `post_preview_links.py` script (#141)
 
 ### Changed
-- `ODDISH_MODAL_NOP_ORACLE_CONCURRENCY` default raised from 48 to 256 — nop/oracle never call a provider, so the cap exists only to bound infra pressure; sizing it close to `WORKER_MAX_CONTAINERS` makes it a non-binding ceiling in practice. Bursts of nop/oracle work are now the canary for whether queue overhead is hurting the product
-- `ODDISH_MODAL_MAX_WORKERS_PER_POLL` default raised from 64 to 256 so a single dispatch wake can saturate the nop/oracle ceiling; with the reactor enabled, "per poll" really means "per wake" and the cap behaves as a spawn-burst ceiling rather than a steady-state rate limit
+- nop / oracle now skip the `queue_slots` concurrency lease entirely. A new `Settings.is_unmetered_queue_key` predicate marks the `nop_oracle` queue key as unmetered; the planner ignores per-key capacity for unmetered keys, and the worker skips slot acquisition + release. The legacy `ODDISH_MODAL_NOP_ORACLE_CONCURRENCY` env var is unused on the hot path but kept for deploy compatibility. Worker exit explicitly fires `notify_dispatch` for unmetered queues so the reactor wakes immediately when capacity opens after a `MAX_WORKERS_PER_POLL`-capped wave
+- `ODDISH_MODAL_MAX_WORKERS_PER_POLL` default raised from 64 to 256 so a single dispatch wake can absorb a large nop / oracle burst in one pass; with the reactor enabled, "per poll" really means "per wake" and the cap behaves as a spawn-burst ceiling rather than a steady-state rate limit
 - In-app preview banner rendered when `NEXT_PUBLIC_IS_PREVIEW=true`, surfacing PR context to reviewers using the preview environment (#141)
 
 ### Changed

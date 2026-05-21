@@ -153,14 +153,12 @@ if MODAL_APP_NAME.startswith("oddish-pr-"):
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
 MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 32)
-# nop/oracle never call a model provider, so the only reason to cap
-# their concurrency is to bound Modal/DB/S3 pressure. Setting it close
-# to ``WORKER_MAX_CONTAINERS`` makes it a non-binding ceiling in
-# practice: any time the cap actually limits a nop/oracle burst, the
-# bottleneck is Modal's container fleet, not the queue. This is also
-# the canary for whether queue overhead is hurting the product -- if a
-# nop/oracle burst doesn't run effectively in parallel, we still have
-# work to do.
+# nop/oracle bypass the ``queue_slots`` lease entirely (see
+# ``Settings.is_unmetered_queue_key``) so this value is unused at the
+# worker. It survives only as the legacy advertised value for the
+# ``ODDISH_NOP_ORACLE_CONCURRENCY`` library setting; nothing checks it
+# on the dispatch hot path. Left as an env var so deploys that still
+# reference it don't fail on rollout.
 NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 256)
 
 ENV_VARS = {
