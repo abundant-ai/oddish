@@ -98,7 +98,7 @@ export function ResizableDrawer({
       {/* Backdrop overlay - click to close */}
       <div
         className="animate-in fade-in fixed inset-0 z-30 bg-black/20 duration-300"
-        style={{ top: "56px" }}
+        style={{ top: "calc(56px + var(--preview-banner-h, 0px))" }}
         onClick={() => onOpenChange(false)}
       />
 
@@ -114,8 +114,9 @@ export function ResizableDrawer({
         )}
         style={{
           width: `${width}px`,
-          top: "56px", // Below the nav header (h-14 = 56px)
-          height: "calc(100vh - 56px)",
+          // Below the nav header (h-14 = 56px) + optional preview banner
+          top: "calc(56px + var(--preview-banner-h, 0px))",
+          height: "calc(100vh - 56px - var(--preview-banner-h, 0px))",
         }}
         onClick={(e) => e.stopPropagation()} // Prevent closing when clicking inside drawer
       >

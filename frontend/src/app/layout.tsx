@@ -102,6 +102,9 @@ export default function RootLayout({
       <html
         lang="en"
         className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable}`}
+        data-preview={
+          process.env.NEXT_PUBLIC_ODDISH_PREVIEW === "true" ? "true" : undefined
+        }
       >
         <body className="flex min-h-screen flex-col bg-background font-sans text-foreground antialiased">
           <Providers>

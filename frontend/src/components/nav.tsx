@@ -29,7 +29,7 @@ export function Nav() {
   const { signOut } = useClerk();
 
   return (
-    <nav className="sticky top-0 z-50 border-b border-[#6f88b4]/15 bg-card/80 backdrop-blur-xs">
+    <nav className="sticky top-[var(--preview-banner-h,0px)] z-40 border-b border-[#6f88b4]/15 bg-card/80 backdrop-blur-xs">
       <div className="mx-auto flex h-14 max-w-(--breakpoint-2xl) items-center px-4">
         <div className="flex w-full items-center justify-between">
           {/* Left side - primary nav */}
