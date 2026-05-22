@@ -1,0 +1,23 @@
+
+=== s3-clone-23996371 -> s3-clone ===
+  KEEP 60, ADD 5, REMOVE 1
+  [1/5] s3-clone-23996371-213: uploaded 52.3 MB in 6.7s; canonical=task-s3-clone-23996371-1pqqt7md__QtdJAPY
+  [2/5] s3-clone-23996371-214: uploaded 62.2 MB in 5.0s; canonical=task-s3-clone-23996371-n8920ycv__5VBmXva
+  [3/5] s3-clone-23996371-215: uploaded 45.6 MB in 3.7s; canonical=task-s3-clone-23996371-rr6bos4t__v3PNZZ5
+  [4/5] s3-clone-23996371-216: uploaded 109.0 MB in 5.5s; canonical=task-s3-clone-23996371-rsn2umd5__dMPFYWt
+  [5/5] s3-clone-23996371-217: uploaded 60.0 MB in 3.8s; canonical=task-s3-clone-23996371-fxv4q_23__W9EpyZg
+  [1/1] REMOVE s3-clone-23996371-161: deleted 241 keys
+  Uploaded _manifest.json (87860 bytes; n_trials=65, n_pass=5, dup=0)
+    claude-code  / anthropic/claude-opus-4-7                 5  OK
+    codex        / openai/gpt-5.5                            5  OK
+    gemini-cli   / gemini/gemini-3.1-pro-preview             5  OK
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           5  OK
+    terminus-2   / anthropic/claude-opus-4-7                 5  OK
+    terminus-2   / openai/gpt-5.5                            5  OK
+    terminus-2   / gemini/gemini-3.1-pro-preview             5  OK
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           5  OK
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       5  OK
+    terminus-2   / openrouter/z-ai/glm-5.1                   5  OK
+    terminus-2   / openrouter/minimax/minimax-m2.7           5  OK
+    nop          / default                                   5  OK
+    oracle       / default                                   5  OK
