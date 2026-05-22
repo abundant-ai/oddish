@@ -7,6 +7,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from harbor.models.environment_type import EnvironmentType
+
+from oddish.cli.run import _default_cloud_environment_for_task
 from oddish.schemas import TaskSweepSubmission, TrialSpec
 from oddish.task_timeouts import (
     TaskTimeoutValidationError,
@@ -106,3 +109,56 @@ def test_task_sweep_submission_rejects_timeout_minutes_override():
             timeout_minutes=30,
             configs=[{"agent": "codex", "model": "gpt-5"}],
         )
+
+
+def test_default_cloud_environment_uses_daytona_for_cpu_only_task(tmp_path):
+    (tmp_path / "task.toml").write_text(
+        """
+[agent]
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 300
+
+[environment]
+build_timeout_sec = 300
+gpus = 0
+""".strip()
+    )
+
+    assert (
+        _default_cloud_environment_for_task(tmp_path, override_gpus=None)
+        == EnvironmentType.DAYTONA
+    )
+
+
+def test_default_cloud_environment_uses_modal_for_gpu_task(tmp_path):
+    (tmp_path / "task.toml").write_text(
+        """
+[agent]
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 300
+
+[environment]
+build_timeout_sec = 300
+gpus = 1
+""".strip()
+    )
+
+    assert (
+        _default_cloud_environment_for_task(tmp_path, override_gpus=None)
+        == EnvironmentType.MODAL
+    )
+
+
+def test_default_cloud_environment_honors_gpu_override(tmp_path):
+    assert (
+        _default_cloud_environment_for_task(tmp_path, override_gpus=1)
+        == EnvironmentType.MODAL
+    )
+    assert (
+        _default_cloud_environment_for_task(tmp_path, override_gpus=0)
+        == EnvironmentType.DAYTONA
+    )

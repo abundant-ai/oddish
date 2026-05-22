@@ -17,6 +17,7 @@ from rich.progress import (
 )
 
 from harbor.models.environment_type import EnvironmentType
+from harbor.models.task.config import TaskConfig as HarborTaskConfig
 
 from oddish.cli.api import (
     TASK_UPLOAD_CONCURRENCY,
@@ -39,6 +40,27 @@ from oddish.cli.config import (
 from oddish.experiment import generate_experiment_name
 
 console = Console()
+
+
+def _task_config_requests_gpu(task_path: Path) -> bool:
+    config_path = task_path / "task.toml"
+    try:
+        task_config = HarborTaskConfig.model_validate_toml(config_path.read_text())
+    except Exception:
+        return False
+    return task_config.environment.gpus > 0
+
+
+def _default_cloud_environment_for_task(
+    task_path: Path | None,
+    *,
+    override_gpus: int | None,
+) -> EnvironmentType:
+    if override_gpus is not None:
+        return EnvironmentType.MODAL if override_gpus > 0 else EnvironmentType.DAYTONA
+    if task_path is not None and _task_config_requests_gpu(task_path):
+        return EnvironmentType.MODAL
+    return EnvironmentType.DAYTONA
 
 
 def run(
@@ -145,7 +167,8 @@ def run(
             "-e",
             help=(
                 "Execution environment (docker, daytona, e2b, modal, runloop, gke). "
-                "Defaults: modal for Modal Cloud, docker otherwise."
+                "Defaults: daytona for CPU-only hosted tasks, modal for GPU hosted "
+                "tasks, docker otherwise."
             ),
         ),
     ] = None,
@@ -503,8 +526,8 @@ def run(
     if not experiment_id and not existing_task_ids:
         experiment_id = generate_experiment_name()
 
-    if environment is None and not existing_task_ids:
-        environment = EnvironmentType.MODAL if is_modal_api else EnvironmentType.DOCKER
+    if environment is None and not existing_task_ids and not is_modal_api:
+        environment = EnvironmentType.DOCKER
     elif (
         environment is not None
         and is_modal_api
@@ -525,17 +548,24 @@ def run(
         *,
         append_to_task: bool,
         task_content_hash: str | None = None,
+        task_path: Path | None = None,
     ) -> dict:
         tags: dict[str, str] = {}
         if github_meta:
             tags["github_meta"] = github_meta
 
         task_configs = copy.deepcopy(configs)
+        task_environment = environment
+        if task_environment is None and is_modal_api and task_path is not None:
+            task_environment = _default_cloud_environment_for_task(
+                task_path,
+                override_gpus=override_gpus,
+            )
         return submit_sweep(
             api_url=api_url,
             task_id=task_id,
             configs=task_configs,
-            environment=environment,
+            environment=task_environment,
             user=user,
             priority=priority,
             experiment_id=experiment_id,
@@ -571,7 +601,7 @@ def run(
     # When ``--task`` is used the upload phase is skipped -- we
     # already have a task ID and only need to submit trials against
     # it.
-    submit_targets: list[tuple[str, bool, str | None]] = []  # (task_id, append, hash)
+    submit_targets: list[tuple[str, bool, str | None, Path | None]] = []
     if task_paths:
         upload_results = upload_tasks_with_progress(
             api_url,
@@ -595,11 +625,16 @@ def run(
                         f"[dim]Task '{task_path.name}' updated, created version {ver}[/dim]"
                     )
             submit_targets.append(
-                (result["task_id"], is_existing, result.get("content_hash"))
+                (
+                    result["task_id"],
+                    is_existing,
+                    result.get("content_hash"),
+                    task_path,
+                )
             )
     else:
         # --task path: nothing to upload; sweep always appends.
-        submit_targets = [(tid, True, None) for tid in existing_task_ids]
+        submit_targets = [(tid, True, None, None) for tid in existing_task_ids]
 
     # Phase 2: submit trials for every resolved task.
     submit_progress = Progress(
@@ -616,11 +651,12 @@ def run(
             total=len(submit_targets),
         )
         if len(submit_targets) <= 1:
-            for target_id, append, content_hash in submit_targets:
+            for target_id, append, content_hash, task_path in submit_targets:
                 result = submit_task(
                     target_id,
                     append_to_task=append,
                     task_content_hash=content_hash,
+                    task_path=task_path,
                 )
                 all_results.append(result)
                 total_trials_submitted += result["trials_count"]
@@ -635,10 +671,14 @@ def run(
                         target_id,
                         append_to_task=append,
                         task_content_hash=content_hash,
+                        task_path=task_path,
                     ): index
-                    for index, (target_id, append, content_hash) in enumerate(
-                        submit_targets
-                    )
+                    for index, (
+                        target_id,
+                        append,
+                        content_hash,
+                        task_path,
+                    ) in enumerate(submit_targets)
                 }
                 for future in as_completed(future_to_index):
                     index = future_to_index[future]

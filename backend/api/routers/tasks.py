@@ -310,7 +310,7 @@ async def create_task_sweep(
             session,
             submission=submission,
             org_id=auth.org_id,
-            default_environment=get_default_cloud_environment(),
+            default_environment=get_default_cloud_environment(submission),
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
         )
 

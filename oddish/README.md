@@ -140,7 +140,7 @@ Supported `--env` values:
 
 When `--env` is omitted:
 
-- hosted Oddish (`*.modal.run`) defaults to `modal`
+- hosted Oddish (`*.modal.run`) defaults to `daytona` for CPU-only tasks and `modal` for tasks that request GPUs
 - other API URLs default to `docker`
 - `--task` preserves the existing task's environment unless you override it
 
