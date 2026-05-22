@@ -7,6 +7,44 @@
     "by_pair": {
       "claude-code|anthropic/claude-opus-4-7": [
         {
+          "id": "s3-clone-23996371-212",
+          "agent": "claude-code",
+          "model": "anthropic/claude-opus-4-7",
+          "raw_model": "anthropic/claude-opus-4-7",
+          "provider": "claude",
+          "reward": 0.0,
+          "status": "success",
+          "attempts": 1,
+          "max_attempts": 6,
+          "started_at": "2026-05-22T21:30:55.865296+00:00",
+          "finished_at": "2026-05-22T21:54:25.063056+00:00",
+          "input_tokens": 8912187,
+          "cache_tokens": 8763806,
+          "output_tokens": 110096,
+          "cost_usd": 8.061553,
+          "has_trajectory": true,
+          "source_trial_name": "s3-clone-212",
+          "trial_s3_key": "tasks/s3-clone-23996371/trials/s3-clone-23996371-212/",
+          "error_message": null,
+          "total_bytes": 82294574,
+          "n_files": 261,
+          "top_files": [
+            "config.json",
+            "job.log",
+            "lock.json",
+            "modal-output.log",
+            "result.json"
+          ],
+          "subs": [
+            "task-s3-clone-23996371-3p6mncr8__KmqUcHg"
+          ],
+          "trajectory_bytes_max": 1384321,
+          "exception_classes": [],
+          "pullable": true,
+          "valid_strict": true,
+          "rejected_reason": null
+        },
+        {
           "id": "s3-clone-23996371-142",
           "agent": "claude-code",
           "model": "anthropic/claude-opus-4-7",
@@ -248,6 +286,126 @@
           "rejected_reason": null,
           "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
           "trajectory_bytes": 1912890
+        },
+        {
+          "id": "s3-clone-23996371-215",
+          "agent": "claude-code",
+          "model": "anthropic/claude-opus-4-7",
+          "raw_model": "anthropic/claude-opus-4-7",
+          "provider": "claude",
+          "reward": 0.0,
+          "status": "success",
+          "attempts": 1,
+          "max_attempts": 6,
+          "started_at": "2026-05-22T21:31:01.985341+00:00",
+          "finished_at": "2026-05-22T22:04:52.576770+00:00",
+          "input_tokens": 14771902,
+          "cache_tokens": 14616816,
+          "output_tokens": 114966,
+          "cost_usd": 11.390603,
+          "has_trajectory": true,
+          "source_trial_name": "s3-clone-215",
+          "trial_s3_key": "tasks/s3-clone-23996371/trials/s3-clone-23996371-215/",
+          "error_message": null,
+          "total_bytes": 47830854,
+          "n_files": 201,
+          "top_files": [
+            "config.json",
+            "job.log",
+            "lock.json",
+            "modal-output.log",
+            "result.json"
+          ],
+          "subs": [
+            "task-s3-clone-23996371-rr6bos4t__v3PNZZ5"
+          ],
+          "trajectory_bytes_max": 2161031,
+          "exception_classes": [],
+          "pullable": true,
+          "valid_strict": true,
+          "rejected_reason": null,
+          "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
+          "trajectory_bytes": 2161031
+        },
+        {
+          "id": "s3-clone-23996371-214",
+          "agent": "claude-code",
+          "model": "anthropic/claude-opus-4-7",
+          "raw_model": "anthropic/claude-opus-4-7",
+          "provider": "claude",
+          "reward": 0.0,
+          "status": "success",
+          "attempts": 1,
+          "max_attempts": 6,
+          "started_at": "2026-05-22T21:31:01.076761+00:00",
+          "finished_at": "2026-05-22T22:04:15.962116+00:00",
+          "input_tokens": 13519827,
+          "cache_tokens": 13334987,
+          "output_tokens": 126482,
+          "cost_usd": 11.256191,
+          "has_trajectory": true,
+          "source_trial_name": "s3-clone-214",
+          "trial_s3_key": "tasks/s3-clone-23996371/trials/s3-clone-23996371-214/",
+          "error_message": null,
+          "total_bytes": 65245649,
+          "n_files": 237,
+          "top_files": [
+            "config.json",
+            "job.log",
+            "lock.json",
+            "modal-output.log",
+            "result.json"
+          ],
+          "subs": [
+            "task-s3-clone-23996371-n8920ycv__5VBmXva"
+          ],
+          "trajectory_bytes_max": 2383039,
+          "exception_classes": [],
+          "pullable": true,
+          "valid_strict": true,
+          "rejected_reason": null,
+          "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
+          "trajectory_bytes": 2383039
+        },
+        {
+          "id": "s3-clone-23996371-213",
+          "agent": "claude-code",
+          "model": "anthropic/claude-opus-4-7",
+          "raw_model": "anthropic/claude-opus-4-7",
+          "provider": "claude",
+          "reward": 0.0,
+          "status": "success",
+          "attempts": 1,
+          "max_attempts": 6,
+          "started_at": "2026-05-22T21:30:57.980015+00:00",
+          "finished_at": "2026-05-22T22:06:44.141524+00:00",
+          "input_tokens": 18064353,
+          "cache_tokens": 17901821,
+          "output_tokens": 121553,
+          "cost_usd": 13.2881215,
+          "has_trajectory": true,
+          "source_trial_name": "s3-clone-213",
+          "trial_s3_key": "tasks/s3-clone-23996371/trials/s3-clone-23996371-213/",
+          "error_message": null,
+          "total_bytes": 54794121,
+          "n_files": 221,
+          "top_files": [
+            "config.json",
+            "job.log",
+            "lock.json",
+            "modal-output.log",
+            "result.json"
+          ],
+          "subs": [
+            "task-s3-clone-23996371-1pqqt7md__QtdJAPY"
+          ],
+          "trajectory_bytes_max": 2131949,
+          "exception_classes": [],
+          "pullable": true,
+          "valid_strict": true,
+          "rejected_reason": null,
+          "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
+          "trajectory_bytes": 2131949
         }
       ],
       "codex|openai/gpt-5.5": [
@@ -487,9 +645,87 @@
           "exception_classes": [],
           "pullable": true,
           "valid_strict": true,
+          "rejected_reason": null
+        },
+        {
+          "id": "s3-clone-23996371-216",
+          "agent": "codex",
+          "model": "openai/gpt-5.5",
+          "raw_model": "openai/gpt-5.5",
+          "provider": "openai",
+          "reward": 0.0,
+          "status": "success",
+          "attempts": 1,
+          "max_attempts": 6,
+          "started_at": "2026-05-22T22:13:00.326520+00:00",
+          "finished_at": "2026-05-22T22:30:20.901145+00:00",
+          "input_tokens": 2595310,
+          "cache_tokens": 2524032,
+          "output_tokens": 40425,
+          "cost_usd": 2.831156,
+          "has_trajectory": true,
+          "source_trial_name": "s3-clone-216",
+          "trial_s3_key": "tasks/s3-clone-23996371/trials/s3-clone-23996371-216/",
+          "error_message": null,
+          "total_bytes": 114279363,
+          "n_files": 290,
+          "top_files": [
+            "config.json",
+            "job.log",
+            "lock.json",
+            "modal-output.log",
+            "result.json"
+          ],
+          "subs": [
+            "task-s3-clone-23996371-rsn2umd5__dMPFYWt"
+          ],
+          "trajectory_bytes_max": 337361,
+          "exception_classes": [],
+          "pullable": true,
+          "valid_strict": true,
           "rejected_reason": null,
           "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
-          "trajectory_bytes": 336445
+          "trajectory_bytes": 337361
+        },
+        {
+          "id": "s3-clone-23996371-217",
+          "agent": "codex",
+          "model": "openai/gpt-5.5",
+          "raw_model": "openai/gpt-5.5",
+          "provider": "openai",
+          "reward": 0.0,
+          "status": "success",
+          "attempts": 1,
+          "max_attempts": 6,
+          "started_at": "2026-05-22T22:13:02.068996+00:00",
+          "finished_at": "2026-05-22T22:32:06.526599+00:00",
+          "input_tokens": 3691857,
+          "cache_tokens": 3604992,
+          "output_tokens": 40749,
+          "cost_usd": 3.459291,
+          "has_trajectory": true,
+          "source_trial_name": "s3-clone-217",
+          "trial_s3_key": "tasks/s3-clone-23996371/trials/s3-clone-23996371-217/",
+          "error_message": null,
+          "total_bytes": 62916179,
+          "n_files": 217,
+          "top_files": [
+            "config.json",
+            "job.log",
+            "lock.json",
+            "modal-output.log",
+            "result.json"
+          ],
+          "subs": [
+            "task-s3-clone-23996371-fxv4q_23__W9EpyZg"
+          ],
+          "trajectory_bytes_max": 404605,
+          "exception_classes": [],
+          "pullable": true,
+          "valid_strict": true,
+          "rejected_reason": null,
+          "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
+          "trajectory_bytes": 404605
         }
       ],
       "gemini-cli|gemini/gemini-3.1-pro-preview": [
@@ -913,8 +1149,8 @@
           "source_trial_name": "s3-clone-169",
           "trial_s3_key": "tasks/s3-clone-23996371/trials/s3-clone-23996371-169/",
           "error_message": null,
-          "total_bytes": 110448304,
-          "n_files": 249,
+          "total_bytes": 115408812,
+          "n_files": 312,
           "top_files": [
             "config.json",
             "job.log",
@@ -923,6 +1159,7 @@
             "result.json"
           ],
           "subs": [
+            "task-s3-clone-23996371-f6lx3_56__6ifqxAu",
             "task-s3-clone-23996371-n5vbq7h6__p6jdTi2"
           ],
           "trajectory_bytes_max": 973762,
@@ -2965,28 +3202,32 @@
             "claude-code",
             "anthropic/claude-opus-4-7"
           ],
-          "n_candidates_success_numeric": 6,
-          "n_valid_strict": 2,
+          "n_candidates_success_numeric": 10,
+          "n_valid_strict": 6,
           "picks": [
             "s3-clone-23996371-142",
+            "s3-clone-23996371-214",
+            "s3-clone-23996371-215",
+            "s3-clone-23996371-213",
             "s3-clone-23996371-160"
           ],
-          "notes": "SHORTFALL"
+          "notes": "OK"
         },
         "codex|openai/gpt-5.5": {
           "pair": [
             "codex",
             "openai/gpt-5.5"
           ],
-          "n_candidates_success_numeric": 6,
-          "n_valid_strict": 4,
+          "n_candidates_success_numeric": 8,
+          "n_valid_strict": 6,
           "picks": [
             "s3-clone-23996371-145",
+            "s3-clone-23996371-217",
             "s3-clone-23996371-144",
             "s3-clone-23996371-163",
-            "s3-clone-23996371-161"
+            "s3-clone-23996371-216"
           ],
-          "notes": "SHORTFALL"
+          "notes": "OK"
         },
         "gemini-cli|gemini/gemini-3.1-pro-preview": {
           "pair": [

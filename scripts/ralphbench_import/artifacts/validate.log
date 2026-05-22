@@ -47,16 +47,16 @@
   sample slack-clone-b0a98beb-207/config.json task_name=slack-clone task_hash=b0a98beb task_version_id=slack-clone-b0a98beb-v24
   sample slack-clone-b0a98beb-207/result.json task_name=slack-clone task_hash=b0a98beb task_version_id=slack-clone-b0a98beb-v24
 === s3-clone ===
-  manifest n_trials = 61, len(trials) = 61, match = True
+  manifest n_trials = 65, len(trials) = 65, match = True
   task_version_id = s3-clone-23996371-v13
   task_hash = 23996371
-  numeric reward: 61/61  pass count (reward=1.0): 5
+  numeric reward: 65/65  pass count (reward=1.0): 5
   duplicate fingerprint count: 0
   missing top-level config: 0, result: 0, canonical: 0
   artifact_prefix mismatches: 0
   pair counts:
-    claude-code  / anthropic/claude-opus-4-7                 2  GAP 2/5
-    codex        / openai/gpt-5.5                            4  GAP 4/5
+    claude-code  / anthropic/claude-opus-4-7                 5  OK
+    codex        / openai/gpt-5.5                            5  OK
     gemini-cli   / gemini/gemini-3.1-pro-preview             5  OK
     kimi-cli     / openrouter/moonshotai/kimi-k2.6           5  OK
     terminus-2   / anthropic/claude-opus-4-7                 5  OK
