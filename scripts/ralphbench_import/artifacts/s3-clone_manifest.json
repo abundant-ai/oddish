@@ -1,14 +1,14 @@
 {
   "experiment_id": "cd8c33d8",
-  "n_trials": 64,
-  "note": "Generated at 2026-05-22T20:58:31.785120+00:00 from Oddish experiment cd8c33d8. Contains up to 5 valid trials per task/agent/model pair (numeric verifier reward), ranked by reward then trajectory_bytes then total artifact bytes then recency. Notes: shortfall terminus-2|openrouter/minimax/minimax-m2.7: 4/5.",
+  "n_trials": 61,
+  "note": "Re-generated at 2026-05-22T21:15:29.512980+00:00 from Oddish experiment cd8c33d8 on task version s3-clone-23996371-v13. Strict selection: up to 5 valid trials per agent/model pair, where valid = SUCCESS + numeric reward AND top-level result.json exception_stats is empty or limited to {AgentTimeoutError, VerifierTimeoutError}. Ranked by reward then trajectory_bytes then total artifact bytes then recency. Notes: shortfall claude-code|anthropic/claude-opus-4-7: 2/5 \u2014 limited by v=s3-clone-23996371-v13 valid trials (excludes NonZeroAgentExitCodeError and other infra failures); shortfall codex|openai/gpt-5.5: 4/5 \u2014 limited by v=s3-clone-23996371-v13 valid trials (excludes NonZeroAgentExitCodeError and other infra failures).",
   "task": "s3-clone-23996371",
   "task_name": "s3-clone",
   "task_hash": "23996371",
   "task_version_id": "s3-clone-23996371-v13",
   "pair_counts": {
-    "claude-code|anthropic/claude-opus-4-7": 5,
-    "codex|openai/gpt-5.5": 5,
+    "claude-code|anthropic/claude-opus-4-7": 2,
+    "codex|openai/gpt-5.5": 4,
     "gemini-cli|gemini/gemini-3.1-pro-preview": 5,
     "kimi-cli|openrouter/moonshotai/kimi-k2.6": 5,
     "terminus-2|anthropic/claude-opus-4-7": 5,
@@ -17,7 +17,7 @@
     "terminus-2|openrouter/moonshotai/kimi-k2.6": 5,
     "terminus-2|openrouter/deepseek/deepseek-v4-pro": 5,
     "terminus-2|openrouter/z-ai/glm-5.1": 5,
-    "terminus-2|openrouter/minimax/minimax-m2.7": 4,
+    "terminus-2|openrouter/minimax/minimax-m2.7": 5,
     "nop|default": 5,
     "oracle|default": 5
   },
@@ -41,6 +41,7 @@
       "cost_usd": 0.1858425,
       "has_trajectory": true,
       "trajectory_bytes": 0,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-131/",
@@ -48,7 +49,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-131",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-1vleco61__yai9zpa"
     },
     "s3-clone-23996371-132": {
@@ -68,6 +69,7 @@
       "cost_usd": 0.21629125,
       "has_trajectory": true,
       "trajectory_bytes": 0,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-132/",
@@ -75,7 +77,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-132",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-nm3js4rq__LJVnRyc"
     },
     "s3-clone-23996371-133": {
@@ -95,6 +97,7 @@
       "cost_usd": 0.2107525,
       "has_trajectory": true,
       "trajectory_bytes": 0,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-133/",
@@ -102,7 +105,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-133",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-dj3hpniw__jbvQjZM"
     },
     "s3-clone-23996371-134": {
@@ -122,6 +125,7 @@
       "cost_usd": 0.22256925,
       "has_trajectory": true,
       "trajectory_bytes": 0,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-134/",
@@ -129,7 +133,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-134",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-vl9wdfgl__g6NkS9G"
     },
     "s3-clone-23996371-135": {
@@ -149,6 +153,7 @@
       "cost_usd": 0.1454705,
       "has_trajectory": true,
       "trajectory_bytes": 0,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-135/",
@@ -156,7 +161,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-135",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-xhp4pvgl__orYFbFT"
     },
     "s3-clone-23996371-136": {
@@ -176,6 +181,7 @@
       "cost_usd": 1.3581055,
       "has_trajectory": true,
       "trajectory_bytes": 0,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-136/",
@@ -183,7 +189,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-136",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-bqgxzard__gApnhGx"
     },
     "s3-clone-23996371-137": {
@@ -203,6 +209,7 @@
       "cost_usd": 1.29417,
       "has_trajectory": true,
       "trajectory_bytes": 0,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-137/",
@@ -210,7 +217,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-137",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-1ni04po3__49RzTgq"
     },
     "s3-clone-23996371-138": {
@@ -230,6 +237,7 @@
       "cost_usd": 1.9708085,
       "has_trajectory": true,
       "trajectory_bytes": 0,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-138/",
@@ -237,7 +245,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-138",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-0cdl3630__NSutnbo"
     },
     "s3-clone-23996371-139": {
@@ -257,6 +265,7 @@
       "cost_usd": 1.4965695,
       "has_trajectory": true,
       "trajectory_bytes": 0,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-139/",
@@ -264,7 +273,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-139",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-u088muwa__SoSMjVw"
     },
     "s3-clone-23996371-140": {
@@ -284,6 +293,7 @@
       "cost_usd": 1.41915475,
       "has_trajectory": true,
       "trajectory_bytes": 0,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-140/",
@@ -291,35 +301,8 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-140",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-bzggp4jl__9yTATLr"
-    },
-    "s3-clone-23996371-141": {
-      "agent": "claude-code",
-      "model": "anthropic/claude-opus-4-7",
-      "provider": "claude",
-      "reward": 0.0,
-      "status": "success",
-      "attempts": 1,
-      "max_attempts": 6,
-      "task_version_id": "s3-clone-23996371-v13",
-      "started_at": "2026-05-20T03:48:57.168067+00:00",
-      "finished_at": "2026-05-20T04:13:16.155000+00:00",
-      "input_tokens": 3090103,
-      "cache_tokens": 3003206,
-      "output_tokens": 84926,
-      "cost_usd": null,
-      "has_trajectory": true,
-      "trajectory_bytes": 927162,
-      "origin": "oddish",
-      "artifact_layout": "harbor-nested",
-      "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-141/",
-      "source_trial_name": "s3-clone-141",
-      "source_oddish_task_id": "s3-clone-23996371",
-      "source_oddish_trial_id": "s3-clone-23996371-141",
-      "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
-      "canonical_attempt_dir": "task-s3-clone-23996371-_z_7s4e9__diWRGKE"
     },
     "s3-clone-23996371-142": {
       "agent": "claude-code",
@@ -338,6 +321,9 @@
       "cost_usd": 8.13812925,
       "has_trajectory": true,
       "trajectory_bytes": 2990013,
+      "exception_classes": [
+        "AgentTimeoutError"
+      ],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-142/",
@@ -345,35 +331,8 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-142",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-3r2jhmm7__r7yhbJm"
-    },
-    "s3-clone-23996371-143": {
-      "agent": "claude-code",
-      "model": "anthropic/claude-opus-4-7",
-      "provider": "claude",
-      "reward": 0.0,
-      "status": "success",
-      "attempts": 2,
-      "max_attempts": 6,
-      "task_version_id": "s3-clone-23996371-v13",
-      "started_at": "2026-05-20T04:18:55.961642+00:00",
-      "finished_at": "2026-05-20T04:45:53.725762+00:00",
-      "input_tokens": 7190587,
-      "cache_tokens": 7064174,
-      "output_tokens": 108968,
-      "cost_usd": null,
-      "has_trajectory": true,
-      "trajectory_bytes": 1551987,
-      "origin": "oddish",
-      "artifact_layout": "harbor-nested",
-      "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-143/",
-      "source_trial_name": "s3-clone-143",
-      "source_oddish_task_id": "s3-clone-23996371",
-      "source_oddish_trial_id": "s3-clone-23996371-143",
-      "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
-      "canonical_attempt_dir": "task-s3-clone-23996371-deys3103__ehboAjG"
     },
     "s3-clone-23996371-144": {
       "agent": "codex",
@@ -392,6 +351,7 @@
       "cost_usd": 3.066028,
       "has_trajectory": true,
       "trajectory_bytes": 347612,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-144/",
@@ -399,7 +359,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-144",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-hvns_e12__HBNHHLc"
     },
     "s3-clone-23996371-145": {
@@ -419,6 +379,7 @@
       "cost_usd": 3.529389,
       "has_trajectory": true,
       "trajectory_bytes": 452147,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-145/",
@@ -426,7 +387,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-145",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-r1s5mnks__iR8UKBv"
     },
     "s3-clone-23996371-147": {
@@ -446,6 +407,7 @@
       "cost_usd": 2.6147314,
       "has_trajectory": true,
       "trajectory_bytes": 446745,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-147/",
@@ -453,7 +415,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-147",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-a76n34_h__DHpYPsR"
     },
     "s3-clone-23996371-148": {
@@ -473,6 +435,7 @@
       "cost_usd": 2.6901168,
       "has_trajectory": true,
       "trajectory_bytes": 358537,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-148/",
@@ -480,7 +443,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-148",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-wxnl5zed__8QHaHQh"
     },
     "s3-clone-23996371-149": {
@@ -500,6 +463,7 @@
       "cost_usd": 0.0563202,
       "has_trajectory": true,
       "trajectory_bytes": 18669,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-149/",
@@ -507,7 +471,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-149",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-doa0hiay__GUKwCLC"
     },
     "s3-clone-23996371-150": {
@@ -527,6 +491,7 @@
       "cost_usd": null,
       "has_trajectory": true,
       "trajectory_bytes": 741213,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-150/",
@@ -534,7 +499,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-150",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-se1a4g_k__sDht8zX"
     },
     "s3-clone-23996371-151": {
@@ -554,6 +519,7 @@
       "cost_usd": 5.73277275,
       "has_trajectory": true,
       "trajectory_bytes": 369458,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-151/",
@@ -561,7 +527,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-151",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-10x2d_xk__k52ZWH8"
     },
     "s3-clone-23996371-152": {
@@ -581,6 +547,7 @@
       "cost_usd": 1.211508,
       "has_trajectory": true,
       "trajectory_bytes": 161846,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-152/",
@@ -588,7 +555,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-152",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-gfqqx9n8__ZzfKU2h"
     },
     "s3-clone-23996371-153": {
@@ -608,6 +575,7 @@
       "cost_usd": 1.2860968,
       "has_trajectory": true,
       "trajectory_bytes": 196412,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-153/",
@@ -615,7 +583,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-153",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-lmza_or__RunjzFe"
     },
     "s3-clone-23996371-154": {
@@ -635,6 +603,7 @@
       "cost_usd": 2.51221698,
       "has_trajectory": true,
       "trajectory_bytes": 939320,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-154/",
@@ -642,7 +611,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-154",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-6jk5ouxk__TxB9SHc"
     },
     "s3-clone-23996371-155": {
@@ -662,6 +631,7 @@
       "cost_usd": 3.013437432,
       "has_trajectory": true,
       "trajectory_bytes": 887727,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-155/",
@@ -669,35 +639,8 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-155",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-86qqc21x__HumuFgy"
-    },
-    "s3-clone-23996371-158": {
-      "agent": "claude-code",
-      "model": "anthropic/claude-opus-4-7",
-      "provider": "claude",
-      "reward": 0.0,
-      "status": "success",
-      "attempts": 1,
-      "max_attempts": 6,
-      "task_version_id": "s3-clone-23996371-v13",
-      "started_at": "2026-05-20T22:06:56.417927+00:00",
-      "finished_at": "2026-05-20T22:22:04.085207+00:00",
-      "input_tokens": 948323,
-      "cache_tokens": 911603,
-      "output_tokens": 42060,
-      "cost_usd": 1.704039,
-      "has_trajectory": true,
-      "trajectory_bytes": 338270,
-      "origin": "oddish",
-      "artifact_layout": "harbor-nested",
-      "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-158/",
-      "source_trial_name": "s3-clone-158",
-      "source_oddish_task_id": "s3-clone-23996371",
-      "source_oddish_trial_id": "s3-clone-23996371-158",
-      "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
-      "canonical_attempt_dir": "task-s3-clone-23996371-7i7_46bb__t9Q8kWS"
     },
     "s3-clone-23996371-160": {
       "agent": "claude-code",
@@ -716,6 +659,7 @@
       "cost_usd": 9.48109225,
       "has_trajectory": true,
       "trajectory_bytes": 1912890,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-160/",
@@ -723,7 +667,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-160",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-7x_0onb9__BduVWM3"
     },
     "s3-clone-23996371-161": {
@@ -743,6 +687,7 @@
       "cost_usd": 2.623629,
       "has_trajectory": true,
       "trajectory_bytes": 336445,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-161/",
@@ -750,35 +695,8 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-161",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-6s99i5hl__PLq2erx"
-    },
-    "s3-clone-23996371-162": {
-      "agent": "codex",
-      "model": "openai/gpt-5.5",
-      "provider": "openai",
-      "reward": 0.0,
-      "status": "success",
-      "attempts": 1,
-      "max_attempts": 6,
-      "task_version_id": "s3-clone-23996371-v13",
-      "started_at": "2026-05-20T22:06:54.981459+00:00",
-      "finished_at": "2026-05-20T22:14:34.146245+00:00",
-      "input_tokens": null,
-      "cache_tokens": null,
-      "output_tokens": null,
-      "cost_usd": null,
-      "has_trajectory": false,
-      "trajectory_bytes": 0,
-      "origin": "oddish",
-      "artifact_layout": "harbor-nested",
-      "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-162/",
-      "source_trial_name": "s3-clone-162",
-      "source_oddish_task_id": "s3-clone-23996371",
-      "source_oddish_trial_id": "s3-clone-23996371-162",
-      "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
-      "canonical_attempt_dir": "task-s3-clone-23996371-e5c0z03q__WxzMJoS"
     },
     "s3-clone-23996371-163": {
       "agent": "codex",
@@ -797,6 +715,7 @@
       "cost_usd": 2.88162,
       "has_trajectory": true,
       "trajectory_bytes": 342112,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-163/",
@@ -804,7 +723,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-163",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-yldyw7bt__R2HU6AN"
     },
     "s3-clone-23996371-164": {
@@ -824,6 +743,7 @@
       "cost_usd": 2.4282142,
       "has_trajectory": true,
       "trajectory_bytes": 434160,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-164/",
@@ -831,7 +751,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-164",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-ai028ba8__EvSCQPY"
     },
     "s3-clone-23996371-165": {
@@ -851,6 +771,7 @@
       "cost_usd": 0.0827052,
       "has_trajectory": true,
       "trajectory_bytes": 24556,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-165/",
@@ -858,7 +779,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-165",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-idoyhg97__yCpQv6h"
     },
     "s3-clone-23996371-166": {
@@ -878,6 +799,7 @@
       "cost_usd": null,
       "has_trajectory": true,
       "trajectory_bytes": 1016793,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-166/",
@@ -885,7 +807,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-166",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-zuk991qu__79pJu5E"
     },
     "s3-clone-23996371-168": {
@@ -905,6 +827,7 @@
       "cost_usd": null,
       "has_trajectory": true,
       "trajectory_bytes": 1087122,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-168/",
@@ -912,7 +835,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-168",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-u9m57vfp__ZVm7CMt"
     },
     "s3-clone-23996371-169": {
@@ -932,6 +855,7 @@
       "cost_usd": null,
       "has_trajectory": true,
       "trajectory_bytes": 973762,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-169/",
@@ -939,7 +863,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-169",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-n5vbq7h6__p6jdTi2"
     },
     "s3-clone-23996371-170": {
@@ -959,6 +883,7 @@
       "cost_usd": null,
       "has_trajectory": true,
       "trajectory_bytes": 82440,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-170/",
@@ -966,7 +891,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-170",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-ydbkedcp__Hp4n2Gg"
     },
     "s3-clone-23996371-172": {
@@ -986,6 +911,7 @@
       "cost_usd": 6.5898845,
       "has_trajectory": true,
       "trajectory_bytes": 390724,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-172/",
@@ -993,7 +919,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-172",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-1kfbgfqn__p5EzrPF"
     },
     "s3-clone-23996371-173": {
@@ -1013,6 +939,7 @@
       "cost_usd": 5.77617725,
       "has_trajectory": true,
       "trajectory_bytes": 366983,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-173/",
@@ -1020,7 +947,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-173",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-tzeseuk5__Qktceoy"
     },
     "s3-clone-23996371-174": {
@@ -1040,6 +967,7 @@
       "cost_usd": 7.8307915,
       "has_trajectory": true,
       "trajectory_bytes": 453404,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-174/",
@@ -1047,7 +975,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-174",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-91796htn__pdtMoLg"
     },
     "s3-clone-23996371-175": {
@@ -1067,6 +995,7 @@
       "cost_usd": 10.8524345,
       "has_trajectory": true,
       "trajectory_bytes": 499796,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-175/",
@@ -1074,7 +1003,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-175",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-gi5emvg1__2SbJfof"
     },
     "s3-clone-23996371-176": {
@@ -1094,6 +1023,7 @@
       "cost_usd": 1.203409,
       "has_trajectory": true,
       "trajectory_bytes": 156429,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-176/",
@@ -1101,7 +1031,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-176",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-4hawtryw__kjjuoCg"
     },
     "s3-clone-23996371-177": {
@@ -1121,6 +1051,7 @@
       "cost_usd": 1.331934,
       "has_trajectory": true,
       "trajectory_bytes": 157154,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-177/",
@@ -1128,7 +1059,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-177",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-wwrv2dz3__kFBB2J5"
     },
     "s3-clone-23996371-178": {
@@ -1148,6 +1079,7 @@
       "cost_usd": 1.45073,
       "has_trajectory": true,
       "trajectory_bytes": 188163,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-178/",
@@ -1155,7 +1087,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-178",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-b31hdo46__QojmYey"
     },
     "s3-clone-23996371-179": {
@@ -1175,6 +1107,7 @@
       "cost_usd": 1.232599,
       "has_trajectory": true,
       "trajectory_bytes": 152631,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-179/",
@@ -1182,7 +1115,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-179",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-1tnq7dl5__5WNcuCR"
     },
     "s3-clone-23996371-181": {
@@ -1202,6 +1135,7 @@
       "cost_usd": 1.3171904,
       "has_trajectory": true,
       "trajectory_bytes": 194619,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-181/",
@@ -1209,7 +1143,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-181",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-sfru07sz__dNSxwqk"
     },
     "s3-clone-23996371-182": {
@@ -1229,6 +1163,7 @@
       "cost_usd": 0.8523118,
       "has_trajectory": true,
       "trajectory_bytes": 236724,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-182/",
@@ -1236,7 +1171,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-182",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-oq_nv2u4__w5jW23D"
     },
     "s3-clone-23996371-183": {
@@ -1256,6 +1191,7 @@
       "cost_usd": 1.1895676,
       "has_trajectory": true,
       "trajectory_bytes": 209570,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-183/",
@@ -1263,7 +1199,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-183",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-5tchkexy__tfDZ8dm"
     },
     "s3-clone-23996371-184": {
@@ -1283,6 +1219,7 @@
       "cost_usd": 1.6847692,
       "has_trajectory": true,
       "trajectory_bytes": 271010,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-184/",
@@ -1290,7 +1227,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-184",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-sd01c9y5__rXgEAFh"
     },
     "s3-clone-23996371-186": {
@@ -1310,6 +1247,7 @@
       "cost_usd": 2.55105446,
       "has_trajectory": true,
       "trajectory_bytes": 865323,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-186/",
@@ -1317,7 +1255,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-186",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-ama4tmyt__HsBo3fc"
     },
     "s3-clone-23996371-187": {
@@ -1337,6 +1275,7 @@
       "cost_usd": 3.16805002,
       "has_trajectory": true,
       "trajectory_bytes": 1108553,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-187/",
@@ -1344,7 +1283,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-187",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-cm69lpco__uPKRnds"
     },
     "s3-clone-23996371-188": {
@@ -1364,6 +1303,9 @@
       "cost_usd": 2.53748944,
       "has_trajectory": true,
       "trajectory_bytes": 905229,
+      "exception_classes": [
+        "AgentTimeoutError"
+      ],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-188/",
@@ -1371,7 +1313,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-188",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-6dgc12lo__ogeutpf"
     },
     "s3-clone-23996371-189": {
@@ -1391,6 +1333,7 @@
       "cost_usd": 1.54898232,
       "has_trajectory": true,
       "trajectory_bytes": 644658,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-189/",
@@ -1398,7 +1341,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-189",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-96uth88q__58TN7jo"
     },
     "s3-clone-23996371-192": {
@@ -1418,6 +1361,7 @@
       "cost_usd": 13.538641848,
       "has_trajectory": true,
       "trajectory_bytes": 1526396,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-192/",
@@ -1425,7 +1369,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-192",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-2ppv6w44__NUbVEam"
     },
     "s3-clone-23996371-193": {
@@ -1445,6 +1389,7 @@
       "cost_usd": 6.225940462,
       "has_trajectory": true,
       "trajectory_bytes": 973526,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-193/",
@@ -1452,7 +1397,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-193",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-r6kf2qcj__3ZcYWXs"
     },
     "s3-clone-23996371-194": {
@@ -1472,6 +1417,7 @@
       "cost_usd": 5.26712553,
       "has_trajectory": true,
       "trajectory_bytes": 831789,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-194/",
@@ -1479,7 +1425,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-194",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-8a65anm9__wKEvEcg"
     },
     "s3-clone-23996371-195": {
@@ -1499,6 +1445,7 @@
       "cost_usd": 6.41398828,
       "has_trajectory": true,
       "trajectory_bytes": 1075396,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-195/",
@@ -1506,7 +1453,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-195",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-vb367twx__onSndwd"
     },
     "s3-clone-23996371-196": {
@@ -1526,6 +1473,9 @@
       "cost_usd": 115.362222434,
       "has_trajectory": true,
       "trajectory_bytes": 1280954,
+      "exception_classes": [
+        "AgentTimeoutError"
+      ],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-196/",
@@ -1533,7 +1483,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-196",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-sdabicxa__tU6NuD2"
     },
     "s3-clone-23996371-197": {
@@ -1553,6 +1503,9 @@
       "cost_usd": 115.511412948,
       "has_trajectory": true,
       "trajectory_bytes": 1197684,
+      "exception_classes": [
+        "AgentTimeoutError"
+      ],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-197/",
@@ -1560,7 +1513,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-197",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-2lyirhe8__DdiM7FZ"
     },
     "s3-clone-23996371-198": {
@@ -1580,6 +1533,7 @@
       "cost_usd": 1.476451284,
       "has_trajectory": true,
       "trajectory_bytes": 710395,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-198/",
@@ -1587,7 +1541,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-198",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-u_t9jbup__xbaDgKw"
     },
     "s3-clone-23996371-199": {
@@ -1607,6 +1561,9 @@
       "cost_usd": 7.64588263,
       "has_trajectory": true,
       "trajectory_bytes": 1255379,
+      "exception_classes": [
+        "AgentTimeoutError"
+      ],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-199/",
@@ -1614,7 +1571,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-199",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-f0wpfnya__vZo4utY"
     },
     "s3-clone-23996371-200": {
@@ -1634,6 +1591,7 @@
       "cost_usd": 2.344516608,
       "has_trajectory": true,
       "trajectory_bytes": 681260,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-200/",
@@ -1641,7 +1599,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-200",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-um_l8q96__DvXJP38"
     },
     "s3-clone-23996371-201": {
@@ -1661,6 +1619,9 @@
       "cost_usd": 0.95172102,
       "has_trajectory": true,
       "trajectory_bytes": 1052338,
+      "exception_classes": [
+        "AgentTimeoutError"
+      ],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-201/",
@@ -1668,7 +1629,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-201",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-ynnmkeyv__BDs8CC2"
     },
     "s3-clone-23996371-202": {
@@ -1688,6 +1649,7 @@
       "cost_usd": 2.506995456,
       "has_trajectory": true,
       "trajectory_bytes": 955740,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-202/",
@@ -1695,7 +1657,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-202",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-0w871xqw__GYiYeZX"
     },
     "s3-clone-23996371-203": {
@@ -1715,6 +1677,9 @@
       "cost_usd": 1.41413592,
       "has_trajectory": true,
       "trajectory_bytes": 1347712,
+      "exception_classes": [
+        "AgentTimeoutError"
+      ],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-203/",
@@ -1722,7 +1687,7 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-203",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-ipgn_gc__ERVjRZP"
     },
     "s3-clone-23996371-209": {
@@ -1742,6 +1707,7 @@
       "cost_usd": 0.63731922,
       "has_trajectory": true,
       "trajectory_bytes": 474525,
+      "exception_classes": [],
       "origin": "oddish",
       "artifact_layout": "harbor-nested",
       "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-209/",
@@ -1749,8 +1715,36 @@
       "source_oddish_task_id": "s3-clone-23996371",
       "source_oddish_trial_id": "s3-clone-23996371-209",
       "source_oddish_experiment_id": "cd8c33d8",
-      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency.",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
       "canonical_attempt_dir": "task-s3-clone-23996371-4o6sh_bd__nddNdLf"
+    },
+    "s3-clone-23996371-211": {
+      "agent": "terminus-2",
+      "model": "openrouter/minimax/minimax-m2.7",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "s3-clone-23996371-v13",
+      "started_at": "2026-05-22T18:40:21.076384+00:00",
+      "finished_at": "2026-05-22T21:01:36.534763+00:00",
+      "input_tokens": 12339662,
+      "cache_tokens": 11296028,
+      "output_tokens": 60203,
+      "cost_usd": 1.06309548,
+      "has_trajectory": true,
+      "trajectory_bytes": 512666,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-211/",
+      "source_trial_name": "s3-clone-211",
+      "source_oddish_task_id": "s3-clone-23996371",
+      "source_oddish_trial_id": "s3-clone-23996371-211",
+      "source_oddish_experiment_id": "cd8c33d8",
+      "selection_note": "Selected as one of up to 5 valid trials for this task/agent/model, ranked by reward then trajectory_bytes then total artifact bytes then recency. Strict: only AgentTimeoutError/VerifierTimeoutError exception classes are kept; NonZero/other infra failures are excluded.",
+      "canonical_attempt_dir": "task-s3-clone-23996371-af3pg7dh__KcmEpCK"
     }
   }
 }

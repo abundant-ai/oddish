@@ -1,0 +1,47 @@
+
+=== mastodon-clone-e9964b7a -> mastodon-clone ===
+  KEEP 49, ADD 14, REMOVE 16
+  [1/14] mastodon-clone-e9964b7a-162: uploaded 0.8 MB in 1.6s; canonical=task-mastodon-clone-e9964b7a-04y__mJeqKJG
+  [2/14] mastodon-clone-e9964b7a-164: uploaded 0.9 MB in 61.5s; canonical=task-mastodon-clone-e9964b7a-9rw__4gQH8JV
+  [3/14] mastodon-clone-e9964b7a-167: uploaded 72.7 MB in 9.3s; canonical=task-mastodon-clone-e9964b7a-wu2__SJUw7Ev
+  [4/14] mastodon-clone-e9964b7a-168: uploaded 66.4 MB in 5.6s; canonical=task-mastodon-clone-e9964b7a-443__RkAgwwh
+  [5/14] mastodon-clone-e9964b7a-171: uploaded 81.4 MB in 5.0s; canonical=task-mastodon-clone-e9964b7a-mfj__Eiak4vk
+  [6/14] mastodon-clone-e9964b7a-177: uploaded 123.0 MB in 4.8s; canonical=task-mastodon-clone-e9964b7a-zr8__k5uqp7t
+  [7/14] mastodon-clone-e9964b7a-178: uploaded 24.4 MB in 3.1s; canonical=task-mastodon-clone-e9964b7a-pja__3NyZQAw
+  [8/14] mastodon-clone-e9964b7a-182: uploaded 316.7 MB in 10.8s; canonical=task-mastodon-clone-e9964b7a-cbe__S8Sakg9
+  [9/14] mastodon-clone-e9964b7a-193: uploaded 146.7 MB in 5.3s; canonical=task-mastodon-clone-e9964b7a-q80__kVnhLiv
+  [10/14] mastodon-clone-e9964b7a-195: uploaded 126.4 MB in 4.8s; canonical=task-mastodon-clone-e9964b7a-7q6__KhKwN5f
+  [11/14] mastodon-clone-e9964b7a-196: uploaded 83.7 MB in 4.5s; canonical=task-mastodon-clone-e9964b7a-lvt__LNTXJiE
+  [12/14] mastodon-clone-e9964b7a-201: uploaded 8.7 MB in 1.6s; canonical=task-mastodon-clone-e9964b7a-fd6__BtrnapG
+  [13/14] mastodon-clone-e9964b7a-220: uploaded 81.2 MB in 64.1s; canonical=task-mastodon-clone-e9964b7a-oi2__bjK4zSc
+  [14/14] mastodon-clone-e9964b7a-227: uploaded 496.0 MB in 11.7s; canonical=task-mastodon-clone-e9964b7a-vbo__3bPCjN7
+  [1/16] REMOVE mastodon-clone-e9964b7a-137: deleted 46 keys
+  [2/16] REMOVE mastodon-clone-e9964b7a-139: deleted 38 keys
+  [3/16] REMOVE mastodon-clone-e9964b7a-141: deleted 255 keys
+  [4/16] REMOVE mastodon-clone-e9964b7a-143: deleted 259 keys
+  [5/16] REMOVE mastodon-clone-e9964b7a-144: deleted 259 keys
+  [6/16] REMOVE mastodon-clone-e9964b7a-147: deleted 254 keys
+  [7/16] REMOVE mastodon-clone-e9964b7a-148: deleted 214 keys
+  [8/16] REMOVE mastodon-clone-e9964b7a-150: deleted 226 keys
+  [9/16] REMOVE mastodon-clone-e9964b7a-151: deleted 391 keys
+  [10/16] REMOVE mastodon-clone-e9964b7a-152: deleted 277 keys
+  [11/16] REMOVE mastodon-clone-e9964b7a-153: deleted 187 keys
+  [12/16] REMOVE mastodon-clone-e9964b7a-154: deleted 65 keys
+  [13/16] REMOVE mastodon-clone-e9964b7a-155: deleted 746 keys
+  [14/16] REMOVE mastodon-clone-e9964b7a-158: deleted 670 keys
+  [15/16] REMOVE mastodon-clone-e9964b7a-159: deleted 607 keys
+  [16/16] REMOVE mastodon-clone-e9964b7a-161: deleted 336 keys
+  Uploaded _manifest.json (88254 bytes; n_trials=63, n_pass=5, dup=0)
+    claude-code  / anthropic/claude-opus-4-7                 4  GAP 4/5
+    codex        / openai/gpt-5.5                            5  OK
+    gemini-cli   / gemini/gemini-3.1-pro-preview             5  OK
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           5  OK
+    terminus-2   / anthropic/claude-opus-4-7                 5  OK
+    terminus-2   / openai/gpt-5.5                            5  OK
+    terminus-2   / gemini/gemini-3.1-pro-preview             5  OK
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           5  OK
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       5  OK
+    terminus-2   / openrouter/z-ai/glm-5.1                   5  OK
+    terminus-2   / openrouter/minimax/minimax-m2.7           4  GAP 4/5
+    nop          / default                                   5  OK
+    oracle       / default                                   5  OK

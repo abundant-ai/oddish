@@ -1,0 +1,22 @@
+
+=== s3-clone-23996371 -> s3-clone ===
+  KEEP 60, ADD 1, REMOVE 4
+  [1/1] s3-clone-23996371-211: uploaded 224.5 MB in 15.1s; canonical=task-s3-clone-23996371-af3pg7dh__KcmEpCK
+  [1/4] REMOVE s3-clone-23996371-141: deleted 258 keys
+  [2/4] REMOVE s3-clone-23996371-143: deleted 241 keys
+  [3/4] REMOVE s3-clone-23996371-158: deleted 75 keys
+  [4/4] REMOVE s3-clone-23996371-162: deleted 12 keys
+  Uploaded _manifest.json (82865 bytes; n_trials=61, n_pass=5, dup=0)
+    claude-code  / anthropic/claude-opus-4-7                 2  GAP 2/5
+    codex        / openai/gpt-5.5                            4  GAP 4/5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             5  OK
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           5  OK
+    terminus-2   / anthropic/claude-opus-4-7                 5  OK
+    terminus-2   / openai/gpt-5.5                            5  OK
+    terminus-2   / gemini/gemini-3.1-pro-preview             5  OK
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           5  OK
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       5  OK
+    terminus-2   / openrouter/z-ai/glm-5.1                   5  OK
+    terminus-2   / openrouter/minimax/minimax-m2.7           5  OK
+    nop          / default                                   5  OK
+    oracle       / default                                   5  OK

@@ -1,0 +1,53 @@
+
+=== slack-clone-b0a98beb -> slack-clone ===
+  KEEP 47, ADD 18, REMOVE 18
+  [1/18] slack-clone-b0a98beb-207: uploaded 0.9 MB in 1.7s; canonical=task-slack-clone-b0a98beb-_ds_yz__DXh4VLk
+  [2/18] slack-clone-b0a98beb-208: uploaded 0.9 MB in 1.0s; canonical=task-slack-clone-b0a98beb-klqhdl__TCPeLhB
+  [3/18] slack-clone-b0a98beb-209: uploaded 1.0 MB in 0.9s; canonical=task-slack-clone-b0a98beb-lzpoe2__HmUPHyj
+  [4/18] slack-clone-b0a98beb-210: uploaded 0.9 MB in 1.0s; canonical=task-slack-clone-b0a98beb-ya61n3__EQrVc5s
+  [5/18] slack-clone-b0a98beb-211: uploaded 0.9 MB in 0.9s; canonical=task-slack-clone-b0a98beb-fecn9l__2rX4kS9
+  [6/18] slack-clone-b0a98beb-212: uploaded 108.5 MB in 6.8s; canonical=task-slack-clone-b0a98beb-iy_jyr__DAR7F5m
+  [7/18] slack-clone-b0a98beb-214: uploaded 108.4 MB in 6.8s; canonical=task-slack-clone-b0a98beb-43xe_g__UGXmDjC
+  [8/18] slack-clone-b0a98beb-219: uploaded 126.2 MB in 5.5s; canonical=task-slack-clone-b0a98beb-cvxmmw__byYLxEf
+  [9/18] slack-clone-b0a98beb-220: uploaded 126.9 MB in 6.3s; canonical=task-slack-clone-b0a98beb-e2f8p5__Eio2LD8
+  [10/18] slack-clone-b0a98beb-234: uploaded 94.0 MB in 5.2s; canonical=task-slack-clone-b0a98beb-rgwgbz__Swse7jL
+  [11/18] slack-clone-b0a98beb-236: uploaded 120.6 MB in 6.1s; canonical=task-slack-clone-b0a98beb-0ojuhj__tHL5xV5
+  [12/18] slack-clone-b0a98beb-237: uploaded 124.0 MB in 5.4s; canonical=task-slack-clone-b0a98beb-1wh364__oMMrw6o
+  [13/18] slack-clone-b0a98beb-238: uploaded 104.7 MB in 5.4s; canonical=task-slack-clone-b0a98beb-75aqj9__cqehoRE
+  [14/18] slack-clone-b0a98beb-242: uploaded 9.2 MB in 2.4s; canonical=task-slack-clone-b0a98beb-42ht66__RkTSKgg
+  [15/18] slack-clone-b0a98beb-243: uploaded 1.3 MB in 1.0s; canonical=task-slack-clone-b0a98beb-25filq__wFbKR9X
+  [16/18] slack-clone-b0a98beb-245: uploaded 187.8 MB in 6.6s; canonical=task-slack-clone-b0a98beb-kdpyi9__NDtAmYR
+  [17/18] slack-clone-b0a98beb-283: uploaded 124.9 MB in 6.1s; canonical=task-slack-clone-b0a98beb-jgo36z__Q3t5tmx
+  [18/18] slack-clone-b0a98beb-284: uploaded 133.9 MB in 5.8s; canonical=task-slack-clone-b0a98beb-08w5dv__E5X9K7g
+  [1/18] REMOVE slack-clone-b0a98beb-106: deleted 331 keys
+  [2/18] REMOVE slack-clone-b0a98beb-115: deleted 327 keys
+  [3/18] REMOVE slack-clone-b0a98beb-150: deleted 354 keys
+  [4/18] REMOVE slack-clone-b0a98beb-152: deleted 320 keys
+  [5/18] REMOVE slack-clone-b0a98beb-153: deleted 302 keys
+  [6/18] REMOVE slack-clone-b0a98beb-154: deleted 259 keys
+  [7/18] REMOVE slack-clone-b0a98beb-155: deleted 279 keys
+  [8/18] REMOVE slack-clone-b0a98beb-159: deleted 44 keys
+  [9/18] REMOVE slack-clone-b0a98beb-160: deleted 40 keys
+  [10/18] REMOVE slack-clone-b0a98beb-161: deleted 44 keys
+  [11/18] REMOVE slack-clone-b0a98beb-162: deleted 44 keys
+  [12/18] REMOVE slack-clone-b0a98beb-166: deleted 363 keys
+  [13/18] REMOVE slack-clone-b0a98beb-173: deleted 295 keys
+  [14/18] REMOVE slack-clone-b0a98beb-174: deleted 100 keys
+  [15/18] REMOVE slack-clone-b0a98beb-247: deleted 362 keys
+  [16/18] REMOVE slack-clone-b0a98beb-311: deleted 393 keys
+  [17/18] REMOVE slack-clone-b0a98beb-84: deleted 51 keys
+  [18/18] REMOVE slack-clone-b0a98beb-98: deleted 44 keys
+  Uploaded _manifest.json (89261 bytes; n_trials=65, n_pass=5, dup=0)
+    claude-code  / anthropic/claude-opus-4-7                 5  OK
+    codex        / openai/gpt-5.5                            5  OK
+    gemini-cli   / gemini/gemini-3.1-pro-preview             5  OK
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           5  OK
+    terminus-2   / anthropic/claude-opus-4-7                 5  OK
+    terminus-2   / openai/gpt-5.5                            5  OK
+    terminus-2   / gemini/gemini-3.1-pro-preview             5  OK
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           5  OK
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       5  OK
+    terminus-2   / openrouter/z-ai/glm-5.1                   5  OK
+    terminus-2   / openrouter/minimax/minimax-m2.7           5  OK
+    nop          / default                                   5  OK
+    oracle       / default                                   5  OK
