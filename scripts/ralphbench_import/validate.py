@@ -19,7 +19,7 @@ def head(key):
 
 def main():
     overall_ok = True
-    for task_name in ('mastodon-clone', 'slack-clone'):
+    for task_name in ('mastodon-clone', 'slack-clone', 's3-clone'):
         print(f"=== {task_name} ===")
         # Load manifest
         obj = dst.get_object(Bucket=DEST_BUCKET, Key=f"{task_name}/_manifest.json")
