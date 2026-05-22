@@ -1,12 +1,7 @@
-"""Scheduled reaper: re-spawn worker_jobs rows that aren't actually running.
-
-Runs every ``REAPER_PERIOD_SECONDS``. In preview environments, the
-``cancel_cloned_preview_work`` script records ``preview_epoch_at`` in
-``oddish_runtime_config`` after cancelling all cloned-from-prod rows.
-The reaper filters on that timestamp so it can never resurrect cloned
-production work, while still respawning legitimate stranded preview
-rows enqueued after the cutover. In prod the row doesn't exist and
-the filter degenerates to a no-op.
+"""Scheduled reaper. Respawns stranded worker_jobs and reaps stale-
+heartbeat RUNNING rows. In previews, the ``preview_epoch_at`` row in
+``oddish_runtime_config`` (written by ``cancel_cloned_preview_work``)
+gates the respawn pass so cloned-from-prod work can't be resurrected.
 """
 
 from __future__ import annotations
@@ -36,9 +31,6 @@ async def reaper() -> dict:
 
     with _otel_span("worker.reaper"):
         try:
-            # Pass 1: reap stale RUNNING rows (workers whose container died,
-            # most commonly during a deploy stop). Transitions them to
-            # RETRYING or FAILED; the next pass picks the RETRYING ones up.
             try:
                 cleanup_counts = await cleanup_orphaned_queue_state()
                 if any(cleanup_counts.values()):
@@ -51,9 +43,6 @@ async def reaper() -> dict:
                     f"[yellow]reaper orphan cleanup failed: {exc!r}[/yellow]"
                 )
 
-            # Pass 2: respawn rows in QUEUED/RETRYING with no active spawn.
-            # Filter by preview_epoch_at so we never resurrect cloned-from-
-            # prod work in preview environments.
             pool = await get_pool()
             rows = await pool.fetch(
                 """
@@ -83,7 +72,7 @@ async def reaper() -> dict:
                 console.print(f"[red]reaper spawn errors: {errors[:3]}[/red]")
             console.print(
                 f"[green]reaper: respawned {len(queue_keys) - len(errors)} / "
-                f"{len(queue_keys)} stranded rows[/green]"
+                f"{len(queue_keys)} rows[/green]"
             )
             return {"respawned": len(queue_keys) - len(errors), "errors": errors[:5]}
         finally:
