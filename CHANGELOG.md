@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-05-23]
+
+### Changed
+- Daytona is now the default execution environment for CPU-only hosted tasks; Modal is automatically selected when a task's `task.toml` declares GPU requirements or when `--override-gpus` is set to a positive value; `--env` help text updated to reflect the new defaults
+- Harbor dependency updated to a version that runs build tools under a restricted network
+
+---
+
 ## [2026-05-22]
 
 ### Changed
