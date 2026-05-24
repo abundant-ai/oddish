@@ -6,6 +6,7 @@ import { Providers } from "./providers";
 import { Footer } from "@/components/footer";
 import { PreviewBanner } from "@/components/preview-banner";
 import { SpeedInsights } from "@vercel/speed-insights/next";
+import { Analytics } from "@vercel/analytics/next";
 
 const geistSans = Geist({
   subsets: ["latin"],
@@ -110,6 +111,7 @@ export default function RootLayout({
             <Footer />
           </Providers>
           <SpeedInsights />
+          <Analytics />
         </body>
       </html>
     </ClerkProvider>
