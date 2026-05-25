@@ -946,7 +946,7 @@ export default function SettingsPage() {
       </header>
 
       <div className="grid gap-8 lg:grid-cols-[220px_minmax(0,1fr)]">
-        <aside className="lg:sticky lg:top-20 lg:self-start">
+        <aside className="lg:sticky lg:top-[calc(5rem+var(--preview-banner-h,0px))] lg:self-start">
           <SidebarNav section={section} onSelect={handleSectionChange} />
         </aside>
 
