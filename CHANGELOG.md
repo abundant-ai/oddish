@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-05-26]
+
+### Fixed
+- Preview banner now sticks to the top of the viewport and no longer overlaps the nav bar, task drawer, or settings sidebar; a CSS custom property `--preview-banner-h` (0px normally, 1.75rem in preview mode via `data-preview` on `<html>`) propagates the banner height to all affected components so `calc()` offsets stay in sync without hardcoded values (#146)
+
+### Changed
+- Automated daily changelog updated with entries for 2026-05-25 changes (#151)
+
+---
+
 ## [2026-05-25]
 
 ### Changed
