@@ -189,11 +189,24 @@ fi
 # driver prefix because psql doesn't understand it.
 echo "smoke-testing connection to branch DB..." >&2
 psql_url="postgresql://${db_url#postgresql+asyncpg://}"
-if ! PGCONNECT_TIMEOUT=15 psql "$psql_url" -c 'select 1' >/dev/null 2>/tmp/psql.err; then
-  echo "psql connect failed:" >&2
+smoke_deadline=$(($(date +%s) + 300))
+smoke_attempt=1
+while true; do
+  if PGCONNECT_TIMEOUT=15 psql "$psql_url" -c 'select 1' >/dev/null 2>/tmp/psql.err; then
+    break
+  fi
+
+  if [ "$(date +%s)" -ge "$smoke_deadline" ]; then
+    echo "psql connect failed:" >&2
+    cat /tmp/psql.err >&2
+    exit 1
+  fi
+
+  echo "psql connect failed on attempt $smoke_attempt; waiting for Supabase pooler..." >&2
   cat /tmp/psql.err >&2
-  exit 1
-fi
+  smoke_attempt=$((smoke_attempt + 1))
+  sleep 10
+done
 echo "smoke test OK" >&2
 
 echo "ODDISH_DATABASE_URL=$db_url" >> "$GITHUB_ENV"
