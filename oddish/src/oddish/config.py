@@ -13,7 +13,7 @@ from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 
 
 _FIXED_AGENT_PROVIDERS: dict[str, str] = {
-    AgentName.CLAUDE_CODE.value: "claude",
+    AgentName.CLAUDE_CODE.value: "bedrock",
     AgentName.GEMINI_CLI.value: "gemini",
     AgentName.CODEX.value: "openai",
 }
@@ -47,9 +47,7 @@ _NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
 _BEDROCK_REGION_PREFIXES: tuple[str, ...] = ("us.", "eu.", "apac.", "apn.", "global.")
 
 # Environment variables that put Claude Code into Bedrock mode. The Modal image
-# sets these globally so Bedrock is the default route; callers that run Claude
-# against a non-Bedrock model id strip them so the request falls back to
-# ANTHROPIC_API_KEY (Anthropic and Bedrock use different model id formats).
+# sets these globally so Bedrock is the default route for Oddish-run Claude jobs.
 BEDROCK_ENV_VARS: tuple[str, ...] = (
     "AWS_BEARER_TOKEN_BEDROCK",
     "CLAUDE_CODE_USE_BEDROCK",
@@ -236,10 +234,11 @@ def _build_agent_provider_map() -> dict[str, str]:
 
 # Keep a compact provider map for usage/cost attribution and compatibility.
 _MODEL_PROVIDER_ALIASES: dict[str, str] = {
-    # Claude (direct + Bedrock)
-    "anthropic": "claude",
-    "claude": "claude",
-    "bedrock": "claude",
+    # Claude transports. Oddish-run Claude trials canonicalize to Bedrock, while
+    # direct Anthropic ids can still appear in imported/off-platform data.
+    "anthropic": "anthropic",
+    "claude": "anthropic",
+    "bedrock": "bedrock",
     # Gemini / Google
     "gemini": "gemini",
     "google": "gemini",
@@ -255,11 +254,13 @@ def _normalize_model_provider(provider: str) -> str | None:
     if normalized in _MODEL_PROVIDER_ALIASES:
         return _MODEL_PROVIDER_ALIASES[normalized]
     if normalized in PROVIDER_KEYS:
-        return "openai"
+        return normalized
     return None
 
 
 def _get_provider_from_model(model_name: str) -> str | None:
+    if looks_like_bedrock_model_id(model_name):
+        return "bedrock"
     provider_prefix, _ = split_provider_model_name(model_name)
     if provider_prefix:
         return _normalize_model_provider(provider_prefix)
@@ -486,6 +487,8 @@ class Settings(BaseSettings):
 
         - Treat '-', 'none', 'null', empty, etc as missing.
         - For nop/oracle, always force model to 'default'.
+        - Canonicalize Claude models to their Bedrock runtime id, since Oddish
+          runs Claude through Bedrock and persists the same id it executes.
         - Otherwise return cleaned model (or None if missing).
         """
         cleaned = normalize_model_id(model)
@@ -494,20 +497,23 @@ class Settings(BaseSettings):
         if normalized_agent in _NOP_ORACLE_AGENTS:
             return "default"
 
-        return cleaned
+        return to_bedrock_model_id(cleaned)
 
     def normalize_queue_key(self, model: str) -> str:
         """Normalize queue keys.
 
-        For model-like inputs without an explicit provider prefix, this attempts
-        to infer the provider and returns `provider/model` so bare and prefixed
-        variants collapse to one queue key.
+        Claude aliases collapse to the same Bedrock id that is persisted on the
+        trial, so queueing/concurrency and execution use one model id. For other
+        bare model inputs, infer a provider prefix as before.
         """
         normalized = model.strip().lower().replace(" ", "_")
         if not normalized or normalized in _MODEL_ABSENT_ALIASES:
             return "default"
         if normalized in _PROVIDER_ONLY_QUEUE_ALIASES:
             return "default"
+        normalized = to_bedrock_model_id(normalized) or normalized
+        if looks_like_bedrock_model_id(normalized):
+            return normalized
         if "/" in normalized:
             provider_prefix, canonical = normalized.split("/", 1)
             if (

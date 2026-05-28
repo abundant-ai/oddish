@@ -44,3 +44,34 @@ def test_model_concurrency_overrides_can_override_nop_oracle_queue(monkeypatch):
 
     assert settings.get_model_concurrency(NOP_ORACLE_QUEUE_KEY) == 12
     assert settings.get_model_concurrency("default") == 3
+
+
+def test_claude_trial_model_is_persisted_as_bedrock_id(monkeypatch):
+    settings = _settings(monkeypatch)
+
+    expected = "global.anthropic.claude-sonnet-4-6"
+
+    assert (
+        settings.normalize_trial_model("claude-code", "claude-sonnet-4-6") == expected
+    )
+    assert (
+        settings.normalize_trial_model("claude-code", "anthropic/claude-sonnet-4-6")
+        == expected
+    )
+    assert (
+        settings.get_provider_for_trial("claude-code", "claude-sonnet-4-6") == "bedrock"
+    )
+    assert (
+        settings.get_queue_key_for_trial("claude-code", "claude-sonnet-4-6") == expected
+    )
+    assert settings.get_provider_for_trial("claude-code", None) == "bedrock"
+
+
+def test_bedrock_queue_key_normalization_collapses_aliases(monkeypatch):
+    settings = _settings(monkeypatch)
+
+    expected = "global.anthropic.claude-sonnet-4-6"
+
+    assert settings.normalize_queue_key("claude-sonnet-4-6") == expected
+    assert settings.normalize_queue_key("anthropic/claude-sonnet-4-6") == expected
+    assert settings.normalize_queue_key(f"bedrock/{expected}") == expected
