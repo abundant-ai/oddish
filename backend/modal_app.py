@@ -22,6 +22,7 @@ def _env_int(name: str, default: int) -> int:
 MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
 MODAL_SECRET_ENVIRONMENT = os.environ.get("MODAL_SECRET_ENVIRONMENT", "main")
 RUNTIME_SECRET_NAME = "oddish-prod"
+OPENAI_SECRET_NAME = os.environ.get("ODDISH_OPENAI_SECRET_NAME", "")
 # Per-app webhook label so PR previews don't collide on the shared
 # `{workspace}-{environment}--{label}.modal.run` subdomain. Production keeps
 # the historical "api" label; previews derive a unique one from the app name.
@@ -82,6 +83,16 @@ runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
 )
 runtime_secrets = [runtime_secret]
+
+# OpenAI-compatible routing is layered after the main runtime secret so Harbor's
+# Codex agent, verdict jobs, and any other OpenAI callers can point at Azure AI
+# Foundry without rewriting unrelated values stored in oddish-prod.
+if OPENAI_SECRET_NAME:
+    runtime_secrets.append(
+        modal.Secret.from_name(
+            OPENAI_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
+        )
+    )
 
 # AWS credentials for the sauron S3 mirror. Kept in a separate Modal
 # secret so it can be rotated independently of oddish-prod. Set

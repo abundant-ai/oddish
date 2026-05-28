@@ -175,7 +175,17 @@ Common optional settings:
 - `CLERK_ISSUER`
 - `CLERK_JWT_AUDIENCE`
 - provider keys such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DAYTONA_API_KEY`
+- `OPENAI_BASE_URL` when routing OpenAI-compatible calls through Azure AI Foundry or another compatible endpoint
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`
+
+OpenAI-compatible provider credentials can also live in a smaller Modal secret
+layered after `oddish-prod`. Set `ODDISH_OPENAI_SECRET_NAME` to the secret name
+when deploying to enable that layer; by default it is disabled. Values from
+this secret override same-named keys in `oddish-prod`. Harbor's `codex` agent reads
+`OPENAI_API_KEY` and `OPENAI_BASE_URL` from the worker environment, so this is
+also the production path for running Harbor trials against Azure AI Foundry.
+Use a model/deployment name that exists on the Foundry resource, for example
+`openai/gpt-5.2` or bare `gpt-5.2`.
 
 ### Observability (Pydantic Logfire)
 
@@ -214,6 +224,7 @@ Modal runtime knobs are read directly by `modal_app.py`, including:
 - `ODDISH_DEFAULT_MODEL_CONCURRENCY`
 - `MODAL_APP_NAME`
 - `MODAL_SECRET_ENVIRONMENT`
+- `ODDISH_OPENAI_SECRET_NAME`
 
 Local `backend/.env` values are layered on top of the shared Modal secret for local deploys.
 
