@@ -159,44 +159,52 @@ async def cleanup_orphaned_queue_state(
                 await session.execute(
                     text(
                         """
-                    UPDATE worker_jobs
+                    WITH stale AS (
+                        SELECT id, modal_function_call_id AS prior_fc_id
+                        FROM   worker_jobs
+                        WHERE  status::text = 'RUNNING'
+                          AND  (
+                              heartbeat_at IS NULL
+                              OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
+                          )
+                        FOR UPDATE
+                    )
+                    UPDATE worker_jobs wj
                     SET    status = CASE
-                               WHEN attempts < max_attempts THEN 'RETRYING'::worker_job_status
+                               WHEN wj.attempts < wj.max_attempts THEN 'RETRYING'::worker_job_status
                                ELSE 'FAILED'::worker_job_status
                            END,
                            stale_reaped_at = NOW(),
                            finished_at = CASE
-                               WHEN attempts < max_attempts THEN finished_at
+                               WHEN wj.attempts < wj.max_attempts THEN wj.finished_at
                                ELSE NOW()
                            END,
                            current_worker_id = NULL,
                            current_queue_slot = NULL,
                            modal_function_call_id = NULL,
                            error_message = CASE
-                               WHEN heartbeat_failure_count > 0 AND last_heartbeat_error IS NOT NULL
+                               WHEN wj.heartbeat_failure_count > 0 AND wj.last_heartbeat_error IS NOT NULL
                                    THEN 'Worker heartbeat stalled for over '
                                         || :stale_after_minutes
                                         || ' minutes. Worker reported '
-                                        || heartbeat_failure_count
+                                        || wj.heartbeat_failure_count
                                         || ' write failures; last error: '
-                                        || last_heartbeat_error
+                                        || wj.last_heartbeat_error
                                ELSE 'Worker heartbeat stalled for over '
                                     || :stale_after_minutes
                                     || ' minutes.'
                            END
-                    WHERE  status::text = 'RUNNING'
-                      AND  (
-                          heartbeat_at IS NULL
-                          OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
-                      )
-                    RETURNING id,
-                              kind::text AS kind,
-                              status::text AS new_status,
-                              subject_table,
-                              subject_id,
-                              attempts,
-                              max_attempts,
-                              error_message
+                    FROM   stale
+                    WHERE  wj.id = stale.id
+                    RETURNING wj.id,
+                              wj.kind::text AS kind,
+                              wj.status::text AS new_status,
+                              wj.subject_table,
+                              wj.subject_id,
+                              wj.attempts,
+                              wj.max_attempts,
+                              wj.error_message,
+                              stale.prior_fc_id AS stale_modal_fc_id
                     """
                     ),
                     {"stale_after_minutes": stale_after_minutes},
@@ -205,6 +213,12 @@ async def cleanup_orphaned_queue_state(
             .mappings()
             .all()
         )
+
+        stale_modal_fc_ids: list[str] = [
+            str(row["stale_modal_fc_id"])
+            for row in stale_rows
+            if row.get("stale_modal_fc_id")
+        ]
 
         # Mirror the terminal worker_jobs state back onto the domain
         # rows (``trials`` / ``tasks``) so dashboards don't lag. This
@@ -537,6 +551,10 @@ async def cleanup_orphaned_queue_state(
             or 0
         )
 
+    orphaned_modal_fcs_terminated = await _terminate_modal_function_calls(
+        stale_modal_fc_ids
+    )
+
     return {
         "worker_jobs_retried": worker_jobs_retried,
         "worker_jobs_failed": worker_jobs_failed,
@@ -547,4 +565,43 @@ async def cleanup_orphaned_queue_state(
         "orphaned_active_slots_cleared": orphaned_active_slots_cleared,
         "zombie_txn_reaped": zombie_txn_reaped,
         "experiments_last_activity_reconciled": experiments_last_activity_reconciled,
+        "orphaned_modal_fcs_terminated": orphaned_modal_fcs_terminated,
     }
+
+
+async def _terminate_modal_function_calls(fc_ids: list[str]) -> int:
+    """Best-effort termination of Modal containers whose owning job was reaped.
+
+    The stale-heartbeat sweep nulls ``modal_function_call_id`` on the DB row,
+    but the Modal container keeps running until something explicitly cancels
+    it. We do that here, after the DB commit, so a Modal API blip can't
+    block the queue from making progress.
+    """
+    if not fc_ids:
+        return 0
+    try:
+        import modal
+    except ImportError:
+        return 0
+
+    import asyncio
+
+    async def cancel_one(fc_id: str) -> bool:
+        try:
+            fc = modal.FunctionCall.from_id(fc_id)
+            await fc.cancel.aio(terminate_containers=True)
+            return True
+        except Exception as exc:
+            console.print(
+                f"[yellow]Failed to terminate orphaned Modal FC {fc_id}: {exc}[/yellow]"
+            )
+            return False
+
+    results = await asyncio.gather(*(cancel_one(fc_id) for fc_id in fc_ids))
+    terminated = sum(1 for ok in results if ok)
+    if terminated > 0:
+        console.print(
+            f"metric=orphaned_modal_fcs_terminated count={terminated} "
+            f"requested={len(fc_ids)}"
+        )
+    return terminated
