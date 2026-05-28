@@ -132,6 +132,26 @@ gpus = 0
     )
 
 
+def test_default_cloud_environment_uses_daytona_when_gpus_omitted(tmp_path):
+    (tmp_path / "task.toml").write_text(
+        """
+[agent]
+timeout_sec = 1800
+
+[verifier]
+timeout_sec = 300
+
+[environment]
+build_timeout_sec = 300
+""".strip()
+    )
+
+    assert (
+        _default_cloud_environment_for_task(tmp_path, override_gpus=None)
+        == EnvironmentType.DAYTONA
+    )
+
+
 def test_default_cloud_environment_uses_modal_for_gpu_task(tmp_path):
     (tmp_path / "task.toml").write_text(
         """
