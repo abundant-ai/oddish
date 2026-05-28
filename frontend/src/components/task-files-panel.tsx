@@ -82,6 +82,12 @@ interface TaskFilesPanelProps {
   onNavigateToFirstTrial?: () => void;
   apiBaseUrl?: string;
   allowRetry?: boolean;
+  /**
+   * When false, analysis/verdict UI (the verdict badge and the run
+   * analysis/verdict actions) is hidden entirely — used by the public
+   * read-only share view.
+   */
+  showAnalysis?: boolean;
   onRetryComplete?: (taskIds?: string[]) => void;
   /** Render content only without ResizableDrawer wrapper */
   contentOnly?: boolean;
@@ -256,6 +262,7 @@ export function TaskFilesPanel({
   onNavigateToFirstTrial,
   apiBaseUrl,
   allowRetry = true,
+  showAnalysis = true,
   onRetryComplete,
   contentOnly = false,
   filesUrl,
@@ -1308,7 +1315,7 @@ export function TaskFilesPanel({
                     {isRerunning ? "Rerunning..." : "Rerun trials"}
                   </Button>
                 )}
-                {task && (
+                {showAnalysis && task && (
                   <Button
                     type="button"
                     variant="outline"
@@ -1325,7 +1332,7 @@ export function TaskFilesPanel({
                     {isRunningAnalysis ? "Queueing..." : analysisActionLabel}
                   </Button>
                 )}
-                {task && (
+                {showAnalysis && task && (
                   <Button
                     type="button"
                     variant="outline"
@@ -1361,7 +1368,7 @@ export function TaskFilesPanel({
       </DrawerHeader>
 
       <div className="flex flex-1 flex-col overflow-hidden">
-        {verdictSource ? (
+        {showAnalysis && verdictSource ? (
           <div className="shrink-0 border-b border-border bg-muted/10">
             <div className="p-4 sm:p-6">
               <TaskVerdictBadge task={verdictSource} variant="card" />
