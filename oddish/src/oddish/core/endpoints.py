@@ -47,6 +47,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.schemas import (
+    ExperimentCombineResponse,
     TaskBrowseExperiment,
     TaskBrowseItem,
     TaskBrowseResponse,
@@ -1876,6 +1877,265 @@ async def delete_experiment_core(
             "experiments": deleted_experiments,
         },
     }
+
+
+# Trial columns whose execution/claim/heartbeat state is meaningless on a
+# copy. Everything *not* listed here is carried over from the source trial
+# so the combined trial keeps its results, analysis, token usage, and timing.
+_COMBINE_TRIAL_RESULT_FIELDS = (
+    "task_version_id",
+    "agent",
+    "provider",
+    "queue_key",
+    "model",
+    "timeout_minutes",
+    "environment",
+    "harbor_config",
+    "status",
+    "origin",
+    "attempts",
+    "max_attempts",
+    "harbor_stage",
+    "reward",
+    "error_message",
+    "result",
+    "input_tokens",
+    "cache_tokens",
+    "output_tokens",
+    "cost_usd",
+    "phase_timing",
+    "has_trajectory",
+    "analysis",
+    "analysis_status",
+    "analysis_error",
+    "analysis_started_at",
+    "analysis_finished_at",
+    "started_at",
+    "finished_at",
+)
+
+
+async def combine_experiments_core(
+    session: AsyncSession,
+    *,
+    source_experiment_ids: Collection[str],
+    name: str | None = None,
+    org_id: str | None = None,
+    copy_artifacts: bool = True,
+) -> ExperimentCombineResponse:
+    """Create a new experiment that merges the data of several others.
+
+    The source experiments are read-only here: a fresh result experiment
+    is created and the *underlying data* of every source is copied into
+    it. Concretely, for each source experiment we
+
+    1. link its tasks into the result experiment (``task_experiments``),
+       so the result experiment's task list is the union of the sources;
+    2. copy every finished (``SUCCESS`` / ``FAILED``), non-superseded
+       trial into the result experiment as a new immutable trial row under
+       the *same* task, preserving results / analysis / token usage /
+       timing; and
+    3. duplicate each copied trial's S3 artifacts into the new trial's
+       prefix (``copy_artifacts=True``, the default) so the result
+       experiment is fully self-contained, or point the copy at the source
+       artifacts in place when ``copy_artifacts=False``.
+
+    Non-terminal source trials (still pending/queued/running) have no
+    result to combine and are skipped; the count is surfaced in the
+    response. No worker jobs are enqueued -- combined trials land already
+    terminal, exactly like imported ones.
+
+    The caller's session context manager is responsible for the commit;
+    on any error the artifact copy and row inserts roll back together.
+    """
+    from oddish.db import task_experiments
+    from oddish.db.storage import (
+        StorageClient,
+        get_storage_client,
+        resolve_trial_s3_prefix,
+    )
+    from oddish.experiment import generate_experiment_name
+    from oddish.queue import (
+        _link_task_to_experiment,
+        bump_experiment_last_activity,
+        get_experiment_by_id_or_name,
+        reserve_next_trial_index,
+    )
+
+    # 1. Resolve + validate the sources (org-scoped). Preserve caller order
+    #    while collapsing duplicate ids/names onto the same experiment.
+    resolved: list[ExperimentModel] = []
+    seen_ids: set[str] = set()
+    for identifier in source_experiment_ids:
+        if not identifier or not identifier.strip():
+            continue
+        experiment = await get_experiment_by_id_or_name(session, identifier, org_id)
+        if experiment is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Experiment {identifier} not found",
+            )
+        if experiment.id in seen_ids:
+            continue
+        seen_ids.add(experiment.id)
+        resolved.append(experiment)
+
+    if len(resolved) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide at least two distinct experiments to combine",
+        )
+
+    resolved_ids = [experiment.id for experiment in resolved]
+
+    # 2. Create the result experiment.
+    result_name = (name or "").strip() or generate_experiment_name()
+    result = ExperimentModel(
+        name=result_name,
+        org_id=org_id,
+        last_activity_at=utcnow(),
+    )
+    session.add(result)
+    await session.flush()
+
+    # 3. Union of tasks linked to any source experiment.
+    linked_task_rows = await session.execute(
+        select(task_experiments.c.task_id)
+        .where(task_experiments.c.experiment_id.in_(resolved_ids))
+        .where(task_experiments.c.deleted_at.is_(None))
+        .distinct()
+    )
+    linked_task_ids = [row[0] for row in linked_task_rows.all()]
+
+    # 4. Finished, non-superseded trials across every source. Ordered by
+    #    task so per-task index allocation stays contiguous and stable.
+    source_trials = list(
+        (
+            await session.execute(
+                select(TrialModel)
+                .where(TrialModel.experiment_id.in_(resolved_ids))
+                .where(TrialModel.superseded_by_trial_id.is_(None))
+                .order_by(TrialModel.task_id, TrialModel.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    # Defensive: make sure tasks that own a copied trial are linked too,
+    # even if a ``task_experiments`` row was somehow missing.
+    all_task_ids = list(
+        dict.fromkeys([*linked_task_ids, *(t.task_id for t in source_trials)])
+    )
+    for task_id in all_task_ids:
+        await _link_task_to_experiment(
+            session, task_id=task_id, experiment_id=result.id
+        )
+
+    # Task name + org are needed to mint new trial ids/names.
+    task_meta: dict[str, tuple[str, str | None]] = {}
+    if all_task_ids:
+        meta_rows = await session.execute(
+            select(TaskModel.id, TaskModel.name, TaskModel.org_id).where(
+                TaskModel.id.in_(all_task_ids)
+            )
+        )
+        for task_id, task_name, task_org in meta_rows.all():
+            task_meta[task_id] = (task_name, task_org)
+
+    # 5. Copy the trials.
+    terminal_states = {TrialStatus.SUCCESS, TrialStatus.FAILED}
+    next_index_for_task: dict[str, int] = {}
+    copy_plan: list[tuple[str, str]] = []
+    trials_copied = 0
+    trials_skipped = 0
+
+    for source in source_trials:
+        if source.status not in terminal_states:
+            trials_skipped += 1
+            continue
+
+        task_id = source.task_id
+        if task_id not in next_index_for_task:
+            next_index_for_task[task_id] = await reserve_next_trial_index(
+                session, task_id=task_id
+            )
+        index = next_index_for_task[task_id]
+        next_index_for_task[task_id] = index + 1
+
+        new_trial_id = f"{task_id}-{index}"
+        task_name, task_org = task_meta.get(task_id, (task_id, source.org_id))
+        new_trial_name = f"{task_name}-{index}"
+
+        source_prefix = resolve_trial_s3_prefix(
+            source.id,
+            trial_s3_key=source.trial_s3_key,
+            trial_result_path=source.harbor_result_path,
+        )
+        if copy_artifacts:
+            destination_prefix = StorageClient._trial_prefix(new_trial_id)
+            new_trial_s3_key: str | None = destination_prefix
+            new_harbor_result_path: str | None = None
+            copy_plan.append((source_prefix, destination_prefix))
+        else:
+            # Reference the source artifacts in place.
+            new_trial_s3_key = source_prefix
+            new_harbor_result_path = source.harbor_result_path
+
+        idempotency_key = f"combine:{result.id}:{source.id}"
+        if len(idempotency_key) > 64:
+            idempotency_key = None
+
+        # The copy belongs to the result experiment, so it inherits that
+        # experiment's org. ``org_id`` is None only on the single-tenant
+        # OSS path, where we fall back to whatever the source carried.
+        new_org_id = org_id if org_id is not None else (source.org_id or task_org)
+
+        new_trial = TrialModel(
+            id=new_trial_id,
+            name=new_trial_name,
+            task_id=task_id,
+            experiment_id=result.id,
+            org_id=new_org_id,
+            idempotency_key=idempotency_key,
+            trial_s3_key=new_trial_s3_key,
+            harbor_result_path=new_harbor_result_path,
+            **{field: getattr(source, field) for field in _COMBINE_TRIAL_RESULT_FIELDS},
+        )
+        session.add(new_trial)
+        trials_copied += 1
+
+    await session.flush()
+
+    # 6. Duplicate artifacts server-side. Surfacing a hard failure rolls
+    #    the whole transaction back (no orphaned rows committed).
+    artifacts_copied = 0
+    if copy_artifacts and copy_plan:
+        storage = get_storage_client()
+        for source_prefix, destination_prefix in copy_plan:
+            try:
+                artifacts_copied += await storage.copy_prefix(
+                    source_prefix, destination_prefix
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to copy trial artifacts: {exc}",
+                ) from exc
+
+    await bump_experiment_last_activity(session, experiment_ids=result.id)
+
+    return ExperimentCombineResponse(
+        id=result.id,
+        name=result.name,
+        source_experiment_ids=resolved_ids,
+        tasks_linked=len(all_task_ids),
+        trials_copied=trials_copied,
+        trials_skipped=trials_skipped,
+        artifacts_copied=artifacts_copied,
+    )
 
 
 async def delete_trial_core(

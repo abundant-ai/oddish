@@ -1227,6 +1227,56 @@ class StorageClient:
             deleted += await self.delete_prefix(prefix)
         return deleted
 
+    async def copy_object(self, src_key: str, dst_key: str) -> None:
+        """Server-side copy of a single object within the bucket.
+
+        Uses S3's ``CopyObject`` so the bytes are duplicated inside the
+        storage backend without round-tripping through this process.
+        """
+        await self._ensure_client()
+        await self._s3.copy_object(
+            Bucket=settings.s3_bucket,
+            Key=dst_key,
+            CopySource={"Bucket": settings.s3_bucket, "Key": src_key},
+        )
+
+    async def copy_prefix(self, src_prefix: str, dst_prefix: str) -> int:
+        """Recursively copy every object under ``src_prefix`` to ``dst_prefix``.
+
+        Each source key has its ``src_prefix`` portion swapped for
+        ``dst_prefix`` and is duplicated with a server-side copy. The
+        ``.oddish-trial-import.tar.gz`` staging archive (if any lingered)
+        is skipped so a combined trial never inherits a half-uploaded
+        import tarball. Returns the number of objects copied.
+
+        Copies run with bounded concurrency so an experiment with many
+        large trials does not open an unbounded number of S3 calls.
+        """
+        src_prefix = normalize_s3_prefix(src_prefix) or src_prefix
+        dst_prefix = normalize_s3_prefix(dst_prefix) or dst_prefix
+        if src_prefix == dst_prefix:
+            return 0
+
+        keys = await self.list_keys(src_prefix)
+        copyable = [
+            key
+            for key in keys
+            if not key.endswith(f"/{self._TRIAL_IMPORT_ARCHIVE_OBJECT_NAME}")
+        ]
+        if not copyable:
+            return 0
+
+        semaphore = asyncio.Semaphore(16)
+
+        async def _copy_one(src_key: str) -> None:
+            relative = src_key[len(src_prefix) :]
+            dst_key = f"{dst_prefix}{relative}"
+            async with semaphore:
+                await self.copy_object(src_key, dst_key)
+
+        await asyncio.gather(*(_copy_one(key) for key in copyable))
+        return len(copyable)
+
     async def prefix_exists(self, prefix: str) -> bool:
         """Return whether at least one object exists for a prefix."""
         await self._ensure_client()

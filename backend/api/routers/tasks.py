@@ -15,6 +15,7 @@ from cloud_policy import (
 )
 from oddish.core.endpoints import (
     browse_tasks_core,
+    combine_experiments_core,
     create_task_sweep_core,
     delete_experiment_core,
     get_task_detail_core,
@@ -53,6 +54,8 @@ from oddish.queue import (
     cancel_tasks_runs,
 )
 from oddish.schemas import (
+    ExperimentCombineRequest,
+    ExperimentCombineResponse,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
     TaskDetailResponse,
@@ -434,6 +437,34 @@ async def browse_tasks(
             query=query,
             record_timing=_make_timing_recorder(request),
         )
+
+
+@router.post("/experiments/combine", response_model=ExperimentCombineResponse)
+async def combine_experiments(
+    payload: ExperimentCombineRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> ExperimentCombineResponse:
+    """Combine several experiments into a new result experiment.
+
+    Creates a brand-new experiment and copies the task memberships and
+    finished trials (with their S3 artifacts) of every source experiment
+    into it. The sources are org-scoped and left untouched; append-only,
+    so this needs only the ``tasks`` scope rather than admin.
+    """
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        result = await combine_experiments_core(
+            session,
+            source_experiment_ids=payload.source_experiment_ids,
+            name=payload.name,
+            org_id=auth.org_id,
+            copy_artifacts=payload.copy_artifacts,
+        )
+        await session.commit()
+
+    invalidate_dashboard_cache(org_id=auth.org_id)
+    return result
 
 
 @router.get(

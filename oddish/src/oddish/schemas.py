@@ -317,6 +317,60 @@ class ExperimentUpdateRequest(BaseModel):
     name: str = Field(..., description="Experiment name")
 
 
+class ExperimentCombineRequest(BaseModel):
+    """Request to combine several experiments into one result experiment.
+
+    The named source experiments are left untouched; a brand-new result
+    experiment is created and the underlying data (task memberships and
+    finished trials, plus their artifacts) of every source is copied into
+    it.
+    """
+
+    source_experiment_ids: list[str] = Field(
+        ...,
+        description=(
+            "IDs (or names) of the experiments to combine. At least two "
+            "distinct sources are required."
+        ),
+    )
+    name: str | None = Field(
+        None,
+        description=(
+            "Name for the result experiment. A human-friendly name is "
+            "generated when omitted."
+        ),
+    )
+    copy_artifacts: bool = Field(
+        True,
+        description=(
+            "When True (default) each copied trial gets its own duplicate of "
+            "the source trial's S3 artifacts so the result experiment is fully "
+            "independent. When False the copied trials reference the source "
+            "trials' artifacts in place (cheaper, but shared storage)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_sources(self) -> "ExperimentCombineRequest":
+        # Preserve order while dropping blanks/duplicates so the same
+        # experiment can't be combined with itself into a doubled result.
+        deduped = list(
+            dict.fromkeys(
+                stripped
+                for s in self.source_experiment_ids
+                if s and (stripped := s.strip())
+            )
+        )
+        if len(deduped) < 2:
+            raise ValueError(
+                "source_experiment_ids must contain at least two distinct experiments"
+            )
+        self.source_experiment_ids = deduped
+        if self.name is not None:
+            self.name = self.name.strip() or None
+        return self
+
+
 # =============================================================================
 # Response Schemas
 # =============================================================================
@@ -639,6 +693,32 @@ class TaskBatchCancelRequest(BaseModel):
 class ExperimentUpdateResponse(BaseModel):
     id: str
     name: str
+
+
+class ExperimentCombineResponse(BaseModel):
+    """Result of combining several experiments."""
+
+    id: str = Field(..., description="ID of the newly created result experiment")
+    name: str = Field(..., description="Name of the result experiment")
+    source_experiment_ids: list[str] = Field(
+        ..., description="Resolved IDs of the experiments that were combined"
+    )
+    tasks_linked: int = Field(
+        0, description="Distinct tasks linked into the result experiment"
+    )
+    trials_copied: int = Field(
+        0, description="Finished trials copied into the result experiment"
+    )
+    trials_skipped: int = Field(
+        0,
+        description=(
+            "Source trials skipped because they were not finished "
+            "(still pending/queued/running) at combine time"
+        ),
+    )
+    artifacts_copied: int = Field(
+        0, description="S3 objects duplicated for the copied trials"
+    )
 
 
 class TaskBrowseExperiment(BaseModel):
