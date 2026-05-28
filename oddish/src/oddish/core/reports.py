@@ -24,7 +24,6 @@ functions.
 
 from __future__ import annotations
 
-import hashlib
 import secrets
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -61,7 +60,6 @@ from oddish.schemas import (
     BackfillPlan,
     HarborConfig,
     PublicReportResponse,
-    PublicReportTrialSummary,
     ReportAgentBackfillConfig,
     ReportAgentEntry,
     ReportBackfillSettings,
@@ -854,24 +852,6 @@ def _placeholder_trial_response(
     )
 
 
-def _summarize_trial_public(trial: TrialModel) -> PublicReportTrialSummary:
-    duration: float | None = None
-    if trial.started_at and trial.finished_at:
-        duration = (trial.finished_at - trial.started_at).total_seconds()
-    return PublicReportTrialSummary(
-        id=trial.id,
-        agent=trial.agent,
-        model=trial.model,
-        status=trial.status,
-        reward=trial.reward,
-        cost_usd=trial.cost_usd,
-        started_at=trial.started_at,
-        finished_at=trial.finished_at,
-        duration_seconds=duration,
-        has_trajectory=trial.has_trajectory,
-    )
-
-
 def build_report_response(
     report: ReportModel,
     rows: Sequence[_ResolvedRow],
@@ -1589,8 +1569,3 @@ def display_for_user(*, email: str | None, name: str | None) -> str | None:
     return None
 
 
-# Stable string fingerprint of a spec — useful for cache keys etc. Not
-# stored in the DB but exported for future deduplication work.
-def spec_fingerprint(spec: ReportSpec) -> str:
-    payload = spec.model_dump_json(exclude_none=False)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]

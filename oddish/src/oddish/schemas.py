@@ -1342,40 +1342,6 @@ class BackfillEventResponse(BaseModel):
 # what they need to click into individual trials.
 
 
-class PublicReportTrialSummary(BaseModel):
-    id: str
-    agent: str
-    model: str | None = None
-    status: TrialStatus
-    reward: float | None = None
-    cost_usd: float | None = None
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-    duration_seconds: float | None = None
-    has_trajectory: bool = False
-
-
-class PublicReportRow(BaseModel):
-    position: int
-    task_version_id: str
-    task_id: str
-    version: int
-    task_name: str
-
-
-class PublicReportColumn(BaseModel):
-    position: int
-    column_key: str
-    agent: str
-    model: str | None = None
-
-
-class PublicReportCell(BaseModel):
-    row_idx: int
-    col_idx: int
-    trials: list[PublicReportTrialSummary] = Field(default_factory=list)
-
-
 class PublicReportResponse(BaseModel):
     """Anonymous report read.
 

@@ -766,19 +766,6 @@ export interface BackfillEvent {
   trial_ids: string[];
 }
 
-export interface PublicReportTrialSummary {
-  id: string;
-  agent: string;
-  model: string | null;
-  status: TrialStatus;
-  reward: number | null;
-  cost_usd: number | null;
-  started_at: string | null;
-  finished_at: string | null;
-  duration_seconds: number | null;
-  has_trajectory: boolean;
-}
-
 export interface PublicReport {
   name: string;
   description: string | null;
