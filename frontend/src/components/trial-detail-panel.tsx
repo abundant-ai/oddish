@@ -116,6 +116,11 @@ interface TrialDetailPanelProps {
   onDelete?: (trial: Trial, task: Task | null) => Promise<void>;
   apiBaseUrl?: string;
   allowRetry?: boolean;
+  /**
+   * When false, the analysis card and run-analysis action are hidden
+   * entirely — used by the public read-only share view.
+   */
+  showAnalysis?: boolean;
   allowDelete?: boolean;
   /** Render content only without ResizableDrawer wrapper */
   contentOnly?: boolean;
@@ -197,6 +202,7 @@ export function TrialDetailPanel({
   onDelete,
   apiBaseUrl = "/api",
   allowRetry = true,
+  showAnalysis = true,
   allowDelete = false,
   contentOnly = false,
   paneAction,
@@ -270,6 +276,7 @@ export function TrialDetailPanel({
       ? Math.max(0, task.total - task.completed - task.failed) > 0
       : false;
   const canRunAnalysis =
+    showAnalysis &&
     allowRetry &&
     !taskHasActiveTrials &&
     (task?.run_analysis ||
@@ -817,7 +824,7 @@ export function TrialDetailPanel({
                 </Card>
               )}
               {/* Analysis Card - only show if analysis is enabled/running/complete */}
-              {(trial.analysis_status || trial.analysis) && (
+              {showAnalysis && (trial.analysis_status || trial.analysis) && (
                 <Card
                   className={
                     trial.analysis_status === "running" ||

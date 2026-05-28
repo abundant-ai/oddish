@@ -106,6 +106,7 @@ type ExperimentTrialsTableProps = {
   onRerun?: (taskIds?: string[]) => void;
   allowRerun?: boolean;
   readOnly?: boolean;
+  showAnalysis?: boolean;
   onTrialSelect?: (
     trial: Trial,
     task: Task,
@@ -452,6 +453,7 @@ export function ExperimentTrialsTable({
   onRerun,
   allowRerun = true,
   readOnly = false,
+  showAnalysis = true,
   onTrialSelect,
   onTaskSelect,
 }: ExperimentTrialsTableProps) {
@@ -1543,17 +1545,21 @@ export function ExperimentTrialsTable({
             >
               <StatusIcon status="pass" />
             </span>
-            <span className="absolute -right-[2px] -top-[2px] h-[7px] w-[7px] rounded-full bg-[color:var(--paper-a-good)] ring-[1.5px] ring-[color:var(--paper-surface)]" />
+            {showAnalysis && (
+              <span className="absolute -right-[2px] -top-[2px] h-[7px] w-[7px] rounded-full bg-[color:var(--paper-a-good)] ring-[1.5px] ring-[color:var(--paper-surface)]" />
+            )}
           </span>
           <span className="flex flex-col gap-0.5">
             <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
               <span className="inline-block h-2.5 w-2.5 rounded-[2px] bg-[color:var(--paper-pass)]" />
               trial outcome
             </span>
-            <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-              <span className="mx-[1px] inline-block h-2 w-2 rounded-full bg-[color:var(--paper-a-good)]" />
-              trial analysis
-            </span>
+            {showAnalysis && (
+              <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                <span className="mx-[1px] inline-block h-2 w-2 rounded-full bg-[color:var(--paper-a-good)]" />
+                trial analysis
+              </span>
+            )}
           </span>
         </div>
       </TooltipTrigger>
@@ -1687,20 +1693,22 @@ export function ExperimentTrialsTable({
         </Tooltip>
         {LEGEND_STATUS_ORDER.map((status) => renderStatusChip(status))}
       </div>
-      <div className="flex items-center gap-0.5 border-l border-dashed border-[color:var(--paper-line)] pl-2 ml-1">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="cursor-help whitespace-nowrap pr-2 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] text-[color:var(--paper-ink-3)]">
-              Trial analysis
-            </span>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-xs">
-            A second pass — an LLM grades the trial output. Only present for
-            trials that were sent for analysis.
-          </TooltipContent>
-        </Tooltip>
-        {ANALYSIS_LEGEND_ITEMS.map((item) => renderAnalyzerChip(item))}
-      </div>
+      {showAnalysis && (
+        <div className="flex items-center gap-0.5 border-l border-dashed border-[color:var(--paper-line)] pl-2 ml-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="cursor-help whitespace-nowrap pr-2 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] text-[color:var(--paper-ink-3)]">
+                Trial analysis
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              A second pass — an LLM grades the trial output. Only present for
+              trials that were sent for analysis.
+            </TooltipContent>
+          </Tooltip>
+          {ANALYSIS_LEGEND_ITEMS.map((item) => renderAnalyzerChip(item))}
+        </div>
+      )}
     </div>
   );
 
@@ -2270,10 +2278,12 @@ export function ExperimentTrialsTable({
                                     isDimmed && status !== "harness-error"
                                       ? "opacity-25"
                                       : "";
-                                  const analysisIndicator =
-                                    getAnalysisIndicator(trial);
-                                  const analysisLegendKey =
-                                    getAnalysisLegendKey(trial);
+                                  const analysisIndicator = showAnalysis
+                                    ? getAnalysisIndicator(trial)
+                                    : null;
+                                  const analysisLegendKey = showAnalysis
+                                    ? getAnalysisLegendKey(trial)
+                                    : null;
                                   const analysisDimClass =
                                     analysisLegendKey &&
                                     dimmedAnalysisKeys.has(analysisLegendKey)

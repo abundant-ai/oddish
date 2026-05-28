@@ -546,7 +546,7 @@ uv run alembic upgrade head
     stale-RUNNING samples, recent failures/cancels, duration percentiles,
     plus `OrphanedStateCard`
   - **Concurrency**: `queue_slots` leases and per-queue-key health
-- `/share/[token]` — read-only public experiment view
+- `/share/[token]` — read-only public experiment view. Passes `showAnalysis={false}` to `ExperimentDetailView`, which hides all trial-analysis and task-verdict UI (matrix analysis dots, the "Trial analysis" legend section, the trial analysis card, and the task verdict badge) from public viewers.
 - `/datasets` and `/datasets/[token]` — public dataset listing and detail
 
 ### Request Flow

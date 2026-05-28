@@ -88,6 +88,7 @@ interface ExperimentDetailViewProps {
   inlineAlert?: React.ReactNode;
   readOnly?: boolean;
   allowRetry?: boolean;
+  showAnalysis?: boolean;
   apiBaseUrl?: string;
   onTaskDelete?: (task: Task) => Promise<void>;
   onTrialDelete?: (trial: Trial, task: Task | null) => Promise<void>;
@@ -522,6 +523,7 @@ export function ExperimentDetailView({
   inlineAlert,
   readOnly = false,
   allowRetry = true,
+  showAnalysis = true,
   apiBaseUrl = "/api",
   onTaskDelete,
   onTrialDelete,
@@ -887,6 +889,7 @@ export function ExperimentDetailView({
                 onRerun={onRerun}
                 allowRerun={allowRetry}
                 readOnly={readOnly}
+                showAnalysis={showAnalysis}
                 onTrialSelect={(trial, task, context) => {
                   const taskIndex = tasksForExperiment.findIndex(
                     (t) => t.id === task.id
@@ -957,6 +960,7 @@ export function ExperimentDetailView({
               taskIndex={drawerState.taskIndex}
               onRetryComplete={onRerun}
               allowRetry={allowRetry}
+              showAnalysis={showAnalysis}
               onNavigate={(nextTask, nextIndex) => {
                 if (!drawerState) return;
                 const { trialGroups, orderedTrials } =
@@ -993,6 +997,7 @@ export function ExperimentDetailView({
                 onRetry={onRerun}
                 onDelete={onTrialDelete}
                 allowRetry={allowRetry}
+                showAnalysis={showAnalysis}
                 allowDelete={Boolean(onTrialDelete)}
                 apiBaseUrl={apiBaseUrl}
                 contentOnly={true}
