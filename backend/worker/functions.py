@@ -80,7 +80,8 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
     scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
     max_containers=WORKER_MAX_CONTAINERS,
     timeout=WORKER_TIMEOUT_SECONDS,
-    memory=1024,  # 1GB memory to prevent OOM issues
+    cpu=1.0,
+    memory=3072,  # 3GB memory to prevent OOM issues
     nonpreemptible=WORKER_NONPREEMPTIBLE,
 )
 async def process_single_job(queue_key: str):
