@@ -139,9 +139,10 @@ ENV_VARS = {
     # (oddish.config.to_bedrock_model_id) so the route is never ambiguous.
     "CLAUDE_CODE_USE_BEDROCK": "1",
     # Baked into the image so the container sees the same identity the
-    # deploy host did (the per-PR secret gate above depends on it).
+    # deploy host did (the conditional secret gates above depend on it).
     "MODAL_APP_NAME": MODAL_APP_NAME,
     "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
+    "ODDISH_OPENAI_SECRET_NAME": OPENAI_SECRET_NAME,
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
