@@ -236,7 +236,10 @@ oddish status
 
 Provision your Modal secret (named `oddish-prod` by default, override with
 `RUNTIME_SECRET_NAME` in `modal_app.py`) with the same values you put in
-`backend/.env`. Then:
+`backend/.env`. OpenAI-compatible credentials can also be kept in a separate
+Modal secret by setting `ODDISH_OPENAI_SECRET_NAME` during deployment; it is
+layered after `oddish-prod` so values such as `OPENAI_API_KEY` and
+`OPENAI_BASE_URL` override only provider routing. Then:
 
 ```bash
 cd backend
@@ -271,6 +274,11 @@ export ODDISH_API_KEY="ok_..."   # created from the dashboard Settings page
 
 oddish run -d terminalbench@2.0 -a codex -m openai/gpt-5.4-mini --n-trials 3
 ```
+
+For `codex`, Harbor strips the `openai/` prefix before invoking Codex CLI, so
+the suffix must match an OpenAI-compatible deployment name. With Azure AI
+Foundry, deploy names such as `gpt-5.2` or `gpt-5.4-mini` on the Foundry
+resource and pass them as either `openai/<deployment>` or bare `<deployment>`.
 
 Per-model concurrency can be tuned via backend env vars:
 
