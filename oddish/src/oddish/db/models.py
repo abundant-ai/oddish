@@ -805,6 +805,8 @@ class WorkerJobModel(TimestampedMixin, Base):
     current_worker_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     current_queue_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
     modal_function_call_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sandbox_provider: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sandbox_external_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     claimed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -115,22 +115,36 @@ async def cancel_tasks_runs(
             await session.execute(
                 text(
                     """
-                UPDATE worker_jobs
+                WITH cancelable AS (
+                    SELECT id,
+                           modal_function_call_id AS prior_fc_id,
+                           sandbox_provider AS prior_sandbox_provider,
+                           sandbox_external_id AS prior_sandbox_external_id
+                    FROM   worker_jobs
+                    WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                      AND  (
+                          (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
+                          OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))
+                      )
+                    FOR UPDATE
+                )
+                UPDATE worker_jobs wj
                 SET    status = 'CANCELLED',
                        finished_at = NOW(),
                        error_message = :cancel_msg,
                        current_worker_id = NULL,
                        current_queue_slot = NULL,
-                       modal_function_call_id = NULL
-                WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                  AND  (
-                      (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
-                      OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))
-                  )
-                RETURNING id,
-                          kind::text AS kind,
-                          subject_id,
-                          modal_function_call_id
+                       modal_function_call_id = NULL,
+                       sandbox_provider = NULL,
+                       sandbox_external_id = NULL
+                FROM   cancelable
+                WHERE  wj.id = cancelable.id
+                RETURNING wj.id,
+                          wj.kind::text AS kind,
+                          wj.subject_id,
+                          cancelable.prior_fc_id AS modal_function_call_id,
+                          cancelable.prior_sandbox_provider AS sandbox_provider,
+                          cancelable.prior_sandbox_external_id AS sandbox_external_id
                 """
                 ),
                 {
@@ -145,6 +159,7 @@ async def cancel_tasks_runs(
     )
 
     modal_fc_ids: list[str] = []
+    cancelled_sandboxes: list[tuple[str, str]] = []
     canceled_trial_kinds: set[str] = set()
     canceled_verdict_task_ids: set[str] = set()
     canceled_analysis_trial_ids: set[str] = set()
@@ -153,6 +168,10 @@ async def cancel_tasks_runs(
         fc = row.get("modal_function_call_id")
         if fc:
             modal_fc_ids.append(str(fc))
+        provider = row.get("sandbox_provider")
+        external_id = row.get("sandbox_external_id")
+        if provider and external_id:
+            cancelled_sandboxes.append((str(provider), str(external_id)))
         kind = row["kind"]
         subject_id = row["subject_id"]
         if kind == "TRIAL" and subject_id:
@@ -221,6 +240,7 @@ async def cancel_tasks_runs(
         "tasks_cancelled": tasks_cancelled,
         "trials_cancelled": trials_cancelled,
         "modal_function_call_ids": list(dict.fromkeys(modal_fc_ids)),
+        "sandboxes": list(dict.fromkeys(cancelled_sandboxes)),
     }
 
 

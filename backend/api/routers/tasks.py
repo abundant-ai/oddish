@@ -52,6 +52,7 @@ from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, 
 from oddish.queue import (
     cancel_tasks_runs,
 )
+from oddish.workers.queue.cleanup import terminate_orphaned_sandboxes
 from oddish.schemas import (
     TaskBrowseResponse,
     TaskBatchCancelRequest,
@@ -598,6 +599,9 @@ async def cancel_tasks(
     modal_cancelled = await _cancel_modal_function_calls(
         result.get("modal_function_call_ids", [])
     )
+    sandboxes_terminated = await terminate_orphaned_sandboxes(
+        result.get("sandboxes", [])
+    )
 
     return {
         "status": "cancelled",
@@ -607,6 +611,7 @@ async def cancel_tasks(
         "tasks_cancelled": result.get("tasks_cancelled", 0),
         "trials_cancelled": result.get("trials_cancelled", 0),
         "modal_calls_cancelled": modal_cancelled,
+        "sandboxes_terminated": sandboxes_terminated,
     }
 
 

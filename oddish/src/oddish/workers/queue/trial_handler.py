@@ -14,6 +14,7 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
+from sqlalchemy import text
 
 from oddish.config import settings
 from oddish.db import (
@@ -575,17 +576,62 @@ async def _store_trial_results(
                 )
 
 
+async def _record_sandbox_ref(
+    session,
+    hook_event: TrialHookEvent,
+    worker_job_id: str | None,
+) -> None:
+    """Persist or clear (provider, external_id) on the active worker_jobs row.
+
+    Written on ENVIRONMENT_START so the stale-heartbeat reaper can
+    terminate the sandbox if the worker dies. Cleared on terminal
+    events so a successful teardown doesn't leave dangling refs.
+    """
+    if worker_job_id is None:
+        return
+    event = hook_event.event
+    if event == TrialEvent.ENVIRONMENT_START:
+        provider = hook_event.environment_provider
+        external_id = hook_event.environment_external_id
+        if not external_id:
+            return
+        await session.execute(
+            text(
+                "UPDATE worker_jobs "
+                "SET sandbox_provider = :provider, "
+                "    sandbox_external_id = :external_id "
+                "WHERE id = :job_id"
+            ),
+            {
+                "provider": provider,
+                "external_id": external_id,
+                "job_id": worker_job_id,
+            },
+        )
+    elif event in (TrialEvent.END, TrialEvent.CANCEL):
+        await session.execute(
+            text(
+                "UPDATE worker_jobs "
+                "SET sandbox_provider = NULL, sandbox_external_id = NULL "
+                "WHERE id = :job_id"
+            ),
+            {"job_id": worker_job_id},
+        )
+
+
 async def _handle_harbor_event(
     hook_event: TrialHookEvent,
     *,
     trial_id: str,
+    worker_job_id: str | None = None,
 ) -> None:
     """Update database when Harbor trial lifecycle events occur."""
     event = hook_event.event
     try:
-        async with _trial_session(trial_id, allow_missing=True) as (_session, trial):
+        async with _trial_session(trial_id, allow_missing=True) as (session, trial):
             if not trial:
                 return
+            await _record_sandbox_ref(session, hook_event, worker_job_id)
 
             # If the trial was cancelled by the user (cancel API sets
             # max_attempts=attempts), don't let lifecycle hooks
@@ -743,7 +789,11 @@ async def _execute_trial(
             jobs_dir=Path(settings.harbor_jobs_dir),
             model=prepared_trial.trial_model,
             environment=env_type,
-            hook_callback=partial(_handle_harbor_event, trial_id=trial_id),
+            hook_callback=partial(
+                _handle_harbor_event,
+                trial_id=trial_id,
+                worker_job_id=worker_job_id,
+            ),
             trial_id=trial_id,
             harbor_config=prepared_trial.trial_harbor_config,
         )

@@ -160,7 +160,10 @@ async def cleanup_orphaned_queue_state(
                     text(
                         """
                     WITH stale AS (
-                        SELECT id, modal_function_call_id AS prior_fc_id
+                        SELECT id,
+                               modal_function_call_id AS prior_fc_id,
+                               sandbox_provider AS prior_sandbox_provider,
+                               sandbox_external_id AS prior_sandbox_external_id
                         FROM   worker_jobs
                         WHERE  status::text = 'RUNNING'
                           AND  (
@@ -182,6 +185,8 @@ async def cleanup_orphaned_queue_state(
                            current_worker_id = NULL,
                            current_queue_slot = NULL,
                            modal_function_call_id = NULL,
+                           sandbox_provider = NULL,
+                           sandbox_external_id = NULL,
                            error_message = CASE
                                WHEN wj.heartbeat_failure_count > 0 AND wj.last_heartbeat_error IS NOT NULL
                                    THEN 'Worker heartbeat stalled for over '
@@ -204,7 +209,9 @@ async def cleanup_orphaned_queue_state(
                               wj.attempts,
                               wj.max_attempts,
                               wj.error_message,
-                              stale.prior_fc_id AS stale_modal_fc_id
+                              stale.prior_fc_id AS stale_modal_fc_id,
+                              stale.prior_sandbox_provider AS stale_sandbox_provider,
+                              stale.prior_sandbox_external_id AS stale_sandbox_external_id
                     """
                     ),
                     {"stale_after_minutes": stale_after_minutes},
@@ -218,6 +225,13 @@ async def cleanup_orphaned_queue_state(
             str(row["stale_modal_fc_id"])
             for row in stale_rows
             if row.get("stale_modal_fc_id")
+        ]
+
+        stale_sandboxes: list[tuple[str, str]] = [
+            (str(row["stale_sandbox_provider"]), str(row["stale_sandbox_external_id"]))
+            for row in stale_rows
+            if row.get("stale_sandbox_provider")
+            and row.get("stale_sandbox_external_id")
         ]
 
         # Mirror the terminal worker_jobs state back onto the domain
@@ -554,6 +568,7 @@ async def cleanup_orphaned_queue_state(
     orphaned_modal_fcs_terminated = await _terminate_modal_function_calls(
         stale_modal_fc_ids
     )
+    orphaned_sandboxes_terminated = await terminate_orphaned_sandboxes(stale_sandboxes)
 
     return {
         "worker_jobs_retried": worker_jobs_retried,
@@ -566,6 +581,7 @@ async def cleanup_orphaned_queue_state(
         "zombie_txn_reaped": zombie_txn_reaped,
         "experiments_last_activity_reconciled": experiments_last_activity_reconciled,
         "orphaned_modal_fcs_terminated": orphaned_modal_fcs_terminated,
+        "orphaned_sandboxes_terminated": orphaned_sandboxes_terminated,
     }
 
 
@@ -603,5 +619,84 @@ async def _terminate_modal_function_calls(fc_ids: list[str]) -> int:
         console.print(
             f"metric=orphaned_modal_fcs_terminated count={terminated} "
             f"requested={len(fc_ids)}"
+        )
+    return terminated
+
+
+async def _terminate_daytona_sandbox(sandbox_id: str) -> bool:
+    try:
+        from daytona import AsyncDaytona
+    except ImportError:
+        return False
+    try:
+        async with AsyncDaytona() as client:
+            sandbox = await client.get(sandbox_id)
+            await client.delete(sandbox)
+        return True
+    except Exception as exc:
+        console.print(
+            f"[yellow]Failed to delete orphaned Daytona sandbox "
+            f"{sandbox_id}: {exc}[/yellow]"
+        )
+        return False
+
+
+async def _terminate_modal_sandbox(sandbox_id: str) -> bool:
+    try:
+        import modal
+    except ImportError:
+        return False
+    try:
+        sb = await modal.Sandbox.from_id.aio(sandbox_id)
+        await sb.terminate.aio()
+        return True
+    except Exception as exc:
+        console.print(
+            f"[yellow]Failed to terminate orphaned Modal sandbox "
+            f"{sandbox_id}: {exc}[/yellow]"
+        )
+        return False
+
+
+# provider name (matches harbor.BaseEnvironment.provider_name) -> teardown
+_SANDBOX_TERMINATORS = {
+    "daytona": _terminate_daytona_sandbox,
+    "modal": _terminate_modal_sandbox,
+}
+
+
+async def terminate_orphaned_sandboxes(
+    sandboxes: list[tuple[str, str]],
+) -> int:
+    """Best-effort teardown of provider-side sandboxes whose owning job was reaped.
+
+    ``sandboxes`` is a list of ``(provider, external_id)`` pairs captured
+    from worker_jobs.RETURNING before the columns were nulled. Same
+    pattern as ``_terminate_modal_function_calls``: dispatch happens
+    after the DB commit so a provider API blip can't block the queue.
+    """
+    if not sandboxes:
+        return 0
+
+    import asyncio
+
+    async def terminate_one(provider: str, external_id: str) -> bool:
+        terminator = _SANDBOX_TERMINATORS.get(provider)
+        if terminator is None:
+            console.print(
+                f"[yellow]No terminator registered for provider {provider!r} "
+                f"(sandbox {external_id}); leaving it[/yellow]"
+            )
+            return False
+        return await terminator(external_id)
+
+    results = await asyncio.gather(
+        *(terminate_one(p, i) for p, i in sandboxes)
+    )
+    terminated = sum(1 for ok in results if ok)
+    if terminated > 0:
+        console.print(
+            f"metric=orphaned_sandboxes_terminated count={terminated} "
+            f"requested={len(sandboxes)}"
         )
     return terminated
