@@ -16,6 +16,7 @@ from rich.console import Console
 
 from oddish.core.endpoints import (
     browse_tasks_core,
+    combine_experiments_core,
     create_task_sweep_core,
     get_task_detail_core,
     get_task_status_core,
@@ -73,6 +74,8 @@ from oddish.db import (
 from oddish.schemas import (
     TaskBatchCancelRequest,
     TaskBrowseResponse,
+    ExperimentCombineRequest,
+    ExperimentCombineResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
     TaskDetailResponse,
@@ -488,6 +491,25 @@ async def cancel_tasks(payload: TaskBatchCancelRequest):
 # script. Previews running against clones of prod data make this
 # especially load-bearing: a stray DELETE in preview would target
 # the same prod S3 bucket.
+
+
+@api.post("/experiments/combine", response_model=ExperimentCombineResponse)
+async def combine_experiments(
+    payload: ExperimentCombineRequest,
+) -> ExperimentCombineResponse:
+    """Combine several experiments into a new result experiment.
+
+    Copies the task memberships and finished trials (with their artifacts)
+    of every source experiment into a brand-new experiment. The sources
+    are left untouched.
+    """
+    async with get_session() as session:
+        return await combine_experiments_core(
+            session,
+            source_experiment_ids=payload.source_experiment_ids,
+            name=payload.name,
+            copy_artifacts=payload.copy_artifacts,
+        )
 
 
 @api.patch("/experiments/{experiment_id}", response_model=ExperimentUpdateResponse)
