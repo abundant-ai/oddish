@@ -843,6 +843,10 @@ async def retry_trial_core(
         status=TrialStatus.QUEUED,
     )
     session.add(new_trial)
+    # ``superseded_by_trial_id`` is a self-referential FK. Flush the new
+    # row before pointing the old row at it so Postgres never sees an
+    # UPDATE that references a trial id that has not been inserted yet.
+    await session.flush()
 
     # Mark the old row superseded so it stops showing up in the trial
     # viewer, file viewer, and verdict / analysis aggregation. We also
