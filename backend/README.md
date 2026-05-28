@@ -217,6 +217,40 @@ Modal runtime knobs are read directly by `modal_app.py`, including:
 
 Local `backend/.env` values are layered on top of the shared Modal secret for local deploys.
 
+### Doppler-backed runtime secrets
+
+The backend can load runtime secrets directly from Doppler when a scoped
+Doppler token is present. This is opt-in; existing Modal secrets continue to
+work unchanged unless `DOPPLER_TOKEN` is attached to the runtime.
+
+Recommended production shape:
+
+1. Create a Doppler project/config such as `oddish/prd`.
+2. Store the backend runtime keys in that config, including `ODDISH_DATABASE_URL`,
+   `ODDISH_S3_*`, `CLERK_*`, provider API keys, and observability tokens.
+3. Create a read-only Doppler service token scoped to that config.
+4. Store only that token and its target config in a Modal secret, for example:
+
+   ```bash
+   modal secret create oddish-doppler-prod \
+     DOPPLER_TOKEN=dp.st... \
+     DOPPLER_PROJECT=oddish \
+     DOPPLER_CONFIG=prd
+   ```
+
+5. Set `DOPPLER_MODAL_SECRET_NAME=oddish-doppler-prod` in the deploy
+   environment and deploy the backend.
+
+When `DOPPLER_TOKEN` is present, Doppler values override existing platform
+environment variables by default. Set `DOPPLER_SECRETS_OVERRIDE=false` to make
+platform variables win during a staged rollout. Set `DOPPLER_SECRETS_REQUIRED=false`
+to allow startup to continue if Doppler is temporarily unavailable; the default
+is fail-closed.
+
+Keep the existing `oddish-prod` and `aws-credentials` Modal secrets attached
+during the first rollout. Once the API and workers are healthy with Doppler as
+source of truth, remove those legacy secrets from the runtime.
+
 ### oddish runtime patching
 
 `endpoints.py`, `serve.py`, and `worker/runtime.py` patch oddish settings at startup:

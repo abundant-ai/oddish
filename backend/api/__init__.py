@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import os
 
+from doppler_bootstrap import load_doppler_secrets
 from observability import configure_logfire, span as _otel_span
+
+load_doppler_secrets()
 
 configure_logfire(
     service_name=os.environ.get("LOGFIRE_SERVICE_NAME", "oddish-backend"),

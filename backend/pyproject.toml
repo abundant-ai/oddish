@@ -67,6 +67,7 @@ harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
 py-modules = [
     "cloud_policy",
     "deploy",
+    "doppler_bootstrap",
     "endpoints",
     "modal_app",
     "models",

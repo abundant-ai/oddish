@@ -16,7 +16,10 @@ container cold start.
 
 from __future__ import annotations
 
+from doppler_bootstrap import load_doppler_secrets
 from observability import configure_logfire, span as _otel_span
+
+load_doppler_secrets()
 
 configure_logfire(service_name="oddish-worker")
 

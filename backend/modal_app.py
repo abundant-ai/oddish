@@ -4,6 +4,10 @@ from pathlib import Path
 import modal
 from dotenv import dotenv_values
 
+from doppler_bootstrap import load_doppler_secrets
+
+load_doppler_secrets()
+
 
 def _env_flag(name: str, default: bool) -> bool:
     value = os.environ.get(name)
@@ -22,6 +26,7 @@ def _env_int(name: str, default: int) -> int:
 MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
 MODAL_SECRET_ENVIRONMENT = os.environ.get("MODAL_SECRET_ENVIRONMENT", "main")
 RUNTIME_SECRET_NAME = "oddish-prod"
+DOPPLER_MODAL_SECRET_NAME = os.environ.get("DOPPLER_MODAL_SECRET_NAME", "")
 # Per-app webhook label so PR previews don't collide on the shared
 # `{workspace}-{environment}--{label}.modal.run` subdomain. Production keeps
 # the historical "api" label; previews derive a unique one from the app name.
@@ -82,6 +87,13 @@ runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
 )
 runtime_secrets = [runtime_secret]
+
+if DOPPLER_MODAL_SECRET_NAME:
+    runtime_secrets.append(
+        modal.Secret.from_name(
+            DOPPLER_MODAL_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
+        )
+    )
 
 # AWS credentials for the sauron S3 mirror. Kept in a separate Modal
 # secret so it can be rotated independently of oddish-prod. Set

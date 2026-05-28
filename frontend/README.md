@@ -171,6 +171,14 @@ docker build -t oddish-frontend .
 docker run --rm -p 3000:3000 --env-file .env.local oddish-frontend
 ```
 
+For centrally managed Vercel production secrets, prefer Doppler's Vercel
+integration over runtime token fetching. Next.js embeds `NEXT_PUBLIC_*` values
+at build time, so syncing an `oddish/prd` Doppler config into Vercel Production
+and redeploying keeps browser-visible configuration deterministic while still
+making Doppler the source of truth. Do not use local-only URLs such as
+`https://local.oddish.app` for Vercel Production; omit `NEXT_PUBLIC_APP_URL` or
+set it to `https://www.oddish.app`.
+
 ### Use Clerk production keys locally
 
 If you need production-origin Clerk behavior locally:

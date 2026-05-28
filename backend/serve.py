@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from doppler_bootstrap import load_doppler_secrets
+
+load_doppler_secrets()
+
 from oddish.config import Settings
 
 Settings.db_use_null_pool = False
