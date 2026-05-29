@@ -572,9 +572,8 @@ def _build_agent_config(
     if model is not None:
         agent_config.model_name = model
 
-    # oddish runs Claude exclusively through AWS Bedrock. Normalize whatever
-    # model id lands here — a per-trial override or one persisted in the
-    # AgentConfig — to a Bedrock-native id (raises on an unmapped Claude id).
+    # Trial rows should already store the runtime model id. Keep this as a
+    # defensive guard for legacy rows or rich AgentConfig payloads.
     agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
 
     return agent_config
