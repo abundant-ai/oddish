@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-05-29]
+
+### Added
+- `oddish combine` CLI command to merge two or more experiments into a new result experiment; copies finished trials with artifacts from source experiments and supports `--name`, `--copy-artifacts/--no-copy-artifacts`, and `--json` flags (#162)
+- `POST /experiments/combine` API endpoint that creates a new result experiment by merging task memberships and finished trials (with S3 artifacts) from two or more source experiments; in-flight trials are skipped and counted in the response; append-only so requires only `tasks` scope (#157)
+
+### Changed
+- Analysis and verdict UI (trial analysis dots, legend section, analysis card, verdict badge, and run analysis/verdict actions) is now hidden in the public share view (`/share/[token]`) via a new `showAnalysis` prop on `ExperimentDetailView`; authenticated views are unchanged (#159)
+
+### Fixed
+- Trial retry no longer returns a 500 error; the new trial row is now flushed before the old trial's `superseded_by_trial_id` self-referential FK is set, preventing a Postgres FK violation (#155)
+
+---
+
 ## [2026-05-28]
 
 ### Changed
