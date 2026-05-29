@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [2026-05-29]
 
 ### Added
+- `oddish run --retry` re-runs existing work for a trial, task, or experiment id (positional, `--task`, or `--experiment`): re-queues failed trials by default, or re-runs analysis/verdict with `--analysis` / `--verdict`; `-y` skips confirmation
+- `oddish publish` / `oddish unpublish` commands toggle public read-only sharing for an experiment from the CLI and return the shareable URL
+- `--json` machine-readable output added to `oddish status`, `cancel`, `delete`, and `pull` (previously only on `run` / `upload` / `ls`)
 - `oddish combine` CLI command to merge two or more experiments into a new result experiment; copies finished trials with artifacts from source experiments and supports `--name`, `--copy-artifacts/--no-copy-artifacts`, and `--json` flags (#162)
 - `POST /experiments/combine` API endpoint that creates a new result experiment by merging task memberships and finished trials (with S3 artifacts) from two or more source experiments; in-flight trials are skipped and counted in the response; append-only so requires only `tasks` scope (#157)
 

@@ -14,7 +14,12 @@ import httpx
 import typer
 from rich.console import Console
 
-from oddish.cli.config import get_api_url, get_auth_headers, require_api_key
+from oddish.cli.config import (
+    get_api_url,
+    get_auth_headers,
+    print_json,
+    require_api_key,
+)
 
 console = Console()
 
@@ -794,6 +799,13 @@ def pull(
         typer.Option("--interval", help="Polling interval in seconds for --watch."),
     ] = 5,
     api_url: Annotated[str, typer.Option("--api", help="API URL")] = "",
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Output the pull manifest as JSON (for CI/scripts).",
+        ),
+    ] = False,
 ):
     """Pull logs and artifacts from Oddish remote to local files."""
     if not api_url:
@@ -810,17 +822,17 @@ def pull(
         output_root = out or (Path.cwd() / ".oddish" / resolved_id)
         output_root.mkdir(parents=True, exist_ok=True)
 
-        console.print(
-            f"[cyan]Pulling[/cyan] type={resolved_type} id={resolved_id} -> {output_root}"
-        )
+        if not json_output:
+            console.print(
+                f"[cyan]Pulling[/cyan] type={resolved_type} id={resolved_id} "
+                f"-> {output_root}"
+            )
 
         iteration = 0
+        manifest: dict = {}
         while True:
             iteration += 1
-            with console.status(
-                f"Pulling {resolved_type} {resolved_id} (iteration {iteration})",
-                spinner="dots",
-            ) as status:
+            if json_output:
                 run_manifest = _pull_once(
                     client,
                     resolved_type,
@@ -831,8 +843,25 @@ def pull(
                     include_structured_logs=structured,
                     include_task_files=include_task_files,
                     cached_data=cached_data,
-                    status_update=status.update,
+                    status_update=None,
                 )
+            else:
+                with console.status(
+                    f"Pulling {resolved_type} {resolved_id} (iteration {iteration})",
+                    spinner="dots",
+                ) as status:
+                    run_manifest = _pull_once(
+                        client,
+                        resolved_type,
+                        resolved_id,
+                        output_root,
+                        include_logs=logs,
+                        include_files=files,
+                        include_structured_logs=structured,
+                        include_task_files=include_task_files,
+                        cached_data=cached_data,
+                        status_update=status.update,
+                    )
             cached_data = None
 
             manifest = {
@@ -852,10 +881,12 @@ def pull(
                 int(t.get("files_saved", 0)) + int(t.get("logs_saved", 0))
                 for t in run_manifest.get("trials", [])
             )
-            console.print(
-                f"[green]Pull iteration {iteration} complete[/green] "
-                f"({len(run_manifest.get('trials', []))} trials, {total_saved} artifacts/log files saved)"
-            )
+            if not json_output:
+                console.print(
+                    f"[green]Pull iteration {iteration} complete[/green] "
+                    f"({len(run_manifest.get('trials', []))} trials, "
+                    f"{total_saved} artifacts/log files saved)"
+                )
 
             if not watch:
                 break
@@ -868,12 +899,17 @@ def pull(
                 done = _is_experiment_terminal(client, resolved_id)
 
             if done:
-                console.print(
-                    "[green]Target reached terminal state; stopping watch.[/green]"
-                )
+                if not json_output:
+                    console.print(
+                        "[green]Target reached terminal state; stopping watch.[/green]"
+                    )
                 break
 
-            console.print(
-                f"[dim]Target still running; polling again in {interval}s...[/dim]"
-            )
+            if not json_output:
+                console.print(
+                    f"[dim]Target still running; polling again in {interval}s...[/dim]"
+                )
             time.sleep(interval)
+
+        if json_output:
+            print_json(manifest)

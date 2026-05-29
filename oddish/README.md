@@ -62,7 +62,7 @@ oddish --help
 
 Available commands:
 
-- `oddish run` uploads a local task or dataset, downloads a registry dataset, or expands a sweep config into trials
+- `oddish run` uploads a local task or dataset, downloads a registry dataset, or expands a sweep config into trials (also re-runs trials/analysis/verdict via `--retry`)
 - `oddish upload` registers task bundles (no trials) or uploads off-oddish Harbor trial results (logs, rewards, tokens) onto an existing task
 - `oddish ls` lists uploaded tasks with version, trial, reward, and experiment summaries
 - `oddish status` shows system, task, or experiment status
@@ -70,6 +70,9 @@ Available commands:
 - `oddish pull` downloads logs, results, trajectories, and artifact files for a trial, task, or experiment
 - `oddish combine` merges several experiments into a new result experiment
 - `oddish delete` deletes a task or experiment from a self-hosted deployment
+- `oddish publish` / `oddish unpublish` toggle public read-only sharing for an experiment
+
+Every command supports `--json` for machine-readable output (CI / agents).
 
 ### `oddish run`
 
@@ -144,6 +147,37 @@ When `--env` is omitted:
 - hosted Oddish (`*.modal.run`) defaults to `daytona` for CPU-only tasks and `modal` for tasks that request GPUs
 - other API URLs default to `docker`
 - `--task` preserves the existing task's environment unless you override it
+
+### Re-running with `oddish run --retry`
+
+`oddish run --retry` re-runs existing work instead of submitting new trials. It
+accepts a trial, task, or experiment id (positional, `--task`, or
+`--experiment`) and auto-detects the target type.
+
+```bash
+# Retry a single failed trial
+oddish run task_123-2 --retry
+
+# Retry every failed trial in a task (skip the confirmation prompt)
+oddish run task_123 --retry -y
+
+# Retry all failed trials across an experiment
+oddish run my-experiment --retry -y
+
+# Re-run analysis or the task verdict instead of trials
+oddish run task_123 --retry --analysis
+oddish run task_123 --retry --verdict
+
+# Script-friendly summary of what was queued
+oddish run my-experiment --retry -y --json
+```
+
+- default (`--retry` alone) re-queues failed trials; for task / experiment
+  targets only trials currently in a `failed` state are retried
+- `--analysis` re-runs trial analysis (per-trial for a trial target, otherwise
+  task-wide); `--verdict` re-runs the task verdict
+- `--analysis` and `--verdict` are mutually exclusive and require `--retry`
+- `-y, --yes` skips the confirmation prompt; `--json` implies non-interactive
 
 ### Sweep Configs
 
@@ -302,6 +336,9 @@ oddish status <task_id> --watch
 
 # Watch an experiment
 oddish status --experiment <experiment_id> --watch
+
+# Single JSON snapshot (no live watch) for scripts/agents
+oddish status <task_id> --json
 ```
 
 ### `oddish cancel`
@@ -313,6 +350,7 @@ when applicable. Completed trials and their results are preserved.
 ```bash
 oddish cancel <task_id>
 oddish cancel <task_id> --force   # skip confirmation
+oddish cancel <task_id> --json    # machine-readable result (implies --force)
 ```
 
 ### `oddish pull`
@@ -337,7 +375,8 @@ By default, pull output is written to `./.oddish/<target>` and includes a
 `manifest.json` describing the fetch. Use `--no-logs`, `--no-files`,
 `--structured`, `--include-task-files`, `--out`, and `--type` to control what
 gets downloaded and where it lands. `--type trial|task|experiment` forces the
-target type instead of auto-resolving it.
+target type instead of auto-resolving it. `--json` prints the pull manifest to
+stdout instead of the progress output.
 
 ### `oddish combine`
 
@@ -372,6 +411,21 @@ oddish delete <task_id>
 
 # Delete an entire experiment
 oddish delete --experiment <experiment_id>
+
+# Delete trials and emit a JSON result (implies --yes)
+oddish delete --trial <trial_id> --json
+```
+
+### `oddish publish` / `oddish unpublish`
+
+Toggle public, read-only sharing for an experiment. `publish` returns a
+shareable URL; public viewers never see trial analysis or task verdicts.
+(Both require a hosted/cloud deployment.)
+
+```bash
+oddish publish <experiment_id>
+oddish publish <experiment_id> --json   # prints the public URL/token
+oddish unpublish <experiment_id>
 ```
 
 ## Typical Workflow

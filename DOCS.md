@@ -19,7 +19,7 @@ export ODDISH_API_KEY="ok_..."
 
 **Commands:**
 
-- `oddish run` - submit a job
+- `oddish run` - submit a job (or re-run trials/analysis/verdict with `--retry`)
 - `oddish upload` - register a task or upload existing trials
 - `oddish ls` - list uploaded tasks
 - `oddish status` - view progress
@@ -27,6 +27,9 @@ export ODDISH_API_KEY="ok_..."
 - `oddish pull` - download logs and artifacts
 - `oddish combine` - merge several experiments into a new one
 - `oddish delete` - delete task data
+- `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
+
+Every command accepts `--json` for machine-readable output (CI / scripts / agents).
 
 ### Lifecycle
 
@@ -35,7 +38,9 @@ A typical run flows through these commands:
 1. `oddish run` (or `oddish upload`) — submit a task, dataset, or sweep and get back a task ID and experiment ID.
 2. `oddish status` — discover what's in flight, then drill into a specific task or experiment to see trial-level progress and rewards.
 3. `oddish pull` — once you have a trial, task, or experiment ID, download its logs, results, trajectories, and artifact files to disk.
-4. `oddish cancel` / `oddish delete` — stop in-flight work or remove data when you're done.
+4. `oddish run --retry` — re-queue failed trials, or re-run analysis/verdict, for a trial, task, or experiment.
+5. `oddish cancel` / `oddish delete` — stop in-flight work or remove data when you're done.
+6. `oddish publish` — share an experiment publicly (read-only) and get a link.
 
 Both read commands accept a trial, task, or experiment ID and auto-detect which kind it is. The CLI does not yet support listing or filtering trials/tasks/experiments by status, name, or date — IDs are typically discovered through the dashboard or `oddish status`.
 
@@ -89,10 +94,45 @@ oddish run ./my-task -c sweep.yaml
 - `--ae`, `--agent-env TEXT` - Pass agent env vars as `KEY=VALUE`; can be used multiple times
 - `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times
 - `--artifact TEXT` - Download an environment path as an artifact after the trial
+- `--retry` - Re-run an existing target instead of submitting new work (see below)
+- `--analysis` - With `--retry`: re-run analysis instead of trials
+- `--verdict` - With `--retry`: re-run the task verdict instead of trials
+- `--yes`, `-y` - Skip confirmation prompts (used with `--retry`)
 - `--api TEXT` - Override the API URL
 - `--json` - Emit JSON for scripts and CI; implies `--background`
 
 </details>
+
+### Re-run with `--retry`
+
+`oddish run --retry` re-runs existing work instead of submitting new trials. It
+accepts a trial, task, or experiment id — positional, `--task`, or
+`--experiment` — and auto-detects the target type.
+
+```bash
+# Retry a single failed trial
+oddish run <trial_id> --retry
+
+# Retry every failed trial in a task (skip the confirmation prompt)
+oddish run <task_id> --retry -y
+
+# Retry all failed trials across an experiment
+oddish run <experiment_id> --retry -y
+
+# Re-run analysis or the task verdict instead of trials
+oddish run <task_id> --retry --analysis
+oddish run <task_id> --retry --verdict
+
+# Machine-readable summary of what was queued
+oddish run <experiment_id> --retry -y --json
+```
+
+- Default (`--retry` alone) re-queues failed trials. For task and experiment
+  targets, only trials currently in a `failed` state are retried.
+- `--analysis` re-runs trial analysis (per-trial for a trial target, otherwise
+  task-wide); `--verdict` re-runs the task verdict.
+- `--analysis` and `--verdict` are mutually exclusive and require `--retry`.
+- `-y, --yes` skips the confirmation prompt; `--json` is always non-interactive.
 
 ### Sweep Config
 
@@ -160,6 +200,9 @@ oddish status <task_id>
 
 # Experiment status
 oddish status --experiment <experiment_id> --watch
+
+# Single JSON snapshot (no live watch) for scripts/agents
+oddish status <task_id> --json
 ```
 
 If a positional ID isn't found as a task, `status` automatically retries it as an experiment ID.
@@ -171,6 +214,7 @@ If a positional ID isn't found as a task, `status` automatically retries it as a
 - `--experiment`, `-e TEXT` - Inspect an experiment instead of a task
 - `--watch`, `-w` - Poll until the task or experiment finishes
 - `--api TEXT` - Override the API URL
+- `--json` - Emit a single JSON snapshot (no live watch)
 
 </details>
 
@@ -190,6 +234,7 @@ oddish cancel <task_id>
 - `TASK_ID` - Task ID to cancel
 - `--force`, `-f` - Skip the confirmation prompt
 - `--api TEXT` - Override the API URL
+- `--json` - Emit the cancellation result as JSON (implies `--force`)
 
 </details>
 
@@ -220,6 +265,7 @@ By default, files are written to `./.oddish/<target>`. Re-pulling is idempotent 
 - `--watch`, `-w` - Keep pulling while the run is in progress
 - `--interval INTEGER` - Poll interval in seconds for `--watch`
 - `--api TEXT` - Override the API URL
+- `--json` - Print the pull manifest as JSON instead of progress output
 
 </details>
 
@@ -296,6 +342,9 @@ oddish delete <task_id>
 
 # Delete an experiment
 oddish delete --experiment <experiment_id>
+
+# Delete one or more trials and emit a JSON result
+oddish delete --trial <trial_id> --json
 ```
 
 <details>
@@ -303,7 +352,36 @@ oddish delete --experiment <experiment_id>
 
 - `TASK_ID` - Task ID to delete when not using `--experiment`
 - `--experiment`, `-e TEXT` - Delete an experiment instead of a task
+- `--trial`, `-t TEXT` - Delete one or more trials (repeatable); works against hosted Oddish
+- `--yes`, `-y` - Skip confirmation prompts
 - `--api-url`, `-u TEXT` - Override the API URL
+- `--json` - Emit the delete result as JSON (implies `--yes`)
+
+</details>
+
+## Share an Experiment
+
+Use `oddish publish` to make an experiment publicly viewable (read-only) and
+get a shareable URL; `oddish unpublish` revokes it. Public viewers never see
+trial analysis or task verdicts. (Both require a hosted/cloud deployment.)
+
+```bash
+# Publish and print the public URL
+oddish publish <experiment_id>
+
+# Machine-readable output (public URL + token)
+oddish publish <experiment_id> --json
+
+# Stop sharing
+oddish unpublish <experiment_id>
+```
+
+<details>
+<summary>Options</summary>
+
+- `EXPERIMENT_ID` - Experiment ID (or name) to publish/unpublish
+- `--api TEXT` - Override the API URL
+- `--json` - Emit the share status as JSON
 
 </details>
 
