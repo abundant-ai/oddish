@@ -701,6 +701,7 @@ def test_extract_outcome_from_job_result_carries_exception_type(monkeypatch):
         agent_setup=None,
         agent_execution=None,
         verifier=None,
+        compute_token_cost_totals=lambda: (None, None, None, None),
     )
     job_result = SimpleNamespace(
         trial_results=[trial_result],
@@ -731,6 +732,7 @@ def test_extract_outcome_from_job_result_exception_type_none_when_no_exc():
         agent_setup=None,
         agent_execution=None,
         verifier=None,
+        compute_token_cost_totals=lambda: (None, None, None, None),
     )
     job_result = SimpleNamespace(
         trial_results=[trial_result],
@@ -745,4 +747,39 @@ def test_extract_outcome_from_job_result_exception_type_none_when_no_exc():
     )
 
     assert outcome.exception_type is None
+    assert outcome.reward == 1.0
+
+
+def test_extract_outcome_uses_compute_token_cost_totals_for_multi_step():
+    """Multi-step trials leave ``agent_result`` unset and record token/cost on
+    ``step_results[*].agent_result``. ``_extract_outcome_from_job_result`` must
+    source totals from ``TrialResult.compute_token_cost_totals`` so those
+    multi-step tokens/cost are not silently dropped."""
+
+    trial_result = SimpleNamespace(
+        exception_info=None,
+        agent_result=None,  # multi-step trials leave this empty
+        verifier_result=SimpleNamespace(rewards={"reward": 1.0}),
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+        compute_token_cost_totals=lambda: (300, 50, 120, 0.42),
+    )
+    job_result = SimpleNamespace(
+        trial_results=[trial_result],
+        stats=SimpleNamespace(evals={}),
+    )
+
+    outcome = harbor_runner._extract_outcome_from_job_result(
+        job_result=job_result,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp"),
+        duration_sec=1.0,
+    )
+
+    assert outcome.input_tokens == 300
+    assert outcome.cache_tokens == 50
+    assert outcome.output_tokens == 120
+    assert outcome.cost_usd == 0.42
     assert outcome.reward == 1.0

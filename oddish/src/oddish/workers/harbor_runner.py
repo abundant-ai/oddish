@@ -403,7 +403,13 @@ def _extract_outcome_from_job_result(
             if error or exception_type:
                 break
 
-    # Extract token usage & cost from the first trial's AgentContext
+    # Extract token usage & cost from Harbor's TrialResult.
+    # ``TrialResult.compute_token_cost_totals`` aggregates the trial's
+    # ``AgentContext`` for single-step trials *and* the per-step contexts on
+    # ``step_results[*].agent_result`` for multi-step trials. Reading
+    # ``agent_result`` directly (the previous behavior) silently dropped all
+    # token/cost for multi-step trials, since those leave ``agent_result``
+    # unset and only populate ``step_results``.
     input_tokens: int | None = None
     cache_tokens: int | None = None
     output_tokens: int | None = None
@@ -411,15 +417,17 @@ def _extract_outcome_from_job_result(
     phase_timing: dict[str, Any] | None = None
 
     for trial_result in job_result.trial_results:
-        ctx = trial_result.agent_result
-        if ctx and not ctx.is_empty():
-            input_tokens = ctx.n_input_tokens
-            cache_tokens = ctx.n_cache_tokens
-            output_tokens = ctx.n_output_tokens
-            cost_usd = ctx.cost_usd
+        n_in, n_cache, n_out, cost = trial_result.compute_token_cost_totals()
+        if n_in is not None or n_out is not None or cost is not None:
+            input_tokens = n_in
+            cache_tokens = n_cache
+            output_tokens = n_out
+            cost_usd = cost
             break
 
-    # Fallback: read from ATIF trajectory final_metrics if AgentContext was empty
+    # Fallback: read from ATIF trajectory final_metrics when Harbor reported
+    # no token totals (e.g. CLI-wrapping agents that don't populate
+    # AgentContext).
     if input_tokens is None and output_tokens is None:
         t_in, t_out, t_cache, t_cost = _extract_tokens_from_trajectory(job_dir)
         input_tokens = t_in
