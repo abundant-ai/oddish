@@ -186,6 +186,20 @@ def to_bedrock_model_id(model: str | None) -> str | None:
     return bedrock_id
 
 
+def _to_bedrock_model_id_if_known(model: str) -> str:
+    """Best-effort Bedrock canonicalization for read-side legacy metadata.
+
+    New trial creation calls ``to_bedrock_model_id`` through
+    ``normalize_trial_model`` and remains strict. Queue/admin/dashboard reads
+    may encounter historical queue keys with unmapped Claude aliases; those
+    should remain visible instead of breaking the whole response.
+    """
+    try:
+        return to_bedrock_model_id(model) or model
+    except ValueError:
+        return model
+
+
 def normalize_model_id(model: str | None) -> str | None:
     """Canonicalize model identifiers for storage and display.
 
@@ -511,7 +525,7 @@ class Settings(BaseSettings):
             return "default"
         if normalized in _PROVIDER_ONLY_QUEUE_ALIASES:
             return "default"
-        normalized = to_bedrock_model_id(normalized) or normalized
+        normalized = _to_bedrock_model_id_if_known(normalized)
         if looks_like_bedrock_model_id(normalized):
             return normalized
         if "/" in normalized:

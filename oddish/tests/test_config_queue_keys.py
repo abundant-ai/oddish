@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.config import NOP_ORACLE_QUEUE_KEY, Settings  # noqa: E402
@@ -75,3 +77,12 @@ def test_bedrock_queue_key_normalization_collapses_aliases(monkeypatch):
     assert settings.normalize_queue_key("claude-sonnet-4-6") == expected
     assert settings.normalize_queue_key("anthropic/claude-sonnet-4-6") == expected
     assert settings.normalize_queue_key(f"bedrock/{expected}") == expected
+
+
+def test_legacy_unmapped_claude_queue_key_does_not_break_reads(monkeypatch):
+    settings = _settings(monkeypatch)
+    legacy_key = "anthropic/claude-sonnet-4-6-20250514"
+
+    assert settings.normalize_queue_key(legacy_key) == legacy_key
+    with pytest.raises(ValueError):
+        settings.normalize_trial_model("claude-code", legacy_key)
