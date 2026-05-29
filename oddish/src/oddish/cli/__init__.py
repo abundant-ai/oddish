@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import typer
 from oddish.cli.cancel import cancel
+from oddish.cli.combine import combine
 from oddish.cli.delete import delete
 from oddish.cli.ls import ls
 from oddish.cli.publish import publish, unpublish
@@ -20,6 +21,7 @@ app.command()(upload)
 app.command(name="ls")(ls)
 app.command()(status)
 app.command()(cancel)
+app.command()(combine)
 app.command()(delete)
 app.command()(pull)
 app.command()(publish)

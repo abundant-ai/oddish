@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.config import NOP_ORACLE_QUEUE_KEY, Settings  # noqa: E402
@@ -44,3 +46,43 @@ def test_model_concurrency_overrides_can_override_nop_oracle_queue(monkeypatch):
 
     assert settings.get_model_concurrency(NOP_ORACLE_QUEUE_KEY) == 12
     assert settings.get_model_concurrency("default") == 3
+
+
+def test_claude_trial_model_is_persisted_as_bedrock_id(monkeypatch):
+    settings = _settings(monkeypatch)
+
+    expected = "global.anthropic.claude-sonnet-4-6"
+
+    assert (
+        settings.normalize_trial_model("claude-code", "claude-sonnet-4-6") == expected
+    )
+    assert (
+        settings.normalize_trial_model("claude-code", "anthropic/claude-sonnet-4-6")
+        == expected
+    )
+    assert (
+        settings.get_provider_for_trial("claude-code", "claude-sonnet-4-6") == "bedrock"
+    )
+    assert (
+        settings.get_queue_key_for_trial("claude-code", "claude-sonnet-4-6") == expected
+    )
+    assert settings.get_provider_for_trial("claude-code", None) == "bedrock"
+
+
+def test_bedrock_queue_key_normalization_collapses_aliases(monkeypatch):
+    settings = _settings(monkeypatch)
+
+    expected = "global.anthropic.claude-sonnet-4-6"
+
+    assert settings.normalize_queue_key("claude-sonnet-4-6") == expected
+    assert settings.normalize_queue_key("anthropic/claude-sonnet-4-6") == expected
+    assert settings.normalize_queue_key(f"bedrock/{expected}") == expected
+
+
+def test_legacy_unmapped_claude_queue_key_does_not_break_reads(monkeypatch):
+    settings = _settings(monkeypatch)
+    legacy_key = "anthropic/claude-sonnet-4-6-20250514"
+
+    assert settings.normalize_queue_key(legacy_key) == legacy_key
+    with pytest.raises(ValueError):
+        settings.normalize_trial_model("claude-code", legacy_key)
