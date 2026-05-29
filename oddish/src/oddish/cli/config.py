@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 
 import typer
@@ -99,3 +100,18 @@ def get_auth_headers(api_url: str | None = None) -> dict[str, str]:
     if not api_key:
         return {}
     return {"Authorization": f"Bearer {api_key}"}
+
+
+# =============================================================================
+# JSON output (for CI / agents / scripting)
+# =============================================================================
+
+
+def print_json(payload: object) -> None:
+    """Emit a JSON document on stdout for programmatic consumers.
+
+    Uses the plain ``print`` builtin (not a Rich console) so the output is
+    never wrapped, colorized, or truncated and can be piped straight into
+    ``jq`` or parsed by an agent.
+    """
+    print(json.dumps(payload, indent=2, default=str))
