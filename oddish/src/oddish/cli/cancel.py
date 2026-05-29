@@ -6,7 +6,12 @@ import httpx
 import typer
 from rich.console import Console
 
-from oddish.cli.config import get_api_url, get_auth_headers, require_api_key
+from oddish.cli.config import (
+    get_api_url,
+    get_auth_headers,
+    print_json,
+    require_api_key,
+)
 
 console = Console()
 
@@ -28,6 +33,13 @@ def cancel(
         str,
         typer.Option("--api", help="API URL"),
     ] = "",
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Output JSON (for CI/scripts). Implies --force.",
+        ),
+    ] = False,
 ):
     """Cancel all in-flight runs for a task.
 
@@ -42,7 +54,7 @@ def cancel(
         api_url = get_api_url()
     require_api_key(api_url)
 
-    if not force:
+    if not force and not json_output:
         confirm = typer.confirm(f"Cancel all runs for task {task_id}?")
         if not confirm:
             console.print("[dim]Aborted[/dim]")
@@ -55,14 +67,24 @@ def cancel(
         )
 
     if response.status_code == 404:
-        console.print(f"[red]Task {task_id} not found[/red]")
+        if json_output:
+            print_json({"error": f"Task {task_id} not found", "status": 404})
+        else:
+            console.print(f"[red]Task {task_id} not found[/red]")
         raise typer.Exit(1)
 
     if response.status_code != 200:
-        console.print(f"[red]Failed to cancel task:[/red] {response.text}")
+        if json_output:
+            print_json({"error": response.text, "status": response.status_code})
+        else:
+            console.print(f"[red]Failed to cancel task:[/red] {response.text}")
         raise typer.Exit(1)
 
     result = response.json()
+
+    if json_output:
+        print_json({"task_id": task_id, **result})
+        return
     trials = result.get("trials_cancelled", 0)
     pgq = 0  # Legacy field, no longer tracked
     modal = result.get("modal_calls_cancelled", 0)
