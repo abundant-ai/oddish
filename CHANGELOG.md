@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-05-29]
+
+### Added
+- `oddish run --retry` re-runs existing work for a trial, task, or experiment id (positional, `--task`, or `--experiment`): re-queues failed trials by default, or re-runs analysis/verdict with `--analysis` / `--verdict`; `-y` skips confirmation
+- `oddish publish` / `oddish unpublish` commands toggle public read-only sharing for an experiment from the CLI and return the shareable URL
+- `--json` machine-readable output added to `oddish status`, `cancel`, `delete`, and `pull` (previously only on `run` / `upload` / `ls`)
+
+---
+
 ## [2026-05-28]
 
 ### Changed
