@@ -25,6 +25,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish status` - view progress
 - `oddish cancel` - stop in-flight trials for a task
 - `oddish pull` - download logs and artifacts
+- `oddish combine` - merge several experiments into a new one
 - `oddish delete` - delete task data
 
 ### Lifecycle
@@ -249,6 +250,41 @@ API URL resolution order is `ODDISH_API_URL` (explicit) >
 `ODDISH_PREVIEW_PR` (derived) > prod default. Forks change the URL
 pattern by setting `ODDISH_PREVIEW_URL_TEMPLATE` (with `{n}` for the
 PR number).
+
+## Combine Experiments
+
+Use `oddish combine` to merge two or more experiments into a brand-new
+result experiment. The source experiments are left untouched; their task
+memberships and finished trials (with artifacts) are copied into the new
+experiment, so you get a single rolled-up view.
+
+```bash
+# Combine two experiments (by ID or name)
+oddish combine <experiment_a> <experiment_b>
+
+# Name the result and combine three experiments
+oddish combine <exp_a> <exp_b> <exp_c> --name nightly-rollup
+
+# Reference source artifacts in place instead of duplicating them
+oddish combine <exp_a> <exp_b> --no-copy-artifacts
+```
+
+In-flight trials (still pending/queued/running) have no result to combine
+and are skipped; the response reports how many were copied vs. skipped.
+
+<details>
+<summary>Options</summary>
+
+- `SOURCE_EXPERIMENT_IDS...` - Two or more experiment IDs or names to combine
+- `--name`, `-n TEXT` - Name for the result experiment (auto-generated if omitted)
+- `--copy-artifacts / --no-copy-artifacts` - Duplicate each copied trial's
+  artifacts so the result is fully independent (default), or reference the
+  source artifacts in place (cheaper, shared storage)
+- `--json` - Print the raw JSON response
+- `--api-url`, `-u TEXT` - Override the API URL
+
+</details>
+
 
 ## Delete Data
 
