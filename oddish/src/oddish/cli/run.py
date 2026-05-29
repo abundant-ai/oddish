@@ -338,6 +338,40 @@ def run(
             help="Environment path to download as an artifact after the trial (can be used multiple times)",
         ),
     ] = None,
+    retry: Annotated[
+        bool,
+        typer.Option(
+            "--retry",
+            help=(
+                "Re-run an existing target instead of submitting new work. "
+                "Pass a trial, task, or experiment id (positional, --task, or "
+                "--experiment). Retries failed trials by default; combine with "
+                "--analysis or --verdict to re-run those stages."
+            ),
+        ),
+    ] = False,
+    retry_analysis: Annotated[
+        bool,
+        typer.Option(
+            "--analysis",
+            help="With --retry: re-run analysis instead of retrying trials.",
+        ),
+    ] = False,
+    retry_verdict: Annotated[
+        bool,
+        typer.Option(
+            "--verdict",
+            help="With --retry: re-run the task verdict instead of trials.",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Skip confirmation prompts (used with --retry).",
+        ),
+    ] = False,
     api_url: Annotated[
         str,
         typer.Option(
@@ -423,6 +457,27 @@ def run(
         api_url = get_api_url()
     require_api_key(api_url)
     is_modal_api = is_modal_api_url(api_url)
+
+    # Retry mode: re-run existing trials / analysis / verdict for a target
+    # instead of submitting new work. Kept on `run` (rather than a separate
+    # command) so the CLI surface stays small.
+    if retry:
+        from oddish.cli.retry import run_retry
+
+        run_retry(
+            api_url,
+            target=str(path) if path is not None else None,
+            task_id=existing_task_id,
+            experiment_id=experiment_id,
+            do_analysis=retry_analysis,
+            do_verdict=retry_verdict,
+            yes=yes,
+            json_output=json_output,
+        )
+        return
+    if retry_analysis or retry_verdict:
+        error_console.print("[red]--analysis and --verdict require --retry.[/red]")
+        raise typer.Exit(1)
 
     # Handle config file vs CLI mode for agent configs
     if config:
