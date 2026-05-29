@@ -24,7 +24,7 @@ Python `3.12+` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` 
 ```text
 oddish/                         # Core Python package (CLI, server, workers, DB)
 ├── src/oddish/
-│   ├── cli/                    # oddish run/status/cancel/pull/delete
+│   ├── cli/                    # oddish run/status/cancel/pull/combine/delete
 │   ├── core/                   # shared business logic (reused by backend/)
 │   ├── server/                 # standalone FastAPI app (python -m oddish.server)
 │   ├── db/                     # models, connection helpers, storage

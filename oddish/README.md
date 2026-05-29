@@ -68,6 +68,7 @@ Available commands:
 - `oddish status` shows system, task, or experiment status
 - `oddish cancel` stops all in-flight runs for a task
 - `oddish pull` downloads logs, results, trajectories, and artifact files for a trial, task, or experiment
+- `oddish combine` merges several experiments into a new result experiment
 - `oddish delete` deletes a task or experiment from a self-hosted deployment
 
 ### `oddish run`
@@ -337,6 +338,29 @@ By default, pull output is written to `./.oddish/<target>` and includes a
 `--structured`, `--include-task-files`, `--out`, and `--type` to control what
 gets downloaded and where it lands. `--type trial|task|experiment` forces the
 target type instead of auto-resolving it.
+
+### `oddish combine`
+
+Merge two or more experiments into a brand-new result experiment. The sources
+are left untouched; their task memberships and finished trials (with artifacts)
+are copied into the new experiment for a single rolled-up view. Sources are
+given by experiment ID or name.
+
+```bash
+# Combine two experiments
+oddish combine <experiment_a> <experiment_b>
+
+# Name the result and combine three
+oddish combine <exp_a> <exp_b> <exp_c> --name nightly-rollup
+
+# Reference source artifacts in place instead of duplicating them
+oddish combine <exp_a> <exp_b> --no-copy-artifacts
+```
+
+Finished trials (`success`/`failed`) are copied; in-flight ones are skipped.
+Use `--copy-artifacts/--no-copy-artifacts` to choose between a fully independent
+copy (default) and a cheaper shared-artifact reference, and `--json` for
+machine-readable output.
 
 ### `oddish delete`
 
