@@ -217,3 +217,78 @@ def test_harbor_runner_passes_environment_kwargs_to_job_config(
 
     assert outcome.error is None
     assert seen["environment_kwargs"]["agent_tools_image"] == AGENT_TOOLS_IMAGE
+
+
+def test_harbor_runner_passes_resource_enforcement_to_job_config(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Harbor's resource-enforcement knobs (``cpu_enforcement_policy``,
+    ``memory_enforcement_policy``, ``override_cpus``/``override_memory_mb``)
+    live on ``EnvironmentConfig``, which ``HarborConfig.environment`` embeds.
+    They must survive untouched into the ``JobConfig`` handed to Harbor so a
+    sweep can opt into provider resource enforcement without Oddish-side
+    plumbing for each new field."""
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    jobs_dir = tmp_path / "jobs"
+    seen: dict[str, object] = {}
+
+    class _FakeJob:
+        def __init__(self, config: dict):
+            self.job_dir = config["jobs_dir"] / "job-1"
+            env = config["environment"]
+            seen["cpu_enforcement_policy"] = env.cpu_enforcement_policy
+            seen["memory_enforcement_policy"] = env.memory_enforcement_policy
+            seen["override_cpus"] = env.override_cpus
+            seen["override_memory_mb"] = env.override_memory_mb
+
+        @classmethod
+        async def create(cls, config: dict):
+            return cls(config)
+
+        async def run(self):
+            self.job_dir.mkdir(parents=True, exist_ok=True)
+            (self.job_dir / "result.json").write_text("{}\n", encoding="utf-8")
+            return object()
+
+    monkeypatch.setattr(harbor_runner, "validate_task_timeout_config", lambda path: None)
+    monkeypatch.setattr(harbor_runner, "_build_agent_config", lambda **kwargs: object())
+    monkeypatch.setattr(harbor_runner, "TaskConfig", lambda path: path)
+    monkeypatch.setattr(harbor_runner, "JobConfig", lambda **kwargs: kwargs)
+    monkeypatch.setattr(harbor_runner, "Job", _FakeJob)
+    monkeypatch.setattr(
+        harbor_runner,
+        "_extract_outcome_from_job_result",
+        lambda **kwargs: harbor_runner.HarborOutcome(
+            reward=1.0,
+            error=None,
+            exit_code=0,
+            duration_sec=kwargs["duration_sec"],
+            job_result_path=kwargs["job_result_path"],
+            job_dir=kwargs["job_dir"],
+        ),
+    )
+
+    outcome = asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="nop",
+            jobs_dir=jobs_dir,
+            environment=EnvironmentType.MODAL,
+            harbor_config={
+                "environment": {
+                    "cpu_enforcement_policy": "guarantee",
+                    "memory_enforcement_policy": "limit",
+                    "override_cpus": 4,
+                    "override_memory_mb": 8192,
+                }
+            },
+        )
+    )
+
+    assert outcome.error is None
+    assert seen["cpu_enforcement_policy"].value == "guarantee"
+    assert seen["memory_enforcement_policy"].value == "limit"
+    assert seen["override_cpus"] == 4
+    assert seen["override_memory_mb"] == 8192

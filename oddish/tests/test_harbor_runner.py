@@ -16,6 +16,16 @@ from oddish.workers.queue import trial_handler  # noqa: E402
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
 
 
+def _empty_job_stats() -> SimpleNamespace:
+    """Stand-in for Harbor's ``JobStats`` with no token/cost recorded."""
+    return SimpleNamespace(
+        n_input_tokens=None,
+        n_cache_tokens=None,
+        n_output_tokens=None,
+        cost_usd=None,
+    )
+
+
 def test_check_local_storage_preflight_reports_low_bytes(monkeypatch, tmp_path):
     monkeypatch.setattr(
         harbor_runner.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
@@ -701,11 +711,10 @@ def test_extract_outcome_from_job_result_carries_exception_type(monkeypatch):
         agent_setup=None,
         agent_execution=None,
         verifier=None,
-        compute_token_cost_totals=lambda: (None, None, None, None),
     )
     job_result = SimpleNamespace(
         trial_results=[trial_result],
-        stats=SimpleNamespace(evals={}),
+        stats=_empty_job_stats(),
     )
 
     outcome = harbor_runner._extract_outcome_from_job_result(
@@ -732,11 +741,10 @@ def test_extract_outcome_from_job_result_exception_type_none_when_no_exc():
         agent_setup=None,
         agent_execution=None,
         verifier=None,
-        compute_token_cost_totals=lambda: (None, None, None, None),
     )
     job_result = SimpleNamespace(
         trial_results=[trial_result],
-        stats=SimpleNamespace(evals={}),
+        stats=_empty_job_stats(),
     )
 
     outcome = harbor_runner._extract_outcome_from_job_result(
@@ -750,25 +758,29 @@ def test_extract_outcome_from_job_result_exception_type_none_when_no_exc():
     assert outcome.reward == 1.0
 
 
-def test_extract_outcome_uses_compute_token_cost_totals_for_multi_step():
-    """Multi-step trials leave ``agent_result`` unset and record token/cost on
-    ``step_results[*].agent_result``. ``_extract_outcome_from_job_result`` must
-    source totals from ``TrialResult.compute_token_cost_totals`` so those
-    multi-step tokens/cost are not silently dropped."""
+def test_extract_outcome_reads_token_cost_from_job_stats():
+    """Token/cost come from the job-level ``JobStats`` aggregate, which Harbor
+    builds from ``TrialResult.compute_token_cost_totals`` (covering single-step
+    ``agent_result`` *and* multi-step ``step_results``). The reward still comes
+    from the trial's verifier result."""
 
     trial_result = SimpleNamespace(
         exception_info=None,
-        agent_result=None,  # multi-step trials leave this empty
+        agent_result=None,  # e.g. a multi-step trial: tokens live in stats
         verifier_result=SimpleNamespace(rewards={"reward": 1.0}),
         environment_setup=None,
         agent_setup=None,
         agent_execution=None,
         verifier=None,
-        compute_token_cost_totals=lambda: (300, 50, 120, 0.42),
     )
     job_result = SimpleNamespace(
         trial_results=[trial_result],
-        stats=SimpleNamespace(evals={}),
+        stats=SimpleNamespace(
+            n_input_tokens=300,
+            n_cache_tokens=50,
+            n_output_tokens=120,
+            cost_usd=0.42,
+        ),
     )
 
     outcome = harbor_runner._extract_outcome_from_job_result(

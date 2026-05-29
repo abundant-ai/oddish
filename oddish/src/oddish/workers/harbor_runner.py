@@ -403,27 +403,21 @@ def _extract_outcome_from_job_result(
             if error or exception_type:
                 break
 
-    # Extract token usage & cost from Harbor's TrialResult.
-    # ``TrialResult.compute_token_cost_totals`` aggregates the trial's
-    # ``AgentContext`` for single-step trials *and* the per-step contexts on
-    # ``step_results[*].agent_result`` for multi-step trials. Reading
-    # ``agent_result`` directly (the previous behavior) silently dropped all
-    # token/cost for multi-step trials, since those leave ``agent_result``
-    # unset and only populate ``step_results``.
-    input_tokens: int | None = None
-    cache_tokens: int | None = None
-    output_tokens: int | None = None
-    cost_usd: float | None = None
+    # Token usage & cost come from Harbor's job-level ``JobStats`` aggregate.
+    # ``Job.run`` builds ``stats`` via ``JobStats.from_trial_results``, which
+    # sums each trial's ``TrialResult.compute_token_cost_totals`` — that helper
+    # aggregates the single-step ``agent_result`` *and* the per-step contexts
+    # on ``step_results[*].agent_result`` for multi-step trials. Reading the
+    # aggregate keeps us multi-step-correct (a plain ``agent_result`` read used
+    # to drop multi-step token/cost entirely) without re-walking trial results
+    # here. ``n_input_tokens`` preserves ``AgentContext`` semantics: total input
+    # including cache.
+    stats = job_result.stats
+    input_tokens: int | None = stats.n_input_tokens
+    cache_tokens: int | None = stats.n_cache_tokens
+    output_tokens: int | None = stats.n_output_tokens
+    cost_usd: float | None = stats.cost_usd
     phase_timing: dict[str, Any] | None = None
-
-    for trial_result in job_result.trial_results:
-        n_in, n_cache, n_out, cost = trial_result.compute_token_cost_totals()
-        if n_in is not None or n_out is not None or cost is not None:
-            input_tokens = n_in
-            cache_tokens = n_cache
-            output_tokens = n_out
-            cost_usd = cost
-            break
 
     # Fallback: read from ATIF trajectory final_metrics when Harbor reported
     # no token totals (e.g. CLI-wrapping agents that don't populate
@@ -461,28 +455,10 @@ def _extract_outcome_from_job_result(
             exception_type=exception_type,
         )
 
-    # Method 1: Check reward_stats in job stats.
-    # Harbor's AgentDatasetStats.reward_stats is
-    # ``dict[str, dict[float | int, list[str]]]`` where the innermost value
-    # is the list of trial IDs that produced each reward value. Pick the
-    # reward with the most trial IDs (most frequent outcome).
-    if job_result.stats.evals:
-        first_eval = next(iter(job_result.stats.evals.values()))
-        if first_eval.reward_stats and "reward" in first_eval.reward_stats:
-            reward_map = first_eval.reward_stats["reward"]
-            for reward_key, trial_ids in sorted(
-                reward_map.items(),
-                key=lambda item: len(item[1]),
-                reverse=True,
-            ):
-                if not trial_ids:
-                    continue
-                try:
-                    return _outcome(float(reward_key))
-                except (TypeError, ValueError):
-                    continue
-
-    # Method 2: Check trial results directly
+    # Reward comes straight off the trial's verifier result. Oddish runs
+    # exactly one trial per Harbor job, so the older ``stats.evals.reward_stats``
+    # "pick the most frequent reward across trials" walk was dead weight — there
+    # is only ever one trial to read.
     for trial_result in job_result.trial_results:
         if trial_result.verifier_result and trial_result.verifier_result.rewards:
             reward_value = trial_result.verifier_result.rewards.get("reward")
