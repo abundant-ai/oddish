@@ -4,6 +4,7 @@ import typer
 from oddish.cli.cancel import cancel
 from oddish.cli.delete import delete
 from oddish.cli.ls import ls
+from oddish.cli.publish import publish, unpublish
 from oddish.cli.pull import pull
 from oddish.cli.run import run
 from oddish.cli.status import status
@@ -21,6 +22,8 @@ app.command()(status)
 app.command()(cancel)
 app.command()(delete)
 app.command()(pull)
+app.command()(publish)
+app.command()(unpublish)
 
 
 if __name__ == "__main__":
