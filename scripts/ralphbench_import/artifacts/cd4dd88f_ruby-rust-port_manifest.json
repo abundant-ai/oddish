@@ -1,0 +1,3492 @@
+{
+  "task": "ruby-rust-port-383776ff",
+  "task_name": "ruby-rust-port",
+  "task_hash": "383776ff",
+  "task_version_id": "ruby-rust-port-383776ff-v13",
+  "task_versions": [
+    "ruby-rust-port-383776ff-v13",
+    "ruby-rust-port-383776ff-v14"
+  ],
+  "experiment_id": "cd8c33d8",
+  "n_trials": 75,
+  "note": "Generated from Oddish experiment cd8c33d8 on 20260519T005502Z. Only rewritten-task trials (latest task_version) with numeric verifier reward (including 0.0) kept; BAD_SUCCESS classifications excluded as reward-hacked; <=5 trials per (agent,model) ranked by total artifact bytes.\nMoved rerun-suspect trials to s3://ralphbench-logs/trash/rerun-suspect-trials-20260527T184724Z/ on 2026-05-27: ruby-rust-port-383776ff-163, ruby-rust-port-383776ff-172, ruby-rust-port-383776ff-227.\nImported clean replacement trials from cd8c33d8: . | 2026-06-01T21:13:05.377598+00:00 appended 10 trials from Oddish experiment cd4dd88f on task_version ruby-rust-port-383776ff-v14 (pairs: claude-code/anthropic/claude-opus-4-8, gemini-cli/gemini/gemini-3.5-flash); strict validity filter (status=SUCCESS, numeric reward, exception_stats clean or AgentTimeoutError/VerifierTimeoutError).",
+  "trials": {
+    "ruby-rust-port-383776ff-153": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:49:07.009845+00:00",
+      "finished_at": "2026-05-15T04:55:25.279787+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-153/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-9ti__v3syzH6",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-153",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T04:49:16.354443+00:00",
+          "finished_at": "2026-05-15T04:55:22.434040+00:00",
+          "duration_sec": 366.08
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:49:13.872271+00:00",
+          "finished_at": "2026-05-15T04:49:13.872322+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:49:14.000117+00:00",
+          "finished_at": "2026-05-15T04:49:14.000164+00:00",
+          "duration_sec": 0.0
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:49:08.557617+00:00",
+          "finished_at": "2026-05-15T04:49:13.872245+00:00",
+          "duration_sec": 5.31
+        }
+      },
+      "total_artifact_bytes": 12487,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-154": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:49:07.074910+00:00",
+      "finished_at": "2026-05-15T04:54:41.040012+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-154/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-hi3__CBeRMJw",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-154",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T04:49:12.004641+00:00",
+          "finished_at": "2026-05-15T04:54:38.920494+00:00",
+          "duration_sec": 326.92
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:49:11.286849+00:00",
+          "finished_at": "2026-05-15T04:49:11.286881+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:49:11.425984+00:00",
+          "finished_at": "2026-05-15T04:49:11.426063+00:00",
+          "duration_sec": 0.0
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:49:08.310443+00:00",
+          "finished_at": "2026-05-15T04:49:11.286819+00:00",
+          "duration_sec": 2.98
+        }
+      },
+      "total_artifact_bytes": 12487,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-155": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:49:08.925534+00:00",
+      "finished_at": "2026-05-15T04:55:49.662708+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-155/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-wrk__hN7tX3j",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-155",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T04:49:20.233210+00:00",
+          "finished_at": "2026-05-15T04:55:45.511585+00:00",
+          "duration_sec": 385.28
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:49:17.081787+00:00",
+          "finished_at": "2026-05-15T04:49:17.081822+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:49:17.474349+00:00",
+          "finished_at": "2026-05-15T04:49:17.474470+00:00",
+          "duration_sec": 0.0
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:49:12.305704+00:00",
+          "finished_at": "2026-05-15T04:49:17.081735+00:00",
+          "duration_sec": 4.78
+        }
+      },
+      "total_artifact_bytes": 12487,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-156": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:49:09.101852+00:00",
+      "finished_at": "2026-05-15T04:55:41.810813+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-156/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-58i__wCyVPfR",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-156",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T04:49:21.036394+00:00",
+          "finished_at": "2026-05-15T04:55:37.652241+00:00",
+          "duration_sec": 376.62
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:49:17.895159+00:00",
+          "finished_at": "2026-05-15T04:49:17.895203+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:49:18.324757+00:00",
+          "finished_at": "2026-05-15T04:49:18.324875+00:00",
+          "duration_sec": 0.0
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:49:12.644627+00:00",
+          "finished_at": "2026-05-15T04:49:17.895084+00:00",
+          "duration_sec": 5.25
+        }
+      },
+      "total_artifact_bytes": 12487,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-157": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:49:09.686460+00:00",
+      "finished_at": "2026-05-15T04:54:51.527118+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-157/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-iyq__YTTnBBg",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-157",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T04:49:18.657444+00:00",
+          "finished_at": "2026-05-15T04:54:48.366879+00:00",
+          "duration_sec": 329.71
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:49:17.213454+00:00",
+          "finished_at": "2026-05-15T04:49:17.213488+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:49:17.723692+00:00",
+          "finished_at": "2026-05-15T04:49:17.723798+00:00",
+          "duration_sec": 0.0
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:49:13.318922+00:00",
+          "finished_at": "2026-05-15T04:49:17.213400+00:00",
+          "duration_sec": 3.89
+        }
+      },
+      "total_artifact_bytes": 12487,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-158": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:49:09.993184+00:00",
+      "finished_at": "2026-05-15T04:58:43.244588+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-158/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-x84__gEA6gZx",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-158",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T04:55:09.855899+00:00",
+          "finished_at": "2026-05-15T04:58:30.523296+00:00",
+          "duration_sec": 200.67
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:49:19.265699+00:00",
+          "finished_at": "2026-05-15T04:49:19.265747+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:49:19.815073+00:00",
+          "finished_at": "2026-05-15T04:55:05.900291+00:00",
+          "duration_sec": 346.09
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:49:12.917913+00:00",
+          "finished_at": "2026-05-15T04:49:19.265657+00:00",
+          "duration_sec": 6.35
+        }
+      },
+      "total_artifact_bytes": 1598277,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-159": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:52:07.162603+00:00",
+      "finished_at": "2026-05-15T04:57:16.684434+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-159/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-uk2__q6xkWzT",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-159",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T04:54:59.655527+00:00",
+          "finished_at": "2026-05-15T04:57:09.680784+00:00",
+          "duration_sec": 130.03
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:52:10.951024+00:00",
+          "finished_at": "2026-05-15T04:52:10.951044+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:52:11.112397+00:00",
+          "finished_at": "2026-05-15T04:54:58.918210+00:00",
+          "duration_sec": 167.81
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:52:08.715511+00:00",
+          "finished_at": "2026-05-15T04:52:10.951000+00:00",
+          "duration_sec": 2.24
+        }
+      },
+      "total_artifact_bytes": 1602364,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-160": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:52:07.547998+00:00",
+      "finished_at": "2026-05-15T04:57:28.328895+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-160/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-v2l__pRQLfma",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-160",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T04:55:03.401338+00:00",
+          "finished_at": "2026-05-15T04:57:20.766739+00:00",
+          "duration_sec": 137.37
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:52:12.695954+00:00",
+          "finished_at": "2026-05-15T04:52:12.695990+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:52:12.913873+00:00",
+          "finished_at": "2026-05-15T04:55:02.699245+00:00",
+          "duration_sec": 169.79
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:52:09.810791+00:00",
+          "finished_at": "2026-05-15T04:52:12.695905+00:00",
+          "duration_sec": 2.89
+        }
+      },
+      "total_artifact_bytes": 1602572,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-161": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:52:07.779448+00:00",
+      "finished_at": "2026-05-15T04:57:03.025754+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-161/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-qwq__AdKuyVR",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-161",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T04:54:52.970391+00:00",
+          "finished_at": "2026-05-15T04:56:55.171905+00:00",
+          "duration_sec": 122.2
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:52:11.643697+00:00",
+          "finished_at": "2026-05-15T04:52:11.643717+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:52:11.916740+00:00",
+          "finished_at": "2026-05-15T04:54:52.127059+00:00",
+          "duration_sec": 160.21
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:52:09.404619+00:00",
+          "finished_at": "2026-05-15T04:52:11.643656+00:00",
+          "duration_sec": 2.24
+        }
+      },
+      "total_artifact_bytes": 1598301,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-162": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:52:13.192694+00:00",
+      "finished_at": "2026-05-15T05:02:22.261933+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-162/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-a63__xL7j6im",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-162",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T04:58:29.449969+00:00",
+          "finished_at": "2026-05-15T05:02:03.899899+00:00",
+          "duration_sec": 214.45
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:52:24.254515+00:00",
+          "finished_at": "2026-05-15T04:52:24.254552+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:52:25.302061+00:00",
+          "finished_at": "2026-05-15T04:58:24.892435+00:00",
+          "duration_sec": 359.59
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:52:18.637662+00:00",
+          "finished_at": "2026-05-15T04:52:24.254472+00:00",
+          "duration_sec": 5.62
+        }
+      },
+      "total_artifact_bytes": 1602602,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-166": {
+      "agent": "codex",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:49:08.956699+00:00",
+      "finished_at": "2026-05-15T05:04:28.400297+00:00",
+      "input_tokens": 5781514,
+      "cache_tokens": 5664128,
+      "output_tokens": 47986,
+      "cost_usd": 4.858574,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-166/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-50j__8gFonLs",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-166",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T05:01:15.635851+00:00",
+          "finished_at": "2026-05-15T05:04:18.820025+00:00",
+          "duration_sec": 183.18
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:49:15.501883+00:00",
+          "finished_at": "2026-05-15T04:49:44.301976+00:00",
+          "duration_sec": 28.8
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:49:44.707512+00:00",
+          "finished_at": "2026-05-15T05:01:14.071232+00:00",
+          "duration_sec": 689.36
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:49:11.986031+00:00",
+          "finished_at": "2026-05-15T04:49:15.501845+00:00",
+          "duration_sec": 3.52
+        }
+      },
+      "total_artifact_bytes": 3155778,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-167": {
+      "agent": "codex",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:49:14.700186+00:00",
+      "finished_at": "2026-05-15T05:27:36.480540+00:00",
+      "input_tokens": 13125346,
+      "cache_tokens": 12840448,
+      "output_tokens": 47825,
+      "cost_usd": 9.279463999999999,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-167/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-e1r__6KxmETg",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-167",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T05:03:00.507905+00:00",
+          "finished_at": "2026-05-15T05:27:30.396597+00:00",
+          "duration_sec": 1469.89
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:49:20.245580+00:00",
+          "finished_at": "2026-05-15T04:49:43.812527+00:00",
+          "duration_sec": 23.57
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:49:43.935134+00:00",
+          "finished_at": "2026-05-15T05:02:57.620020+00:00",
+          "duration_sec": 793.68
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:49:16.304151+00:00",
+          "finished_at": "2026-05-15T04:49:20.245528+00:00",
+          "duration_sec": 3.94
+        }
+      },
+      "total_artifact_bytes": 4204191,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-168": {
+      "agent": "codex",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:49:16.527470+00:00",
+      "finished_at": "2026-05-15T05:05:30.437562+00:00",
+      "input_tokens": 6798305,
+      "cache_tokens": 6354816,
+      "output_tokens": 50238,
+      "cost_usd": 6.901992999999999,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-168/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-bt__rxnV2yh",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-168",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T05:02:29.000026+00:00",
+          "finished_at": "2026-05-15T05:05:21.506823+00:00",
+          "duration_sec": 172.51
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:49:22.987487+00:00",
+          "finished_at": "2026-05-15T04:49:48.859792+00:00",
+          "duration_sec": 25.87
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:49:48.998148+00:00",
+          "finished_at": "2026-05-15T05:02:25.705801+00:00",
+          "duration_sec": 756.71
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:49:18.668617+00:00",
+          "finished_at": "2026-05-15T04:49:22.987443+00:00",
+          "duration_sec": 4.32
+        }
+      },
+      "total_artifact_bytes": 3198177,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-170": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:49:14.326698+00:00",
+      "finished_at": "2026-05-15T06:08:17.722737+00:00",
+      "input_tokens": 19133703,
+      "cache_tokens": 17362539,
+      "output_tokens": 78465,
+      "cost_usd": 7.9564158,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-170/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-rv1__CS8fePQ",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-170",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T06:02:33.375075+00:00",
+          "finished_at": "2026-05-15T06:08:13.893069+00:00",
+          "duration_sec": 340.52
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:49:20.458551+00:00",
+          "finished_at": "2026-05-15T04:49:55.076264+00:00",
+          "duration_sec": 34.62
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:49:55.239868+00:00",
+          "finished_at": "2026-05-15T06:02:30.134773+00:00",
+          "duration_sec": 4354.89
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:49:16.043050+00:00",
+          "finished_at": "2026-05-15T04:49:20.458498+00:00",
+          "duration_sec": 4.42
+        }
+      },
+      "total_artifact_bytes": 13175946,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-171": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T04:49:14.478749+00:00",
+      "finished_at": "2026-05-15T05:41:44.106172+00:00",
+      "input_tokens": 11313668,
+      "cache_tokens": 10162763,
+      "output_tokens": 65990,
+      "cost_usd": 5.126242599999999,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-171/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-3pi__85ECKaY",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-171",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T05:41:30.914640+00:00",
+          "finished_at": "2026-05-15T05:41:40.224313+00:00",
+          "duration_sec": 9.31
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T04:49:19.436300+00:00",
+          "finished_at": "2026-05-15T04:49:50.396005+00:00",
+          "duration_sec": 30.96
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T04:49:50.520847+00:00",
+          "finished_at": "2026-05-15T05:41:29.885956+00:00",
+          "duration_sec": 3099.37
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T04:49:16.016078+00:00",
+          "finished_at": "2026-05-15T04:49:19.436259+00:00",
+          "duration_sec": 3.42
+        }
+      },
+      "total_artifact_bytes": 8629393,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-177": {
+      "agent": "codex",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:12:53.528622+00:00",
+      "finished_at": "2026-05-15T21:27:26.562521+00:00",
+      "input_tokens": 4668356,
+      "cache_tokens": 4532864,
+      "output_tokens": 47144,
+      "cost_usd": 4.358212,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-177/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-rth__DFcRhmm",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-177",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:25:03.489292+00:00",
+          "finished_at": "2026-05-15T21:27:18.951136+00:00",
+          "duration_sec": 135.46
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:12:56.927573+00:00",
+          "finished_at": "2026-05-15T21:13:20.807125+00:00",
+          "duration_sec": 23.88
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:13:20.989993+00:00",
+          "finished_at": "2026-05-15T21:25:02.532065+00:00",
+          "duration_sec": 701.54
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:12:54.705270+00:00",
+          "finished_at": "2026-05-15T21:12:56.927558+00:00",
+          "duration_sec": 2.22
+        }
+      },
+      "total_artifact_bytes": 3383115,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-178": {
+      "agent": "codex",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:12:56.821447+00:00",
+      "finished_at": "2026-05-15T21:28:58.515405+00:00",
+      "input_tokens": 6243848,
+      "cache_tokens": 6118784,
+      "output_tokens": 47279,
+      "cost_usd": 5.103082000000001,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-178/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-__b__MUm6kuq",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-178",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:25:15.194580+00:00",
+          "finished_at": "2026-05-15T21:28:48.587286+00:00",
+          "duration_sec": 213.39
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:13:03.950179+00:00",
+          "finished_at": "2026-05-15T21:13:28.452909+00:00",
+          "duration_sec": 24.5
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:13:29.071311+00:00",
+          "finished_at": "2026-05-15T21:25:11.837317+00:00",
+          "duration_sec": 702.77
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:13:00.537545+00:00",
+          "finished_at": "2026-05-15T21:13:03.950165+00:00",
+          "duration_sec": 3.41
+        }
+      },
+      "total_artifact_bytes": 3273966,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-179": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:12:53.492098+00:00",
+      "finished_at": "2026-05-15T21:46:22.685576+00:00",
+      "input_tokens": 5624469,
+      "cache_tokens": 5284560,
+      "output_tokens": 34304,
+      "cost_usd": 2.1483779999999997,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-179/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-q77__VEPfg7q",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-179",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:43:07.394263+00:00",
+          "finished_at": "2026-05-15T21:46:15.977826+00:00",
+          "duration_sec": 188.58
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:12:56.961154+00:00",
+          "finished_at": "2026-05-15T21:13:24.377439+00:00",
+          "duration_sec": 27.42
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:13:24.522607+00:00",
+          "finished_at": "2026-05-15T21:43:06.609617+00:00",
+          "duration_sec": 1782.09
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:12:54.548495+00:00",
+          "finished_at": "2026-05-15T21:12:56.961135+00:00",
+          "duration_sec": 2.41
+        }
+      },
+      "total_artifact_bytes": 7157899,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-180": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:12:54.835510+00:00",
+      "finished_at": "2026-05-15T22:54:21.497262+00:00",
+      "input_tokens": 11204470,
+      "cache_tokens": 10159517,
+      "output_tokens": 92951,
+      "cost_usd": 5.2372214,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-180/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-b7l__apZaaoq",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-180",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:38:27.119180+00:00",
+          "finished_at": "2026-05-15T22:54:16.926832+00:00",
+          "duration_sec": 4549.81
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:12:58.819142+00:00",
+          "finished_at": "2026-05-15T21:13:43.507245+00:00",
+          "duration_sec": 44.69
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:13:43.635896+00:00",
+          "finished_at": "2026-05-15T21:38:24.355994+00:00",
+          "duration_sec": 1480.72
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:12:55.782115+00:00",
+          "finished_at": "2026-05-15T21:12:58.819116+00:00",
+          "duration_sec": 3.04
+        }
+      },
+      "total_artifact_bytes": 9035544,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-181": {
+      "agent": "kimi-cli",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:12:53.537865+00:00",
+      "finished_at": "2026-05-15T23:35:18.926402+00:00",
+      "input_tokens": 6661984,
+      "cache_tokens": 4579904,
+      "output_tokens": 181675,
+      "cost_usd": null,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-181/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-z0u__bTWHSom",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-181",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T23:29:50.144353+00:00",
+          "finished_at": "2026-05-15T23:35:15.958735+00:00",
+          "duration_sec": 325.81
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:12:56.888122+00:00",
+          "finished_at": "2026-05-15T21:13:11.243762+00:00",
+          "duration_sec": 14.36
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:13:11.410453+00:00",
+          "finished_at": "2026-05-15T23:29:48.777517+00:00",
+          "duration_sec": 8197.37
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:12:54.857677+00:00",
+          "finished_at": "2026-05-15T21:12:56.888094+00:00",
+          "duration_sec": 2.03
+        }
+      },
+      "total_artifact_bytes": 5568651,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-182": {
+      "agent": "kimi-cli",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:13:00.140269+00:00",
+      "finished_at": "2026-05-16T00:41:06.919884+00:00",
+      "input_tokens": 12290542,
+      "cache_tokens": 8905056,
+      "output_tokens": 288962,
+      "cost_usd": null,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-182/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-tru__nasEAfw",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-182",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-16T00:34:35.546556+00:00",
+          "finished_at": "2026-05-16T00:40:53.609612+00:00",
+          "duration_sec": 378.06
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:13:10.998969+00:00",
+          "finished_at": "2026-05-15T21:13:28.441631+00:00",
+          "duration_sec": 17.44
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:13:29.541033+00:00",
+          "finished_at": "2026-05-16T00:34:25.326352+00:00",
+          "duration_sec": 12055.79
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:13:06.118033+00:00",
+          "finished_at": "2026-05-15T21:13:10.998939+00:00",
+          "duration_sec": 4.88
+        }
+      },
+      "total_artifact_bytes": 13873455,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-183": {
+      "agent": "kimi-cli",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:12:56.726733+00:00",
+      "finished_at": "2026-05-16T01:59:14.999850+00:00",
+      "input_tokens": 15208560,
+      "cache_tokens": 9790384,
+      "output_tokens": 307301,
+      "cost_usd": null,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-183/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-wgd__VL6vA6e",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-183",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-16T01:57:34.955149+00:00",
+          "finished_at": "2026-05-16T01:59:11.222420+00:00",
+          "duration_sec": 96.27
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:13:00.422919+00:00",
+          "finished_at": "2026-05-15T21:13:19.851659+00:00",
+          "duration_sec": 19.43
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:13:19.974110+00:00",
+          "finished_at": "2026-05-16T01:57:31.360876+00:00",
+          "duration_sec": 17051.39
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:12:57.735147+00:00",
+          "finished_at": "2026-05-15T21:13:00.422904+00:00",
+          "duration_sec": 2.69
+        }
+      },
+      "total_artifact_bytes": 11920022,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-184": {
+      "agent": "kimi-cli",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:15:57.121339+00:00",
+      "finished_at": "2026-05-15T22:39:04.859893+00:00",
+      "input_tokens": 7893234,
+      "cache_tokens": 7077667,
+      "output_tokens": 210295,
+      "cost_usd": null,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-184/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-fnb__JJH7dqx",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-184",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T22:32:17.506708+00:00",
+          "finished_at": "2026-05-15T22:38:55.530411+00:00",
+          "duration_sec": 398.02
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:16:05.362827+00:00",
+          "finished_at": "2026-05-15T21:16:25.738777+00:00",
+          "duration_sec": 20.38
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:16:26.344866+00:00",
+          "finished_at": "2026-05-15T22:32:09.274279+00:00",
+          "duration_sec": 4542.93
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:16:00.666877+00:00",
+          "finished_at": "2026-05-15T21:16:05.362813+00:00",
+          "duration_sec": 4.7
+        }
+      },
+      "total_artifact_bytes": 5321512,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-185": {
+      "agent": "kimi-cli",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:15:59.257553+00:00",
+      "finished_at": "2026-05-15T22:23:21.257112+00:00",
+      "input_tokens": 599096,
+      "cache_tokens": 246064,
+      "output_tokens": 40484,
+      "cost_usd": null,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-185/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-yic__CMijed2",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-185",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T22:17:00.604115+00:00",
+          "finished_at": "2026-05-15T22:23:16.692669+00:00",
+          "duration_sec": 376.09
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:16:05.579220+00:00",
+          "finished_at": "2026-05-15T21:16:25.041919+00:00",
+          "duration_sec": 19.46
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:16:25.421057+00:00",
+          "finished_at": "2026-05-15T22:16:55.909251+00:00",
+          "duration_sec": 3630.49
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:16:01.894836+00:00",
+          "finished_at": "2026-05-15T21:16:05.579197+00:00",
+          "duration_sec": 3.68
+        }
+      },
+      "total_artifact_bytes": 987437,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-186": {
+      "agent": "terminus-2",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:18:54.011572+00:00",
+      "finished_at": "2026-05-15T22:03:12.321871+00:00",
+      "input_tokens": 14467521,
+      "cache_tokens": 14254580,
+      "output_tokens": 78412,
+      "cost_usd": 10.409854999999999,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-186/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-zaz__ZbviRLE",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-186",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T22:00:09.840648+00:00",
+          "finished_at": "2026-05-15T22:02:49.102547+00:00",
+          "duration_sec": 159.26
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:18:59.594174+00:00",
+          "finished_at": "2026-05-15T21:19:14.987828+00:00",
+          "duration_sec": 15.39
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:19:15.130361+00:00",
+          "finished_at": "2026-05-15T21:53:53.077530+00:00",
+          "duration_sec": 2077.95
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:18:56.161635+00:00",
+          "finished_at": "2026-05-15T21:18:59.594117+00:00",
+          "duration_sec": 3.43
+        }
+      },
+      "total_artifact_bytes": 116366066,
+      "original_provider": "claude",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-187": {
+      "agent": "terminus-2",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 4,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-16T01:09:56.878025+00:00",
+      "finished_at": "2026-05-16T02:10:17.296407+00:00",
+      "input_tokens": 31123313,
+      "cache_tokens": 30846660,
+      "output_tokens": 109947,
+      "cost_usd": 19.892178750000003,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-187/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-1v4__YYYTdix",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-187",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-16T02:06:55.942387+00:00",
+          "finished_at": "2026-05-16T02:09:43.888428+00:00",
+          "duration_sec": 167.95
+        },
+        "agent_setup": {
+          "started_at": "2026-05-16T01:10:01.305711+00:00",
+          "finished_at": "2026-05-16T01:10:16.128188+00:00",
+          "duration_sec": 14.82
+        },
+        "agent_execution": {
+          "started_at": "2026-05-16T01:10:16.262358+00:00",
+          "finished_at": "2026-05-16T02:00:10.241822+00:00",
+          "duration_sec": 2993.98
+        },
+        "environment_setup": {
+          "started_at": "2026-05-16T01:09:58.250982+00:00",
+          "finished_at": "2026-05-16T01:10:01.305693+00:00",
+          "duration_sec": 3.05
+        }
+      },
+      "total_artifact_bytes": 504428517,
+      "original_provider": "claude",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-188": {
+      "agent": "terminus-2",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:45:59.235568+00:00",
+      "finished_at": "2026-05-15T22:30:23.295035+00:00",
+      "input_tokens": 22158810,
+      "cache_tokens": 21922792,
+      "output_tokens": 87626,
+      "cost_usd": 14.618205999999992,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-188/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-fj__oqoHDQt",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-188",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T22:27:38.813723+00:00",
+          "finished_at": "2026-05-15T22:29:45.034155+00:00",
+          "duration_sec": 126.22
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:46:06.476005+00:00",
+          "finished_at": "2026-05-15T21:46:18.121801+00:00",
+          "duration_sec": 11.65
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:46:18.567931+00:00",
+          "finished_at": "2026-05-15T22:25:08.511447+00:00",
+          "duration_sec": 2329.94
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:46:03.577885+00:00",
+          "finished_at": "2026-05-15T21:46:06.475957+00:00",
+          "duration_sec": 2.9
+        }
+      },
+      "total_artifact_bytes": 217847454,
+      "original_provider": "claude",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-189": {
+      "agent": "terminus-2",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:19:00.580564+00:00",
+      "finished_at": "2026-05-15T22:18:08.839332+00:00",
+      "input_tokens": 21819536,
+      "cache_tokens": 21567308,
+      "output_tokens": 90492,
+      "cost_usd": 14.613553999999999,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-189/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-4zc__dXBgCAq",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-189",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T22:15:23.267705+00:00",
+          "finished_at": "2026-05-15T22:16:25.866602+00:00",
+          "duration_sec": 62.6
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:19:10.475063+00:00",
+          "finished_at": "2026-05-15T21:19:28.044549+00:00",
+          "duration_sec": 17.57
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:19:29.128988+00:00",
+          "finished_at": "2026-05-15T22:03:52.119127+00:00",
+          "duration_sec": 2662.99
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:19:06.122020+00:00",
+          "finished_at": "2026-05-15T21:19:10.475013+00:00",
+          "duration_sec": 4.35
+        }
+      },
+      "total_artifact_bytes": 170025153,
+      "original_provider": "claude",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-190": {
+      "agent": "terminus-2",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:18:57.478062+00:00",
+      "finished_at": "2026-05-15T21:52:10.021171+00:00",
+      "input_tokens": 14372146,
+      "cache_tokens": 14158276,
+      "output_tokens": 80922,
+      "cost_usd": 10.430996749999998,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-190/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-5qs__XyYSdM5",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-190",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:49:41.992258+00:00",
+          "finished_at": "2026-05-15T21:51:48.609116+00:00",
+          "duration_sec": 126.62
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:19:00.649717+00:00",
+          "finished_at": "2026-05-15T21:19:09.841307+00:00",
+          "duration_sec": 9.19
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:19:09.994676+00:00",
+          "finished_at": "2026-05-15T21:48:20.216135+00:00",
+          "duration_sec": 1750.22
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:18:58.482415+00:00",
+          "finished_at": "2026-05-15T21:19:00.649699+00:00",
+          "duration_sec": 2.17
+        }
+      },
+      "total_artifact_bytes": 117239319,
+      "original_provider": "claude",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-191": {
+      "agent": "terminus-2",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:12:59.937347+00:00",
+      "finished_at": "2026-05-15T21:26:28.073808+00:00",
+      "input_tokens": 509103,
+      "cache_tokens": 444416,
+      "output_tokens": 24322,
+      "cost_usd": 1.275303,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-191/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-v5q__t73pBUD",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-191",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:22:03.101472+00:00",
+          "finished_at": "2026-05-15T21:25:58.549114+00:00",
+          "duration_sec": 235.45
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:13:10.112539+00:00",
+          "finished_at": "2026-05-15T21:13:26.945496+00:00",
+          "duration_sec": 16.83
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:13:28.016963+00:00",
+          "finished_at": "2026-05-15T21:20:49.310905+00:00",
+          "duration_sec": 441.29
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:13:05.913517+00:00",
+          "finished_at": "2026-05-15T21:13:10.112522+00:00",
+          "duration_sec": 4.2
+        }
+      },
+      "total_artifact_bytes": 17275127,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-192": {
+      "agent": "terminus-2",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:15:53.762449+00:00",
+      "finished_at": "2026-05-15T21:24:50.225557+00:00",
+      "input_tokens": 242290,
+      "cache_tokens": 191488,
+      "output_tokens": 20338,
+      "cost_usd": 0.959894,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-192/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-3xp__3TAy5Af",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-192",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:21:40.716042+00:00",
+          "finished_at": "2026-05-15T21:24:40.631292+00:00",
+          "duration_sec": 179.92
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:15:58.085879+00:00",
+          "finished_at": "2026-05-15T21:16:12.384864+00:00",
+          "duration_sec": 14.3
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:16:12.598448+00:00",
+          "finished_at": "2026-05-15T21:21:11.492956+00:00",
+          "duration_sec": 298.89
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:15:55.148993+00:00",
+          "finished_at": "2026-05-15T21:15:58.085861+00:00",
+          "duration_sec": 2.94
+        }
+      },
+      "total_artifact_bytes": 14277668,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-193": {
+      "agent": "terminus-2",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:15:58.481492+00:00",
+      "finished_at": "2026-05-15T21:32:01.158359+00:00",
+      "input_tokens": 579788,
+      "cache_tokens": 463104,
+      "output_tokens": 25062,
+      "cost_usd": 1.5668319999999996,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-193/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-8vh__f5WibNo",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-193",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:26:12.013161+00:00",
+          "finished_at": "2026-05-15T21:31:50.109735+00:00",
+          "duration_sec": 338.1
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:16:02.540547+00:00",
+          "finished_at": "2026-05-15T21:16:17.920812+00:00",
+          "duration_sec": 15.38
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:16:18.049472+00:00",
+          "finished_at": "2026-05-15T21:25:08.557160+00:00",
+          "duration_sec": 530.51
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:15:59.387588+00:00",
+          "finished_at": "2026-05-15T21:16:02.540519+00:00",
+          "duration_sec": 3.15
+        }
+      },
+      "total_artifact_bytes": 18576852,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-194": {
+      "agent": "terminus-2",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:16:02.144969+00:00",
+      "finished_at": "2026-05-15T21:24:47.382366+00:00",
+      "input_tokens": 418830,
+      "cache_tokens": 363776,
+      "output_tokens": 20278,
+      "cost_usd": 1.0654979999999998,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-194/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-klr__nZ98m7m",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-194",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:24:03.785660+00:00",
+          "finished_at": "2026-05-15T21:24:35.096960+00:00",
+          "duration_sec": 31.31
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:16:08.357902+00:00",
+          "finished_at": "2026-05-15T21:16:20.955194+00:00",
+          "duration_sec": 12.6
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:16:21.411092+00:00",
+          "finished_at": "2026-05-15T21:23:25.597717+00:00",
+          "duration_sec": 424.19
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:16:05.876466+00:00",
+          "finished_at": "2026-05-15T21:16:08.357859+00:00",
+          "duration_sec": 2.48
+        }
+      },
+      "total_artifact_bytes": 14025612,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-195": {
+      "agent": "terminus-2",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:16:01.369774+00:00",
+      "finished_at": "2026-05-15T21:23:44.575769+00:00",
+      "input_tokens": 532986,
+      "cache_tokens": 475648,
+      "output_tokens": 20910,
+      "cost_usd": 1.151814,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-195/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-y_d__nECHLy2",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-195",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:23:21.733459+00:00",
+          "finished_at": "2026-05-15T21:23:36.264523+00:00",
+          "duration_sec": 14.53
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:16:04.928171+00:00",
+          "finished_at": "2026-05-15T21:16:14.774220+00:00",
+          "duration_sec": 9.85
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:16:14.904087+00:00",
+          "finished_at": "2026-05-15T21:23:05.445371+00:00",
+          "duration_sec": 410.54
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:16:02.959677+00:00",
+          "finished_at": "2026-05-15T21:16:04.928124+00:00",
+          "duration_sec": 1.97
+        }
+      },
+      "total_artifact_bytes": 15286912,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-196": {
+      "agent": "terminus-2",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:13:00.115536+00:00",
+      "finished_at": "2026-05-15T21:35:18.175358+00:00",
+      "input_tokens": 1062672,
+      "cache_tokens": 924457,
+      "output_tokens": 66898,
+      "cost_usd": 1.2640974,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-196/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-tyh__a8Ft2JA",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-196",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:31:49.354903+00:00",
+          "finished_at": "2026-05-15T21:34:44.114944+00:00",
+          "duration_sec": 174.76
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:13:10.070491+00:00",
+          "finished_at": "2026-05-15T21:13:26.934087+00:00",
+          "duration_sec": 16.86
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:13:28.021414+00:00",
+          "finished_at": "2026-05-15T21:29:30.443612+00:00",
+          "duration_sec": 962.42
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:13:05.593734+00:00",
+          "finished_at": "2026-05-15T21:13:10.070458+00:00",
+          "duration_sec": 4.48
+        }
+      },
+      "total_artifact_bytes": 22933378,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-197": {
+      "agent": "terminus-2",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:12:56.992462+00:00",
+      "finished_at": "2026-05-15T21:37:14.769900+00:00",
+      "input_tokens": 1209343,
+      "cache_tokens": 1050819,
+      "output_tokens": 54474,
+      "cost_usd": 1.1808998,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-197/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-3mo__EUtdg9G",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-197",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:31:39.511135+00:00",
+          "finished_at": "2026-05-15T21:37:07.410584+00:00",
+          "duration_sec": 327.9
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:12:59.631231+00:00",
+          "finished_at": "2026-05-15T21:13:09.745857+00:00",
+          "duration_sec": 10.11
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:13:09.880182+00:00",
+          "finished_at": "2026-05-15T21:31:05.016834+00:00",
+          "duration_sec": 1075.14
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:12:57.955991+00:00",
+          "finished_at": "2026-05-15T21:12:59.631214+00:00",
+          "duration_sec": 1.68
+        }
+      },
+      "total_artifact_bytes": 15950218,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-198": {
+      "agent": "terminus-2",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:15:53.662123+00:00",
+      "finished_at": "2026-05-15T21:32:18.083572+00:00",
+      "input_tokens": 807907,
+      "cache_tokens": 647910,
+      "output_tokens": 36605,
+      "cost_usd": 0.8888360000000001,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-198/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-n_n__ES8SQ5s",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-198",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:29:15.440327+00:00",
+          "finished_at": "2026-05-15T21:32:04.900432+00:00",
+          "duration_sec": 169.46
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:16:01.347327+00:00",
+          "finished_at": "2026-05-15T21:16:19.450992+00:00",
+          "duration_sec": 18.1
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:16:19.578145+00:00",
+          "finished_at": "2026-05-15T21:27:35.215777+00:00",
+          "duration_sec": 675.64
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:15:55.318380+00:00",
+          "finished_at": "2026-05-15T21:16:01.347262+00:00",
+          "duration_sec": 6.03
+        }
+      },
+      "total_artifact_bytes": 20007903,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-199": {
+      "agent": "terminus-2",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:16:00.848652+00:00",
+      "finished_at": "2026-05-15T21:27:45.889650+00:00",
+      "input_tokens": 462636,
+      "cache_tokens": 370705,
+      "output_tokens": 35308,
+      "cost_usd": 0.681699,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-199/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-3dv__LSne9su",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-199",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:25:25.480194+00:00",
+          "finished_at": "2026-05-15T21:27:35.593643+00:00",
+          "duration_sec": 130.11
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:16:04.707199+00:00",
+          "finished_at": "2026-05-15T21:16:16.452572+00:00",
+          "duration_sec": 11.75
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:16:16.580290+00:00",
+          "finished_at": "2026-05-15T21:24:56.542187+00:00",
+          "duration_sec": 519.96
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:16:02.291668+00:00",
+          "finished_at": "2026-05-15T21:16:04.707156+00:00",
+          "duration_sec": 2.42
+        }
+      },
+      "total_artifact_bytes": 16411279,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-200": {
+      "agent": "terminus-2",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:16:03.856289+00:00",
+      "finished_at": "2026-05-15T21:44:53.782580+00:00",
+      "input_tokens": 1818299,
+      "cache_tokens": 1580763,
+      "output_tokens": 94941,
+      "cost_usd": 1.9305166,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-200/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-uti__Ubss24t",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-200",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T21:41:52.710573+00:00",
+          "finished_at": "2026-05-15T21:44:36.535079+00:00",
+          "duration_sec": 163.82
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:16:09.161415+00:00",
+          "finished_at": "2026-05-15T21:16:24.124294+00:00",
+          "duration_sec": 14.96
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:16:24.343270+00:00",
+          "finished_at": "2026-05-15T21:39:53.272806+00:00",
+          "duration_sec": 1408.93
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:16:05.936366+00:00",
+          "finished_at": "2026-05-15T21:16:09.161319+00:00",
+          "duration_sec": 3.22
+        }
+      },
+      "total_artifact_bytes": 31476240,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-201": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:16:00.844747+00:00",
+      "finished_at": "2026-05-15T23:05:14.166528+00:00",
+      "input_tokens": 18470987,
+      "cache_tokens": 17589952,
+      "output_tokens": 107567,
+      "cost_usd": 4.732989449999998,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-201/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-qli__dwJMSPD",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-201",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T23:02:08.601431+00:00",
+          "finished_at": "2026-05-15T23:04:36.731680+00:00",
+          "duration_sec": 148.13
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:16:04.784068+00:00",
+          "finished_at": "2026-05-15T21:16:15.320588+00:00",
+          "duration_sec": 10.54
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:16:15.462672+00:00",
+          "finished_at": "2026-05-15T22:58:36.711966+00:00",
+          "duration_sec": 6141.25
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:16:02.206790+00:00",
+          "finished_at": "2026-05-15T21:16:04.784026+00:00",
+          "duration_sec": 2.58
+        }
+      },
+      "total_artifact_bytes": 227142539,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-202": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 3,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-16T01:12:56.938201+00:00",
+      "finished_at": "2026-05-16T02:41:32.265565+00:00",
+      "input_tokens": 11184906,
+      "cache_tokens": 8168336,
+      "output_tokens": 138874,
+      "cost_usd": 4.740162660000001,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-202/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-cxh__JzXGui5",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-202",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-16T02:17:25.287874+00:00",
+          "finished_at": "2026-05-16T02:41:11.700547+00:00",
+          "duration_sec": 1426.41
+        },
+        "agent_setup": {
+          "started_at": "2026-05-16T01:13:01.245345+00:00",
+          "finished_at": "2026-05-16T01:13:09.872678+00:00",
+          "duration_sec": 8.63
+        },
+        "agent_execution": {
+          "started_at": "2026-05-16T01:13:10.012648+00:00",
+          "finished_at": "2026-05-16T02:16:05.670837+00:00",
+          "duration_sec": 3775.66
+        },
+        "environment_setup": {
+          "started_at": "2026-05-16T01:12:58.108667+00:00",
+          "finished_at": "2026-05-16T01:13:01.245327+00:00",
+          "duration_sec": 3.14
+        }
+      },
+      "total_artifact_bytes": 743734822,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-203": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:16:10.472806+00:00",
+      "finished_at": "2026-05-15T23:43:35.194511+00:00",
+      "input_tokens": 16241408,
+      "cache_tokens": 14889248,
+      "output_tokens": 107946,
+      "cost_usd": 3.721688620000001,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-203/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-few__VNjbxbR",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-203",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T23:36:20.223107+00:00",
+          "finished_at": "2026-05-15T23:41:55.064633+00:00",
+          "duration_sec": 334.84
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:16:21.380167+00:00",
+          "finished_at": "2026-05-15T21:16:38.559868+00:00",
+          "duration_sec": 17.18
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:16:39.773861+00:00",
+          "finished_at": "2026-05-15T23:24:32.622441+00:00",
+          "duration_sec": 7672.85
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:16:16.919581+00:00",
+          "finished_at": "2026-05-15T21:16:21.380117+00:00",
+          "duration_sec": 4.46
+        }
+      },
+      "total_artifact_bytes": 209103609,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-204": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:18:54.024195+00:00",
+      "finished_at": "2026-05-15T22:54:10.774674+00:00",
+      "input_tokens": 12986926,
+      "cache_tokens": 12524800,
+      "output_tokens": 113299,
+      "cost_usd": 3.359423740000001,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-204/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-81i__e6bkwq3",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-204",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T22:51:00.807057+00:00",
+          "finished_at": "2026-05-15T22:53:42.176195+00:00",
+          "duration_sec": 161.37
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:18:58.431666+00:00",
+          "finished_at": "2026-05-15T21:21:47.559169+00:00",
+          "duration_sec": 169.13
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:21:47.697221+00:00",
+          "finished_at": "2026-05-15T22:42:32.436351+00:00",
+          "duration_sec": 4844.74
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:18:55.368765+00:00",
+          "finished_at": "2026-05-15T21:18:58.431623+00:00",
+          "duration_sec": 3.06
+        }
+      },
+      "total_artifact_bytes": 161769896,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-205": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:19:00.580292+00:00",
+      "finished_at": "2026-05-15T22:59:13.325580+00:00",
+      "input_tokens": 8287953,
+      "cache_tokens": 8100928,
+      "output_tokens": 67676,
+      "cost_usd": 2.0588281399999997,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-205/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-6h6__56jkpZA",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-205",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T22:24:33.212668+00:00",
+          "finished_at": "2026-05-15T22:58:06.928406+00:00",
+          "duration_sec": 2013.72
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:19:10.378428+00:00",
+          "finished_at": "2026-05-15T21:19:26.227889+00:00",
+          "duration_sec": 15.85
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:19:27.323843+00:00",
+          "finished_at": "2026-05-15T22:17:12.782894+00:00",
+          "duration_sec": 3465.46
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:19:06.047683+00:00",
+          "finished_at": "2026-05-15T21:19:10.378389+00:00",
+          "duration_sec": 4.33
+        }
+      },
+      "total_artifact_bytes": 110210306,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-206": {
+      "agent": "terminus-2",
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:12:53.489003+00:00",
+      "finished_at": "2026-05-15T22:38:50.872020+00:00",
+      "input_tokens": 10419085,
+      "cache_tokens": 4842583,
+      "output_tokens": 134161,
+      "cost_usd": 9.603567864000002,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-206/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-0h3__isBMujj",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-206",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T22:35:08.148091+00:00",
+          "finished_at": "2026-05-15T22:38:27.208171+00:00",
+          "duration_sec": 199.06
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:12:58.525242+00:00",
+          "finished_at": "2026-05-15T21:13:15.377204+00:00",
+          "duration_sec": 16.85
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:13:15.514973+00:00",
+          "finished_at": "2026-05-15T22:25:40.886716+00:00",
+          "duration_sec": 4345.37
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:12:54.600017+00:00",
+          "finished_at": "2026-05-15T21:12:58.525226+00:00",
+          "duration_sec": 3.93
+        }
+      },
+      "total_artifact_bytes": 129990493,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-207": {
+      "agent": "terminus-2",
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:52:10.453054+00:00",
+      "finished_at": "2026-05-15T23:41:47.577800+00:00",
+      "input_tokens": 11724341,
+      "cache_tokens": 7403262,
+      "output_tokens": 175165,
+      "cost_usd": 8.469686747,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-207/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-r6m__gBt5mAD",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-207",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T23:35:51.614032+00:00",
+          "finished_at": "2026-05-15T23:39:35.772661+00:00",
+          "duration_sec": 224.16
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:52:27.847894+00:00",
+          "finished_at": "2026-05-15T21:52:49.828395+00:00",
+          "duration_sec": 21.98
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:52:51.873032+00:00",
+          "finished_at": "2026-05-15T23:24:30.941113+00:00",
+          "duration_sec": 5499.07
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:52:21.208516+00:00",
+          "finished_at": "2026-05-15T21:52:27.847854+00:00",
+          "duration_sec": 6.64
+        }
+      },
+      "total_artifact_bytes": 189130337,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-208": {
+      "agent": "terminus-2",
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T22:00:57.420090+00:00",
+      "finished_at": "2026-05-15T23:18:30.892578+00:00",
+      "input_tokens": 10325726,
+      "cache_tokens": 4603974,
+      "output_tokens": 119980,
+      "cost_usd": 9.647864675999998,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-208/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-yqg__LKLCeUC",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-208",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T23:13:54.575252+00:00",
+          "finished_at": "2026-05-15T23:18:02.368139+00:00",
+          "duration_sec": 247.79
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T22:01:04.144852+00:00",
+          "finished_at": "2026-05-15T22:01:20.051214+00:00",
+          "duration_sec": 15.91
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T22:01:20.216326+00:00",
+          "finished_at": "2026-05-15T23:05:58.150445+00:00",
+          "duration_sec": 3877.93
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T22:00:58.609726+00:00",
+          "finished_at": "2026-05-15T22:01:04.144824+00:00",
+          "duration_sec": 5.54
+        }
+      },
+      "total_artifact_bytes": 196163537,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-209": {
+      "agent": "terminus-2",
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 4,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T23:27:56.127496+00:00",
+      "finished_at": "2026-05-16T01:30:16.877644+00:00",
+      "input_tokens": 17495095,
+      "cache_tokens": 7757554,
+      "output_tokens": 233279,
+      "cost_usd": 16.547824953000003,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-209/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-x0j__tQCgoCU",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-209",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-16T01:27:19.362487+00:00",
+          "finished_at": "2026-05-16T01:29:50.468949+00:00",
+          "duration_sec": 151.11
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T23:28:00.636370+00:00",
+          "finished_at": "2026-05-15T23:28:16.576782+00:00",
+          "duration_sec": 15.94
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T23:28:16.734827+00:00",
+          "finished_at": "2026-05-16T01:18:22.888228+00:00",
+          "duration_sec": 6606.15
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T23:27:57.411485+00:00",
+          "finished_at": "2026-05-15T23:28:00.636355+00:00",
+          "duration_sec": 3.22
+        }
+      },
+      "total_artifact_bytes": 323212696,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-210": {
+      "agent": "terminus-2",
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T22:00:57.344596+00:00",
+      "finished_at": "2026-05-15T23:30:22.438528+00:00",
+      "input_tokens": 12289129,
+      "cache_tokens": 5461891,
+      "output_tokens": 146613,
+      "cost_usd": 11.617225143,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-210/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-bj1__WBK4eTh",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-210",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T23:27:38.039382+00:00",
+          "finished_at": "2026-05-15T23:29:58.706120+00:00",
+          "duration_sec": 140.67
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T22:01:06.944885+00:00",
+          "finished_at": "2026-05-15T22:01:15.358394+00:00",
+          "duration_sec": 8.41
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T22:01:15.506414+00:00",
+          "finished_at": "2026-05-15T23:25:09.390977+00:00",
+          "duration_sec": 5033.88
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T22:00:58.447604+00:00",
+          "finished_at": "2026-05-15T22:01:06.944867+00:00",
+          "duration_sec": 8.5
+        }
+      },
+      "total_artifact_bytes": 182351063,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-211": {
+      "agent": "terminus-2",
+      "model": "openrouter/z-ai/glm-5.1",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:12:54.350927+00:00",
+      "finished_at": "2026-05-15T22:40:15.738473+00:00",
+      "input_tokens": 10556457,
+      "cache_tokens": 10358592,
+      "output_tokens": 184609,
+      "cost_usd": 3.7801423100000013,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-211/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-yyl__eBK3u6n",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-211",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T22:37:57.861879+00:00",
+          "finished_at": "2026-05-15T22:39:47.947605+00:00",
+          "duration_sec": 110.09
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:12:59.546874+00:00",
+          "finished_at": "2026-05-15T21:13:12.948654+00:00",
+          "duration_sec": 13.4
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:13:13.212303+00:00",
+          "finished_at": "2026-05-15T22:35:41.501439+00:00",
+          "duration_sec": 4948.29
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:12:56.363632+00:00",
+          "finished_at": "2026-05-15T21:12:59.546843+00:00",
+          "duration_sec": 3.18
+        }
+      },
+      "total_artifact_bytes": 136261492,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-212": {
+      "agent": "terminus-2",
+      "model": "openrouter/z-ai/glm-5.1",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:12:55.653227+00:00",
+      "finished_at": "2026-05-16T01:02:05.551096+00:00",
+      "input_tokens": 20739731,
+      "cache_tokens": 19784064,
+      "output_tokens": 132480,
+      "cost_usd": 6.946516287999999,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-212/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-jw__iFUxvet",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-212",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-16T00:18:58.643952+00:00",
+          "finished_at": "2026-05-16T01:01:23.042158+00:00",
+          "duration_sec": 2544.4
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:13:01.784233+00:00",
+          "finished_at": "2026-05-15T21:13:14.302729+00:00",
+          "duration_sec": 12.52
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:13:14.749559+00:00",
+          "finished_at": "2026-05-16T00:16:02.552643+00:00",
+          "duration_sec": 10967.8
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:12:58.464357+00:00",
+          "finished_at": "2026-05-15T21:13:01.784213+00:00",
+          "duration_sec": 3.32
+        }
+      },
+      "total_artifact_bytes": 332226124,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-213": {
+      "agent": "terminus-2",
+      "model": "openrouter/z-ai/glm-5.1",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:13:01.010343+00:00",
+      "finished_at": "2026-05-15T22:18:19.057910+00:00",
+      "input_tokens": 5977168,
+      "cache_tokens": 5821760,
+      "output_tokens": 108942,
+      "cost_usd": 1.7379362,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-213/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-ffw__6dh36ec",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-213",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T22:13:45.883013+00:00",
+          "finished_at": "2026-05-15T22:17:11.751580+00:00",
+          "duration_sec": 205.87
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:13:12.079572+00:00",
+          "finished_at": "2026-05-15T21:13:34.147856+00:00",
+          "duration_sec": 22.07
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:13:35.375860+00:00",
+          "finished_at": "2026-05-15T22:06:37.564438+00:00",
+          "duration_sec": 3182.19
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:13:07.207511+00:00",
+          "finished_at": "2026-05-15T21:13:12.079556+00:00",
+          "duration_sec": 4.87
+        }
+      },
+      "total_artifact_bytes": 83774900,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-214": {
+      "agent": "terminus-2",
+      "model": "openrouter/z-ai/glm-5.1",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:16:00.303435+00:00",
+      "finished_at": "2026-05-15T22:12:12.883045+00:00",
+      "input_tokens": 5568678,
+      "cache_tokens": 5114816,
+      "output_tokens": 63036,
+      "cost_usd": 1.984522488,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-214/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-t46__udWSL7C",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-214",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T22:06:23.247993+00:00",
+          "finished_at": "2026-05-15T22:11:20.328573+00:00",
+          "duration_sec": 297.08
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:16:10.446146+00:00",
+          "finished_at": "2026-05-15T21:16:27.084679+00:00",
+          "duration_sec": 16.64
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:16:28.159592+00:00",
+          "finished_at": "2026-05-15T22:00:41.328202+00:00",
+          "duration_sec": 2653.17
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:16:05.962771+00:00",
+          "finished_at": "2026-05-15T21:16:10.446100+00:00",
+          "duration_sec": 4.48
+        }
+      },
+      "total_artifact_bytes": 88306330,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-215": {
+      "agent": "terminus-2",
+      "model": "openrouter/z-ai/glm-5.1",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 4,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T23:52:05.870068+00:00",
+      "finished_at": "2026-05-16T02:31:52.461483+00:00",
+      "input_tokens": 18495984,
+      "cache_tokens": 17745664,
+      "output_tokens": 126035,
+      "cost_usd": 6.097333710000001,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-215/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-ody__TtPPVkb",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-215",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-16T01:51:23.959507+00:00",
+          "finished_at": "2026-05-16T02:31:23.835066+00:00",
+          "duration_sec": 2399.88
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T23:52:10.037326+00:00",
+          "finished_at": "2026-05-15T23:52:20.057499+00:00",
+          "duration_sec": 10.02
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T23:52:20.230811+00:00",
+          "finished_at": "2026-05-16T01:48:30.756899+00:00",
+          "duration_sec": 6970.53
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T23:52:07.307355+00:00",
+          "finished_at": "2026-05-15T23:52:10.037278+00:00",
+          "duration_sec": 2.73
+        }
+      },
+      "total_artifact_bytes": 422385688,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-221": {
+      "agent": "terminus-2",
+      "model": "openrouter/minimax/minimax-m2.7",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T21:24:56.293272+00:00",
+      "finished_at": "2026-05-16T09:16:03.840175+00:00",
+      "input_tokens": 12045651,
+      "cache_tokens": 10654193,
+      "output_tokens": 155276,
+      "cost_usd": 1.2430201799999998,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-221/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-x1m__EWrHuiB",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-221",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": "Agent execution timed out after 36000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-16T09:05:04.884585+00:00",
+          "finished_at": "2026-05-16T09:10:45.966316+00:00",
+          "duration_sec": 341.08
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T21:25:00.816027+00:00",
+          "finished_at": "2026-05-15T21:25:14.932492+00:00",
+          "duration_sec": 14.12
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T21:25:15.083915+00:00",
+          "finished_at": "2026-05-16T07:25:15.117301+00:00",
+          "duration_sec": 36000.03
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T21:24:57.893243+00:00",
+          "finished_at": "2026-05-15T21:25:00.815978+00:00",
+          "duration_sec": 2.92
+        }
+      },
+      "total_artifact_bytes": 5050111635,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-222": {
+      "agent": "terminus-2",
+      "model": "openrouter/minimax/minimax-m2.7",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T22:24:58.277077+00:00",
+      "finished_at": "2026-05-15T23:44:18.322943+00:00",
+      "input_tokens": 10009610,
+      "cache_tokens": 8650105,
+      "output_tokens": 129150,
+      "cost_usd": 1.0818378,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-222/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-s3y__fEEfGcK",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-222",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-15T23:41:15.992449+00:00",
+          "finished_at": "2026-05-15T23:43:48.260280+00:00",
+          "duration_sec": 152.27
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T22:25:09.723453+00:00",
+          "finished_at": "2026-05-15T22:25:21.064535+00:00",
+          "duration_sec": 11.34
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T22:25:21.531891+00:00",
+          "finished_at": "2026-05-15T23:38:33.984595+00:00",
+          "duration_sec": 4392.45
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T22:25:01.240874+00:00",
+          "finished_at": "2026-05-15T22:25:09.723415+00:00",
+          "duration_sec": 8.48
+        }
+      },
+      "total_artifact_bytes": 238587518,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-223": {
+      "agent": "terminus-2",
+      "model": "openrouter/minimax/minimax-m2.7",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T22:30:58.551859+00:00",
+      "finished_at": "2026-05-16T08:52:10.199653+00:00",
+      "input_tokens": 12808366,
+      "cache_tokens": 11568094,
+      "output_tokens": 118284,
+      "cost_usd": 1.207656267,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-223/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-4k6__p9YXUNL",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-223",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": "Agent execution timed out after 36000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-16T08:46:17.073144+00:00",
+          "finished_at": "2026-05-16T08:48:22.320286+00:00",
+          "duration_sec": 125.25
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T22:31:04.954586+00:00",
+          "finished_at": "2026-05-15T22:31:18.581119+00:00",
+          "duration_sec": 13.63
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T22:31:19.023677+00:00",
+          "finished_at": "2026-05-16T08:31:19.048175+00:00",
+          "duration_sec": 36000.02
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T22:31:01.417606+00:00",
+          "finished_at": "2026-05-15T22:31:04.954569+00:00",
+          "duration_sec": 3.54
+        }
+      },
+      "total_artifact_bytes": 1963131317,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-224": {
+      "agent": "terminus-2",
+      "model": "openrouter/minimax/minimax-m2.7",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 3,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-15T23:21:56.157776+00:00",
+      "finished_at": "2026-05-16T10:05:32.500743+00:00",
+      "input_tokens": 4821514,
+      "cache_tokens": 4235684,
+      "output_tokens": 144541,
+      "cost_usd": 0.60333924,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-224/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-h7l__J7SghQW",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-224",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": "Agent execution timed out after 36000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-16T09:55:36.287383+00:00",
+          "finished_at": "2026-05-16T10:00:56.610441+00:00",
+          "duration_sec": 320.32
+        },
+        "agent_setup": {
+          "started_at": "2026-05-15T23:21:59.556381+00:00",
+          "finished_at": "2026-05-15T23:22:07.547273+00:00",
+          "duration_sec": 7.99
+        },
+        "agent_execution": {
+          "started_at": "2026-05-15T23:22:07.709339+00:00",
+          "finished_at": "2026-05-16T09:22:07.739322+00:00",
+          "duration_sec": 36000.03
+        },
+        "environment_setup": {
+          "started_at": "2026-05-15T23:21:57.567643+00:00",
+          "finished_at": "2026-05-15T23:21:59.556364+00:00",
+          "duration_sec": 1.99
+        }
+      },
+      "total_artifact_bytes": 3797511035,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-225": {
+      "agent": "terminus-2",
+      "model": "openrouter/minimax/minimax-m2.7",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 4,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-16T11:21:58.908269+00:00",
+      "finished_at": "2026-05-16T12:14:19.690713+00:00",
+      "input_tokens": 4206073,
+      "cache_tokens": 4051680,
+      "output_tokens": 75584,
+      "cost_usd": 0.38288712599999997,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-225/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-yb4__JmDKQoi",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-225",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-16T12:11:54.015934+00:00",
+          "finished_at": "2026-05-16T12:14:05.797312+00:00",
+          "duration_sec": 131.78
+        },
+        "agent_setup": {
+          "started_at": "2026-05-16T11:22:02.633363+00:00",
+          "finished_at": "2026-05-16T11:22:14.405728+00:00",
+          "duration_sec": 11.77
+        },
+        "agent_execution": {
+          "started_at": "2026-05-16T11:22:14.512584+00:00",
+          "finished_at": "2026-05-16T12:10:01.195121+00:00",
+          "duration_sec": 2866.68
+        },
+        "environment_setup": {
+          "started_at": "2026-05-16T11:21:59.853493+00:00",
+          "finished_at": "2026-05-16T11:22:02.633321+00:00",
+          "duration_sec": 2.78
+        }
+      },
+      "total_artifact_bytes": 797786830,
+      "original_provider": "openai",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-230": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-18T01:03:56.818025+00:00",
+      "finished_at": "2026-05-18T01:52:02.944545+00:00",
+      "input_tokens": 23849798,
+      "cache_tokens": 22943970,
+      "output_tokens": 122243,
+      "cost_usd": 20.189284999999995,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-230/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-83k__3ZWfwhs",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-230",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T01:51:04.235700+00:00",
+          "finished_at": "2026-05-18T01:51:58.373694+00:00",
+          "duration_sec": 54.14
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T01:04:02.383370+00:00",
+          "finished_at": "2026-05-18T01:04:19.962061+00:00",
+          "duration_sec": 17.58
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T01:04:20.126437+00:00",
+          "finished_at": "2026-05-18T01:50:38.721880+00:00",
+          "duration_sec": 2778.6
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T01:03:58.607981+00:00",
+          "finished_at": "2026-05-18T01:04:02.383305+00:00",
+          "duration_sec": 3.78
+        }
+      },
+      "total_artifact_bytes": 6989378,
+      "original_provider": "claude",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-239": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-18T22:15:56.822371+00:00",
+      "finished_at": "2026-05-18T22:38:58.320095+00:00",
+      "input_tokens": 9574625,
+      "cache_tokens": 8629232,
+      "output_tokens": 88507,
+      "cost_usd": 4.6787164,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-239/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-lye__9mxwMdw",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-239",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T22:36:37.823669+00:00",
+          "finished_at": "2026-05-18T22:38:51.560599+00:00",
+          "duration_sec": 133.74
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T22:16:00.939689+00:00",
+          "finished_at": "2026-05-18T22:16:30.384758+00:00",
+          "duration_sec": 29.45
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T22:16:30.511014+00:00",
+          "finished_at": "2026-05-18T22:36:34.723529+00:00",
+          "duration_sec": 1204.21
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T22:15:58.168444+00:00",
+          "finished_at": "2026-05-18T22:16:00.939675+00:00",
+          "duration_sec": 2.77
+        }
+      },
+      "total_artifact_bytes": 15878855,
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-240": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 4,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "task_hash": "383776ff",
+      "task_name": "ruby-rust-port",
+      "started_at": "2026-05-19T01:25:04.146282",
+      "finished_at": "2026-05-19T01:41:55.463832",
+      "input_tokens": 5708909,
+      "output_tokens": 85038,
+      "cache_tokens": 5521292,
+      "cost_usd": 6.534241250000002,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-240/",
+      "has_trajectory": true,
+      "source_trial_name": "task-ruby-rust-port-383776ff-5pq__debYyYN",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-240",
+      "source_oddish_experiment_id": "cd8c33d8"
+    },
+    "ruby-rust-port-383776ff-241": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "started_at": "2026-05-19T00:13:05.598647+00:00",
+      "finished_at": "2026-05-19T00:39:07.950059+00:00",
+      "input_tokens": 17805102,
+      "cache_tokens": 17575899,
+      "output_tokens": 105402,
+      "cost_usd": 12.855338249999997,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-241/",
+      "source_trial_name": "task-ruby-rust-port-383776ff-kdo__eFh9H2Q",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-241",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-19T00:35:44.829838+00:00",
+          "finished_at": "2026-05-19T00:38:46.115363+00:00",
+          "duration_sec": 181.29
+        },
+        "agent_setup": {
+          "started_at": "2026-05-19T00:13:17.182942+00:00",
+          "finished_at": "2026-05-19T00:13:33.756551+00:00",
+          "duration_sec": 16.57
+        },
+        "agent_execution": {
+          "started_at": "2026-05-19T00:13:34.970347+00:00",
+          "finished_at": "2026-05-19T00:35:15.481159+00:00",
+          "duration_sec": 1300.51
+        },
+        "environment_setup": {
+          "started_at": "2026-05-19T00:13:12.115743+00:00",
+          "finished_at": "2026-05-19T00:13:17.182889+00:00",
+          "duration_sec": 5.07
+        }
+      },
+      "total_artifact_bytes": 9746758,
+      "original_provider": "claude",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-242": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "task_hash": "383776ff",
+      "task_name": "ruby-rust-port",
+      "started_at": "2026-05-19T00:09:58.154980",
+      "finished_at": "2026-05-19T00:35:49.000804",
+      "input_tokens": 16367602,
+      "output_tokens": 120335,
+      "cache_tokens": 16110300,
+      "cost_usd": 12.671492500000003,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-242/",
+      "has_trajectory": true,
+      "source_trial_name": "task-ruby-rust-port-383776ff-xny__DdxgJfe",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-242",
+      "source_oddish_experiment_id": "cd8c33d8"
+    },
+    "ruby-rust-port-383776ff-248": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "AgentTimeoutError",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v13",
+      "task_hash": "383776ff",
+      "task_name": "ruby-rust-port",
+      "started_at": "2026-05-27T01:34:06.306274",
+      "finished_at": "2026-05-27T11:37:43.206363",
+      "input_tokens": 6371363,
+      "output_tokens": 110758,
+      "cache_tokens": 5966325,
+      "cost_usd": 8.841508000000001,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-248/",
+      "has_trajectory": true,
+      "source_trial_name": "task-ruby-rust-port-383776ff-orc__XD2Pwwa",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-248",
+      "source_oddish_experiment_id": "cd8c33d8"
+    },
+    "ruby-rust-port-383776ff-258": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v14",
+      "started_at": "2026-05-28T20:17:39.648102+00:00",
+      "finished_at": "2026-05-28T21:20:05.668569+00:00",
+      "input_tokens": 29631657,
+      "cache_tokens": 28451468,
+      "output_tokens": 242354,
+      "cost_usd": 27.6472465,
+      "has_trajectory": true,
+      "trajectory_bytes": 3391500,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-258/",
+      "source_trial_name": "ruby-rust-port-258",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-258",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-ruby-rust-port-383776ff-bp__mTnuhXJ",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-262": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v14",
+      "started_at": "2026-05-28T20:17:39.634948+00:00",
+      "finished_at": "2026-05-28T20:24:39.346551+00:00",
+      "input_tokens": 134327,
+      "cache_tokens": 0,
+      "output_tokens": 6109,
+      "cost_usd": 0.2564715,
+      "has_trajectory": true,
+      "trajectory_bytes": 32588,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-262/",
+      "source_trial_name": "ruby-rust-port-262",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-262",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-ruby-rust-port-383776ff-kqp__EwvU9Ra",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-265": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v14",
+      "started_at": "2026-05-28T20:17:40.258413+00:00",
+      "finished_at": "2026-05-28T20:29:08.549574+00:00",
+      "input_tokens": 2842488,
+      "cache_tokens": 2520317,
+      "output_tokens": 31602,
+      "cost_usd": 1.14572205,
+      "has_trajectory": true,
+      "trajectory_bytes": 258022,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-265/",
+      "source_trial_name": "ruby-rust-port-265",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-265",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-ruby-rust-port-383776ff-ppw__SiaKvyE",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-267": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v14",
+      "started_at": "2026-05-29T00:53:43.647297+00:00",
+      "finished_at": "2026-05-29T01:54:35.678462+00:00",
+      "input_tokens": 41907494,
+      "cache_tokens": 39618241,
+      "output_tokens": 245278,
+      "cost_usd": 40.20678175,
+      "has_trajectory": true,
+      "trajectory_bytes": 3821765,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-267/",
+      "source_trial_name": "ruby-rust-port-267",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-267",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-ruby-rust-port-383776ff-v4n__ziC2Cvo",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-268": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v14",
+      "started_at": "2026-05-29T00:56:45.206896+00:00",
+      "finished_at": "2026-05-29T02:05:19.998563+00:00",
+      "input_tokens": 66236578,
+      "cache_tokens": 64025693,
+      "output_tokens": 257691,
+      "cost_usd": null,
+      "has_trajectory": true,
+      "trajectory_bytes": 4415508,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-268/",
+      "source_trial_name": "ruby-rust-port-268",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-268",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-ruby-rust-port-383776ff-v3w__NgUGyw9",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-271": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v14",
+      "started_at": "2026-05-29T09:08:36.435581+00:00",
+      "finished_at": "2026-05-29T09:17:48.622756+00:00",
+      "input_tokens": 4205283,
+      "cache_tokens": 3655086,
+      "output_tokens": 25918,
+      "cost_usd": 1.6068204,
+      "has_trajectory": true,
+      "trajectory_bytes": 330561,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-271/",
+      "source_trial_name": "ruby-rust-port-271",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-271",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-ruby-rust-port-383776ff-p_5__P4Q6F3i",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-275": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v14",
+      "started_at": "2026-05-29T10:56:35.666385+00:00",
+      "finished_at": "2026-05-29T11:25:29.790161+00:00",
+      "input_tokens": 17713339,
+      "cache_tokens": 15836061,
+      "output_tokens": 279990,
+      "cost_usd": 7.71123615,
+      "has_trajectory": true,
+      "trajectory_bytes": 1577076,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-275/",
+      "source_trial_name": "ruby-rust-port-275",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-275",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-ruby-rust-port-383776ff-v5z__gUtQdM7",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-276": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v14",
+      "started_at": "2026-05-29T12:47:41.333149+00:00",
+      "finished_at": "2026-05-29T12:59:03.091245+00:00",
+      "input_tokens": 8368962,
+      "cache_tokens": 7186653,
+      "output_tokens": 58426,
+      "cost_usd": 3.37729545,
+      "has_trajectory": true,
+      "trajectory_bytes": 587624,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-276/",
+      "source_trial_name": "ruby-rust-port-276",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-276",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-ruby-rust-port-383776ff-bi6__v6fSGoC",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-286": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "bedrock",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v14",
+      "started_at": "2026-05-30T17:02:40.807928+00:00",
+      "finished_at": "2026-05-31T03:05:10.174587+00:00",
+      "input_tokens": 98346489,
+      "cache_tokens": 95671825,
+      "output_tokens": 285281,
+      "cost_usd": 71.649665,
+      "has_trajectory": true,
+      "trajectory_bytes": 5406430,
+      "exception_classes": [
+        "AgentTimeoutError"
+      ],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-286/",
+      "source_trial_name": "ruby-rust-port-286",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-286",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-ruby-rust-port-383776ff-l0__2AY7xHj",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    },
+    "ruby-rust-port-383776ff-288": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "bedrock",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "ruby-rust-port-383776ff-v14",
+      "started_at": "2026-05-30T17:02:46.879366+00:00",
+      "finished_at": "2026-05-30T18:14:38.494941+00:00",
+      "input_tokens": 78349431,
+      "cache_tokens": 75954912,
+      "output_tokens": 255701,
+      "cost_usd": 59.29888475,
+      "has_trajectory": true,
+      "trajectory_bytes": 4413364,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/ruby-rust-port/ruby-rust-port-383776ff-288/",
+      "source_trial_name": "ruby-rust-port-288",
+      "source_oddish_task_id": "ruby-rust-port-383776ff",
+      "source_oddish_trial_id": "ruby-rust-port-383776ff-288",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-ruby-rust-port-383776ff-z8p__jTTpueZ",
+      "task_name": "ruby-rust-port",
+      "task_hash": "383776ff"
+    }
+  },
+  "task_hashes": [
+    "383776ff"
+  ],
+  "is_multi_version": true,
+  "experiment_ids": [
+    "cd8c33d8",
+    "cd4dd88f"
+  ],
+  "additional_imports": [
+    {
+      "imported_at": "2026-06-01T21:13:05.377561+00:00",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "task_version_id_at_snapshot": "ruby-rust-port-383776ff-v14",
+      "n_trials_added": 10,
+      "pairs_added": [
+        [
+          "claude-code",
+          "anthropic/claude-opus-4-8"
+        ],
+        [
+          "gemini-cli",
+          "gemini/gemini-3.5-flash"
+        ]
+      ],
+      "note": "Augmenting (Option A): add up to 5 trials per pair for the new agent/model pairs from this experiment. nop/oracle excluded; for nextjs-vite-rewrite, claude-code is also excluded."
+    }
+  ]
+}

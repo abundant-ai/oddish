@@ -1,0 +1,410 @@
+
+=== biofabric-rust-rewrite-897c0fc8 -> biofabric-rust-rewrite (uploading 10 trials)
+  [1/10] biofabric-rust-rewrite-897c0fc8-242: uploaded 23.3 MB in 2.1s; canonical=task-biofabric-rust-rewrite-897c__GwSSG5a
+  [2/10] biofabric-rust-rewrite-897c0fc8-234: uploaded 21.9 MB in 1.4s; canonical=task-biofabric-rust-rewrite-897c__K9ftcUs
+  [3/10] biofabric-rust-rewrite-897c0fc8-233: uploaded 23.6 MB in 2.0s; canonical=task-biofabric-rust-rewrite-897c__LZBf4uT
+  [4/10] biofabric-rust-rewrite-897c0fc8-232: uploaded 22.0 MB in 1.6s; canonical=task-biofabric-rust-rewrite-897c__2mvFj2J
+  [5/10] biofabric-rust-rewrite-897c0fc8-231: uploaded 20.5 MB in 1.3s; canonical=task-biofabric-rust-rewrite-897c__EGyABkF
+  [6/10] biofabric-rust-rewrite-897c0fc8-243: uploaded 41.6 MB in 2.5s; canonical=task-biofabric-rust-rewrite-897c__9bu3qRX
+  [7/10] biofabric-rust-rewrite-897c0fc8-241: uploaded 24.4 MB in 10.3s; canonical=task-biofabric-rust-rewrite-897c__rWaGuhT
+  [8/10] biofabric-rust-rewrite-897c0fc8-236: uploaded 9.4 MB in 2.7s; canonical=task-biofabric-rust-rewrite-897c__CCkHjAH
+  [9/10] biofabric-rust-rewrite-897c0fc8-240: uploaded 3.7 MB in 1.1s; canonical=task-biofabric-rust-rewrite-897c__XaDyHka
+  [10/10] biofabric-rust-rewrite-897c0fc8-238: uploaded 2.0 MB in 0.9s; canonical=task-biofabric-rust-rewrite-897c__kP6BUWY
+  Updated _manifest.json: n_trials=75 (+10); experiment_ids=['ad9a2ab3', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                 n=5
+    claude-code  / anthropic/claude-opus-4-8                 n=5
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5
+
+=== embedding-eval-be1dc228 -> embedding-eval (uploading 10 trials)
+  [1/10] embedding-eval-be1dc228-339: uploaded 3.2 MB in 1.0s; canonical=task-embedding-eval-be1dc228-ff__weSFKGk
+  [2/10] embedding-eval-be1dc228-338: uploaded 2.8 MB in 0.9s; canonical=task-embedding-eval-be1dc228-c21__cfwNaRF
+  [3/10] embedding-eval-be1dc228-337: uploaded 2.4 MB in 0.8s; canonical=task-embedding-eval-be1dc228-xqz__EL7euWT
+  [4/10] embedding-eval-be1dc228-341: uploaded 2.4 MB in 1.0s; canonical=task-embedding-eval-be1dc228-guo__DrJSdc2
+  [5/10] embedding-eval-be1dc228-340: uploaded 2.6 MB in 1.1s; canonical=task-embedding-eval-be1dc228-wnp__evixUnV
+  [6/10] embedding-eval-be1dc228-342: uploaded 1.5 MB in 1.0s; canonical=task-embedding-eval-be1dc228-l3b__wGQj5yQ
+  [7/10] embedding-eval-be1dc228-344: uploaded 2.7 MB in 1.0s; canonical=task-embedding-eval-be1dc228-9pv__ddQkvA7
+  [8/10] embedding-eval-be1dc228-343: uploaded 1.5 MB in 0.9s; canonical=task-embedding-eval-be1dc228-uy0__8kyj5xp
+  [9/10] embedding-eval-be1dc228-345: uploaded 1.7 MB in 0.9s; canonical=task-embedding-eval-be1dc228-ddj__FgUnxbP
+  [10/10] embedding-eval-be1dc228-346: uploaded 1.2 MB in 0.7s; canonical=task-embedding-eval-be1dc228-mna__6sLsxrn
+  Updated _manifest.json: n_trials=75 (+10); experiment_ids=['cd8c33d8', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                 n=5
+    claude-code  / anthropic/claude-opus-4-8                 n=5
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5
+
+=== find-network-alignments-b2ecebb7 -> find-network-alignments (uploading 8 trials)
+  [1/8] find-network-alignments-b2ecebb7-185: uploaded 4.5 MB in 0.9s; canonical=task-find-network-alignments-b2e__qAtsBYA
+  [2/8] find-network-alignments-b2ecebb7-187: uploaded 3.9 MB in 0.9s; canonical=task-find-network-alignments-b2e__RQpNTaM
+  [3/8] find-network-alignments-b2ecebb7-186: uploaded 3.5 MB in 1.3s; canonical=task-find-network-alignments-b2e__5L7Ej9L
+  [4/8] find-network-alignments-b2ecebb7-199: uploaded 14.1 MB in 1.1s; canonical=task-find-network-alignments-b2e__fquk2ZU
+  [5/8] find-network-alignments-b2ecebb7-196: uploaded 4.1 MB in 0.7s; canonical=task-find-network-alignments-b2e__gNPcecY
+  [6/8] find-network-alignments-b2ecebb7-198: uploaded 4.5 MB in 1.1s; canonical=task-find-network-alignments-b2e__4JbjuL9
+  [7/8] find-network-alignments-b2ecebb7-203: uploaded 4.6 MB in 0.7s; canonical=task-find-network-alignments-b2e__FXv8GDh
+  [8/8] find-network-alignments-b2ecebb7-201: uploaded 3.7 MB in 0.9s; canonical=task-find-network-alignments-b2e__bChTyc9
+  Updated _manifest.json: n_trials=73 (+8); experiment_ids=['ad9a2ab3', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                 n=5
+    claude-code  / anthropic/claude-opus-4-8                 n=3
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5
+
+=== jax-pytorch-rewrite-93c38683 -> jax-pytorch-rewrite (uploading 10 trials)
+  [1/10] jax-pytorch-rewrite-93c38683-137: uploaded 3.2 MB in 1.0s; canonical=task-jax-pytorch-rewrite-93c3868__AZzyiMq
+  [2/10] jax-pytorch-rewrite-93c38683-136: uploaded 6.0 MB in 1.0s; canonical=task-jax-pytorch-rewrite-93c3868__FRYs5Mf
+  [3/10] jax-pytorch-rewrite-93c38683-138: uploaded 4.2 MB in 1.0s; canonical=task-jax-pytorch-rewrite-93c3868__57PWsDg
+  [4/10] jax-pytorch-rewrite-93c38683-135: uploaded 4.1 MB in 0.8s; canonical=task-jax-pytorch-rewrite-93c3868__v29dW3o
+  [5/10] jax-pytorch-rewrite-93c38683-139: uploaded 3.6 MB in 0.9s; canonical=task-jax-pytorch-rewrite-93c3868__62Mztnp
+  [6/10] jax-pytorch-rewrite-93c38683-142: uploaded 3.6 MB in 0.9s; canonical=task-jax-pytorch-rewrite-93c3868__HtgLqcm
+  [7/10] jax-pytorch-rewrite-93c38683-144: uploaded 6.2 MB in 1.2s; canonical=task-jax-pytorch-rewrite-93c3868__ooGfTMM
+  [8/10] jax-pytorch-rewrite-93c38683-143: uploaded 5.4 MB in 1.2s; canonical=task-jax-pytorch-rewrite-93c3868__zJ97wyf
+  [9/10] jax-pytorch-rewrite-93c38683-140: uploaded 3.0 MB in 1.0s; canonical=task-jax-pytorch-rewrite-93c3868__Urf8QJ5
+  [10/10] jax-pytorch-rewrite-93c38683-141: uploaded 2.8 MB in 0.8s; canonical=task-jax-pytorch-rewrite-93c3868__Nz7Kr9w
+  Updated _manifest.json: n_trials=75 (+10); experiment_ids=['ad9a2ab3', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                 n=5
+    claude-code  / anthropic/claude-opus-4-8                 n=5
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5
+
+=== kubernetes-rust-rewrite-bae0f616 -> kubernetes-rust-rewrite (uploading 10 trials)
+  [1/10] kubernetes-rust-rewrite-bae0f616-212: uploaded 33.4 MB in 2.0s; canonical=task-kubernetes-rust-rewrite-bae__4pn86Z3
+  [2/10] kubernetes-rust-rewrite-bae0f616-209: uploaded 38.6 MB in 3.2s; canonical=task-kubernetes-rust-rewrite-bae__8xnvFn8
+  [3/10] kubernetes-rust-rewrite-bae0f616-211: uploaded 48.6 MB in 2.1s; canonical=task-kubernetes-rust-rewrite-bae__FiFJF8e
+  [4/10] kubernetes-rust-rewrite-bae0f616-213: uploaded 34.7 MB in 1.5s; canonical=task-kubernetes-rust-rewrite-bae__6aFtMeV
+  [5/10] kubernetes-rust-rewrite-bae0f616-214: uploaded 69.8 MB in 2.4s; canonical=task-kubernetes-rust-rewrite-bae__NAPWfor
+  [6/10] kubernetes-rust-rewrite-bae0f616-215: uploaded 20.4 MB in 2.1s; canonical=task-kubernetes-rust-rewrite-bae__BHFpyVs
+  [7/10] kubernetes-rust-rewrite-bae0f616-218: uploaded 1.8 MB in 0.9s; canonical=task-kubernetes-rust-rewrite-bae__hswerkB
+  [8/10] kubernetes-rust-rewrite-bae0f616-210: uploaded 1.6 MB in 0.7s; canonical=task-kubernetes-rust-rewrite-bae__xDQee4r
+  [9/10] kubernetes-rust-rewrite-bae0f616-217: uploaded 1.7 MB in 0.7s; canonical=task-kubernetes-rust-rewrite-bae__BK7JeEi
+  [10/10] kubernetes-rust-rewrite-bae0f616-219: uploaded 36.2 MB in 2.1s; canonical=task-kubernetes-rust-rewrite-bae__mZ5ABMA
+  Updated _manifest.json: n_trials=75 (+10); experiment_ids=['closed-internet-cursor', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                 n=5
+    claude-code  / anthropic/claude-opus-4-8                 n=5
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5
+
+=== nextjs-vite-rewrite-b0d028b0 -> nextjs-vite-rewrite (uploading 5 trials)
+  [1/5] nextjs-vite-rewrite-b0d028b0-255: uploaded 2.8 MB in 0.9s; canonical=task-nextjs-vite-rewrite-b0d028b__R3BkkYx
+  [2/5] nextjs-vite-rewrite-b0d028b0-253: uploaded 1.0 MB in 0.8s; canonical=task-nextjs-vite-rewrite-b0d028b__tCsVAhi
+  [3/5] nextjs-vite-rewrite-b0d028b0-257: uploaded 1.0 MB in 0.9s; canonical=task-nextjs-vite-rewrite-b0d028b__xfpumde
+  [4/5] nextjs-vite-rewrite-b0d028b0-259: uploaded 1.1 MB in 0.9s; canonical=task-nextjs-vite-rewrite-b0d028b__4sBhqbz
+  [5/5] nextjs-vite-rewrite-b0d028b0-260: uploaded 1.7 MB in 0.9s; canonical=task-nextjs-vite-rewrite-b0d028b__R9jWSBy
+  Updated _manifest.json: n_trials=70 (+5); experiment_ids=['closed-internet-cursor', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                 n=5
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5
+
+=== parameter-golf-61e11605 -> parameter-golf (uploading 9 trials)
+  [1/9] parameter-golf-61e11605-436: uploaded 1.9 MB in 0.9s; canonical=task-parameter-golf-61e11605-h0y__xTAXs7d
+  [2/9] parameter-golf-61e11605-446: uploaded 2.5 MB in 1.0s; canonical=task-parameter-golf-61e11605-l6x__GVqNZ6t
+  [3/9] parameter-golf-61e11605-435: uploaded 2.2 MB in 1.1s; canonical=task-parameter-golf-61e11605-4os__8nJR6h5
+  [4/9] parameter-golf-61e11605-438: uploaded 1.5 MB in 0.8s; canonical=task-parameter-golf-61e11605-gwj__2YYqA53
+  [5/9] parameter-golf-61e11605-447: uploaded 7.6 MB in 0.9s; canonical=task-parameter-golf-61e11605-fnk__QvLQePq
+  [6/9] parameter-golf-61e11605-442: uploaded 1.7 MB in 0.7s; canonical=task-parameter-golf-61e11605-qvp__G97ypUf
+  [7/9] parameter-golf-61e11605-445: uploaded 1.5 MB in 0.6s; canonical=task-parameter-golf-61e11605-fce__KjjjBci
+  [8/9] parameter-golf-61e11605-448: uploaded 1.0 MB in 0.9s; canonical=task-parameter-golf-61e11605-h4b__pcdXnDB
+  [9/9] parameter-golf-61e11605-441: uploaded 0.2 MB in 0.5s; canonical=task-parameter-golf-61e11605-1z3__eDxXr5R
+  Updated _manifest.json: n_trials=74 (+9); experiment_ids=['cd8c33d8', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                 n=5
+    claude-code  / anthropic/claude-opus-4-8                 n=4
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5
+
+=== ruby-rust-port-383776ff -> ruby-rust-port (uploading 10 trials)
+  [1/10] ruby-rust-port-383776ff-286: uploaded 12.0 MB in 1.5s; canonical=task-ruby-rust-port-383776ff-l0__2AY7xHj
+  [2/10] ruby-rust-port-383776ff-268: uploaded 6.6 MB in 1.3s; canonical=task-ruby-rust-port-383776ff-v3w__NgUGyw9
+  [3/10] ruby-rust-port-383776ff-288: uploaded 9.2 MB in 1.3s; canonical=task-ruby-rust-port-383776ff-z8p__jTTpueZ
+  [4/10] ruby-rust-port-383776ff-267: uploaded 8.9 MB in 1.5s; canonical=task-ruby-rust-port-383776ff-v4n__ziC2Cvo
+  [5/10] ruby-rust-port-383776ff-258: uploaded 8.9 MB in 2.5s; canonical=task-ruby-rust-port-383776ff-bp__mTnuhXJ
+  [6/10] ruby-rust-port-383776ff-275: uploaded 8.9 MB in 1.3s; canonical=task-ruby-rust-port-383776ff-v5z__gUtQdM7
+  [7/10] ruby-rust-port-383776ff-276: uploaded 2.9 MB in 1.2s; canonical=task-ruby-rust-port-383776ff-bi6__v6fSGoC
+  [8/10] ruby-rust-port-383776ff-271: uploaded 1.2 MB in 0.8s; canonical=task-ruby-rust-port-383776ff-p_5__P4Q6F3i
+  [9/10] ruby-rust-port-383776ff-265: uploaded 0.8 MB in 0.6s; canonical=task-ruby-rust-port-383776ff-ppw__SiaKvyE
+  [10/10] ruby-rust-port-383776ff-262: uploaded 0.1 MB in 0.5s; canonical=task-ruby-rust-port-383776ff-kqp__EwvU9Ra
+  Updated _manifest.json: n_trials=75 (+10); experiment_ids=['cd8c33d8', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                 n=5
+    claude-code  / anthropic/claude-opus-4-8                 n=5
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5
+
+=== rust-c-compiler-57913cbe -> rust-c-compiler (uploading 10 trials)
+  [1/10] rust-c-compiler-57913cbe-332: uploaded 24.6 MB in 1.3s; canonical=task-rust-c-compiler-57913cbe-_g__EDMNF3Q
+  [2/10] rust-c-compiler-57913cbe-333: uploaded 24.8 MB in 1.5s; canonical=task-rust-c-compiler-57913cbe-t0__JgXqH79
+  [3/10] rust-c-compiler-57913cbe-339: uploaded 27.4 MB in 1.7s; canonical=task-rust-c-compiler-57913cbe-_i__6WzBCnL
+  [4/10] rust-c-compiler-57913cbe-340: uploaded 26.3 MB in 1.4s; canonical=task-rust-c-compiler-57913cbe-9g__bETAuW8
+  [5/10] rust-c-compiler-57913cbe-330: uploaded 24.2 MB in 1.6s; canonical=task-rust-c-compiler-57913cbe-tl__sKFSBTs
+  [6/10] rust-c-compiler-57913cbe-334: uploaded 27.9 MB in 2.0s; canonical=task-rust-c-compiler-57913cbe-97__eKu459H
+  [7/10] rust-c-compiler-57913cbe-337: uploaded 11.0 MB in 1.2s; canonical=task-rust-c-compiler-57913cbe-hh__6HJDZTt
+  [8/10] rust-c-compiler-57913cbe-338: uploaded 11.8 MB in 1.1s; canonical=task-rust-c-compiler-57913cbe-gh__S7EPWaW
+  [9/10] rust-c-compiler-57913cbe-335: uploaded 1.4 MB in 0.9s; canonical=task-rust-c-compiler-57913cbe-yu__oh5bBF2
+  [10/10] rust-c-compiler-57913cbe-336: uploaded 0.2 MB in 0.4s; canonical=task-rust-c-compiler-57913cbe-l3__WoYjXF3
+  Updated _manifest.json: n_trials=75 (+10); experiment_ids=['ad9a2ab3', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                 n=5
+    claude-code  / anthropic/claude-opus-4-8                 n=5
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5
+
+=== rust-java-lsp-0a9c67d6 -> rust-java-lsp (uploading 10 trials)
+  [1/10] rust-java-lsp-0a9c67d6-251: uploaded 24.0 MB in 1.3s; canonical=task-rust-java-lsp-0a9c67d6-mdj4__7TR45ai
+  [2/10] rust-java-lsp-0a9c67d6-252: uploaded 28.6 MB in 1.5s; canonical=task-rust-java-lsp-0a9c67d6-iixt__iNaqcRx
+  [3/10] rust-java-lsp-0a9c67d6-253: uploaded 26.2 MB in 1.3s; canonical=task-rust-java-lsp-0a9c67d6-4d4b__3vmtDqM
+  [4/10] rust-java-lsp-0a9c67d6-249: uploaded 23.4 MB in 1.2s; canonical=task-rust-java-lsp-0a9c67d6-b15r__6LR7TPJ
+  [5/10] rust-java-lsp-0a9c67d6-259: uploaded 19.8 MB in 1.0s; canonical=task-rust-java-lsp-0a9c67d6-syg0__N29nEGW
+  [6/10] rust-java-lsp-0a9c67d6-257: uploaded 6.0 MB in 1.1s; canonical=task-rust-java-lsp-0a9c67d6-l2co__wHBwymu
+  [7/10] rust-java-lsp-0a9c67d6-255: uploaded 0.9 MB in 0.5s; canonical=task-rust-java-lsp-0a9c67d6-yvt2__5Ksh3yJ
+  [8/10] rust-java-lsp-0a9c67d6-258: uploaded 1.0 MB in 0.7s; canonical=task-rust-java-lsp-0a9c67d6-x565__NwJJ2Cs
+  [9/10] rust-java-lsp-0a9c67d6-254: uploaded 0.7 MB in 0.5s; canonical=task-rust-java-lsp-0a9c67d6-goz2__nmj6MzZ
+  [10/10] rust-java-lsp-0a9c67d6-256: uploaded 0.6 MB in 0.5s; canonical=task-rust-java-lsp-0a9c67d6-blas__GRdHLTg
+  Updated _manifest.json: n_trials=75 (+10); experiment_ids=['ad9a2ab3', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                 n=5
+    claude-code  / anthropic/claude-opus-4-8                 n=5
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5
+
+=== stripe-clone-66061f4d -> stripe-clone (uploading 10 trials)
+  [1/10] stripe-clone-66061f4d-82: uploaded 4.6 MB in 1.6s; canonical=task-stripe-clone-66061f4d-4vryr__GtoLsKe
+  [2/10] stripe-clone-66061f4d-79: uploaded 4.5 MB in 1.6s; canonical=task-stripe-clone-66061f4d-23pta__5iKL9Hi
+  [3/10] stripe-clone-66061f4d-81: uploaded 5.6 MB in 2.1s; canonical=task-stripe-clone-66061f4d-oobxq__g3cbbVV
+  [4/10] stripe-clone-66061f4d-78: uploaded 2.6 MB in 1.4s; canonical=task-stripe-clone-66061f4d-h6sqy__HFPUuVw
+  [5/10] stripe-clone-66061f4d-80: uploaded 2.5 MB in 1.9s; canonical=task-stripe-clone-66061f4d-6i9sw__cEUAtmE
+  [6/10] stripe-clone-66061f4d-88: uploaded 2.1 MB in 2.2s; canonical=task-stripe-clone-66061f4d-qa3j3__7PURUQF
+  [7/10] stripe-clone-66061f4d-83: uploaded 1.9 MB in 1.3s; canonical=task-stripe-clone-66061f4d-sutxb__oLrueHs
+  [8/10] stripe-clone-66061f4d-86: uploaded 1.0 MB in 0.7s; canonical=task-stripe-clone-66061f4d-tfg2d__cigoGYW
+  [9/10] stripe-clone-66061f4d-87: uploaded 0.5 MB in 0.6s; canonical=task-stripe-clone-66061f4d-kysq6__MX4o6Kw
+  [10/10] stripe-clone-66061f4d-89: uploaded 1.2 MB in 0.7s; canonical=task-stripe-clone-66061f4d-pukih__WTgHY2D
+  Updated _manifest.json: n_trials=75 (+10); experiment_ids=['45a08302', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                 n=5
+    claude-code  / anthropic/claude-opus-4-8                 n=5
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5
+
+=== trimul-cuda-fc34aaba -> trimul-cuda (uploading 9 trials)
+  [1/9] trimul-cuda-fc34aaba-570: uploaded 10.4 MB in 1.1s; canonical=task-trimul-cuda-fc34aaba-n9qc0u__5UuZLFF
+  [2/9] trimul-cuda-fc34aaba-569: uploaded 8.6 MB in 1.0s; canonical=task-trimul-cuda-fc34aaba-xqj256__JaQ8iJk
+  [3/9] trimul-cuda-fc34aaba-571: uploaded 9.0 MB in 1.0s; canonical=task-trimul-cuda-fc34aaba-z9ygo9__5NhzF3n
+  [4/9] trimul-cuda-fc34aaba-568: uploaded 10.5 MB in 0.9s; canonical=task-trimul-cuda-fc34aaba-dejke__XFDLYtG
+  [5/9] trimul-cuda-fc34aaba-572: uploaded 2.4 MB in 0.7s; canonical=task-trimul-cuda-fc34aaba-sqkdyc__u9ZR6Cu
+  [6/9] trimul-cuda-fc34aaba-575: uploaded 0.1 MB in 0.6s; canonical=task-trimul-cuda-fc34aaba-mqpv1o__c63QyJN
+  [7/9] trimul-cuda-fc34aaba-567: uploaded 2.7 MB in 0.7s; canonical=task-trimul-cuda-fc34aaba-tqe21q__r63yjHx
+  [8/9] trimul-cuda-fc34aaba-574: uploaded 0.2 MB in 0.8s; canonical=task-trimul-cuda-fc34aaba-vdo_iz__mjUVrXc
+  [9/9] trimul-cuda-fc34aaba-573: uploaded 0.9 MB in 0.7s; canonical=task-trimul-cuda-fc34aaba-pxj8p8__QbhtCDn
+  Updated _manifest.json: n_trials=73 (+9); experiment_ids=['cd8c33d8', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                 n=4
+    claude-code  / anthropic/claude-opus-4-8                 n=4
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5
+
+=== vliw-kernel-optimization-e4d25121 -> vliw-kernel-optimization (uploading 10 trials)
+  [1/10] vliw-kernel-optimization-e4d25121-207: uploaded 7.6 MB in 1.0s; canonical=task-vliw-kernel-optimization-e4__uqq7haq
+  [2/10] vliw-kernel-optimization-e4d25121-208: uploaded 9.7 MB in 0.8s; canonical=task-vliw-kernel-optimization-e4__sWVE8CJ
+  [3/10] vliw-kernel-optimization-e4d25121-187: uploaded 7.7 MB in 0.7s; canonical=task-vliw-kernel-optimization-e4__B3zPxD2
+  [4/10] vliw-kernel-optimization-e4d25121-204: uploaded 5.0 MB in 0.8s; canonical=task-vliw-kernel-optimization-e4__wveuHjG
+  [5/10] vliw-kernel-optimization-e4d25121-209: uploaded 14.6 MB in 0.9s; canonical=task-vliw-kernel-optimization-e4__vNY2M9a
+  [6/10] vliw-kernel-optimization-e4d25121-193: uploaded 3.6 MB in 0.9s; canonical=task-vliw-kernel-optimization-e4__nq8upzk
+  [7/10] vliw-kernel-optimization-e4d25121-191: uploaded 7.7 MB in 0.7s; canonical=task-vliw-kernel-optimization-e4__Mo7oBUV
+  [8/10] vliw-kernel-optimization-e4d25121-194: uploaded 5.1 MB in 0.8s; canonical=task-vliw-kernel-optimization-e4__Fubs7iW
+  [9/10] vliw-kernel-optimization-e4d25121-192: uploaded 2.5 MB in 0.9s; canonical=task-vliw-kernel-optimization-e4__ywT3CUG
+  [10/10] vliw-kernel-optimization-e4d25121-195: uploaded 33.8 MB in 2.0s; canonical=task-vliw-kernel-optimization-e4__THmZsis
+  Updated _manifest.json: n_trials=75 (+10); experiment_ids=['ad9a2ab3', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                 n=5
+    claude-code  / anthropic/claude-opus-4-8                 n=5
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5
+
+=== wasm-simd-40e18127 -> wasm-simd (uploading 10 trials)
+  [1/10] wasm-simd-40e18127-292: uploaded 5.9 MB in 1.0s; canonical=task-wasm-simd-40e18127-i9oajg95__6Ec6tkM
+  [2/10] wasm-simd-40e18127-291: uploaded 5.8 MB in 1.2s; canonical=task-wasm-simd-40e18127-dcnlio8q__GhqgYeY
+  [3/10] wasm-simd-40e18127-289: uploaded 5.3 MB in 1.0s; canonical=task-wasm-simd-40e18127-eu3i7i1i__9Yk4DLZ
+  [4/10] wasm-simd-40e18127-293: uploaded 5.9 MB in 0.8s; canonical=task-wasm-simd-40e18127-mz8ae7n1__gyfvPgw
+  [5/10] wasm-simd-40e18127-290: uploaded 5.1 MB in 1.0s; canonical=task-wasm-simd-40e18127-rp5b99hs__Qy3pVyU
+  [6/10] wasm-simd-40e18127-309: uploaded 40.9 MB in 2.1s; canonical=task-wasm-simd-40e18127-xesydjdx__XfPAKYM
+  [7/10] wasm-simd-40e18127-296: uploaded 27.8 MB in 1.6s; canonical=task-wasm-simd-40e18127-izwvvph6__LJoQyCe
+  [8/10] wasm-simd-40e18127-308: uploaded 19.6 MB in 1.5s; canonical=task-wasm-simd-40e18127-js6a5d8w__3ineKyC
+  [9/10] wasm-simd-40e18127-307: uploaded 20.0 MB in 1.2s; canonical=task-wasm-simd-40e18127-i2ihbz8k__2rkUeCD
+  [10/10] wasm-simd-40e18127-302: uploaded 1.3 MB in 0.9s; canonical=task-wasm-simd-40e18127-dnh76yg9__fyG9h2g
+  Updated _manifest.json: n_trials=75 (+10); experiment_ids=['ad9a2ab3', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                 n=5
+    claude-code  / anthropic/claude-opus-4-8                 n=5
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5
+
+=== zstd-decoder-72bbfded -> zstd-decoder (uploading 10 trials)
+  [1/10] zstd-decoder-72bbfded-405: uploaded 6.1 MB in 1.1s; canonical=task-zstd-decoder-72bbfded-wqtzk__DDV6U2u
+  [2/10] zstd-decoder-72bbfded-414: uploaded 4.6 MB in 1.0s; canonical=task-zstd-decoder-72bbfded-wi7gc__JMGSXqj
+  [3/10] zstd-decoder-72bbfded-402: uploaded 3.7 MB in 0.9s; canonical=task-zstd-decoder-72bbfded-5l6tw__aG6itWK
+  [4/10] zstd-decoder-72bbfded-413: uploaded 3.1 MB in 0.9s; canonical=task-zstd-decoder-72bbfded-475uy__VwJC34X
+  [5/10] zstd-decoder-72bbfded-404: uploaded 2.9 MB in 1.0s; canonical=task-zstd-decoder-72bbfded-lwiyu__936Uh4M
+  [6/10] zstd-decoder-72bbfded-408: uploaded 2.4 MB in 0.7s; canonical=task-zstd-decoder-72bbfded-59i4a__PmKdQ73
+  [7/10] zstd-decoder-72bbfded-411: uploaded 9.4 MB in 0.7s; canonical=task-zstd-decoder-72bbfded-x17el__eDV7rBa
+  [8/10] zstd-decoder-72bbfded-409: uploaded 8.1 MB in 1.0s; canonical=task-zstd-decoder-72bbfded-4fy5h__4zxmwgi
+  [9/10] zstd-decoder-72bbfded-410: uploaded 0.6 MB in 0.6s; canonical=task-zstd-decoder-72bbfded-520vr__SdQ86aj
+  [10/10] zstd-decoder-72bbfded-407: uploaded 0.5 MB in 0.5s; canonical=task-zstd-decoder-72bbfded-am5jy__XQcKjgN
+  Updated _manifest.json: n_trials=75 (+10); experiment_ids=['cd8c33d8', 'cd4dd88f']; is_multi_version=False
+    claude-code  / anthropic/claude-opus-4-7                 n=5
+    claude-code  / anthropic/claude-opus-4-8                 n=5
+    codex        / openai/gpt-5.5                            n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview             n=5
+    gemini-cli   / gemini/gemini-3.5-flash                   n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6           n=5
+    nop          / default                                   n=5
+    oracle       / default                                   n=5
+    terminus-2   / anthropic/claude-opus-4-7                 n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview             n=5
+    terminus-2   / openai/gpt-5.5                            n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro       n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7           n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6           n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                   n=5

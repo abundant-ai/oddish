@@ -1,0 +1,2749 @@
+{
+  "task": "kubernetes-rust-rewrite-ecef12ce",
+  "experiment_id": "closed-internet-cursor",
+  "task_name": "kubernetes-rust-rewrite",
+  "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+  "n_trials": 75,
+  "note": "Closed-internet trials run on Modal via harbor + harbor_ext (ManagedModalEnvironment + claude-code-api-key-no-search / codex-api-key-no-search wrappers). Each sandbox had only its agent's LLM-provider IP allowlisted (Anthropic for claude-code, OpenAI for codex). Every trial in this manifest was independently validated to (a) have no exception_info, (b) carry the per-trial network-resolution.json proving the CIDR allowlist held, (c) show no infra-failure markers (invalid_api_key, SIGTERM, credential-not-loaded) in its agent log. Embedding-eval is deliberately excluded \u2014 task owner has flagged it as not yet ready. Gemini-cli is deferred until a working GEMINI_API_KEY is provisioned. Added 34 kubernetes-rust-rewrite-bae0f616-v4 trials from oddish experiment 1a480d14 (lh-pr-178-25622823542-cheat) on 2026-05-18 to fix prior reward-hack passes. Added 37 kubernetes-rust-rewrite-bae0f616-v4 trials from oddish experiment 1a480d14 (lh-pr-178-25622823542-cheat) on 2026-05-18 to fix prior reward-hack passes. Removed 2 known reward-hacked kubernetes-rust-rewrite-ecef12ce-v1 trial(s) to trash/reward-hacks-replaced-20260518T2208Z/kubernetes-rust-rewrite/ and normalized task_version_id labels on 2026-05-18. Pruned 44 duplicate/overquota/reward-null trial(s) to trash/dedupe-and-exact5-prune-20260518T2305Z/kubernetes-rust-rewrite/ on 2026-05-18; duplicates are not allowed and each agent/model pair is capped at 5 where possible. Added k8s fill trials from Oddish on 2026-05-19 after duplicate-aware validation: kubernetes-rust-rewrite-bae0f616-191, kubernetes-rust-rewrite-bae0f616-188, kubernetes-rust-rewrite-bae0f616-189, kubernetes-rust-rewrite-bae0f616-194 | 2026-06-01T21:12:39.715363+00:00 appended 10 trials from Oddish experiment cd4dd88f on task_version kubernetes-rust-rewrite-bae0f616-v4 (pairs: claude-code/anthropic/claude-opus-4-8, gemini-cli/gemini/gemini-3.5-flash); strict validity filter (status=SUCCESS, numeric reward, exception_stats clean or AgentTimeoutError/VerifierTimeoutError).",
+  "trials": {
+    "kubernetes-rust-rewrite-ecef12ce-19": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-19/",
+      "attempts": 1,
+      "cache_tokens": 400851,
+      "cost_usd": 0.53030425,
+      "finished_at": "2026-05-04 21:55:33.46965+00",
+      "has_trajectory": true,
+      "input_tokens": 430549,
+      "max_attempts": 1,
+      "model": "anthropic/claude-opus-4-7",
+      "origin": "imported",
+      "output_tokens": 5867,
+      "provider": "anthropic",
+      "reward": 0,
+      "source_oddish_task_id": "kubernetes-rust-rewrite-bae0f616",
+      "source_oddish_trial_id": "kubernetes-rust-rewrite-bae0f616-19",
+      "source_trial_name": "kubernetes-rust-rewrite__sxaZUpv",
+      "started_at": "2026-05-04 21:41:19.121137+00",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-79": {
+      "agent": "gemini-cli",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-79/",
+      "attempts": 1,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-05T22:54:32.498072Z",
+      "has_trajectory": true,
+      "input_tokens": null,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "output_tokens": null,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 3307.64,
+          "finished_at": "2026-05-05T22:33:53.044959Z",
+          "started_at": "2026-05-05T21:38:45.404159Z"
+        },
+        "agent_setup": {
+          "duration_sec": 4.35,
+          "finished_at": "2026-05-05T21:38:45.404082Z",
+          "started_at": "2026-05-05T21:38:41.052853Z"
+        },
+        "environment_setup": {
+          "duration_sec": 8.57,
+          "finished_at": "2026-05-05T21:38:41.052844Z",
+          "started_at": "2026-05-05T21:38:32.485849Z"
+        },
+        "verifier": {
+          "duration_sec": 27.84,
+          "finished_at": "2026-05-05T22:36:40.096087Z",
+          "started_at": "2026-05-05T22:36:12.252873Z"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__GmhczSP",
+      "started_at": "2026-05-05T21:38:32.476531Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-84": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-84/",
+      "attempts": 1,
+      "cache_tokens": 164930432,
+      "cost_usd": 43.84614004400003,
+      "error_message": null,
+      "finished_at": "2026-05-05T19:25:51.357297Z",
+      "has_trajectory": true,
+      "input_tokens": 178626235,
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "output_tokens": 605727,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.04,
+          "finished_at": "2026-05-05T19:00:24.075107Z",
+          "started_at": "2026-05-05T09:00:24.037064Z"
+        },
+        "agent_setup": {
+          "duration_sec": 3.45,
+          "finished_at": "2026-05-05T09:00:24.037004Z",
+          "started_at": "2026-05-05T09:00:20.590797Z"
+        },
+        "environment_setup": {
+          "duration_sec": 5.77,
+          "finished_at": "2026-05-05T09:00:20.590780Z",
+          "started_at": "2026-05-05T09:00:14.825409Z"
+        },
+        "verifier": {
+          "duration_sec": 15.0,
+          "finished_at": "2026-05-05T19:05:11.440224Z",
+          "started_at": "2026-05-05T19:04:56.439692Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__59pmV3M",
+      "started_at": "2026-05-05T09:00:14.776332Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-85": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-85/",
+      "attempts": 1,
+      "cache_tokens": 175010560,
+      "cost_usd": 45.320507136,
+      "error_message": null,
+      "finished_at": "2026-05-05T19:31:50.888478Z",
+      "has_trajectory": true,
+      "input_tokens": 188550310,
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "output_tokens": 677717,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.04,
+          "finished_at": "2026-05-05T19:00:21.626682Z",
+          "started_at": "2026-05-05T09:00:21.590136Z"
+        },
+        "agent_setup": {
+          "duration_sec": 2.33,
+          "finished_at": "2026-05-05T09:00:21.590047Z",
+          "started_at": "2026-05-05T09:00:19.259419Z"
+        },
+        "environment_setup": {
+          "duration_sec": 4.43,
+          "finished_at": "2026-05-05T09:00:19.259381Z",
+          "started_at": "2026-05-05T09:00:14.828123Z"
+        },
+        "verifier": {
+          "duration_sec": 10.4,
+          "finished_at": "2026-05-05T19:04:32.202321Z",
+          "started_at": "2026-05-05T19:04:21.798347Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__ze6axWt",
+      "started_at": "2026-05-05T09:00:14.803891Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-86": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-86/",
+      "attempts": 1,
+      "cache_tokens": 119028608,
+      "cost_usd": 33.11445212,
+      "error_message": null,
+      "finished_at": "2026-05-05T17:30:51.461212Z",
+      "has_trajectory": true,
+      "input_tokens": 129609620,
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "output_tokens": 453528,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 28607.83,
+          "finished_at": "2026-05-05T16:57:12.044129Z",
+          "started_at": "2026-05-05T09:00:24.210516Z"
+        },
+        "agent_setup": {
+          "duration_sec": 3.48,
+          "finished_at": "2026-05-05T09:00:24.210471Z",
+          "started_at": "2026-05-05T09:00:20.730838Z"
+        },
+        "environment_setup": {
+          "duration_sec": 5.9,
+          "finished_at": "2026-05-05T09:00:20.730829Z",
+          "started_at": "2026-05-05T09:00:14.829573Z"
+        },
+        "verifier": {
+          "duration_sec": 9.96,
+          "finished_at": "2026-05-05T17:08:12.378263Z",
+          "started_at": "2026-05-05T17:08:02.417355Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__fJdaksV",
+      "started_at": "2026-05-05T09:00:14.809698Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-87": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-87/",
+      "attempts": 1,
+      "cache_tokens": 95839872,
+      "cost_usd": 27.507511748000013,
+      "error_message": null,
+      "finished_at": "2026-05-05T16:57:41.819413Z",
+      "has_trajectory": true,
+      "input_tokens": 104519600,
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "output_tokens": 392946,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 26023.92,
+          "finished_at": "2026-05-05T16:14:10.032219Z",
+          "started_at": "2026-05-05T09:00:26.115937Z"
+        },
+        "agent_setup": {
+          "duration_sec": 4.18,
+          "finished_at": "2026-05-05T09:00:26.115867Z",
+          "started_at": "2026-05-05T09:00:21.931352Z"
+        },
+        "environment_setup": {
+          "duration_sec": 7.1,
+          "finished_at": "2026-05-05T09:00:21.931342Z",
+          "started_at": "2026-05-05T09:00:14.830671Z"
+        },
+        "verifier": {
+          "duration_sec": 7.91,
+          "finished_at": "2026-05-05T16:27:01.999971Z",
+          "started_at": "2026-05-05T16:26:54.085630Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__pqHvKqA",
+      "started_at": "2026-05-05T09:00:14.815645Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-88": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-88/",
+      "attempts": 1,
+      "cache_tokens": 16105728,
+      "cost_usd": 3.36240906,
+      "error_message": null,
+      "finished_at": "2026-05-05T11:24:44.838219Z",
+      "has_trajectory": true,
+      "input_tokens": 16798190,
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "output_tokens": 179453,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 6699.66,
+          "finished_at": "2026-05-05T10:52:07.693739Z",
+          "started_at": "2026-05-05T09:00:28.037111Z"
+        },
+        "agent_setup": {
+          "duration_sec": 4.24,
+          "finished_at": "2026-05-05T09:00:28.037063Z",
+          "started_at": "2026-05-05T09:00:23.798536Z"
+        },
+        "environment_setup": {
+          "duration_sec": 8.97,
+          "finished_at": "2026-05-05T09:00:23.798526Z",
+          "started_at": "2026-05-05T09:00:14.831620Z"
+        },
+        "verifier": {
+          "duration_sec": 5.54,
+          "finished_at": "2026-05-05T10:59:28.870936Z",
+          "started_at": "2026-05-05T10:59:23.331375Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__uVUu4vY",
+      "started_at": "2026-05-05T09:00:14.821261Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-90": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-90/",
+      "attempts": 1,
+      "cache_tokens": 17607168,
+      "cost_usd": 44.33598967999998,
+      "error_message": null,
+      "finished_at": "2026-05-05T20:04:35.173834Z",
+      "has_trajectory": true,
+      "input_tokens": 45995003,
+      "model": "openrouter/z-ai/glm-5.1",
+      "output_tokens": 155669,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.03,
+          "finished_at": "2026-05-05T19:03:57.315894Z",
+          "started_at": "2026-05-05T09:03:57.285257Z"
+        },
+        "agent_setup": {
+          "duration_sec": 3.29,
+          "finished_at": "2026-05-05T09:03:57.285154Z",
+          "started_at": "2026-05-05T09:03:53.992935Z"
+        },
+        "environment_setup": {
+          "duration_sec": 5.71,
+          "finished_at": "2026-05-05T09:03:53.992925Z",
+          "started_at": "2026-05-05T09:03:48.286102Z"
+        },
+        "verifier": {
+          "duration_sec": 30.95,
+          "finished_at": "2026-05-05T19:50:54.942613Z",
+          "started_at": "2026-05-05T19:50:23.995491Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__dDSGbEi",
+      "started_at": "2026-05-05T09:03:48.264630Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-91": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-91/",
+      "attempts": 1,
+      "cache_tokens": 20951968,
+      "cost_usd": 34.79012221,
+      "error_message": null,
+      "finished_at": "2026-05-05T19:24:56.784226Z",
+      "has_trajectory": true,
+      "input_tokens": 41781934,
+      "model": "openrouter/z-ai/glm-5.1",
+      "output_tokens": 146527,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.02,
+          "finished_at": "2026-05-05T19:03:56.014853Z",
+          "started_at": "2026-05-05T09:03:55.999375Z"
+        },
+        "agent_setup": {
+          "duration_sec": 2.34,
+          "finished_at": "2026-05-05T09:03:55.999313Z",
+          "started_at": "2026-05-05T09:03:53.658384Z"
+        },
+        "environment_setup": {
+          "duration_sec": 5.37,
+          "finished_at": "2026-05-05T09:03:53.658372Z",
+          "started_at": "2026-05-05T09:03:48.287125Z"
+        },
+        "verifier": {
+          "duration_sec": 11.11,
+          "finished_at": "2026-05-05T19:09:50.322664Z",
+          "started_at": "2026-05-05T19:09:39.210530Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__UECnzCV",
+      "started_at": "2026-05-05T09:03:48.270181Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-92": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-92/",
+      "attempts": 1,
+      "cache_tokens": 17220736,
+      "cost_usd": 18.512555160000005,
+      "error_message": null,
+      "finished_at": "2026-05-05T19:56:01.000018Z",
+      "has_trajectory": true,
+      "input_tokens": 26842232,
+      "model": "openrouter/z-ai/glm-5.1",
+      "output_tokens": 141323,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.04,
+          "finished_at": "2026-05-05T19:03:55.869500Z",
+          "started_at": "2026-05-05T09:03:55.830966Z"
+        },
+        "agent_setup": {
+          "duration_sec": 2.7,
+          "finished_at": "2026-05-05T09:03:55.830798Z",
+          "started_at": "2026-05-05T09:03:53.134244Z"
+        },
+        "environment_setup": {
+          "duration_sec": 4.85,
+          "finished_at": "2026-05-05T09:03:53.134226Z",
+          "started_at": "2026-05-05T09:03:48.288283Z"
+        },
+        "verifier": {
+          "duration_sec": 11.16,
+          "finished_at": "2026-05-05T19:25:07.181515Z",
+          "started_at": "2026-05-05T19:24:56.024545Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__BaVnj4j",
+      "started_at": "2026-05-05T09:03:48.275096Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-93": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-93/",
+      "attempts": 1,
+      "cache_tokens": 16519872,
+      "cost_usd": 42.07517807999999,
+      "error_message": null,
+      "finished_at": "2026-05-05T20:04:35.606713Z",
+      "has_trajectory": true,
+      "input_tokens": 43393145,
+      "model": "openrouter/z-ai/glm-5.1",
+      "output_tokens": 155589,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.03,
+          "finished_at": "2026-05-05T19:03:58.467142Z",
+          "started_at": "2026-05-05T09:03:58.432227Z"
+        },
+        "agent_setup": {
+          "duration_sec": 4.52,
+          "finished_at": "2026-05-05T09:03:58.432142Z",
+          "started_at": "2026-05-05T09:03:53.916475Z"
+        },
+        "environment_setup": {
+          "duration_sec": 5.63,
+          "finished_at": "2026-05-05T09:03:53.916464Z",
+          "started_at": "2026-05-05T09:03:48.289515Z"
+        },
+        "verifier": {
+          "duration_sec": 16.6,
+          "finished_at": "2026-05-05T19:48:18.070796Z",
+          "started_at": "2026-05-05T19:48:01.474862Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__SCUMBXL",
+      "started_at": "2026-05-05T09:03:48.279999Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-98": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-98/",
+      "attempts": 1,
+      "cache_tokens": 43262188,
+      "cost_usd": 3.1037071800000002,
+      "error_message": null,
+      "finished_at": "2026-05-05T19:32:18.487345Z",
+      "has_trajectory": true,
+      "input_tokens": 44469433,
+      "model": "openrouter/minimax/minimax-m2.7",
+      "output_tokens": 121502,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.03,
+          "finished_at": "2026-05-05T19:02:50.849199Z",
+          "started_at": "2026-05-05T09:02:50.817006Z"
+        },
+        "agent_setup": {
+          "duration_sec": 3.02,
+          "finished_at": "2026-05-05T09:02:50.816943Z",
+          "started_at": "2026-05-05T09:02:47.792183Z"
+        },
+        "environment_setup": {
+          "duration_sec": 4.14,
+          "finished_at": "2026-05-05T09:02:47.792142Z",
+          "started_at": "2026-05-05T09:02:43.655061Z"
+        },
+        "verifier": {
+          "duration_sec": 6.85,
+          "finished_at": "2026-05-05T19:09:09.365835Z",
+          "started_at": "2026-05-05T19:09:02.519515Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__zZuDBTS",
+      "started_at": "2026-05-05T09:02:43.622574Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-99": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-99/",
+      "attempts": 1,
+      "cache_tokens": 22385610,
+      "cost_usd": 2.0911364999999997,
+      "error_message": null,
+      "finished_at": "2026-05-05T20:12:04.733885Z",
+      "has_trajectory": true,
+      "input_tokens": 24212186,
+      "model": "openrouter/minimax/minimax-m2.7",
+      "output_tokens": 118597,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.02,
+          "finished_at": "2026-05-05T19:02:54.219775Z",
+          "started_at": "2026-05-05T09:02:54.195421Z"
+        },
+        "agent_setup": {
+          "duration_sec": 4.8,
+          "finished_at": "2026-05-05T09:02:54.195372Z",
+          "started_at": "2026-05-05T09:02:49.391737Z"
+        },
+        "environment_setup": {
+          "duration_sec": 5.73,
+          "finished_at": "2026-05-05T09:02:49.391727Z",
+          "started_at": "2026-05-05T09:02:43.657581Z"
+        },
+        "verifier": {
+          "duration_sec": 73.69,
+          "finished_at": "2026-05-05T19:34:59.749421Z",
+          "started_at": "2026-05-05T19:33:46.057019Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__nFJrFhN",
+      "started_at": "2026-05-05T09:02:43.636349Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-100": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-100/",
+      "attempts": 1,
+      "cache_tokens": 32345428,
+      "cost_usd": 2.6402773799999997,
+      "error_message": null,
+      "finished_at": "2026-05-05T19:30:06.029502Z",
+      "has_trajectory": true,
+      "input_tokens": 34210931,
+      "model": "openrouter/minimax/minimax-m2.7",
+      "output_tokens": 116584,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.02,
+          "finished_at": "2026-05-05T19:02:50.792439Z",
+          "started_at": "2026-05-05T09:02:50.772239Z"
+        },
+        "agent_setup": {
+          "duration_sec": 2.76,
+          "finished_at": "2026-05-05T09:02:50.772132Z",
+          "started_at": "2026-05-05T09:02:48.012386Z"
+        },
+        "environment_setup": {
+          "duration_sec": 4.35,
+          "finished_at": "2026-05-05T09:02:48.012366Z",
+          "started_at": "2026-05-05T09:02:43.659324Z"
+        },
+        "verifier": {
+          "duration_sec": 6.93,
+          "finished_at": "2026-05-05T19:08:36.533171Z",
+          "started_at": "2026-05-05T19:08:29.606776Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__TrQkgrU",
+      "started_at": "2026-05-05T09:02:43.641800Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-102": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-102/",
+      "attempts": 1,
+      "cache_tokens": 26713648,
+      "cost_usd": 2.19861348,
+      "error_message": null,
+      "finished_at": "2026-05-05T20:03:43.289523Z",
+      "has_trajectory": true,
+      "input_tokens": 28233310,
+      "model": "openrouter/minimax/minimax-m2.7",
+      "output_tokens": 116580,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.03,
+          "finished_at": "2026-05-05T19:02:52.452175Z",
+          "started_at": "2026-05-05T09:02:52.422165Z"
+        },
+        "agent_setup": {
+          "duration_sec": 3.1,
+          "finished_at": "2026-05-05T09:02:52.422110Z",
+          "started_at": "2026-05-05T09:02:49.324375Z"
+        },
+        "environment_setup": {
+          "duration_sec": 5.66,
+          "finished_at": "2026-05-05T09:02:49.324361Z",
+          "started_at": "2026-05-05T09:02:43.661152Z"
+        },
+        "verifier": {
+          "duration_sec": 10.34,
+          "finished_at": "2026-05-05T19:58:09.118995Z",
+          "started_at": "2026-05-05T19:57:58.783231Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__TCXucKm",
+      "started_at": "2026-05-05T09:02:43.651419Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-103": {
+      "agent": "codex",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-103/",
+      "attempts": 1,
+      "cache_tokens": 52495872,
+      "cost_usd": 41.815956,
+      "error_message": null,
+      "finished_at": "2026-05-06T00:14:31.353536Z",
+      "has_trajectory": true,
+      "input_tokens": 54735426,
+      "model": "openai/gpt-5.5",
+      "output_tokens": 145675,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 3284.68,
+          "finished_at": "2026-05-05T22:38:49.971850Z",
+          "started_at": "2026-05-05T21:44:05.292811Z"
+        },
+        "agent_setup": {
+          "duration_sec": 2.21,
+          "finished_at": "2026-05-05T21:44:05.292566Z",
+          "started_at": "2026-05-05T21:44:03.087308Z"
+        },
+        "environment_setup": {
+          "duration_sec": 5.99,
+          "finished_at": "2026-05-05T21:44:03.087281Z",
+          "started_at": "2026-05-05T21:43:57.097150Z"
+        },
+        "verifier": {
+          "duration_sec": 90.44,
+          "finished_at": "2026-05-05T22:41:12.102517Z",
+          "started_at": "2026-05-05T22:39:41.661338Z"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__nKPsUHP",
+      "started_at": "2026-05-05T21:43:57.080903Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-105": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-105/",
+      "attempts": 1,
+      "cache_tokens": 434620,
+      "cost_usd": 0.8796499999999996,
+      "error_message": null,
+      "finished_at": "2026-05-05T09:44:11.114459Z",
+      "has_trajectory": true,
+      "input_tokens": 645103,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "output_tokens": 30980,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 411.43,
+          "finished_at": "2026-05-05T09:35:18.934617Z",
+          "started_at": "2026-05-05T09:28:27.509449Z"
+        },
+        "agent_setup": {
+          "duration_sec": 3.38,
+          "finished_at": "2026-05-05T09:28:27.509383Z",
+          "started_at": "2026-05-05T09:28:24.125069Z"
+        },
+        "environment_setup": {
+          "duration_sec": 5.61,
+          "finished_at": "2026-05-05T09:28:24.125051Z",
+          "started_at": "2026-05-05T09:28:18.518641Z"
+        },
+        "verifier": {
+          "duration_sec": 4.98,
+          "finished_at": "2026-05-05T09:36:04.275939Z",
+          "started_at": "2026-05-05T09:35:59.300431Z"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__8kCSTEg",
+      "started_at": "2026-05-05T09:28:18.449457Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "original_provider": "openrouter",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-106": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-106/",
+      "attempts": 1,
+      "cache_tokens": 772754,
+      "cost_usd": 1.2770127999999998,
+      "error_message": null,
+      "finished_at": "2026-05-05T09:50:18.465451Z",
+      "has_trajectory": true,
+      "input_tokens": 1115363,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "output_tokens": 36437,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 952.24,
+          "finished_at": "2026-05-05T09:44:18.404616Z",
+          "started_at": "2026-05-05T09:28:26.159678Z"
+        },
+        "agent_setup": {
+          "duration_sec": 3.42,
+          "finished_at": "2026-05-05T09:28:26.159638Z",
+          "started_at": "2026-05-05T09:28:22.739851Z"
+        },
+        "environment_setup": {
+          "duration_sec": 4.19,
+          "finished_at": "2026-05-05T09:28:22.739814Z",
+          "started_at": "2026-05-05T09:28:18.549050Z"
+        },
+        "verifier": {
+          "duration_sec": 4.29,
+          "finished_at": "2026-05-05T09:44:41.664021Z",
+          "started_at": "2026-05-05T09:44:37.374353Z"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__8dwW9J2",
+      "started_at": "2026-05-05T09:28:18.485898Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "original_provider": "openrouter",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-107": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-107/",
+      "attempts": 1,
+      "cache_tokens": 577321,
+      "cost_usd": 1.0307182000000001,
+      "error_message": null,
+      "finished_at": "2026-05-05T09:45:53.612181Z",
+      "has_trajectory": true,
+      "input_tokens": 807302,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "output_tokens": 37941,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 611.14,
+          "finished_at": "2026-05-05T09:38:37.594602Z",
+          "started_at": "2026-05-05T09:28:26.452741Z"
+        },
+        "agent_setup": {
+          "duration_sec": 2.21,
+          "finished_at": "2026-05-05T09:28:26.452674Z",
+          "started_at": "2026-05-05T09:28:24.244047Z"
+        },
+        "environment_setup": {
+          "duration_sec": 5.69,
+          "finished_at": "2026-05-05T09:28:24.244037Z",
+          "started_at": "2026-05-05T09:28:18.550126Z"
+        },
+        "verifier": {
+          "duration_sec": 2.98,
+          "finished_at": "2026-05-05T09:39:01.296080Z",
+          "started_at": "2026-05-05T09:38:58.312868Z"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__UL683Z3",
+      "started_at": "2026-05-05T09:28:18.492264Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "original_provider": "openrouter",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-108": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-108/",
+      "attempts": 1,
+      "cache_tokens": 11071019,
+      "cost_usd": 9.234489799999999,
+      "error_message": null,
+      "finished_at": "2026-05-05T10:41:16.457696Z",
+      "has_trajectory": true,
+      "input_tokens": 13961902,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "output_tokens": 103210,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 3646.06,
+          "finished_at": "2026-05-05T10:29:11.677734Z",
+          "started_at": "2026-05-05T09:28:25.614839Z"
+        },
+        "agent_setup": {
+          "duration_sec": 2.39,
+          "finished_at": "2026-05-05T09:28:25.614729Z",
+          "started_at": "2026-05-05T09:28:23.220352Z"
+        },
+        "environment_setup": {
+          "duration_sec": 4.67,
+          "finished_at": "2026-05-05T09:28:23.220313Z",
+          "started_at": "2026-05-05T09:28:18.551065Z"
+        },
+        "verifier": {
+          "duration_sec": 9.83,
+          "finished_at": "2026-05-05T10:30:36.189149Z",
+          "started_at": "2026-05-05T10:30:26.354675Z"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__JcMh2jU",
+      "started_at": "2026-05-05T09:28:18.497391Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "original_provider": "openrouter",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-109": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-109/",
+      "attempts": 1,
+      "cache_tokens": 10049420,
+      "cost_usd": 6.877532,
+      "error_message": null,
+      "finished_at": "2026-05-05T11:17:16.645831Z",
+      "has_trajectory": true,
+      "input_tokens": 11582428,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "output_tokens": 150136,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 5993.1,
+          "finished_at": "2026-05-05T11:08:19.254095Z",
+          "started_at": "2026-05-05T09:28:26.153143Z"
+        },
+        "agent_setup": {
+          "duration_sec": 2.81,
+          "finished_at": "2026-05-05T09:28:26.153083Z",
+          "started_at": "2026-05-05T09:28:23.346389Z"
+        },
+        "environment_setup": {
+          "duration_sec": 4.79,
+          "finished_at": "2026-05-05T09:28:23.346376Z",
+          "started_at": "2026-05-05T09:28:18.552218Z"
+        },
+        "verifier": {
+          "duration_sec": 50.47,
+          "finished_at": "2026-05-05T11:10:35.168553Z",
+          "started_at": "2026-05-05T11:09:44.699405Z"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__4doU9vL",
+      "started_at": "2026-05-05T09:28:18.502515Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "original_provider": "openrouter",
+      "origin": "oddish",
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-110": {
+      "agent": "kimi-cli",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-110/",
+      "attempts": 1,
+      "cache_tokens": 8531488,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-06T04:46:56.674555Z",
+      "input_tokens": 16328155,
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "output_tokens": 282332,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 15367.85,
+          "finished_at": "2026-05-06T04:19:49.268838Z",
+          "started_at": "2026-05-06T00:03:41.416058Z"
+        },
+        "agent_setup": {
+          "duration_sec": 0.68,
+          "finished_at": "2026-05-06T00:03:41.415867Z",
+          "started_at": "2026-05-06T00:03:40.732729Z"
+        },
+        "environment_setup": {
+          "duration_sec": 33.0,
+          "finished_at": "2026-05-06T00:03:40.732651Z",
+          "started_at": "2026-05-06T00:03:07.728345Z"
+        },
+        "verifier": {
+          "duration_sec": 5.01,
+          "finished_at": "2026-05-06T04:20:09.328350Z",
+          "started_at": "2026-05-06T04:20:04.318987Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__JtCgQQv",
+      "started_at": "2026-05-06T00:03:07.655519Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-113": {
+      "agent": "kimi-cli",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-113/",
+      "attempts": 1,
+      "cache_tokens": 13534384,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-05T18:06:40.032127Z",
+      "input_tokens": 19954704,
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "output_tokens": 521038,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 21757.67,
+          "finished_at": "2026-05-05T17:53:17.466462Z",
+          "started_at": "2026-05-05T11:50:39.793248Z"
+        },
+        "agent_setup": {
+          "duration_sec": 0.59,
+          "finished_at": "2026-05-05T11:50:39.793171Z",
+          "started_at": "2026-05-05T11:50:39.205117Z"
+        },
+        "environment_setup": {
+          "duration_sec": 5.38,
+          "finished_at": "2026-05-05T11:50:39.205096Z",
+          "started_at": "2026-05-05T11:50:33.827539Z"
+        },
+        "verifier": {
+          "duration_sec": 6.1,
+          "finished_at": "2026-05-05T17:53:42.698059Z",
+          "started_at": "2026-05-05T17:53:36.598406Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__9TnWQLY",
+      "started_at": "2026-05-05T11:50:33.814914Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-116": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-116/",
+      "attempts": 1,
+      "cache_tokens": 103278080,
+      "cost_usd": 139.858807,
+      "error_message": null,
+      "finished_at": "2026-05-06T08:36:47.020238Z",
+      "input_tokens": 106029688,
+      "model": "openai/gpt-5.5",
+      "output_tokens": 689047,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.02,
+          "finished_at": "2026-05-06T07:40:40.023421Z",
+          "started_at": "2026-05-05T21:40:40.004533Z"
+        },
+        "agent_setup": {
+          "duration_sec": 3.41,
+          "finished_at": "2026-05-05T21:40:40.004485Z",
+          "started_at": "2026-05-05T21:40:36.596249Z"
+        },
+        "environment_setup": {
+          "duration_sec": 5.62,
+          "finished_at": "2026-05-05T21:40:36.596124Z",
+          "started_at": "2026-05-05T21:40:30.979861Z"
+        },
+        "verifier": {
+          "duration_sec": 8.91,
+          "finished_at": "2026-05-06T07:54:44.193666Z",
+          "started_at": "2026-05-06T07:54:35.283789Z"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__iLEQmmW",
+      "started_at": "2026-05-05T21:40:30.967384Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-117": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-117/",
+      "attempts": 1,
+      "cache_tokens": 67681280,
+      "cost_usd": 109.57023300000006,
+      "error_message": null,
+      "finished_at": "2026-05-06T08:30:17.523651Z",
+      "input_tokens": 70029261,
+      "model": "openai/gpt-5.5",
+      "output_tokens": 770702,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.02,
+          "finished_at": "2026-05-06T07:40:39.836200Z",
+          "started_at": "2026-05-05T21:40:39.813037Z"
+        },
+        "agent_setup": {
+          "duration_sec": 3.04,
+          "finished_at": "2026-05-05T21:40:39.812889Z",
+          "started_at": "2026-05-05T21:40:36.770908Z"
+        },
+        "environment_setup": {
+          "duration_sec": 5.78,
+          "finished_at": "2026-05-05T21:40:36.770899Z",
+          "started_at": "2026-05-05T21:40:30.994850Z"
+        },
+        "verifier": {
+          "duration_sec": 13.59,
+          "finished_at": "2026-05-06T07:56:32.618773Z",
+          "started_at": "2026-05-06T07:56:19.033499Z"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__k7EmERH",
+      "started_at": "2026-05-05T21:40:30.983991Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-118": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-118/",
+      "attempts": 1,
+      "cache_tokens": 315890688,
+      "cost_usd": 299.8095809999997,
+      "error_message": null,
+      "finished_at": "2026-05-06T08:41:32.299470Z",
+      "input_tokens": 317470586,
+      "model": "openai/gpt-5.5",
+      "output_tokens": 175402,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.06,
+          "finished_at": "2026-05-06T07:40:39.884110Z",
+          "started_at": "2026-05-05T21:40:39.827917Z"
+        },
+        "agent_setup": {
+          "duration_sec": 3.19,
+          "finished_at": "2026-05-05T21:40:39.827863Z",
+          "started_at": "2026-05-05T21:40:36.637016Z"
+        },
+        "environment_setup": {
+          "duration_sec": 5.64,
+          "finished_at": "2026-05-05T21:40:36.636996Z",
+          "started_at": "2026-05-05T21:40:30.996278Z"
+        },
+        "verifier": {
+          "duration_sec": 339.86,
+          "finished_at": "2026-05-06T08:14:21.399885Z",
+          "started_at": "2026-05-06T08:08:41.535522Z"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__Cxh2Fge",
+      "started_at": "2026-05-05T21:40:30.990181Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-134": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-134/",
+      "attempts": 1,
+      "cache_tokens": 274363392,
+      "cost_usd": 303.25307499999974,
+      "error_message": null,
+      "finished_at": "2026-05-06T13:30:15.132699Z",
+      "input_tokens": 276914786,
+      "model": "openai/gpt-5.5",
+      "output_tokens": 448281,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.02,
+          "finished_at": "2026-05-06T12:12:07.771530Z",
+          "started_at": "2026-05-06T02:12:07.746918Z"
+        },
+        "agent_setup": {
+          "duration_sec": 4.21,
+          "finished_at": "2026-05-06T02:12:07.746844Z",
+          "started_at": "2026-05-06T02:12:03.533230Z"
+        },
+        "environment_setup": {
+          "duration_sec": 6.01,
+          "finished_at": "2026-05-06T02:12:03.533206Z",
+          "started_at": "2026-05-06T02:11:57.522965Z"
+        },
+        "verifier": {
+          "duration_sec": 15.88,
+          "finished_at": "2026-05-06T12:27:01.464129Z",
+          "started_at": "2026-05-06T12:26:45.583922Z"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__xr2BTGt",
+      "started_at": "2026-05-06T02:11:57.505389Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-135": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-ecef12ce-135/",
+      "attempts": 1,
+      "cache_tokens": 458499328,
+      "cost_usd": 468.72180800000046,
+      "error_message": null,
+      "finished_at": "2026-05-06T13:26:41.672974Z",
+      "input_tokens": 460565301,
+      "model": "openai/gpt-5.5",
+      "output_tokens": 188775,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 36000.05,
+          "finished_at": "2026-05-06T12:12:06.307127Z",
+          "started_at": "2026-05-06T02:12:06.261210Z"
+        },
+        "agent_setup": {
+          "duration_sec": 4.19,
+          "finished_at": "2026-05-06T02:12:06.261132Z",
+          "started_at": "2026-05-06T02:12:02.071987Z"
+        },
+        "environment_setup": {
+          "duration_sec": 4.54,
+          "finished_at": "2026-05-06T02:12:02.071940Z",
+          "started_at": "2026-05-06T02:11:57.529392Z"
+        },
+        "verifier": {
+          "duration_sec": 175.97,
+          "finished_at": "2026-05-06T12:49:01.562509Z",
+          "started_at": "2026-05-06T12:46:05.590670Z"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__Lpg6NVf",
+      "started_at": "2026-05-06T02:11:57.518849Z",
+      "status": "AgentTimeoutError",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-136": {
+      "agent": "claude-code",
+      "attempts": 1,
+      "cache_tokens": 1100405,
+      "cost_usd": 1.3285273000000002,
+      "error_message": null,
+      "finished_at": "2026-05-04T08:25:08.996266Z",
+      "input_tokens": 1173895,
+      "model": "anthropic/claude-opus-4-7",
+      "output_tokens": 11405,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 223.38,
+          "finished_at": "2026-05-04T08:12:27.475510Z",
+          "started_at": "2026-05-04T08:08:44.096524Z"
+        },
+        "agent_setup": {
+          "duration_sec": 1.97,
+          "finished_at": "2026-05-04T08:08:44.096438Z",
+          "started_at": "2026-05-04T08:08:42.124773Z"
+        },
+        "environment_setup": {
+          "duration_sec": 199.23,
+          "finished_at": "2026-05-04T08:08:42.124751Z",
+          "started_at": "2026-05-04T08:05:22.894844Z"
+        },
+        "verifier": {
+          "duration_sec": 110.39,
+          "finished_at": "2026-05-04T08:14:29.229570Z",
+          "started_at": "2026-05-04T08:12:38.836334Z"
+        }
+      },
+      "provider": "anthropic",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__ZHE8ixi",
+      "started_at": "2026-05-04T08:05:22.856189Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-139": {
+      "agent": "kimi-cli",
+      "attempts": 1,
+      "cache_tokens": 13468496,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-05T15:03:56.042300Z",
+      "input_tokens": 18355874,
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "output_tokens": 393212,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 19962.3,
+          "finished_at": "2026-05-05T14:29:34.460594Z",
+          "started_at": "2026-05-05T08:56:52.160630Z"
+        },
+        "agent_setup": {
+          "duration_sec": 1.51,
+          "finished_at": "2026-05-05T08:56:52.160568Z",
+          "started_at": "2026-05-05T08:56:50.651244Z"
+        },
+        "environment_setup": {
+          "duration_sec": 7.5,
+          "finished_at": "2026-05-05T08:56:50.651232Z",
+          "started_at": "2026-05-05T08:56:43.155083Z"
+        },
+        "verifier": {
+          "duration_sec": 10.3,
+          "finished_at": "2026-05-05T14:31:28.503083Z",
+          "started_at": "2026-05-05T14:31:18.206599Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__VoivpMu",
+      "started_at": "2026-05-05T08:56:43.134134Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-142": {
+      "agent": "kimi-cli",
+      "attempts": 1,
+      "cache_tokens": 14406048,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-06T05:42:34.701552Z",
+      "input_tokens": 24069333,
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "output_tokens": 462346,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 11980.22,
+          "finished_at": "2026-05-06T05:22:42.292272Z",
+          "started_at": "2026-05-06T02:03:02.067793Z"
+        },
+        "agent_setup": {
+          "duration_sec": 1.24,
+          "finished_at": "2026-05-06T02:03:02.067712Z",
+          "started_at": "2026-05-06T02:03:00.830077Z"
+        },
+        "environment_setup": {
+          "duration_sec": 4.78,
+          "finished_at": "2026-05-06T02:03:00.830009Z",
+          "started_at": "2026-05-06T02:02:56.047422Z"
+        },
+        "verifier": {
+          "duration_sec": 11.16,
+          "finished_at": "2026-05-06T05:23:17.900250Z",
+          "started_at": "2026-05-06T05:23:06.742187Z"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__39Mdue7",
+      "started_at": "2026-05-06T02:02:56.035455Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-bae0f616-144": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-14T22:10:04.535512",
+      "finished_at": "2026-05-14T22:13:46.096016",
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-144/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__qTrCXMV",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-145": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-14T22:10:05.531355",
+      "finished_at": "2026-05-14T22:13:30.791082",
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-145/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__fAwjkGb",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-145": {
+      "agent": "terminus-2",
+      "attempts": 1,
+      "cache_tokens": 294892,
+      "cost_usd": 0.41024475000000005,
+      "error_message": null,
+      "finished_at": "2026-05-04T08:23:29.477618Z",
+      "input_tokens": 317270,
+      "model": "anthropic/claude-opus-4-7",
+      "output_tokens": 5013,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 130.48,
+          "finished_at": "2026-05-04T08:10:56.889074Z",
+          "started_at": "2026-05-04T08:08:46.406084Z"
+        },
+        "agent_setup": {
+          "duration_sec": 4.26,
+          "finished_at": "2026-05-04T08:08:46.405994Z",
+          "started_at": "2026-05-04T08:08:42.147928Z"
+        },
+        "environment_setup": {
+          "duration_sec": 199.25,
+          "finished_at": "2026-05-04T08:08:42.147914Z",
+          "started_at": "2026-05-04T08:05:22.897814Z"
+        },
+        "verifier": {
+          "duration_sec": 299.86,
+          "finished_at": "2026-05-04T08:16:46.020391Z",
+          "started_at": "2026-05-04T08:11:46.162170Z"
+        }
+      },
+      "provider": "anthropic",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__Z8EPZmM",
+      "started_at": "2026-05-04T08:05:22.871109Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-bae0f616-146": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-14T22:10:06.040322",
+      "finished_at": "2026-05-14T22:14:12.795940",
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-146/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__rSCysxS",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-146": {
+      "agent": "terminus-2",
+      "attempts": 1,
+      "cache_tokens": 385607,
+      "cost_usd": 0.5054335,
+      "error_message": null,
+      "finished_at": "2026-05-04T08:22:41.624438Z",
+      "input_tokens": 414536,
+      "model": "anthropic/claude-opus-4-7",
+      "output_tokens": 5369,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 150.14,
+          "finished_at": "2026-05-04T08:11:14.766083Z",
+          "started_at": "2026-05-04T08:08:44.623846Z"
+        },
+        "agent_setup": {
+          "duration_sec": 3.68,
+          "finished_at": "2026-05-04T08:08:44.623776Z",
+          "started_at": "2026-05-04T08:08:40.947618Z"
+        },
+        "environment_setup": {
+          "duration_sec": 198.05,
+          "finished_at": "2026-05-04T08:08:40.947480Z",
+          "started_at": "2026-05-04T08:05:22.900155Z"
+        },
+        "verifier": {
+          "duration_sec": 198.02,
+          "finished_at": "2026-05-04T08:15:13.220355Z",
+          "started_at": "2026-05-04T08:11:55.203909Z"
+        }
+      },
+      "provider": "anthropic",
+      "reward": 0.0,
+      "source_trial_name": "kubernetes-rust-rewrite__pMSCEog",
+      "started_at": "2026-05-04T08:05:22.880962Z",
+      "status": "success",
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-bae0f616-147": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-14T22:10:06.326230",
+      "finished_at": "2026-05-14T22:14:06.568700",
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-147/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__4ihwahC",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-148": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-14T22:10:12.775980",
+      "finished_at": "2026-05-14T22:13:33.872388",
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-148/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__5v6moPd",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-149": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-14T22:42:54.012094",
+      "finished_at": "2026-05-14T23:04:49.415455",
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-149/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__7auNNk5",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-156": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "started_at": "2026-05-03T10:09:14.382800Z",
+      "finished_at": "2026-05-03T10:22:40.587297Z",
+      "input_tokens": 462726,
+      "output_tokens": 3552,
+      "cache_tokens": 418859,
+      "cost_usd": 0.57236825,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-03T10:10:49.334627Z",
+          "finished_at": "2026-05-03T10:14:12.175737Z",
+          "duration_sec": 202.84
+        },
+        "agent_setup": {
+          "started_at": "2026-05-03T10:09:22.121390Z",
+          "finished_at": "2026-05-03T10:09:24.090229Z",
+          "duration_sec": 1.97
+        },
+        "agent_execution": {
+          "started_at": "2026-05-03T10:09:24.090261Z",
+          "finished_at": "2026-05-03T10:10:39.880718Z",
+          "duration_sec": 75.79
+        },
+        "environment_setup": {
+          "started_at": "2026-05-03T10:09:14.477429Z",
+          "finished_at": "2026-05-03T10:09:22.121381Z",
+          "duration_sec": 7.64
+        }
+      },
+      "error_message": null,
+      "source_trial_name": "kubernetes-rust-rewrite__JBztSdD",
+      "original_model": "claude-opus-4-7",
+      "original_provider": "anthropic",
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-157": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "started_at": "2026-05-03T10:09:14.459529Z",
+      "finished_at": "2026-05-03T10:22:39.610628Z",
+      "input_tokens": 654648,
+      "output_tokens": 6177,
+      "cache_tokens": 637010,
+      "cost_usd": 0.583135,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-03T10:11:28.027616Z",
+          "finished_at": "2026-05-03T10:14:55.651725Z",
+          "duration_sec": 207.62
+        },
+        "agent_setup": {
+          "started_at": "2026-05-03T10:09:22.205635Z",
+          "finished_at": "2026-05-03T10:09:24.033099Z",
+          "duration_sec": 1.83
+        },
+        "agent_execution": {
+          "started_at": "2026-05-03T10:09:24.033149Z",
+          "finished_at": "2026-05-03T10:11:19.956069Z",
+          "duration_sec": 115.92
+        },
+        "environment_setup": {
+          "started_at": "2026-05-03T10:09:14.485165Z",
+          "finished_at": "2026-05-03T10:09:22.205626Z",
+          "duration_sec": 7.72
+        }
+      },
+      "error_message": null,
+      "source_trial_name": "kubernetes-rust-rewrite__M75n6KF",
+      "original_model": "claude-opus-4-7",
+      "original_provider": "anthropic",
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-bae0f616-158": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-15T01:34:06.457066",
+      "finished_at": "2026-05-15T01:51:27.591886",
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-158/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__NkEZTms",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-158": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "started_at": "2026-05-03T16:07:14.559295Z",
+      "finished_at": "2026-05-03T16:16:15.035656Z",
+      "input_tokens": 665575,
+      "output_tokens": 7009,
+      "cache_tokens": 633517,
+      "cost_usd": 0.6923147500000001,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-03T16:09:28.188120Z",
+          "finished_at": "2026-05-03T16:13:14.174195Z",
+          "duration_sec": 225.99
+        },
+        "agent_setup": {
+          "started_at": "2026-05-03T16:07:19.363089Z",
+          "finished_at": "2026-05-03T16:07:20.631025Z",
+          "duration_sec": 1.27
+        },
+        "agent_execution": {
+          "started_at": "2026-05-03T16:07:20.631101Z",
+          "finished_at": "2026-05-03T16:09:25.888479Z",
+          "duration_sec": 125.26
+        },
+        "environment_setup": {
+          "started_at": "2026-05-03T16:07:14.575305Z",
+          "finished_at": "2026-05-03T16:07:19.363080Z",
+          "duration_sec": 4.79
+        }
+      },
+      "error_message": null,
+      "source_trial_name": "kubernetes-rust-rewrite__a5CVHhT",
+      "original_model": "claude-opus-4-7",
+      "original_provider": "anthropic",
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-159": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "started_at": "2026-05-03T17:43:16.488842Z",
+      "finished_at": "2026-05-03T17:52:13.265760Z",
+      "input_tokens": 518901,
+      "output_tokens": 6033,
+      "cache_tokens": 483598,
+      "cost_usd": 0.6132415000000001,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-03T17:45:18.339724Z",
+          "finished_at": "2026-05-03T17:49:24.300536Z",
+          "duration_sec": 245.96
+        },
+        "agent_setup": {
+          "started_at": "2026-05-03T17:43:22.468581Z",
+          "finished_at": "2026-05-03T17:43:24.162692Z",
+          "duration_sec": 1.69
+        },
+        "agent_execution": {
+          "started_at": "2026-05-03T17:43:24.162725Z",
+          "finished_at": "2026-05-03T17:45:14.339987Z",
+          "duration_sec": 110.18
+        },
+        "environment_setup": {
+          "started_at": "2026-05-03T17:43:16.569604Z",
+          "finished_at": "2026-05-03T17:43:22.468569Z",
+          "duration_sec": 5.9
+        }
+      },
+      "error_message": null,
+      "source_trial_name": "kubernetes-rust-rewrite__MniJoxy",
+      "original_model": "claude-opus-4-7",
+      "original_provider": "anthropic",
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-162": {
+      "agent": "codex",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "started_at": "2026-05-03T10:09:14.387398Z",
+      "finished_at": "2026-05-03T11:37:40.366235Z",
+      "input_tokens": 58488286,
+      "output_tokens": 140748,
+      "cache_tokens": 55867904,
+      "cost_usd": 45.258302,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-03T10:54:37.855990Z",
+          "finished_at": "2026-05-03T10:55:41.766122Z",
+          "duration_sec": 63.91
+        },
+        "agent_setup": {
+          "started_at": "2026-05-03T10:09:20.344580Z",
+          "finished_at": "2026-05-03T10:09:21.771740Z",
+          "duration_sec": 1.43
+        },
+        "agent_execution": {
+          "started_at": "2026-05-03T10:09:21.771786Z",
+          "finished_at": "2026-05-03T10:54:30.137922Z",
+          "duration_sec": 2708.37
+        },
+        "environment_setup": {
+          "started_at": "2026-05-03T10:09:14.478571Z",
+          "finished_at": "2026-05-03T10:09:20.344571Z",
+          "duration_sec": 5.87
+        }
+      },
+      "error_message": null,
+      "source_trial_name": "kubernetes-rust-rewrite__3L233Uq",
+      "original_model": "gpt-5.5",
+      "original_provider": "openai",
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-163": {
+      "agent": "codex",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "started_at": "2026-05-03T10:09:14.464175Z",
+      "finished_at": "2026-05-03T12:22:36.886422Z",
+      "input_tokens": 52889974,
+      "output_tokens": 133923,
+      "cache_tokens": 48771584,
+      "cost_usd": 48.995432,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-03T10:54:19.655539Z",
+          "finished_at": "2026-05-03T10:55:36.496906Z",
+          "duration_sec": 76.84
+        },
+        "agent_setup": {
+          "started_at": "2026-05-03T10:09:22.704041Z",
+          "finished_at": "2026-05-03T10:09:24.879614Z",
+          "duration_sec": 2.18
+        },
+        "agent_execution": {
+          "started_at": "2026-05-03T10:09:24.879651Z",
+          "finished_at": "2026-05-03T10:53:29.913169Z",
+          "duration_sec": 2645.03
+        },
+        "environment_setup": {
+          "started_at": "2026-05-03T10:09:14.486325Z",
+          "finished_at": "2026-05-03T10:09:22.704031Z",
+          "duration_sec": 8.22
+        }
+      },
+      "error_message": null,
+      "source_trial_name": "kubernetes-rust-rewrite__muQPvXC",
+      "original_model": "gpt-5.5",
+      "original_provider": "openai",
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-ecef12ce-164": {
+      "agent": "codex",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "task_version_id": "kubernetes-rust-rewrite-ecef12ce-v1",
+      "started_at": "2026-05-03T16:07:14.565290Z",
+      "finished_at": "2026-05-03T16:38:32.539033Z",
+      "input_tokens": 23664202,
+      "output_tokens": 71422,
+      "cache_tokens": 23382016,
+      "cost_usd": 15.244598,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-03T16:26:57.643054Z",
+          "finished_at": "2026-05-03T16:29:07.563935Z",
+          "duration_sec": 129.92
+        },
+        "agent_setup": {
+          "started_at": "2026-05-03T16:07:19.392748Z",
+          "finished_at": "2026-05-03T16:07:21.043618Z",
+          "duration_sec": 1.65
+        },
+        "agent_execution": {
+          "started_at": "2026-05-03T16:07:21.043676Z",
+          "finished_at": "2026-05-03T16:26:48.049330Z",
+          "duration_sec": 1167.01
+        },
+        "environment_setup": {
+          "started_at": "2026-05-03T16:07:14.576013Z",
+          "finished_at": "2026-05-03T16:07:19.392739Z",
+          "duration_sec": 4.82
+        }
+      },
+      "error_message": null,
+      "source_trial_name": "kubernetes-rust-rewrite__CSm4VGf",
+      "original_model": "gpt-5.5",
+      "original_provider": "openai",
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "has_trajectory": true,
+      "max_attempts": 6,
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "ecef12ce"
+    },
+    "kubernetes-rust-rewrite-bae0f616-171": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-15T07:58:01.451148",
+      "finished_at": "2026-05-15T08:22:00.700861",
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-171/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__YZQJz7j",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-172": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-15T07:58:01.658044",
+      "finished_at": "2026-05-15T08:22:43.814640",
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-172/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__SLC3nPf",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-175": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-15T08:07:03.316461",
+      "finished_at": "2026-05-15T08:27:21.811697",
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-175/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__uz23nqH",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-176": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-15T10:00:54.828659",
+      "finished_at": "2026-05-15T10:43:49.358900",
+      "input_tokens": 11711494,
+      "output_tokens": 32020,
+      "cache_tokens": 10462105,
+      "cost_usd": 4.975439,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-176/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__EGELK26",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-177": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-15T07:46:02.780684",
+      "finished_at": "2026-05-15T08:03:23.148232",
+      "input_tokens": 4025473,
+      "output_tokens": 15315,
+      "cache_tokens": 3683046,
+      "cost_usd": 1.6052431999999999,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-177/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__UKqv8w9",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-178": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-15T07:46:02.054906",
+      "finished_at": "2026-05-15T09:55:38.642567",
+      "input_tokens": 60537132,
+      "output_tokens": 178319,
+      "cache_tokens": 55765889,
+      "cost_usd": 22.8354918,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-178/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__TmajJXM",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-179": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "AgentTimeoutError",
+      "attempts": 3,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": null,
+      "finished_at": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-179/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__idAEzPq",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-180": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "AgentTimeoutError",
+      "attempts": 3,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": null,
+      "finished_at": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-180/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__GzKxNCe",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-181": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "AgentTimeoutError",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-16T00:21:57.471473",
+      "finished_at": "2026-05-16T10:41:06.742613",
+      "input_tokens": 47473167,
+      "output_tokens": 204851,
+      "cache_tokens": 38326637,
+      "cost_usd": 15.661462550000088,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-181/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__p2ji2Ce",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-182": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "AgentTimeoutError",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-16T00:21:57.642445",
+      "finished_at": "2026-05-16T10:38:13.427932",
+      "input_tokens": 52704025,
+      "output_tokens": 208872,
+      "cache_tokens": 44357381,
+      "cost_usd": 15.94091125999999,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-182/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__3bAQJSz",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-183": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "AgentTimeoutError",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-16T00:21:59.787627",
+      "finished_at": "2026-05-16T10:36:00.444868",
+      "input_tokens": 42685775,
+      "output_tokens": 171866,
+      "cache_tokens": 41946140,
+      "cost_usd": 8.216288000000178,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-183/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__2LAsseq",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-184": {
+      "agent": "terminus-2",
+      "model": "openrouter/z-ai/glm-5.1",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "AgentTimeoutError",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": null,
+      "finished_at": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-184/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__7qVKPFh",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-185": {
+      "agent": "terminus-2",
+      "model": "openrouter/minimax/minimax-m2.7",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "AgentTimeoutError",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-16T00:21:57.548097",
+      "finished_at": "2026-05-16T10:37:43.463120",
+      "input_tokens": 24360101,
+      "output_tokens": 132826,
+      "cache_tokens": 23482043,
+      "cost_usd": 1.8358453800000012,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-185/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__4bquHNM",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-186": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-18T05:36:58.283795",
+      "finished_at": "2026-05-18T05:46:16.810974",
+      "input_tokens": 4448606,
+      "output_tokens": 16837,
+      "cache_tokens": 4147162,
+      "cost_usd": 1.6343644,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-186/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__Essh8EX",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-188": {
+      "agent": "kimi-cli",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-18T23:42:57.726628",
+      "finished_at": "2026-05-19T02:41:49.466663",
+      "input_tokens": 15056720,
+      "output_tokens": 223468,
+      "cache_tokens": 11315138,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-188/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__fcKrJ4J",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-189": {
+      "agent": "terminus-2",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-19T12:01:10.513064",
+      "finished_at": "2026-05-19T12:13:34.033676",
+      "input_tokens": 788805,
+      "output_tokens": 10921,
+      "cache_tokens": 734816,
+      "cost_usd": 0.9709430000000002,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-189/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__BSAfcRV",
+      "original_model": "global.anthropic.claude-opus-4-7",
+      "original_provider": "default",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-191": {
+      "agent": "codex",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-18T23:43:01.989699",
+      "finished_at": "2026-05-19T00:45:44.091705",
+      "input_tokens": 54752331,
+      "output_tokens": 129001,
+      "cache_tokens": 53642752,
+      "cost_usd": 36.239301,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-191/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__WgVZ9rP",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-194": {
+      "agent": "terminus-2",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-18T23:43:04.280692",
+      "finished_at": "2026-05-18T23:55:15.968947",
+      "input_tokens": 611104,
+      "output_tokens": 11625,
+      "cache_tokens": 566022,
+      "cost_usd": 0.8487435000000003,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-194/",
+      "has_trajectory": true,
+      "source_trial_name": "task-kubernetes-rust-rewrite-bae__WFY9JTY",
+      "original_model": "global.anthropic.claude-opus-4-7",
+      "original_provider": "default",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-209": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-28T23:56:45.417701+00:00",
+      "finished_at": "2026-05-29T03:25:37.280462+00:00",
+      "input_tokens": 88453275,
+      "cache_tokens": 84123859,
+      "output_tokens": 550578,
+      "cost_usd": 62.4637656,
+      "has_trajectory": true,
+      "trajectory_bytes": 21573776,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-209/",
+      "source_trial_name": "kubernetes-rust-rewrite-209",
+      "source_oddish_task_id": "kubernetes-rust-rewrite-bae0f616",
+      "source_oddish_trial_id": "kubernetes-rust-rewrite-bae0f616-209",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-kubernetes-rust-rewrite-bae__8xnvFn8",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-210": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-28T23:56:43.159950+00:00",
+      "finished_at": "2026-05-29T01:53:42.398088+00:00",
+      "input_tokens": 79360197,
+      "cache_tokens": 73528966,
+      "output_tokens": 675002,
+      "cost_usd": 25.8512094,
+      "has_trajectory": true,
+      "trajectory_bytes": 1604192,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-210/",
+      "source_trial_name": "kubernetes-rust-rewrite-210",
+      "source_oddish_task_id": "kubernetes-rust-rewrite-bae0f616",
+      "source_oddish_trial_id": "kubernetes-rust-rewrite-bae0f616-210",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-kubernetes-rust-rewrite-bae__xDQee4r",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-211": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-29T00:08:41.391017+00:00",
+      "finished_at": "2026-05-29T02:12:40.081514+00:00",
+      "input_tokens": 62147381,
+      "cache_tokens": 59343479,
+      "output_tokens": 370261,
+      "cost_usd": 42.69003605,
+      "has_trajectory": true,
+      "trajectory_bytes": 18420547,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-211/",
+      "source_trial_name": "kubernetes-rust-rewrite-211",
+      "source_oddish_task_id": "kubernetes-rust-rewrite-bae0f616",
+      "source_oddish_trial_id": "kubernetes-rust-rewrite-bae0f616-211",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-kubernetes-rust-rewrite-bae__FiFJF8e",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-212": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-29T00:08:41.461353+00:00",
+      "finished_at": "2026-05-29T03:46:52.335174+00:00",
+      "input_tokens": 104608262,
+      "cache_tokens": 97963652,
+      "output_tokens": 612041,
+      "cost_usd": 70.0865399,
+      "has_trajectory": true,
+      "trajectory_bytes": 42324776,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-212/",
+      "source_trial_name": "kubernetes-rust-rewrite-212",
+      "source_oddish_task_id": "kubernetes-rust-rewrite-bae0f616",
+      "source_oddish_trial_id": "kubernetes-rust-rewrite-bae0f616-212",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-kubernetes-rust-rewrite-bae__4pn86Z3",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-213": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-29T00:08:44.012958+00:00",
+      "finished_at": "2026-05-29T02:29:24.137378+00:00",
+      "input_tokens": 58778716,
+      "cache_tokens": 55946491,
+      "output_tokens": 444270,
+      "cost_usd": 46.5016401000001,
+      "has_trajectory": true,
+      "trajectory_bytes": 17565052,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-213/",
+      "source_trial_name": "kubernetes-rust-rewrite-213",
+      "source_oddish_task_id": "kubernetes-rust-rewrite-bae0f616",
+      "source_oddish_trial_id": "kubernetes-rust-rewrite-bae0f616-213",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-kubernetes-rust-rewrite-bae__6aFtMeV",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-214": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-29T00:08:44.696123+00:00",
+      "finished_at": "2026-05-29T07:46:31.647532+00:00",
+      "input_tokens": 183934536,
+      "cache_tokens": 162695607,
+      "output_tokens": 775043,
+      "cost_usd": 166.43731385,
+      "has_trajectory": true,
+      "trajectory_bytes": 13664586,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-214/",
+      "source_trial_name": "kubernetes-rust-rewrite-214",
+      "source_oddish_task_id": "kubernetes-rust-rewrite-bae0f616",
+      "source_oddish_trial_id": "kubernetes-rust-rewrite-bae0f616-214",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-kubernetes-rust-rewrite-bae__NAPWfor",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-215": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-29T00:11:39.970896+00:00",
+      "finished_at": "2026-05-29T02:22:29.942159+00:00",
+      "input_tokens": 402841926,
+      "cache_tokens": 390730596,
+      "output_tokens": 707903,
+      "cost_usd": 83.1477114,
+      "has_trajectory": true,
+      "trajectory_bytes": 3174184,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-215/",
+      "source_trial_name": "kubernetes-rust-rewrite-215",
+      "source_oddish_task_id": "kubernetes-rust-rewrite-bae0f616",
+      "source_oddish_trial_id": "kubernetes-rust-rewrite-bae0f616-215",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-kubernetes-rust-rewrite-bae__BHFpyVs",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-217": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-29T00:11:39.759256+00:00",
+      "finished_at": "2026-05-29T01:30:09.663400+00:00",
+      "input_tokens": 29886390,
+      "cache_tokens": 26351191,
+      "output_tokens": 316973,
+      "cost_usd": 12.10823415,
+      "has_trajectory": true,
+      "trajectory_bytes": 975385,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-217/",
+      "source_trial_name": "kubernetes-rust-rewrite-217",
+      "source_oddish_task_id": "kubernetes-rust-rewrite-bae0f616",
+      "source_oddish_trial_id": "kubernetes-rust-rewrite-bae0f616-217",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-kubernetes-rust-rewrite-bae__BK7JeEi",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-218": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-29T00:11:40.607626+00:00",
+      "finished_at": "2026-05-29T00:36:11.501280+00:00",
+      "input_tokens": 14194940,
+      "cache_tokens": 12824017,
+      "output_tokens": 106193,
+      "cost_usd": 4.93572405,
+      "has_trajectory": true,
+      "trajectory_bytes": 1846753,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-218/",
+      "source_trial_name": "kubernetes-rust-rewrite-218",
+      "source_oddish_task_id": "kubernetes-rust-rewrite-bae0f616",
+      "source_oddish_trial_id": "kubernetes-rust-rewrite-bae0f616-218",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-kubernetes-rust-rewrite-bae__hswerkB",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    },
+    "kubernetes-rust-rewrite-bae0f616-219": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "kubernetes-rust-rewrite-bae0f616-v4",
+      "started_at": "2026-05-29T17:56:47.877261+00:00",
+      "finished_at": "2026-05-29T19:30:26.484670+00:00",
+      "input_tokens": 54478080,
+      "cache_tokens": 50875778,
+      "output_tokens": 158979,
+      "cost_usd": 14.4656307,
+      "has_trajectory": true,
+      "trajectory_bytes": 944849,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/kubernetes-rust-rewrite/kubernetes-rust-rewrite-bae0f616-219/",
+      "source_trial_name": "kubernetes-rust-rewrite-219",
+      "source_oddish_task_id": "kubernetes-rust-rewrite-bae0f616",
+      "source_oddish_trial_id": "kubernetes-rust-rewrite-bae0f616-219",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-kubernetes-rust-rewrite-bae__mZ5ABMA",
+      "task_name": "kubernetes-rust-rewrite",
+      "task_hash": "bae0f616"
+    }
+  },
+  "legacy_prefix": "kubernetes-rust-rewrite-ecef12ce",
+  "task_versions": [
+    "kubernetes-rust-rewrite-bae0f616-v4",
+    "kubernetes-rust-rewrite-ecef12ce-v1"
+  ],
+  "task_hash": "bae0f616",
+  "task_hashes": [
+    "bae0f616",
+    "ecef12ce"
+  ],
+  "is_multi_version": true,
+  "experiment_ids": [
+    "closed-internet-cursor",
+    "cd4dd88f"
+  ],
+  "additional_imports": [
+    {
+      "imported_at": "2026-06-01T21:12:39.715298+00:00",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "task_version_id_at_snapshot": "kubernetes-rust-rewrite-bae0f616-v4",
+      "n_trials_added": 10,
+      "pairs_added": [
+        [
+          "claude-code",
+          "anthropic/claude-opus-4-8"
+        ],
+        [
+          "gemini-cli",
+          "gemini/gemini-3.5-flash"
+        ]
+      ],
+      "note": "Augmenting (Option A): add up to 5 trials per pair for the new agent/model pairs from this experiment. nop/oracle excluded; for nextjs-vite-rewrite, claude-code is also excluded."
+    }
+  ]
+}

@@ -1,0 +1,3433 @@
+{
+  "experiment_id": "cd8c33d8",
+  "n_trials": 73,
+  "note": "Generated from Oddish experiment cd8c33d8 on 20260519T005502Z. Only rewritten-task trials (latest task_version) with numeric verifier reward (including 0.0) kept; BAD_SUCCESS classifications excluded as reward-hacked; <=5 trials per (agent,model) ranked by total artifact bytes. Added missing oracle trial trimul-cuda-fc34aaba-449 from Oddish on 2026-05-19 after dashboard/bucket reconciliation; chose longer non-duplicate oracle candidate over trimul-cuda-fc34aaba-534 to keep exactly 5.\nRemoved trimul-cuda-fc34aaba-476 from active set on 20260520T012755Z: claude-code trial had no meaningful trajectory (1 step / missing kernel.py); artifacts moved to trash.\nAdded trimul-cuda-fc34aaba-549 (claude-code pass, reward=1.0) from Oddish experiment trimul-opt-20260516T054334Z-iterR32 on 2026-05-20 to replace removed trimul-cuda-fc34aaba-476 and reach 5 claude-code trials.\nMoved rerun-suspect trials to s3://ralphbench-logs/trash/rerun-suspect-trials-20260527T184724Z/ on 2026-05-27: trimul-cuda-fc34aaba-457. | 2026-06-01T21:13:51.538470+00:00 appended 9 trials from Oddish experiment cd4dd88f on task_version trimul-cuda-fc34aaba-v86 (pairs: claude-code/anthropic/claude-opus-4-8, gemini-cli/gemini/gemini-3.5-flash); strict validity filter (status=SUCCESS, numeric reward, exception_stats clean or AgentTimeoutError/VerifierTimeoutError).",
+  "task": "trimul-cuda-fc34aaba",
+  "task_hash": "fc34aaba",
+  "task_name": "trimul-cuda",
+  "task_version_id": "trimul-cuda-fc34aaba-v81",
+  "task_versions": [
+    "trimul-cuda-fc34aaba-v81",
+    "trimul-cuda-fc34aaba-v85",
+    "trimul-cuda-fc34aaba-v86"
+  ],
+  "trials": {
+    "trimul-cuda-fc34aaba-449": {
+      "agent": "oracle",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-449/",
+      "attempts": 1,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "finished_at": "2026-05-16T07:53:21.786132",
+      "has_trajectory": true,
+      "input_tokens": null,
+      "max_attempts": 6,
+      "model": "default",
+      "origin": "oddish",
+      "output_tokens": null,
+      "provider": "default",
+      "reward": 1.0,
+      "source_trial_name": "task-trimul-cuda-fc34aaba-re5be9__NdJwDz6",
+      "started_at": "2026-05-16T07:52:08.715192",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-450": {
+      "agent": "nop",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-450/",
+      "attempts": 1,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:01:55.002859+00:00",
+      "has_trajectory": false,
+      "input_tokens": null,
+      "max_attempts": 6,
+      "model": "default",
+      "origin": "oddish",
+      "output_tokens": null,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 0.0,
+          "finished_at": "2026-05-16T08:01:35.912791+00:00",
+          "started_at": "2026-05-16T08:01:35.912727+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 0.0,
+          "finished_at": "2026-05-16T08:01:34.900775+00:00",
+          "started_at": "2026-05-16T08:01:34.900739+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 24.56,
+          "finished_at": "2026-05-16T08:01:34.900716+00:00",
+          "started_at": "2026-05-16T08:01:10.344691+00:00"
+        },
+        "verifier": {
+          "duration_sec": 11.03,
+          "finished_at": "2026-05-16T08:01:49.660622+00:00",
+          "started_at": "2026-05-16T08:01:38.635159+00:00"
+        }
+      },
+      "provider": "default",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-450",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-eq6zdv__MdV28NG",
+      "started_at": "2026-05-16T08:01:05.990344+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 12313,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-451": {
+      "agent": "nop",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-451/",
+      "attempts": 1,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:01:40.174241+00:00",
+      "has_trajectory": false,
+      "input_tokens": null,
+      "max_attempts": 6,
+      "model": "default",
+      "origin": "oddish",
+      "output_tokens": null,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 0.0,
+          "finished_at": "2026-05-16T08:01:30.594979+00:00",
+          "started_at": "2026-05-16T08:01:30.594922+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 0.0,
+          "finished_at": "2026-05-16T08:01:30.423897+00:00",
+          "started_at": "2026-05-16T08:01:30.423873+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 23.16,
+          "finished_at": "2026-05-16T08:01:30.423826+00:00",
+          "started_at": "2026-05-16T08:01:07.263442+00:00"
+        },
+        "verifier": {
+          "duration_sec": 5.87,
+          "finished_at": "2026-05-16T08:01:37.306602+00:00",
+          "started_at": "2026-05-16T08:01:31.440921+00:00"
+        }
+      },
+      "provider": "default",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-451",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-woklpk__uQY93Mt",
+      "started_at": "2026-05-16T08:01:06.311088+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 12313,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-452": {
+      "agent": "nop",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-452/",
+      "attempts": 1,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:01:50.062801+00:00",
+      "has_trajectory": false,
+      "input_tokens": null,
+      "max_attempts": 6,
+      "model": "default",
+      "origin": "oddish",
+      "output_tokens": null,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 0.0,
+          "finished_at": "2026-05-16T08:01:36.133962+00:00",
+          "started_at": "2026-05-16T08:01:36.133884+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 0.0,
+          "finished_at": "2026-05-16T08:01:35.861993+00:00",
+          "started_at": "2026-05-16T08:01:35.861961+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 23.73,
+          "finished_at": "2026-05-16T08:01:35.861909+00:00",
+          "started_at": "2026-05-16T08:01:12.128828+00:00"
+        },
+        "verifier": {
+          "duration_sec": 7.64,
+          "finished_at": "2026-05-16T08:01:45.840196+00:00",
+          "started_at": "2026-05-16T08:01:38.195232+00:00"
+        }
+      },
+      "provider": "default",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-452",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-a1yo6k__kCCvs7g",
+      "started_at": "2026-05-16T08:01:10.371101+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 12313,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-453": {
+      "agent": "oracle",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-453/",
+      "attempts": 1,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:02:23.434912+00:00",
+      "has_trajectory": false,
+      "input_tokens": null,
+      "max_attempts": 6,
+      "model": "default",
+      "origin": "oddish",
+      "output_tokens": null,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 3.41,
+          "finished_at": "2026-05-16T08:01:46.204694+00:00",
+          "started_at": "2026-05-16T08:01:42.791689+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 0.0,
+          "finished_at": "2026-05-16T08:01:41.849312+00:00",
+          "started_at": "2026-05-16T08:01:41.849272+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 24.06,
+          "finished_at": "2026-05-16T08:01:41.849225+00:00",
+          "started_at": "2026-05-16T08:01:17.790151+00:00"
+        },
+        "verifier": {
+          "duration_sec": 29.05,
+          "finished_at": "2026-05-16T08:02:18.134115+00:00",
+          "started_at": "2026-05-16T08:01:49.088137+00:00"
+        }
+      },
+      "provider": "default",
+      "reward": 1.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-453",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-d7he0e__5nUm8N5",
+      "started_at": "2026-05-16T08:01:13.277633+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 48214,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-454": {
+      "agent": "oracle",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-454/",
+      "attempts": 1,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:02:15.848537+00:00",
+      "has_trajectory": false,
+      "input_tokens": null,
+      "max_attempts": 6,
+      "model": "default",
+      "origin": "oddish",
+      "output_tokens": null,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 4.53,
+          "finished_at": "2026-05-16T08:01:39.922174+00:00",
+          "started_at": "2026-05-16T08:01:35.396794+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 0.0,
+          "finished_at": "2026-05-16T08:01:35.166199+00:00",
+          "started_at": "2026-05-16T08:01:35.166163+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 23.14,
+          "finished_at": "2026-05-16T08:01:35.166116+00:00",
+          "started_at": "2026-05-16T08:01:12.021233+00:00"
+        },
+        "verifier": {
+          "duration_sec": 30.88,
+          "finished_at": "2026-05-16T08:02:12.556024+00:00",
+          "started_at": "2026-05-16T08:01:41.676606+00:00"
+        }
+      },
+      "provider": "default",
+      "reward": 1.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-454",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-tmkoei__7kGgjUd",
+      "started_at": "2026-05-16T08:01:10.747478+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 48212,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-455": {
+      "agent": "oracle",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-455/",
+      "attempts": 1,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:02:32.834148+00:00",
+      "has_trajectory": false,
+      "input_tokens": null,
+      "max_attempts": 6,
+      "model": "default",
+      "origin": "oddish",
+      "output_tokens": null,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 8.19,
+          "finished_at": "2026-05-16T08:01:46.022697+00:00",
+          "started_at": "2026-05-16T08:01:37.831728+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 0.0,
+          "finished_at": "2026-05-16T08:01:37.519714+00:00",
+          "started_at": "2026-05-16T08:01:37.519672+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 23.72,
+          "finished_at": "2026-05-16T08:01:37.519618+00:00",
+          "started_at": "2026-05-16T08:01:13.797940+00:00"
+        },
+        "verifier": {
+          "duration_sec": 40.62,
+          "finished_at": "2026-05-16T08:02:29.448219+00:00",
+          "started_at": "2026-05-16T08:01:48.826647+00:00"
+        }
+      },
+      "provider": "default",
+      "reward": 1.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-455",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-7diqlg__WA4dwy3",
+      "started_at": "2026-05-16T08:01:11.890854+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 48210,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-456": {
+      "agent": "claude-code",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-456/",
+      "attempts": 1,
+      "cache_tokens": 63668075,
+      "cost_usd": 46.22781249999999,
+      "error_message": null,
+      "finished_at": "2026-05-16T09:54:41.484812+00:00",
+      "has_trajectory": true,
+      "input_tokens": 64074575,
+      "max_attempts": 6,
+      "model": "anthropic/claude-opus-4-7",
+      "origin": "oddish",
+      "output_tokens": 474142,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 6756.85,
+          "finished_at": "2026-05-16T09:54:06.568375+00:00",
+          "started_at": "2026-05-16T08:01:29.720554+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 3.5,
+          "finished_at": "2026-05-16T08:01:29.563946+00:00",
+          "started_at": "2026-05-16T08:01:26.060773+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.38,
+          "finished_at": "2026-05-16T08:01:26.060755+00:00",
+          "started_at": "2026-05-16T08:01:00.679625+00:00"
+        },
+        "verifier": {
+          "duration_sec": 14.5,
+          "finished_at": "2026-05-16T09:54:36.404844+00:00",
+          "started_at": "2026-05-16T09:54:21.905361+00:00"
+        }
+      },
+      "provider": "anthropic",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-456",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-e5_8pp__DqVFjyF",
+      "started_at": "2026-05-16T08:00:59.880027+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 29106459,
+      "original_provider": "claude",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-458": {
+      "agent": "claude-code",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-458/",
+      "attempts": 1,
+      "cache_tokens": 112962935,
+      "cost_usd": 73.98709375000007,
+      "error_message": null,
+      "finished_at": "2026-05-16T10:32:06.648684+00:00",
+      "has_trajectory": true,
+      "input_tokens": 113398528,
+      "max_attempts": 6,
+      "model": "anthropic/claude-opus-4-7",
+      "origin": "oddish",
+      "output_tokens": 591350,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 8990.35,
+          "finished_at": "2026-05-16T10:31:25.584347+00:00",
+          "started_at": "2026-05-16T08:01:35.235108+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 1.66,
+          "finished_at": "2026-05-16T08:01:35.073778+00:00",
+          "started_at": "2026-05-16T08:01:33.412760+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 24.58,
+          "finished_at": "2026-05-16T08:01:33.412706+00:00",
+          "started_at": "2026-05-16T08:01:08.831723+00:00"
+        },
+        "verifier": {
+          "duration_sec": 31.79,
+          "finished_at": "2026-05-16T10:32:01.707566+00:00",
+          "started_at": "2026-05-16T10:31:29.917124+00:00"
+        }
+      },
+      "provider": "anthropic",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-458",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-7c6gat__7w8X5oe",
+      "started_at": "2026-05-16T08:01:07.736210+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 12532249,
+      "original_provider": "claude",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-459": {
+      "agent": "codex",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-459/",
+      "attempts": 1,
+      "cache_tokens": 4038656,
+      "cost_usd": 4.387193,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:19:55.771946+00:00",
+      "has_trajectory": true,
+      "input_tokens": 4210585,
+      "max_attempts": 6,
+      "model": "openai/gpt-5.5",
+      "origin": "oddish",
+      "output_tokens": 50274,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 1058.79,
+          "finished_at": "2026-05-16T08:19:20.923881+00:00",
+          "started_at": "2026-05-16T08:01:42.135605+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 4.22,
+          "finished_at": "2026-05-16T08:01:41.058807+00:00",
+          "started_at": "2026-05-16T08:01:36.834320+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.21,
+          "finished_at": "2026-05-16T08:01:36.834298+00:00",
+          "started_at": "2026-05-16T08:01:10.619378+00:00"
+        },
+        "verifier": {
+          "duration_sec": 17.86,
+          "finished_at": "2026-05-16T08:19:46.788357+00:00",
+          "started_at": "2026-05-16T08:19:28.932750+00:00"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-459",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-82w3n__pF2PLQ5",
+      "started_at": "2026-05-16T08:01:05.909214+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 952351,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-460": {
+      "agent": "codex",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-460/",
+      "attempts": 1,
+      "cache_tokens": 7065600,
+      "cost_usd": 6.1015,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:27:56.713847+00:00",
+      "has_trajectory": true,
+      "input_tokens": 7244606,
+      "max_attempts": 6,
+      "model": "openai/gpt-5.5",
+      "origin": "oddish",
+      "output_tokens": 55789,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 1556.96,
+          "finished_at": "2026-05-16T08:27:33.017724+00:00",
+          "started_at": "2026-05-16T08:01:36.054019+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 1.87,
+          "finished_at": "2026-05-16T08:01:35.866548+00:00",
+          "started_at": "2026-05-16T08:01:33.998230+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 24.27,
+          "finished_at": "2026-05-16T08:01:33.998168+00:00",
+          "started_at": "2026-05-16T08:01:09.731537+00:00"
+        },
+        "verifier": {
+          "duration_sec": 17.37,
+          "finished_at": "2026-05-16T08:27:53.116637+00:00",
+          "started_at": "2026-05-16T08:27:35.744345+00:00"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-460",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-laadvp__wJeGXZH",
+      "started_at": "2026-05-16T08:01:08.728992+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 1188480,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-461": {
+      "agent": "codex",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-461/",
+      "attempts": 1,
+      "cache_tokens": 7855616,
+      "cost_usd": 6.5960529999999995,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:30:25.531764+00:00",
+      "has_trajectory": true,
+      "input_tokens": 8012999,
+      "max_attempts": 6,
+      "model": "openai/gpt-5.5",
+      "origin": "oddish",
+      "output_tokens": 62711,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 1671.67,
+          "finished_at": "2026-05-16T08:29:33.859482+00:00",
+          "started_at": "2026-05-16T08:01:42.189253+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 2.05,
+          "finished_at": "2026-05-16T08:01:41.463858+00:00",
+          "started_at": "2026-05-16T08:01:39.414545+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 24.54,
+          "finished_at": "2026-05-16T08:01:39.414498+00:00",
+          "started_at": "2026-05-16T08:01:14.872538+00:00"
+        },
+        "verifier": {
+          "duration_sec": 41.69,
+          "finished_at": "2026-05-16T08:30:20.721112+00:00",
+          "started_at": "2026-05-16T08:29:39.027366+00:00"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-461",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-rps3ut__3KoYFXs",
+      "started_at": "2026-05-16T08:01:11.306774+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 1262752,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-462": {
+      "agent": "gemini-cli",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-462/",
+      "attempts": 1,
+      "cache_tokens": 3297109,
+      "cost_usd": 2.4427418,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:45:29.287611+00:00",
+      "has_trajectory": true,
+      "input_tokens": 3587839,
+      "max_attempts": 6,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "origin": "oddish",
+      "output_tokens": 100155,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 2406.48,
+          "finished_at": "2026-05-16T08:41:39.632514+00:00",
+          "started_at": "2026-05-16T08:01:33.156346+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 5.4,
+          "finished_at": "2026-05-16T08:01:33.009983+00:00",
+          "started_at": "2026-05-16T08:01:27.605447+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.84,
+          "finished_at": "2026-05-16T08:01:27.605430+00:00",
+          "started_at": "2026-05-16T08:01:00.767840+00:00"
+        },
+        "verifier": {
+          "duration_sec": 222.46,
+          "finished_at": "2026-05-16T08:45:25.686537+00:00",
+          "started_at": "2026-05-16T08:41:43.229777+00:00"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-462",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-bo3wck__MFW4GLm",
+      "started_at": "2026-05-16T08:00:59.995050+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 1005090,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-463": {
+      "agent": "gemini-cli",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-463/",
+      "attempts": 1,
+      "cache_tokens": 16233,
+      "cost_usd": 0.48565660000000005,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:06:37.002711+00:00",
+      "has_trajectory": true,
+      "input_tokens": 56432,
+      "max_attempts": 6,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "origin": "oddish",
+      "output_tokens": 33501,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 283.5,
+          "finished_at": "2026-05-16T08:06:22.830158+00:00",
+          "started_at": "2026-05-16T08:01:39.330463+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 5.2,
+          "finished_at": "2026-05-16T08:01:39.192716+00:00",
+          "started_at": "2026-05-16T08:01:33.996334+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.05,
+          "finished_at": "2026-05-16T08:01:33.996290+00:00",
+          "started_at": "2026-05-16T08:01:08.943181+00:00"
+        },
+        "verifier": {
+          "duration_sec": 8.71,
+          "finished_at": "2026-05-16T08:06:34.272500+00:00",
+          "started_at": "2026-05-16T08:06:25.559212+00:00"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-463",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-65htmr__xJvtyHH",
+      "started_at": "2026-05-16T08:01:07.636426+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 188203,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-464": {
+      "agent": "gemini-cli",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-464/",
+      "attempts": 1,
+      "cache_tokens": 126493,
+      "cost_usd": 0.7033146,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:08:33.603474+00:00",
+      "has_trajectory": true,
+      "input_tokens": 183129,
+      "max_attempts": 6,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "origin": "oddish",
+      "output_tokens": 47062,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 387.85,
+          "finished_at": "2026-05-16T08:08:14.897675+00:00",
+          "started_at": "2026-05-16T08:01:47.046693+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 6.61,
+          "finished_at": "2026-05-16T08:01:46.432901+00:00",
+          "started_at": "2026-05-16T08:01:39.825146+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.1,
+          "finished_at": "2026-05-16T08:01:39.825099+00:00",
+          "started_at": "2026-05-16T08:01:13.726241+00:00"
+        },
+        "verifier": {
+          "duration_sec": 9.88,
+          "finished_at": "2026-05-16T08:08:29.812367+00:00",
+          "started_at": "2026-05-16T08:08:19.927969+00:00"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-464",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-mibc1x__YqDjZeu",
+      "started_at": "2026-05-16T08:01:10.695013+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 245540,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-466": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-466/",
+      "attempts": 1,
+      "cache_tokens": 6096410,
+      "cost_usd": 5.93806875,
+      "error_message": null,
+      "finished_at": "2026-05-16T09:23:10.067733+00:00",
+      "has_trajectory": true,
+      "input_tokens": 6254683,
+      "max_attempts": 6,
+      "model": "anthropic/claude-opus-4-7",
+      "origin": "oddish",
+      "output_tokens": 76165,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 4714.76,
+          "finished_at": "2026-05-16T09:20:13.668285+00:00",
+          "started_at": "2026-05-16T08:01:38.909174+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 3.2,
+          "finished_at": "2026-05-16T08:01:38.755958+00:00",
+          "started_at": "2026-05-16T08:01:35.560260+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 24.8,
+          "finished_at": "2026-05-16T08:01:35.560215+00:00",
+          "started_at": "2026-05-16T08:01:10.760858+00:00"
+        },
+        "verifier": {
+          "duration_sec": 67.22,
+          "finished_at": "2026-05-16T09:22:59.588912+00:00",
+          "started_at": "2026-05-16T09:21:52.364725+00:00"
+        }
+      },
+      "provider": "anthropic",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-466",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-p9450x__Y5nCJou",
+      "started_at": "2026-05-16T08:01:09.563584+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 42249065,
+      "original_provider": "claude",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-467": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-467/",
+      "attempts": 1,
+      "cache_tokens": 473600,
+      "cost_usd": 1.8807649999999998,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:28:40.204220+00:00",
+      "has_trajectory": true,
+      "input_tokens": 566737,
+      "max_attempts": 6,
+      "model": "openai/gpt-5.5",
+      "origin": "oddish",
+      "output_tokens": 39276,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 1488.39,
+          "finished_at": "2026-05-16T08:26:39.452664+00:00",
+          "started_at": "2026-05-16T08:01:51.065087+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 4.08,
+          "finished_at": "2026-05-16T08:01:50.032917+00:00",
+          "started_at": "2026-05-16T08:01:45.954778+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.8,
+          "finished_at": "2026-05-16T08:01:45.954722+00:00",
+          "started_at": "2026-05-16T08:01:20.156703+00:00"
+        },
+        "verifier": {
+          "duration_sec": 61.76,
+          "finished_at": "2026-05-16T08:28:27.042090+00:00",
+          "started_at": "2026-05-16T08:27:25.283514+00:00"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-467",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-l694rc__QRKd2jb",
+      "started_at": "2026-05-16T08:01:15.112315+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 6934569,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-468": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-468/",
+      "attempts": 1,
+      "cache_tokens": 795414,
+      "cost_usd": 1.7041887999999998,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:27:37.745582+00:00",
+      "has_trajectory": true,
+      "input_tokens": 1060679,
+      "max_attempts": 6,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "origin": "oddish",
+      "output_tokens": 84548,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 1475.82,
+          "finished_at": "2026-05-16T08:26:27.569816+00:00",
+          "started_at": "2026-05-16T08:01:51.744876+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 3.11,
+          "finished_at": "2026-05-16T08:01:50.499106+00:00",
+          "started_at": "2026-05-16T08:01:47.384166+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.72,
+          "finished_at": "2026-05-16T08:01:47.384115+00:00",
+          "started_at": "2026-05-16T08:01:20.667126+00:00"
+        },
+        "verifier": {
+          "duration_sec": 7.86,
+          "finished_at": "2026-05-16T08:27:20.024175+00:00",
+          "started_at": "2026-05-16T08:27:12.162142+00:00"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-468",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-vi6kg0__i3P3SdL",
+      "started_at": "2026-05-16T08:01:14.972672+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 10495736,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-469": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-469/",
+      "attempts": 1,
+      "cache_tokens": 11114112,
+      "cost_usd": 3.300596520000001,
+      "error_message": null,
+      "finished_at": "2026-05-16T12:00:50.005345+00:00",
+      "has_trajectory": true,
+      "input_tokens": 11596030,
+      "max_attempts": 6,
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "origin": "oddish",
+      "output_tokens": 308083,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 14094.28,
+          "finished_at": "2026-05-16T11:56:34.059273+00:00",
+          "started_at": "2026-05-16T08:01:39.782574+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 3.78,
+          "finished_at": "2026-05-16T08:01:38.817115+00:00",
+          "started_at": "2026-05-16T08:01:35.039595+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.58,
+          "finished_at": "2026-05-16T08:01:35.039577+00:00",
+          "started_at": "2026-05-16T08:01:09.460225+00:00"
+        },
+        "verifier": {
+          "duration_sec": 12.48,
+          "finished_at": "2026-05-16T12:00:00.558419+00:00",
+          "started_at": "2026-05-16T11:59:48.076471+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-469",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-rhdmoc__LMcPoQG",
+      "started_at": "2026-05-16T08:01:05.456325+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 114565378,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-470": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-470/",
+      "attempts": 1,
+      "cache_tokens": 3560640,
+      "cost_usd": 0.464170617,
+      "error_message": null,
+      "finished_at": "2026-05-16T08:49:27.943931+00:00",
+      "has_trajectory": true,
+      "input_tokens": 4062945,
+      "max_attempts": 6,
+      "model": "openrouter/minimax/minimax-m2.7",
+      "origin": "oddish",
+      "output_tokens": 44642,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 2640.28,
+          "finished_at": "2026-05-16T08:45:46.615216+00:00",
+          "started_at": "2026-05-16T08:01:46.338020+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 9.48,
+          "finished_at": "2026-05-16T08:01:46.135047+00:00",
+          "started_at": "2026-05-16T08:01:36.659504+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.19,
+          "finished_at": "2026-05-16T08:01:36.659460+00:00",
+          "started_at": "2026-05-16T08:01:11.464507+00:00"
+        },
+        "verifier": {
+          "duration_sec": 11.89,
+          "finished_at": "2026-05-16T08:49:17.163519+00:00",
+          "started_at": "2026-05-16T08:49:05.270411+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-470",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-fdydg0__ZbXfMjv",
+      "started_at": "2026-05-16T08:01:10.184910+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 42779935,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-472": {
+      "agent": "nop",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-472/",
+      "attempts": 1,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-16T18:37:35.499869+00:00",
+      "has_trajectory": false,
+      "input_tokens": null,
+      "max_attempts": 6,
+      "model": "default",
+      "origin": "oddish",
+      "output_tokens": null,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 0.0,
+          "finished_at": "2026-05-16T18:37:24.287259+00:00",
+          "started_at": "2026-05-16T18:37:24.287200+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 0.0,
+          "finished_at": "2026-05-16T18:37:24.139131+00:00",
+          "started_at": "2026-05-16T18:37:24.139100+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 23.51,
+          "finished_at": "2026-05-16T18:37:24.139081+00:00",
+          "started_at": "2026-05-16T18:37:00.632946+00:00"
+        },
+        "verifier": {
+          "duration_sec": 6.84,
+          "finished_at": "2026-05-16T18:37:33.045392+00:00",
+          "started_at": "2026-05-16T18:37:26.209711+00:00"
+        }
+      },
+      "provider": "default",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-472",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-g9sk0g__dKN9J3H",
+      "started_at": "2026-05-16T18:36:59.538962+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 12313,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-473": {
+      "agent": "nop",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-473/",
+      "attempts": 1,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-16T18:37:39.392324+00:00",
+      "has_trajectory": false,
+      "input_tokens": null,
+      "max_attempts": 6,
+      "model": "default",
+      "origin": "oddish",
+      "output_tokens": null,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 0.0,
+          "finished_at": "2026-05-16T18:37:25.018866+00:00",
+          "started_at": "2026-05-16T18:37:25.018799+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 0.0,
+          "finished_at": "2026-05-16T18:37:24.872557+00:00",
+          "started_at": "2026-05-16T18:37:24.872532+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 24.06,
+          "finished_at": "2026-05-16T18:37:24.872516+00:00",
+          "started_at": "2026-05-16T18:37:00.808726+00:00"
+        },
+        "verifier": {
+          "duration_sec": 9.1,
+          "finished_at": "2026-05-16T18:37:36.301997+00:00",
+          "started_at": "2026-05-16T18:37:27.198137+00:00"
+        }
+      },
+      "provider": "default",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-473",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-akh_8g__hYHwbdC",
+      "started_at": "2026-05-16T18:36:59.550822+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 12313,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-474": {
+      "agent": "oracle",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-474/",
+      "attempts": 1,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-16T18:38:09.582668+00:00",
+      "has_trajectory": false,
+      "input_tokens": null,
+      "max_attempts": 6,
+      "model": "default",
+      "origin": "oddish",
+      "output_tokens": null,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 2.53,
+          "finished_at": "2026-05-16T18:37:27.416283+00:00",
+          "started_at": "2026-05-16T18:37:24.882222+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 0.0,
+          "finished_at": "2026-05-16T18:37:24.731640+00:00",
+          "started_at": "2026-05-16T18:37:24.731619+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 24.05,
+          "finished_at": "2026-05-16T18:37:24.731602+00:00",
+          "started_at": "2026-05-16T18:37:00.683084+00:00"
+        },
+        "verifier": {
+          "duration_sec": 38.74,
+          "finished_at": "2026-05-16T18:38:07.215768+00:00",
+          "started_at": "2026-05-16T18:37:28.479430+00:00"
+        }
+      },
+      "provider": "default",
+      "reward": 1.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-474",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-q_5m5l__cis6w5v",
+      "started_at": "2026-05-16T18:36:59.711386+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 47972,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-475": {
+      "agent": "claude-code",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-475/",
+      "attempts": 1,
+      "cache_tokens": 84359320,
+      "cost_usd": 59.271883750000086,
+      "error_message": "Agent execution timed out after 25200.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "finished_at": "2026-05-17T01:38:10.370828+00:00",
+      "has_trajectory": true,
+      "input_tokens": 85325160,
+      "max_attempts": 6,
+      "model": "anthropic/claude-opus-4-7",
+      "origin": "oddish",
+      "output_tokens": 442248,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 25202.98,
+          "finished_at": "2026-05-17T01:37:32.749034+00:00",
+          "started_at": "2026-05-16T18:37:29.765973+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 3.32,
+          "finished_at": "2026-05-16T18:37:29.628788+00:00",
+          "started_at": "2026-05-16T18:37:26.311983+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.73,
+          "finished_at": "2026-05-16T18:37:26.311965+00:00",
+          "started_at": "2026-05-16T18:37:00.584514+00:00"
+        },
+        "verifier": {
+          "duration_sec": 17.03,
+          "finished_at": "2026-05-17T01:38:05.380720+00:00",
+          "started_at": "2026-05-17T01:37:48.355218+00:00"
+        }
+      },
+      "provider": "anthropic",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-475",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-6tkt0o__mWtQHYo",
+      "started_at": "2026-05-16T18:36:59.371204+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 12556341,
+      "original_provider": "claude",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-477": {
+      "agent": "codex",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-477/",
+      "attempts": 1,
+      "cache_tokens": 11652096,
+      "cost_usd": 8.845273,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:02:01.804947+00:00",
+      "has_trajectory": true,
+      "input_tokens": 11818127,
+      "max_attempts": 6,
+      "model": "openai/gpt-5.5",
+      "origin": "oddish",
+      "output_tokens": 72969,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 1438.67,
+          "finished_at": "2026-05-16T19:01:27.118697+00:00",
+          "started_at": "2026-05-16T18:37:28.448402+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 2.21,
+          "finished_at": "2026-05-16T18:37:28.305215+00:00",
+          "started_at": "2026-05-16T18:37:26.093541+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.8,
+          "finished_at": "2026-05-16T18:37:26.093526+00:00",
+          "started_at": "2026-05-16T18:37:00.295889+00:00"
+        },
+        "verifier": {
+          "duration_sec": 26.24,
+          "finished_at": "2026-05-16T19:01:58.307900+00:00",
+          "started_at": "2026-05-16T19:01:32.066876+00:00"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-477",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-3j90sn__agSzb3s",
+      "started_at": "2026-05-16T18:36:59.147074+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 1585945,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-478": {
+      "agent": "codex",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-478/",
+      "attempts": 1,
+      "cache_tokens": 9215488,
+      "cost_usd": 7.3492239999999995,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:04:59.217751+00:00",
+      "has_trajectory": true,
+      "input_tokens": 9355916,
+      "max_attempts": 6,
+      "model": "openai/gpt-5.5",
+      "origin": "oddish",
+      "output_tokens": 67978,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 1622.39,
+          "finished_at": "2026-05-16T19:04:33.287148+00:00",
+          "started_at": "2026-05-16T18:37:30.898505+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 1.92,
+          "finished_at": "2026-05-16T18:37:30.480448+00:00",
+          "started_at": "2026-05-16T18:37:28.557256+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.0,
+          "finished_at": "2026-05-16T18:37:28.557236+00:00",
+          "started_at": "2026-05-16T18:37:03.557021+00:00"
+        },
+        "verifier": {
+          "duration_sec": 17.97,
+          "finished_at": "2026-05-16T19:04:55.183903+00:00",
+          "started_at": "2026-05-16T19:04:37.209980+00:00"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-478",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-6o_b9e__JhJTXcm",
+      "started_at": "2026-05-16T18:37:01.384674+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 1370843,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-479": {
+      "agent": "gemini-cli",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-479/",
+      "attempts": 1,
+      "cache_tokens": 17051534,
+      "cost_usd": 8.702526800000001,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:29:50.856779+00:00",
+      "has_trajectory": true,
+      "input_tokens": 18024154,
+      "max_attempts": 6,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "origin": "oddish",
+      "output_tokens": 278915,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 3115.51,
+          "finished_at": "2026-05-16T19:29:28.413766+00:00",
+          "started_at": "2026-05-16T18:37:32.903752+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 6.09,
+          "finished_at": "2026-05-16T18:37:32.769004+00:00",
+          "started_at": "2026-05-16T18:37:26.681426+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.18,
+          "finished_at": "2026-05-16T18:37:26.681407+00:00",
+          "started_at": "2026-05-16T18:37:00.503027+00:00"
+        },
+        "verifier": {
+          "duration_sec": 9.0,
+          "finished_at": "2026-05-16T19:29:46.240342+00:00",
+          "started_at": "2026-05-16T19:29:37.238956+00:00"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-479",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-7ea5eb__PxiKWAk",
+      "started_at": "2026-05-16T18:36:59.342582+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 3196694,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-480": {
+      "agent": "gemini-cli",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-480/",
+      "attempts": 1,
+      "cache_tokens": 110244,
+      "cost_usd": 0.6849068,
+      "error_message": null,
+      "finished_at": "2026-05-16T18:47:17.214901+00:00",
+      "has_trajectory": true,
+      "input_tokens": 175969,
+      "max_attempts": 6,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "origin": "oddish",
+      "output_tokens": 44284,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 539.23,
+          "finished_at": "2026-05-16T18:46:31.413115+00:00",
+          "started_at": "2026-05-16T18:37:32.178907+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 6.2,
+          "finished_at": "2026-05-16T18:37:32.066076+00:00",
+          "started_at": "2026-05-16T18:37:25.865973+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.54,
+          "finished_at": "2026-05-16T18:37:25.865957+00:00",
+          "started_at": "2026-05-16T18:37:00.328589+00:00"
+        },
+        "verifier": {
+          "duration_sec": 33.24,
+          "finished_at": "2026-05-16T18:47:14.632829+00:00",
+          "started_at": "2026-05-16T18:46:41.396117+00:00"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-480",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-gql24w__usLsN8S",
+      "started_at": "2026-05-16T18:36:59.310566+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 351283,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-484": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-484/",
+      "attempts": 1,
+      "cache_tokens": 24850554,
+      "cost_usd": 18.358009499999994,
+      "error_message": null,
+      "finished_at": "2026-05-16T21:19:44.036537+00:00",
+      "has_trajectory": true,
+      "input_tokens": 25163974,
+      "max_attempts": 6,
+      "model": "anthropic/claude-opus-4-7",
+      "origin": "oddish",
+      "output_tokens": 159640,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 8799.76,
+          "finished_at": "2026-05-16T21:04:25.452918+00:00",
+          "started_at": "2026-05-16T18:37:45.696963+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 7.24,
+          "finished_at": "2026-05-16T18:37:44.622668+00:00",
+          "started_at": "2026-05-16T18:37:37.381308+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.83,
+          "finished_at": "2026-05-16T18:37:37.381280+00:00",
+          "started_at": "2026-05-16T18:37:10.546423+00:00"
+        },
+        "verifier": {
+          "duration_sec": 69.02,
+          "finished_at": "2026-05-16T21:18:27.184866+00:00",
+          "started_at": "2026-05-16T21:17:18.169718+00:00"
+        }
+      },
+      "provider": "anthropic",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-484",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-sirl74__yciL4Ji",
+      "started_at": "2026-05-16T18:37:05.708491+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 158982763,
+      "original_provider": "claude",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-485": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-485/",
+      "attempts": 1,
+      "cache_tokens": 53932688,
+      "cost_usd": 34.86041899999999,
+      "error_message": null,
+      "finished_at": "2026-05-16T22:02:20.591701+00:00",
+      "has_trajectory": true,
+      "input_tokens": 54345276,
+      "max_attempts": 6,
+      "model": "anthropic/claude-opus-4-7",
+      "origin": "oddish",
+      "output_tokens": 212794,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 11151.08,
+          "finished_at": "2026-05-16T21:43:34.272706+00:00",
+          "started_at": "2026-05-16T18:37:43.187872+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 5.85,
+          "finished_at": "2026-05-16T18:37:42.089118+00:00",
+          "started_at": "2026-05-16T18:37:36.239127+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.33,
+          "finished_at": "2026-05-16T18:37:36.239113+00:00",
+          "started_at": "2026-05-16T18:37:10.910883+00:00"
+        },
+        "verifier": {
+          "duration_sec": 17.3,
+          "finished_at": "2026-05-16T22:00:00.355558+00:00",
+          "started_at": "2026-05-16T21:59:43.057780+00:00"
+        }
+      },
+      "provider": "anthropic",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-485",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-s_sst5__6z9TLqB",
+      "started_at": "2026-05-16T18:37:05.932262+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 345954471,
+      "original_provider": "claude",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-486": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-486/",
+      "attempts": 1,
+      "cache_tokens": 19886440,
+      "cost_usd": 14.025787499999995,
+      "error_message": null,
+      "finished_at": "2026-05-16T20:51:04.351903+00:00",
+      "has_trajectory": true,
+      "input_tokens": 20108942,
+      "max_attempts": 6,
+      "model": "anthropic/claude-opus-4-7",
+      "origin": "oddish",
+      "output_tokens": 108122,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 7046.39,
+          "finished_at": "2026-05-16T20:38:00.211328+00:00",
+          "started_at": "2026-05-16T18:40:33.825048+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 7.27,
+          "finished_at": "2026-05-16T18:40:33.685500+00:00",
+          "started_at": "2026-05-16T18:40:26.414754+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.97,
+          "finished_at": "2026-05-16T18:40:26.414737+00:00",
+          "started_at": "2026-05-16T18:40:00.441832+00:00"
+        },
+        "verifier": {
+          "duration_sec": 11.98,
+          "finished_at": "2026-05-16T20:50:44.444461+00:00",
+          "started_at": "2026-05-16T20:50:32.464431+00:00"
+        }
+      },
+      "provider": "anthropic",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-486",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-1liw8m__58V2uLo",
+      "started_at": "2026-05-16T18:39:59.510918+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 126427559,
+      "original_provider": "claude",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-487": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-487/",
+      "attempts": 1,
+      "cache_tokens": 27668394,
+      "cost_usd": 20.051727,
+      "error_message": null,
+      "finished_at": "2026-05-16T21:47:46.120323+00:00",
+      "has_trajectory": true,
+      "input_tokens": 28002293,
+      "max_attempts": 6,
+      "model": "anthropic/claude-opus-4-7",
+      "origin": "oddish",
+      "output_tokens": 165909,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 10296.96,
+          "finished_at": "2026-05-16T21:32:22.447507+00:00",
+          "started_at": "2026-05-16T18:40:45.484777+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 6.79,
+          "finished_at": "2026-05-16T18:40:44.392596+00:00",
+          "started_at": "2026-05-16T18:40:37.604364+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.89,
+          "finished_at": "2026-05-16T18:40:37.604321+00:00",
+          "started_at": "2026-05-16T18:40:10.713676+00:00"
+        },
+        "verifier": {
+          "duration_sec": 17.61,
+          "finished_at": "2026-05-16T21:46:22.208565+00:00",
+          "started_at": "2026-05-16T21:46:04.593959+00:00"
+        }
+      },
+      "provider": "anthropic",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-487",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-3s3awa__RieFBNY",
+      "started_at": "2026-05-16T18:40:05.719476+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 173331367,
+      "original_provider": "claude",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-488": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-488/",
+      "attempts": 1,
+      "cache_tokens": 642048,
+      "cost_usd": 2.412229,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:16:09.146599+00:00",
+      "has_trajectory": true,
+      "input_tokens": 744227,
+      "max_attempts": 6,
+      "model": "openai/gpt-5.5",
+      "origin": "oddish",
+      "output_tokens": 52677,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 2030.47,
+          "finished_at": "2026-05-16T19:14:17.520256+00:00",
+          "started_at": "2026-05-16T18:40:27.050556+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 2.34,
+          "finished_at": "2026-05-16T18:40:26.904509+00:00",
+          "started_at": "2026-05-16T18:40:24.562021+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 24.14,
+          "finished_at": "2026-05-16T18:40:24.562005+00:00",
+          "started_at": "2026-05-16T18:40:00.423302+00:00"
+        },
+        "verifier": {
+          "duration_sec": 83.03,
+          "finished_at": "2026-05-16T19:16:04.072624+00:00",
+          "started_at": "2026-05-16T19:14:41.040658+00:00"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-488",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-4v921n__CQNFUfN",
+      "started_at": "2026-05-16T18:39:59.525121+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 8706204,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-489": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-489/",
+      "attempts": 1,
+      "cache_tokens": 692224,
+      "cost_usd": 2.1235270000000006,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:11:12.400509+00:00",
+      "has_trajectory": true,
+      "input_tokens": 774785,
+      "max_attempts": 6,
+      "model": "openai/gpt-5.5",
+      "origin": "oddish",
+      "output_tokens": 45487,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 1690.35,
+          "finished_at": "2026-05-16T19:08:44.432071+00:00",
+          "started_at": "2026-05-16T18:40:34.085683+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 6.75,
+          "finished_at": "2026-05-16T18:40:33.943497+00:00",
+          "started_at": "2026-05-16T18:40:27.193493+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.5,
+          "finished_at": "2026-05-16T18:40:27.193477+00:00",
+          "started_at": "2026-05-16T18:40:00.693925+00:00"
+        },
+        "verifier": {
+          "duration_sec": 12.21,
+          "finished_at": "2026-05-16T19:11:05.421306+00:00",
+          "started_at": "2026-05-16T19:10:53.215605+00:00"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-489",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-oaf1kr__E3UVVd3",
+      "started_at": "2026-05-16T18:39:59.551102+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 8786327,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-490": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-490/",
+      "attempts": 1,
+      "cache_tokens": 731648,
+      "cost_usd": 2.3953889999999998,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:22:43.752666+00:00",
+      "has_trajectory": true,
+      "input_tokens": 802797,
+      "max_attempts": 6,
+      "model": "openai/gpt-5.5",
+      "origin": "oddish",
+      "output_tokens": 55794,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 2444.2,
+          "finished_at": "2026-05-16T19:21:15.931885+00:00",
+          "started_at": "2026-05-16T18:40:31.731551+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 3.63,
+          "finished_at": "2026-05-16T18:40:31.354035+00:00",
+          "started_at": "2026-05-16T18:40:27.726952+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 24.83,
+          "finished_at": "2026-05-16T18:40:27.726930+00:00",
+          "started_at": "2026-05-16T18:40:02.892835+00:00"
+        },
+        "verifier": {
+          "duration_sec": 27.97,
+          "finished_at": "2026-05-16T19:22:36.375794+00:00",
+          "started_at": "2026-05-16T19:22:08.404650+00:00"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-490",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-3t38e6__6BMdJKT",
+      "started_at": "2026-05-16T18:40:01.110438+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 8874088,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-491": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-491/",
+      "attempts": 1,
+      "cache_tokens": 420864,
+      "cost_usd": 1.698962,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:09:15.165317+00:00",
+      "has_trajectory": true,
+      "input_tokens": 483892,
+      "max_attempts": 6,
+      "model": "openai/gpt-5.5",
+      "origin": "oddish",
+      "output_tokens": 39113,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 1538.68,
+          "finished_at": "2026-05-16T19:06:31.183276+00:00",
+          "started_at": "2026-05-16T18:40:52.508232+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 8.75,
+          "finished_at": "2026-05-16T18:40:50.978334+00:00",
+          "started_at": "2026-05-16T18:40:42.225247+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.73,
+          "finished_at": "2026-05-16T18:40:42.225219+00:00",
+          "started_at": "2026-05-16T18:40:15.491137+00:00"
+        },
+        "verifier": {
+          "duration_sec": 19.76,
+          "finished_at": "2026-05-16T19:09:00.241426+00:00",
+          "started_at": "2026-05-16T19:08:40.484971+00:00"
+        }
+      },
+      "provider": "openai",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-491",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-60l8da__CRstxxL",
+      "started_at": "2026-05-16T18:40:08.444956+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 5783444,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-492": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-492/",
+      "attempts": 1,
+      "cache_tokens": 967728,
+      "cost_usd": 1.9398836,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:06:04.172762+00:00",
+      "has_trajectory": true,
+      "input_tokens": 1116517,
+      "max_attempts": 6,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "origin": "oddish",
+      "output_tokens": 120730,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 1360.0,
+          "finished_at": "2026-05-16T19:00:12.180722+00:00",
+          "started_at": "2026-05-16T18:37:32.184976+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 4.68,
+          "finished_at": "2026-05-16T18:37:32.037283+00:00",
+          "started_at": "2026-05-16T18:37:27.360747+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.75,
+          "finished_at": "2026-05-16T18:37:27.360732+00:00",
+          "started_at": "2026-05-16T18:37:00.606600+00:00"
+        },
+        "verifier": {
+          "duration_sec": 247.33,
+          "finished_at": "2026-05-16T19:05:57.647749+00:00",
+          "started_at": "2026-05-16T19:01:50.319445+00:00"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-492",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-bldmf5__4BHZQuG",
+      "started_at": "2026-05-16T18:36:59.601495+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 11222112,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-493": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-493/",
+      "attempts": 1,
+      "cache_tokens": 2402905,
+      "cost_usd": 2.610393,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:11:23.026797+00:00",
+      "has_trajectory": true,
+      "input_tokens": 2774829,
+      "max_attempts": 6,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "origin": "oddish",
+      "output_tokens": 115497,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 1719.08,
+          "finished_at": "2026-05-16T19:09:07.793864+00:00",
+          "started_at": "2026-05-16T18:40:28.712499+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 3.24,
+          "finished_at": "2026-05-16T18:40:28.593671+00:00",
+          "started_at": "2026-05-16T18:40:25.350196+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.47,
+          "finished_at": "2026-05-16T18:40:25.350181+00:00",
+          "started_at": "2026-05-16T18:39:59.883701+00:00"
+        },
+        "verifier": {
+          "duration_sec": 66.43,
+          "finished_at": "2026-05-16T19:11:15.671348+00:00",
+          "started_at": "2026-05-16T19:10:09.244609+00:00"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-493",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-1peepu__9f9aK5g",
+      "started_at": "2026-05-16T18:39:59.088043+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 25849019,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-494": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-494/",
+      "attempts": 1,
+      "cache_tokens": 280053,
+      "cost_usd": 1.3630226,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:06:49.487828+00:00",
+      "has_trajectory": true,
+      "input_tokens": 425305,
+      "max_attempts": 6,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "origin": "oddish",
+      "output_tokens": 84709,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 1354.91,
+          "finished_at": "2026-05-16T19:03:05.542749+00:00",
+          "started_at": "2026-05-16T18:40:30.633779+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 4.55,
+          "finished_at": "2026-05-16T18:40:30.498982+00:00",
+          "started_at": "2026-05-16T18:40:25.948483+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.83,
+          "finished_at": "2026-05-16T18:40:25.948466+00:00",
+          "started_at": "2026-05-16T18:40:00.120266+00:00"
+        },
+        "verifier": {
+          "duration_sec": 158.62,
+          "finished_at": "2026-05-16T19:06:44.152005+00:00",
+          "started_at": "2026-05-16T19:04:05.528832+00:00"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-494",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-0ixx5a__Xd4A5kB",
+      "started_at": "2026-05-16T18:39:59.344717+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 4821724,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-495": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-495/",
+      "attempts": 1,
+      "cache_tokens": 3332282,
+      "cost_usd": 3.2885084000000004,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:16:43.015285+00:00",
+      "has_trajectory": true,
+      "input_tokens": 3608422,
+      "max_attempts": 6,
+      "model": "gemini/gemini-3.1-pro-preview",
+      "origin": "oddish",
+      "output_tokens": 172481,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 2061.46,
+          "finished_at": "2026-05-16T19:14:52.005620+00:00",
+          "started_at": "2026-05-16T18:40:30.543134+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 3.4,
+          "finished_at": "2026-05-16T18:40:30.393062+00:00",
+          "started_at": "2026-05-16T18:40:26.996514+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.63,
+          "finished_at": "2026-05-16T18:40:26.996495+00:00",
+          "started_at": "2026-05-16T18:40:00.367932+00:00"
+        },
+        "verifier": {
+          "duration_sec": 10.33,
+          "finished_at": "2026-05-16T19:16:32.870728+00:00",
+          "started_at": "2026-05-16T19:16:22.537996+00:00"
+        }
+      },
+      "provider": "gemini",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-495",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-5ypcxj__VjtXckA",
+      "started_at": "2026-05-16T18:39:59.444065+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 33860795,
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-496": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-496/",
+      "attempts": 1,
+      "cache_tokens": 6774608,
+      "cost_usd": 14.521393305000004,
+      "error_message": null,
+      "finished_at": "2026-05-16T21:51:45.324923+00:00",
+      "has_trajectory": true,
+      "input_tokens": 14938519,
+      "max_attempts": 6,
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "origin": "oddish",
+      "output_tokens": 411073,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 11213.43,
+          "finished_at": "2026-05-16T21:44:22.908534+00:00",
+          "started_at": "2026-05-16T18:37:29.476241+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 4.42,
+          "finished_at": "2026-05-16T18:37:29.325363+00:00",
+          "started_at": "2026-05-16T18:37:24.905633+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 24.35,
+          "finished_at": "2026-05-16T18:37:24.905605+00:00",
+          "started_at": "2026-05-16T18:37:00.553861+00:00"
+        },
+        "verifier": {
+          "duration_sec": 12.01,
+          "finished_at": "2026-05-16T21:51:26.867537+00:00",
+          "started_at": "2026-05-16T21:51:14.855392+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-496",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-g4wg2z__2bwotPk",
+      "started_at": "2026-05-16T18:36:59.403142+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 152263025,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-497": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-497/",
+      "attempts": 2,
+      "cache_tokens": 2694308,
+      "cost_usd": 6.014803835999999,
+      "error_message": null,
+      "finished_at": "2026-05-16T21:13:32.989117+00:00",
+      "has_trajectory": true,
+      "input_tokens": 6002356,
+      "max_attempts": 6,
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "origin": "oddish",
+      "output_tokens": 211356,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 5566.58,
+          "finished_at": "2026-05-16T21:04:40.192747+00:00",
+          "started_at": "2026-05-16T19:31:53.614576+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 8.23,
+          "finished_at": "2026-05-16T19:31:52.121468+00:00",
+          "started_at": "2026-05-16T19:31:43.886494+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 28.15,
+          "finished_at": "2026-05-16T19:31:43.886470+00:00",
+          "started_at": "2026-05-16T19:31:15.738790+00:00"
+        },
+        "verifier": {
+          "duration_sec": 57.33,
+          "finished_at": "2026-05-16T21:12:51.783052+00:00",
+          "started_at": "2026-05-16T21:11:54.451248+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-497",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-akke01__YjP8vHe",
+      "started_at": "2026-05-16T19:31:08.560768+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 83706454,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-498": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-498/",
+      "attempts": 1,
+      "cache_tokens": 3474599,
+      "cost_usd": 7.8311112570000025,
+      "error_message": null,
+      "finished_at": "2026-05-16T20:53:17.278632+00:00",
+      "has_trajectory": true,
+      "input_tokens": 7805702,
+      "max_attempts": 6,
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "origin": "oddish",
+      "output_tokens": 264860,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 7515.73,
+          "finished_at": "2026-05-16T20:43:01.395769+00:00",
+          "started_at": "2026-05-16T18:37:45.665515+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 7.22,
+          "finished_at": "2026-05-16T18:37:44.625928+00:00",
+          "started_at": "2026-05-16T18:37:37.409916+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 27.45,
+          "finished_at": "2026-05-16T18:37:37.409899+00:00",
+          "started_at": "2026-05-16T18:37:09.955774+00:00"
+        },
+        "verifier": {
+          "duration_sec": 13.3,
+          "finished_at": "2026-05-16T20:52:28.161554+00:00",
+          "started_at": "2026-05-16T20:52:14.857241+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-498",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-lgz8el__hfAr8vh",
+      "started_at": "2026-05-16T18:37:05.449048+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 80667389,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-499": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-499/",
+      "attempts": 1,
+      "cache_tokens": 2371182,
+      "cost_usd": 5.2367593139999995,
+      "error_message": null,
+      "finished_at": "2026-05-16T20:16:27.157272+00:00",
+      "has_trajectory": true,
+      "input_tokens": 5245966,
+      "max_attempts": 6,
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "origin": "oddish",
+      "output_tokens": 185879,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 5685.49,
+          "finished_at": "2026-05-16T20:15:14.777931+00:00",
+          "started_at": "2026-05-16T18:40:29.289789+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 2.53,
+          "finished_at": "2026-05-16T18:40:29.133750+00:00",
+          "started_at": "2026-05-16T18:40:26.599752+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.39,
+          "finished_at": "2026-05-16T18:40:26.599735+00:00",
+          "started_at": "2026-05-16T18:40:00.207503+00:00"
+        },
+        "verifier": {
+          "duration_sec": 12.0,
+          "finished_at": "2026-05-16T20:16:16.770020+00:00",
+          "started_at": "2026-05-16T20:16:04.768423+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-499",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-6x1g0a__maonyW9",
+      "started_at": "2026-05-16T18:39:59.437249+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 54515863,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-500": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-500/",
+      "attempts": 1,
+      "cache_tokens": 2612480,
+      "cost_usd": 0.32142561300000005,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:24:37.909572+00:00",
+      "has_trajectory": true,
+      "input_tokens": 2840686,
+      "max_attempts": 6,
+      "model": "openrouter/minimax/minimax-m2.7",
+      "origin": "oddish",
+      "output_tokens": 80208,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 2703.05,
+          "finished_at": "2026-05-16T19:22:32.550176+00:00",
+          "started_at": "2026-05-16T18:37:29.504947+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 4.56,
+          "finished_at": "2026-05-16T18:37:29.352419+00:00",
+          "started_at": "2026-05-16T18:37:24.797256+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 24.32,
+          "finished_at": "2026-05-16T18:37:24.797239+00:00",
+          "started_at": "2026-05-16T18:37:00.480166+00:00"
+        },
+        "verifier": {
+          "duration_sec": 10.61,
+          "finished_at": "2026-05-16T19:24:30.433417+00:00",
+          "started_at": "2026-05-16T19:24:19.820038+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-500",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-bgwrsy__Aja9xC8",
+      "started_at": "2026-05-16T18:36:59.219780+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 31725133,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-501": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-501/",
+      "attempts": 1,
+      "cache_tokens": 3437728,
+      "cost_usd": 0.546025893,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:38:09.746861+00:00",
+      "has_trajectory": true,
+      "input_tokens": 4022644,
+      "max_attempts": 6,
+      "model": "openrouter/minimax/minimax-m2.7",
+      "origin": "oddish",
+      "output_tokens": 136935,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 3478.6,
+          "finished_at": "2026-05-16T19:35:27.549172+00:00",
+          "started_at": "2026-05-16T18:37:28.945333+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 4.45,
+          "finished_at": "2026-05-16T18:37:28.816181+00:00",
+          "started_at": "2026-05-16T18:37:24.370726+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 23.91,
+          "finished_at": "2026-05-16T18:37:24.370709+00:00",
+          "started_at": "2026-05-16T18:37:00.457992+00:00"
+        },
+        "verifier": {
+          "duration_sec": 6.1,
+          "finished_at": "2026-05-16T19:37:59.375408+00:00",
+          "started_at": "2026-05-16T19:37:53.272679+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-501",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-f5hzju__DKSUjaS",
+      "started_at": "2026-05-16T18:36:59.327085+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 44272153,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-502": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-502/",
+      "attempts": 1,
+      "cache_tokens": 4764256,
+      "cost_usd": 0.66324456,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:46:24.886710+00:00",
+      "has_trajectory": true,
+      "input_tokens": 5505392,
+      "max_attempts": 6,
+      "model": "openrouter/minimax/minimax-m2.7",
+      "origin": "oddish",
+      "output_tokens": 129207,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 4060.04,
+          "finished_at": "2026-05-16T19:45:08.358154+00:00",
+          "started_at": "2026-05-16T18:37:28.315901+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 2.94,
+          "finished_at": "2026-05-16T18:37:28.051431+00:00",
+          "started_at": "2026-05-16T18:37:25.116386+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 23.77,
+          "finished_at": "2026-05-16T18:37:25.116372+00:00",
+          "started_at": "2026-05-16T18:37:01.348202+00:00"
+        },
+        "verifier": {
+          "duration_sec": 8.57,
+          "finished_at": "2026-05-16T19:46:13.929110+00:00",
+          "started_at": "2026-05-16T19:46:05.358385+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-502",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-r10uzd__vLvNwHU",
+      "started_at": "2026-05-16T18:37:00.127746+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 70058487,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-503": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-503/",
+      "attempts": 1,
+      "cache_tokens": 4723296,
+      "cost_usd": 0.62768316,
+      "error_message": null,
+      "finished_at": "2026-05-16T19:41:53.060316+00:00",
+      "has_trajectory": true,
+      "input_tokens": 5407426,
+      "max_attempts": 6,
+      "model": "openrouter/minimax/minimax-m2.7",
+      "origin": "oddish",
+      "output_tokens": 115872,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 3444.33,
+          "finished_at": "2026-05-16T19:37:58.176895+00:00",
+          "started_at": "2026-05-16T18:40:33.850215+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 5.69,
+          "finished_at": "2026-05-16T18:40:33.607058+00:00",
+          "started_at": "2026-05-16T18:40:27.922054+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.69,
+          "finished_at": "2026-05-16T18:40:27.922034+00:00",
+          "started_at": "2026-05-16T18:40:01.234573+00:00"
+        },
+        "verifier": {
+          "duration_sec": 8.72,
+          "finished_at": "2026-05-16T19:41:40.531616+00:00",
+          "started_at": "2026-05-16T19:41:31.806740+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-503",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-0wieg5__prUfcy3",
+      "started_at": "2026-05-16T18:39:59.966174+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 60504376,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-504": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-504/",
+      "attempts": 1,
+      "cache_tokens": 22641376,
+      "cost_usd": 8.025568120000084,
+      "error_message": "Agent execution timed out after 25200.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "finished_at": "2026-05-17T03:00:54.027286+00:00",
+      "has_trajectory": true,
+      "input_tokens": 25092471,
+      "max_attempts": 6,
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "origin": "oddish",
+      "output_tokens": 571389,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 25200.02,
+          "finished_at": "2026-05-17T02:52:26.499646+00:00",
+          "started_at": "2026-05-16T19:52:26.480345+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 2.72,
+          "finished_at": "2026-05-16T19:52:26.326569+00:00",
+          "started_at": "2026-05-16T19:52:23.609507+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 23.57,
+          "finished_at": "2026-05-16T19:52:23.609487+00:00",
+          "started_at": "2026-05-16T19:52:00.039399+00:00"
+        },
+        "verifier": {
+          "duration_sec": 164.6,
+          "finished_at": "2026-05-17T03:00:07.097839+00:00",
+          "started_at": "2026-05-17T02:57:22.500555+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-504",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-q5mn70__VLcPgSy",
+      "started_at": "2026-05-16T19:51:59.235248+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 545987686,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-505": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-505/",
+      "attempts": 1,
+      "cache_tokens": 15765152,
+      "cost_usd": 6.736111285,
+      "error_message": "Agent execution timed out after 25200.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "finished_at": "2026-05-17T02:57:12.658906+00:00",
+      "has_trajectory": true,
+      "input_tokens": 18910313,
+      "max_attempts": 6,
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "origin": "oddish",
+      "output_tokens": 368322,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 25200.01,
+          "finished_at": "2026-05-17T02:52:28.566308+00:00",
+          "started_at": "2026-05-16T19:52:28.551779+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 2.38,
+          "finished_at": "2026-05-16T19:52:28.405130+00:00",
+          "started_at": "2026-05-16T19:52:26.020475+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.72,
+          "finished_at": "2026-05-16T19:52:26.020430+00:00",
+          "started_at": "2026-05-16T19:52:00.299954+00:00"
+        },
+        "verifier": {
+          "duration_sec": 44.44,
+          "finished_at": "2026-05-17T02:56:34.064269+00:00",
+          "started_at": "2026-05-17T02:55:49.620669+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-505",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-5w830c__a34uRKn",
+      "started_at": "2026-05-16T19:51:59.245108+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 567236854,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-506": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-506/",
+      "attempts": 2,
+      "cache_tokens": 15587872,
+      "cost_usd": 5.22361027,
+      "error_message": null,
+      "finished_at": "2026-05-17T01:01:00.422265+00:00",
+      "has_trajectory": true,
+      "input_tokens": 16555929,
+      "max_attempts": 6,
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "origin": "oddish",
+      "output_tokens": 483863,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 14575.6,
+          "finished_at": "2026-05-17T00:58:22.729290+00:00",
+          "started_at": "2026-05-16T20:55:27.131967+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 2.61,
+          "finished_at": "2026-05-16T20:55:26.986045+00:00",
+          "started_at": "2026-05-16T20:55:24.373261+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 23.75,
+          "finished_at": "2026-05-16T20:55:24.373210+00:00",
+          "started_at": "2026-05-16T20:55:00.623395+00:00"
+        },
+        "verifier": {
+          "duration_sec": 9.3,
+          "finished_at": "2026-05-17T01:00:40.650936+00:00",
+          "started_at": "2026-05-17T01:00:31.348043+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-506",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-vakypx__zpJvRAW",
+      "started_at": "2026-05-16T20:54:59.349838+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 252077415,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-507": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-507/",
+      "attempts": 1,
+      "cache_tokens": 17114955,
+      "cost_usd": 4.48257816,
+      "error_message": "Agent execution timed out after 25200.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "finished_at": "2026-05-17T03:23:21.555258+00:00",
+      "has_trajectory": true,
+      "input_tokens": 17594451,
+      "max_attempts": 6,
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "origin": "oddish",
+      "output_tokens": 318750,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 25200.01,
+          "finished_at": "2026-05-17T02:52:38.014755+00:00",
+          "started_at": "2026-05-16T19:52:38.000509+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 7.9,
+          "finished_at": "2026-05-16T19:52:37.553971+00:00",
+          "started_at": "2026-05-16T19:52:29.650956+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.23,
+          "finished_at": "2026-05-16T19:52:29.650937+00:00",
+          "started_at": "2026-05-16T19:52:03.422367+00:00"
+        },
+        "verifier": {
+          "duration_sec": 49.94,
+          "finished_at": "2026-05-17T03:22:25.699498+00:00",
+          "started_at": "2026-05-17T03:21:35.757183+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-507",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-q5dqo2__CvGCAtc",
+      "started_at": "2026-05-16T19:52:01.385532+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 375184942,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-508": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-508/",
+      "attempts": 1,
+      "cache_tokens": 15866925,
+      "cost_usd": 4.38107351,
+      "error_message": null,
+      "finished_at": "2026-05-17T01:09:34.739096+00:00",
+      "has_trajectory": true,
+      "input_tokens": 16468207,
+      "max_attempts": 6,
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "origin": "oddish",
+      "output_tokens": 318375,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 18619.52,
+          "finished_at": "2026-05-17T01:02:53.756876+00:00",
+          "started_at": "2026-05-16T19:52:34.238656+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 4.42,
+          "finished_at": "2026-05-16T19:52:33.788900+00:00",
+          "started_at": "2026-05-16T19:52:29.365046+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.83,
+          "finished_at": "2026-05-16T19:52:29.365005+00:00",
+          "started_at": "2026-05-16T19:52:03.537246+00:00"
+        },
+        "verifier": {
+          "duration_sec": 8.93,
+          "finished_at": "2026-05-17T01:09:03.100307+00:00",
+          "started_at": "2026-05-17T01:08:54.167280+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-508",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-jajb61__7dZS3NQ",
+      "started_at": "2026-05-16T19:52:01.485527+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 166456460,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-509": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-509/",
+      "attempts": 1,
+      "cache_tokens": 5818880,
+      "cost_usd": 3.80833137,
+      "error_message": null,
+      "finished_at": "2026-05-17T00:11:15.289464+00:00",
+      "has_trajectory": true,
+      "input_tokens": 6158333,
+      "max_attempts": 6,
+      "model": "openrouter/z-ai/glm-5.1",
+      "origin": "oddish",
+      "output_tokens": 466837,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 15326.41,
+          "finished_at": "2026-05-17T00:08:00.807777+00:00",
+          "started_at": "2026-05-16T19:52:34.399278+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 4.32,
+          "finished_at": "2026-05-16T19:52:34.279481+00:00",
+          "started_at": "2026-05-16T19:52:29.957746+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 30.18,
+          "finished_at": "2026-05-16T19:52:29.957729+00:00",
+          "started_at": "2026-05-16T19:51:59.782464+00:00"
+        },
+        "verifier": {
+          "duration_sec": 10.77,
+          "finished_at": "2026-05-17T00:11:04.658718+00:00",
+          "started_at": "2026-05-17T00:10:53.893032+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-509",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-03j0iq__cquehDq",
+      "started_at": "2026-05-16T19:51:59.037259+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 65624672,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-510": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-510/",
+      "attempts": 1,
+      "cache_tokens": 7808960,
+      "cost_usd": 161.82142306399948,
+      "error_message": "Agent execution timed out after 25200.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "finished_at": "2026-05-17T04:25:00.992571+00:00",
+      "has_trajectory": true,
+      "input_tokens": 139253984,
+      "max_attempts": 6,
+      "model": "openrouter/z-ai/glm-5.1",
+      "origin": "oddish",
+      "output_tokens": 377844,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 25200.02,
+          "finished_at": "2026-05-17T02:52:32.335643+00:00",
+          "started_at": "2026-05-16T19:52:32.314738+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 6.41,
+          "finished_at": "2026-05-16T19:52:32.181583+00:00",
+          "started_at": "2026-05-16T19:52:25.775456+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.86,
+          "finished_at": "2026-05-16T19:52:25.775439+00:00",
+          "started_at": "2026-05-16T19:51:59.920423+00:00"
+        },
+        "verifier": {
+          "duration_sec": 33.35,
+          "finished_at": "2026-05-17T04:21:59.073295+00:00",
+          "started_at": "2026-05-17T04:21:25.724282+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-510",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-w5qv6p__9Atq4EA",
+      "started_at": "2026-05-16T19:51:59.123004+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 2364302360,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-511": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-511/",
+      "attempts": 1,
+      "cache_tokens": 5171648,
+      "cost_usd": 4.450488981999998,
+      "error_message": null,
+      "finished_at": "2026-05-17T00:01:31.652019+00:00",
+      "has_trajectory": true,
+      "input_tokens": 6087682,
+      "max_attempts": 6,
+      "model": "openrouter/z-ai/glm-5.1",
+      "origin": "oddish",
+      "output_tokens": 581398,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 14738.8,
+          "finished_at": "2026-05-16T23:58:08.154405+00:00",
+          "started_at": "2026-05-16T19:52:29.356152+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 4.42,
+          "finished_at": "2026-05-16T19:52:29.212642+00:00",
+          "started_at": "2026-05-16T19:52:24.790269+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 24.8,
+          "finished_at": "2026-05-16T19:52:24.790253+00:00",
+          "started_at": "2026-05-16T19:51:59.987179+00:00"
+        },
+        "verifier": {
+          "duration_sec": 12.74,
+          "finished_at": "2026-05-17T00:01:21.016366+00:00",
+          "started_at": "2026-05-17T00:01:08.271953+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-511",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-7b40ic__f33G5aV",
+      "started_at": "2026-05-16T19:51:59.173038+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 64967207,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-512": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-512/",
+      "attempts": 1,
+      "cache_tokens": 7001792,
+      "cost_usd": 4.614036589999998,
+      "error_message": null,
+      "finished_at": "2026-05-17T00:26:42.848218+00:00",
+      "has_trajectory": true,
+      "input_tokens": 7284060,
+      "max_attempts": 6,
+      "model": "openrouter/z-ai/glm-5.1",
+      "origin": "oddish",
+      "output_tokens": 545186,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 15359.42,
+          "finished_at": "2026-05-17T00:08:46.430142+00:00",
+          "started_at": "2026-05-16T19:52:47.009793+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 11.32,
+          "finished_at": "2026-05-16T19:52:46.117391+00:00",
+          "started_at": "2026-05-16T19:52:34.802358+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.65,
+          "finished_at": "2026-05-16T19:52:34.802342+00:00",
+          "started_at": "2026-05-16T19:52:08.152803+00:00"
+        },
+        "verifier": {
+          "duration_sec": 24.54,
+          "finished_at": "2026-05-17T00:26:04.066158+00:00",
+          "started_at": "2026-05-17T00:25:39.530270+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-512",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-_djx9e__KMrDonQ",
+      "started_at": "2026-05-16T19:52:04.262547+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 76791374,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-513": {
+      "agent": "terminus-2",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-513/",
+      "attempts": 1,
+      "cache_tokens": 230912,
+      "cost_usd": 0.6577077100000002,
+      "error_message": null,
+      "finished_at": "2026-05-16T20:51:59.535981+00:00",
+      "has_trajectory": true,
+      "input_tokens": 314608,
+      "max_attempts": 6,
+      "model": "openrouter/z-ai/glm-5.1",
+      "origin": "oddish",
+      "output_tokens": 103496,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 3460.51,
+          "finished_at": "2026-05-16T20:50:24.575491+00:00",
+          "started_at": "2026-05-16T19:52:44.070275+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 6.42,
+          "finished_at": "2026-05-16T19:52:42.952298+00:00",
+          "started_at": "2026-05-16T19:52:36.532080+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 26.19,
+          "finished_at": "2026-05-16T19:52:36.532061+00:00",
+          "started_at": "2026-05-16T19:52:10.344004+00:00"
+        },
+        "verifier": {
+          "duration_sec": 8.92,
+          "finished_at": "2026-05-16T20:51:47.536653+00:00",
+          "started_at": "2026-05-16T20:51:38.612184+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-513",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-8cwide__qDCAdzT",
+      "started_at": "2026-05-16T19:52:05.774048+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 4936850,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-532": {
+      "agent": "kimi-cli",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-532/",
+      "attempts": 1,
+      "cache_tokens": 224504,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-17T22:07:32.513126+00:00",
+      "has_trajectory": true,
+      "input_tokens": 886848,
+      "max_attempts": 6,
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "origin": "oddish",
+      "output_tokens": 188448,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 10212.68,
+          "finished_at": "2026-05-17T22:06:57.934726+00:00",
+          "started_at": "2026-05-17T19:16:45.254981+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 3.35,
+          "finished_at": "2026-05-17T19:16:44.059017+00:00",
+          "started_at": "2026-05-17T19:16:40.710919+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 27.06,
+          "finished_at": "2026-05-17T19:16:40.710868+00:00",
+          "started_at": "2026-05-17T19:16:13.652601+00:00"
+        },
+        "verifier": {
+          "duration_sec": 12.8,
+          "finished_at": "2026-05-17T22:07:20.431203+00:00",
+          "started_at": "2026-05-17T22:07:07.628021+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-532",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-2d_pnp__SR2uE6m",
+      "started_at": "2026-05-17T19:16:07.924915+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 3271497,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-536": {
+      "agent": "kimi-cli",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-536/",
+      "attempts": 1,
+      "cache_tokens": 62848,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-18T06:07:11.287981+00:00",
+      "has_trajectory": true,
+      "input_tokens": 101975,
+      "max_attempts": 6,
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "origin": "oddish",
+      "output_tokens": 44561,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 2848.23,
+          "finished_at": "2026-05-18T06:06:57.252702+00:00",
+          "started_at": "2026-05-18T05:19:29.020532+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 2.4,
+          "finished_at": "2026-05-18T05:19:28.555425+00:00",
+          "started_at": "2026-05-18T05:19:26.158752+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.24,
+          "finished_at": "2026-05-18T05:19:26.158724+00:00",
+          "started_at": "2026-05-18T05:19:00.916698+00:00"
+        },
+        "verifier": {
+          "duration_sec": 4.94,
+          "finished_at": "2026-05-18T06:07:07.174675+00:00",
+          "started_at": "2026-05-18T06:07:02.236387+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-536",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-9ojch__KN9Ffz3",
+      "started_at": "2026-05-18T05:18:58.679186+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 1420528,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-539": {
+      "agent": "kimi-cli",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-539/",
+      "attempts": 2,
+      "cache_tokens": 6860180,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-18T16:02:35.423968+00:00",
+      "has_trajectory": true,
+      "input_tokens": 8737446,
+      "max_attempts": 6,
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "origin": "oddish",
+      "output_tokens": 662653,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 23252.93,
+          "finished_at": "2026-05-18T16:02:19.228047+00:00",
+          "started_at": "2026-05-18T09:34:46.298875+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 9.99,
+          "finished_at": "2026-05-18T09:34:46.134695+00:00",
+          "started_at": "2026-05-18T09:34:36.146412+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 40.65,
+          "finished_at": "2026-05-18T09:34:36.146393+00:00",
+          "started_at": "2026-05-18T09:33:55.491634+00:00"
+        },
+        "verifier": {
+          "duration_sec": 9.27,
+          "finished_at": "2026-05-18T16:02:31.581046+00:00",
+          "started_at": "2026-05-18T16:02:22.314759+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-539",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-okfqa9__XM2fhmJ",
+      "started_at": "2026-05-18T09:33:54.156759+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 16325182,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-542": {
+      "agent": "kimi-cli",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-542/",
+      "attempts": 2,
+      "cache_tokens": 6941587,
+      "cost_usd": null,
+      "error_message": "Agent execution timed out after 25200.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "finished_at": "2026-05-18T16:41:21.613648+00:00",
+      "has_trajectory": true,
+      "input_tokens": 8740133,
+      "max_attempts": 6,
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "origin": "oddish",
+      "output_tokens": 604502,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 25202.15,
+          "finished_at": "2026-05-18T16:34:26.432556+00:00",
+          "started_at": "2026-05-18T09:34:24.278985+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 3.23,
+          "finished_at": "2026-05-18T09:34:24.119917+00:00",
+          "started_at": "2026-05-18T09:34:20.887732+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.52,
+          "finished_at": "2026-05-18T09:34:20.887716+00:00",
+          "started_at": "2026-05-18T09:33:55.363632+00:00"
+        },
+        "verifier": {
+          "duration_sec": 408.02,
+          "finished_at": "2026-05-18T16:41:17.178824+00:00",
+          "started_at": "2026-05-18T16:34:29.156791+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-542",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-98hdbz__PGsZSmy",
+      "started_at": "2026-05-18T09:33:54.308012+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 17038474,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-543": {
+      "agent": "kimi-cli",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-543/",
+      "attempts": 1,
+      "cache_tokens": 3946000,
+      "cost_usd": null,
+      "error_message": null,
+      "finished_at": "2026-05-19T00:13:35.578786+00:00",
+      "has_trajectory": true,
+      "input_tokens": 5811364,
+      "max_attempts": 6,
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "origin": "oddish",
+      "output_tokens": 486030,
+      "phase_timing": {
+        "agent_execution": {
+          "duration_sec": 16167.66,
+          "finished_at": "2026-05-19T00:13:01.825737+00:00",
+          "started_at": "2026-05-18T19:43:34.164776+00:00"
+        },
+        "agent_setup": {
+          "duration_sec": 1.06,
+          "finished_at": "2026-05-18T19:43:33.073416+00:00",
+          "started_at": "2026-05-18T19:43:32.015413+00:00"
+        },
+        "environment_setup": {
+          "duration_sec": 25.62,
+          "finished_at": "2026-05-18T19:43:32.015392+00:00",
+          "started_at": "2026-05-18T19:43:06.396495+00:00"
+        },
+        "verifier": {
+          "duration_sec": 2.62,
+          "finished_at": "2026-05-19T00:13:08.382613+00:00",
+          "started_at": "2026-05-19T00:13:05.766781+00:00"
+        }
+      },
+      "provider": "openrouter",
+      "reward": 0.0,
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-543",
+      "source_trial_name": "task-trimul-cuda-fc34aaba-glr3ec__iepALVL",
+      "started_at": "2026-05-18T19:43:01.788973+00:00",
+      "status": "success",
+      "task_version_id": "trimul-cuda-fc34aaba-v81",
+      "total_artifact_bytes": 12777193,
+      "original_provider": "openai",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-549": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "trimul-cuda-fc34aaba-v85",
+      "started_at": "2026-05-20T01:24:57.488429",
+      "finished_at": "2026-05-20T04:00:37.826613",
+      "input_tokens": 75009864,
+      "output_tokens": 454620,
+      "cache_tokens": 74562200,
+      "cost_usd": 51.444067499999996,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-549/",
+      "has_trajectory": true,
+      "source_trial_name": "task-trimul-cuda-fc34aaba-tya3_q__sbkjXfL",
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-549",
+      "source_oddish_experiment_id": "6e80ba95",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-567": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "trimul-cuda-fc34aaba-v86",
+      "started_at": "2026-05-28T23:56:43.891124+00:00",
+      "finished_at": "2026-05-29T00:19:28.868171+00:00",
+      "input_tokens": 3641280,
+      "cache_tokens": 3222924,
+      "output_tokens": 88587,
+      "cost_usd": 1.9082556,
+      "has_trajectory": true,
+      "trajectory_bytes": 710230,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-567/",
+      "source_trial_name": "trimul-cuda-567",
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-567",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-trimul-cuda-fc34aaba-tqe21q__r63yjHx",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-568": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "trimul-cuda-fc34aaba-v86",
+      "started_at": "2026-05-29T00:11:40.171770+00:00",
+      "finished_at": "2026-05-29T03:35:30.315360+00:00",
+      "input_tokens": 18935419,
+      "cache_tokens": 17017971,
+      "output_tokens": 359410,
+      "cost_usd": 17.85249525,
+      "has_trajectory": true,
+      "trajectory_bytes": 4185598,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-568/",
+      "source_trial_name": "trimul-cuda-568",
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-568",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-trimul-cuda-fc34aaba-dejke__XFDLYtG",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-569": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "trimul-cuda-fc34aaba-v86",
+      "started_at": "2026-05-29T00:11:39.425745+00:00",
+      "finished_at": "2026-05-29T01:35:05.612891+00:00",
+      "input_tokens": 17572744,
+      "cache_tokens": 17112075,
+      "output_tokens": 205073,
+      "cost_usd": 10.0877862,
+      "has_trajectory": true,
+      "trajectory_bytes": 3576444,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-569/",
+      "source_trial_name": "trimul-cuda-569",
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-569",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-trimul-cuda-fc34aaba-xqj256__JaQ8iJk",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-570": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "trimul-cuda-fc34aaba-v86",
+      "started_at": "2026-05-29T00:11:39.515974+00:00",
+      "finished_at": "2026-05-29T01:54:53.081538+00:00",
+      "input_tokens": 15129802,
+      "cache_tokens": 14515470,
+      "output_tokens": 297985,
+      "cost_usd": 11.2985976,
+      "has_trajectory": true,
+      "trajectory_bytes": 4731032,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-570/",
+      "source_trial_name": "trimul-cuda-570",
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-570",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-trimul-cuda-fc34aaba-n9qc0u__5UuZLFF",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-571": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "trimul-cuda-fc34aaba-v86",
+      "started_at": "2026-05-29T00:11:40.047044+00:00",
+      "finished_at": "2026-05-29T02:03:12.166665+00:00",
+      "input_tokens": 22994350,
+      "cache_tokens": 22327164,
+      "output_tokens": 368613,
+      "cost_usd": 14.9148771,
+      "has_trajectory": true,
+      "trajectory_bytes": 3397814,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-571/",
+      "source_trial_name": "trimul-cuda-571",
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-571",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-trimul-cuda-fc34aaba-z9ygo9__5NhzF3n",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-572": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "trimul-cuda-fc34aaba-v86",
+      "started_at": "2026-05-29T00:11:42.177479+00:00",
+      "finished_at": "2026-05-29T01:39:20.183483+00:00",
+      "input_tokens": 18233240,
+      "cache_tokens": 16284534,
+      "output_tokens": 196564,
+      "cost_usd": 7.1348151,
+      "has_trajectory": true,
+      "trajectory_bytes": 734762,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-572/",
+      "source_trial_name": "trimul-cuda-572",
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-572",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-trimul-cuda-fc34aaba-sqkdyc__u9ZR6Cu",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-573": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "trimul-cuda-fc34aaba-v86",
+      "started_at": "2026-05-29T00:11:42.056863+00:00",
+      "finished_at": "2026-05-29T00:32:02.023826+00:00",
+      "input_tokens": 5686565,
+      "cache_tokens": 4936994,
+      "output_tokens": 88979,
+      "cost_usd": 2.6657166,
+      "has_trajectory": true,
+      "trajectory_bytes": 330396,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-573/",
+      "source_trial_name": "trimul-cuda-573",
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-573",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-trimul-cuda-fc34aaba-pxj8p8__QbhtCDn",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-574": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "trimul-cuda-fc34aaba-v86",
+      "started_at": "2026-05-29T00:11:42.108001+00:00",
+      "finished_at": "2026-05-29T00:42:37.528078+00:00",
+      "input_tokens": 15091245,
+      "cache_tokens": 14243425,
+      "output_tokens": 183782,
+      "cost_usd": 5.06228175,
+      "has_trajectory": true,
+      "trajectory_bytes": 661291,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-574/",
+      "source_trial_name": "trimul-cuda-574",
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-574",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-trimul-cuda-fc34aaba-vdo_iz__mjUVrXc",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-575": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "trimul-cuda-fc34aaba-v86",
+      "started_at": "2026-05-29T00:11:42.978101+00:00",
+      "finished_at": "2026-05-29T00:41:51.077153+00:00",
+      "input_tokens": 16581782,
+      "cache_tokens": 15332750,
+      "output_tokens": 222975,
+      "cost_usd": 6.1802355,
+      "has_trajectory": true,
+      "trajectory_bytes": 723726,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-575/",
+      "source_trial_name": "trimul-cuda-575",
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-575",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-trimul-cuda-fc34aaba-mqpv1o__c63QyJN",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba"
+    }
+  },
+  "task_hashes": [
+    "fc34aaba"
+  ],
+  "is_multi_version": true,
+  "experiment_ids": [
+    "cd8c33d8",
+    "cd4dd88f"
+  ],
+  "additional_imports": [
+    {
+      "imported_at": "2026-06-01T21:13:51.538441+00:00",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "task_version_id_at_snapshot": "trimul-cuda-fc34aaba-v86",
+      "n_trials_added": 9,
+      "pairs_added": [
+        [
+          "claude-code",
+          "anthropic/claude-opus-4-8"
+        ],
+        [
+          "gemini-cli",
+          "gemini/gemini-3.5-flash"
+        ]
+      ],
+      "note": "Augmenting (Option A): add up to 5 trials per pair for the new agent/model pairs from this experiment. nop/oracle excluded; for nextjs-vite-rewrite, claude-code is also excluded."
+    }
+  ]
+}

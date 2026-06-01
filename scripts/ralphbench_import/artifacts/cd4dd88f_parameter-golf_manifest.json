@@ -1,0 +1,3428 @@
+{
+  "task": "parameter-golf-61e11605",
+  "task_name": "parameter-golf",
+  "task_hash": "61e11605",
+  "task_version_id": "parameter-golf-61e11605-v31",
+  "task_versions": [
+    "parameter-golf-61e11605-v31",
+    "parameter-golf-61e11605-v32"
+  ],
+  "experiment_id": "cd8c33d8",
+  "n_trials": 74,
+  "note": "Generated from Oddish experiment cd8c33d8 on 20260519T005502Z. Only rewritten-task trials (latest task_version) with numeric verifier reward (including 0.0) kept; BAD_SUCCESS classifications excluded as reward-hacked; <=5 trials per (agent,model) ranked by total artifact bytes. Added missing oracle trials parameter-golf-61e11605-362 and parameter-golf-61e11605-365 from Oddish on 2026-05-19 after dashboard/bucket reconciliation. Added missing terminus-2/kimi trial parameter-golf-61e11605-406 from Oddish on 2026-05-19 after dashboard/bucket reconciliation. Added final missing terminus-2/glm trial parameter-golf-61e11605-416 from Oddish on 2026-05-19 after completion. | 2026-06-01T21:12:52.368587+00:00 appended 9 trials from Oddish experiment cd4dd88f on task_version parameter-golf-61e11605-v32 (pairs: claude-code/anthropic/claude-opus-4-8, gemini-cli/gemini/gemini-3.5-flash); strict validity filter (status=SUCCESS, numeric reward, exception_stats clean or AgentTimeoutError/VerifierTimeoutError).",
+  "trials": {
+    "parameter-golf-61e11605-356": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:00.985622+00:00",
+      "finished_at": "2026-05-18T07:34:30.580898+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-356/",
+      "source_trial_name": "task-parameter-golf-61e11605-6vd__tkA9Bdp",
+      "source_oddish_trial_id": "parameter-golf-61e11605-356",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T07:34:26.453001+00:00",
+          "finished_at": "2026-05-18T07:34:28.883213+00:00",
+          "duration_sec": 2.43
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:34:25.489595+00:00",
+          "finished_at": "2026-05-18T07:34:25.489615+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:34:25.621079+00:00",
+          "finished_at": "2026-05-18T07:34:25.621128+00:00",
+          "duration_sec": 0.0
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:34:01.827077+00:00",
+          "finished_at": "2026-05-18T07:34:25.489579+00:00",
+          "duration_sec": 23.66
+        }
+      },
+      "total_artifact_bytes": 11458,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-357": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:01.213560+00:00",
+      "finished_at": "2026-05-18T07:34:40.011487+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-357/",
+      "source_trial_name": "task-parameter-golf-61e11605-bjc__VGa9f3S",
+      "source_oddish_trial_id": "parameter-golf-61e11605-357",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T07:34:28.671374+00:00",
+          "finished_at": "2026-05-18T07:34:36.622897+00:00",
+          "duration_sec": 7.95
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:34:26.338177+00:00",
+          "finished_at": "2026-05-18T07:34:26.338206+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:34:26.500889+00:00",
+          "finished_at": "2026-05-18T07:34:26.500948+00:00",
+          "duration_sec": 0.0
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:34:02.196451+00:00",
+          "finished_at": "2026-05-18T07:34:26.338161+00:00",
+          "duration_sec": 24.14
+        }
+      },
+      "total_artifact_bytes": 11458,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-358": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:03.446670+00:00",
+      "finished_at": "2026-05-18T07:34:38.147907+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-358/",
+      "source_trial_name": "task-parameter-golf-61e11605-y7f__UeU6GzS",
+      "source_oddish_trial_id": "parameter-golf-61e11605-358",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T07:34:30.777407+00:00",
+          "finished_at": "2026-05-18T07:34:34.781034+00:00",
+          "duration_sec": 4.0
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:34:28.833844+00:00",
+          "finished_at": "2026-05-18T07:34:28.833874+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:34:29.308313+00:00",
+          "finished_at": "2026-05-18T07:34:29.308377+00:00",
+          "duration_sec": 0.0
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:34:05.750524+00:00",
+          "finished_at": "2026-05-18T07:34:28.833824+00:00",
+          "duration_sec": 23.08
+        }
+      },
+      "total_artifact_bytes": 11458,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-359": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:03.470934+00:00",
+      "finished_at": "2026-05-18T07:34:35.781476+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-359/",
+      "source_trial_name": "task-parameter-golf-61e11605-azs__wkVTUeg",
+      "source_oddish_trial_id": "parameter-golf-61e11605-359",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T07:34:30.301303+00:00",
+          "finished_at": "2026-05-18T07:34:33.405282+00:00",
+          "duration_sec": 3.1
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:34:28.634601+00:00",
+          "finished_at": "2026-05-18T07:34:28.634637+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:34:29.095812+00:00",
+          "finished_at": "2026-05-18T07:34:29.095873+00:00",
+          "duration_sec": 0.0
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:34:05.605624+00:00",
+          "finished_at": "2026-05-18T07:34:28.634580+00:00",
+          "duration_sec": 23.03
+        }
+      },
+      "total_artifact_bytes": 11458,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-360": {
+      "agent": "nop",
+      "model": "default",
+      "provider": "default",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:07.732527+00:00",
+      "finished_at": "2026-05-18T07:34:52.824093+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-360/",
+      "source_trial_name": "task-parameter-golf-61e11605-1mt__JkHKCkX",
+      "source_oddish_trial_id": "parameter-golf-61e11605-360",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T07:34:41.297881+00:00",
+          "finished_at": "2026-05-18T07:34:47.748886+00:00",
+          "duration_sec": 6.45
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:34:37.543249+00:00",
+          "finished_at": "2026-05-18T07:34:37.543281+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:34:38.625858+00:00",
+          "finished_at": "2026-05-18T07:34:38.625931+00:00",
+          "duration_sec": 0.0
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:34:12.831941+00:00",
+          "finished_at": "2026-05-18T07:34:37.543227+00:00",
+          "duration_sec": 24.71
+        }
+      },
+      "total_artifact_bytes": 11458,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-361": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T09:33:56.773912+00:00",
+      "finished_at": "2026-05-18T11:41:54.222992+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-361/",
+      "source_trial_name": "task-parameter-golf-61e11605-xr6__XntnRiU",
+      "source_oddish_trial_id": "parameter-golf-61e11605-361",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T11:41:36.280147+00:00",
+          "finished_at": "2026-05-18T11:41:45.441920+00:00",
+          "duration_sec": 9.16
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T09:34:30.604437+00:00",
+          "finished_at": "2026-05-18T09:34:30.604472+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T09:34:31.102509+00:00",
+          "finished_at": "2026-05-18T11:41:34.592769+00:00",
+          "duration_sec": 7623.49
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T09:33:59.095807+00:00",
+          "finished_at": "2026-05-18T09:34:30.604400+00:00",
+          "duration_sec": 31.51
+        }
+      },
+      "total_artifact_bytes": 20887145,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-362": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:17.765295",
+      "finished_at": "2026-05-18T09:40:28.772030",
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-362/",
+      "has_trajectory": true,
+      "source_trial_name": "task-parameter-golf-61e11605-8bc__9aEmEzQ",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-363": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T09:36:56.905587+00:00",
+      "finished_at": "2026-05-18T11:42:55.635158+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-363/",
+      "source_trial_name": "task-parameter-golf-61e11605-z8q__Wm6h8o2",
+      "source_oddish_trial_id": "parameter-golf-61e11605-363",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T11:42:42.563501+00:00",
+          "finished_at": "2026-05-18T11:42:51.236211+00:00",
+          "duration_sec": 8.67
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T09:37:30.644702+00:00",
+          "finished_at": "2026-05-18T09:37:30.644725+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T09:37:30.786593+00:00",
+          "finished_at": "2026-05-18T11:42:41.529767+00:00",
+          "duration_sec": 7510.74
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T09:36:58.061709+00:00",
+          "finished_at": "2026-05-18T09:37:30.644686+00:00",
+          "duration_sec": 32.58
+        }
+      },
+      "total_artifact_bytes": 20886302,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-364": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:13.983711+00:00",
+      "finished_at": "2026-05-18T09:41:32.272580+00:00",
+      "input_tokens": null,
+      "cache_tokens": null,
+      "output_tokens": null,
+      "cost_usd": null,
+      "has_trajectory": false,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-364/",
+      "source_trial_name": "task-parameter-golf-61e11605-zam__ry3QGQN",
+      "source_oddish_trial_id": "parameter-golf-61e11605-364",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T09:41:06.309472+00:00",
+          "finished_at": "2026-05-18T09:41:14.080026+00:00",
+          "duration_sec": 7.77
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:34:40.110102+00:00",
+          "finished_at": "2026-05-18T07:34:40.110142+00:00",
+          "duration_sec": 0.0
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:34:40.580732+00:00",
+          "finished_at": "2026-05-18T09:41:04.844984+00:00",
+          "duration_sec": 7584.26
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:34:16.839070+00:00",
+          "finished_at": "2026-05-18T07:34:40.110047+00:00",
+          "duration_sec": 23.27
+        }
+      },
+      "total_artifact_bytes": 20862418,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-365": {
+      "agent": "oracle",
+      "model": "default",
+      "provider": "default",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:16.550146",
+      "finished_at": "2026-05-18T09:40:46.280253",
+      "input_tokens": null,
+      "output_tokens": null,
+      "cache_tokens": null,
+      "cost_usd": null,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-365/",
+      "has_trajectory": true,
+      "source_trial_name": "task-parameter-golf-61e11605-sge__35zjo2w",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-366": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:01.083774+00:00",
+      "finished_at": "2026-05-18T11:51:35.013155+00:00",
+      "input_tokens": 9355509,
+      "cache_tokens": 7549072,
+      "output_tokens": 95180,
+      "cost_usd": 17.44408975,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-366/",
+      "source_trial_name": "task-parameter-golf-61e11605-eqb__sHk6d65",
+      "source_oddish_trial_id": "parameter-golf-61e11605-366",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T11:51:11.637851+00:00",
+          "finished_at": "2026-05-18T11:51:26.939567+00:00",
+          "duration_sec": 15.3
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:34:27.926002+00:00",
+          "finished_at": "2026-05-18T07:34:31.393482+00:00",
+          "duration_sec": 3.47
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:34:31.526218+00:00",
+          "finished_at": "2026-05-18T11:50:49.183378+00:00",
+          "duration_sec": 15377.66
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:34:02.039761+00:00",
+          "finished_at": "2026-05-18T07:34:27.925987+00:00",
+          "duration_sec": 25.89
+        }
+      },
+      "total_artifact_bytes": 31826620,
+      "original_provider": "claude",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-368": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:08.413186+00:00",
+      "finished_at": "2026-05-18T09:10:32.332048+00:00",
+      "input_tokens": 4737639,
+      "cache_tokens": 4155648,
+      "output_tokens": 52031,
+      "cost_usd": 7.015938999999998,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-368/",
+      "source_trial_name": "task-parameter-golf-61e11605-l2c__R7Gs92W",
+      "source_oddish_trial_id": "parameter-golf-61e11605-368",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T09:09:35.388773+00:00",
+          "finished_at": "2026-05-18T09:09:47.537414+00:00",
+          "duration_sec": 12.15
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:34:39.395303+00:00",
+          "finished_at": "2026-05-18T07:34:42.013480+00:00",
+          "duration_sec": 2.62
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:34:43.492392+00:00",
+          "finished_at": "2026-05-18T09:09:20.030210+00:00",
+          "duration_sec": 5676.54
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:34:13.498804+00:00",
+          "finished_at": "2026-05-18T07:34:39.395285+00:00",
+          "duration_sec": 25.9
+        }
+      },
+      "total_artifact_bytes": 29299875,
+      "original_provider": "claude",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-369": {
+      "agent": "codex",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T09:33:57.682557+00:00",
+      "finished_at": "2026-05-18T11:36:51.008562+00:00",
+      "input_tokens": 5750668,
+      "cache_tokens": 5593600,
+      "output_tokens": 35400,
+      "cost_usd": 4.64414,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-369/",
+      "source_trial_name": "task-parameter-golf-61e11605-21k__AhXhejF",
+      "source_oddish_trial_id": "parameter-golf-61e11605-369",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T11:35:52.442519+00:00",
+          "finished_at": "2026-05-18T11:36:14.224418+00:00",
+          "duration_sec": 21.78
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T09:34:31.216876+00:00",
+          "finished_at": "2026-05-18T09:34:41.550112+00:00",
+          "duration_sec": 10.33
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T09:34:42.238330+00:00",
+          "finished_at": "2026-05-18T11:35:42.762749+00:00",
+          "duration_sec": 7260.52
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T09:34:01.603382+00:00",
+          "finished_at": "2026-05-18T09:34:31.216854+00:00",
+          "duration_sec": 29.61
+        }
+      },
+      "total_artifact_bytes": 32379744,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-370": {
+      "agent": "codex",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T09:34:01.297379+00:00",
+      "finished_at": "2026-05-18T13:35:05.619743+00:00",
+      "input_tokens": 11666350,
+      "cache_tokens": 11484160,
+      "output_tokens": 51694,
+      "cost_usd": 8.20385,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-370/",
+      "source_trial_name": "task-parameter-golf-61e11605-x24__Q6cUS8t",
+      "source_oddish_trial_id": "parameter-golf-61e11605-370",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T13:34:29.031711+00:00",
+          "finished_at": "2026-05-18T13:34:38.737885+00:00",
+          "duration_sec": 9.71
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T09:34:33.020374+00:00",
+          "finished_at": "2026-05-18T09:34:34.515693+00:00",
+          "duration_sec": 1.5
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T09:34:35.742750+00:00",
+          "finished_at": "2026-05-18T13:34:25.411725+00:00",
+          "duration_sec": 14389.67
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T09:34:07.079744+00:00",
+          "finished_at": "2026-05-18T09:34:33.020356+00:00",
+          "duration_sec": 25.94
+        }
+      },
+      "total_artifact_bytes": 33229810,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-371": {
+      "agent": "codex",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:10.734459+00:00",
+      "finished_at": "2026-05-18T11:47:42.207461+00:00",
+      "input_tokens": 17052325,
+      "cache_tokens": 16698880,
+      "output_tokens": 56491,
+      "cost_usd": 11.811395,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-371/",
+      "source_trial_name": "task-parameter-golf-61e11605-9mj__RDRwg73",
+      "source_oddish_trial_id": "parameter-golf-61e11605-371",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T11:47:16.146087+00:00",
+          "finished_at": "2026-05-18T11:47:36.186171+00:00",
+          "duration_sec": 20.04
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:34:36.100786+00:00",
+          "finished_at": "2026-05-18T07:34:37.625311+00:00",
+          "duration_sec": 1.52
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:34:37.823928+00:00",
+          "finished_at": "2026-05-18T11:47:14.025360+00:00",
+          "duration_sec": 15156.2
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:34:12.552242+00:00",
+          "finished_at": "2026-05-18T07:34:36.100732+00:00",
+          "duration_sec": 23.55
+        }
+      },
+      "total_artifact_bytes": 33407600,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-372": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T09:33:54.166535+00:00",
+      "finished_at": "2026-05-18T14:34:37.349950+00:00",
+      "input_tokens": 5613564,
+      "cache_tokens": 4727427,
+      "output_tokens": 36415,
+      "cost_usd": 3.1547394,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-372/",
+      "source_trial_name": "task-parameter-golf-61e11605-lu2__a3onwG5",
+      "source_oddish_trial_id": "parameter-golf-61e11605-372",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": "Agent execution timed out after 18000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T14:34:32.286356+00:00",
+          "finished_at": "2026-05-18T14:34:33.859231+00:00",
+          "duration_sec": 1.57
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T09:34:20.510531+00:00",
+          "finished_at": "2026-05-18T09:34:27.819024+00:00",
+          "duration_sec": 7.31
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T09:34:27.982582+00:00",
+          "finished_at": "2026-05-18T14:34:30.502409+00:00",
+          "duration_sec": 18002.52
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T09:33:55.265116+00:00",
+          "finished_at": "2026-05-18T09:34:20.510512+00:00",
+          "duration_sec": 25.25
+        }
+      },
+      "total_artifact_bytes": 1315630,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-373": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:01.272832+00:00",
+      "finished_at": "2026-05-18T08:20:31.820348+00:00",
+      "input_tokens": 2060765,
+      "cache_tokens": 1861748,
+      "output_tokens": 30666,
+      "cost_usd": 1.1383755999999998,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-373/",
+      "source_trial_name": "task-parameter-golf-61e11605-uzh__ekXSS6z",
+      "source_oddish_trial_id": "parameter-golf-61e11605-373",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T08:20:09.855086+00:00",
+          "finished_at": "2026-05-18T08:20:24.699379+00:00",
+          "duration_sec": 14.84
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:34:28.237990+00:00",
+          "finished_at": "2026-05-18T07:34:35.498885+00:00",
+          "duration_sec": 7.26
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:34:35.647246+00:00",
+          "finished_at": "2026-05-18T08:20:07.223088+00:00",
+          "duration_sec": 2731.58
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:34:02.115501+00:00",
+          "finished_at": "2026-05-18T07:34:28.237973+00:00",
+          "duration_sec": 26.12
+        }
+      },
+      "total_artifact_bytes": 29677986,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-374": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T09:33:56.629254+00:00",
+      "finished_at": "2026-05-18T12:23:29.628552+00:00",
+      "input_tokens": 3958005,
+      "cache_tokens": 3472560,
+      "output_tokens": 43466,
+      "cost_usd": 2.186994,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-374/",
+      "source_trial_name": "task-parameter-golf-61e11605-871__Pjm8mjg",
+      "source_oddish_trial_id": "parameter-golf-61e11605-374",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T12:22:57.408632+00:00",
+          "finished_at": "2026-05-18T12:23:09.948637+00:00",
+          "duration_sec": 12.54
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T09:34:25.761159+00:00",
+          "finished_at": "2026-05-18T09:34:31.088847+00:00",
+          "duration_sec": 5.33
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T09:34:31.557595+00:00",
+          "finished_at": "2026-05-18T12:22:52.897236+00:00",
+          "duration_sec": 10101.34
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T09:33:58.770218+00:00",
+          "finished_at": "2026-05-18T09:34:25.761136+00:00",
+          "duration_sec": 26.99
+        }
+      },
+      "total_artifact_bytes": 25304808,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-375": {
+      "agent": "kimi-cli",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T09:33:56.601025+00:00",
+      "finished_at": "2026-05-18T14:35:47.968626+00:00",
+      "input_tokens": 7562547,
+      "cache_tokens": 4976064,
+      "output_tokens": 386743,
+      "cost_usd": null,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-375/",
+      "source_trial_name": "task-parameter-golf-61e11605-3dy__GoGgSfs",
+      "source_oddish_trial_id": "parameter-golf-61e11605-375",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": "Agent execution timed out after 18000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T14:34:33.395222+00:00",
+          "finished_at": "2026-05-18T14:35:30.445579+00:00",
+          "duration_sec": 57.05
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T09:34:23.809510+00:00",
+          "finished_at": "2026-05-18T09:34:25.704564+00:00",
+          "duration_sec": 1.9
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T09:34:26.159266+00:00",
+          "finished_at": "2026-05-18T14:34:28.556253+00:00",
+          "duration_sec": 18002.4
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T09:33:58.883428+00:00",
+          "finished_at": "2026-05-18T09:34:23.809491+00:00",
+          "duration_sec": 24.93
+        }
+      },
+      "total_artifact_bytes": 32982823,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-376": {
+      "agent": "terminus-2",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:08.932209+00:00",
+      "finished_at": "2026-05-18T08:40:29.939520+00:00",
+      "input_tokens": 3008887,
+      "cache_tokens": 2940537,
+      "output_tokens": 26359,
+      "cost_usd": 2.55385475,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-376/",
+      "source_trial_name": "task-parameter-golf-61e11605-8xr__FzgHfxy",
+      "source_oddish_trial_id": "parameter-golf-61e11605-376",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T08:40:06.424754+00:00",
+          "finished_at": "2026-05-18T08:40:17.652937+00:00",
+          "duration_sec": 11.23
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:34:35.117988+00:00",
+          "finished_at": "2026-05-18T07:34:40.820473+00:00",
+          "duration_sec": 5.7
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:34:40.945110+00:00",
+          "finished_at": "2026-05-18T08:38:22.366504+00:00",
+          "duration_sec": 3821.42
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:34:09.646342+00:00",
+          "finished_at": "2026-05-18T07:34:35.117946+00:00",
+          "duration_sec": 25.47
+        }
+      },
+      "total_artifact_bytes": 51830758,
+      "original_provider": "claude",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-377": {
+      "agent": "terminus-2",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:13.077599+00:00",
+      "finished_at": "2026-05-18T08:43:33.700564+00:00",
+      "input_tokens": 1561541,
+      "cache_tokens": 1430784,
+      "output_tokens": 43560,
+      "cost_usd": 2.6759769999999996,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-377/",
+      "source_trial_name": "task-parameter-golf-61e11605-_86__UGHQYSh",
+      "source_oddish_trial_id": "parameter-golf-61e11605-377",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T08:43:10.349302+00:00",
+          "finished_at": "2026-05-18T08:43:20.610518+00:00",
+          "duration_sec": 10.26
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:34:40.943307+00:00",
+          "finished_at": "2026-05-18T07:34:44.062163+00:00",
+          "duration_sec": 3.12
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:34:44.557356+00:00",
+          "finished_at": "2026-05-18T08:41:52.389758+00:00",
+          "duration_sec": 4027.83
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:34:15.932365+00:00",
+          "finished_at": "2026-05-18T07:34:40.943220+00:00",
+          "duration_sec": 25.01
+        }
+      },
+      "total_artifact_bytes": 47028970,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-378": {
+      "agent": "terminus-2",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:08.236039+00:00",
+      "finished_at": "2026-05-18T08:39:05.489073+00:00",
+      "input_tokens": 3266753,
+      "cache_tokens": 2682550,
+      "output_tokens": 121613,
+      "cost_usd": 3.164272,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-378/",
+      "source_trial_name": "task-parameter-golf-61e11605-ec5__6RwnrEb",
+      "source_oddish_trial_id": "parameter-golf-61e11605-378",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T08:38:46.865882+00:00",
+          "finished_at": "2026-05-18T08:38:51.885401+00:00",
+          "duration_sec": 5.02
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:34:34.865723+00:00",
+          "finished_at": "2026-05-18T07:34:38.947511+00:00",
+          "duration_sec": 4.08
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:34:39.097708+00:00",
+          "finished_at": "2026-05-18T08:37:06.426130+00:00",
+          "duration_sec": 3747.33
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:34:09.525019+00:00",
+          "finished_at": "2026-05-18T07:34:34.865679+00:00",
+          "duration_sec": 25.34
+        }
+      },
+      "total_artifact_bytes": 72872217,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-379": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:34:13.299840+00:00",
+      "finished_at": "2026-05-18T09:36:51.183555+00:00",
+      "input_tokens": 5300031,
+      "cache_tokens": 4935941,
+      "output_tokens": 142597,
+      "cost_usd": 1.5916704,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-379/",
+      "source_trial_name": "task-parameter-golf-61e11605-dv5__tjCWWL9",
+      "source_oddish_trial_id": "parameter-golf-61e11605-379",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T09:36:13.433185+00:00",
+          "finished_at": "2026-05-18T09:36:26.908946+00:00",
+          "duration_sec": 13.48
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:34:40.991811+00:00",
+          "finished_at": "2026-05-18T07:34:45.402763+00:00",
+          "duration_sec": 4.41
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:34:46.259626+00:00",
+          "finished_at": "2026-05-18T09:31:11.340417+00:00",
+          "duration_sec": 6985.08
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:34:16.378661+00:00",
+          "finished_at": "2026-05-18T07:34:40.991757+00:00",
+          "duration_sec": 24.61
+        }
+      },
+      "total_artifact_bytes": 90103163,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-380": {
+      "agent": "terminus-2",
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T08:12:56.714406+00:00",
+      "finished_at": "2026-05-18T12:10:58.149483+00:00",
+      "input_tokens": 29734666,
+      "cache_tokens": 22071991,
+      "output_tokens": 251160,
+      "cost_usd": 14.948268477999997,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-380/",
+      "source_trial_name": "task-parameter-golf-61e11605-aj9__C5Qzkp6",
+      "source_oddish_trial_id": "parameter-golf-61e11605-380",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T12:08:46.045859+00:00",
+          "finished_at": "2026-05-18T12:09:01.717332+00:00",
+          "duration_sec": 15.67
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T08:13:23.210770+00:00",
+          "finished_at": "2026-05-18T08:13:26.771596+00:00",
+          "duration_sec": 3.56
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T08:13:27.269704+00:00",
+          "finished_at": "2026-05-18T12:01:23.418961+00:00",
+          "duration_sec": 13676.15
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T08:12:59.050693+00:00",
+          "finished_at": "2026-05-18T08:13:23.210736+00:00",
+          "duration_sec": 24.16
+        }
+      },
+      "total_artifact_bytes": 360758687,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-381": {
+      "agent": "terminus-2",
+      "model": "openrouter/z-ai/glm-5.1",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T08:24:53.985765+00:00",
+      "finished_at": "2026-05-18T13:35:57.719868+00:00",
+      "input_tokens": 14744693,
+      "cache_tokens": 9994688,
+      "output_tokens": 148281,
+      "cost_usd": 6.930743596000008,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-381/",
+      "source_trial_name": "task-parameter-golf-61e11605-a2b__PFDWFKz",
+      "source_oddish_trial_id": "parameter-golf-61e11605-381",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": "Agent execution timed out after 18000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T13:35:08.463110+00:00",
+          "finished_at": "2026-05-18T13:35:29.449164+00:00",
+          "duration_sec": 20.99
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T08:25:18.920066+00:00",
+          "finished_at": "2026-05-18T08:25:23.251935+00:00",
+          "duration_sec": 4.33
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T08:25:23.371131+00:00",
+          "finished_at": "2026-05-18T13:25:23.377969+00:00",
+          "duration_sec": 18000.01
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T08:24:54.667389+00:00",
+          "finished_at": "2026-05-18T08:25:18.920035+00:00",
+          "duration_sec": 24.25
+        }
+      },
+      "total_artifact_bytes": 211116096,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-382": {
+      "agent": "terminus-2",
+      "model": "openrouter/minimax/minimax-m2.7",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T07:48:55.262868+00:00",
+      "finished_at": "2026-05-18T08:18:22.682304+00:00",
+      "input_tokens": 2418611,
+      "cache_tokens": 2323360,
+      "output_tokens": 33480,
+      "cost_usd": 0.2081529,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-382/",
+      "source_trial_name": "task-parameter-golf-61e11605-hpf__5ysH5Ud",
+      "source_oddish_trial_id": "parameter-golf-61e11605-382",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T08:17:55.036028+00:00",
+          "finished_at": "2026-05-18T08:18:07.593846+00:00",
+          "duration_sec": 12.56
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T07:49:23.139698+00:00",
+          "finished_at": "2026-05-18T07:49:26.553880+00:00",
+          "duration_sec": 3.41
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T07:49:26.748136+00:00",
+          "finished_at": "2026-05-18T08:15:46.737776+00:00",
+          "duration_sec": 1579.99
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T07:48:57.195996+00:00",
+          "finished_at": "2026-05-18T07:49:23.139629+00:00",
+          "duration_sec": 25.94
+        }
+      },
+      "total_artifact_bytes": 62424365,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-383": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:54.547554+00:00",
+      "finished_at": "2026-05-18T21:41:31.325494+00:00",
+      "input_tokens": 16645502,
+      "cache_tokens": 16520100,
+      "output_tokens": 116534,
+      "cost_usd": 11.956943749999999,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-383/",
+      "source_trial_name": "task-parameter-golf-61e11605-4t__ivgmVWK",
+      "source_oddish_trial_id": "parameter-golf-61e11605-383",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T21:41:07.606495+00:00",
+          "finished_at": "2026-05-18T21:41:24.043417+00:00",
+          "duration_sec": 16.44
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:21.709655+00:00",
+          "finished_at": "2026-05-18T18:31:23.823709+00:00",
+          "duration_sec": 2.11
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:23.967195+00:00",
+          "finished_at": "2026-05-18T21:40:58.498090+00:00",
+          "duration_sec": 11374.53
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:30:55.529208+00:00",
+          "finished_at": "2026-05-18T18:31:21.709607+00:00",
+          "duration_sec": 26.18
+        }
+      },
+      "total_artifact_bytes": 33713643,
+      "original_provider": "claude",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-384": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:54.595001+00:00",
+      "finished_at": "2026-05-18T23:05:21.696533+00:00",
+      "input_tokens": 11189132,
+      "cache_tokens": 9475889,
+      "output_tokens": 73137,
+      "cost_usd": 17.273938250000008,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-384/",
+      "source_trial_name": "task-parameter-golf-61e11605-gtw__cqTqaKw",
+      "source_oddish_trial_id": "parameter-golf-61e11605-384",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T23:05:00.976239+00:00",
+          "finished_at": "2026-05-18T23:05:15.099292+00:00",
+          "duration_sec": 14.12
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:21.250480+00:00",
+          "finished_at": "2026-05-18T18:31:23.046590+00:00",
+          "duration_sec": 1.8
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:23.180604+00:00",
+          "finished_at": "2026-05-18T23:04:55.723601+00:00",
+          "duration_sec": 16412.54
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:30:55.393808+00:00",
+          "finished_at": "2026-05-18T18:31:21.250464+00:00",
+          "duration_sec": 25.86
+        }
+      },
+      "total_artifact_bytes": 34100626,
+      "original_provider": "claude",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-385": {
+      "agent": "codex",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:31:00.735178+00:00",
+      "finished_at": "2026-05-18T21:10:12.790436+00:00",
+      "input_tokens": 4626002,
+      "cache_tokens": 4474368,
+      "output_tokens": 21820,
+      "cost_usd": 3.649954,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-385/",
+      "source_trial_name": "task-parameter-golf-61e11605-si5__Ys5z8WE",
+      "source_oddish_trial_id": "parameter-golf-61e11605-385",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T21:09:43.309098+00:00",
+          "finished_at": "2026-05-18T21:09:52.153726+00:00",
+          "duration_sec": 8.84
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:31.365469+00:00",
+          "finished_at": "2026-05-18T18:31:32.463489+00:00",
+          "duration_sec": 1.1
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:33.555091+00:00",
+          "finished_at": "2026-05-18T21:09:40.330892+00:00",
+          "duration_sec": 9486.78
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:31:05.826894+00:00",
+          "finished_at": "2026-05-18T18:31:31.365422+00:00",
+          "duration_sec": 25.54
+        }
+      },
+      "total_artifact_bytes": 31284114,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-386": {
+      "agent": "codex",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:33:55.021915+00:00",
+      "finished_at": "2026-05-18T23:34:47.981014+00:00",
+      "input_tokens": 8344226,
+      "cache_tokens": 8144896,
+      "output_tokens": 44501,
+      "cost_usd": 6.404127999999999,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-386/",
+      "source_trial_name": "task-parameter-golf-61e11605-52d__kZgVYKg",
+      "source_oddish_trial_id": "parameter-golf-61e11605-386",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": "Agent execution timed out after 18000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T23:34:36.110829+00:00",
+          "finished_at": "2026-05-18T23:34:42.023507+00:00",
+          "duration_sec": 5.91
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:34:20.621716+00:00",
+          "finished_at": "2026-05-18T18:34:27.516449+00:00",
+          "duration_sec": 6.89
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:34:27.633472+00:00",
+          "finished_at": "2026-05-18T23:34:31.952154+00:00",
+          "duration_sec": 18004.32
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:33:55.952675+00:00",
+          "finished_at": "2026-05-18T18:34:20.621668+00:00",
+          "duration_sec": 24.67
+        }
+      },
+      "total_artifact_bytes": 36272749,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-387": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:54.146938+00:00",
+      "finished_at": "2026-05-18T20:02:33.767614+00:00",
+      "input_tokens": 4471578,
+      "cache_tokens": 3973122,
+      "output_tokens": 50585,
+      "cost_usd": 2.3985564,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-387/",
+      "source_trial_name": "task-parameter-golf-61e11605-xq6__7yZQpdW",
+      "source_oddish_trial_id": "parameter-golf-61e11605-387",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T20:02:12.180953+00:00",
+          "finished_at": "2026-05-18T20:02:27.686763+00:00",
+          "duration_sec": 15.51
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:22.943889+00:00",
+          "finished_at": "2026-05-18T18:31:29.424902+00:00",
+          "duration_sec": 6.48
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:29.538502+00:00",
+          "finished_at": "2026-05-18T20:02:07.976154+00:00",
+          "duration_sec": 5438.44
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:30:54.910828+00:00",
+          "finished_at": "2026-05-18T18:31:22.943861+00:00",
+          "duration_sec": 28.03
+        }
+      },
+      "total_artifact_bytes": 29538388,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-388": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:42:55.063145+00:00",
+      "finished_at": "2026-05-18T23:43:55.772232+00:00",
+      "input_tokens": 649585,
+      "cache_tokens": 409746,
+      "output_tokens": 31434,
+      "cost_usd": 0.9388352,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-388/",
+      "source_trial_name": "task-parameter-golf-61e11605-vc3__yMT5mdf",
+      "source_oddish_trial_id": "parameter-golf-61e11605-388",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": "Agent execution timed out after 18000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T23:43:33.880789+00:00",
+          "finished_at": "2026-05-18T23:43:50.042081+00:00",
+          "duration_sec": 16.16
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:43:22.291764+00:00",
+          "finished_at": "2026-05-18T18:43:28.829138+00:00",
+          "duration_sec": 6.54
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:43:29.262353+00:00",
+          "finished_at": "2026-05-18T23:43:31.857498+00:00",
+          "duration_sec": 18002.6
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:42:55.790192+00:00",
+          "finished_at": "2026-05-18T18:43:22.291744+00:00",
+          "duration_sec": 26.5
+        }
+      },
+      "total_artifact_bytes": 27548992,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-389": {
+      "agent": "kimi-cli",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:53.952615+00:00",
+      "finished_at": "2026-05-18T23:31:46.709560+00:00",
+      "input_tokens": 10404519,
+      "cache_tokens": 8023158,
+      "output_tokens": 264306,
+      "cost_usd": null,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-389/",
+      "source_trial_name": "task-parameter-golf-61e11605-ape__RMSvHAv",
+      "source_oddish_trial_id": "parameter-golf-61e11605-389",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": "Agent execution timed out after 18000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T23:31:31.588799+00:00",
+          "finished_at": "2026-05-18T23:31:38.792509+00:00",
+          "duration_sec": 7.2
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:21.504936+00:00",
+          "finished_at": "2026-05-18T18:31:23.781164+00:00",
+          "duration_sec": 2.28
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:23.891478+00:00",
+          "finished_at": "2026-05-18T23:31:26.455490+00:00",
+          "duration_sec": 18002.56
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:30:54.797549+00:00",
+          "finished_at": "2026-05-18T18:31:21.504892+00:00",
+          "duration_sec": 26.71
+        }
+      },
+      "total_artifact_bytes": 39192625,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-390": {
+      "agent": "kimi-cli",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:56.839336+00:00",
+      "finished_at": "2026-05-18T22:47:17.595450+00:00",
+      "input_tokens": 14530533,
+      "cache_tokens": 13309312,
+      "output_tokens": 478399,
+      "cost_usd": null,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-390/",
+      "source_trial_name": "task-parameter-golf-61e11605-2u7__VfeufDP",
+      "source_oddish_trial_id": "parameter-golf-61e11605-390",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T22:46:56.540416+00:00",
+          "finished_at": "2026-05-18T22:47:03.603377+00:00",
+          "duration_sec": 7.06
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:24.729496+00:00",
+          "finished_at": "2026-05-18T18:31:26.815985+00:00",
+          "duration_sec": 2.09
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:27.326588+00:00",
+          "finished_at": "2026-05-18T22:46:51.288663+00:00",
+          "duration_sec": 15323.96
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:30:59.536422+00:00",
+          "finished_at": "2026-05-18T18:31:24.729469+00:00",
+          "duration_sec": 25.19
+        }
+      },
+      "total_artifact_bytes": 41625744,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-391": {
+      "agent": "kimi-cli",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:59.273687+00:00",
+      "finished_at": "2026-05-18T19:41:14.601011+00:00",
+      "input_tokens": 4365867,
+      "cache_tokens": 3937728,
+      "output_tokens": 172018,
+      "cost_usd": null,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-391/",
+      "source_trial_name": "task-parameter-golf-61e11605-xfp__5cAKaFX",
+      "source_oddish_trial_id": "parameter-golf-61e11605-391",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T19:40:23.768315+00:00",
+          "finished_at": "2026-05-18T19:40:38.151908+00:00",
+          "duration_sec": 14.38
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:31.400338+00:00",
+          "finished_at": "2026-05-18T18:31:35.637701+00:00",
+          "duration_sec": 4.24
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:36.526668+00:00",
+          "finished_at": "2026-05-18T19:40:11.319246+00:00",
+          "duration_sec": 4114.79
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:31:03.641273+00:00",
+          "finished_at": "2026-05-18T18:31:31.400280+00:00",
+          "duration_sec": 27.76
+        }
+      },
+      "total_artifact_bytes": 35330740,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-392": {
+      "agent": "kimi-cli",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:31:00.569560+00:00",
+      "finished_at": "2026-05-18T21:09:06.531245+00:00",
+      "input_tokens": 11635454,
+      "cache_tokens": 11180574,
+      "output_tokens": 282965,
+      "cost_usd": null,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-392/",
+      "source_trial_name": "task-parameter-golf-61e11605-zfz__DRg7wye",
+      "source_oddish_trial_id": "parameter-golf-61e11605-392",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T21:07:46.336286+00:00",
+          "finished_at": "2026-05-18T21:08:04.493999+00:00",
+          "duration_sec": 18.16
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:32.498287+00:00",
+          "finished_at": "2026-05-18T18:31:36.662782+00:00",
+          "duration_sec": 4.16
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:37.743284+00:00",
+          "finished_at": "2026-05-18T21:07:32.535034+00:00",
+          "duration_sec": 9354.79
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:31:05.829753+00:00",
+          "finished_at": "2026-05-18T18:31:32.498270+00:00",
+          "duration_sec": 26.67
+        }
+      },
+      "total_artifact_bytes": 38990211,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-393": {
+      "agent": "terminus-2",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:54.790125+00:00",
+      "finished_at": "2026-05-18T21:14:08.559588+00:00",
+      "input_tokens": 6599143,
+      "cache_tokens": 6529656,
+      "output_tokens": 30433,
+      "cost_usd": 4.456883,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-393/",
+      "source_trial_name": "task-parameter-golf-61e11605-365__c7pWMGr",
+      "source_oddish_trial_id": "parameter-golf-61e11605-393",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T21:13:20.409177+00:00",
+          "finished_at": "2026-05-18T21:13:34.207231+00:00",
+          "duration_sec": 13.8
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:22.154753+00:00",
+          "finished_at": "2026-05-18T18:31:28.086829+00:00",
+          "duration_sec": 5.93
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:28.237443+00:00",
+          "finished_at": "2026-05-18T21:03:13.882516+00:00",
+          "duration_sec": 9105.65
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:30:55.928363+00:00",
+          "finished_at": "2026-05-18T18:31:22.154735+00:00",
+          "duration_sec": 26.23
+        }
+      },
+      "total_artifact_bytes": 74988569,
+      "original_provider": "claude",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-394": {
+      "agent": "terminus-2",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:54.776925+00:00",
+      "finished_at": "2026-05-18T23:09:58.275346+00:00",
+      "input_tokens": 27039832,
+      "cache_tokens": 26882005,
+      "output_tokens": 72222,
+      "cost_usd": 16.229037499999997,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-394/",
+      "source_trial_name": "task-parameter-golf-61e11605-yxx__7tV9rkZ",
+      "source_oddish_trial_id": "parameter-golf-61e11605-394",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T23:08:57.394410+00:00",
+          "finished_at": "2026-05-18T23:09:11.296922+00:00",
+          "duration_sec": 13.9
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:21.141094+00:00",
+          "finished_at": "2026-05-18T18:31:27.111068+00:00",
+          "duration_sec": 5.97
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:27.252013+00:00",
+          "finished_at": "2026-05-18T22:48:26.708945+00:00",
+          "duration_sec": 15419.46
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:30:55.855452+00:00",
+          "finished_at": "2026-05-18T18:31:21.141076+00:00",
+          "duration_sec": 25.29
+        }
+      },
+      "total_artifact_bytes": 223847107,
+      "original_provider": "claude",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-395": {
+      "agent": "terminus-2",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:33:55.174329+00:00",
+      "finished_at": "2026-05-18T22:13:03.054605+00:00",
+      "input_tokens": 15648853,
+      "cache_tokens": 15544739,
+      "output_tokens": 39986,
+      "cost_usd": 9.4191245,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-395/",
+      "source_trial_name": "task-parameter-golf-61e11605-ph1__dpZnUAP",
+      "source_oddish_trial_id": "parameter-golf-61e11605-395",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T22:12:18.137612+00:00",
+          "finished_at": "2026-05-18T22:12:31.286044+00:00",
+          "duration_sec": 13.15
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:34:20.262024+00:00",
+          "finished_at": "2026-05-18T18:34:24.727955+00:00",
+          "duration_sec": 4.47
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:34:24.874541+00:00",
+          "finished_at": "2026-05-18T22:01:47.049069+00:00",
+          "duration_sec": 12442.17
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:33:56.005949+00:00",
+          "finished_at": "2026-05-18T18:34:20.262006+00:00",
+          "duration_sec": 24.26
+        }
+      },
+      "total_artifact_bytes": 142147267,
+      "original_provider": "claude",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-396": {
+      "agent": "terminus-2",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:34:06.043838+00:00",
+      "finished_at": "2026-05-18T22:37:15.037922+00:00",
+      "input_tokens": 17215262,
+      "cache_tokens": 17107972,
+      "output_tokens": 49189,
+      "cost_usd": 10.450528499999995,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-396/",
+      "source_trial_name": "task-parameter-golf-61e11605-g61__bJEWbe4",
+      "source_oddish_trial_id": "parameter-golf-61e11605-396",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T22:36:04.262102+00:00",
+          "finished_at": "2026-05-18T22:36:24.661265+00:00",
+          "duration_sec": 20.4
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:34:37.275038+00:00",
+          "finished_at": "2026-05-18T18:34:46.418407+00:00",
+          "duration_sec": 9.14
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:34:46.931786+00:00",
+          "finished_at": "2026-05-18T22:07:19.500107+00:00",
+          "duration_sec": 12752.57
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:34:09.193313+00:00",
+          "finished_at": "2026-05-18T18:34:37.274985+00:00",
+          "duration_sec": 28.08
+        }
+      },
+      "total_artifact_bytes": 159521433,
+      "original_provider": "claude",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-397": {
+      "agent": "terminus-2",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:33:57.746735+00:00",
+      "finished_at": "2026-05-18T21:43:13.231907+00:00",
+      "input_tokens": 10852513,
+      "cache_tokens": 10632448,
+      "output_tokens": 66865,
+      "cost_usd": 8.422498999999998,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-397/",
+      "source_trial_name": "task-parameter-golf-61e11605-yhr__ZGw6EjB",
+      "source_oddish_trial_id": "parameter-golf-61e11605-397",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T21:42:13.572356+00:00",
+          "finished_at": "2026-05-18T21:42:31.315471+00:00",
+          "duration_sec": 17.74
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:34:24.977370+00:00",
+          "finished_at": "2026-05-18T18:34:29.295072+00:00",
+          "duration_sec": 4.32
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:34:29.805472+00:00",
+          "finished_at": "2026-05-18T21:35:35.342661+00:00",
+          "duration_sec": 10865.54
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:34:00.419915+00:00",
+          "finished_at": "2026-05-18T18:34:24.977351+00:00",
+          "duration_sec": 24.56
+        }
+      },
+      "total_artifact_bytes": 135948809,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-398": {
+      "agent": "terminus-2",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:34:09.797771+00:00",
+      "finished_at": "2026-05-18T21:18:24.198897+00:00",
+      "input_tokens": 6208320,
+      "cache_tokens": 5956608,
+      "output_tokens": 94056,
+      "cost_usd": 7.058543999999999,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-398/",
+      "source_trial_name": "task-parameter-golf-61e11605-arw__UzAi7QN",
+      "source_oddish_trial_id": "parameter-golf-61e11605-398",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T21:14:18.427583+00:00",
+          "finished_at": "2026-05-18T21:16:58.457887+00:00",
+          "duration_sec": 160.03
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:34:43.942690+00:00",
+          "finished_at": "2026-05-18T18:34:46.461514+00:00",
+          "duration_sec": 2.52
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:34:48.301615+00:00",
+          "finished_at": "2026-05-18T21:11:50.613345+00:00",
+          "duration_sec": 9422.31
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:34:18.409717+00:00",
+          "finished_at": "2026-05-18T18:34:43.942638+00:00",
+          "duration_sec": 25.53
+        }
+      },
+      "total_artifact_bytes": 96186046,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-399": {
+      "agent": "terminus-2",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:34:06.690232+00:00",
+      "finished_at": "2026-05-18T19:53:31.365411+00:00",
+      "input_tokens": 2149497,
+      "cache_tokens": 2039040,
+      "output_tokens": 31686,
+      "cost_usd": 2.522385000000001,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-399/",
+      "source_trial_name": "task-parameter-golf-61e11605-fwc__CzLNrBV",
+      "source_oddish_trial_id": "parameter-golf-61e11605-399",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T19:52:58.128001+00:00",
+          "finished_at": "2026-05-18T19:53:16.706119+00:00",
+          "duration_sec": 18.58
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:34:33.459710+00:00",
+          "finished_at": "2026-05-18T18:34:37.675015+00:00",
+          "duration_sec": 4.22
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:34:38.000244+00:00",
+          "finished_at": "2026-05-18T19:50:07.577959+00:00",
+          "duration_sec": 4529.58
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:34:08.918626+00:00",
+          "finished_at": "2026-05-18T18:34:33.459644+00:00",
+          "duration_sec": 24.54
+        }
+      },
+      "total_artifact_bytes": 53405132,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-400": {
+      "agent": "terminus-2",
+      "model": "openai/gpt-5.5",
+      "provider": "openai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:34:10.625352+00:00",
+      "finished_at": "2026-05-18T22:02:59.342246+00:00",
+      "input_tokens": 12550477,
+      "cache_tokens": 12192512,
+      "output_tokens": 110196,
+      "cost_usd": 11.191961,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-400/",
+      "source_trial_name": "task-parameter-golf-61e11605-swx__PsrzRHD",
+      "source_oddish_trial_id": "parameter-golf-61e11605-400",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T22:01:09.410149+00:00",
+          "finished_at": "2026-05-18T22:01:34.946589+00:00",
+          "duration_sec": 25.54
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:34:46.606395+00:00",
+          "finished_at": "2026-05-18T18:34:52.822479+00:00",
+          "duration_sec": 6.22
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:34:53.798677+00:00",
+          "finished_at": "2026-05-18T21:48:35.946853+00:00",
+          "duration_sec": 11622.15
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:34:19.364517+00:00",
+          "finished_at": "2026-05-18T18:34:46.606340+00:00",
+          "duration_sec": 27.24
+        }
+      },
+      "total_artifact_bytes": 153394625,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-401": {
+      "agent": "terminus-2",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:42:55.463965+00:00",
+      "finished_at": "2026-05-18T19:14:30.737301+00:00",
+      "input_tokens": 847637,
+      "cache_tokens": 704047,
+      "output_tokens": 63998,
+      "cost_usd": 1.1959654000000002,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-401/",
+      "source_trial_name": "task-parameter-golf-61e11605-g1b__3z5CeQo",
+      "source_oddish_trial_id": "parameter-golf-61e11605-401",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T19:13:59.530677+00:00",
+          "finished_at": "2026-05-18T19:14:13.453610+00:00",
+          "duration_sec": 13.92
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:43:28.792185+00:00",
+          "finished_at": "2026-05-18T18:43:33.743895+00:00",
+          "duration_sec": 4.95
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:43:33.893774+00:00",
+          "finished_at": "2026-05-18T19:12:20.494791+00:00",
+          "duration_sec": 1726.6
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:42:56.494671+00:00",
+          "finished_at": "2026-05-18T18:43:28.792156+00:00",
+          "duration_sec": 32.3
+        }
+      },
+      "total_artifact_bytes": 36907699,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-402": {
+      "agent": "terminus-2",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:56.796276+00:00",
+      "finished_at": "2026-05-18T19:56:00.299067+00:00",
+      "input_tokens": 4414140,
+      "cache_tokens": 4026125,
+      "output_tokens": 55343,
+      "cost_usd": 2.2453710000000004,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-402/",
+      "source_trial_name": "task-parameter-golf-61e11605-pdq__HGn7v9v",
+      "source_oddish_trial_id": "parameter-golf-61e11605-402",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T19:55:28.655127+00:00",
+          "finished_at": "2026-05-18T19:55:40.053872+00:00",
+          "duration_sec": 11.4
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:25.748944+00:00",
+          "finished_at": "2026-05-18T18:31:28.547323+00:00",
+          "duration_sec": 2.8
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:29.064357+00:00",
+          "finished_at": "2026-05-18T19:53:42.338810+00:00",
+          "duration_sec": 4933.27
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:30:59.744725+00:00",
+          "finished_at": "2026-05-18T18:31:25.748897+00:00",
+          "duration_sec": 26.0
+        }
+      },
+      "total_artifact_bytes": 73427805,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-403": {
+      "agent": "terminus-2",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:59.432191+00:00",
+      "finished_at": "2026-05-18T20:22:12.789975+00:00",
+      "input_tokens": 3468743,
+      "cache_tokens": 2742731,
+      "output_tokens": 77649,
+      "cost_usd": 2.932358200000001,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-403/",
+      "source_trial_name": "task-parameter-golf-61e11605-yc6__YU7GVkA",
+      "source_oddish_trial_id": "parameter-golf-61e11605-403",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T20:21:03.266959+00:00",
+          "finished_at": "2026-05-18T20:21:13.191680+00:00",
+          "duration_sec": 9.92
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:30.527443+00:00",
+          "finished_at": "2026-05-18T18:31:33.261692+00:00",
+          "duration_sec": 2.73
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:34.171149+00:00",
+          "finished_at": "2026-05-18T20:19:23.142548+00:00",
+          "duration_sec": 6468.97
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:31:03.916788+00:00",
+          "finished_at": "2026-05-18T18:31:30.527391+00:00",
+          "duration_sec": 26.61
+        }
+      },
+      "total_artifact_bytes": 63126506,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-404": {
+      "agent": "terminus-2",
+      "model": "gemini/gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:33:55.117926+00:00",
+      "finished_at": "2026-05-18T20:32:02.139285+00:00",
+      "input_tokens": 4173501,
+      "cache_tokens": 3733372,
+      "output_tokens": 76600,
+      "cost_usd": 2.5461323999999994,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-404/",
+      "source_trial_name": "task-parameter-golf-61e11605-_7p__UYovccH",
+      "source_oddish_trial_id": "parameter-golf-61e11605-404",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T20:31:24.025410+00:00",
+          "finished_at": "2026-05-18T20:31:41.779558+00:00",
+          "duration_sec": 17.75
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:34:22.021691+00:00",
+          "finished_at": "2026-05-18T18:34:28.745273+00:00",
+          "duration_sec": 6.72
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:34:28.880319+00:00",
+          "finished_at": "2026-05-18T20:24:08.359700+00:00",
+          "duration_sec": 6579.48
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:33:55.809075+00:00",
+          "finished_at": "2026-05-18T18:34:22.021673+00:00",
+          "duration_sec": 26.21
+        }
+      },
+      "total_artifact_bytes": 70054030,
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-405": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:31:00.612739+00:00",
+      "finished_at": "2026-05-18T23:39:44.493887+00:00",
+      "input_tokens": 11614429,
+      "cache_tokens": 10962776,
+      "output_tokens": 160961,
+      "cost_usd": 3.4374339699999994,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-405/",
+      "source_trial_name": "task-parameter-golf-61e11605-k4e__7nMxBfE",
+      "source_oddish_trial_id": "parameter-golf-61e11605-405",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": "Agent execution timed out after 18000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T23:38:06.639992+00:00",
+          "finished_at": "2026-05-18T23:38:18.479299+00:00",
+          "duration_sec": 11.84
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:31.751102+00:00",
+          "finished_at": "2026-05-18T18:31:35.481398+00:00",
+          "duration_sec": 3.73
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:36.570729+00:00",
+          "finished_at": "2026-05-18T23:31:36.580808+00:00",
+          "duration_sec": 18000.01
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:31:05.497620+00:00",
+          "finished_at": "2026-05-18T18:31:31.751085+00:00",
+          "duration_sec": 26.25
+        }
+      },
+      "total_artifact_bytes": 161781408,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-406": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "AgentTimeoutError",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T19:49:04.560947",
+      "finished_at": "2026-05-19T01:07:00.762969",
+      "input_tokens": 18597596,
+      "output_tokens": 316507,
+      "cache_tokens": 15545115,
+      "cost_usd": 7.350143955,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-406/",
+      "has_trajectory": true,
+      "source_trial_name": "task-parameter-golf-61e11605-tci__mYmU3UU",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-407": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:34:06.317098+00:00",
+      "finished_at": "2026-05-18T23:41:01.194989+00:00",
+      "input_tokens": 32670551,
+      "cache_tokens": 31143648,
+      "output_tokens": 200310,
+      "cost_usd": 7.0978735,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-407/",
+      "source_trial_name": "task-parameter-golf-61e11605-diq__5auguKn",
+      "source_oddish_trial_id": "parameter-golf-61e11605-407",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": "Agent execution timed out after 18000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T23:40:09.422947+00:00",
+          "finished_at": "2026-05-18T23:40:24.393903+00:00",
+          "duration_sec": 14.97
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:34:31.376351+00:00",
+          "finished_at": "2026-05-18T18:34:34.707168+00:00",
+          "duration_sec": 3.33
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:34:34.855204+00:00",
+          "finished_at": "2026-05-18T23:34:34.868068+00:00",
+          "duration_sec": 18000.01
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:34:07.286319+00:00",
+          "finished_at": "2026-05-18T18:34:31.376310+00:00",
+          "duration_sec": 24.09
+        }
+      },
+      "total_artifact_bytes": 385501793,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-408": {
+      "agent": "terminus-2",
+      "model": "openrouter/moonshotai/kimi-k2.6",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:34:11.896451+00:00",
+      "finished_at": "2026-05-18T23:41:05.693158+00:00",
+      "input_tokens": 15609912,
+      "cache_tokens": 14699374,
+      "output_tokens": 274633,
+      "cost_usd": 4.77955151,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-408/",
+      "source_trial_name": "task-parameter-golf-61e11605-nhw__ov9hk8G",
+      "source_oddish_trial_id": "parameter-golf-61e11605-408",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": "Agent execution timed out after 18000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T23:39:20.758282+00:00",
+          "finished_at": "2026-05-18T23:39:31.572568+00:00",
+          "duration_sec": 10.81
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:34:54.838480+00:00",
+          "finished_at": "2026-05-18T18:34:57.219331+00:00",
+          "duration_sec": 2.38
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:34:59.398110+00:00",
+          "finished_at": "2026-05-18T23:34:59.410423+00:00",
+          "duration_sec": 18000.01
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:34:29.493935+00:00",
+          "finished_at": "2026-05-18T18:34:54.838434+00:00",
+          "duration_sec": 25.34
+        }
+      },
+      "total_artifact_bytes": 183245795,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-409": {
+      "agent": "terminus-2",
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:49:00.097016+00:00",
+      "finished_at": "2026-05-18T21:03:56.055243+00:00",
+      "input_tokens": 13855485,
+      "cache_tokens": 11962496,
+      "output_tokens": 173120,
+      "cost_usd": 5.3536465539999964,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-409/",
+      "source_trial_name": "task-parameter-golf-61e11605-67q__NWnjK7q",
+      "source_oddish_trial_id": "parameter-golf-61e11605-409",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T21:02:26.581798+00:00",
+          "finished_at": "2026-05-18T21:02:40.528886+00:00",
+          "duration_sec": 13.95
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:49:30.875465+00:00",
+          "finished_at": "2026-05-18T18:49:37.728758+00:00",
+          "duration_sec": 6.85
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:49:38.608181+00:00",
+          "finished_at": "2026-05-18T20:46:39.223808+00:00",
+          "duration_sec": 7020.62
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:49:04.259449+00:00",
+          "finished_at": "2026-05-18T18:49:30.875433+00:00",
+          "duration_sec": 26.62
+        }
+      },
+      "total_artifact_bytes": 178546333,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-410": {
+      "agent": "terminus-2",
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:59.339888+00:00",
+      "finished_at": "2026-05-18T20:30:20.308712+00:00",
+      "input_tokens": 11204645,
+      "cache_tokens": 9484160,
+      "output_tokens": 135688,
+      "cost_usd": 4.524279202,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-410/",
+      "source_trial_name": "task-parameter-golf-61e11605-pj__5LB4vZo",
+      "source_oddish_trial_id": "parameter-golf-61e11605-410",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T20:28:50.237368+00:00",
+          "finished_at": "2026-05-18T20:29:09.706952+00:00",
+          "duration_sec": 19.47
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:31.103140+00:00",
+          "finished_at": "2026-05-18T18:31:37.144098+00:00",
+          "duration_sec": 6.04
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:38.055673+00:00",
+          "finished_at": "2026-05-18T20:18:23.739978+00:00",
+          "duration_sec": 6405.68
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:31:04.126729+00:00",
+          "finished_at": "2026-05-18T18:31:31.103110+00:00",
+          "duration_sec": 26.98
+        }
+      },
+      "total_artifact_bytes": 143003165,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-411": {
+      "agent": "terminus-2",
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 3,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T20:03:56.326387+00:00",
+      "finished_at": "2026-05-18T21:14:45.530299+00:00",
+      "input_tokens": 6562504,
+      "cache_tokens": 5749120,
+      "output_tokens": 125419,
+      "cost_usd": 2.592901640000001,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-411/",
+      "source_trial_name": "task-parameter-golf-61e11605-bxj__uwW52T6",
+      "source_oddish_trial_id": "parameter-golf-61e11605-411",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T21:14:01.093302+00:00",
+          "finished_at": "2026-05-18T21:14:23.012365+00:00",
+          "duration_sec": 21.92
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T20:04:24.173378+00:00",
+          "finished_at": "2026-05-18T20:04:30.627240+00:00",
+          "duration_sec": 6.45
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T20:04:30.945996+00:00",
+          "finished_at": "2026-05-18T21:06:33.964837+00:00",
+          "duration_sec": 3723.02
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T20:03:58.471388+00:00",
+          "finished_at": "2026-05-18T20:04:24.173342+00:00",
+          "duration_sec": 25.7
+        }
+      },
+      "total_artifact_bytes": 147837276,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-412": {
+      "agent": "terminus-2",
+      "model": "openrouter/deepseek/deepseek-v4-pro",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:56.762906+00:00",
+      "finished_at": "2026-05-18T19:34:55.550618+00:00",
+      "input_tokens": 6137311,
+      "cache_tokens": 3928082,
+      "output_tokens": 108936,
+      "cost_usd": 4.214418078,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-412/",
+      "source_trial_name": "task-parameter-golf-61e11605-bwq__nP4VbvU",
+      "source_oddish_trial_id": "parameter-golf-61e11605-412",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T19:34:21.130693+00:00",
+          "finished_at": "2026-05-18T19:34:33.926549+00:00",
+          "duration_sec": 12.8
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:21.891087+00:00",
+          "finished_at": "2026-05-18T18:31:26.353471+00:00",
+          "duration_sec": 4.46
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:26.470977+00:00",
+          "finished_at": "2026-05-18T19:29:48.141081+00:00",
+          "duration_sec": 3501.67
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:30:57.419432+00:00",
+          "finished_at": "2026-05-18T18:31:21.891047+00:00",
+          "duration_sec": 24.47
+        }
+      },
+      "total_artifact_bytes": 91680780,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-413": {
+      "agent": "terminus-2",
+      "model": "openrouter/z-ai/glm-5.1",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:54.501218+00:00",
+      "finished_at": "2026-05-18T23:45:54.647116+00:00",
+      "input_tokens": 13382106,
+      "cache_tokens": 13158080,
+      "output_tokens": 214179,
+      "cost_usd": 4.6771248000000005,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-413/",
+      "source_trial_name": "task-parameter-golf-61e11605-c8p__CedSFt4",
+      "source_oddish_trial_id": "parameter-golf-61e11605-413",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": "Agent execution timed out after 18000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T23:45:04.570660+00:00",
+          "finished_at": "2026-05-18T23:45:12.398068+00:00",
+          "duration_sec": 7.83
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:21.014248+00:00",
+          "finished_at": "2026-05-18T18:31:26.632248+00:00",
+          "duration_sec": 5.62
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:26.780458+00:00",
+          "finished_at": "2026-05-18T23:31:26.788924+00:00",
+          "duration_sec": 18000.01
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:30:55.555316+00:00",
+          "finished_at": "2026-05-18T18:31:21.014189+00:00",
+          "duration_sec": 25.46
+        }
+      },
+      "total_artifact_bytes": 191404702,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-414": {
+      "agent": "terminus-2",
+      "model": "openrouter/z-ai/glm-5.1",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T19:04:07.447337+00:00",
+      "finished_at": "2026-05-18T22:36:42.690097+00:00",
+      "input_tokens": 6247764,
+      "cache_tokens": 6130110,
+      "output_tokens": 108214,
+      "cost_usd": 2.144615554,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-414/",
+      "source_trial_name": "task-parameter-golf-61e11605-gt__szrkeXG",
+      "source_oddish_trial_id": "parameter-golf-61e11605-414",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T22:33:49.024672+00:00",
+          "finished_at": "2026-05-18T22:34:24.610924+00:00",
+          "duration_sec": 35.59
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T19:04:47.949410+00:00",
+          "finished_at": "2026-05-18T19:05:03.681929+00:00",
+          "duration_sec": 15.73
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T19:05:05.654980+00:00",
+          "finished_at": "2026-05-18T21:54:45.931821+00:00",
+          "duration_sec": 10180.28
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T19:04:17.569284+00:00",
+          "finished_at": "2026-05-18T19:04:47.949374+00:00",
+          "duration_sec": 30.38
+        }
+      },
+      "total_artifact_bytes": 105452514,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-415": {
+      "agent": "terminus-2",
+      "model": "openrouter/z-ai/glm-5.1",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:59.099619+00:00",
+      "finished_at": "2026-05-18T23:48:56.260047+00:00",
+      "input_tokens": 12713804,
+      "cache_tokens": 11708388,
+      "output_tokens": 187044,
+      "cost_usd": 5.206621734,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-415/",
+      "source_trial_name": "task-parameter-golf-61e11605-cj2__TyhyHpt",
+      "source_oddish_trial_id": "parameter-golf-61e11605-415",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": "Agent execution timed out after 18000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T23:46:49.669147+00:00",
+          "finished_at": "2026-05-18T23:47:17.839965+00:00",
+          "duration_sec": 28.17
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:30.148740+00:00",
+          "finished_at": "2026-05-18T18:31:36.485660+00:00",
+          "duration_sec": 6.34
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:37.377949+00:00",
+          "finished_at": "2026-05-18T23:31:37.387491+00:00",
+          "duration_sec": 18000.01
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:31:03.261874+00:00",
+          "finished_at": "2026-05-18T18:31:30.148687+00:00",
+          "duration_sec": 26.89
+        }
+      },
+      "total_artifact_bytes": 179907086,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-416": {
+      "agent": "terminus-2",
+      "model": "openrouter/z-ai/glm-5.1",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "AgentTimeoutError",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-19T06:52:01.434276",
+      "finished_at": "2026-05-19T11:55:47.226586",
+      "input_tokens": 12854744,
+      "output_tokens": 236087,
+      "cache_tokens": 9595508,
+      "cost_usd": 6.842108375999995,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-416/",
+      "has_trajectory": true,
+      "source_trial_name": "task-parameter-golf-61e11605-w1j__GiGwfLk",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-417": {
+      "agent": "terminus-2",
+      "model": "openrouter/minimax/minimax-m2.7",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:54.737989+00:00",
+      "finished_at": "2026-05-18T19:20:40.573767+00:00",
+      "input_tokens": 5657673,
+      "cache_tokens": 5471387,
+      "output_tokens": 69640,
+      "cost_usd": 0.46773702,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-417/",
+      "source_trial_name": "task-parameter-golf-61e11605-j2k__wQoUPQU",
+      "source_oddish_trial_id": "parameter-golf-61e11605-417",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T19:20:13.075846+00:00",
+          "finished_at": "2026-05-18T19:20:23.924241+00:00",
+          "duration_sec": 10.85
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:21.756807+00:00",
+          "finished_at": "2026-05-18T18:31:27.070824+00:00",
+          "duration_sec": 5.31
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:27.250751+00:00",
+          "finished_at": "2026-05-18T19:15:50.346996+00:00",
+          "duration_sec": 2663.1
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:30:56.002966+00:00",
+          "finished_at": "2026-05-18T18:31:21.756756+00:00",
+          "duration_sec": 25.75
+        }
+      },
+      "total_artifact_bytes": 75303321,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-418": {
+      "agent": "terminus-2",
+      "model": "openrouter/minimax/minimax-m2.7",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:45:55.404878+00:00",
+      "finished_at": "2026-05-18T19:32:40.128945+00:00",
+      "input_tokens": 2799093,
+      "cache_tokens": 2585344,
+      "output_tokens": 54579,
+      "cost_usd": 0.2837710319999999,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-418/",
+      "source_trial_name": "task-parameter-golf-61e11605-9dw__KRVee6E",
+      "source_oddish_trial_id": "parameter-golf-61e11605-418",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T19:32:17.415317+00:00",
+          "finished_at": "2026-05-18T19:32:29.401902+00:00",
+          "duration_sec": 11.99
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:46:21.885036+00:00",
+          "finished_at": "2026-05-18T18:46:26.468214+00:00",
+          "duration_sec": 4.58
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:46:26.589635+00:00",
+          "finished_at": "2026-05-18T19:30:55.585096+00:00",
+          "duration_sec": 2669.0
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:45:56.589256+00:00",
+          "finished_at": "2026-05-18T18:46:21.884989+00:00",
+          "duration_sec": 25.3
+        }
+      },
+      "total_artifact_bytes": 64522139,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-419": {
+      "agent": "terminus-2",
+      "model": "openrouter/minimax/minimax-m2.7",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:30:56.906981+00:00",
+      "finished_at": "2026-05-18T23:57:57.030834+00:00",
+      "input_tokens": 15454545,
+      "cache_tokens": 14883200,
+      "output_tokens": 165213,
+      "cost_usd": 1.2972183000000008,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-419/",
+      "source_trial_name": "task-parameter-golf-61e11605-gvt__nudbCUd",
+      "source_oddish_trial_id": "parameter-golf-61e11605-419",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": "Agent execution timed out after 18000.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T23:51:40.231486+00:00",
+          "finished_at": "2026-05-18T23:51:45.682238+00:00",
+          "duration_sec": 5.45
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:31:24.749587+00:00",
+          "finished_at": "2026-05-18T18:31:27.513140+00:00",
+          "duration_sec": 2.76
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:31:28.030113+00:00",
+          "finished_at": "2026-05-18T23:31:28.050303+00:00",
+          "duration_sec": 18000.02
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:30:59.814170+00:00",
+          "finished_at": "2026-05-18T18:31:24.749570+00:00",
+          "duration_sec": 24.94
+        }
+      },
+      "total_artifact_bytes": 2629611989,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-420": {
+      "agent": "terminus-2",
+      "model": "openrouter/minimax/minimax-m2.7",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T19:00:55.974906+00:00",
+      "finished_at": "2026-05-18T19:46:16.060981+00:00",
+      "input_tokens": 1975651,
+      "cache_tokens": 1924096,
+      "output_tokens": 33047,
+      "cost_usd": 0.17056865999999993,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-420/",
+      "source_trial_name": "task-parameter-golf-61e11605-thb__py97HmC",
+      "source_oddish_trial_id": "parameter-golf-61e11605-420",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T19:45:58.050286+00:00",
+          "finished_at": "2026-05-18T19:46:05.976778+00:00",
+          "duration_sec": 7.93
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T19:01:21.893468+00:00",
+          "finished_at": "2026-05-18T19:01:25.898679+00:00",
+          "duration_sec": 4.01
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T19:01:26.023252+00:00",
+          "finished_at": "2026-05-18T19:43:39.402993+00:00",
+          "duration_sec": 2533.38
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T19:00:57.297284+00:00",
+          "finished_at": "2026-05-18T19:01:21.893439+00:00",
+          "duration_sec": 24.6
+        }
+      },
+      "total_artifact_bytes": 42677117,
+      "original_provider": "openai",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-421": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v31",
+      "started_at": "2026-05-18T18:54:55.027569+00:00",
+      "finished_at": "2026-05-18T20:14:05.029608+00:00",
+      "input_tokens": 2840553,
+      "cache_tokens": 2544760,
+      "output_tokens": 65965,
+      "cost_usd": 4.770076249999997,
+      "has_trajectory": true,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-421/",
+      "source_trial_name": "task-parameter-golf-61e11605-fwi__j99yuBZ",
+      "source_oddish_trial_id": "parameter-golf-61e11605-421",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "error_message": null,
+      "phase_timing": {
+        "verifier": {
+          "started_at": "2026-05-18T20:13:48.921217+00:00",
+          "finished_at": "2026-05-18T20:14:00.215305+00:00",
+          "duration_sec": 11.29
+        },
+        "agent_setup": {
+          "started_at": "2026-05-18T18:55:19.951809+00:00",
+          "finished_at": "2026-05-18T18:55:20.877410+00:00",
+          "duration_sec": 0.93
+        },
+        "agent_execution": {
+          "started_at": "2026-05-18T18:55:21.016643+00:00",
+          "finished_at": "2026-05-18T20:13:46.059575+00:00",
+          "duration_sec": 4705.04
+        },
+        "environment_setup": {
+          "started_at": "2026-05-18T18:54:56.188821+00:00",
+          "finished_at": "2026-05-18T18:55:19.951750+00:00",
+          "duration_sec": 23.76
+        }
+      },
+      "total_artifact_bytes": 31536783,
+      "original_provider": "claude",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-435": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v32",
+      "started_at": "2026-05-29T01:35:42.118062+00:00",
+      "finished_at": "2026-05-29T02:47:22.444610+00:00",
+      "input_tokens": 1355613,
+      "cache_tokens": 1081025,
+      "output_tokens": 33627,
+      "cost_usd": 1.85837025,
+      "has_trajectory": true,
+      "trajectory_bytes": 839036,
+      "exception_classes": [
+        "AgentTimeoutError"
+      ],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-435/",
+      "source_trial_name": "parameter-golf-435",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "source_oddish_trial_id": "parameter-golf-61e11605-435",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-parameter-golf-61e11605-4os__8nJR6h5",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-436": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v32",
+      "started_at": "2026-05-29T01:35:42.390635+00:00",
+      "finished_at": "2026-05-29T04:02:32.399369+00:00",
+      "input_tokens": 55048598,
+      "cache_tokens": 53422448,
+      "output_tokens": 127988,
+      "cost_usd": 23.4816645,
+      "has_trajectory": true,
+      "trajectory_bytes": 2189987,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-436/",
+      "source_trial_name": "parameter-golf-436",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "source_oddish_trial_id": "parameter-golf-61e11605-436",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-parameter-golf-61e11605-h0y__xTAXs7d",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-438": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "claude",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v32",
+      "started_at": "2026-05-29T02:02:45.015390+00:00",
+      "finished_at": "2026-05-29T04:44:50.634937+00:00",
+      "input_tokens": 2380218,
+      "cache_tokens": 1750601,
+      "output_tokens": 40633,
+      "cost_usd": 3.4956618,
+      "has_trajectory": true,
+      "trajectory_bytes": 548273,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-438/",
+      "source_trial_name": "parameter-golf-438",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "source_oddish_trial_id": "parameter-golf-61e11605-438",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-parameter-golf-61e11605-gwj__2YYqA53",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-441": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v32",
+      "started_at": "2026-05-29T00:23:48.554570+00:00",
+      "finished_at": "2026-05-29T00:26:23.757581+00:00",
+      "input_tokens": 230177,
+      "cache_tokens": 85250,
+      "output_tokens": 15392,
+      "cost_usd": 0.368706,
+      "has_trajectory": true,
+      "trajectory_bytes": 55870,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-441/",
+      "source_trial_name": "parameter-golf-441",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "source_oddish_trial_id": "parameter-golf-61e11605-441",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-parameter-golf-61e11605-1z3__eDxXr5R",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-442": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v32",
+      "started_at": "2026-05-29T00:26:43.140550+00:00",
+      "finished_at": "2026-05-29T02:56:09.196688+00:00",
+      "input_tokens": 11713410,
+      "cache_tokens": 10597343,
+      "output_tokens": 72608,
+      "cost_usd": 3.91717395,
+      "has_trajectory": true,
+      "trajectory_bytes": 472066,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-442/",
+      "source_trial_name": "parameter-golf-442",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "source_oddish_trial_id": "parameter-golf-61e11605-442",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-parameter-golf-61e11605-qvp__G97ypUf",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-445": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v32",
+      "started_at": "2026-05-29T02:59:45.143279+00:00",
+      "finished_at": "2026-05-29T04:48:08.218130+00:00",
+      "input_tokens": 13233058,
+      "cache_tokens": 12295279,
+      "output_tokens": 73038,
+      "cost_usd": 3.90830235,
+      "has_trajectory": true,
+      "trajectory_bytes": 433089,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-445/",
+      "source_trial_name": "parameter-golf-445",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "source_oddish_trial_id": "parameter-golf-61e11605-445",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-parameter-golf-61e11605-fce__KjjjBci",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-446": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "bedrock",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v32",
+      "started_at": "2026-05-29T17:56:48.009662+00:00",
+      "finished_at": "2026-05-29T20:08:22.428614+00:00",
+      "input_tokens": 13657432,
+      "cache_tokens": 13331636,
+      "output_tokens": 79829,
+      "cost_usd": 6.41830305,
+      "has_trajectory": true,
+      "trajectory_bytes": 955982,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-446/",
+      "source_trial_name": "parameter-golf-446",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "source_oddish_trial_id": "parameter-golf-61e11605-446",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-parameter-golf-61e11605-l6x__GVqNZ6t",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-447": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v32",
+      "started_at": "2026-05-29T17:56:47.864120+00:00",
+      "finished_at": "2026-05-29T22:14:48.957907+00:00",
+      "input_tokens": 17103455,
+      "cache_tokens": 14812084,
+      "output_tokens": 91846,
+      "cost_usd": 6.4854831,
+      "has_trajectory": true,
+      "trajectory_bytes": 602875,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-447/",
+      "source_trial_name": "parameter-golf-447",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "source_oddish_trial_id": "parameter-golf-61e11605-447",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-parameter-golf-61e11605-fnk__QvLQePq",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    },
+    "parameter-golf-61e11605-448": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "parameter-golf-61e11605-v32",
+      "started_at": "2026-05-29T17:56:48.119749+00:00",
+      "finished_at": "2026-05-29T18:23:03.605104+00:00",
+      "input_tokens": 7799494,
+      "cache_tokens": 6946666,
+      "output_tokens": 61262,
+      "cost_usd": 2.8725999,
+      "has_trajectory": true,
+      "trajectory_bytes": 308857,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-448/",
+      "source_trial_name": "parameter-golf-448",
+      "source_oddish_task_id": "parameter-golf-61e11605",
+      "source_oddish_trial_id": "parameter-golf-61e11605-448",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-parameter-golf-61e11605-h4b__pcdXnDB",
+      "task_name": "parameter-golf",
+      "task_hash": "61e11605"
+    }
+  },
+  "task_hashes": [
+    "61e11605"
+  ],
+  "is_multi_version": true,
+  "experiment_ids": [
+    "cd8c33d8",
+    "cd4dd88f"
+  ],
+  "additional_imports": [
+    {
+      "imported_at": "2026-06-01T21:12:52.368546+00:00",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "task_version_id_at_snapshot": "parameter-golf-61e11605-v32",
+      "n_trials_added": 9,
+      "pairs_added": [
+        [
+          "claude-code",
+          "anthropic/claude-opus-4-8"
+        ],
+        [
+          "gemini-cli",
+          "gemini/gemini-3.5-flash"
+        ]
+      ],
+      "note": "Augmenting (Option A): add up to 5 trials per pair for the new agent/model pairs from this experiment. nop/oracle excluded; for nextjs-vite-rewrite, claude-code is also excluded."
+    }
+  ]
+}
