@@ -348,8 +348,8 @@ Harbor. That normalizer accepts any of these forms:
 - already invokable (`global.`/`us.`/... inference profiles,
   `arn:aws:bedrock:...`) — passed through, minus any redundant `bedrock/`
   prefix.
-- Anthropic-style (`anthropic/claude-opus-4-7`, bare `claude-opus-4-7`) **or**
-  a bare Bedrock foundation-model id (`anthropic.claude-opus-4-7`) — mapped to
+- Anthropic-style (`anthropic/claude-opus-4-8`, bare `claude-opus-4-8`) **or**
+  a bare Bedrock foundation-model id (`anthropic.claude-opus-4-8`) — mapped to
   an invokable inference profile id via the explicit
   `_ANTHROPIC_TO_BEDROCK_MODEL_IDS` table in `oddish/config.py`. **A Claude
   model with no table entry raises a `ValueError`** — add an entry there

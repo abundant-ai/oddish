@@ -69,6 +69,23 @@ def test_claude_trial_model_is_persisted_as_bedrock_id(monkeypatch):
     assert settings.get_provider_for_trial("claude-code", None) == "bedrock"
 
 
+def test_opus_4_8_maps_to_global_inference_profile(monkeypatch):
+    settings = _settings(monkeypatch)
+
+    # Opus 4.8's invokable Bedrock id is the "global." cross-region inference
+    # profile (the bare "anthropic.claude-opus-4-8" foundation-model id is not
+    # invokable on-demand via the legacy InvokeModel API Claude Code uses).
+    expected = "global.anthropic.claude-opus-4-8"
+
+    assert settings.normalize_trial_model("claude-code", "claude-opus-4-8") == expected
+    assert (
+        settings.normalize_trial_model("claude-code", "anthropic/claude-opus-4-8")
+        == expected
+    )
+    assert settings.normalize_queue_key("claude-opus-4-8") == expected
+    assert settings.normalize_queue_key("anthropic/claude-opus-4-8") == expected
+
+
 def test_bedrock_queue_key_normalization_collapses_aliases(monkeypatch):
     settings = _settings(monkeypatch)
 
