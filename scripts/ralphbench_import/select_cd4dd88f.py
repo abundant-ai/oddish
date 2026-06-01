@@ -16,7 +16,7 @@ from collections import defaultdict
 from datetime import datetime
 
 EXPERIMENT_ID = 'cd4dd88f'
-VALID_EXC = {'AgentTimeoutError', 'VerifierTimeoutError'}
+VALID_EXC = {'AgentTimeoutError'}
 
 # 15 tasks in scope (task_id, task_name, task_hash)
 TASKS = [

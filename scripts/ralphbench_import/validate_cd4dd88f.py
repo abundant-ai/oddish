@@ -8,7 +8,7 @@ TARGETS = ['biofabric-rust-rewrite','embedding-eval','find-network-alignments',
            'jax-pytorch-rewrite','kubernetes-rust-rewrite','nextjs-vite-rewrite',
            'parameter-golf','ruby-rust-port','rust-c-compiler','rust-java-lsp',
            'stripe-clone','trimul-cuda','vliw-kernel-optimization','wasm-simd','zstd-decoder']
-VALID_EXC = {'AgentTimeoutError','VerifierTimeoutError'}
+VALID_EXC = {'AgentTimeoutError'}
 NEW_PAIRS = {('claude-code','anthropic/claude-opus-4-8'),
              ('gemini-cli','gemini/gemini-3.5-flash')}
 

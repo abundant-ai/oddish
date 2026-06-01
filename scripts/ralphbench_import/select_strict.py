@@ -22,7 +22,7 @@ from collections import defaultdict
 from datetime import datetime
 
 EXPERIMENT_ID = 'cd8c33d8'
-VALID_EXC = {'AgentTimeoutError', 'VerifierTimeoutError'}
+VALID_EXC = {'AgentTimeoutError'}
 
 TASKS = [
     ('s3-clone-23996371',      's3-clone',      '23996371'),

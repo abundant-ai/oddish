@@ -1843,7 +1843,9 @@
           "exception_classes": [],
           "pullable": true,
           "valid_strict": true,
-          "task_version_id_for_trial": "nextjs-vite-rewrite-b0d028b0-v12"
+          "task_version_id_for_trial": "nextjs-vite-rewrite-b0d028b0-v12",
+          "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
+          "trajectory_bytes": 215133
         },
         {
           "id": "nextjs-vite-rewrite-b0d028b0-260",
@@ -1900,10 +1902,8 @@
             "VerifierTimeoutError"
           ],
           "pullable": true,
-          "valid_strict": true,
-          "task_version_id_for_trial": "nextjs-vite-rewrite-b0d028b0-v12",
-          "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
-          "trajectory_bytes": 1416670
+          "valid_strict": false,
+          "task_version_id_for_trial": "nextjs-vite-rewrite-b0d028b0-v12"
         },
         {
           "id": "nextjs-vite-rewrite-b0d028b0-257",
@@ -1974,13 +1974,13 @@
             "gemini/gemini-3.5-flash"
           ],
           "n_candidates": 7,
-          "n_valid_strict": 6,
+          "n_valid_strict": 5,
           "picks": [
             "nextjs-vite-rewrite-b0d028b0-255",
-            "nextjs-vite-rewrite-b0d028b0-253",
             "nextjs-vite-rewrite-b0d028b0-257",
             "nextjs-vite-rewrite-b0d028b0-259",
-            "nextjs-vite-rewrite-b0d028b0-260"
+            "nextjs-vite-rewrite-b0d028b0-260",
+            "nextjs-vite-rewrite-b0d028b0-261"
           ],
           "notes": "OK"
         }

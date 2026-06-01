@@ -1,0 +1,79 @@
+{
+  "rule": "AgentTimeoutError or clean only",
+  "my_uploads_forbidden": [],
+  "prior_data_forbidden": [
+    [
+      "nextjs-vite-rewrite",
+      "nextjs-vite-rewrite-b0d028b0-208",
+      [
+        "RateLimitError"
+      ],
+      "(no source recorded)"
+    ],
+    [
+      "vliw-kernel-optimization",
+      "vliw-kernel-optimization-e4d25121-164",
+      [
+        "Exception"
+      ],
+      "(no source recorded)"
+    ]
+  ],
+  "gaps": [
+    {
+      "task": "find-network-alignments",
+      "snapshot": "find-network-alignments-b2ecebb7-v5",
+      "pair": "claude-code/anthropic/claude-opus-4-8",
+      "valid_now": 3,
+      "need": 2,
+      "inflight": [],
+      "rerun_candidates": [
+        [
+          "find-network-alignments-b2ecebb7-188",
+          [
+            "NonZeroAgentExitCodeError"
+          ]
+        ],
+        [
+          "find-network-alignments-b2ecebb7-189",
+          [
+            "NonZeroAgentExitCodeError"
+          ]
+        ]
+      ]
+    },
+    {
+      "task": "parameter-golf",
+      "snapshot": "parameter-golf-61e11605-v32",
+      "pair": "claude-code/anthropic/claude-opus-4-8",
+      "valid_now": 4,
+      "need": 1,
+      "inflight": [],
+      "rerun_candidates": [
+        [
+          "parameter-golf-61e11605-437",
+          [
+            "NonZeroAgentExitCodeError"
+          ]
+        ]
+      ]
+    },
+    {
+      "task": "trimul-cuda",
+      "snapshot": "trimul-cuda-fc34aaba-v86",
+      "pair": "claude-code/anthropic/claude-opus-4-8",
+      "valid_now": 4,
+      "need": 1,
+      "inflight": [],
+      "rerun_candidates": [
+        [
+          "trimul-cuda-fc34aaba-566",
+          [
+            "NonZeroAgentExitCodeError"
+          ]
+        ]
+      ]
+    }
+  ],
+  "total_need": 4
+}
