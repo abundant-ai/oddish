@@ -1,0 +1,88 @@
+[
+  {
+    "task_name": "find-network-alignments",
+    "task_id": "find-network-alignments-b2ecebb7",
+    "snapshot_version": "find-network-alignments-b2ecebb7-v5",
+    "pair": "claude-code|anthropic/claude-opus-4-8",
+    "valid_now": 3,
+    "need": 2,
+    "inflight": [],
+    "rerun_candidates": [
+      [
+        "find-network-alignments-b2ecebb7-188",
+        "invalid:NonZeroAgentExitCodeError"
+      ],
+      [
+        "find-network-alignments-b2ecebb7-189",
+        "invalid:NonZeroAgentExitCodeError"
+      ]
+    ],
+    "invalid_excs": [
+      [
+        "find-network-alignments-b2ecebb7-188",
+        [
+          "NonZeroAgentExitCodeError"
+        ],
+        "Agent execution timed out after 18000.0 seconds Ca"
+      ],
+      [
+        "find-network-alignments-b2ecebb7-189",
+        [
+          "NonZeroAgentExitCodeError"
+        ],
+        "Agent execution timed out after 18000.0 seconds Ca"
+      ]
+    ],
+    "terminal_no_reward": []
+  },
+  {
+    "task_name": "parameter-golf",
+    "task_id": "parameter-golf-61e11605",
+    "snapshot_version": "parameter-golf-61e11605-v32",
+    "pair": "claude-code|anthropic/claude-opus-4-8",
+    "valid_now": 4,
+    "need": 1,
+    "inflight": [],
+    "rerun_candidates": [
+      [
+        "parameter-golf-61e11605-437",
+        "invalid:NonZeroAgentExitCodeError"
+      ]
+    ],
+    "invalid_excs": [
+      [
+        "parameter-golf-61e11605-437",
+        [
+          "NonZeroAgentExitCodeError"
+        ],
+        "-"
+      ]
+    ],
+    "terminal_no_reward": []
+  },
+  {
+    "task_name": "trimul-cuda",
+    "task_id": "trimul-cuda-fc34aaba",
+    "snapshot_version": "trimul-cuda-fc34aaba-v86",
+    "pair": "claude-code|anthropic/claude-opus-4-8",
+    "valid_now": 4,
+    "need": 1,
+    "inflight": [],
+    "rerun_candidates": [
+      [
+        "trimul-cuda-fc34aaba-566",
+        "invalid:NonZeroAgentExitCodeError"
+      ]
+    ],
+    "invalid_excs": [
+      [
+        "trimul-cuda-fc34aaba-566",
+        [
+          "NonZeroAgentExitCodeError"
+        ],
+        "-"
+      ]
+    ],
+    "terminal_no_reward": []
+  }
+]
