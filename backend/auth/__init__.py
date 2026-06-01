@@ -11,6 +11,7 @@ from models import APIKeyScope, UserRole, hash_api_key
 from oddish.db import get_session
 from oddish.timing import add_server_timing_metric, elapsed_ms, now
 
+from auth.permissions import can_create_api_keys
 from auth.provisioning import get_or_create_user_from_clerk
 from auth.types import AuthContext, AuthMethod
 from auth.verification import (
@@ -184,6 +185,7 @@ async def get_auth_context(
                     method=cached.method,
                     org_id=cached.org_id,
                     user_id=cached.user_id,
+                    user_email=cached.user_email,
                     user_role=cached.user_role,
                     scope=cached.scope,
                     # Note: org/user ORM objects not included in cached response
@@ -220,6 +222,7 @@ async def get_auth_context(
                         method=AuthMethod.CLERK_JWT,
                         org_id=org.id,
                         user_id=user.id,
+                        user_email=user.email,
                         user_role=user.role,
                         scope=APIKeyScope.FULL,
                     )
@@ -229,6 +232,7 @@ async def get_auth_context(
                         org=org,
                         user_id=user.id,
                         user=user,
+                        user_email=user.email,
                         user_role=user.role,
                         scope=APIKeyScope.FULL,
                     )
@@ -331,11 +335,40 @@ async def require_owner(
     )
 
 
+async def require_api_key_creator(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> AuthContext:
+    """
+    Require a user that may create API keys.
+
+    API key auth is rejected so one key cannot mint another. Legacy DB owners
+    retain access, and admins can create keys only from abundant.ai accounts.
+    """
+    if auth.method == AuthMethod.API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User auth required to create API keys",
+        )
+
+    if can_create_api_keys(auth):
+        return auth
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "API key creation requires an admin with an @abundant.ai email "
+            "or a legacy owner role"
+        ),
+    )
+
+
 __all__ = [
     "APIKeyScope",
     "AuthContext",
     "AuthMethod",
+    "can_create_api_keys",
     "require_admin",
+    "require_api_key_creator",
     "require_auth",
     "require_owner",
     "get_auth_context",

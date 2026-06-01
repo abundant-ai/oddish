@@ -25,6 +25,7 @@ class AuthContext:
     org: OrganizationModel | None = None
     user_id: str | None = None
     user: UserModel | None = None
+    user_email: str | None = None
     user_role: UserRole | None = None
     api_key_id: str | None = None
     api_key: APIKeyModel | None = None
