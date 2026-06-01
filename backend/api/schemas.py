@@ -84,6 +84,12 @@ class APIKeyCreateResponse(BaseModel):
     created_at: str
 
 
+class APIKeyPermissionsResponse(BaseModel):
+    """API key capability flags for the current user."""
+
+    can_create: bool
+
+
 class CreateAPIKeyRequest(BaseModel):
     """Request to create an API key."""
 
