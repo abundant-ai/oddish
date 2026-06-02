@@ -616,8 +616,8 @@ async def _handle_harbor_event(
             # row as soon as Harbor reports it (ENVIRONMENT_START onward).
             # cancel_tasks_runs and cleanup_orphaned_queue_state read
             # worker_jobs.provider / external_id to tear the remote sandbox
-            # down. Idempotent (IS DISTINCT FROM) and RUNNING-guarded so
-            # we only attempt to tear down tasks once
+            # down. Idempotent (IS DISTINCT FROM) and RUNNING-guarded
+            # so we only attempt to save sandbox id once
             if hook_event.environment_external_id:
                 await _session.execute(
                     update(WorkerJobModel)
