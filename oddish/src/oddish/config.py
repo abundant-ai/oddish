@@ -41,6 +41,9 @@ ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 VERDICT_MODEL = "gpt-5.2"
 NOP_ORACLE_QUEUE_KEY = "nop_oracle"
 _NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
+OPENAI_PROVIDER_AZURE = "azure"
+OPENAI_PROVIDER_OPENAI = "openai"
+_OPENAI_PROVIDERS: set[str] = {OPENAI_PROVIDER_AZURE, OPENAI_PROVIDER_OPENAI}
 
 # Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
 # "global.anthropic.claude-haiku-4-5-20251001-v1:0".
@@ -464,10 +467,28 @@ class Settings(BaseSettings):
     # tarball on every click.
     tasks_archive_cache_mb: int = 256
 
+    # OpenAI-family routing. Azure is the enterprise default; public OpenAI
+    # requires explicitly setting ODDISH_OPENAI_PROVIDER=openai.
+    openai_provider: str = OPENAI_PROVIDER_AZURE
+
     # API keys (read from env without ODDISH_ prefix)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
+    azure_openai_api_key: str | None = Field(default=None, alias="AZURE_OPENAI_API_KEY")
+    azure_openai_endpoint: str | None = Field(
+        default=None, alias="AZURE_OPENAI_ENDPOINT"
+    )
+    azure_openai_api_version: str | None = Field(
+        default=None, alias="AZURE_OPENAI_API_VERSION"
+    )
+    azure_openai_deployments: dict[str, str] = Field(default_factory=dict)
+    # Deprecated compatibility field. Runtime routing should use
+    # ODDISH_AZURE_OPENAI_DEPLOYMENTS so each requested model maps to an
+    # explicit Azure deployment.
+    azure_openai_deployment: str | None = Field(
+        default=None, alias="AZURE_OPENAI_DEPLOYMENT"
+    )
 
     # ==========================================================================
     # Helper methods
@@ -476,22 +497,42 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def normalize_model_overrides(self) -> "Settings":
         raw = os.getenv("ODDISH_MODEL_CONCURRENCY_OVERRIDES")
-        if not raw:
-            return self
-        try:
-            parsed = json.loads(raw)
-        except Exception as exc:
-            raise ValueError(
-                "ODDISH_MODEL_CONCURRENCY_OVERRIDES must be valid JSON"
-            ) from exc
-        if not isinstance(parsed, dict):
-            raise ValueError("ODDISH_MODEL_CONCURRENCY_OVERRIDES must be a JSON object")
-        normalized: dict[str, int] = {}
-        for key, value in parsed.items():
-            queue_key = self.normalize_queue_key(str(key))
-            normalized[queue_key] = int(value)
-        self.model_concurrency_overrides = normalized
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except Exception as exc:
+                raise ValueError(
+                    "ODDISH_MODEL_CONCURRENCY_OVERRIDES must be valid JSON"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    "ODDISH_MODEL_CONCURRENCY_OVERRIDES must be a JSON object"
+                )
+            normalized: dict[str, int] = {}
+            for key, value in parsed.items():
+                queue_key = self.normalize_queue_key(str(key))
+                normalized[queue_key] = int(value)
+            self.model_concurrency_overrides = normalized
+
+        self.azure_openai_deployments = self._normalize_azure_openai_deployments(
+            self.azure_openai_deployments
+        )
         return self
+
+    @staticmethod
+    def _normalize_azure_openai_deployments(
+        deployments: dict[str, str],
+    ) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        if not isinstance(deployments, dict):
+            raise ValueError("ODDISH_AZURE_OPENAI_DEPLOYMENTS must be a JSON object")
+        for key, value in deployments.items():
+            model_key = normalize_model_id(str(key))
+            deployment = str(value).strip()
+            if not model_key or not deployment:
+                continue
+            normalized[model_key] = deployment
+        return normalized
 
     def get_provider_for_agent(self, agent: str) -> str:
         """Return provider for agent (with prefix matching fallback)."""
@@ -599,6 +640,163 @@ class Settings(BaseSettings):
         }
         keys.update(self.model_concurrency_overrides.keys())
         return keys
+
+    def get_openai_provider(self) -> str:
+        provider = self.openai_provider.strip().lower()
+        if provider not in _OPENAI_PROVIDERS:
+            allowed = ", ".join(sorted(_OPENAI_PROVIDERS))
+            raise ValueError(
+                f"ODDISH_OPENAI_PROVIDER must be one of: {allowed}. "
+                f"Got {self.openai_provider!r}."
+            )
+        return provider
+
+    def get_public_openai_warning(self) -> str:
+        return (
+            "ODDISH_OPENAI_PROVIDER=openai routes OpenAI-family jobs to the "
+            "public OpenAI API. Azure OpenAI is the default for enterprise "
+            "deployments."
+        )
+
+    def require_azure_openai_config(self) -> dict[str, str]:
+        missing = [
+            name
+            for name, value in {
+                "AZURE_OPENAI_API_KEY": self.azure_openai_api_key,
+                "AZURE_OPENAI_ENDPOINT": self.azure_openai_endpoint,
+                "AZURE_OPENAI_API_VERSION": self.azure_openai_api_version,
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                "Azure OpenAI is the default OpenAI-family provider. "
+                f"Set {', '.join(missing)} or explicitly set "
+                "ODDISH_OPENAI_PROVIDER=openai to use the public OpenAI API."
+            )
+        return {
+            "api_key": self.azure_openai_api_key or "",
+            "endpoint": self.azure_openai_endpoint or "",
+            "api_version": self.azure_openai_api_version or "",
+        }
+
+    def resolve_azure_openai_deployment(self, model: str | None) -> str:
+        normalized = normalize_model_id(model)
+        if not normalized:
+            raise ValueError(
+                "Azure OpenAI routing requires an OpenAI model id. Set a model "
+                "such as 'openai/gpt-5.2' and add it to "
+                "ODDISH_AZURE_OPENAI_DEPLOYMENTS."
+            )
+
+        lookup_keys = [normalized]
+        if normalized.startswith("openai/"):
+            lookup_keys.append(normalized.split("/", 1)[1])
+        elif "/" not in normalized:
+            lookup_keys.append(f"openai/{normalized}")
+
+        for key in lookup_keys:
+            deployment = self.azure_openai_deployments.get(key)
+            if deployment:
+                return deployment
+
+        examples = "', '".join(lookup_keys)
+        raise ValueError(
+            f"No Azure OpenAI deployment mapping for OpenAI model {normalized!r}. "
+            "Set ODDISH_AZURE_OPENAI_DEPLOYMENTS to a JSON object with a key "
+            f"for '{examples}'."
+        )
+
+    def get_azure_openai_base_url(self) -> str:
+        """Return the OpenAI-compatible Azure OpenAI v1 base URL.
+
+        Foundry project endpoints are for project/agent APIs. Oddish Harbor
+        jobs use the OpenAI SDK path, so configure the Azure OpenAI endpoint
+        shown for the deployment, typically ``*.openai.azure.com/openai/v1``.
+        """
+        azure = self.require_azure_openai_config()
+        endpoint = azure["endpoint"].rstrip("/")
+        if "/api/projects/" in endpoint:
+            raise RuntimeError(
+                "AZURE_OPENAI_ENDPOINT must be the OpenAI-compatible Azure "
+                "OpenAI endpoint, such as "
+                "'https://YOUR-RESOURCE.openai.azure.com/openai/v1'. "
+                "Do not use the Foundry project endpoint "
+                "'https://YOUR-RESOURCE.services.ai.azure.com/api/projects/...'."
+            )
+        if endpoint.endswith("/openai/v1"):
+            return endpoint
+        if "/openai/" in endpoint:
+            return endpoint
+        return f"{endpoint}/openai/v1"
+
+    def require_public_openai_config(
+        self, api_key: str | None = None
+    ) -> dict[str, str]:
+        key = api_key or self.openai_api_key
+        if not key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is required when "
+                "ODDISH_OPENAI_PROVIDER=openai. Azure OpenAI is the default; "
+                "set AZURE_OPENAI_* values to use Azure instead."
+            )
+        return {"api_key": key}
+
+    def get_openai_runtime_env(
+        self, *, model: str | None = None, api_key: str | None = None
+    ) -> dict[str, str]:
+        """Return process env vars for OpenAI-family provider clients.
+
+        In Azure mode this intentionally does not set ``OPENAI_API_KEY``.
+        If a downstream tool ignores Azure endpoint variables, failing closed is
+        safer than sending task data to the public OpenAI API with an Azure key.
+        """
+        if self.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
+            public = self.require_public_openai_config(api_key=api_key)
+            return {"OPENAI_API_KEY": public["api_key"]}
+
+        azure = self.require_azure_openai_config()
+        deployment = self.resolve_azure_openai_deployment(model)
+        return {
+            "AZURE_OPENAI_API_KEY": azure["api_key"],
+            "AZURE_OPENAI_ENDPOINT": azure["endpoint"],
+            "AZURE_OPENAI_API_VERSION": azure["api_version"],
+            "AZURE_OPENAI_DEPLOYMENT": deployment,
+            # The OpenAI Python SDK reads OPENAI_API_VERSION for Azure clients;
+            # keep the Azure-prefixed name too for tools that prefer it.
+            "OPENAI_API_VERSION": azure["api_version"],
+            "OPENAI_API_TYPE": "azure",
+        }
+
+    def get_openai_agent_env(
+        self, *, model: str | None = None, api_key: str | None = None
+    ) -> dict[str, str]:
+        """Return env vars for OpenAI-family Harbor agents."""
+        if self.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
+            return self.get_openai_runtime_env(api_key=api_key)
+
+        azure = self.require_azure_openai_config()
+        deployment = self.resolve_azure_openai_deployment(model)
+        base_url = self.get_azure_openai_base_url()
+        return {
+            # Codex CLI expects OpenAI-compatible names and writes these into
+            # its sandbox-local auth/config files.
+            "OPENAI_API_KEY": azure["api_key"],
+            "OPENAI_BASE_URL": base_url,
+            # Harbor/LiteLLM-style Azure names for agents that support the
+            # explicit azure provider route.
+            "AZURE_API_KEY": azure["api_key"],
+            "AZURE_API_BASE": base_url,
+            "AZURE_API_VERSION": azure["api_version"],
+            # Azure OpenAI SDK-style names for agent implementations that use
+            # the official Python client directly.
+            "AZURE_OPENAI_API_KEY": azure["api_key"],
+            "AZURE_OPENAI_ENDPOINT": azure["endpoint"],
+            "AZURE_OPENAI_API_VERSION": azure["api_version"],
+            "AZURE_OPENAI_DEPLOYMENT": deployment,
+            "OPENAI_API_VERSION": azure["api_version"],
+            "OPENAI_API_TYPE": "azure",
+        }
 
 
 settings = Settings()
