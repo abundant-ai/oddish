@@ -4,16 +4,16 @@ task                           n_trial  new multi  pairs (n)
   find-network-alignments             73    8  True  claude-code/claude-opus-4-8=3, gemini-cli/gemini-3.5-flash=5
   jax-pytorch-rewrite                 75   10  True  claude-code/claude-opus-4-8=5, gemini-cli/gemini-3.5-flash=5
   kubernetes-rust-rewrite             75   10  True  claude-code/claude-opus-4-8=5, gemini-cli/gemini-3.5-flash=5
-  nextjs-vite-rewrite                 70    5  True  gemini-cli/gemini-3.5-flash=5
+  nextjs-vite-rewrite                 75   10  True  claude-code/claude-opus-4-8=5, gemini-cli/gemini-3.5-flash=5
   parameter-golf                      74    9  True  claude-code/claude-opus-4-8=4, gemini-cli/gemini-3.5-flash=5
   ruby-rust-port                      75   10  True  claude-code/claude-opus-4-8=5, gemini-cli/gemini-3.5-flash=5
   rust-c-compiler                     75   10  True  claude-code/claude-opus-4-8=5, gemini-cli/gemini-3.5-flash=5
   rust-java-lsp                       75   10  True  claude-code/claude-opus-4-8=5, gemini-cli/gemini-3.5-flash=5
   stripe-clone                        75   10  True  claude-code/claude-opus-4-8=5, gemini-cli/gemini-3.5-flash=5
-  trimul-cuda                         73    9  True  claude-code/claude-opus-4-8=4, gemini-cli/gemini-3.5-flash=5
+  trimul-cuda                         74    9  True  claude-code/claude-opus-4-8=4, gemini-cli/gemini-3.5-flash=5
   vliw-kernel-optimization            75   10  True  claude-code/claude-opus-4-8=5, gemini-cli/gemini-3.5-flash=5
   wasm-simd                           75   10  True  claude-code/claude-opus-4-8=5, gemini-cli/gemini-3.5-flash=5
   zstd-decoder                        75   10 False  claude-code/claude-opus-4-8=5, gemini-cli/gemini-3.5-flash=5
 
-Total new cd4dd88f entries across all targets: 141
+Total new cd4dd88f entries across all targets: 146
 OVERALL: OK

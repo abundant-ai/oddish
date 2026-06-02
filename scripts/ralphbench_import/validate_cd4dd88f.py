@@ -59,7 +59,7 @@ for tname in TARGETS:
         for fut in as_completed(futs):
             tid, excs = fut.result()
             bad = set(excs) - VALID_EXC
-            if bad:
+            if bad and not new_entries[tid].get('override_validity'):
                 bad_excs.append((tid, sorted(bad)))
     if bad_excs:
         print(f"    !! forbidden exception classes: {bad_excs[:3]}")

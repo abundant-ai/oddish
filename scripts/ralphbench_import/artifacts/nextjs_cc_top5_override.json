@@ -1,0 +1,430 @@
+{
+  "task_id": "nextjs-vite-rewrite-b0d028b0",
+  "task_name": "nextjs-vite-rewrite",
+  "task_hash": "b0d028b0",
+  "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12",
+  "all_candidates": [
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-280",
+      "reward": 0.0,
+      "attempts": 6,
+      "max_attempts": 6,
+      "started_at": "2026-05-31T12:56:36.220444+00:00",
+      "finished_at": "2026-05-31T16:14:07.586633+00:00",
+      "input_tokens": 45958649,
+      "cache_tokens": 43238988,
+      "output_tokens": 512639,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-280",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-280/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__6TprCGZ",
+      "total_bytes": 96811123,
+      "n_files": 181,
+      "trajectory_bytes": 11426238,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__6TprCGZ"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    },
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-281",
+      "reward": 0.0,
+      "attempts": 1,
+      "max_attempts": 6,
+      "started_at": "2026-05-30T19:05:42.801378+00:00",
+      "finished_at": "2026-05-30T21:53:35.095599+00:00",
+      "input_tokens": 33967256,
+      "cache_tokens": 31296388,
+      "output_tokens": 615891,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-281",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-281/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__2NpLA8k",
+      "total_bytes": 24726847,
+      "n_files": 38,
+      "trajectory_bytes": 10590354,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__2NpLA8k"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    },
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-279",
+      "reward": 0.0,
+      "attempts": 1,
+      "max_attempts": 6,
+      "started_at": "2026-05-30T19:05:42.282440+00:00",
+      "finished_at": "2026-05-30T20:02:55.429765+00:00",
+      "input_tokens": 19349899,
+      "cache_tokens": 17819216,
+      "output_tokens": 130987,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-279",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-279/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__3kPjqGf",
+      "total_bytes": 19318168,
+      "n_files": 31,
+      "trajectory_bytes": 10318342,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__3kPjqGf"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    },
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-277",
+      "reward": 0.0,
+      "attempts": 4,
+      "max_attempts": 6,
+      "started_at": "2026-05-31T01:05:42.159304+00:00",
+      "finished_at": "2026-05-31T02:25:54.789853+00:00",
+      "input_tokens": 17926888,
+      "cache_tokens": 16645315,
+      "output_tokens": 270684,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-277",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-277/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__aYdnwcW",
+      "total_bytes": 66669907,
+      "n_files": 116,
+      "trajectory_bytes": 9218860,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__aYdnwcW"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    },
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-286",
+      "reward": 0.0,
+      "attempts": 4,
+      "max_attempts": 6,
+      "started_at": "2026-05-31T00:17:48.311267+00:00",
+      "finished_at": "2026-05-31T01:34:32.002461+00:00",
+      "input_tokens": 26184925,
+      "cache_tokens": 24788639,
+      "output_tokens": 176850,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-286",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-286/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__kcmuE55",
+      "total_bytes": 52263862,
+      "n_files": 106,
+      "trajectory_bytes": 8954325,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__kcmuE55"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    },
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-283",
+      "reward": 0.0,
+      "attempts": 1,
+      "max_attempts": 6,
+      "started_at": "2026-05-30T19:05:43.190088+00:00",
+      "finished_at": "2026-05-30T21:13:30.554943+00:00",
+      "input_tokens": 27801361,
+      "cache_tokens": 25974817,
+      "output_tokens": 300139,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-283",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-283/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__3kmSfCw",
+      "total_bytes": 18972130,
+      "n_files": 36,
+      "trajectory_bytes": 8751875,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__3kmSfCw"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    },
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-282",
+      "reward": 0.0,
+      "attempts": 1,
+      "max_attempts": 6,
+      "started_at": "2026-05-30T19:05:42.877853+00:00",
+      "finished_at": "2026-05-30T20:53:44.749479+00:00",
+      "input_tokens": 28062082,
+      "cache_tokens": 26286384,
+      "output_tokens": 370143,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-282",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-282/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__JxGdYtK",
+      "total_bytes": 17907408,
+      "n_files": 36,
+      "trajectory_bytes": 8095945,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__JxGdYtK"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    },
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-285",
+      "reward": 0.0,
+      "attempts": 2,
+      "max_attempts": 6,
+      "started_at": "2026-05-30T20:54:03.199905+00:00",
+      "finished_at": "2026-05-30T23:06:03.553120+00:00",
+      "input_tokens": 28578581,
+      "cache_tokens": 26953291,
+      "output_tokens": 260507,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-285",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-285/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__fYZewt8",
+      "total_bytes": 32970129,
+      "n_files": 68,
+      "trajectory_bytes": 7585997,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__fYZewt8"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    },
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-284",
+      "reward": 0.0,
+      "attempts": 2,
+      "max_attempts": 6,
+      "started_at": "2026-05-30T20:20:42.975317+00:00",
+      "finished_at": "2026-05-30T21:54:10.688401+00:00",
+      "input_tokens": 21585932,
+      "cache_tokens": 20562813,
+      "output_tokens": 318313,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-284",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-284/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__6NEG7dV",
+      "total_bytes": 26932066,
+      "n_files": 54,
+      "trajectory_bytes": 6697419,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__6NEG7dV"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    },
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-278",
+      "reward": 0.0,
+      "attempts": 2,
+      "max_attempts": 6,
+      "started_at": "2026-05-30T20:56:43.768599+00:00",
+      "finished_at": "2026-05-30T21:55:32.840636+00:00",
+      "input_tokens": 17025827,
+      "cache_tokens": 16191114,
+      "output_tokens": 204857,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-278",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-278/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__eRvkt3A",
+      "total_bytes": 22289184,
+      "n_files": 53,
+      "trajectory_bytes": 5727549,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__eRvkt3A"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    }
+  ],
+  "top_5_picks": [
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-280",
+      "reward": 0.0,
+      "attempts": 6,
+      "max_attempts": 6,
+      "started_at": "2026-05-31T12:56:36.220444+00:00",
+      "finished_at": "2026-05-31T16:14:07.586633+00:00",
+      "input_tokens": 45958649,
+      "cache_tokens": 43238988,
+      "output_tokens": 512639,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-280",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-280/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__6TprCGZ",
+      "total_bytes": 96811123,
+      "n_files": 181,
+      "trajectory_bytes": 11426238,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__6TprCGZ"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    },
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-281",
+      "reward": 0.0,
+      "attempts": 1,
+      "max_attempts": 6,
+      "started_at": "2026-05-30T19:05:42.801378+00:00",
+      "finished_at": "2026-05-30T21:53:35.095599+00:00",
+      "input_tokens": 33967256,
+      "cache_tokens": 31296388,
+      "output_tokens": 615891,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-281",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-281/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__2NpLA8k",
+      "total_bytes": 24726847,
+      "n_files": 38,
+      "trajectory_bytes": 10590354,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__2NpLA8k"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    },
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-279",
+      "reward": 0.0,
+      "attempts": 1,
+      "max_attempts": 6,
+      "started_at": "2026-05-30T19:05:42.282440+00:00",
+      "finished_at": "2026-05-30T20:02:55.429765+00:00",
+      "input_tokens": 19349899,
+      "cache_tokens": 17819216,
+      "output_tokens": 130987,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-279",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-279/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__3kPjqGf",
+      "total_bytes": 19318168,
+      "n_files": 31,
+      "trajectory_bytes": 10318342,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__3kPjqGf"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    },
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-277",
+      "reward": 0.0,
+      "attempts": 4,
+      "max_attempts": 6,
+      "started_at": "2026-05-31T01:05:42.159304+00:00",
+      "finished_at": "2026-05-31T02:25:54.789853+00:00",
+      "input_tokens": 17926888,
+      "cache_tokens": 16645315,
+      "output_tokens": 270684,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-277",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-277/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__aYdnwcW",
+      "total_bytes": 66669907,
+      "n_files": 116,
+      "trajectory_bytes": 9218860,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__aYdnwcW"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    },
+    {
+      "trial_id": "nextjs-vite-rewrite-b0d028b0-286",
+      "reward": 0.0,
+      "attempts": 4,
+      "max_attempts": 6,
+      "started_at": "2026-05-31T00:17:48.311267+00:00",
+      "finished_at": "2026-05-31T01:34:32.002461+00:00",
+      "input_tokens": 26184925,
+      "cache_tokens": 24788639,
+      "output_tokens": 176850,
+      "cost_usd": null,
+      "source_trial_name": "nextjs-vite-rewrite-286",
+      "src_prefix": "tasks/nextjs-vite-rewrite-b0d028b0/trials/nextjs-vite-rewrite-b0d028b0-286/",
+      "canonical_attempt": "task-nextjs-vite-rewrite-b0d028b__kcmuE55",
+      "total_bytes": 52263862,
+      "n_files": 106,
+      "trajectory_bytes": 8954325,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "reward_stats": {
+        "0.0": [
+          "task-nextjs-vite-rewrite-b0d028b__kcmuE55"
+        ]
+      },
+      "error_message": "Command failed (exit 143): export PATH=\"/opt/harbor-agent-tools/bin:/usr/local/bin:$PATH\"; export PATH=\"$HOME/.local/bin:$PATH\"; claude --verbose --output-forma",
+      "task_version_id": "nextjs-vite-rewrite-b0d028b0-v12"
+    }
+  ]
+}

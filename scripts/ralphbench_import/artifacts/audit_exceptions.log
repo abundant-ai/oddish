@@ -1,0 +1,13 @@
+Trials uploaded by this PR: {'cd8c33d8': 272, 'cd4dd88f': 145}
+Forbidden-exception trials WITH override flag (intentional): 5
+  - nextjs-vite-rewrite/nextjs-vite-rewrite-b0d028b0-277  excs=['NonZeroAgentExitCodeError']
+      reason: User-explicit override (Tue 2026-06-02): user accepted NonZeroAgentExitCodeError trials for this one cell because all 10 cd4dd88f SUCCESS+numeric_reward candida
+  - nextjs-vite-rewrite/nextjs-vite-rewrite-b0d028b0-279  excs=['NonZeroAgentExitCodeError']
+      reason: User-explicit override (Tue 2026-06-02): user accepted NonZeroAgentExitCodeError trials for this one cell because all 10 cd4dd88f SUCCESS+numeric_reward candida
+  - nextjs-vite-rewrite/nextjs-vite-rewrite-b0d028b0-286  excs=['NonZeroAgentExitCodeError']
+      reason: User-explicit override (Tue 2026-06-02): user accepted NonZeroAgentExitCodeError trials for this one cell because all 10 cd4dd88f SUCCESS+numeric_reward candida
+  - nextjs-vite-rewrite/nextjs-vite-rewrite-b0d028b0-280  excs=['NonZeroAgentExitCodeError']
+      reason: User-explicit override (Tue 2026-06-02): user accepted NonZeroAgentExitCodeError trials for this one cell because all 10 cd4dd88f SUCCESS+numeric_reward candida
+  - nextjs-vite-rewrite/nextjs-vite-rewrite-b0d028b0-281  excs=['NonZeroAgentExitCodeError']
+      reason: User-explicit override (Tue 2026-06-02): user accepted NonZeroAgentExitCodeError trials for this one cell because all 10 cd4dd88f SUCCESS+numeric_reward candida
+Forbidden-exception trials WITHOUT override flag: 0
