@@ -96,6 +96,19 @@ def test_bedrock_queue_key_normalization_collapses_aliases(monkeypatch):
     assert settings.normalize_queue_key(f"bedrock/{expected}") == expected
 
 
+def test_openrouter_claude_model_routes_through_openrouter(monkeypatch):
+    settings = _settings(monkeypatch)
+
+    # An explicit openrouter/ prefix must pin the trial to OpenRouter instead
+    # of being rewritten to a Bedrock inference-profile id.
+    model = "openrouter/anthropic/claude-opus-4.8"
+
+    assert settings.normalize_trial_model("claude-code", model) == model
+    assert settings.get_provider_for_trial("claude-code", model) == "openrouter"
+    assert settings.get_queue_key_for_trial("claude-code", model) == model
+    assert settings.normalize_queue_key(model) == model
+
+
 def test_legacy_unmapped_claude_queue_key_does_not_break_reads(monkeypatch):
     settings = _settings(monkeypatch)
     legacy_key = "anthropic/claude-sonnet-4-6-20250514"

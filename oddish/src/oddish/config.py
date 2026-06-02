@@ -133,6 +133,9 @@ def to_bedrock_model_id(model: str | None) -> str | None:
 
       * ``None`` / blank -> returned unchanged
       * non-Claude models (``openai/...``, ``gemini-...``) -> returned unchanged
+      * an explicit non-Anthropic provider prefix (``openrouter/...``, etc.) ->
+        returned unchanged so it runs through that provider, even when the rest
+        of the id mentions Claude (``openrouter/anthropic/claude-opus-4.8``)
       * ARNs and inference-profile ids -> returned as-is (minus any leading
         ``bedrock/`` prefix)
       * everything else containing "claude" (``anthropic/claude-...``, bare
@@ -159,6 +162,17 @@ def to_bedrock_model_id(model: str | None) -> str | None:
     if any(lowered.startswith(p) for p in _BEDROCK_REGION_PREFIXES) and (
         ".anthropic." in lowered
     ):
+        return stripped
+
+    # An explicit non-Anthropic provider prefix means the caller has chosen a
+    # specific transport (e.g. "openrouter/anthropic/claude-opus-4.8" must run
+    # through OpenRouter, not Bedrock). Honor it and pass the id through; only
+    # bare Claude ids and the "anthropic/"/"claude/" routes get Bedrock-mapped.
+    provider_prefix, _ = split_provider_model_name(stripped)
+    if provider_prefix and provider_prefix.strip().lower() not in {
+        "anthropic",
+        "claude",
+    }:
         return stripped
 
     # Resolve everything else through the table, keyed by the lowercased id
