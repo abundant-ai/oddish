@@ -149,8 +149,6 @@ async def cancel_tasks_runs(
     )
 
     modal_fc_ids: list[str] = []
-    # (provider, external_id) for every cancelled row that named a remote
-    # sandbox; deduped and terminated best-effort below.
     worker_targets: set[tuple[str, str]] = set()
     canceled_trial_kinds: set[str] = set()
     canceled_verdict_task_ids: set[str] = set()
@@ -225,14 +223,13 @@ async def cancel_tasks_runs(
 
     await session.flush()
 
-    # Tear down the remote sandboxes for everything we just cancelled.
-    # Best-effort and concurrent: ``cancel_job_by_worker`` never raises,
-    # so a dead sandbox can't block the others or the cancel response.
     sandboxes_terminated = 0
     if worker_targets:
         results = await asyncio.gather(
-            *(cancel_job_by_worker(provider, external_id)
-              for provider, external_id in worker_targets)
+            *(
+                cancel_job_by_worker(provider, external_id)
+                for provider, external_id in worker_targets
+            )
         )
         sandboxes_terminated = sum(1 for ok in results if ok)
 

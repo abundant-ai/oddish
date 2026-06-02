@@ -1091,10 +1091,8 @@ async def cancel_job_by_worker(
             )
             return False
     except Exception:
-        # Hanging-sandbox cleanup is best-effort: the DB row is already
-        # terminal, so a failed remote teardown must not crash the cancel
-        # / reap loop. Log and let the provider's own auto-stop / TTL be
-        # the backstop.
+        # Hanging-sandbox cleanup is best-effort: the DB row is already terminal.
+        # Don't raise an exception, log and let the provider's auto-stop / TTL be backstop.
         logger.exception(
             "cancel_job_by_worker: failed to terminate %s sandbox %s",
             provider,

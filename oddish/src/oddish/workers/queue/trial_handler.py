@@ -612,14 +612,12 @@ async def _handle_harbor_event(
             console.print(f"[dim]Trial {trial_id} event: {event.value}[/dim]")
             trial.heartbeat_at = utcnow()
 
-            # Stamp the sandbox identity onto the trial's RUNNING worker_jobs
+            # Upload sandbox id onto the trial's RUNNING worker_jobs
             # row as soon as Harbor reports it (ENVIRONMENT_START onward).
             # cancel_tasks_runs and cleanup_orphaned_queue_state read
             # worker_jobs.provider / external_id to tear the remote sandbox
-            # down; without this write those columns stay NULL and every
-            # sandbox is invisible to teardown. Idempotent (IS DISTINCT FROM)
-            # and RUNNING-guarded so a late event can't resurrect a terminal
-            # row or overwrite the id after a clean exit.
+            # down. Idempotent (IS DISTINCT FROM) and RUNNING-guarded so
+            # we only attempt to tear down tasks once
             if hook_event.environment_external_id:
                 await _session.execute(
                     update(WorkerJobModel)

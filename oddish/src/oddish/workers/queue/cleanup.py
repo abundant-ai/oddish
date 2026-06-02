@@ -217,10 +217,6 @@ async def cleanup_orphaned_queue_state(
         # the stale rows we just reaped, so the cost is O(stale) not
         # O(table).
         stale_trial_ids: list[str] = []
-        # (provider, external_id) of the sandboxes whose workers crashed
-        # without tearing them down; terminated best-effort after the
-        # mirror pass. Reaped rows are retried on a fresh sandbox, so the
-        # orphaned one must die regardless of RETRYING vs FAILED.
         worker_targets: set[tuple[str, str]] = set()
         for row in stale_rows:
             if row["new_status"] == "RETRYING":
@@ -329,14 +325,15 @@ async def cleanup_orphaned_queue_state(
 
         await session.flush()
 
-        # Kill the orphaned sandboxes whose workers crashed without
-        # tearing them down. Best-effort and concurrent: a dead sandbox
-        # can't block the rest of the reap, and the provider's auto-stop
-        # / auto-delete TTL is the final backstop if this fails.
+        # Kill the orphaned sandboxes whose workers crashed
+        # Best-effort and concurrent: a dead sandbox can't block the rest of the reap,
+        # and the provider's auto-stop / auto-delete TTL is backstop if this fails.
         if worker_targets:
             results = await asyncio.gather(
-                *(cancel_job_by_worker(provider, external_id)
-                  for provider, external_id in worker_targets)
+                *(
+                    cancel_job_by_worker(provider, external_id)
+                    for provider, external_id in worker_targets
+                )
             )
             worker_sandboxes_terminated = sum(1 for ok in results if ok)
 
