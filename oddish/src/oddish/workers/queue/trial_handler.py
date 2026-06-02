@@ -14,7 +14,7 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
-from sqlalchemy import text
+from sqlalchemy import update
 
 from oddish.config import settings
 from oddish.db import (
@@ -24,6 +24,8 @@ from oddish.db import (
     TaskStatus,
     TaskVersionModel,
     TrialStatus,
+    WorkerJobModel,
+    WorkerJobStatus,
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
@@ -620,22 +622,19 @@ async def _handle_harbor_event(
             # row or overwrite the id after a clean exit.
             if hook_event.environment_external_id:
                 await _session.execute(
-                    text(
-                        """
-                        UPDATE worker_jobs
-                        SET    provider = :provider,
-                               external_id = :external_id
-                        WHERE  subject_table = 'trials'
-                          AND  subject_id = :trial_id
-                          AND  status::text = 'RUNNING'
-                          AND  external_id IS DISTINCT FROM :external_id
-                        """
-                    ),
-                    {
-                        "provider": hook_event.environment_provider,
-                        "external_id": hook_event.environment_external_id,
-                        "trial_id": trial_id,
-                    },
+                    update(WorkerJobModel)
+                    .where(
+                        WorkerJobModel.subject_table == "trials",
+                        WorkerJobModel.subject_id == trial_id,
+                        WorkerJobModel.status == WorkerJobStatus.RUNNING,
+                        WorkerJobModel.external_id.is_distinct_from(
+                            hook_event.environment_external_id
+                        ),
+                    )
+                    .values(
+                        provider=hook_event.environment_provider,
+                        external_id=hook_event.environment_external_id,
+                    )
                 )
 
             # Update database based on event type

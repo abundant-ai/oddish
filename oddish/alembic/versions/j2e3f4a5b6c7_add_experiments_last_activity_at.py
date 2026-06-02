@@ -35,12 +35,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Guarded so this is a no-op on a fresh DB, where 000_initial_schema's
-    # ``Base.metadata.create_all`` already created the column from the live
-    # model. Matches the IF NOT EXISTS pattern used by the other migrations.
-    op.execute(
-        "ALTER TABLE experiments "
-        "ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMP WITH TIME ZONE"
+    op.add_column(
+        "experiments",
+        sa.Column(
+            "last_activity_at",
+            sa.DateTime(timezone=True),
+            nullable=True,
+        ),
     )
 
     # One-shot backfill. Greatest-of(latest task created_at via the

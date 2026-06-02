@@ -1045,6 +1045,7 @@ async def build_task_status_responses_from_counts(
         for task in tasks
     ]
 
+
 async def cancel_job_by_worker(
     provider: str | None,
     external_id: str | None,
@@ -1065,6 +1066,9 @@ async def cancel_job_by_worker(
 
     provider = provider.lower()
     try:
+        # import would crash every one of those processes; importing here
+        # keeps the teardown deps confined to the worker context that
+        # actually has them installed.
         if provider == "modal":
             import modal
 
@@ -1098,8 +1102,5 @@ async def cancel_job_by_worker(
         )
         return False
 
-    logger.info(
-        "cancel_job_by_worker: terminated %s sandbox %s", provider, external_id
-    )
+    logger.info("cancel_job_by_worker: terminated %s sandbox %s", provider, external_id)
     return True
-

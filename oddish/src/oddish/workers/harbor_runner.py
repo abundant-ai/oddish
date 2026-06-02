@@ -25,7 +25,7 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialHookEvent
 from harbor.models.job.result import JobResult
 
-from oddish.config import settings, to_bedrock_model_id
+from oddish.config import to_bedrock_model_id
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 
@@ -659,20 +659,6 @@ async def run_harbor_trial_async(
         # well-formed HarborOutcome instead of a bare exception.
         env_config = hc.environment.model_copy()
         env_config.type = environment
-
-        # Daytona auto-cleanup backstop: stop idle sandboxes and delete
-        # them after a stopped grace period so any that escape explicit
-        # teardown (worker crash, lost worker_jobs row) self-destruct.
-        # The factory spreads ``env_config.kwargs`` into the
-        # DaytonaEnvironment constructor, so these map straight onto its
-        # ``auto_stop_interval_mins`` / ``auto_delete_interval_mins`` args.
-        # Merge so an explicit ``--ek`` override still wins.
-        if environment == EnvironmentType.DAYTONA:
-            env_config.kwargs = {
-                "auto_stop_interval_mins": settings.daytona_auto_stop_interval_mins,
-                "auto_delete_interval_mins": settings.daytona_auto_delete_interval_mins,
-                **env_config.kwargs,
-            }
 
         agent_config = _build_agent_config(
             agent=agent,
