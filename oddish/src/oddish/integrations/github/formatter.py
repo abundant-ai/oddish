@@ -127,6 +127,24 @@ def _progress_bar(completed: int, total: int) -> str:
     return f"`{bar}` {pct}%"
 
 
+def _performance_line(trials: list[TrialSummary]) -> str | None:
+    """Aggregate pass-rate across completed trials.
+
+    Returns ``None`` when no trial has finished yet (nothing to report) so
+    callers can omit the line entirely while the run is still queued.
+    """
+    completed = [t for t in trials if t.status in ("success", "failed")]
+    if not completed:
+        return None
+    passed = sum(1 for t in completed if t.reward == 1.0)
+    partial = sum(1 for t in completed if t.reward is not None and 0.0 < t.reward < 1.0)
+    pct = passed * 100 // len(completed)
+    line = f"**Performance:** {passed}/{len(completed)} trials passed ({pct}%)"
+    if partial:
+        line += f" \u2022 {partial} partial"
+    return line
+
+
 # ---------------------------------------------------------------------------
 # Single-task comment
 # ---------------------------------------------------------------------------
@@ -175,6 +193,11 @@ def format_task_comment(
         )
     else:
         lines.append(f"### \u23f3 Queued ({total} trials)")
+
+    perf = _performance_line(task.trials)
+    if perf:
+        lines.append("")
+        lines.append(perf)
 
     lines.append("")
 
@@ -303,6 +326,11 @@ def format_experiment_comment(
             f"### \u23f3 Queued ({total_trials} trials across {total_tasks} tasks)"
         )
 
+    perf = _performance_line([trial for t in tasks for trial in t.trials])
+    if perf:
+        lines.append("")
+        lines.append(perf)
+
     lines.append("")
 
     if any(t.verdict_status for t in tasks):
@@ -341,12 +369,18 @@ def format_experiment_comment(
         "Analysis of agent trajectories including baseline validation and outcome classification."
     )
     lines.append("")
-    lines.append("| Task | Agent | Model | Attempt | Classification | Analysis |")
-    lines.append("|------|-------|-------|---------|----------------|----------|")
+    lines.append(
+        "| Task | Agent | Model | Attempt | Status | Reward | Classification | Analysis |"
+    )
+    lines.append(
+        "|------|-------|-------|---------|--------|--------|----------------|----------|"
+    )
 
     for task in tasks:
         for trial in task.trials:
             model_str = trial.model or "-"
+            status_str = _trial_status_cell(trial)
+            reward_str = _format_reward(trial.reward)
             classification_str = _classification_label(
                 trial.classification, trial.subtype
             )
@@ -355,7 +389,8 @@ def format_experiment_comment(
 
             lines.append(
                 f"| {task.task_name} | {trial.agent} | {model_str} | "
-                f"{trial_link} | {classification_str} | {analysis_str} |"
+                f"{trial_link} | {status_str} | {reward_str} | "
+                f"{classification_str} | {analysis_str} |"
             )
 
     lines.append("")
