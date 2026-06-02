@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import heapq
 import json
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,9 @@ from oddish.schemas import (
     TrialResponse,
     VisibleWorkerJob,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_trial_cost(
@@ -1040,3 +1044,62 @@ async def build_task_status_responses_from_counts(
         )
         for task in tasks
     ]
+
+async def cancel_job_by_worker(
+    provider: str | None,
+    external_id: str | None,
+) -> bool:
+    """Best-effort terminate the remote sandbox backing a hanging job.
+
+    Dispatches on the worker's ``provider`` (``"modal"`` / ``"daytona"``,
+    matching ``harbor``'s ``provider_name``) and tears down the sandbox
+    identified by ``external_id``. Cancellation paths call this for rows
+    they have already marked terminal in the DB, so it never raises into
+    the caller -- failures are logged and reported via the return value.
+
+    Returns ``True`` when a terminate/delete call was issued successfully,
+    ``False`` when there was nothing to do or the teardown failed.
+    """
+    if not provider or not external_id:
+        return False
+
+    provider = provider.lower()
+    try:
+        if provider == "modal":
+            import modal
+
+            sandbox = await modal.Sandbox.from_id.aio(external_id)
+            await sandbox.terminate.aio()
+        elif provider == "daytona":
+            from daytona import AsyncDaytona
+
+            client = AsyncDaytona()
+            try:
+                sandbox = await client.get(external_id)
+                await client.delete(sandbox)
+            finally:
+                await client.close()
+        else:
+            logger.warning(
+                "cancel_job_by_worker: unknown provider %r (external_id=%s)",
+                provider,
+                external_id,
+            )
+            return False
+    except Exception:
+        # Hanging-sandbox cleanup is best-effort: the DB row is already
+        # terminal, so a failed remote teardown must not crash the cancel
+        # / reap loop. Log and let the provider's own auto-stop / TTL be
+        # the backstop.
+        logger.exception(
+            "cancel_job_by_worker: failed to terminate %s sandbox %s",
+            provider,
+            external_id,
+        )
+        return False
+
+    logger.info(
+        "cancel_job_by_worker: terminated %s sandbox %s", provider, external_id
+    )
+    return True
+

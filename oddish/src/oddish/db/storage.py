@@ -58,6 +58,13 @@ def extract_s3_key_from_path(path: str | None) -> str | None:
 def _validate_task_archive_members(
     members: list[tarfile.TarInfo], destination: Path
 ) -> None:
+    # Resolve the destination so the containment check compares like for
+    # like. On macOS tempfile.mkdtemp() returns a /var/folders path that
+    # symlinks into /private/var/folders; member paths resolve through
+    # that symlink, so an unresolved destination would never appear in
+    # resolved.parents and every extraction would falsely trip the
+    # path-traversal guard below.
+    destination = destination.resolve()
     for member in members:
         if member.islnk() or member.issym():
             raise ValueError("links not allowed")

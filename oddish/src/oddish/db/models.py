@@ -879,6 +879,8 @@ class WorkerJobModel(TimestampedMixin, Base):
             postgresql_where=text("org_id IS NOT NULL"),
         ),
     )
+    provider: Mapped[str] = mapped_column(Text, nullable=True)
+    external_id: Mapped[str] = mapped_column(Text, nullable=True)
 
 
 # ---------------------------------------------------------------------------

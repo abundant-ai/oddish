@@ -14,6 +14,7 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
+from sqlalchemy import text
 
 from oddish.config import settings
 from oddish.db import (
@@ -608,6 +609,34 @@ async def _handle_harbor_event(
             # Log event
             console.print(f"[dim]Trial {trial_id} event: {event.value}[/dim]")
             trial.heartbeat_at = utcnow()
+
+            # Stamp the sandbox identity onto the trial's RUNNING worker_jobs
+            # row as soon as Harbor reports it (ENVIRONMENT_START onward).
+            # cancel_tasks_runs and cleanup_orphaned_queue_state read
+            # worker_jobs.provider / external_id to tear the remote sandbox
+            # down; without this write those columns stay NULL and every
+            # sandbox is invisible to teardown. Idempotent (IS DISTINCT FROM)
+            # and RUNNING-guarded so a late event can't resurrect a terminal
+            # row or overwrite the id after a clean exit.
+            if hook_event.environment_external_id:
+                await _session.execute(
+                    text(
+                        """
+                        UPDATE worker_jobs
+                        SET    provider = :provider,
+                               external_id = :external_id
+                        WHERE  subject_table = 'trials'
+                          AND  subject_id = :trial_id
+                          AND  status::text = 'RUNNING'
+                          AND  external_id IS DISTINCT FROM :external_id
+                        """
+                    ),
+                    {
+                        "provider": hook_event.environment_provider,
+                        "external_id": hook_event.environment_external_id,
+                        "trial_id": trial_id,
+                    },
+                )
 
             # Update database based on event type
             if event == TrialEvent.START:
