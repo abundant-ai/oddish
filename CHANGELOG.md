@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-02]
+
+### Changed
+- `claude-opus-4-8` added to the Bedrock model ID mapping table, resolving to `global.anthropic.claude-opus-4-8`; `claude-opus-4-7` moved to the legacy section of the table; regression tests added for all resolution forms (bare, `anthropic/`-prefixed, dotted foundation-model id) (#169)
+
+---
+
 ## [2026-06-01]
 
 ### Changed
