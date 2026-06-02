@@ -573,7 +573,9 @@ def _build_agent_config(
         agent_config.model_name = model
 
     # Trial rows should already store the runtime model id. Keep this as a
-    # defensive guard for legacy rows or rich AgentConfig payloads.
+    # defensive guard for legacy rows or rich AgentConfig payloads. Explicit
+    # "openrouter/..." ids pass through here and the claude-code agent routes
+    # them through OpenRouter instead of the container's default transport.
     agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
 
     return agent_config
