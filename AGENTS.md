@@ -408,6 +408,10 @@ The backend accepts auth from `Authorization`, `X-Clerk-Authorization`, or `X-Au
 
 Auth flow: read token → if `ok_` prefix validate API key → otherwise validate Clerk JWT and resolve org/user → return `AuthContext`.
 
+API key creation is user-auth only: legacy DB `owner` rows can still create
+keys, while the default path requires an `admin` with an `@abundant.ai` email
+in the main Abundant org.
+
 If a Clerk JWT arrives without `org_id`, the backend tries to resolve a single existing org membership, or provisions a personal org.
 
 ### Worker Architecture

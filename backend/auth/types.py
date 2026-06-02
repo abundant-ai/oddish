@@ -23,6 +23,7 @@ class AuthContext:
     method: AuthMethod
     org_id: str | None = None
     org: OrganizationModel | None = None
+    org_slug: str | None = None
     user_id: str | None = None
     user: UserModel | None = None
     user_email: str | None = None

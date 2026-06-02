@@ -91,6 +91,7 @@ async def get_auth_context(
                 return AuthContext(
                     method=cached.method,
                     org_id=cached.org_id,
+                    org_slug=cached.org_slug,
                     api_key_id=cached.api_key_id,
                     scope=cached.scope,
                     # Note: org/api_key ORM objects not included in cached response
@@ -124,6 +125,7 @@ async def get_auth_context(
                     cached_auth = CachedAuthData(
                         method=AuthMethod.API_KEY,
                         org_id=org.id,
+                        org_slug=org.slug,
                         api_key_id=api_key.id,
                         scope=api_key.scope,
                     )
@@ -131,6 +133,7 @@ async def get_auth_context(
                         method=AuthMethod.API_KEY,
                         org_id=org.id,
                         org=org,
+                        org_slug=org.slug,
                         api_key_id=api_key.id,
                         api_key=api_key,
                         scope=api_key.scope,
@@ -184,6 +187,7 @@ async def get_auth_context(
                 return AuthContext(
                     method=cached.method,
                     org_id=cached.org_id,
+                    org_slug=cached.org_slug,
                     user_id=cached.user_id,
                     user_email=cached.user_email,
                     user_role=cached.user_role,
@@ -221,6 +225,7 @@ async def get_auth_context(
                     clerk_cached_auth = CachedAuthData(
                         method=AuthMethod.CLERK_JWT,
                         org_id=org.id,
+                        org_slug=org.slug,
                         user_id=user.id,
                         user_email=user.email,
                         user_role=user.role,
@@ -230,6 +235,7 @@ async def get_auth_context(
                         method=AuthMethod.CLERK_JWT,
                         org_id=org.id,
                         org=org,
+                        org_slug=org.slug,
                         user_id=user.id,
                         user=user,
                         user_email=user.email,
@@ -342,7 +348,8 @@ async def require_api_key_creator(
     Require a user that may create API keys.
 
     API key auth is rejected so one key cannot mint another. Legacy DB owners
-    retain access, and admins can create keys only from abundant.ai accounts.
+    retain access, and admins can create keys only from abundant.ai accounts
+    in the main Abundant org.
     """
     if auth.method == AuthMethod.API_KEY:
         raise HTTPException(
@@ -357,7 +364,7 @@ async def require_api_key_creator(
         status_code=status.HTTP_403_FORBIDDEN,
         detail=(
             "API key creation requires an admin with an @abundant.ai email "
-            "or a legacy owner role"
+            "in the Abundant org or a legacy owner role"
         ),
     )
 

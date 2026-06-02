@@ -19,7 +19,14 @@ class _UserStub:
 
 
 @dataclass
+class _OrgStub:
+    slug: str | None
+
+
+@dataclass
 class _AuthStub:
+    org: _OrgStub | None = None
+    org_slug: str | None = None
     user: _UserStub | None = None
     user_email: str | None = None
     user_role: _UserRole | None = None
@@ -41,7 +48,10 @@ def _load_permissions() -> dict[str, Any]:
 def test_abundant_admin_can_create_api_keys() -> None:
     can_create_api_keys = _load_permissions()["can_create_api_keys"]
 
-    auth = _AuthStub(user=_UserStub(role=_UserRole.ADMIN, email="Admin@Abundant.AI"))
+    auth = _AuthStub(
+        org=_OrgStub(slug="abundant"),
+        user=_UserStub(role=_UserRole.ADMIN, email="Admin@Abundant.AI"),
+    )
 
     assert can_create_api_keys(auth) is True
 
@@ -49,7 +59,21 @@ def test_abundant_admin_can_create_api_keys() -> None:
 def test_non_abundant_admin_cannot_create_api_keys() -> None:
     can_create_api_keys = _load_permissions()["can_create_api_keys"]
 
-    auth = _AuthStub(user=_UserStub(role=_UserRole.ADMIN, email="admin@example.com"))
+    auth = _AuthStub(
+        org=_OrgStub(slug="abundant"),
+        user=_UserStub(role=_UserRole.ADMIN, email="admin@example.com"),
+    )
+
+    assert can_create_api_keys(auth) is False
+
+
+def test_abundant_admin_cannot_create_api_keys_in_other_org() -> None:
+    can_create_api_keys = _load_permissions()["can_create_api_keys"]
+
+    auth = _AuthStub(
+        org=_OrgStub(slug="customer-org"),
+        user=_UserStub(role=_UserRole.ADMIN, email="admin@abundant.ai"),
+    )
 
     assert can_create_api_keys(auth) is False
 
@@ -57,7 +81,10 @@ def test_non_abundant_admin_cannot_create_api_keys() -> None:
 def test_member_cannot_create_api_keys_even_with_abundant_email() -> None:
     can_create_api_keys = _load_permissions()["can_create_api_keys"]
 
-    auth = _AuthStub(user=_UserStub(role=_UserRole.MEMBER, email="member@abundant.ai"))
+    auth = _AuthStub(
+        org=_OrgStub(slug="abundant"),
+        user=_UserStub(role=_UserRole.MEMBER, email="member@abundant.ai"),
+    )
 
     assert can_create_api_keys(auth) is False
 
@@ -65,7 +92,10 @@ def test_member_cannot_create_api_keys_even_with_abundant_email() -> None:
 def test_legacy_owner_can_create_api_keys_with_any_email() -> None:
     can_create_api_keys = _load_permissions()["can_create_api_keys"]
 
-    auth = _AuthStub(user=_UserStub(role=_UserRole.OWNER, email="owner@example.com"))
+    auth = _AuthStub(
+        org=_OrgStub(slug="customer-org"),
+        user=_UserStub(role=_UserRole.OWNER, email="owner@example.com"),
+    )
 
     assert can_create_api_keys(auth) is True
 
@@ -73,6 +103,12 @@ def test_legacy_owner_can_create_api_keys_with_any_email() -> None:
 def test_cached_abundant_admin_can_create_api_keys() -> None:
     can_create_api_keys = _load_permissions()["can_create_api_keys"]
 
-    auth = _AuthStub(user=None, user_role=_UserRole.ADMIN, user_email="admin@abundant.ai")
+    auth = _AuthStub(
+        org=None,
+        org_slug="abundant",
+        user=None,
+        user_role=_UserRole.ADMIN,
+        user_email="admin@abundant.ai",
+    )
 
     assert can_create_api_keys(auth) is True

@@ -46,6 +46,7 @@ class CachedAuthData:
 
     method: AuthMethod
     org_id: str
+    org_slug: str | None = None
     user_id: str | None = None
     user_email: str | None = None
     user_role: UserRole | None = None
