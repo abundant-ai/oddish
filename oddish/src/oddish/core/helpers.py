@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
+from harbor import EnvironmentType
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1064,17 +1065,26 @@ async def cancel_job_by_worker(
     if not provider or not external_id:
         return False
 
-    provider = provider.lower()
+    try:
+        env_type = EnvironmentType(provider.lower())
+    except ValueError:
+        logger.warning(
+            "cancel_job_by_worker: unknown provider %r (external_id=%s)",
+            provider,
+            external_id,
+        )
+        return False
+
     try:
         # import would crash every one of those processes; importing here
         # keeps the teardown deps confined to the worker context that
         # actually has them installed.
-        if provider == "modal":
+        if env_type == EnvironmentType.MODAL:
             import modal
 
             sandbox = await modal.Sandbox.from_id.aio(external_id)
             await sandbox.terminate.aio()
-        elif provider == "daytona":
+        elif env_type == EnvironmentType.DAYTONA:
             from daytona import AsyncDaytona
 
             client = AsyncDaytona()
@@ -1085,7 +1095,7 @@ async def cancel_job_by_worker(
                 await client.close()
         else:
             logger.warning(
-                "cancel_job_by_worker: unknown provider %r (external_id=%s)",
+                "cancel_job_by_worker: no teardown for provider %r (external_id=%s)",
                 provider,
                 external_id,
             )
