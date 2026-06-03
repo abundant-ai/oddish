@@ -1,0 +1,80 @@
+Total picks to upload: 63
+  [1/63] post-train-ifeval-c9f2cfbc-292           396.8 MB in  10.0s  (claude-code|anthropic/claude-opus-4-8)  canonical=task-post-train-ifeval-c9f2cfbc__ubrs3LX
+  [2/63] post-train-ifeval-c9f2cfbc-291           151.0 MB in   3.9s  (claude-code|anthropic/claude-opus-4-8)  canonical=task-post-train-ifeval-c9f2cfbc__TFf4BJR
+  [3/63] post-train-ifeval-c9f2cfbc-288           136.7 MB in   3.4s  (claude-code|anthropic/claude-opus-4-8)  canonical=task-post-train-ifeval-c9f2cfbc__kv6x3Gw
+  [4/63] post-train-ifeval-c9f2cfbc-290            93.4 MB in   3.3s  (claude-code|anthropic/claude-opus-4-8)  canonical=task-post-train-ifeval-c9f2cfbc__mdQroQ4
+  [5/63] post-train-ifeval-c9f2cfbc-289           139.0 MB in   3.3s  (claude-code|anthropic/claude-opus-4-8)  canonical=task-post-train-ifeval-c9f2cfbc__xpere8b
+  [6/63] post-train-ifeval-c9f2cfbc-299           119.9 MB in   3.3s  (gemini-cli|gemini/gemini-3.5-flash)  canonical=task-post-train-ifeval-c9f2cfbc__kGozq6y
+  [7/63] post-train-ifeval-c9f2cfbc-302            52.4 MB in   3.7s  (gemini-cli|gemini/gemini-3.5-flash)  canonical=task-post-train-ifeval-c9f2cfbc__GUBCQRQ
+  [8/63] post-train-ifeval-c9f2cfbc-300           177.6 MB in   4.4s  (gemini-cli|gemini/gemini-3.5-flash)  canonical=task-post-train-ifeval-c9f2cfbc__wgTgAvb
+  [9/63] post-train-ifeval-c9f2cfbc-298           184.4 MB in   5.9s  (gemini-cli|gemini/gemini-3.5-flash)  canonical=task-post-train-ifeval-c9f2cfbc__a9koumH
+  [10/63] post-train-ifeval-c9f2cfbc-301            55.4 MB in  64.1s  (gemini-cli|gemini/gemini-3.5-flash)  canonical=task-post-train-ifeval-c9f2cfbc__FM8xRD5
+  [11/63] post-train-ifeval-c9f2cfbc-296            38.0 MB in  62.3s  (gemini-cli|gemini/gemini-3.1-pro-preview)  canonical=task-post-train-ifeval-c9f2cfbc__sJt7QZz
+  [12/63] post-train-ifeval-c9f2cfbc-293           151.6 MB in   4.5s  (gemini-cli|gemini/gemini-3.1-pro-preview)  canonical=task-post-train-ifeval-c9f2cfbc__RAjFXMh
+  [13/63] post-train-ifeval-c9f2cfbc-295             1.5 MB in   0.9s  (gemini-cli|gemini/gemini-3.1-pro-preview)  canonical=task-post-train-ifeval-c9f2cfbc__W9MHvvy
+  [14/63] post-train-ifeval-c9f2cfbc-297            38.2 MB in  61.4s  (gemini-cli|gemini/gemini-3.1-pro-preview)  canonical=task-post-train-ifeval-c9f2cfbc__vcuhZg2
+  [15/63] post-train-ifeval-c9f2cfbc-294           127.4 MB in   2.9s  (gemini-cli|gemini/gemini-3.1-pro-preview)  canonical=task-post-train-ifeval-c9f2cfbc__HMHm2Km
+  [16/63] post-train-ifeval-c9f2cfbc-310           243.4 MB in  17.5s  (terminus-2|anthropic/claude-opus-4-7)  canonical=task-post-train-ifeval-c9f2cfbc__Tf9gpWe
+  [17/63] post-train-ifeval-c9f2cfbc-309           101.7 MB in   8.3s  (terminus-2|anthropic/claude-opus-4-7)  canonical=task-post-train-ifeval-c9f2cfbc__UyEKCrq
+  [18/63] post-train-ifeval-c9f2cfbc-311           165.2 MB in  13.4s  (terminus-2|anthropic/claude-opus-4-7)  canonical=task-post-train-ifeval-c9f2cfbc__873xf26
+  [19/63] post-train-ifeval-c9f2cfbc-347           327.4 MB in  22.1s  (terminus-2|anthropic/claude-opus-4-7)  canonical=task-post-train-ifeval-c9f2cfbc__QiEQAAe
+  [20/63] post-train-ifeval-c9f2cfbc-348           169.2 MB in  14.1s  (terminus-2|anthropic/claude-opus-4-7)  canonical=task-post-train-ifeval-c9f2cfbc__NDVQjz4
+  [21/63] post-train-ifeval-c9f2cfbc-350           500.4 MB in  19.8s  (terminus-2|openai/gpt-5.5)  canonical=task-post-train-ifeval-c9f2cfbc__D65XZwX
+  [22/63] post-train-ifeval-c9f2cfbc-314           327.1 MB in  14.7s  (terminus-2|openai/gpt-5.5)  canonical=task-post-train-ifeval-c9f2cfbc__BAGBwBE
+  [23/63] post-train-ifeval-c9f2cfbc-315           114.2 MB in  10.7s  (terminus-2|openai/gpt-5.5)  canonical=task-post-train-ifeval-c9f2cfbc__fs5Ca3v
+  [24/63] post-train-ifeval-c9f2cfbc-351            55.5 MB in   6.0s  (terminus-2|openai/gpt-5.5)  canonical=task-post-train-ifeval-c9f2cfbc__5pxRK8L
+  [25/63] post-train-ifeval-c9f2cfbc-317           126.0 MB in  12.1s  (terminus-2|openai/gpt-5.5)  canonical=task-post-train-ifeval-c9f2cfbc__MAr7REM
+  [26/63] post-train-ifeval-c9f2cfbc-368           219.0 MB in  12.3s  (terminus-2|gemini/gemini-3.1-pro-preview)  canonical=task-post-train-ifeval-c9f2cfbc__goLurWg
+  [27/63] post-train-ifeval-c9f2cfbc-352             9.8 MB in   4.1s  (terminus-2|gemini/gemini-3.1-pro-preview)  canonical=task-post-train-ifeval-c9f2cfbc__RQ4bDXp
+  [28/63] post-train-ifeval-c9f2cfbc-367            16.5 MB in   3.8s  (terminus-2|gemini/gemini-3.1-pro-preview)  canonical=task-post-train-ifeval-c9f2cfbc__4BcbiwK
+  [29/63] post-train-ifeval-c9f2cfbc-354            16.3 MB in   3.3s  (terminus-2|gemini/gemini-3.1-pro-preview)  canonical=task-post-train-ifeval-c9f2cfbc__Z4muZtS
+  [30/63] post-train-ifeval-c9f2cfbc-353            16.7 MB in   4.4s  (terminus-2|gemini/gemini-3.1-pro-preview)  canonical=task-post-train-ifeval-c9f2cfbc__bfx4vdH
+  [31/63] post-train-ifeval-c9f2cfbc-330           159.1 MB in  10.5s  (terminus-2|openrouter/deepseek/deepseek-v4-pro)  canonical=task-post-train-ifeval-c9f2cfbc__898GPJF
+  [32/63] post-train-ifeval-c9f2cfbc-359           243.7 MB in  11.9s  (terminus-2|openrouter/deepseek/deepseek-v4-pro)  canonical=task-post-train-ifeval-c9f2cfbc__owaUM4Z
+  [33/63] post-train-ifeval-c9f2cfbc-332           189.5 MB in  11.5s  (terminus-2|openrouter/deepseek/deepseek-v4-pro)  canonical=task-post-train-ifeval-c9f2cfbc__XW7QPbT
+  [34/63] post-train-ifeval-c9f2cfbc-329           146.9 MB in  69.3s  (terminus-2|openrouter/deepseek/deepseek-v4-pro)  canonical=task-post-train-ifeval-c9f2cfbc__tDkc48n
+  [35/63] post-train-ifeval-c9f2cfbc-358           189.1 MB in  13.4s  (terminus-2|openrouter/deepseek/deepseek-v4-pro)  canonical=task-post-train-ifeval-c9f2cfbc__4ScuK5A
+  [36/63] post-train-ifeval-c9f2cfbc-326          1619.8 MB in  48.9s  (terminus-2|openrouter/moonshotai/kimi-k2.6)  canonical=task-post-train-ifeval-c9f2cfbc__x2fj8JC
+  [37/63] post-train-ifeval-c9f2cfbc-356           230.7 MB in  13.8s  (terminus-2|openrouter/moonshotai/kimi-k2.6)  canonical=task-post-train-ifeval-c9f2cfbc__aWsnJaq
+  [38/63] post-train-ifeval-c9f2cfbc-323           208.8 MB in  15.9s  (terminus-2|openrouter/moonshotai/kimi-k2.6)  canonical=task-post-train-ifeval-c9f2cfbc__BL78Db5
+  [39/63] post-train-ifeval-c9f2cfbc-325           214.6 MB in  14.6s  (terminus-2|openrouter/moonshotai/kimi-k2.6)  canonical=task-post-train-ifeval-c9f2cfbc__7bUu7Yx
+  [40/63] post-train-ifeval-c9f2cfbc-357            92.8 MB in  11.3s  (terminus-2|openrouter/moonshotai/kimi-k2.6)  canonical=task-post-train-ifeval-c9f2cfbc__iopCyiF
+  [41/63] post-train-ifeval-c9f2cfbc-341          1999.6 MB in  60.3s  (terminus-2|openrouter/minimax/minimax-m2.7)  canonical=task-post-train-ifeval-c9f2cfbc__QsJzqmN
+  [42/63] post-train-ifeval-c9f2cfbc-366           494.5 MB in  23.4s  (terminus-2|openrouter/minimax/minimax-m2.7)  canonical=task-post-train-ifeval-c9f2cfbc__yoS832m
+  [43/63] post-train-ifeval-c9f2cfbc-365           508.5 MB in  37.5s  (terminus-2|openrouter/minimax/minimax-m2.7)  canonical=task-post-train-ifeval-c9f2cfbc__P6GoHPi
+  [44/63] post-train-ifeval-c9f2cfbc-342           942.3 MB in  67.4s  (terminus-2|openrouter/minimax/minimax-m2.7)  canonical=task-post-train-ifeval-c9f2cfbc__CxxHQkc
+  [45/63] post-train-ifeval-c9f2cfbc-364          2335.3 MB in  81.2s  (terminus-2|openrouter/minimax/minimax-m2.7)  canonical=task-post-train-ifeval-c9f2cfbc__8oKpGLA
+  [46/63] post-train-ifeval-c9f2cfbc-334          1092.9 MB in  36.7s  (terminus-2|openrouter/z-ai/glm-5.1)  canonical=task-post-train-ifeval-c9f2cfbc__hN79sFz
+  [47/63] post-train-ifeval-c9f2cfbc-363           381.6 MB in  17.9s  (terminus-2|openrouter/z-ai/glm-5.1)  canonical=task-post-train-ifeval-c9f2cfbc__qDoSvaZ
+  [48/63] post-train-ifeval-c9f2cfbc-362          2303.4 MB in  73.4s  (terminus-2|openrouter/z-ai/glm-5.1)  canonical=task-post-train-ifeval-c9f2cfbc__wj2Chzp
+  [49/63] post-train-ifeval-c9f2cfbc-305           196.6 MB in   6.7s  (kimi-cli|openrouter/moonshotai/kimi-k2.6)  canonical=task-post-train-ifeval-c9f2cfbc__mw8w8hb
+  [50/63] post-train-ifeval-c9f2cfbc-343           122.0 MB in   3.2s  (kimi-cli|openrouter/moonshotai/kimi-k2.6)  canonical=task-post-train-ifeval-c9f2cfbc__z2Q6YcT
+  [51/63] post-train-ifeval-c9f2cfbc-345            25.2 MB in   1.4s  (kimi-cli|openrouter/moonshotai/kimi-k2.6)  canonical=task-post-train-ifeval-c9f2cfbc__jsToEXC
+  [52/63] post-train-ifeval-c9f2cfbc-304             9.8 MB in   1.4s  (kimi-cli|openrouter/moonshotai/kimi-k2.6)  canonical=task-post-train-ifeval-c9f2cfbc__HsfPJWB
+  [53/63] post-train-ifeval-c9f2cfbc-307            62.9 MB in   4.4s  (kimi-cli|openrouter/moonshotai/kimi-k2.6)  canonical=task-post-train-ifeval-c9f2cfbc__rsZqyLt
+  [54/63] post-train-ifeval-c9f2cfbc-272             0.0 MB in   0.8s  (nop|default)  canonical=task-post-train-ifeval-c9f2cfbc__pxe269Q
+  [55/63] post-train-ifeval-c9f2cfbc-270             0.0 MB in   0.6s  (nop|default)  canonical=task-post-train-ifeval-c9f2cfbc__nowXEQz
+  [56/63] post-train-ifeval-c9f2cfbc-269             0.0 MB in   0.6s  (nop|default)  canonical=task-post-train-ifeval-c9f2cfbc__gi4m86K
+  [57/63] post-train-ifeval-c9f2cfbc-271             0.0 MB in   0.6s  (nop|default)  canonical=task-post-train-ifeval-c9f2cfbc__aE4Ukgg
+  [58/63] post-train-ifeval-c9f2cfbc-268             0.0 MB in   0.6s  (nop|default)  canonical=task-post-train-ifeval-c9f2cfbc__LMYdmtk
+  [59/63] post-train-ifeval-c9f2cfbc-277           112.0 MB in   3.5s  (oracle|default)  canonical=task-post-train-ifeval-c9f2cfbc__n9G4WVE
+  [60/63] post-train-ifeval-c9f2cfbc-274           135.0 MB in   3.6s  (oracle|default)  canonical=task-post-train-ifeval-c9f2cfbc__2kTdJc5
+  [61/63] post-train-ifeval-c9f2cfbc-276            44.4 MB in   3.1s  (oracle|default)  canonical=task-post-train-ifeval-c9f2cfbc__5SXhznt
+  [62/63] post-train-ifeval-c9f2cfbc-273           135.0 MB in   3.2s  (oracle|default)  canonical=task-post-train-ifeval-c9f2cfbc__e6xvYBx
+  [63/63] post-train-ifeval-c9f2cfbc-275            81.0 MB in   2.8s  (oracle|default)  canonical=task-post-train-ifeval-c9f2cfbc__ntrtkWJ
+
+Manifest updated: n_trials=68 (+63); experiment_ids=['6f068eca', '0042aebf']; task_versions=['post-train-ifeval-c9f2cfbc-v33', 'post-train-ifeval-c9f2cfbc-v34', 'post-train-ifeval-c9f2cfbc-v31']; is_multi_version=True
+  claude-code  / anthropic/claude-opus-4-8                   n=5  pass=3
+  codex        / openai/gpt-5.5                              n=5  pass=1
+  gemini-cli   / gemini/gemini-3.1-pro-preview               n=5  pass=0
+  gemini-cli   / gemini/gemini-3.5-flash                     n=5  pass=0
+  kimi-cli     / openrouter/moonshotai/kimi-k2.6             n=5  pass=0
+  nop          / default                                     n=5  pass=0
+  oracle       / default                                     n=5  pass=5
+  terminus-2   / anthropic/claude-opus-4-7                   n=5  pass=4
+  terminus-2   / gemini/gemini-3.1-pro-preview               n=5  pass=0
+  terminus-2   / openai/gpt-5.5                              n=5  pass=0
+  terminus-2   / openrouter/deepseek/deepseek-v4-pro         n=5  pass=4
+  terminus-2   / openrouter/minimax/minimax-m2.7             n=5  pass=0
+  terminus-2   / openrouter/moonshotai/kimi-k2.6             n=5  pass=0
+  terminus-2   / openrouter/z-ai/glm-5.1                     n=3  pass=0
