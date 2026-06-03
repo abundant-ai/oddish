@@ -2234,6 +2234,8 @@ async def create_task_sweep_core(
         # opt in without manual intervention.
         if submission.run_analysis and not task.run_analysis:
             task.run_analysis = True
+        if submission.link and not task.link:
+            task.link = submission.link
 
         new_experiment_id: str | None = None
         experiment: ExperimentModel | None = None
