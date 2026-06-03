@@ -158,6 +158,61 @@ def test_harbor_environment_kwargs_survive_trial_config_round_trip() -> None:
     )
 
 
+def test_claude_code_openrouter_agent_config_sets_anthropic_skin_env(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="openrouter/anthropic/claude-opus-4.8",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "openrouter/anthropic/claude-opus-4.8"
+    assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
+    assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${OPENROUTER_API_KEY}"
+    assert agent_config.env["ENABLE_TOOL_SEARCH"] == "false"
+    assert agent_config.env["ANTHROPIC_API_KEY"] == ""
+    assert agent_config.env["CLAUDE_CODE_USE_BEDROCK"] == ""
+    assert agent_config.env["AWS_BEARER_TOKEN_BEDROCK"] == ""
+
+
+def test_claude_code_openrouter_agent_config_preserves_explicit_base_and_token(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.example/api")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="openrouter/anthropic/claude-opus-4.8",
+        raw_harbor_config={
+            "agent_config": {
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://custom.example/api",
+                    "ANTHROPIC_AUTH_TOKEN": "${CUSTOM_OPENROUTER_TOKEN}",
+                }
+            }
+        },
+    )
+
+    assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://custom.example/api"
+    assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${CUSTOM_OPENROUTER_TOKEN}"
+    assert agent_config.env["ANTHROPIC_API_KEY"] == ""
+
+
+def test_non_openrouter_claude_code_agent_config_does_not_add_openrouter_env() -> None:
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="claude-opus-4-8",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "global.anthropic.claude-opus-4-8"
+    assert "ANTHROPIC_AUTH_TOKEN" not in agent_config.env
+    assert "ANTHROPIC_BASE_URL" not in agent_config.env
+
+
 def test_harbor_runner_passes_environment_kwargs_to_job_config(
     monkeypatch,
     tmp_path: Path,

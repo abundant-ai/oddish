@@ -520,6 +520,29 @@ def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
         config_path.write_text(task_config.model_dump_toml())
 
 
+def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
+    """Apply the env shape Claude Code expects for OpenRouter's Anthropic skin."""
+    agent_name = (agent_config.name or "").strip().lower()
+    model_name = (agent_config.model_name or "").strip().lower()
+    if agent_name != "claude-code" or not model_name.startswith("openrouter/"):
+        return
+
+    env = dict(agent_config.env or {})
+    env.setdefault(
+        "ANTHROPIC_BASE_URL",
+        os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api",
+    )
+    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${OPENROUTER_API_KEY}")
+    env.setdefault("ENABLE_TOOL_SEARCH", "false")
+
+    # Claude Code prioritizes these ambient credentials when present in the
+    # Modal image. Blank them so the OpenRouter auth/base-url route wins.
+    env["ANTHROPIC_API_KEY"] = ""
+    env["CLAUDE_CODE_USE_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    agent_config.env = env
+
+
 def _build_agent_config(
     *,
     agent: str,
@@ -577,6 +600,7 @@ def _build_agent_config(
     # "openrouter/..." ids pass through here and the claude-code agent routes
     # them through OpenRouter instead of the container's default transport.
     agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
+    _apply_claude_code_openrouter_env(agent_config)
 
     return agent_config
 
