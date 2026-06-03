@@ -1,0 +1,8 @@
+  [1/5] post-train-ifeval-c9f2cfbc-283: uploaded 216.8 MB in 5.2s; canonical=task-post-train-ifeval-c9f2cfbc__Q3KqWRk
+  [2/5] post-train-ifeval-c9f2cfbc-284: uploaded 1.0 MB in 0.9s; canonical=task-post-train-ifeval-c9f2cfbc__7GhWkf5
+  [3/5] post-train-ifeval-c9f2cfbc-285: uploaded 195.8 MB in 5.6s; canonical=task-post-train-ifeval-c9f2cfbc__j3aUFjd
+  [4/5] post-train-ifeval-c9f2cfbc-286: uploaded 136.1 MB in 3.7s; canonical=task-post-train-ifeval-c9f2cfbc__QJ85CF8
+  [5/5] post-train-ifeval-c9f2cfbc-287: uploaded 148.6 MB in 3.8s; canonical=task-post-train-ifeval-c9f2cfbc__mDA8voM
+
+Manifest: s3://ralphbench-logs/post-train-ifeval/_manifest.json (n_trials=5, n_pass=1, duplicates=0)
+  codex        / openai/gpt-5.5                            n=5
