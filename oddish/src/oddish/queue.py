@@ -530,6 +530,7 @@ async def create_task(
         task_s3_key=task_s3_key,
         tags=submission.tags,
         run_analysis=submission.run_analysis,
+        link=submission.link,
     )
     session.add(task)
     await session.flush()
