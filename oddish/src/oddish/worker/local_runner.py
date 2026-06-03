@@ -26,7 +26,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from harbor.trial.trial import Trial
-from sqlalchemy import select
 
 from oddish.db import (
     AnalysisStatus,
@@ -34,47 +33,10 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
     get_session,
-    get_storage_client,
 )
-from oddish.worker.probe_overlay import (
-    render_probe_instruction,
-    select_related_trials,
-)
+from oddish.worker.probe_staging import apply_probe_overlay
 
 logger = logging.getLogger(__name__)
-
-# In-container path where prior real-attempt logs are staged (the work task
-# dir is mounted at /app by Harbor). Caps keep an adversarial probe's
-# context bounded and avoid pulling huge artifact trees.
-_RELATED_DIR_NAME = "related_trials"
-_RELATED_CONTAINER_DIR = f"/app/{_RELATED_DIR_NAME}"
-_MAX_RELATED_TRIALS = 10
-_MAX_FILES_PER_TRIAL = 50
-_MAX_BYTES_PER_FILE = 2 * 1024 * 1024  # 2 MiB
-
-
-# ---------------------------------------------------------------------------
-# System framing prepended to instruction.md when the trial carries an
-# operator directive (extra_instructions). Reorients the agent so the
-# operator's directive is treated as the goal and the original task spec
-# is treated as context only -- without this, claude-code tends to default
-# to "actually solve the task" even when explicitly told to do something
-# adversarial.
-# ---------------------------------------------------------------------------
-_PROBE_SYSTEM_FRAMING = (
-    "[Probe runtime — read this first.\n\n"
-    "You are an agent participating in an experimental probe. Below this note "
-    "you will find two sections separated by '---':\n\n"
-    "1. **OPERATOR DIRECTIVE** — your actual goal. Follow it literally. This "
-    "directive overrides the original task's normal completion criteria.\n"
-    "2. **ORIGINAL TASK INSTRUCTION** — context only. Use it to understand the "
-    "environment, the verifier, and what passing the task would look like — but "
-    "DO NOT default to solving the original task. The operator's directive is "
-    "what you're here to do.\n\n"
-    "If there is a conflict between the operator directive and the original "
-    "task, the OPERATOR DIRECTIVE wins. Treat the original task as background "
-    "information about the environment, not as a goal.]"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -264,78 +226,6 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
         logger.info("local_runner: trial %s -> SUCCESS", trial_id)
 
 
-async def _stage_related_trial_logs(
-    work_task_dir: Path, task_id: str, current_trial_id: str
-) -> bool:
-    """Download prior real (non-probe) attempts' logs into the work dir.
-
-    Stages files into ``<work_task_dir>/related_trials/<trial_id>/`` (visible
-    at ``/app/related_trials`` once Harbor mounts the task). The runner pulls
-    the artifacts here, so no S3 credentials enter the agent's container.
-    Per-trial and per-file failures are logged and skipped; counts and sizes
-    are capped. Returns True if anything was staged.
-    """
-    async with get_session() as session:
-        result = await session.execute(
-            select(TrialModel).where(TrialModel.task_id == task_id)
-        )
-        siblings = list(result.scalars().all())
-
-    related = select_related_trials(siblings, current_trial_id=current_trial_id)
-    if not related:
-        return False
-
-    storage = get_storage_client()
-    dest_root = work_task_dir / _RELATED_DIR_NAME
-    staged_any = False
-
-    for trial in related[:_MAX_RELATED_TRIALS]:
-        prefix = f"tasks/{task_id}/trials/{trial.id}/"
-        try:
-            keys = await storage.list_keys(prefix)
-        except Exception:
-            logger.exception(
-                "probe: list_keys failed for %s; skipping", trial.id
-            )
-            continue
-        staged_for_trial = 0
-        for key in keys:
-            if staged_for_trial >= _MAX_FILES_PER_TRIAL:
-                logger.warning(
-                    "probe: capped related logs for %s at %d files",
-                    trial.id,
-                    _MAX_FILES_PER_TRIAL,
-                )
-                break
-            rel = key[len(prefix):]
-            # Skip the prefix root and any hidden path segment.
-            if not rel or any(
-                part.startswith(".") for part in rel.split("/") if part
-            ):
-                continue
-            try:
-                content = await storage.download_bytes(key)
-            except Exception:
-                logger.exception(
-                    "probe: download failed for %s; skipping", key
-                )
-                continue
-            if len(content) > _MAX_BYTES_PER_FILE:
-                logger.info(
-                    "probe: skipping large artifact %s (%d bytes)",
-                    key,
-                    len(content),
-                )
-                continue
-            dest = dest_root / trial.id / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(content)
-            staged_for_trial += 1
-            staged_any = True
-
-    return staged_any
-
-
 async def _run_harbor_trial(trial_id: str) -> None:
     """Execute the trial against a local Harbor instance.
 
@@ -392,26 +282,14 @@ async def _run_harbor_trial(trial_id: str) -> None:
         work_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
         work_task_dir = work_root / task_path.name
         shutil.copytree(task_path, work_task_dir, symlinks=True)
-        # Pre-stage logs from prior real (non-probe) attempts into the work
-        # dir so the probe can study them. The runner downloads them here;
-        # no S3 credentials ever enter the (adversarial) agent's container.
-        try:
-            has_related = await _stage_related_trial_logs(
-                work_task_dir, task_db_id, trial_id
-            )
-        except Exception:
-            logger.exception("probe: staging related trial logs failed")
-            has_related = False
-        instr_path = work_task_dir / "instruction.md"
-        original = instr_path.read_text() if instr_path.exists() else ""
-        instr_path.write_text(
-            render_probe_instruction(
-                _PROBE_SYSTEM_FRAMING,
-                extra_instructions,
-                original,
-                related_dir=_RELATED_CONTAINER_DIR,
-                has_related=has_related,
-            )
+        # Prepend the operator directive, append the test/related-log
+        # sections, and pre-stage prior real-attempt logs. Shared with the
+        # cloud worker so probes behave identically in dev and production.
+        await apply_probe_overlay(
+            work_task_dir,
+            task_id=task_db_id,
+            trial_id=trial_id,
+            extra_instructions=extra_instructions,
         )
         actual_task_path = work_task_dir
     else:
