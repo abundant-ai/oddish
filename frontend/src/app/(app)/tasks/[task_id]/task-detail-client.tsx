@@ -243,6 +243,19 @@ function TaskDetailHeader({
               </span>
             </>
           ) : null}
+          {task.link ? (
+            <>
+              <span aria-hidden>·</span>
+              <a
+                href={task.link}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[color:var(--paper-ink-2)] underline-offset-2 hover:underline"
+              >
+                link
+              </a>
+            </>
+          ) : null}
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
