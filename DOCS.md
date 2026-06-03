@@ -77,7 +77,7 @@ Options
 - `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.
 - `--github-user`, `-G TEXT` - GitHub user attribution for CI metadata. When omitted, the backend auto-fills this from the authenticated user's Clerk-linked GitHub username (if any) so CI-style attribution still works.
 - `--github-meta TEXT` - JSON metadata blob to attach to the task
-- `--link TEXT` - Associate URL with the task 
+- `--link TEXT` - Associate URL with the task. 
 - `--publish` - Publish the experiment for public read-only access
 - `--watch/--no-watch`, `-w` - Watch progress after submission; enabled by default
 - `--background`, `--async`, `-b` - Submit and return immediately
@@ -99,8 +99,6 @@ Options
 - `--yes`, `-y` - Skip confirmation prompts (used with `--retry`)
 - `--api TEXT` - Override the API URL
 - `--json` - Emit JSON for scripts and CI; implies `--background`
-
-
 
 ### Re-run with `--retry`
 
@@ -181,8 +179,6 @@ Options
 - `--json` - Emit the raw task browser JSON response
 - `--api TEXT` - Override the API URL
 
-
-
 ## Check Progress
 
 Use `oddish status` to inspect the system, a task, or an experiment.
@@ -213,8 +209,6 @@ Options
 - `--api TEXT` - Override the API URL
 - `--json` - Emit a single JSON snapshot (no live watch)
 
-
-
 ## Cancel In-Flight Runs
 
 Use `oddish cancel` to stop queued or running work for a task without deleting
@@ -231,8 +225,6 @@ Options
 - `--force`, `-f` - Skip the confirmation prompt
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the cancellation result as JSON (implies `--force`)
-
-
 
 ## Download Outputs
 
@@ -261,8 +253,6 @@ Options
 - `--interval INTEGER` - Poll interval in seconds for `--watch`
 - `--api TEXT` - Override the API URL
 - `--json` - Print the pull manifest as JSON instead of progress output
-
-
 
 ## Targeting a PR Preview
 
@@ -323,8 +313,6 @@ source artifacts in place (cheaper, shared storage)
 - `--json` - Print the raw JSON response
 - `--api-url`, `-u TEXT` - Override the API URL
 
-
-
 ## Delete Data
 
 Use `oddish delete` to delete task data.
@@ -349,8 +337,6 @@ Options
 - `--api-url`, `-u TEXT` - Override the API URL
 - `--json` - Emit the delete result as JSON (implies `--yes`)
 
-
-
 ## Share an Experiment
 
 Use `oddish publish` to make an experiment publicly viewable (read-only) and
@@ -373,8 +359,6 @@ Options
 - `EXPERIMENT_ID` - Experiment ID (or name) to publish/unpublish
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the share status as JSON
-
-
 
 ## Drag-and-drop import (UI)
 
