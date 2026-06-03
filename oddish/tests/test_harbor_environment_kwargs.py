@@ -251,6 +251,20 @@ def test_claude_code_openrouter_empty_env_survives_harbor_serialization() -> Non
     assert resolve_env_vars(serialized_env)["AWS_BEARER_TOKEN_BEDROCK"] == ""
 
 
+def test_preinstalled_claude_code_openrouter_agent_gets_same_env() -> None:
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code-api-key-no-search",
+        model="openrouter/anthropic/claude-opus-4.8",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
+    assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${OPENROUTER_API_KEY}"
+    assert agent_config.env["ANTHROPIC_API_KEY"] == (
+        "${ODDISH_CLAUDE_OPENROUTER_EMPTY:-}"
+    )
+
+
 def test_non_openrouter_claude_code_agent_config_does_not_add_openrouter_env() -> None:
     agent_config = harbor_runner._build_agent_config(
         agent="claude-code",

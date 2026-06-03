@@ -522,6 +522,7 @@ def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
 
 _MASKED_ENV_VALUES = {"****", "[REDACTED]", "REDACTED"}
 _EMPTY_ENV_TEMPLATE = "${ODDISH_CLAUDE_OPENROUTER_EMPTY:-}"
+_CLAUDE_CODE_AGENT_NAMES = {"claude-code", "claude-code-api-key-no-search"}
 
 
 def _is_masked_env_value(value: Any) -> bool:
@@ -532,7 +533,9 @@ def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
     """Apply the env shape Claude Code expects for OpenRouter's Anthropic skin."""
     agent_name = (agent_config.name or "").strip().lower()
     model_name = (agent_config.model_name or "").strip().lower()
-    if agent_name != "claude-code" or not model_name.startswith("openrouter/"):
+    if agent_name not in _CLAUDE_CODE_AGENT_NAMES or not model_name.startswith(
+        "openrouter/"
+    ):
         return
 
     env = dict(agent_config.env or {})
