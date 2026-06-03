@@ -50,17 +50,14 @@ def downgrade() -> None:
     # here purely for migration reversibility, not for restoring data.
     op.add_column(
         "trials",
-        sa.Column("modal_function_call_id", sa.String(length=128), nullable=True),
-    )
+        sa.Column("modal_function_call_id", sa.String(length=128), nullable=True), if_not_exists=True)
     op.add_column(
         "trials",
         sa.Column(
             "analysis_modal_function_call_id", sa.String(length=128), nullable=True
-        ),
-    )
+        ), if_not_exists=True)
     op.add_column(
         "tasks",
         sa.Column(
             "verdict_modal_function_call_id", sa.String(length=128), nullable=True
-        ),
-    )
+        ), if_not_exists=True)

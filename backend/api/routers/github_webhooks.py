@@ -7,7 +7,6 @@ useful for testing and debugging the GitHub integration.
 
 from __future__ import annotations
 
-import logging
 import os
 from typing import Annotated
 
@@ -16,8 +15,6 @@ from pydantic import BaseModel
 
 from auth import AuthContext, require_auth, APIKeyScope
 from oddish.db import TaskModel, get_session
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/github", tags=["GitHub"])
 
@@ -102,6 +99,7 @@ async def refresh_experiment_pr_comment(
             .join(task_experiments, task_experiments.c.task_id == TaskModel.id)
             .where(
                 task_experiments.c.experiment_id == experiment_id,
+                task_experiments.c.deleted_at.is_(None),
                 TaskModel.org_id == auth.org_id,
             )
             .limit(1)

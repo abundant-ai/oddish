@@ -50,7 +50,7 @@ WORKER_TASK_MOUNT_PATH = "/mnt/oddish-tasks"
 WORKER_TASK_MOUNT_KEY_PREFIX = "tasks/"
 
 # Worker configuration
-POLL_INTERVAL_SECONDS = 180  # How often to check for new jobs (3 minutes)
+POLL_INTERVAL_SECONDS = _env_int("ODDISH_MODAL_POLL_INTERVAL_SECONDS", 180)
 # Allow ~12 hour trials.
 WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 43200)
 WORKER_MIN_CONTAINERS = _env_int(
@@ -64,31 +64,70 @@ WORKER_SCALEDOWN_WINDOW_SECONDS = _env_int(
 )  # Keep idle workers warm for 5 minutes
 WORKER_MAX_CONTAINERS = _env_int(
     "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
-    256,
+    320,
 )  # High global cap so several queue keys can scale, but still not unbounded.
 
-# Max number of workers spawned per poll cycle (rate limiter, global across all queue_keys)
-MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 24)
+# Mark single-job worker containers as non-preemptible so Modal does not
+# interrupt long-running trials / analyses / verdicts mid-execution. Modal
+# applies a 3x CPU+memory price multiplier when this is enabled
+# (https://modal.com/docs/guide/preemption); keep it env-flagged so previews
+# or experiments can opt out.
+WORKER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_WORKER_NONPREEMPTIBLE", True)
+DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", True)
 
-# Always attach the production Modal secret. Local deploys can layer a backend
-# `.env` file on top for developer-specific overrides.
+# Max number of workers spawned per poll cycle (rate limiter, global across all queue_keys)
+MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 64)
+
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
 )
 runtime_secrets = [runtime_secret]
+
+# AWS credentials for the sauron S3 mirror. Kept in a separate Modal
+# secret so it can be rotated independently of oddish-prod. Set
+# ODDISH_SAURON_AWS_SECRET_NAME to override the secret name, or to "" to
+# skip loading entirely (e.g. for envs without AWS access).
+SAURON_AWS_SECRET_NAME = os.environ.get(
+    "ODDISH_SAURON_AWS_SECRET_NAME", "aws-credentials"
+)
+if SAURON_AWS_SECRET_NAME:
+    runtime_secrets.append(
+        modal.Secret.from_name(
+            SAURON_AWS_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
+        )
+    )
+
 if LOCAL_DOTENV_VARS:
     runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
+# Per-PR DB override created by the modal-preview workflow. Gating on
+# MODAL_APP_NAME (baked into the image) keeps the secret list identical
+# at deploy and container init.
+if MODAL_APP_NAME.startswith("oddish-pr-"):
+    runtime_secrets.append(
+        modal.Secret.from_name(
+            f"{MODAL_APP_NAME}-db",
+            environment_name=os.environ.get("MODAL_ENVIRONMENT", "preview"),
+        )
+    )
 
 # Queue-key concurrency default for Modal runtime.
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
-MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_MODEL_CONCURRENCY_DEFAULT", 32)
+MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 32)
+NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 48)
 
 ENV_VARS = {
     "UV_LINK_MODE": "copy",
     # Claude CLI refuses --dangerously-skip-permissions when running as root (Modal default).
     # Setting IS_SANDBOX=1 tells it we're in a sandboxed environment and bypasses this check.
     "IS_SANDBOX": "1",
+    # Route Claude Code through AWS Bedrock. Oddish persists Claude trials with
+    # their Bedrock model id, and this flag selects the matching runtime route.
+    "CLAUDE_CODE_USE_BEDROCK": "1",
+    # Baked into the image so the container sees the same identity the
+    # deploy host did (the per-PR secret gate above depends on it).
+    "MODAL_APP_NAME": MODAL_APP_NAME,
+    "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
@@ -97,6 +136,9 @@ ENV_VARS = {
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",
     "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
     "ODDISH_DEFAULT_MODEL_CONCURRENCY": str(MODEL_CONCURRENCY_DEFAULT),
+    # nop/oracle do not call model providers; this cap is for Modal/DB/S3
+    # pressure rather than provider rate limits.
+    "ODDISH_NOP_ORACLE_CONCURRENCY": str(NOP_ORACLE_CONCURRENCY),
 }
 
 
@@ -208,6 +250,7 @@ image = (
         "endpoints",
         "modal_app",
         "models",
+        "observability",
         "worker",
         copy=True,
     )

@@ -18,6 +18,7 @@ into the global registry. Both the standalone worker and the backend
 call it at container load.
 """
 
+from oddish.db import WorkerJobKind
 from oddish.workers.jobs.registry import (
     HANDLERS,
     HandlerAlreadyRegisteredError,
@@ -44,7 +45,13 @@ def ensure_builtin_handlers_registered() -> None:
     calls no-op.
     """
     global _BUILTINS_REGISTERED
-    if _BUILTINS_REGISTERED:
+    required_kinds = {
+        WorkerJobKind.TRIAL,
+        WorkerJobKind.ANALYSIS,
+        WorkerJobKind.VERDICT,
+        WorkerJobKind.TASK_EXPAND,
+    }
+    if _BUILTINS_REGISTERED and required_kinds.issubset(HANDLERS):
         return
 
     # Lazy imports keep ``oddish.workers.queue`` off the critical

@@ -9,6 +9,7 @@ from rich.table import Table
 
 from oddish.cli.api import (
     format_task_status,
+    format_trial_status_detail,
     format_trial_status,
     print_experiment_status,
     watch_experiment,
@@ -17,6 +18,7 @@ from oddish.cli.api import (
 from oddish.cli.config import (
     get_api_url,
     get_auth_headers,
+    print_json,
     require_api_key,
 )
 
@@ -31,6 +33,84 @@ def _format_reward_display(reward: float | None) -> str:
     if reward == 0:
         return "[red]✗[/red]"
     return f"[yellow]{reward:.2f}[/yellow]"
+
+
+def _status_json(
+    api_url: str,
+    *,
+    task_id: Optional[str],
+    experiment_id: Optional[str],
+) -> None:
+    """Emit a single JSON snapshot for system / task / experiment status."""
+    headers = get_auth_headers()
+
+    if experiment_id:
+        with httpx.Client(timeout=10.0, headers=headers) as client:
+            response = client.get(
+                f"{api_url}/tasks", params={"experiment_id": experiment_id}
+            )
+        if response.status_code != 200:
+            print_json({"error": response.text, "status": response.status_code})
+            raise typer.Exit(1)
+        tasks = response.json()
+        print_json({"experiment_id": experiment_id, "tasks": tasks})
+        return
+
+    if task_id is None:
+        # System overview: aggregate recent tasks by experiment.
+        with httpx.Client(timeout=5.0, headers=headers) as client:
+            response = client.get(
+                f"{api_url}/tasks", params={"limit": 200, "offset": 0}
+            )
+        if response.status_code != 200:
+            print_json({"error": response.text, "status": response.status_code})
+            raise typer.Exit(1)
+        tasks = response.json()
+        experiments: dict[str, dict] = {}
+        for task in tasks:
+            exp_id = task.get("experiment_id") or "-"
+            entry = experiments.setdefault(
+                exp_id,
+                {
+                    "experiment_id": exp_id,
+                    "experiment_name": task.get("experiment_name") or "-",
+                    "tasks": 0,
+                    "running": 0,
+                    "done": 0,
+                    "total_trials": 0,
+                    "completed_trials": 0,
+                    "reward_success": 0,
+                    "reward_total": 0,
+                },
+            )
+            entry["tasks"] += 1
+            if task.get("status") == "running":
+                entry["running"] += 1
+            if task.get("status") in ("completed", "failed"):
+                entry["done"] += 1
+            entry["total_trials"] += task.get("total", 0) or 0
+            entry["completed_trials"] += task.get("completed", 0) or 0
+            entry["reward_success"] += task.get("reward_success", 0) or 0
+            entry["reward_total"] += task.get("reward_total", 0) or 0
+        print_json({"experiments": list(experiments.values())})
+        return
+
+    # Task snapshot (fall back to experiment on 404).
+    with httpx.Client(timeout=10.0, headers=headers) as client:
+        response = client.get(f"{api_url}/tasks/{task_id}")
+    if response.status_code == 200:
+        print_json(response.json())
+        return
+    if response.status_code == 404:
+        with httpx.Client(timeout=10.0, headers=headers) as client:
+            exp_response = client.get(
+                f"{api_url}/tasks", params={"experiment_id": task_id}
+            )
+        if exp_response.status_code == 200 and exp_response.json():
+            print_json({"experiment_id": task_id, "tasks": exp_response.json()})
+            return
+    print_json({"error": response.text, "status": response.status_code})
+    raise typer.Exit(1)
 
 
 def status(
@@ -68,6 +148,13 @@ def status(
         str,
         typer.Option("--api", help="API URL"),
     ] = "",
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Output JSON (for CI/scripts). Takes a single snapshot.",
+        ),
+    ] = False,
 ):
     """Check system, task, or experiment status.
 
@@ -90,6 +177,12 @@ def status(
     if task_id and experiment_id:
         console.print("[red]Provide either a task_id or --experiment, not both.[/red]")
         raise typer.Exit(1)
+
+    # JSON output mode takes a single snapshot (no live watch) so the result
+    # is a single parseable document for CI / agents.
+    if json_output:
+        _status_json(api_url, task_id=task_id, experiment_id=experiment_id)
+        return
 
     if experiment_id:
         if watch:
@@ -299,14 +392,13 @@ def status(
             table.add_column("Agent")
             table.add_column("Model")
             table.add_column("Status")
-            table.add_column("Stage", style="dim")
+            table.add_column("Detail")
             table.add_column("Reward", justify="center")
             table.add_column("Attempts", justify="center")
 
             for trial in trials:
                 trial_idx = trial["id"].split("-")[-1]
                 trial_status = trial["status"]
-                harbor_stage = trial.get("harbor_stage") or "-"
                 trial_status_display = format_trial_status(trial_status)
 
                 reward = trial.get("reward")
@@ -336,7 +428,7 @@ def status(
                     trial["agent"],
                     trial.get("model") or "-",
                     trial_status_display,
-                    harbor_stage if trial_status == "running" else "-",
+                    format_trial_status_detail(trial),
                     reward_str,
                     f"{attempts}/{max_attempts}",
                 )

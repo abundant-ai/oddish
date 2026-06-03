@@ -1,5 +1,4 @@
-// Task status (simplified - just tracks trial execution)
-export type TaskStatus =
+type TaskStatus =
   | "pending"
   | "running"
   | "analyzing"
@@ -11,7 +10,7 @@ export type TaskStatus =
 // - "success": Trial executed to completion (regardless of test result)
 // - "failed": Trial encountered an execution error (harness/infrastructure failure)
 // - Test results are stored separately in the `reward` field (0..1 score, null=no result)
-export type TrialStatus =
+type TrialStatus =
   | "pending"
   | "queued"
   | "running"
@@ -21,9 +20,9 @@ export type TrialStatus =
 
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
-export type VisibleJobKind = "trial" | "analysis" | "verdict";
+type VisibleJobKind = "trial" | "analysis" | "verdict";
 
-export type VisibleJobStatus =
+type VisibleJobStatus =
   | "queued"
   | "running"
   | "retrying"
@@ -96,6 +95,11 @@ export interface Trial {
   result?: Record<string, unknown> | null;
   analysis_status?: JobStatus | null;
   analysis?: TrialAnalysis | null;
+  // Set when a user-driven retry has replaced this trial with a new
+  // immutable row. Default list endpoints already hide superseded
+  // trials; this field is here so detail views deep-linked directly
+  // can render a "superseded by …" affordance.
+  superseded_by_trial_id?: string | null;
   jobs?: VisibleWorkerJob[];
   queue_info?: TrialQueueInfo | null;
   task_version?: number | null;
@@ -159,6 +163,7 @@ export interface Task {
   experiment_id: string;
   experiment_name: string;
   experiment_is_public: boolean;
+  experiment_created_at?: string | null;
   total: number;
   completed: number;
   failed: number;
@@ -214,6 +219,42 @@ export interface TaskBrowseResponse {
   limit: number;
   offset: number;
   has_more: boolean;
+}
+
+export interface TaskVersionSummary {
+  id: string;
+  version: number;
+  message?: string | null;
+  created_at: string;
+  is_current: boolean;
+  trial_count: number;
+  completed_count: number;
+  failed_count: number;
+  pass_count: number;
+  partial_count: number;
+  fail_count: number;
+  pending_count: number;
+  reward_sum: number;
+  reward_total: number;
+  cost_usd: number;
+  cost_trial_count: number;
+  cost_has_estimated: boolean;
+  cost_has_native: boolean;
+  last_run_at?: string | null;
+}
+
+export interface TaskCostTotals {
+  cost_usd: number;
+  cost_trial_count: number;
+  cost_has_estimated: boolean;
+  cost_has_native: boolean;
+  total_trials: number;
+}
+
+export interface TaskDetailResponse {
+  task: Task;
+  versions: TaskVersionSummary[];
+  totals: TaskCostTotals;
 }
 
 // Queue statistics keyed by queue key
@@ -279,6 +320,7 @@ export interface DashboardExperiment {
   total_trials: number;
   completed_trials: number;
   failed_trials: number;
+  retrying_trials: number;
   active_trials: number;
   reward_success: number;
   reward_sum: number;

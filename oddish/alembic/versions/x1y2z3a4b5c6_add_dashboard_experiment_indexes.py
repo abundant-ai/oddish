@@ -21,14 +21,12 @@ def upgrade() -> None:
         "idx_tasks_org_experiment_created_at",
         "tasks",
         ["org_id", "experiment_id", "created_at"],
-        unique=False,
-    )
+        unique=False, if_not_exists=True)
     op.create_index(
         "idx_trials_org_experiment_created_at",
         "trials",
         ["org_id", "experiment_id", "created_at"],
-        unique=False,
-    )
+        unique=False, if_not_exists=True)
 
 
 def downgrade() -> None:

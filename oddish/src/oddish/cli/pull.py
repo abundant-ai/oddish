@@ -14,7 +14,12 @@ import httpx
 import typer
 from rich.console import Console
 
-from oddish.cli.config import get_api_url, get_auth_headers, require_api_key
+from oddish.cli.config import (
+    get_api_url,
+    get_auth_headers,
+    print_json,
+    require_api_key,
+)
 
 console = Console()
 
@@ -22,6 +27,11 @@ TargetType = Literal["trial", "task", "experiment"]
 StatusCallback = Callable[[str], None]
 
 MAX_WORKERS = 8
+
+# Trial logs and artifacts can be hundreds of MB, so the read timeout has to be
+# generous enough to keep slow connections alive between chunks. Connect / write
+# / pool timeouts stay short so genuinely dead requests still fail fast.
+_PULL_TIMEOUT = httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=15.0)
 
 
 def _utc_now() -> str:
@@ -56,7 +66,7 @@ def _write_bytes(path: Path, content: bytes) -> None:
 def _make_client(api_url: str) -> httpx.Client:
     return httpx.Client(
         base_url=api_url,
-        timeout=60.0,
+        timeout=_PULL_TIMEOUT,
         headers=get_auth_headers(),
         limits=httpx.Limits(
             max_connections=MAX_WORKERS + 2, max_keepalive_connections=MAX_WORKERS + 2
@@ -120,7 +130,7 @@ def _list_task_files(client: httpx.Client, task_id: str) -> dict | None:
 
 def _download_presigned_bytes(url: str) -> tuple[bytes | None, str | None]:
     try:
-        response = httpx.get(url, timeout=60.0, follow_redirects=True)
+        response = httpx.get(url, timeout=_PULL_TIMEOUT, follow_redirects=True)
     except Exception as exc:
         return None, str(exc)
     if response.status_code != 200:
@@ -789,6 +799,13 @@ def pull(
         typer.Option("--interval", help="Polling interval in seconds for --watch."),
     ] = 5,
     api_url: Annotated[str, typer.Option("--api", help="API URL")] = "",
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Output the pull manifest as JSON (for CI/scripts).",
+        ),
+    ] = False,
 ):
     """Pull logs and artifacts from Oddish remote to local files."""
     if not api_url:
@@ -805,17 +822,17 @@ def pull(
         output_root = out or (Path.cwd() / ".oddish" / resolved_id)
         output_root.mkdir(parents=True, exist_ok=True)
 
-        console.print(
-            f"[cyan]Pulling[/cyan] type={resolved_type} id={resolved_id} -> {output_root}"
-        )
+        if not json_output:
+            console.print(
+                f"[cyan]Pulling[/cyan] type={resolved_type} id={resolved_id} "
+                f"-> {output_root}"
+            )
 
         iteration = 0
+        manifest: dict = {}
         while True:
             iteration += 1
-            with console.status(
-                f"Pulling {resolved_type} {resolved_id} (iteration {iteration})",
-                spinner="dots",
-            ) as status:
+            if json_output:
                 run_manifest = _pull_once(
                     client,
                     resolved_type,
@@ -826,8 +843,25 @@ def pull(
                     include_structured_logs=structured,
                     include_task_files=include_task_files,
                     cached_data=cached_data,
-                    status_update=status.update,
+                    status_update=None,
                 )
+            else:
+                with console.status(
+                    f"Pulling {resolved_type} {resolved_id} (iteration {iteration})",
+                    spinner="dots",
+                ) as status:
+                    run_manifest = _pull_once(
+                        client,
+                        resolved_type,
+                        resolved_id,
+                        output_root,
+                        include_logs=logs,
+                        include_files=files,
+                        include_structured_logs=structured,
+                        include_task_files=include_task_files,
+                        cached_data=cached_data,
+                        status_update=status.update,
+                    )
             cached_data = None
 
             manifest = {
@@ -847,10 +881,12 @@ def pull(
                 int(t.get("files_saved", 0)) + int(t.get("logs_saved", 0))
                 for t in run_manifest.get("trials", [])
             )
-            console.print(
-                f"[green]Pull iteration {iteration} complete[/green] "
-                f"({len(run_manifest.get('trials', []))} trials, {total_saved} artifacts/log files saved)"
-            )
+            if not json_output:
+                console.print(
+                    f"[green]Pull iteration {iteration} complete[/green] "
+                    f"({len(run_manifest.get('trials', []))} trials, "
+                    f"{total_saved} artifacts/log files saved)"
+                )
 
             if not watch:
                 break
@@ -863,12 +899,17 @@ def pull(
                 done = _is_experiment_terminal(client, resolved_id)
 
             if done:
-                console.print(
-                    "[green]Target reached terminal state; stopping watch.[/green]"
-                )
+                if not json_output:
+                    console.print(
+                        "[green]Target reached terminal state; stopping watch.[/green]"
+                    )
                 break
 
-            console.print(
-                f"[dim]Target still running; polling again in {interval}s...[/dim]"
-            )
+            if not json_output:
+                console.print(
+                    f"[dim]Target still running; polling again in {interval}s...[/dim]"
+                )
             time.sleep(interval)
+
+        if json_output:
+            print_json(manifest)

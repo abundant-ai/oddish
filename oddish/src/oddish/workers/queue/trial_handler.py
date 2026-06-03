@@ -11,12 +11,14 @@ import uuid
 from pathlib import Path
 
 from harbor.models.environment_type import EnvironmentType
+from harbor.models.job.config import RetryConfig
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
 
 from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
+    ExperimentModel,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
@@ -27,9 +29,21 @@ from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.workers.harbor_runner import HarborOutcome, run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
+from oddish.workers.queue.trial_failures import (
+    MODAL_IMAGE_BUILD_FAILED_STAGE,
+    is_modal_image_build_failure,
+)
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+def _extract_trial_index(trial_id: str, task_id: str) -> int:
+    """Extract the 0-based trial index from a trial ID like '{task_id}-{index}'."""
+    suffix = trial_id[len(task_id) :]  # e.g., "-0", "-1", "-2"
+    if suffix.startswith("-") and suffix[1:].isdigit():
+        return int(suffix[1:])
+    return 0
 
 
 @dataclass(slots=True)
@@ -41,6 +55,12 @@ class PreparedTrialRun:
     trial_model: str
     trial_environment: str | None
     trial_harbor_config: dict | None
+    # Fields for sauron S3 mirror
+    task_name: str = ""
+    experiment_id: str = ""
+    experiment_name: str | None = None
+    attempt_number: int = 1
+    task_tags: dict | None = None
 
 
 @dataclass(slots=True)
@@ -57,6 +77,24 @@ def _is_agent_timeout_error_message(error: str | None) -> bool:
     if not error:
         return False
     return "AgentTimeoutError" in error or "Agent execution timed out" in error
+
+
+# Source of truth for "the trial finished with an error that retrying in a
+# fresh sandbox cannot fix" lives in Harbor's RetryConfig. We resolve the
+# default exclude set at import time and treat any HarborOutcome whose
+# exception_type lands in here as terminal — without this, a dying-sandbox
+# AddTestsDirError on a 10h ruby-rust-port trial gets re-queued up to
+# ``trial.max_attempts`` times against fresh sandboxes that hit the same
+# failure mode for the same upstream reason.
+_NON_RETRYABLE_EXCEPTION_TYPES: frozenset[str] = frozenset(
+    RetryConfig.model_fields["exclude_exceptions"].default_factory() or set()
+)
+
+
+def _is_non_retryable_outcome(outcome: HarborOutcome | None) -> bool:
+    if outcome is None or outcome.exception_type is None:
+        return False
+    return outcome.exception_type in _NON_RETRYABLE_EXCEPTION_TYPES
 
 
 def _verifier_ran_from_job_result(job_result_path: str | None) -> bool:
@@ -153,8 +191,7 @@ def _cleanup_trial_wrapper_dirs(trial_id: str) -> None:
                 )
         if removed:
             console.print(
-                f"[dim]Swept {len(removed)} Harbor wrapper dir(s) for "
-                f"{trial_id}[/dim]"
+                f"[dim]Swept {len(removed)} Harbor wrapper dir(s) for {trial_id}[/dim]"
             )
     except Exception as exc:
         console.print(
@@ -336,6 +373,15 @@ async def _prepare_trial_run(
             task.started_at = utcnow()
 
         task_id = task.id if task else trial.task_id
+        task_name = task.name if task else trial.task_id
+        task_tags = dict(task.tags) if task and task.tags else None
+
+        experiment_id = trial.experiment_id or ""
+        experiment_name: str | None = None
+        if experiment_id:
+            experiment = await session.get(ExperimentModel, experiment_id)
+            if experiment:
+                experiment_name = experiment.name
 
         # Prefer the version-specific path so the worker runs the exact
         # content the trial was created against.
@@ -375,6 +421,16 @@ async def _prepare_trial_run(
             trial_model=trial_model,
             trial_environment=trial_environment,
             trial_harbor_config=trial_harbor_config,
+            task_name=task_name,
+            experiment_id=experiment_id,
+            experiment_name=experiment_name,
+            # Extract trial index from trial_id ("{task_id}-{index}") for the
+            # sauron attempt number. This is the trial's position within its
+            # task (0, 1, 2...), NOT the retry count (trial.attempts).
+            # Multiple trials of the same task must map to different attempt_N
+            # folders to avoid overwriting each other.
+            attempt_number=_extract_trial_index(trial_id, task_id) + 1,  # 1-indexed
+            task_tags=task_tags,
         )
 
 
@@ -389,18 +445,19 @@ async def _store_trial_results(
         if not trial:
             return
 
+        is_modal_image_build_error = bool(
+            outcome and is_modal_image_build_failure(outcome.error)
+        )
+
         # If the trial was cancelled by the user while we were running,
         # don't overwrite its FAILED/"Cancelled by user" state.
         # The cancel API sets error_message and also max_attempts=attempts
         # as a reliable signal (survives even if this code is from an older deploy).
-        if (
-            trial.error_message == "Cancelled by user"
-            or trial.harbor_stage == "cancelled"
-            or (
-                trial.status == TrialStatus.FAILED
-                and trial.max_attempts <= trial.attempts
-            )
-        ):
+        user_cancelled = trial.error_message == "Cancelled by user" or (
+            trial.status == TrialStatus.FAILED and trial.max_attempts <= trial.attempts
+        )
+        runtime_cancelled = trial.harbor_stage == "cancelled"
+        if user_cancelled or (runtime_cancelled and not is_modal_image_build_error):
             console.print(
                 f"[dim]Trial {trial_id} was cancelled by user, skipping result update[/dim]"
             )
@@ -454,7 +511,23 @@ async def _store_trial_results(
                 )
             else:
                 # No reward - trial encountered an error or didn't complete verification.
-                if trial.attempts < trial.max_attempts:
+                if is_modal_image_build_error:
+                    trial.status = TrialStatus.FAILED
+                    trial.harbor_stage = MODAL_IMAGE_BUILD_FAILED_STAGE
+                    trial.finished_at = utcnow()
+                    console.print(
+                        f"[red]Trial {trial_id} FAILED (Modal image build)[/red]"
+                    )
+                elif _is_non_retryable_outcome(outcome):
+                    # Re-queueing into a fresh sandbox cannot recover from this
+                    # error class (see ``_NON_RETRYABLE_EXCEPTION_TYPES``).
+                    trial.status = TrialStatus.FAILED
+                    trial.finished_at = utcnow()
+                    console.print(
+                        f"[red]Trial {trial_id} FAILED ({outcome.exception_type}; "
+                        "non-retryable)[/red]"
+                    )
+                elif trial.attempts < trial.max_attempts:
                     trial.status = TrialStatus.RETRYING
                     console.print(
                         f"[yellow]Trial {trial_id} re-queued for retry "
@@ -784,6 +857,7 @@ async def run_trial_job(
 
         # Upload trial results to S3.
         trial_s3_key = None
+        oddish_uploaded = False
         if should_upload_to_s3 and execution.outcome and execution.outcome.job_dir:
             try:
                 storage = get_storage_client()
@@ -793,11 +867,41 @@ async def run_trial_job(
                 console.print(
                     f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]"
                 )
-                _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
+                oddish_uploaded = True
             except Exception as e:
                 console.print(
                     f"[yellow]Failed to upload trial results to S3: {e}[/yellow]"
                 )
+
+        # Mirror to sauron's AWS S3 (best-effort).
+        if execution.outcome and execution.outcome.job_dir:
+            try:
+                from oddish.integrations.sauron import get_sauron_uploader
+                from oddish.integrations.github.client import GitHubMeta
+
+                sauron = get_sauron_uploader()
+                if sauron.is_enabled():
+                    sauron_prefix = await sauron.upload_trial(
+                        harbor_job_dir=execution.outcome.job_dir,
+                        task_name=prepared_trial.task_name or prepared_trial.task_id,
+                        agent=prepared_trial.trial_agent,
+                        model=prepared_trial.trial_model,
+                        experiment_id=prepared_trial.experiment_id,
+                        experiment_name=prepared_trial.experiment_name,
+                        attempt_number=prepared_trial.attempt_number,
+                        github_meta=GitHubMeta.from_tags(prepared_trial.task_tags),
+                        task_tags=prepared_trial.task_tags,
+                    )
+                    if sauron_prefix:
+                        console.print(
+                            f"[dim]Mirrored to sauron S3: {sauron_prefix}[/dim]"
+                        )
+            except Exception as e:
+                console.print(f"[yellow]Sauron mirror failed (non-fatal): {e}[/yellow]")
+
+        # Cleanup local Harbor artifacts AFTER both uploads complete.
+        if oddish_uploaded and execution.outcome and execution.outcome.job_dir:
+            _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
 
         await asyncio.shield(
             _store_trial_results(

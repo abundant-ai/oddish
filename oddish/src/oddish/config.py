@@ -13,7 +13,7 @@ from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 
 
 _FIXED_AGENT_PROVIDERS: dict[str, str] = {
-    AgentName.CLAUDE_CODE.value: "claude",
+    AgentName.CLAUDE_CODE.value: "bedrock",
     AgentName.GEMINI_CLI.value: "gemini",
     AgentName.CODEX.value: "openai",
 }
@@ -37,8 +37,182 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-ANALYSIS_MODEL = "claude-haiku-4-5"
+ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 VERDICT_MODEL = "gpt-5.2"
+NOP_ORACLE_QUEUE_KEY = "nop_oracle"
+_NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
+
+# Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
+# "global.anthropic.claude-haiku-4-5-20251001-v1:0".
+_BEDROCK_REGION_PREFIXES: tuple[str, ...] = ("us.", "eu.", "apac.", "apn.", "global.")
+
+# Environment variables that put Claude Code into Bedrock mode. The Modal image
+# sets these globally so Bedrock is the default route for Oddish-run Claude jobs.
+BEDROCK_ENV_VARS: tuple[str, ...] = (
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "CLAUDE_CODE_USE_BEDROCK",
+)
+
+
+def looks_like_bedrock_model_id(model: str | None) -> bool:
+    """Return True if *model* is a Bedrock-style id that should route through AWS.
+
+    Handles the three shapes AWS Bedrock accepts:
+      * ARNs: ``arn:aws:bedrock:...``
+      * Native ids: ``anthropic.claude-...``
+      * Cross-region inference profiles: ``us.anthropic.claude-...``
+    """
+    if not model:
+        return False
+    tail = model.split("/", 1)[-1].strip().lower()
+    if not tail:
+        return False
+    if tail.startswith("arn:aws:bedrock:"):
+        return True
+    if tail.startswith("anthropic."):
+        return True
+    if any(tail.startswith(p) for p in _BEDROCK_REGION_PREFIXES) and (
+        ".anthropic." in tail
+    ):
+        return True
+    return False
+
+
+# Anthropic-style Claude model ids mapped to their invokable AWS Bedrock ids.
+# oddish runs Claude exclusively through AWS Bedrock. Claude Code invokes
+# Bedrock via the legacy InvokeModel API, which only accepts cross-region
+# inference profile ids (a "global."/"us."/... prefix) or ARNs — bare
+# "anthropic.claude-..." foundation-model ids are NOT invokable on-demand.
+# So every value below is a "global." inference profile id, except the two
+# legacy Opus models that have no global profile (they use "us.").
+#
+# Keys are the lowercased model id with any "provider/" prefix removed (e.g.
+# "anthropic/claude-haiku-4-5" and bare "claude-haiku-4-5" both look up
+# "claude-haiku-4-5"); both the dated Claude API id and its dateless alias
+# are listed where they differ. An unmapped Claude id raises in
+# to_bedrock_model_id() rather than reaching Bedrock as an uninvokable id.
+#
+# Sources:
+#   https://platform.claude.com/docs/en/about-claude/models/overview
+#   https://platform.claude.com/docs/en/build-with-claude/claude-on-amazon-bedrock-legacy
+_ANTHROPIC_TO_BEDROCK_MODEL_IDS: dict[str, str] = {
+    # Current models
+    "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
+    "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
+    "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "claude-haiku-4-5-20251001": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    # Legacy models
+    "claude-opus-4-7": "global.anthropic.claude-opus-4-7",
+    "claude-opus-4-6": "global.anthropic.claude-opus-4-6-v1",
+    "claude-sonnet-4-5": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "claude-sonnet-4-5-20250929": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "claude-opus-4-5": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+    "claude-opus-4-5-20251101": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+    # Opus 4.1 / Opus 4 have no "global." inference profile — use "us.".
+    "claude-opus-4-1": "us.anthropic.claude-opus-4-1-20250805-v1:0",
+    "claude-opus-4-1-20250805": "us.anthropic.claude-opus-4-1-20250805-v1:0",
+    "claude-sonnet-4-0": "global.anthropic.claude-sonnet-4-20250514-v1:0",
+    "claude-sonnet-4-20250514": "global.anthropic.claude-sonnet-4-20250514-v1:0",
+    "claude-opus-4-0": "us.anthropic.claude-opus-4-20250514-v1:0",
+    "claude-opus-4-20250514": "us.anthropic.claude-opus-4-20250514-v1:0",
+}
+
+
+def to_bedrock_model_id(model: str | None) -> str | None:
+    """Normalize any Claude model reference to an invokable AWS Bedrock id.
+
+    oddish routes Claude exclusively through AWS Bedrock. Claude Code invokes
+    Bedrock via the legacy InvokeModel API, which only accepts ids that are
+    directly invokable: ARNs and cross-region inference profile ids
+    (``global.``/``us.``/``eu.``/... prefixed). Bare ``anthropic.claude-...``
+    foundation-model ids are NOT invokable on-demand, so they get re-resolved
+    through the mapping table like any other Claude reference.
+
+    This is the single chokepoint that guarantees whatever reaches Claude Code
+    is an invokable Bedrock id:
+
+      * ``None`` / blank -> returned unchanged
+      * non-Claude models (``openai/...``, ``gemini-...``) -> returned unchanged
+      * an explicit non-Anthropic provider prefix (``openrouter/...``, etc.) ->
+        returned unchanged so it runs through that provider, even when the rest
+        of the id mentions Claude (``openrouter/anthropic/claude-opus-4.8``)
+      * ARNs and inference-profile ids -> returned as-is (minus any leading
+        ``bedrock/`` prefix)
+      * everything else containing "claude" (``anthropic/claude-...``, bare
+        ``claude-...``, bare ``anthropic.claude-...``) -> mapped via
+        ``_ANTHROPIC_TO_BEDROCK_MODEL_IDS``
+
+    Raises ``ValueError`` for a Claude model id with no Bedrock mapping rather
+    than silently handing Bedrock an id it cannot invoke.
+    """
+    if model is None:
+        return None
+    stripped = model.strip()
+    if not stripped:
+        return model
+
+    # Drop a redundant "bedrock/" prefix (bedrock/us.anthropic.* -> us.anthropic.*).
+    if stripped.lower().startswith("bedrock/"):
+        stripped = stripped.split("/", 1)[1]
+    lowered = stripped.lower()
+
+    # ARNs and cross-region inference profile ids are already invokable as-is.
+    if lowered.startswith("arn:aws:bedrock:"):
+        return stripped
+    if any(lowered.startswith(p) for p in _BEDROCK_REGION_PREFIXES) and (
+        ".anthropic." in lowered
+    ):
+        return stripped
+
+    # An explicit non-Anthropic provider prefix means the caller has chosen a
+    # specific transport (e.g. "openrouter/anthropic/claude-opus-4.8" must run
+    # through OpenRouter, not Bedrock). Honor it and pass the id through; only
+    # bare Claude ids and the "anthropic/"/"claude/" routes get Bedrock-mapped.
+    provider_prefix, _ = split_provider_model_name(stripped)
+    if provider_prefix and provider_prefix.strip().lower() not in {
+        "anthropic",
+        "claude",
+    }:
+        return stripped
+
+    # Resolve everything else through the table, keyed by the lowercased id
+    # with any "provider/" prefix removed. Non-Claude models route through
+    # their own providers untouched.
+    key = stripped.split("/", 1)[-1].strip().lower()
+    if "claude" not in key:
+        return stripped
+
+    # Bare Bedrock foundation-model ids (anthropic.claude-...-v1:0) are not
+    # invokable on-demand; reduce them to the table's Anthropic-style key.
+    if key.startswith("anthropic."):
+        key = key[len("anthropic.") :]
+        for version_suffix in ("-v1:0", "-v1"):
+            if key.endswith(version_suffix):
+                key = key[: -len(version_suffix)]
+                break
+
+    bedrock_id = _ANTHROPIC_TO_BEDROCK_MODEL_IDS.get(key)
+    if bedrock_id is None:
+        raise ValueError(
+            f"No Bedrock model id mapping for Claude model {model!r}. "
+            "oddish runs Claude through AWS Bedrock only — add an entry to "
+            "_ANTHROPIC_TO_BEDROCK_MODEL_IDS in oddish.config."
+        )
+    return bedrock_id
+
+
+def _to_bedrock_model_id_if_known(model: str) -> str:
+    """Best-effort Bedrock canonicalization for read-side legacy metadata.
+
+    New trial creation calls ``to_bedrock_model_id`` through
+    ``normalize_trial_model`` and remains strict. Queue/admin/dashboard reads
+    may encounter historical queue keys with unmapped Claude aliases; those
+    should remain visible instead of breaking the whole response.
+    """
+    try:
+        return to_bedrock_model_id(model) or model
+    except ValueError:
+        return model
 
 
 def normalize_model_id(model: str | None) -> str | None:
@@ -89,10 +263,11 @@ def _build_agent_provider_map() -> dict[str, str]:
 
 # Keep a compact provider map for usage/cost attribution and compatibility.
 _MODEL_PROVIDER_ALIASES: dict[str, str] = {
-    # Claude (direct + Bedrock)
-    "anthropic": "claude",
-    "claude": "claude",
-    "bedrock": "claude",
+    # Claude transports. Oddish-run Claude trials canonicalize to Bedrock, while
+    # direct Anthropic ids can still appear in imported/off-platform data.
+    "anthropic": "anthropic",
+    "claude": "anthropic",
+    "bedrock": "bedrock",
     # Gemini / Google
     "gemini": "gemini",
     "google": "gemini",
@@ -108,11 +283,13 @@ def _normalize_model_provider(provider: str) -> str | None:
     if normalized in _MODEL_PROVIDER_ALIASES:
         return _MODEL_PROVIDER_ALIASES[normalized]
     if normalized in PROVIDER_KEYS:
-        return "openai"
+        return normalized
     return None
 
 
 def _get_provider_from_model(model_name: str) -> str | None:
+    if looks_like_bedrock_model_id(model_name):
+        return "bedrock"
     provider_prefix, _ = split_provider_model_name(model_name)
     if provider_prefix:
         return _normalize_model_provider(provider_prefix)
@@ -166,12 +343,6 @@ class Settings(BaseSettings):
     # ==========================================================================
 
     # Worker behavior
-    max_retries: int = 5
-    retry_backoff_base: int = 60  # seconds
-    retry_backoff_max: int = 3600  # seconds
-    worker_poll_interval: float = 10.0  # seconds
-    worker_batch_size: int = 1
-    trial_retry_timer_minutes: int = 60
     auto_start_workers: bool = True
 
     # Local execution scratch paths
@@ -187,14 +358,13 @@ class Settings(BaseSettings):
     # Database connection pools (constants — override on Settings class
     # in entry modules for different deployment targets)
     db_use_null_pool: ClassVar[bool] = False
-    db_pool_min_size: ClassVar[int] = 2
-    db_pool_max_size: ClassVar[int] = 20
     db_pool_max_overflow: ClassVar[int] = 10
     db_pool_size: ClassVar[int] = 5
 
     # Queue limits — use ODDISH_MODEL_CONCURRENCY_OVERRIDES for per-model
     # values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
     default_model_concurrency: int = 8
+    nop_oracle_concurrency: int = 32
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
     verdict_model: str = VERDICT_MODEL
@@ -277,8 +447,15 @@ class Settings(BaseSettings):
     s3_bucket: str = "data"
     s3_region: str = "us-east-1"
 
-    # Task upload limits (MB)
-    max_task_upload_mb: int = 50
+    # Sauron S3 mirror (optional, disabled when bucket is empty).
+    # When configured, oddish workers also upload trial artifacts to sauron's
+    # AWS S3 bucket in sauron's expected directory layout, allowing sauron's
+    # frontend to render oddish-originated experiments natively.
+    # Uses AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY from environment for credentials.
+    sauron_s3_bucket: str = ""
+    # Org slug used as the top-level path segment for non-PR (CLI-triggered)
+    # experiments. PR-triggered runs derive owner/repo from task.tags.github_meta.
+    sauron_s3_org: str = "oddish"
 
     # Task archive expansion (derived per-file layout for fast listings).
     # When enabled, uploading a new task version enqueues a
@@ -352,28 +529,33 @@ class Settings(BaseSettings):
 
         - Treat '-', 'none', 'null', empty, etc as missing.
         - For nop/oracle, always force model to 'default'.
+        - Canonicalize Claude models to their Bedrock runtime id, since Oddish
+          runs Claude through Bedrock and persists the same id it executes.
         - Otherwise return cleaned model (or None if missing).
         """
         cleaned = normalize_model_id(model)
 
         normalized_agent = (agent or "").strip().lower()
-        if normalized_agent in {AgentName.NOP.value, AgentName.ORACLE.value}:
+        if normalized_agent in _NOP_ORACLE_AGENTS:
             return "default"
 
-        return cleaned
+        return to_bedrock_model_id(cleaned)
 
     def normalize_queue_key(self, model: str) -> str:
         """Normalize queue keys.
 
-        For model-like inputs without an explicit provider prefix, this attempts
-        to infer the provider and returns `provider/model` so bare and prefixed
-        variants collapse to one queue key.
+        Claude aliases collapse to the same Bedrock id that is persisted on the
+        trial, so queueing/concurrency and execution use one model id. For other
+        bare model inputs, infer a provider prefix as before.
         """
         normalized = model.strip().lower().replace(" ", "_")
         if not normalized or normalized in _MODEL_ABSENT_ALIASES:
             return "default"
         if normalized in _PROVIDER_ONLY_QUEUE_ALIASES:
             return "default"
+        normalized = _to_bedrock_model_id_if_known(normalized)
+        if looks_like_bedrock_model_id(normalized):
+            return normalized
         if "/" in normalized:
             provider_prefix, canonical = normalized.split("/", 1)
             if (
@@ -390,6 +572,9 @@ class Settings(BaseSettings):
 
     def get_queue_key_for_trial(self, agent: str, model: str | None) -> str:
         """Resolve queue key from model first, fallback to provider bucket."""
+        normalized_agent = (agent or "").strip().lower()
+        if normalized_agent in _NOP_ORACLE_AGENTS:
+            return NOP_ORACLE_QUEUE_KEY
         normalized_model = self.normalize_trial_model(agent, model)
         if normalized_model:
             return self.normalize_queue_key(normalized_model)
@@ -415,10 +600,16 @@ class Settings(BaseSettings):
         override = self.model_concurrency_overrides.get(normalized)
         if override is not None:
             return max(int(override), 0)
+        if normalized == NOP_ORACLE_QUEUE_KEY:
+            return max(int(self.nop_oracle_concurrency), 0)
         return max(int(self.default_model_concurrency), 0)
 
     def get_known_queue_keys(self) -> set[str]:
-        keys = {self.get_analysis_queue_key(), self.get_verdict_queue_key()}
+        keys = {
+            NOP_ORACLE_QUEUE_KEY,
+            self.get_analysis_queue_key(),
+            self.get_verdict_queue_key(),
+        }
         keys.update(self.model_concurrency_overrides.keys())
         return keys
 

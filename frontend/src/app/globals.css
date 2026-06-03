@@ -112,6 +112,14 @@
 
 @layer base {
   :root {
+    --preview-banner-h: 0px;
+  }
+
+  :root[data-preview="true"] {
+    --preview-banner-h: 1.75rem;
+  }
+
+  :root {
     /*
      * "Paper" design tokens — editorial warm neutrals with muted ink tones
      * and matrix semantic colors. Used globally so every page (dashboard,

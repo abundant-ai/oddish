@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
-import { useSWRConfig } from "swr";
 import { useAuth } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -85,7 +84,6 @@ export function ExperimentClientPage({
   initialTasks,
 }: ExperimentClientPageProps) {
   const { orgRole } = useAuth();
-  const { mutate: mutateKey } = useSWRConfig();
 
   const [isEditingName, setIsEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -296,20 +294,19 @@ export function ExperimentClientPage({
 
     const intervalId = window.setInterval(() => {
       void mutateLightweight();
-      const firstTrialKey = getTrialsPageKey(0, null);
-      if (firstTrialKey) void mutateKey(firstTrialKey);
+      // Refresh every trial page that's been loaded so far -- not
+      // just the first. Polling only the first page caused later
+      // pages to age (e.g. trial status badges going stale on row
+      // 251+ until the user manually triggered a re-fetch).
+      // ``mutateTrials()`` re-runs every page key currently held by
+      // useSWRInfinite, in order, with the regular SWR dedup window.
+      void mutateTrials();
     }, refreshIntervalMs);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [
-    allTasksUrl,
-    refreshIntervalMs,
-    mutateLightweight,
-    mutateKey,
-    getTrialsPageKey,
-  ]);
+  }, [allTasksUrl, refreshIntervalMs, mutateLightweight, mutateTrials]);
 
   const handleRename = async () => {
     if (!experimentId) return;

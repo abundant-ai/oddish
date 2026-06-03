@@ -32,7 +32,9 @@ db_url = settings.database_url
 if db_url.startswith("postgresql://") and "+asyncpg" not in db_url:
     db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-config.set_main_option("sqlalchemy.url", db_url)
+# alembic loads sqlalchemy.url via configparser, which interprets ``%``
+# as interpolation syntax — escape any literal ``%`` in the URL.
+config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
 # add your model's MetaData object here
 # for 'autogenerate' support
@@ -88,6 +90,9 @@ async def run_async_migrations() -> None:
             "statement_cache_size": 0,
             "timeout": 30,
             "command_timeout": 120,
+            # Supabase preview pooler hands out backends with an empty
+            # search_path; pin it at connect time so the first DDL works.
+            "server_settings": {"search_path": "public"},
         },
         poolclass=pool.NullPool,
     )

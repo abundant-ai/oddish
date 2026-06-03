@@ -10,7 +10,6 @@ class TaskTimeoutValidationError(ValueError):
 
 _REQUIRED_TIMEOUT_FIELDS = (
     ("agent", "timeout_sec", "[agent].timeout_sec"),
-    ("verifier", "timeout_sec", "[verifier].timeout_sec"),
     ("environment", "build_timeout_sec", "[environment].build_timeout_sec"),
 )
 
@@ -45,6 +44,28 @@ def validate_task_timeout_config(task_dir: Path) -> None:
         value = section[field_name]
         if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
             invalid_fields.append(display_name)
+
+    verifier = raw_config.get("verifier")
+    verifiers = raw_config.get("verifiers")
+    if isinstance(verifier, dict) and "timeout_sec" in verifier:
+        value = verifier["timeout_sec"]
+        if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+            invalid_fields.append("[verifier].timeout_sec")
+    elif isinstance(verifiers, list) and verifiers:
+        for index, stage in enumerate(verifiers):
+            display_name = f"[[verifiers]][{index}].timeout_sec"
+            if not isinstance(stage, dict) or "timeout_sec" not in stage:
+                missing_fields.append(display_name)
+                continue
+            value = stage["timeout_sec"]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or value <= 0
+            ):
+                invalid_fields.append(display_name)
+    else:
+        missing_fields.append("[verifier].timeout_sec or [[verifiers]].timeout_sec")
 
     if missing_fields or invalid_fields:
         details: list[str] = []

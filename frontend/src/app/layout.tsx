@@ -4,6 +4,8 @@ import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Providers } from "./providers";
 import { Footer } from "@/components/footer";
+import { PreviewBanner } from "@/components/preview-banner";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 
 const geistSans = Geist({
   subsets: ["latin"],
@@ -100,12 +102,17 @@ export default function RootLayout({
       <html
         lang="en"
         className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable}`}
+        data-preview={
+          process.env.NEXT_PUBLIC_ODDISH_PREVIEW === "true" ? "true" : undefined
+        }
       >
         <body className="flex min-h-screen flex-col bg-background font-sans text-foreground antialiased">
           <Providers>
+            <PreviewBanner />
             <div className="flex flex-1 flex-col">{children}</div>
             <Footer />
           </Providers>
+          <SpeedInsights />
         </body>
       </html>
     </ClerkProvider>

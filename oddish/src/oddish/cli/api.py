@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import shutil
@@ -19,6 +20,7 @@ import typer
 import yaml
 from rich.console import Console
 from rich.live import Live
+from rich.markup import escape
 from rich.progress import (
     BarColumn,
     Progress,
@@ -29,8 +31,6 @@ from rich.progress import (
 from rich.table import Table
 
 from harbor.models.environment_type import EnvironmentType
-from harbor.models.job.config import DatasetConfig
-from harbor.models.task.paths import TaskPaths
 from harbor.models.task.task import Task
 from harbor.models.trial.config import AgentConfig
 from harbor.models.trial.result import TrialResult
@@ -77,7 +77,11 @@ def resolve_task_path(path_arg: Path | None, path_option: Path | None) -> Path |
 
 def is_task_dir(path: Path) -> bool:
     """Check if a path is a valid Harbor task directory."""
-    return cast(bool, TaskPaths(path).is_valid(disable_verification=False))
+    try:
+        Task(path)
+    except Exception:
+        return False
+    return True
 
 
 def validate_tasks(task_paths: list[Path]) -> list[Path]:
@@ -126,14 +130,40 @@ def get_task_paths_from_local(
     n_tasks: int | None = None,
 ) -> list[Path]:
     """Get task paths from a local dataset directory using Harbor's DatasetConfig."""
-    config = DatasetConfig(
-        path=dataset_path,
-        task_names=task_names,
-        exclude_task_names=exclude_task_names,
-        n_tasks=n_tasks,
-    )
-    task_configs = asyncio.run(config.get_task_configs())
-    return [tc.path for tc in task_configs if tc.path is not None]
+    try:
+        from harbor.models.job.config import DatasetConfig
+    except ImportError:
+        task_paths = [
+            path
+            for path in dataset_path.iterdir()
+            if is_task_dir(path)
+        ]
+        if task_names:
+            task_paths = [
+                path
+                for path in task_paths
+                if any(fnmatch(path.name, pattern) for pattern in task_names)
+            ]
+        if exclude_task_names:
+            task_paths = [
+                path
+                for path in task_paths
+                if not any(
+                    fnmatch(path.name, pattern) for pattern in exclude_task_names
+                )
+            ]
+        if n_tasks is not None:
+            task_paths = task_paths[:n_tasks]
+        return task_paths
+    else:
+        config = DatasetConfig(
+            path=dataset_path,
+            task_names=task_names,
+            exclude_task_names=exclude_task_names,
+            n_tasks=n_tasks,
+        )
+        task_configs = asyncio.run(config.get_task_configs())
+        return [tc.path for tc in task_configs if tc.path is not None]
 
 
 def get_task_paths_from_registry(
@@ -309,17 +339,41 @@ def _upload_to_presigned_url(
 ) -> None:
     upload_headers = dict(headers)
     upload_headers.setdefault("Content-Length", str(tarball_path.stat().st_size))
+    retry_status_codes = {408, 425, 429, 500, 502, 503, 504}
+    max_attempts = 3
+
     with httpx.Client(timeout=600.0, follow_redirects=True) as upload_client:
-        response = upload_client.put(
-            url,
-            headers=upload_headers,
-            content=tarball_path.read_bytes(),
-        )
-    if response.status_code not in {200, 201, 204}:
-        error_console.print(
-            f"[red]Failed to upload task directly to storage:[/red] {response.text}"
-        )
-        raise typer.Exit(1)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with tarball_path.open("rb") as tarball:
+                    response = upload_client.put(
+                        url,
+                        headers=upload_headers,
+                        content=tarball,
+                    )
+            except httpx.TransportError as exc:
+                if attempt >= max_attempts:
+                    error_console.print(
+                        "[red]Failed to upload task directly to storage after "
+                        f"{max_attempts} attempts:[/red] {exc}"
+                    )
+                    raise typer.Exit(1) from exc
+                time.sleep(min(2 ** (attempt - 1), 5))
+                continue
+
+            if response.status_code in {200, 201, 204}:
+                return
+
+            if (
+                response.status_code not in retry_status_codes
+                or attempt >= max_attempts
+            ):
+                error_console.print(
+                    f"[red]Failed to upload task directly to storage:[/red] {response.text}"
+                )
+                raise typer.Exit(1)
+
+            time.sleep(min(2 ** (attempt - 1), 5))
 
 
 def upload_task(
@@ -330,6 +384,7 @@ def upload_task(
     message: str | None = None,
     user: str | None = None,
     priority: str | None = None,
+    force_new_version: bool = False,
 ) -> dict:
     """Upload a task directory to the API.
 
@@ -355,6 +410,8 @@ def upload_task(
     }
     if message:
         init_body["message"] = message
+    if force_new_version:
+        init_body["force_new_version"] = True
 
     try:
         with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
@@ -432,6 +489,7 @@ def upload_tasks_with_progress(
     quiet: bool = False,
     json_output: bool = False,
     progress_label: str = "Uploading",
+    force_new_version: bool = False,
 ) -> list[dict]:
     """Upload a batch of task directories with a shared progress bar.
 
@@ -452,6 +510,7 @@ def upload_tasks_with_progress(
             message=message,
             user=user,
             priority=priority,
+            force_new_version=force_new_version,
         )
 
     show_progress = not quiet and not json_output
@@ -503,14 +562,121 @@ def _parse_key_value_pairs(pairs: list[str] | None) -> dict[str, str]:
     return result
 
 
+def _parse_required_key_value_pairs(
+    pairs: list[str] | None,
+    *,
+    option_name: str,
+) -> dict[str, str]:
+    """Parse required 'key=value' CLI pairs, failing on malformed input."""
+    if not pairs:
+        return {}
+
+    result: dict[str, str] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            error_console.print(
+                f"[red]{option_name} values must use KEY=VALUE format:[/red] {pair}"
+            )
+            raise typer.Exit(1)
+        key, _, value = pair.partition("=")
+        key = key.strip()
+        if not key:
+            error_console.print(
+                f"[red]{option_name} values must include a non-empty key:[/red] {pair}"
+            )
+            raise typer.Exit(1)
+        result[key] = value.strip()
+    return result
+
+
+def _validate_json_serializable(value: Any, *, label: str) -> None:
+    try:
+        json.dumps(value)
+    except TypeError as exc:
+        error_console.print(f"[red]{label} must be JSON-serializable:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+def _build_harbor_payload(
+    raw_harbor: dict[str, Any] | None,
+    *,
+    env_overrides: dict[str, Any],
+    environment_kwargs: dict[str, Any],
+    disable_verification: bool,
+    artifact_paths: list[str] | None,
+) -> dict[str, Any]:
+    """Build the Harbor passthrough block for /tasks/sweep.
+
+    Start with config-file Harbor settings, then merge in explicit CLI
+    overrides. CLI values win when both sources set the same key.
+    """
+    if raw_harbor is None:
+        harbor: dict[str, Any] = {}
+    elif isinstance(raw_harbor, dict):
+        harbor = copy.deepcopy(raw_harbor)
+    else:
+        error_console.print("[red]Config field 'harbor' must be a mapping[/red]")
+        raise typer.Exit(1)
+
+    if env_overrides or environment_kwargs:
+        raw_environment = harbor.get("environment")
+        if raw_environment is None:
+            environment: dict[str, Any] = {}
+        elif isinstance(raw_environment, dict):
+            environment = raw_environment
+        else:
+            error_console.print(
+                "[red]Config field 'harbor.environment' must be a mapping[/red]"
+            )
+            raise typer.Exit(1)
+
+        if environment_kwargs:
+            raw_kwargs = environment.get("kwargs")
+            if raw_kwargs is None:
+                existing_kwargs: dict[str, Any] = {}
+            elif isinstance(raw_kwargs, dict):
+                existing_kwargs = raw_kwargs
+            else:
+                error_console.print(
+                    "[red]Config field 'harbor.environment.kwargs' must be a mapping[/red]"
+                )
+                raise typer.Exit(1)
+            environment["kwargs"] = {**existing_kwargs, **environment_kwargs}
+
+        environment.update(env_overrides)
+        harbor["environment"] = environment
+
+    if disable_verification:
+        raw_verifier = harbor.get("verifier")
+        if raw_verifier is None:
+            verifier: dict[str, Any] = {}
+        elif isinstance(raw_verifier, dict):
+            verifier = raw_verifier
+        else:
+            error_console.print(
+                "[red]Config field 'harbor.verifier' must be a mapping[/red]"
+            )
+            raise typer.Exit(1)
+        verifier["disable"] = True
+        harbor["verifier"] = verifier
+
+    if artifact_paths:
+        harbor["artifacts"] = artifact_paths
+
+    if harbor:
+        _validate_json_serializable(harbor, label="harbor")
+    return harbor
+
+
 def submit_sweep(
     api_url: str,
     task_id: str,
     configs: list[dict],
     environment: EnvironmentType | None,
-    user: str,
+    user: str | None,
     priority: str,
     experiment_id: str | None,
+    max_trial_attempts: int | None = None,
     run_analysis: bool = False,
     github_username: str | None = None,
     tags: dict[str, str] | None = None,
@@ -526,6 +692,8 @@ def submit_sweep(
     artifact_paths: list[str] | None = None,
     append_to_task: bool = False,
     content_hash: str | None = None,
+    harbor_config: dict[str, Any] | None = None,
+    environment_kwargs: list[str] | None = None,
 ) -> dict:
     """Submit a task sweep to the API."""
     env_value = environment.value if environment else None
@@ -534,8 +702,7 @@ def submit_sweep(
         for config in configs:
             config["environment"] = env_value
 
-    harbor: dict = {}
-    env_overrides: dict = {}
+    env_overrides: dict[str, Any] = {}
     if override_cpus is not None:
         env_overrides["override_cpus"] = override_cpus
     if override_memory_mb is not None:
@@ -546,12 +713,17 @@ def submit_sweep(
         env_overrides["override_storage_mb"] = override_storage_mb
     if force_build is not None:
         env_overrides["force_build"] = force_build
-    if env_overrides:
-        harbor["environment"] = env_overrides
-    if disable_verification:
-        harbor["verifier"] = {"disable": True}
-    if artifact_paths:
-        harbor["artifacts"] = artifact_paths
+    parsed_environment_kwargs = _parse_required_key_value_pairs(
+        environment_kwargs,
+        option_name="--environment-kwarg",
+    )
+    harbor = _build_harbor_payload(
+        harbor_config,
+        env_overrides=env_overrides,
+        environment_kwargs=parsed_environment_kwargs,
+        disable_verification=disable_verification,
+        artifact_paths=artifact_paths,
+    )
 
     # CLI --ae/--ak flags apply to all configs as default agent overrides
     parsed_env = _parse_key_value_pairs(agent_env)
@@ -568,12 +740,15 @@ def submit_sweep(
     payload: dict = {
         "task_id": task_id,
         "configs": configs,
-        "user": user,
         "priority": priority,
         "run_analysis": run_analysis,
     }
+    if user:
+        payload["user"] = user
     if experiment_id:
         payload["experiment_id"] = experiment_id
+    if max_trial_attempts is not None:
+        payload["max_trial_attempts"] = max_trial_attempts
     if env_value is not None:
         payload["environment"] = env_value
 
@@ -710,6 +885,27 @@ def trial_result_to_import_spec(
     agent_info = trial_result.agent_info
     model_info = agent_info.model_info
 
+    # Prefer the fully-qualified ``provider/model`` string from the
+    # trial's harbor config so imported rows land in the same model
+    # bucket as live ones. ``ModelInfo.name`` is the canonical name
+    # *without* the provider prefix (Harbor splits provider into a
+    # separate field), so falling back to it would file
+    # ``anthropic/claude-opus-4-7`` under ``claude-opus-4-7`` and split
+    # it from the live trials in the dashboard.
+    config_agent = getattr(trial_result.config, "agent", None)
+    config_model_name = (
+        getattr(config_agent, "model_name", None) if config_agent else None
+    )
+    if config_model_name:
+        model_id: str | None = config_model_name
+    elif model_info is not None:
+        if model_info.provider:
+            model_id = f"{model_info.provider}/{model_info.name}"
+        else:
+            model_id = model_info.name
+    else:
+        model_id = None
+
     reward: float | None = None
     if trial_result.verifier_result and trial_result.verifier_result.rewards:
         raw = trial_result.verifier_result.rewards.get("reward")
@@ -759,7 +955,7 @@ def trial_result_to_import_spec(
 
     return {
         "agent": agent_info.name,
-        "model": model_info.name if model_info is not None else None,
+        "model": model_id,
         "status": status,
         "reward": reward,
         "error_message": error_message,
@@ -956,8 +1152,13 @@ def load_sweep_config(config_path: Path) -> dict:
 
         # Optional fields:
         environment: daytona            # execution environment
+        harbor:
+          environment:
+            kwargs:
+              agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
         priority: low
         experiment_id: exp_123
+        max_trial_attempts: 3           # optional total Oddish attempts per trial
     """
     if not config_path.exists():
         error_console.print(f"[red]Config file not found:[/red] {config_path}")
@@ -993,6 +1194,26 @@ def load_sweep_config(config_path: Path) -> dict:
             "Declare explicit timeouts in task.toml instead."
         )
         raise typer.Exit(1)
+    if "max_attempts" in config:
+        error_console.print(
+            "[red]Top-level 'max_attempts' is no longer supported.[/red]\n"
+            "Use 'max_trial_attempts' instead."
+        )
+        raise typer.Exit(1)
+    if "max_trial_attempts" in config:
+        try:
+            max_trial_attempts = int(config["max_trial_attempts"])
+        except (TypeError, ValueError):
+            error_console.print(
+                "[red]Top-level 'max_trial_attempts' must be an integer[/red]"
+            )
+            raise typer.Exit(1)
+        if max_trial_attempts < 1:
+            error_console.print(
+                "[red]Top-level 'max_trial_attempts' must be at least 1[/red]"
+            )
+            raise typer.Exit(1)
+        config["max_trial_attempts"] = max_trial_attempts
 
     normalized_agents = []
     for i, agent_entry in enumerate(config["agents"]):
@@ -1004,7 +1225,8 @@ def load_sweep_config(config_path: Path) -> dict:
         if not agent_data["name"]:
             error_console.print(f"[red]Agent entry {i + 1} missing 'name' field[/red]")
             raise typer.Exit(1)
-        if agent_data["model_name"] is None:
+        allow_missing_model = agent_data["name"] in {"nop", "oracle"}
+        if agent_data["model_name"] is None and not allow_missing_model:
             error_console.print(
                 f"[red]Agent entry {i + 1} missing 'model_name' field[/red]"
             )
@@ -1080,6 +1302,7 @@ def format_trial_status(status: str, harbor_stage: str | None = None) -> str:
         "retrying": "yellow",
         "success": "green",
         "failed": "red",
+        "cancelled": "yellow",
     }
     style = style_map.get(status.lower(), "white")
 
@@ -1087,6 +1310,42 @@ def format_trial_status(status: str, harbor_stage: str | None = None) -> str:
         # Show harbor stage for running trials
         return f"[{style}]{harbor_stage}[/{style}]"
     return f"[{style}]{status}[/{style}]"
+
+
+def _format_status_detail_text(value: object, *, max_chars: int = 72) -> str:
+    text = " ".join(str(value or "").replace("_", " ").split())
+    if len(text) > max_chars:
+        return f"{text[: max_chars - 3]}..."
+    return text
+
+
+def format_trial_status_detail(trial: dict[str, Any]) -> str:
+    """Format the useful detail behind a trial status for CLI tables."""
+    status = str(trial.get("status") or "").lower()
+    harbor_stage = str(trial.get("harbor_stage") or "").strip()
+    harbor_stage_lower = harbor_stage.lower()
+    error_message = str(trial.get("error_message") or "").strip()
+    error_message_lower = error_message.lower()
+
+    if error_message_lower in {"cancelled by user", "canceled by user"}:
+        return "[yellow]cancelled by user[/yellow]"
+
+    if harbor_stage_lower in {"cancelled", "canceled"}:
+        return "[yellow]cancelled[/yellow]"
+
+    if status == "running" and harbor_stage:
+        detail = escape(_format_status_detail_text(harbor_stage))
+        return f"[blue]{detail}[/blue]"
+
+    if status == "failed" and error_message:
+        detail = escape(_format_status_detail_text(error_message))
+        return f"[red]{detail}[/red]"
+
+    if harbor_stage and harbor_stage_lower not in {"-", "completed"}:
+        detail = escape(_format_status_detail_text(harbor_stage))
+        return f"[dim]{detail}[/dim]"
+
+    return "-"
 
 
 def format_verdict_status(verdict_status: str) -> str:
@@ -1391,6 +1650,7 @@ def watch_task(
                 table.add_column("Agent")
                 table.add_column("Model")
                 table.add_column("Status")
+                table.add_column("Detail")
                 table.add_column("Reward", justify="center")
 
                 for trial in all_trials:
@@ -1408,6 +1668,7 @@ def watch_task(
                         trial["agent"],
                         trial.get("model") or "-",
                         status_display,
+                        format_trial_status_detail(trial),
                         reward_str,
                     )
 
@@ -1443,7 +1704,7 @@ def watch_task(
                         reward_summary.append(f"[red]{reward_fail}✗[/red]")
                     summary_parts.append("/".join(reward_summary))
 
-                table.add_row("", ", ".join(summary_parts), "", "", "")
+                table.add_row("", ", ".join(summary_parts), "", "", "", "")
 
                 # Show verdict status if in later pipeline stages
                 if task_status in ("analyzing", "verdict_pending", "completed"):
@@ -1456,7 +1717,7 @@ def watch_task(
                             "success": "[green]done[/green]",
                             "failed": "[red]failed[/red]",
                         }.get(verdict_status.lower(), verdict_status)
-                        table.add_row("", f"Verdict: {verdict_display}", "", "", "")
+                        table.add_row("", f"Verdict: {verdict_display}", "", "", "", "")
 
                 live.update(table)
 

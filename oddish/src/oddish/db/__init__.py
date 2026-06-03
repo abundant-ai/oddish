@@ -42,6 +42,14 @@ from oddish.db.storage import (
     get_storage_client,
 )
 
+# Soft-delete helpers
+from oddish.db.soft_delete import (
+    INCLUDE_DELETED_OPTION,
+    get_soft_delete_models,
+    install_soft_delete_filter,
+    register_soft_delete_models,
+)
+
 __all__ = [
     # Base
     "Base",
@@ -81,4 +89,9 @@ __all__ = [
     # Storage
     "StorageClient",
     "get_storage_client",
+    # Soft delete
+    "INCLUDE_DELETED_OPTION",
+    "get_soft_delete_models",
+    "install_soft_delete_filter",
+    "register_soft_delete_models",
 ]

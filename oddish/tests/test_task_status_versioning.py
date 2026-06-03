@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -7,7 +8,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core import helpers
-from oddish.db import TrialStatus
+from oddish.db import Priority, TaskStatus, TrialStatus
 
 
 def _trial(
@@ -17,6 +18,7 @@ def _trial(
     status: TrialStatus,
     reward: float | None,
     experiment_id: str | None = None,
+    superseded_by_trial_id: str | None = None,
 ):
     return SimpleNamespace(
         id=trial_id,
@@ -24,7 +26,52 @@ def _trial(
         status=status,
         reward=reward,
         experiment_id=experiment_id,
+        superseded_by_trial_id=superseded_by_trial_id,
     )
+
+
+def test_task_status_response_includes_experiment_created_at():
+    experiment_created_at = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    task_created_at = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    experiment = SimpleNamespace(
+        id="exp-a",
+        name="demo experiment",
+        is_public=False,
+        created_at=experiment_created_at,
+    )
+    task = SimpleNamespace(
+        id="task-a",
+        name="demo task",
+        status=TaskStatus.PENDING,
+        priority=Priority.LOW,
+        user="alice",
+        tags={},
+        task_path="/tmp/demo-task",
+        current_version_id=None,
+        run_analysis=False,
+        verdict_status=None,
+        verdict=None,
+        verdict_error=None,
+        experiments=[experiment],
+        created_at=task_created_at,
+        started_at=None,
+        finished_at=None,
+    )
+
+    response = helpers._build_task_status_response(
+        task,
+        total=0,
+        completed=0,
+        failed=0,
+        reward_success=0,
+        reward_sum=0.0,
+        reward_total=0,
+        include_empty_rewards=True,
+        trials=None,
+    )
+
+    assert response.created_at == task_created_at
+    assert response.experiment_created_at == experiment_created_at
 
 
 def test_get_task_status_trials_filters_to_current_version():
@@ -97,7 +144,7 @@ def test_build_task_status_response_uses_current_version_trials(monkeypatch):
     monkeypatch.setattr(
         helpers,
         "build_trial_response",
-        lambda trial, task_path, queue_info=None: trial.id,
+        lambda trial, task_path, queue_info=None, **kwargs: trial.id,
     )
 
     def fake_build_task_status_response(task, **kwargs):
@@ -208,6 +255,43 @@ def test_get_task_status_trials_with_version_id_none_returns_all():
     assert [trial.id for trial in visible] == ["task-1-0", "task-1-1"]
 
 
+def test_get_task_status_trials_hides_superseded_trials():
+    """Reruns insert a fresh trial and mark the old row superseded.
+
+    The default listing must collapse the rerun chain so users only see
+    the live attempt -- otherwise the trial viewer "piles up" with
+    history rows on every retry click.
+    """
+    task = SimpleNamespace(
+        current_version_id="task-1-v1",
+        trials=[
+            _trial(
+                "task-1-0",
+                task_version_id="task-1-v1",
+                status=TrialStatus.FAILED,
+                reward=0,
+                superseded_by_trial_id="task-1-2",
+            ),
+            _trial(
+                "task-1-1",
+                task_version_id="task-1-v1",
+                status=TrialStatus.SUCCESS,
+                reward=1,
+            ),
+            _trial(
+                "task-1-2",
+                task_version_id="task-1-v1",
+                status=TrialStatus.QUEUED,
+                reward=None,
+            ),
+        ],
+    )
+
+    visible_trials = helpers.get_task_status_trials(task)
+
+    assert [trial.id for trial in visible_trials] == ["task-1-1", "task-1-2"]
+
+
 def test_resolve_effective_version_id_returns_global_without_experiment():
     task = SimpleNamespace(
         current_version_id="task-1-v3",
@@ -290,7 +374,7 @@ def test_build_task_status_response_scopes_trials_to_experiment_version(monkeypa
     monkeypatch.setattr(
         helpers,
         "build_trial_response",
-        lambda trial, task_path, queue_info=None: trial.id,
+        lambda trial, task_path, queue_info=None, **kwargs: trial.id,
     )
 
     def fake_build_task_status_response(task, **kwargs):

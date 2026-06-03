@@ -24,7 +24,7 @@ Python `3.12+` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` 
 ```text
 oddish/                         # Core Python package (CLI, server, workers, DB)
 ├── src/oddish/
-│   ├── cli/                    # oddish run/status/cancel/pull/delete
+│   ├── cli/                    # oddish run/status/cancel/pull/combine/delete
 │   ├── core/                   # shared business logic (reused by backend/)
 │   ├── server/                 # standalone FastAPI app (python -m oddish.server)
 │   ├── db/                     # models, connection helpers, storage
@@ -100,7 +100,8 @@ High-level flow:
 1. Upload a task bundle directly to S3 via a presigned PUT URL.
 2. Submit a sweep of agent/model trials for that task; each trial, analysis,
    and verdict is enqueued as a row in `worker_jobs` in the same transaction
-   as its domain row.
+   as its domain row. Set `max_trial_attempts` on a sweep submission or sweep
+   config to override the total attempt budget for newly-created trials.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler (`TRIAL` / `ANALYSIS` / `VERDICT`), write heartbeats, and exit.
 4. Use the CLI or dashboard to watch progress and pull logs/artifacts
@@ -112,11 +113,14 @@ High-level flow:
 
 - core models and migrations, including `worker_jobs` and `queue_slots`
 - unified claim/dispatch SQL, one `run_single_worker_job` runner, and a
-  handler registry (`TrialJobHandler`, `AnalysisJobHandler`, `VerdictJobHandler`)
+ handler registry (`TrialJobHandler`, `AnalysisJobHandler`, `VerdictJobHandler`)
 - shared queue-slot leasing, per-queue-key concurrency limits, and
-  per-user fairness on `TRIAL` claims
+ per-user fairness on `TRIAL` claims
 - stale-heartbeat reaping, RETRYING → QUEUED mirror-back, and pipeline
-  stage reconciliation in one cleanup sweep
+ stage reconciliation in one cleanup sweep
+- soft-delete semantics on domain rows via the `deleted_at` column and
+ a session-level filter (`oddish.db.soft_delete`); every ORM read on a
+ registered model gets `WHERE deleted_at IS NULL` automatically
 
 `backend` wraps `oddish` with the hosted-only layer:
 
@@ -153,6 +157,42 @@ pip install oddish[all]       # everything including dev tools
 - Standalone worker: `python -m oddish.workers.queue.worker` (requires `oddish[worker]`)
 - DB helper CLI: `python -m oddish.db` (requires `oddish[server]`)
 - Queue key backfill: `python -m oddish.backfill_queue_keys`
+
+### Soft Delete
+
+Every model that mixes in `TimestampedMixin` has a `deleted_at` column,
+but only the classes registered through
+`oddish.db.soft_delete.register_soft_delete_models` participate in the
+session-level auto-filter:
+
+| Package | Soft-deletable models |
+|---------|------------------------|
+| `oddish.db.models` | `ExperimentModel`, `TaskModel`, `TrialModel` |
+| `backend.models` | `OrganizationModel`, `UserModel`, `APIKeyModel` |
+
+Behavior:
+
+- ORM `SELECT` / `UPDATE` / `DELETE` issued through a session pick up
+  `WHERE deleted_at IS NULL` automatically, including eager-loaded
+  relationships (`selectinload`, `joinedload`) and aliased subqueries.
+- The DELETE endpoints (`delete_task_core`, `delete_experiment_core`,
+  `delete_trial_core`) tombstone rows via `UPDATE ... SET deleted_at = NOW()`
+  and cancel any matching `worker_jobs` rows. They return an empty
+  `s3_prefixes` list so caller best-effort S3 cleanup is a no-op --
+  S3 data is preserved for restore.
+- The `task_experiments` join table also carries `deleted_at` so experiment
+  membership is preserved for audit/restore. Because it is a SQLAlchemy
+  `Table`, not a registered model, live membership queries and relationship
+  joins must explicitly include `task_experiments.deleted_at IS NULL`.
+- Raw `text()` SQL doesn't run through the ORM listener; the dispatcher
+  claim path (`worker_job_single_job.py`), cleanup sweep, and admin
+  diagnostics each add `deleted_at IS NULL` inline.
+- The `(org_id, name)` uniqueness on `tasks` is a **partial** unique
+  index (`WHERE deleted_at IS NULL`) so a deleted task's name slot is
+  reusable.
+- To read or rewrite tombstoned rows (admin tooling, future restore
+  flows) opt out per statement:
+  `session.execute(stmt.execution_options(include_deleted=True))`.
 
 ### Worker Runtime (`oddish.workers.queue`)
 
@@ -237,14 +277,15 @@ uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/
 | GET | `/tasks` | List tasks |
 | GET | `/tasks/{task_id}` | Fetch a task with trials |
 | POST | `/tasks/cancel` | Cancel many tasks in one request |
-| DELETE | `/tasks/{task_id}` | Delete a task, its trials, and associated S3 artifacts when enabled |
+| DELETE | `/tasks/{task_id}` | Soft-delete a task and its trials (sets `deleted_at`; S3 artifacts are preserved for restore) |
 | POST | `/tasks/{task_id}/analysis/retry` | Queue or rerun task-wide analysis jobs |
 | POST | `/tasks/{task_id}/verdict/retry` | Queue or rerun a task verdict |
-| DELETE | `/experiments/{experiment_id}` | Delete an experiment, its tasks/trials, and associated S3 artifacts when enabled |
+| POST | `/experiments/combine` | Create a new experiment that merges the task memberships and finished trials (with artifacts) of two or more source experiments |
+| DELETE | `/experiments/{experiment_id}` | Soft-delete an experiment, its trials, and any now-orphaned tasks |
 | PATCH | `/experiments/{experiment_id}` | Update experiment metadata |
 | GET | `/tasks/{task_id}/trials/{index}` | Fetch a trial by 0-based index |
 | POST | `/trials/{trial_id}/analysis/retry` | Queue or rerun analysis for one trial |
-| DELETE | `/trials/{trial_id}` | Delete a single trial, cancel its in-flight jobs, and remove its S3 artifacts when enabled |
+| DELETE | `/trials/{trial_id}` | Soft-delete a single trial, cancel its in-flight jobs, and invalidate the parent task's cached verdict |
 | GET | `/trials/{trial_id}/logs` | Fetch logs for a trial |
 | GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
 
@@ -262,6 +303,7 @@ ODDISH_API_KEY=ok_...
 
 # Queue concurrency
 ODDISH_DEFAULT_MODEL_CONCURRENCY=8
+ODDISH_NOP_ORACLE_CONCURRENCY=32
 ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 8}'
 
 # S3-compatible storage
@@ -276,7 +318,10 @@ ANTHROPIC_API_KEY=...
 OPENAI_API_KEY=...
 GEMINI_API_KEY=...
 
-# AWS Bedrock (alternate route for Claude models)
+# AWS Bedrock — the default route for Claude models on the Modal
+# deployment (the image sets CLAUDE_CODE_USE_BEDROCK=1). Provide the
+# bearer token here; ANTHROPIC_API_KEY above is used as the fallback
+# route for `anthropic/...` model ids.
 AWS_BEARER_TOKEN_BEDROCK=...
 
 # Optional sandbox credentials
@@ -285,22 +330,43 @@ MODAL_TOKEN_ID=...
 MODAL_TOKEN_SECRET=...
 ```
 
-### Claude model routing: Anthropic API vs Bedrock
+### Claude model routing: AWS Bedrock only
 
-Claude models can be called either via the Anthropic API or via AWS Bedrock.
-The model string tells the provider layer which route to take:
+**oddish runs Claude exclusively through AWS Bedrock.** The Modal image
+bakes in `CLAUDE_CODE_USE_BEDROCK=1`, and Claude Code authenticates with
+`AWS_BEARER_TOKEN_BEDROCK` from the runtime Modal secret. There is no
+Anthropic API route — `ANTHROPIC_API_KEY` is not used for trials.
 
-- `anthropic/claude-opus-4-7` — routes through the Anthropic API using
-  `ANTHROPIC_API_KEY`.
-- `bedrock/global.anthropic.claude-opus-4-7` — routes through AWS Bedrock
-  using `AWS_BEARER_TOKEN_BEDROCK`. The `global.` prefix selects the
-  cross-region inference profile; swap it for a region prefix
-  (`us.`, `eu.`, `apac.`) if you need region-pinned inference.
+Claude Code invokes Bedrock via the legacy `InvokeModel` API, which only
+accepts **cross-region inference profile ids** (a `global.`/`us.`/... prefix)
+or ARNs. A bare `anthropic.claude-...` foundation-model id is *not* invokable
+on-demand — Bedrock rejects it with "Retry your request with the ID or ARN
+of an inference profile". So `harbor_runner` normalizes whatever model id a
+trial supplies via `oddish.config.to_bedrock_model_id` before handing it to
+Harbor. That normalizer accepts any of these forms:
 
-Pass these strings anywhere a model is accepted: `oddish run -m ...`, sweep
-configs (`model_name:`), or `--n-concurrent` overrides. Concurrency limits
-are keyed off the full `provider/model` string, so Anthropic API traffic
-and Bedrock traffic for the same Claude model are accounted separately.
+- already invokable (`global.`/`us.`/... inference profiles,
+  `arn:aws:bedrock:...`) — passed through, minus any redundant `bedrock/`
+  prefix.
+- Anthropic-style (`anthropic/claude-opus-4-8`, bare `claude-opus-4-8`) **or**
+  a bare Bedrock foundation-model id (`anthropic.claude-opus-4-8`) — mapped to
+  an invokable inference profile id via the explicit
+  `_ANTHROPIC_TO_BEDROCK_MODEL_IDS` table in `oddish/config.py`. **A Claude
+  model with no table entry raises a `ValueError`** — add an entry there
+  before running that model.
+- non-Claude models (`openai/...`, `gemini-...`) — passed through untouched.
+
+The table maps to `global.` inference profiles (recommended by AWS, no
+pricing premium) except Opus 4.1 / Opus 4, which have no global profile and
+use `us.`. If you need regional data residency, change the prefixes there.
+
+You can pass any of those forms anywhere a model is accepted: `oddish run
+-m ...`, sweep configs (`model_name:`), or `--n-concurrent` overrides.
+Concurrency limits are keyed off the full `provider/model` string.
+
+> Trial *analysis* (the `claude -p` classifier) uses its own `ANALYSIS_MODEL`
+> (`oddish/config.py`), which is already a `global.` inference profile id. It
+> is not wired through `to_bedrock_model_id`.
 
 Storage defaults:
 
@@ -423,9 +489,12 @@ Modal runtime knobs (read by `modal_app.py`):
 ODDISH_ENABLE_MODAL_WORKERS=...
 ODDISH_MODAL_API_MIN_CONTAINERS=...
 ODDISH_MODAL_API_MAX_CONTAINERS=...
+ODDISH_MODAL_POLL_INTERVAL_SECONDS=...
 ODDISH_MODAL_WORKER_TIMEOUT_SECONDS=...
-ODDISH_MODAL_MAX_WORKERS_PER_POLL=...
-ODDISH_MODEL_CONCURRENCY_DEFAULT=...
+ODDISH_MODAL_WORKER_NONPREEMPTIBLE=...
+ODDISH_MODAL_MAX_WORKERS_PER_POLL=64
+ODDISH_DEFAULT_MODEL_CONCURRENCY=...
+ODDISH_MODAL_NOP_ORACLE_CONCURRENCY=...
 MODAL_APP_NAME=...
 MODAL_SECRET_ENVIRONMENT=...
 ```
@@ -477,7 +546,7 @@ uv run alembic upgrade head
     stale-RUNNING samples, recent failures/cancels, duration percentiles,
     plus `OrphanedStateCard`
   - **Concurrency**: `queue_slots` leases and per-queue-key health
-- `/share/[token]` — read-only public experiment view
+- `/share/[token]` — read-only public experiment view. Passes `showAnalysis={false}` to `ExperimentDetailView`, which hides all trial-analysis and task-verdict UI (matrix analysis dots, the "Trial analysis" legend section, the trial analysis card, and the task verdict badge) from public viewers.
 - `/datasets` and `/datasets/[token]` — public dataset listing and detail
 
 ### Request Flow
@@ -498,7 +567,9 @@ already matches the default view. The route handlers for
 `src/app/api/experiments/[experiment]/tasks/route.ts` emit `Server-Timing`
 headers and forward upstream timing data for latency debugging. The backend
 dashboard aggregation now stays on a single DB session per request to avoid
-doubling connection pressure during bursts.
+doubling connection pressure during bursts. Experiment-scoped task responses
+include `experiment_created_at`, sourced from `ExperimentModel.created_at`, so
+the experiment header does not infer creation time from one of its tasks.
 
 ### Local Development
 

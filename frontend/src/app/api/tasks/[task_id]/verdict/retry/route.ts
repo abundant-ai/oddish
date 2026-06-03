@@ -5,10 +5,11 @@ import {
   getBackendUrl,
   getClerkToken,
 } from "@/lib/backend-config";
+import { backendErrorPayload, readBackendJson } from "@/lib/backend-response";
 
 export async function POST(
   _request: Request,
-  { params }: { params: Promise<{ task_id: string }> },
+  { params }: { params: Promise<{ task_id: string }> }
 ) {
   try {
     const { getToken } = await auth();
@@ -26,23 +27,26 @@ export async function POST(
       headers: getAuthHeaders(token),
     });
 
-    const text = await res.text();
-    const data = text ? JSON.parse(text) : null;
+    const parsed = await readBackendJson(res, "Failed to queue task verdict");
+
+    if (parsed.parseError) {
+      return NextResponse.json(parsed.parseError, { status: parsed.status });
+    }
 
     if (!res.ok) {
       return NextResponse.json(
-        data ?? { error: "Failed to queue task verdict" },
+        backendErrorPayload(parsed.data, "Failed to queue task verdict"),
         {
           status: res.status,
-        },
+        }
       );
     }
 
-    return NextResponse.json(data);
+    return NextResponse.json(parsed.data);
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 
 import typer
@@ -18,6 +19,12 @@ DEFAULT_API_URL = os.environ.get(
 DEFAULT_DASHBOARD_URL = os.environ.get(
     "ODDISH_DEFAULT_DASHBOARD_URL", "https://www.oddish.app"
 )
+# Format string for resolving a PR-preview URL from `ODDISH_PREVIEW_PR`.
+# `{n}` is the PR number. Forks override via `ODDISH_PREVIEW_URL_TEMPLATE`.
+PREVIEW_URL_TEMPLATE = os.environ.get(
+    "ODDISH_PREVIEW_URL_TEMPLATE",
+    "https://abundant-ai-preview--oddish-pr-{n}-api.modal.run",
+)
 
 
 # =============================================================================
@@ -26,10 +33,19 @@ DEFAULT_DASHBOARD_URL = os.environ.get(
 
 
 def get_api_url() -> str:
-    """Get API URL from environment or default."""
+    """Get API URL from environment or default.
+
+    Resolution order:
+      1. ``ODDISH_API_URL`` (full URL override)
+      2. ``ODDISH_PREVIEW_PR`` formatted into ``PREVIEW_URL_TEMPLATE``
+      3. ``DEFAULT_API_URL``
+    """
     env_url = os.environ.get("ODDISH_API_URL")
     if env_url:
         return env_url
+    pr = os.environ.get("ODDISH_PREVIEW_PR", "").strip()
+    if pr:
+        return PREVIEW_URL_TEMPLATE.format(n=pr)
     return DEFAULT_API_URL
 
 
@@ -84,3 +100,18 @@ def get_auth_headers(api_url: str | None = None) -> dict[str, str]:
     if not api_key:
         return {}
     return {"Authorization": f"Bearer {api_key}"}
+
+
+# =============================================================================
+# JSON output (for CI / agents / scripting)
+# =============================================================================
+
+
+def print_json(payload: object) -> None:
+    """Emit a JSON document on stdout for programmatic consumers.
+
+    Uses the plain ``print`` builtin (not a Rich console) so the output is
+    never wrapped, colorized, or truncated and can be piped straight into
+    ``jq`` or parsed by an agent.
+    """
+    print(json.dumps(payload, indent=2, default=str))

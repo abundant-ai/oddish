@@ -1,8 +1,12 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "oddish-app"
 version = "0.1.0"
 description = "Cloud deployment layer for Oddish - Modal API with multi-tenant auth"
-requires-python = ">=3.14"
+requires-python = ">=3.13,<3.14"
 
 # All direct runtime dependencies are pinned to exact versions for
 # supply-chain security.  Upgrades happen via ``uv lock --upgrade-package
@@ -35,10 +39,11 @@ dependencies = [
     "python-multipart==0.0.21",
 
     # Environment loading
-    "python-dotenv==1.2.1",
+    "python-dotenv==1.2.2",
 
-    # Daytona sandbox SDK for the CC chat orchestrator
-    "daytona>=0.20",
+    # Observability (Pydantic Logfire). Extras pull in the OpenTelemetry
+    # instrumentations we wire up in ``backend/observability.py``.
+    "logfire[asyncpg,fastapi,httpx,sqlalchemy,system-metrics]==4.33.0",
 ]
 
 [project.optional-dependencies]
@@ -49,13 +54,26 @@ dev = [
 
 [tool.uv.sources]
 oddish = { path = "../oddish", editable = true }
+# Mirror oddish's harbor source so the backend's own resolution also
+# pulls harbor from the rishidesai/harbor fork (uv does not inherit
+# sources from transitive dependencies).
+harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
 
-[tool.pytest.ini_options]
-pythonpath = ["."]
-# Async tests share a single event loop for the whole session so the
-# import-time SQLAlchemy engine + asyncpg pool (created on the first
-# loop they see) keep working across tests. Without this, the second
-# DB-touching test fails with `RuntimeError: Event loop is closed`.
-asyncio_mode = "strict"
-asyncio_default_fixture_loop_scope = "session"
-asyncio_default_test_loop_scope = "session"
+# Backend is a flat-layout project: real packages live next to top-level
+# entrypoint modules. Spell out what setuptools should ship so it
+# doesn't trip on local-only directories (alembic migrations, the
+# gitignored jobs/ runtime cache, dist/, __pycache__/, etc.).
+[tool.setuptools]
+py-modules = [
+    "cloud_policy",
+    "deploy",
+    "endpoints",
+    "modal_app",
+    "models",
+    "observability",
+    "serve",
+]
+
+[tool.setuptools.packages.find]
+include = ["api*", "auth*", "worker*"]
+namespaces = false
