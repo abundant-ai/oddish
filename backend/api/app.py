@@ -179,6 +179,7 @@ def create_app() -> FastAPI:
         github_webhooks,
         imports,
         orgs,
+        probe_presets,
         public,
         tasks,
         trials,
@@ -192,6 +193,7 @@ def create_app() -> FastAPI:
     api.include_router(tasks.router)
     api.include_router(trials.router)
     api.include_router(imports.router)
+    api.include_router(probe_presets.router)
     api.include_router(public.router)
     api.include_router(admin.router)
 
