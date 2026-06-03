@@ -1,7 +1,7 @@
 {
   "experiment_id": "cd8c33d8",
-  "n_trials": 74,
-  "note": "Re-generated at 2026-05-22T23:50:08.633728+00:00 from Oddish experiment cd8c33d8 on task version s3-clone-23996371-v13. Strict selection: up to 5 valid trials per agent/model pair, where valid = SUCCESS + numeric reward AND top-level result.json exception_stats is empty or limited to {AgentTimeoutError, VerifierTimeoutError}. Ranked by reward then trajectory_bytes then total artifact bytes then recency. | 2026-06-03T18:39:19.724340+00:00 appended 9 trials from Oddish experiment cd4dd88f (s3-clone-23996371-v14) for claude-code/anthropic/claude-opus-4-8 (bedrock + openrouter routes folded into one normalized cell) and gemini-cli/gemini/gemini-3.5-flash. Strict AgentTimeoutError-only validity filter.",
+  "n_trials": 75,
+  "note": "Re-generated at 2026-05-22T23:50:08.633728+00:00 from Oddish experiment cd8c33d8 on task version s3-clone-23996371-v13. Strict selection: up to 5 valid trials per agent/model pair, where valid = SUCCESS + numeric reward AND top-level result.json exception_stats is empty or limited to {AgentTimeoutError, VerifierTimeoutError}. Ranked by reward then trajectory_bytes then total artifact bytes then recency. | 2026-06-03T18:39:19.724340+00:00 appended 9 trials from Oddish experiment cd4dd88f (s3-clone-23996371-v14) for claude-code/anthropic/claude-opus-4-8 (bedrock + openrouter routes folded into one normalized cell) and gemini-cli/gemini/gemini-3.5-flash. Strict AgentTimeoutError-only validity filter. | 2026-06-03T21:48:08.732597+00:00 cd4dd88f CUA experiment is finished upstream. Added s3-clone-23996371-290 (claude-code / anthropic/claude-opus-4-8, openrouter route, clean exception_stats, verifier audit OK) to fill claude pair from 4/5 to 5/5. Note: the strict selector also wants to add slack-clone-b0a98beb-330 and mastodon-clone-e9964b7a-282 (top-level exception_stats are empty on both), but both were previously removed for verifier-side infra failures (slack-330 = litellm AuthenticationError in the CUA judge; mastodon-282 = corrupted correctness/metrics.json with literal '-' and 'false' keys + no server.log/anti_cheat.json). Keeping them out. mastodon-clone gemini-3.5-flash remains at 4/5 (no other valid candidate in cd4dd88f).",
   "task": "s3-clone-23996371",
   "task_name": "s3-clone",
   "task_hash": "23996371",
@@ -2301,6 +2301,37 @@
       "task_name": "s3-clone",
       "task_hash": "23996371",
       "raw_model": "openrouter/anthropic/claude-opus-4.8"
+    },
+    "s3-clone-23996371-290": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "openrouter",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "s3-clone-23996371-v14",
+      "started_at": "2026-06-03T19:14:53.158868+00:00",
+      "finished_at": "2026-06-03T19:47:24.262662+00:00",
+      "input_tokens": 11371073,
+      "cache_tokens": 11041371,
+      "output_tokens": 98651,
+      "cost_usd": 30.141984,
+      "has_trajectory": true,
+      "trajectory_bytes": 1930948,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/s3-clone/s3-clone-23996371-290/",
+      "source_trial_name": "s3-clone-290",
+      "source_oddish_task_id": "s3-clone-23996371",
+      "source_oddish_trial_id": "s3-clone-23996371-290",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Selected from cd4dd88f (CUA-task import) on s3-clone-23996371-v14. Up to 5 per (agent, normalized_model) pair; ranked by reward then trajectory_bytes then total bytes then recency. Both bedrock and openrouter routes are the same normalized cell; the route is recorded in the entry's provider field. Strict: empty or {AgentTimeoutError} exception_stats only.",
+      "canonical_attempt_dir": "task-s3-clone-23996371-dspb659v__PZBocPt",
+      "task_name": "s3-clone",
+      "task_hash": "23996371",
+      "raw_model": "openrouter/anthropic/claude-opus-4.8"
     }
   },
   "task_versions": [
@@ -2332,6 +2363,19 @@
         ]
       ],
       "note": "CUA-task cd4dd88f import: claude-code/anthropic/claude-opus-4-8 + gemini-cli/gemini/gemini-3.5-flash. Strict validity (AgentTimeoutError or clean only). For the claude pair, both bedrock and openrouter route trials are folded into one normalized cell (model=\"anthropic/claude-opus-4-8\"); the actual route is recorded per-entry as provider in {bedrock, claude, openrouter}. Trials are still rolling in upstream so this cell may be short of 5 until more land."
+    },
+    {
+      "imported_at": "2026-06-03T21:48:08.732616+00:00",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "task_version_id_at_snapshot": "s3-clone-23996371-v14",
+      "n_trials_added": 1,
+      "pairs_added": [
+        [
+          "claude-code",
+          "anthropic/claude-opus-4-8"
+        ]
+      ],
+      "note": "Post-finish gap-fill for s3-clone claude pair (4 -> 5)."
     }
   ]
 }

@@ -17,6 +17,25 @@ import sys
 dst = boto3.client('s3', aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
     aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'], region_name='us-west-2')
 VALID = {'AgentTimeoutError'}
+
+# Known-bad trials that prior audits flagged for explicit removal. Any
+# future import pipeline should consult this list and skip these IDs even
+# if they pass the agent-side exception_stats filter — they have
+# verifier-side infra issues that don't surface in top-level exception_stats.
+KNOWN_BAD_TRIALS = {
+    # CUA-judge auth-error (litellm AuthenticationError after episode 0):
+    'slack-clone-b0a98beb-330',
+    # Corrupted correctness/metrics.json + no server.log/anti_cheat.json
+    # (verifier framework crashed pre-setup):
+    'mastodon-clone-e9964b7a-282',
+    # NonZeroAgentExitCodeError trials previously selected by an early
+    # loose-filter pass; the strict AgentTimeoutError-only rule excludes
+    # them. They keep re-appearing in some pipelines so we hard-block
+    # them here.
+    'find-network-alignments-b2ecebb7-188',
+    'find-network-alignments-b2ecebb7-189',
+    'parameter-golf-61e11605-437',
+}
 ALL = ['biofabric-rust-rewrite','embedding-eval','find-network-alignments',
        'jax-pytorch-rewrite','kubernetes-rust-rewrite','nextjs-vite-rewrite',
        'parameter-golf','ruby-rust-port','rust-c-compiler','rust-java-lsp',
