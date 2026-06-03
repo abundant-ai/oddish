@@ -30,6 +30,28 @@ from oddish.schemas import (
 )
 
 
+def merge_resubmission_tags(
+    existing: dict | None, incoming: dict | None
+) -> dict:
+    """Merge a re-submission's tags over a task's existing tags.
+
+    A task is keyed by its content hash, so re-running the same task from a
+    different PR reuses the same task row. The submission carries a fresh
+    ``github_meta`` (owner/repo/PR number) for the PR it was triggered from;
+    without merging it back onto the task, the task keeps the *original* PR's
+    metadata and PR-comment refreshes keep targeting that first PR instead of
+    the one the run was actually triggered from.
+
+    Incoming keys overwrite existing ones; ``None`` values are ignored so an
+    append that omits a tag never clears it.
+    """
+    merged = dict(existing or {})
+    for key, value in (incoming or {}).items():
+        if value is not None:
+            merged[key] = value
+    return merged
+
+
 def _resolve_trial_cost(
     trial: TrialModel, model_name: str | None
 ) -> tuple[float | None, bool | None]:

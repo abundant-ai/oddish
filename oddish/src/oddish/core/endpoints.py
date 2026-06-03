@@ -25,6 +25,7 @@ from oddish.core.helpers import (
     fetch_trial_queue_info,
     fetch_visible_worker_jobs,
     get_task_status_trials,
+    merge_resubmission_tags,
     resolve_effective_version_id,
 )
 from collections.abc import Collection
@@ -2288,12 +2289,22 @@ async def create_task_sweep_core(
         )
 
         fallback_experiment_id = primary_experiment.id if primary_experiment else None
+
+        # Re-running a content-identical task from a different PR reuses this
+        # task row. Refresh its tags (notably ``github_meta``) from the new
+        # submission so PR-comment updates target the PR this run came from,
+        # not whichever PR first created the task. Reassign a new dict so the
+        # JSON column is marked dirty and persisted.
+        merged_tags = merge_resubmission_tags(task.tags, submission.tags)
+        if merged_tags != (task.tags or {}):
+            task.tags = merged_tags
+
         append_submission = submission.model_copy(
             update={
                 "name": task.name,
                 "priority": task.priority,
                 "experiment_id": new_experiment_id or fallback_experiment_id,
-                "tags": task.tags or {},
+                "tags": merged_tags,
                 "run_analysis": task.run_analysis,
                 "user": task.user,
             }
