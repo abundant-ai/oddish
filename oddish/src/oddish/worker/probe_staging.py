@@ -128,6 +128,15 @@ async def apply_probe_overlay(
 
     instr_path = task_dir / "instruction.md"
     original = instr_path.read_text() if instr_path.exists() else ""
+
+    # Split the probe instruction across two files: the original task spec goes
+    # to ``task_details.md`` (reference data), and ``instruction.md`` is rewritten
+    # to hold only the operator directive plus a pointer to it. Keeping the spec
+    # out of the authoritative instruction.md slot avoids the "override your real
+    # task" tension that triggers claude-code refusals.
+    if original:
+        (task_dir / "task_details.md").write_text(original)
+
     instr_path.write_text(
         render_probe_instruction(
             PROBE_SYSTEM_FRAMING,

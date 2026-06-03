@@ -345,6 +345,11 @@ class Settings(BaseSettings):
     # Worker behavior
     auto_start_workers: bool = True
 
+    # Local dev: dispatch trials to the in-process runner
+    # (``worker.local_runner``) instead of the Modal/cloud queue. Set
+    # ODDISH_LOCAL_MODE=1 to exercise probe trials end-to-end on a dev box.
+    local_mode: bool = False
+
     # Local execution scratch paths
     harbor_jobs_dir: str = "/tmp/harbor-jobs"
 
