@@ -9,6 +9,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from harbor.models.environment_type import EnvironmentType
+from harbor.utils.env import resolve_env_vars
 
 from oddish.cli import api as cli_api
 from oddish.core.sweeps import (
@@ -173,9 +174,12 @@ def test_claude_code_openrouter_agent_config_sets_anthropic_skin_env(
     assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${OPENROUTER_API_KEY}"
     assert agent_config.env["ENABLE_TOOL_SEARCH"] == "false"
-    assert agent_config.env["ANTHROPIC_API_KEY"] == ""
+    assert agent_config.env["ANTHROPIC_API_KEY"] == "${ODDISH_CLAUDE_OPENROUTER_EMPTY:-}"
     assert agent_config.env["CLAUDE_CODE_USE_BEDROCK"] == ""
-    assert agent_config.env["AWS_BEARER_TOKEN_BEDROCK"] == ""
+    assert (
+        agent_config.env["AWS_BEARER_TOKEN_BEDROCK"]
+        == "${ODDISH_CLAUDE_OPENROUTER_EMPTY:-}"
+    )
 
 
 def test_claude_code_openrouter_agent_config_preserves_explicit_base_and_token(
@@ -198,7 +202,7 @@ def test_claude_code_openrouter_agent_config_preserves_explicit_base_and_token(
 
     assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://custom.example/api"
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${CUSTOM_OPENROUTER_TOKEN}"
-    assert agent_config.env["ANTHROPIC_API_KEY"] == ""
+    assert agent_config.env["ANTHROPIC_API_KEY"] == "${ODDISH_CLAUDE_OPENROUTER_EMPTY:-}"
 
 
 def test_claude_code_openrouter_agent_config_replaces_masked_secret_placeholders() -> None:
@@ -220,9 +224,31 @@ def test_claude_code_openrouter_agent_config_replaces_masked_secret_placeholders
 
     assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${OPENROUTER_API_KEY}"
-    assert agent_config.env["ANTHROPIC_API_KEY"] == ""
+    assert agent_config.env["ANTHROPIC_API_KEY"] == "${ODDISH_CLAUDE_OPENROUTER_EMPTY:-}"
     assert agent_config.env["CLAUDE_CODE_USE_BEDROCK"] == ""
-    assert agent_config.env["AWS_BEARER_TOKEN_BEDROCK"] == ""
+    assert (
+        agent_config.env["AWS_BEARER_TOKEN_BEDROCK"]
+        == "${ODDISH_CLAUDE_OPENROUTER_EMPTY:-}"
+    )
+
+
+def test_claude_code_openrouter_empty_env_survives_harbor_serialization() -> None:
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="openrouter/anthropic/claude-opus-4.8",
+        raw_harbor_config={},
+    )
+
+    serialized_env = agent_config.model_dump(mode="json")["env"]
+
+    assert serialized_env["ANTHROPIC_API_KEY"] == (
+        "${ODDISH_CLAUDE_OPENROUTER_EMPTY:-}"
+    )
+    assert serialized_env["AWS_BEARER_TOKEN_BEDROCK"] == (
+        "${ODDISH_CLAUDE_OPENROUTER_EMPTY:-}"
+    )
+    assert resolve_env_vars(serialized_env)["ANTHROPIC_API_KEY"] == ""
+    assert resolve_env_vars(serialized_env)["AWS_BEARER_TOKEN_BEDROCK"] == ""
 
 
 def test_non_openrouter_claude_code_agent_config_does_not_add_openrouter_env() -> None:
