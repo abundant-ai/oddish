@@ -520,6 +520,13 @@ def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
         config_path.write_text(task_config.model_dump_toml())
 
 
+_MASKED_ENV_VALUES = {"****", "[REDACTED]", "REDACTED"}
+
+
+def _is_masked_env_value(value: Any) -> bool:
+    return isinstance(value, str) and value.strip() in _MASKED_ENV_VALUES
+
+
 def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
     """Apply the env shape Claude Code expects for OpenRouter's Anthropic skin."""
     agent_name = (agent_config.name or "").strip().lower()
@@ -528,12 +535,20 @@ def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
         return
 
     env = dict(agent_config.env or {})
-    env.setdefault(
-        "ANTHROPIC_BASE_URL",
-        os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api",
-    )
-    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${OPENROUTER_API_KEY}")
-    env.setdefault("ENABLE_TOOL_SEARCH", "false")
+    if not env.get("ANTHROPIC_BASE_URL") or _is_masked_env_value(
+        env.get("ANTHROPIC_BASE_URL")
+    ):
+        env["ANTHROPIC_BASE_URL"] = (
+            os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api"
+        )
+    if not env.get("ANTHROPIC_AUTH_TOKEN") or _is_masked_env_value(
+        env.get("ANTHROPIC_AUTH_TOKEN")
+    ):
+        env["ANTHROPIC_AUTH_TOKEN"] = "${OPENROUTER_API_KEY}"
+    if not env.get("ENABLE_TOOL_SEARCH") or _is_masked_env_value(
+        env.get("ENABLE_TOOL_SEARCH")
+    ):
+        env["ENABLE_TOOL_SEARCH"] = "false"
 
     # Claude Code prioritizes these ambient credentials when present in the
     # Modal image. Blank them so the OpenRouter auth/base-url route wins.
