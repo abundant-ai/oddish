@@ -2,9 +2,11 @@
 
 Exercises ``oddish.core.probe_presets`` against the real local Postgres
 (same pattern as ``test_local_runner.py``: a session-scoped org id, seed +
-teardown via id/org-scoped deletes). Run with ``.env.local`` sourced:
+teardown via id/org-scoped deletes). Run with your backend env (the one
+providing ``ODDISH_DATABASE_URL``, e.g. ``backend/.env``) sourced and the
+``probe_presets_001`` migration applied:
 
-    set -a && source .env.local && set +a && uv run pytest tests/test_probe_presets.py
+    set -a && source .env && set +a && uv run pytest tests/test_probe_presets.py
 """
 
 import uuid
