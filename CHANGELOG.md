@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-03]
+
+### Added
+- OpenAI-family workers now route through Azure OpenAI by default; `ODDISH_OPENAI_PROVIDER` (default `azure`) selects the transport, with `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, and `ODDISH_AZURE_OPENAI_DEPLOYMENTS` for per-model deployment mapping; set `ODDISH_OPENAI_PROVIDER=openai` to use the public OpenAI API instead
+- Daytona sandboxes now auto-stop (30 min) and auto-delete (60 min) as a backstop for sandboxes that escape explicit teardown; `worker_jobs` gains `provider`/`external_id` columns and cancel/orphan-reap paths now terminate the underlying sandbox by ID, preventing idle sandbox accumulation
+
+### Changed
+- `to_bedrock_model_id()` now passes through any model ID with an explicit non-Anthropic provider prefix (e.g. `openrouter/anthropic/claude-opus-4.8`) unchanged so it runs through that provider rather than being rewritten to a Bedrock inference-profile ID; `claude-code` agent in harbor_runner updated to reflect the same pass-through semantics
+- Oddish GitHub PR comment now includes a "Performance: X/Y trials passed (Z%)" summary line and Status + Reward columns in the experiment trajectory table, surfacing actual agent scores alongside the existing classification status
+
+### Security
+- API key creation now requires the requesting user to be an admin of the Abundant organization; the API keys settings section is hidden in the UI for non-admins
+
+---
+
 ## [2026-06-02]
 
 ### Changed
