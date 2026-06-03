@@ -521,6 +521,7 @@ def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
 
 
 _MASKED_ENV_VALUES = {"****", "[REDACTED]", "REDACTED"}
+_EMPTY_ENV_TEMPLATE = "${ODDISH_CLAUDE_OPENROUTER_EMPTY:-}"
 
 
 def _is_masked_env_value(value: Any) -> bool:
@@ -551,10 +552,11 @@ def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
         env["ENABLE_TOOL_SEARCH"] = "false"
 
     # Claude Code prioritizes these ambient credentials when present in the
-    # Modal image. Blank them so the OpenRouter auth/base-url route wins.
-    env["ANTHROPIC_API_KEY"] = ""
+    # Modal image. Use an env-template empty value so Harbor's sensitive-env
+    # serializer does not turn the intended blank into a literal "****".
+    env["ANTHROPIC_API_KEY"] = _EMPTY_ENV_TEMPLATE
     env["CLAUDE_CODE_USE_BEDROCK"] = ""
-    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = _EMPTY_ENV_TEMPLATE
     agent_config.env = env
 
 
