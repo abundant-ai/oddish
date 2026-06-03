@@ -201,6 +201,30 @@ def test_claude_code_openrouter_agent_config_preserves_explicit_base_and_token(
     assert agent_config.env["ANTHROPIC_API_KEY"] == ""
 
 
+def test_claude_code_openrouter_agent_config_replaces_masked_secret_placeholders() -> None:
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="openrouter/anthropic/claude-opus-4.8",
+        raw_harbor_config={
+            "agent_config": {
+                "env": {
+                    "ANTHROPIC_API_KEY": "****",
+                    "ANTHROPIC_AUTH_TOKEN": "****",
+                    "ANTHROPIC_BASE_URL": "[REDACTED]",
+                    "AWS_BEARER_TOKEN_BEDROCK": "****",
+                    "CLAUDE_CODE_USE_BEDROCK": "1",
+                }
+            }
+        },
+    )
+
+    assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
+    assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${OPENROUTER_API_KEY}"
+    assert agent_config.env["ANTHROPIC_API_KEY"] == ""
+    assert agent_config.env["CLAUDE_CODE_USE_BEDROCK"] == ""
+    assert agent_config.env["AWS_BEARER_TOKEN_BEDROCK"] == ""
+
+
 def test_non_openrouter_claude_code_agent_config_does_not_add_openrouter_env() -> None:
     agent_config = harbor_runner._build_agent_config(
         agent="claude-code",
