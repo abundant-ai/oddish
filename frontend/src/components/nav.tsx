@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Show, SignInButton, useClerk, useUser } from "@clerk/nextjs";
+import { SignInButton, useClerk, useUser } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -25,11 +25,11 @@ import {
 
 export function Nav() {
   const pathname = usePathname();
-  const { user } = useUser();
+  const { user, isLoaded, isSignedIn } = useUser();
   const { signOut } = useClerk();
 
   return (
-    <nav className="sticky top-0 z-50 border-b border-[#6f88b4]/15 bg-card/80 backdrop-blur-xs">
+    <nav className="sticky top-[var(--preview-banner-h,0px)] z-40 border-b border-[#6f88b4]/15 bg-card/80 backdrop-blur-xs">
       <div className="mx-auto flex h-14 max-w-(--breakpoint-2xl) items-center px-4">
         <div className="flex w-full items-center justify-between">
           {/* Left side - primary nav */}
@@ -75,7 +75,8 @@ export function Nav() {
           {/* Right side - consolidated settings menu */}
           <div className="flex items-center gap-2">
             <ThemeToggle />
-            <Show when="signed-in">
+            {isLoaded && isSignedIn && (
+              <>
               <Button
                 variant="ghost"
                 size="sm"
@@ -155,14 +156,15 @@ export function Nav() {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-            </Show>
-            <Show when="signed-out">
+              </>
+            )}
+            {isLoaded && !isSignedIn && (
               <SignInButton mode="modal" fallbackRedirectUrl="/dashboard">
                 <Button variant="outline" size="sm">
                   Sign in
                 </Button>
               </SignInButton>
-            </Show>
+            )}
           </div>
         </div>
       </div>

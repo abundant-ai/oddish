@@ -15,9 +15,10 @@ from cloud_policy import (
 )
 from oddish.core.endpoints import (
     browse_tasks_core,
+    combine_experiments_core,
     create_task_sweep_core,
     delete_experiment_core,
-    delete_task_core,
+    get_task_detail_core,
     get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
@@ -26,6 +27,7 @@ from oddish.core.endpoints import (
     rerun_task_analysis_core,
     rerun_task_verdict_core,
 )
+from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.public_helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
@@ -47,14 +49,16 @@ from oddish.db import (
     TaskModel,
     get_session,
 )
-from oddish.db.storage import delete_s3_prefixes
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
 from oddish.queue import (
     cancel_tasks_runs,
 )
 from oddish.schemas import (
+    ExperimentCombineRequest,
+    ExperimentCombineResponse,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
+    TaskDetailResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
     TaskUploadInitResponse,
@@ -111,6 +115,85 @@ def _apply_github_attribution(submission: TaskSweepSubmission) -> None:
     if submission.github_username:
         submission.tags = submission.tags or {}
         submission.tags.setdefault("github_username", submission.github_username)
+
+
+async def _resolve_actor_user(
+    session: AsyncSession,
+    auth: AuthContext,
+) -> UserModel | None:
+    """Return the UserModel of the authenticating principal, or None.
+
+    The auth dependency caches lightweight identity tuples — on cache hits
+    the ORM ``user`` / ``api_key`` objects are stripped and only the IDs are
+    available, so we lazy-load via ``session.get`` when needed.
+    """
+    if auth.user is not None:
+        return auth.user
+    if auth.user_id:
+        user = await session.get(UserModel, auth.user_id)
+        if user is not None:
+            return user
+    if auth.api_key_id:
+        api_key = auth.api_key or await session.get(APIKeyModel, auth.api_key_id)
+        if api_key and api_key.created_by_user_id:
+            return await session.get(UserModel, api_key.created_by_user_id)
+    return None
+
+
+async def _resolve_actor_user_string(
+    session: AsyncSession,
+    auth: AuthContext,
+    explicit_user: str | None,
+    explicit_github_username: str | None,
+) -> str:
+    """Resolve a non-empty author string from the authenticated actor.
+
+    Precedence:
+      1. explicit_user (e.g. --user)
+      2. explicit_github_username (e.g. --github-user)
+      3. actor's UserModel.email (the stable Clerk-backed identity)
+      4. api_key.name (service-account API keys with no linked user)
+      5. "unknown" (so tasks.user is never empty)
+    """
+    if explicit_user:
+        return explicit_user
+    if explicit_github_username:
+        return explicit_github_username
+
+    actor = await _resolve_actor_user(session, auth)
+    if actor and actor.email:
+        return actor.email
+
+    if auth.api_key_id:
+        api_key = auth.api_key or await session.get(APIKeyModel, auth.api_key_id)
+        if api_key and api_key.name:
+            return api_key.name
+
+    return "unknown"
+
+
+async def _resolve_submission_identity(
+    session: AsyncSession,
+    submission: TaskSweepSubmission,
+    auth: AuthContext,
+) -> None:
+    """Fill submission.user and submission.github_username from the authenticated
+    actor when missing. Mutates submission in place.
+
+    `github_username` is only auto-filled from UserModel.github_username so the
+    dashboard's `source: "github"` attribution stays meaningful.
+    """
+    if not submission.github_username:
+        actor = await _resolve_actor_user(session, auth)
+        if actor and actor.github_username:
+            submission.github_username = actor.github_username
+
+    submission.user = await _resolve_actor_user_string(
+        session,
+        auth,
+        explicit_user=submission.user,
+        explicit_github_username=submission.github_username,
+    )
 
 
 async def _resolve_created_by_user_id(
@@ -174,6 +257,7 @@ async def init_task_upload(
         org_id=auth.org_id,
         content_hash=payload.content_hash,
         message=payload.message,
+        force_new_version=payload.force_new_version,
     )
 
 
@@ -184,6 +268,17 @@ async def finalize_task_upload(
 ) -> UploadResponse:
     """Finalize a direct task upload after the client PUTs the archive to S3."""
     auth.require_scope(APIKeyScope.TASKS)
+
+    resolved_user = payload.user
+    if payload.register_task and not resolved_user:
+        async with get_session() as session:
+            resolved_user = await _resolve_actor_user_string(
+                session,
+                auth,
+                explicit_user=payload.user,
+                explicit_github_username=None,
+            )
+
     return await complete_task_upload(
         task_id=payload.task_id,
         task_name=payload.name,
@@ -193,7 +288,7 @@ async def finalize_task_upload(
         org_id=auth.org_id,
         created_by_user_id=auth.user_id,
         register=payload.register_task,
-        user=payload.user,
+        user=resolved_user,
         priority=payload.priority,
     )
 
@@ -209,14 +304,16 @@ async def create_task_sweep(
     from oddish.core.sweeps import validate_sweep_submission
 
     validate_sweep_submission(submission)
-    _apply_github_attribution(submission)
 
     async with get_session() as session:
+        await _resolve_submission_identity(session, submission, auth)
+        _apply_github_attribution(submission)
+
         task, new_trials, is_append, experiment = await create_task_sweep_core(
             session,
             submission=submission,
             org_id=auth.org_id,
-            default_environment=get_default_cloud_environment(),
+            default_environment=get_default_cloud_environment(submission),
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
         )
 
@@ -268,12 +365,20 @@ async def list_tasks(
     experiment_id: str | None = None,
     include_trials: bool = False,
     compact_trials: bool = False,
+    compact_tasks: bool = False,
     include_queue_info: bool = True,
     include_worker_jobs: bool = True,
     limit: int = 100,
     offset: int = 0,
 ) -> list[TaskStatusResponse]:
-    """List tasks for the authenticated organization."""
+    """List tasks for the authenticated organization.
+
+    ``compact_tasks=true`` is a fast-path used by the experiment page
+    first paint: it implies ``include_trials=false`` and skips the
+    per-task ``visible_worker_jobs`` and ``effective_version_ids``
+    lookups. The phase-2 batched fetch (``include_trials=true``) fills
+    those columns in afterwards.
+    """
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
@@ -292,6 +397,7 @@ async def list_tasks(
             experiment_id=experiment_id,
             include_trials=include_trials,
             compact_trials=compact_trials,
+            compact_tasks=compact_tasks,
             include_queue_info=include_queue_info,
             include_worker_jobs=include_worker_jobs,
             limit=limit,
@@ -331,6 +437,34 @@ async def browse_tasks(
             query=query,
             record_timing=_make_timing_recorder(request),
         )
+
+
+@router.post("/experiments/combine", response_model=ExperimentCombineResponse)
+async def combine_experiments(
+    payload: ExperimentCombineRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> ExperimentCombineResponse:
+    """Combine several experiments into a new result experiment.
+
+    Creates a brand-new experiment and copies the task memberships and
+    finished trials (with their S3 artifacts) of every source experiment
+    into it. The sources are org-scoped and left untouched; append-only,
+    so this needs only the ``tasks`` scope rather than admin.
+    """
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        result = await combine_experiments_core(
+            session,
+            source_experiment_ids=payload.source_experiment_ids,
+            name=payload.name,
+            org_id=auth.org_id,
+            copy_artifacts=payload.copy_artifacts,
+        )
+        await session.commit()
+
+    invalidate_dashboard_cache(org_id=auth.org_id)
+    return result
 
 
 @router.get(
@@ -390,6 +524,28 @@ async def update_experiment(
         await session.commit()
 
         return ExperimentUpdateResponse(id=experiment.id, name=experiment.name)
+
+
+@router.delete("/experiments/{experiment_id}")
+async def delete_experiment(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> dict:
+    """Soft-delete an experiment and its experiment-scoped data.
+
+    This tombstones the experiment plus its scoped trials and any tasks
+    orphaned by removing the experiment membership. Artifacts remain in
+    storage; the core path returns an empty ``s3_prefixes`` list so the
+    API layer performs no hard-deletion follow-up.
+    """
+    async with get_session() as session:
+        result = await delete_experiment_core(
+            session, experiment_id=experiment_id, org_id=auth.org_id
+        )
+        await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
+
+    return result
 
 
 @router.post(
@@ -454,34 +610,6 @@ async def unpublish_experiment(
         )
 
 
-@router.delete("/experiments/{experiment_id}")
-async def delete_experiment(
-    experiment_id: str,
-    auth: Annotated[AuthContext, Depends(require_admin)],
-) -> dict:
-    """Delete an experiment and all associated tasks/trials."""
-
-    async with get_session() as session:
-        result = await delete_experiment_core(
-            session, experiment_id=experiment_id, org_id=auth.org_id
-        )
-        await session.commit()
-
-    if result.get("s3_prefixes"):
-        try:
-            await delete_s3_prefixes(result["s3_prefixes"])
-        except Exception:
-            logger.exception(
-                "Failed to delete S3 artifacts for experiment %s", experiment_id
-            )
-
-    return {
-        "status": "success",
-        "message": "Experiment deleted",
-        "deleted": result["deleted"],
-    }
-
-
 @router.post("/tasks/cancel")
 async def cancel_tasks(
     payload: TaskBatchCancelRequest,
@@ -511,26 +639,6 @@ async def cancel_tasks(
         "trials_cancelled": result.get("trials_cancelled", 0),
         "modal_calls_cancelled": modal_cancelled,
     }
-
-
-@router.delete("/tasks/{task_id}")
-async def delete_task(
-    task_id: str,
-    auth: Annotated[AuthContext, Depends(require_admin)],
-) -> dict:
-    """Delete a task and its trials."""
-
-    async with get_session() as session:
-        result = await delete_task_core(session, task_id=task_id, org_id=auth.org_id)
-        await session.commit()
-
-    if result.get("s3_prefixes"):
-        try:
-            await delete_s3_prefixes(result["s3_prefixes"])
-        except Exception:
-            logger.exception("Failed to delete S3 artifacts for task %s", task_id)
-
-    return {"status": "success", "deleted": result["deleted"]}
 
 
 @router.post("/tasks/{task_id}/analysis/retry")
@@ -578,6 +686,18 @@ async def get_task_status(
             include_empty_rewards=True,
             org_id=auth.org_id,
         )
+
+
+@router.get("/tasks/{task_id}/detail", response_model=TaskDetailResponse)
+async def get_task_detail(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> TaskDetailResponse:
+    """Task detail bundle: task + trials + per-version + cost rollups."""
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await get_task_detail_core(session, task_id=task_id, org_id=auth.org_id)
 
 
 # =============================================================================
@@ -653,7 +773,12 @@ async def list_task_files(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
-        task = await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
+        task = await get_task_for_org_core(
+            session,
+            task_id=task_id,
+            org_id=auth.org_id,
+            load_current_version=True,
+        )
         if version is None and task.current_version:
             version = task.current_version.version
 
@@ -688,7 +813,12 @@ async def get_task_file_content(
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:
-        task = await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
+        task = await get_task_for_org_core(
+            session,
+            task_id=task_id,
+            org_id=auth.org_id,
+            load_current_version=True,
+        )
         if version is None and task.current_version:
             version = task.current_version.version
 

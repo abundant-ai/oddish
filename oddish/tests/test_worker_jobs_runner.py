@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -255,6 +256,109 @@ def test_claim_sql_increments_attempts_and_stamps_claim_metadata():
         assert needle in sql, f"missing: {needle}"
 
 
+def test_claim_sql_clears_retry_timestamp_on_claim():
+    assert "next_retry_at = NULL" in _normalized_claim_sql()
+
+
+# ---------------------------------------------------------------------------
+# retry backoff helpers
+# ---------------------------------------------------------------------------
+
+
+def test_trial_retry_backoff_uses_exponential_delay_and_jitter():
+    delay = worker_job_single_job.calculate_trial_retry_delay_seconds(
+        attempts=3,
+        error_message="transient agent failure",
+        jitter=0.25,
+    )
+
+    assert delay == 150.0
+
+
+def test_trial_retry_backoff_uses_longer_rate_limit_base():
+    delay = worker_job_single_job.calculate_trial_retry_delay_seconds(
+        attempts=1,
+        error_message="Gemini failed with HTTP 429: rate limit exceeded",
+        jitter=0.0,
+    )
+
+    assert delay == 300.0
+    assert (
+        worker_job_single_job.classify_retry_reason("RESOURCE_EXHAUSTED quota")
+        == "rate_limit"
+    )
+
+
+def test_trial_retry_backoff_is_capped_after_jitter():
+    delay = worker_job_single_job.calculate_trial_retry_delay_seconds(
+        attempts=10,
+        error_message="rate limit exceeded",
+        jitter=0.25,
+    )
+
+    assert delay == worker_job_single_job.TRIAL_RETRY_MAX_DELAY_SECONDS
+
+
+class _FakeConnection:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+        self.closed = False
+
+    async def execute(self, sql: str, *args: Any) -> None:
+        self.calls.append((sql, args))
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry(
+    monkeypatch,
+):
+    connection = _FakeConnection()
+
+    async def fake_open_connection():
+        return connection
+
+    monkeypatch.setattr(worker_job_single_job, "_open_connection", fake_open_connection)
+    monkeypatch.setattr(worker_job_single_job.random, "uniform", lambda _a, _b: 0.0)
+
+    before = datetime.now(timezone.utc)
+    await worker_job_single_job._record_outcome(
+        job_id="wj-1",
+        outcome=JobOutcome.fail("HTTP 503 from agent", retryable=True),
+        attempts=2,
+        max_attempts=6,
+        kind=WorkerJobKind.TRIAL,
+        subject_table="trials",
+        subject_id="trial-1",
+    )
+    after = datetime.now(timezone.utc)
+
+    assert connection.closed is True
+    assert len(connection.calls) == 2
+
+    worker_sql, worker_args = connection.calls[0]
+    assert "status = 'RETRYING'" in worker_sql
+    assert "next_retry_at = $3" in worker_sql
+    assert "available_after = COALESCE($3::timestamptz, NOW())" in worker_sql
+    assert worker_args[0] == "wj-1"
+    assert worker_args[1] == "HTTP 503 from agent"
+
+    retry_at = worker_args[2]
+    assert retry_at is not None
+    assert before + timedelta(seconds=60) <= retry_at <= after + timedelta(seconds=60)
+
+    trial_sql, trial_args = connection.calls[1]
+    assert "UPDATE trials" in trial_sql
+    assert "status = 'RETRYING'" in trial_sql
+    assert "error_message = $2" in trial_sql
+    assert "next_retry_at = $3" in trial_sql
+    assert "current_worker_id = NULL" in trial_sql
+    assert "current_queue_slot = NULL" in trial_sql
+    assert trial_args == ("trial-1", "HTTP 503 from agent", retry_at)
+
+
 # ---------------------------------------------------------------------------
 # run_single_worker_job: dispatch + outcome recording
 # ---------------------------------------------------------------------------
@@ -272,13 +376,25 @@ def _install_fake_claim(monkeypatch, job: ClaimedWorkerJob | None):
 def _capture_record_outcome(monkeypatch):
     captured: list[dict[str, Any]] = []
 
-    async def fake_record(*, job_id, outcome, attempts, max_attempts):
+    async def fake_record(
+        *,
+        job_id,
+        outcome,
+        attempts,
+        max_attempts,
+        kind=None,
+        subject_table=None,
+        subject_id=None,
+    ):
         captured.append(
             {
                 "job_id": job_id,
                 "outcome": outcome,
                 "attempts": attempts,
                 "max_attempts": max_attempts,
+                "kind": kind,
+                "subject_table": subject_table,
+                "subject_id": subject_id,
             }
         )
 

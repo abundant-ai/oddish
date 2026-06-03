@@ -25,6 +25,7 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialHookEvent
 from harbor.models.job.result import JobResult
 
+from oddish.config import to_bedrock_model_id
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 
@@ -32,67 +33,6 @@ HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _MIN_REQUIRED_FREE_GB = 5.0
 _MIN_REQUIRED_FREE_INODES = 1024
-
-# Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
-# "us.anthropic.claude-opus-4-7-20250514-v1:0".
-_BEDROCK_REGION_PREFIXES: tuple[str, ...] = ("us.", "eu.", "apac.", "apn.", "global.")
-_BEDROCK_ENV_VARS: tuple[str, ...] = (
-    "AWS_BEARER_TOKEN_BEDROCK",
-    "CLAUDE_CODE_USE_BEDROCK",
-)
-
-
-def _looks_like_bedrock_model_id(model: str | None) -> bool:
-    """Return True if *model* is a Bedrock-style id that should route through AWS.
-
-    Handles the three shapes AWS Bedrock accepts:
-      * ARNs: ``arn:aws:bedrock:...``
-      * Native ids: ``anthropic.claude-...``
-      * Cross-region inference profiles: ``us.anthropic.claude-...``
-    """
-    if not model:
-        return False
-    tail = model.split("/", 1)[-1].strip().lower()
-    if not tail:
-        return False
-    if tail.startswith("arn:aws:bedrock:"):
-        return True
-    if tail.startswith("anthropic."):
-        return True
-    if any(tail.startswith(p) for p in _BEDROCK_REGION_PREFIXES) and (
-        ".anthropic." in tail
-    ):
-        return True
-    return False
-
-
-@contextlib.contextmanager
-def _scoped_bedrock_env(model: str | None) -> Iterator[None]:
-    """Route a trial between Anthropic's API and AWS Bedrock by model id.
-
-    Harbor's ``ClaudeCodeAgent._is_bedrock_mode()`` only inspects ``os.environ``,
-    so with ``AWS_BEARER_TOKEN_BEDROCK`` set globally every claude-code trial
-    defaults to Bedrock.  When the trial's model id does not look Bedrock-native
-    (ARNs, ``anthropic.*`` ids, or region-prefixed inference profiles), we
-    temporarily unset the Bedrock signals for the process so Harbor falls back
-    to ``ANTHROPIC_API_KEY``.
-
-    Safe on Modal single-job workers (one trial per container).  In the
-    standalone local worker multiple trials can share a process, but local dev
-    typically does not set ``AWS_BEARER_TOKEN_BEDROCK`` so the race does not
-    manifest in practice.
-    """
-    if _looks_like_bedrock_model_id(model):
-        yield
-        return
-    previous: dict[str, str] = {
-        name: os.environ.pop(name) for name in _BEDROCK_ENV_VARS if name in os.environ
-    }
-    try:
-        yield
-    finally:
-        for name, value in previous.items():
-            os.environ[name] = value
 
 
 class _TeeTextIO:
@@ -157,6 +97,17 @@ class HarborOutcome:
 
     # Whether an ATIF trajectory file exists
     has_trajectory: bool = False
+
+    # The Python exception class name (e.g. "AddTestsDirError",
+    # "AgentTimeoutError") that ended this trial, sourced from
+    # ``TrialResult.exception_info.exception_type`` when Harbor produced one,
+    # or ``type(exc).__name__`` when ``run_harbor_trial_async`` itself caught
+    # an exception. Used by ``trial_handler._store_trial_results`` to skip
+    # trial-level retries on outcomes Harbor's own RetryConfig already marks
+    # as non-retryable (e.g. AddTestsDirError on a dying sandbox); without
+    # this, oddish re-queues those trials into fresh sandboxes for hours
+    # before exhausting ``max_attempts``.
+    exception_type: str | None = None
 
 
 def _extract_timing_info(trial_result: Any) -> dict[str, Any] | None:
@@ -402,8 +353,7 @@ def log_local_storage_snapshot(path: str | Path) -> None:
         )
     except Exception as exc:
         print(
-            f"[oddish] storage snapshot at {path} failed: "
-            f"{type(exc).__name__}: {exc}",
+            f"[oddish] storage snapshot at {path} failed: {type(exc).__name__}: {exc}",
             flush=True,
         )
 
@@ -439,14 +389,18 @@ def _extract_outcome_from_job_result(
     duration_sec: float,
 ) -> HarborOutcome:
     """Extract reward, error, token usage, timing, and trajectory from Harbor's JobResult."""
-    # Extract error from trial results
+    # Extract error and exception type from trial results
     error: str | None = None
+    exception_type: str | None = None
     for trial_result in job_result.trial_results:
         if trial_result.exception_info:
             exc = trial_result.exception_info
             msg = exc.exception_message or exc.exception_type
             if msg:
                 error = str(msg)
+            if exc.exception_type:
+                exception_type = str(exc.exception_type)
+            if error or exception_type:
                 break
 
     # Extract token usage & cost from the first trial's AgentContext
@@ -496,6 +450,7 @@ def _extract_outcome_from_job_result(
             cost_usd=cost_usd,
             phase_timing=phase_timing,
             has_trajectory=has_trajectory,
+            exception_type=exception_type,
         )
 
     # Method 1: Check reward_stats in job stats.
@@ -565,6 +520,29 @@ def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
         config_path.write_text(task_config.model_dump_toml())
 
 
+def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
+    """Apply the env shape Claude Code expects for OpenRouter's Anthropic skin."""
+    agent_name = (agent_config.name or "").strip().lower()
+    model_name = (agent_config.model_name or "").strip().lower()
+    if agent_name != "claude-code" or not model_name.startswith("openrouter/"):
+        return
+
+    env = dict(agent_config.env or {})
+    env.setdefault(
+        "ANTHROPIC_BASE_URL",
+        os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api",
+    )
+    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${OPENROUTER_API_KEY}")
+    env.setdefault("ENABLE_TOOL_SEARCH", "false")
+
+    # Claude Code prioritizes these ambient credentials when present in the
+    # Modal image. Blank them so the OpenRouter auth/base-url route wins.
+    env["ANTHROPIC_API_KEY"] = ""
+    env["CLAUDE_CODE_USE_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    agent_config.env = env
+
+
 def _build_agent_config(
     *,
     agent: str,
@@ -616,6 +594,13 @@ def _build_agent_config(
         agent_config.name = agent
     if model is not None:
         agent_config.model_name = model
+
+    # Trial rows should already store the runtime model id. Keep this as a
+    # defensive guard for legacy rows or rich AgentConfig payloads. Explicit
+    # "openrouter/..." ids pass through here and the claude-code agent routes
+    # them through OpenRouter instead of the container's default transport.
+    agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
+    _apply_claude_code_openrouter_env(agent_config)
 
     return agent_config
 
@@ -669,6 +654,7 @@ async def run_harbor_trial_async(
             duration_sec=0.0,
             job_result_path=None,
             job_dir=None,
+            exception_type="LocalStoragePreflightError",
         )
 
     # Create unique job directory
@@ -686,54 +672,55 @@ async def run_harbor_trial_async(
         _patch_task_toml(patched_task, hc)
         effective_task_path = patched_task
 
-    # ── Build Harbor configs ─────────────────────────────────────────────
-    env_config = hc.environment.model_copy()
-    env_config.type = environment
-
-    agent_config = _build_agent_config(
-        agent=agent,
-        model=model,
-        raw_harbor_config=raw,
-    )
-
-    job_config_kwargs: dict[str, Any] = {
-        "tasks": [TaskConfig(path=effective_task_path)],
-        "agents": [agent_config],
-        "environment": env_config,
-        "verifier": hc.verifier,
-        "artifacts": hc.artifacts,
-        "jobs_dir": unique_parent,
-    }
-    if hc.timeout_multiplier is not None:
-        job_config_kwargs["timeout_multiplier"] = hc.timeout_multiplier
-    if hc.agent_timeout_multiplier is not None:
-        job_config_kwargs["agent_timeout_multiplier"] = hc.agent_timeout_multiplier
-    if hc.verifier_timeout_multiplier is not None:
-        job_config_kwargs["verifier_timeout_multiplier"] = (
-            hc.verifier_timeout_multiplier
-        )
-    if hc.agent_setup_timeout_multiplier is not None:
-        job_config_kwargs["agent_setup_timeout_multiplier"] = (
-            hc.agent_setup_timeout_multiplier
-        )
-    if hc.environment_build_timeout_multiplier is not None:
-        job_config_kwargs["environment_build_timeout_multiplier"] = (
-            hc.environment_build_timeout_multiplier
-        )
-    if hc.retry is not None:
-        job_config_kwargs["retry"] = hc.retry
-
-    config = JobConfig(**job_config_kwargs)
-
     # Run the job
     actual_job_dir = unique_parent
     start = time.time()
     modal_debug_log_path: Path | None = None
 
     try:
-        # Job.create performs task/metric resolution + task caching and can
-        # fail on transient I/O. Keep it inside the try so failures produce
-        # a well-formed HarborOutcome instead of a bare exception.
+        # Build Harbor configs inside the try: _build_agent_config normalizes
+        # the model id to a Bedrock-native id and raises on an unmapped Claude
+        # model, and Job.create performs task/metric resolution that can fail
+        # on transient I/O. Keeping both here turns those failures into a
+        # well-formed HarborOutcome instead of a bare exception.
+        env_config = hc.environment.model_copy()
+        env_config.type = environment
+
+        agent_config = _build_agent_config(
+            agent=agent,
+            model=model,
+            raw_harbor_config=raw,
+        )
+
+        job_config_kwargs: dict[str, Any] = {
+            "tasks": [TaskConfig(path=effective_task_path)],
+            "agents": [agent_config],
+            "environment": env_config,
+            "verifier": hc.verifier,
+            "artifacts": hc.artifacts,
+            "jobs_dir": unique_parent,
+        }
+        if hc.timeout_multiplier is not None:
+            job_config_kwargs["timeout_multiplier"] = hc.timeout_multiplier
+        if hc.agent_timeout_multiplier is not None:
+            job_config_kwargs["agent_timeout_multiplier"] = hc.agent_timeout_multiplier
+        if hc.verifier_timeout_multiplier is not None:
+            job_config_kwargs["verifier_timeout_multiplier"] = (
+                hc.verifier_timeout_multiplier
+            )
+        if hc.agent_setup_timeout_multiplier is not None:
+            job_config_kwargs["agent_setup_timeout_multiplier"] = (
+                hc.agent_setup_timeout_multiplier
+            )
+        if hc.environment_build_timeout_multiplier is not None:
+            job_config_kwargs["environment_build_timeout_multiplier"] = (
+                hc.environment_build_timeout_multiplier
+            )
+        if hc.retry is not None:
+            job_config_kwargs["retry"] = hc.retry
+
+        config = JobConfig(**job_config_kwargs)
+
         job = await Job.create(config)
         actual_job_dir = job.job_dir
 
@@ -745,10 +732,7 @@ async def run_harbor_trial_async(
             job.on_trial_ended(hook_callback)
             job.on_trial_cancelled(hook_callback)
 
-        with (
-            _scoped_bedrock_env(model),
-            _capture_modal_output(actual_job_dir, environment) as captured_log_path,
-        ):
+        with _capture_modal_output(actual_job_dir, environment) as captured_log_path:
             modal_debug_log_path = captured_log_path
             # Harbor's job.run() returns JobResult object directly
             job_result = await job.run()
@@ -767,6 +751,7 @@ async def run_harbor_trial_async(
                 duration_sec=duration,
                 job_result_path=None,
                 job_dir=job_dir,
+                exception_type="JobResultMissingError",
             )
 
         # Extract reward/error directly from JobResult object (no file parsing needed)
@@ -804,6 +789,7 @@ async def run_harbor_trial_async(
             duration_sec=duration,
             job_result_path=debug_result_path,
             job_dir=actual_job_dir,
+            exception_type="CancelledError",
         )
     except Exception as e:
         duration = time.time() - start
@@ -823,6 +809,7 @@ async def run_harbor_trial_async(
             duration_sec=duration,
             job_result_path=debug_result_path,
             job_dir=actual_job_dir,
+            exception_type=type(e).__name__,
         )
     finally:
         if task_tmpdir is not None:

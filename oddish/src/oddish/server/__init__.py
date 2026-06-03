@@ -8,17 +8,17 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
+from sqlalchemy import select, text
+from sqlalchemy.orm import selectinload
 from typing import cast
 import uvicorn
 from rich.console import Console
 
 from oddish.core.endpoints import (
     browse_tasks_core,
+    combine_experiments_core,
     create_task_sweep_core,
-    delete_experiment_core,
-    delete_task_core,
-    delete_trial_core,
+    get_task_detail_core,
     get_task_status_core,
     get_task_version_core,
     get_trial_by_index_core,
@@ -71,12 +71,14 @@ from oddish.db import (
     get_pool,
     utcnow,
 )
-from oddish.db.storage import delete_s3_prefixes
 from oddish.schemas import (
     TaskBatchCancelRequest,
     TaskBrowseResponse,
+    ExperimentCombineRequest,
+    ExperimentCombineResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
+    TaskDetailResponse,
     TaskUploadCompleteRequest,
     TaskUploadInitRequest,
     TaskUploadInitResponse,
@@ -390,6 +392,7 @@ async def list_tasks(
     experiment_id: str | None = None,
     include_trials: bool = True,
     compact_trials: bool = False,
+    compact_tasks: bool = False,
     include_queue_info: bool = True,
     include_worker_jobs: bool = True,
     limit: int = 100,
@@ -404,6 +407,7 @@ async def list_tasks(
             experiment_id=experiment_id,
             include_trials=include_trials,
             compact_trials=compact_trials,
+            compact_tasks=compact_tasks,
             include_queue_info=include_queue_info,
             include_worker_jobs=include_worker_jobs,
             limit=limit,
@@ -433,6 +437,13 @@ async def get_task_status(task_id: str):
             include_trials=True,
             include_empty_rewards=False,
         )
+
+
+@api.get("/tasks/{task_id}/detail", response_model=TaskDetailResponse)
+async def get_task_detail(task_id: str):
+    """Task detail bundle: task + trials + per-version + cost rollups."""
+    async with get_session() as session:
+        return await get_task_detail_core(session, task_id=task_id)
 
 
 @api.get("/tasks/{task_id}/versions", response_model=list[TaskVersionResponse])
@@ -472,57 +483,33 @@ async def cancel_tasks(payload: TaskBatchCancelRequest):
     }
 
 
-@api.delete("/tasks/{task_id}")
-async def delete_task(task_id: str):
-    """Delete a task and its trials."""
+# No DELETE endpoints, by policy: user data (tasks, experiments,
+# trials, and their S3 artifacts) is append-only from the API surface.
+# Removing a row over the network — even gated behind admin auth — is
+# never the right answer; if something needs to go, an operator runs
+# ``delete_{task,experiment,trial}_core`` from the CLI / a one-off
+# script. Previews running against clones of prod data make this
+# especially load-bearing: a stray DELETE in preview would target
+# the same prod S3 bucket.
+
+
+@api.post("/experiments/combine", response_model=ExperimentCombineResponse)
+async def combine_experiments(
+    payload: ExperimentCombineRequest,
+) -> ExperimentCombineResponse:
+    """Combine several experiments into a new result experiment.
+
+    Copies the task memberships and finished trials (with their artifacts)
+    of every source experiment into a brand-new experiment. The sources
+    are left untouched.
+    """
     async with get_session() as session:
-        result = await delete_task_core(session, task_id=task_id)
-        await session.commit()
-
-    if result.get("s3_prefixes"):
-        try:
-            await delete_s3_prefixes(result["s3_prefixes"])
-        except Exception:
-            logger.exception("Failed to delete S3 artifacts for task %s", task_id)
-
-    return {"status": "success", "deleted": result["deleted"]}
-
-
-@api.delete("/experiments/{experiment_id}")
-async def delete_experiment(experiment_id: str):
-    """Delete an experiment and all associated tasks/trials."""
-    async with get_session() as session:
-        result = await delete_experiment_core(session, experiment_id=experiment_id)
-        await session.commit()
-
-    if result.get("s3_prefixes"):
-        try:
-            await delete_s3_prefixes(result["s3_prefixes"])
-        except Exception:
-            logger.exception(
-                "Failed to delete S3 artifacts for experiment %s", experiment_id
-            )
-
-    return {
-        "status": "success",
-        "deleted": result["deleted"],
-    }
-
-
-@api.delete("/trials/{trial_id}")
-async def delete_trial(trial_id: str) -> dict:
-    """Delete a single trial and its associated artifacts."""
-    async with get_session() as session:
-        result = await delete_trial_core(session, trial_id=trial_id)
-        await session.commit()
-
-    if result.get("s3_prefixes"):
-        try:
-            await delete_s3_prefixes(result["s3_prefixes"])
-        except Exception:
-            logger.exception("Failed to delete S3 artifacts for trial %s", trial_id)
-
-    return {"status": "success", "deleted": result["deleted"]}
+        return await combine_experiments_core(
+            session,
+            source_experiment_ids=payload.source_experiment_ids,
+            name=payload.name,
+            copy_artifacts=payload.copy_artifacts,
+        )
 
 
 @api.patch("/experiments/{experiment_id}", response_model=ExperimentUpdateResponse)
@@ -636,7 +623,13 @@ async def list_task_files(
 ) -> dict:
     """List all files in a task's S3 directory with optional presigned URLs."""
     async with get_session() as session:
-        task = await session.get(TaskModel, task_id)
+        task = (
+            await session.execute(
+                select(TaskModel)
+                .where(TaskModel.id == task_id)
+                .options(selectinload(TaskModel.current_version))
+            )
+        ).scalar_one_or_none()
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
         if version is None and task.current_version:
@@ -662,7 +655,13 @@ async def get_task_file_content(
 ) -> dict:
     """Get content of a specific task file from S3."""
     async with get_session() as session:
-        task = await session.get(TaskModel, task_id)
+        task = (
+            await session.execute(
+                select(TaskModel)
+                .where(TaskModel.id == task_id)
+                .options(selectinload(TaskModel.current_version))
+            )
+        ).scalar_one_or_none()
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
         if version is None and task.current_version:

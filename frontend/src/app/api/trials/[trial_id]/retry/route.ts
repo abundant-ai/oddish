@@ -5,10 +5,11 @@ import {
   getBackendUrl,
   getClerkToken,
 } from "@/lib/backend-config";
+import { backendErrorPayload, readBackendJson } from "@/lib/backend-response";
 
 export async function POST(
   _request: Request,
-  { params }: { params: Promise<{ trial_id: string }> },
+  { params }: { params: Promise<{ trial_id: string }> }
 ) {
   try {
     const { getToken } = await auth();
@@ -26,20 +27,24 @@ export async function POST(
       headers: getAuthHeaders(token),
     });
 
-    const text = await res.text();
-    const data = text ? JSON.parse(text) : null;
+    const parsed = await readBackendJson(res, "Failed to retry trial");
 
-    if (!res.ok) {
-      return NextResponse.json(data ?? { error: "Failed to retry trial" }, {
-        status: res.status,
-      });
+    if (parsed.parseError) {
+      return NextResponse.json(parsed.parseError, { status: parsed.status });
     }
 
-    return NextResponse.json(data);
+    if (!res.ok) {
+      return NextResponse.json(
+        backendErrorPayload(parsed.data, "Failed to retry trial"),
+        { status: res.status }
+      );
+    }
+
+    return NextResponse.json(parsed.data);
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }

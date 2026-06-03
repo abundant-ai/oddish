@@ -10,12 +10,19 @@ from uuid import uuid4
 
 import modal
 
+# ``configure_logfire`` runs in ``worker/__init__.py`` (so auto-tracing
+# can patch our modules before they're imported); we just need the
+# ``span`` helper here to wrap entry points.
+from observability import span as _otel_span
+
 from modal_app import (
+    DISPATCHER_NONPREEMPTIBLE,
     MAX_WORKERS_PER_POLL,
     POLL_INTERVAL_SECONDS,
     WORKER_BUFFER_CONTAINERS,
     WORKER_MAX_CONTAINERS,
     WORKER_MIN_CONTAINERS,
+    WORKER_NONPREEMPTIBLE,
     WORKER_SCALEDOWN_WINDOW_SECONDS,
     WORKER_TIMEOUT_SECONDS,
     app,
@@ -73,7 +80,9 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
     scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
     max_containers=WORKER_MAX_CONTAINERS,
     timeout=WORKER_TIMEOUT_SECONDS,
-    memory=1024,  # 1GB memory to prevent OOM issues
+    cpu=1.0,
+    memory=3072,  # 3GB memory to prevent OOM issues
+    nonpreemptible=WORKER_NONPREEMPTIBLE,
 )
 async def process_single_job(queue_key: str):
     """
@@ -87,21 +96,35 @@ async def process_single_job(queue_key: str):
 
     Each worker gets the full timeout budget for its single job.
     """
-    console.print(f"[cyan]Job worker starting (queue_key={queue_key})...[/cyan]")
-    await configure_storage_paths()
-
+    # Resolve the Modal function-call id BEFORE opening the span so
+    # it can ride as a span attribute. This is a pure in-process
+    # lookup, no I/O, so it's safe to do pre-span.
     fc_id: str | None = None
     try:
         fc_id = modal.current_function_call_id()
     except Exception:
         pass
-    if fc_id:
-        console.print(f"[dim]Modal function call: {fc_id}[/dim]")
+
+    # Open the span FIRST and run everything else inside it — the
+    # ``configure_storage_paths`` + Modal handshake + console prints
+    # used to fire ahead of the span and showed up as orphan top-
+    # level activity on every job worker container.
+    job_span = _otel_span(
+        "worker.process_single_job",
+        queue_key=queue_key,
+        modal_function_call_id=fc_id,
+    )
 
     worker_id = f"{queue_key}-{uuid4().hex[:12]}"
     lock_slot: int | None = None
 
+    job_span.__enter__()
     try:
+        console.print(f"[cyan]Job worker starting (queue_key={queue_key})...[/cyan]")
+        if fc_id:
+            console.print(f"[dim]Modal function call: {fc_id}[/dim]")
+        await configure_storage_paths()
+
         queue_limit = settings.get_model_concurrency(queue_key)
         if queue_limit <= 0:
             console.print(
@@ -156,6 +179,12 @@ async def process_single_job(queue_key: str):
                 worker_id=worker_id,
             )
         await close_database_connections()
+        import sys as _sys
+
+        try:
+            job_span.__exit__(*_sys.exc_info())
+        except Exception:
+            pass
         console.print("[green]Job worker complete[/green]")
 
 
@@ -167,6 +196,7 @@ async def process_single_job(queue_key: str):
     min_containers=1,  # Keep one dispatcher container warm.
     max_containers=1,  # Keep the scheduled dispatcher singleton-ish.
     schedule=modal.Period(seconds=POLL_INTERVAL_SECONDS),
+    nonpreemptible=DISPATCHER_NONPREEMPTIBLE,
 )
 async def poll_queue():
     """
@@ -181,10 +211,15 @@ async def poll_queue():
     3. Spawns up to ``MAX_WORKERS_PER_POLL`` ``process_single_job``
        workers, budgeted per queue_key against concurrency limits.
     """
-    console.print("[cyan]Queue dispatcher starting...[/cyan]")
-    await configure_storage_paths()
-
+    # Open the span FIRST so the storage-path setup, cleanup,
+    # discovery, and spawn-plan queries all nest under one named
+    # ``worker.poll_queue_cycle`` parent per tick.
+    cycle_span = _otel_span("worker.poll_queue_cycle")
+    cycle_span.__enter__()
     try:
+        console.print("[cyan]Queue dispatcher starting...[/cyan]")
+        await configure_storage_paths()
+
         stale_cleared = await cleanup_stale_queue_slots()
         if stale_cleared > 0:
             console.print(f"metric=queue_lock_stale_cleared count={stale_cleared}")
@@ -283,4 +318,10 @@ async def poll_queue():
         raise
     finally:
         await close_database_connections()
+        import sys as _sys
+
+        try:
+            cycle_span.__exit__(*_sys.exc_info())
+        except Exception:
+            pass
         console.print("[green]Dispatcher complete[/green]")

@@ -54,6 +54,12 @@ async function getInitialTasks(experimentId: string): Promise<Task[] | null> {
       limit: "2000",
       offset: "0",
       include_trials: "false",
+      // Lightweight first-paint shell: skips the experiment-scoped
+      // ``effective_version_ids`` IN-list and the per-task
+      // ``visible_worker_jobs`` fetch on the backend. Trial data and
+      // worker-job badges arrive via the phase-2 batched fetch in
+      // ``experiment-client.tsx``.
+      compact_tasks: "true",
     });
     const response = await fetch(url, {
       cache: "no-store",

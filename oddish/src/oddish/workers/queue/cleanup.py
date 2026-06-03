@@ -19,6 +19,7 @@ with all trials done can't get stuck if a single stage-transition
 flush failed at handler-commit time.
 """
 
+from datetime import timedelta
 from typing import cast
 
 from sqlalchemy import text
@@ -34,6 +35,10 @@ from oddish.db import (
     VerdictStatus,
     get_session,
     utcnow,
+)
+from oddish.workers.queue.worker_job_single_job import (
+    calculate_trial_retry_delay_seconds,
+    classify_retry_reason,
 )
 from oddish.workers.queue.shared import console
 
@@ -223,15 +228,38 @@ async def cleanup_orphaned_queue_state(
                 if trial is None:
                     continue
                 if row["new_status"] == "RETRYING":
+                    delay_seconds = calculate_trial_retry_delay_seconds(
+                        attempts=int(row["attempts"]),
+                        error_message=row["error_message"],
+                    )
+                    retry_at = utcnow() + timedelta(seconds=delay_seconds)
+                    await session.execute(
+                        text(
+                            """
+                            UPDATE worker_jobs
+                            SET    next_retry_at = :retry_at,
+                                   available_after = :retry_at
+                            WHERE  id = :job_id
+                            """
+                        ),
+                        {"job_id": row["id"], "retry_at": retry_at},
+                    )
                     # Domain row goes back to RETRYING so the UI
                     # reflects "waiting for another attempt". The new
                     # worker_jobs claim will bump trials.status back
                     # to RUNNING via ``_prepare_trial_run``.
                     trial.status = TrialStatus.RETRYING
                     trial.error_message = row["error_message"]
+                    trial.next_retry_at = retry_at
                     trial.current_worker_id = None
                     trial.current_queue_slot = None
                     trial.stale_reaped_at = utcnow()
+                    console.print(
+                        f"metric=worker_job_stale_retry_scheduled id={row['id']} "
+                        f"attempts={row['attempts']}/{row['max_attempts']} "
+                        f"retry_reason={classify_retry_reason(row['error_message'])} "
+                        f"retry_delay_seconds={delay_seconds:.2f}"
+                    )
                 else:
                     trial.status = TrialStatus.FAILED
                     trial.error_message = row["error_message"]
@@ -308,6 +336,9 @@ async def cleanup_orphaned_queue_state(
                     FROM tasks t
                     JOIN trials tr ON tr.task_id = t.id
                     WHERE t.status = 'RUNNING'
+                      AND t.deleted_at IS NULL
+                      AND tr.deleted_at IS NULL
+                      AND tr.superseded_by_trial_id IS NULL
                     GROUP BY t.id
                     HAVING COUNT(*) FILTER (
                         WHERE tr.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
@@ -332,6 +363,9 @@ async def cleanup_orphaned_queue_state(
                     FROM tasks t
                     JOIN trials tr ON tr.task_id = t.id
                     WHERE t.status = 'ANALYZING'
+                      AND t.deleted_at IS NULL
+                      AND tr.deleted_at IS NULL
+                      AND tr.superseded_by_trial_id IS NULL
                     GROUP BY t.id
                     HAVING COUNT(*) FILTER (
                         WHERE tr.analysis_status IS NULL
@@ -360,6 +394,7 @@ async def cleanup_orphaned_queue_state(
                     SELECT id
                     FROM tasks
                     WHERE status = 'VERDICT_PENDING'
+                      AND deleted_at IS NULL
                       AND (
                           verdict_status IS NULL
                           OR verdict_status::text NOT IN ('QUEUED', 'RUNNING')
@@ -402,6 +437,7 @@ async def cleanup_orphaned_queue_state(
                     SET    current_worker_id = NULL,
                            current_queue_slot = NULL
                     WHERE  status::text IN ('SUCCESS', 'FAILED')
+                      AND  deleted_at IS NULL
                       AND  (
                           current_worker_id IS NOT NULL
                           OR current_queue_slot IS NOT NULL
@@ -441,6 +477,66 @@ async def cleanup_orphaned_queue_state(
         )
         orphaned_active_slots_cleared = int(orphaned_slot_cleanup_result.rowcount or 0)
 
+        # -----------------------------------------------------------------
+        # 7. Reconcile drift on the denormalized
+        #    ``experiments.last_activity_at`` column. Application
+        #    write paths bump it best-effort on task/trial inserts,
+        #    so this pass only catches misses (process crash between
+        #    insert flush and bump, etc). Bounded by a 30-minute
+        #    lookback so it stays cheap on every sweep.
+        # -----------------------------------------------------------------
+        experiments_last_activity_reconciled = int(
+            (
+                cast(
+                    CursorResult,
+                    await session.execute(
+                        text(
+                            """
+                            UPDATE experiments e
+                            SET last_activity_at = derived.last_activity_at
+                            FROM (
+                                SELECT
+                                    sub.experiment_id,
+                                    GREATEST(
+                                        MAX(sub.task_created_at),
+                                        MAX(sub.trial_created_at)
+                                    ) AS last_activity_at
+                                FROM (
+                                    SELECT
+                                        te.experiment_id,
+                                        t.created_at AS task_created_at,
+                                        NULL::timestamptz AS trial_created_at
+                                    FROM task_experiments te
+                                    JOIN tasks t ON t.id = te.task_id
+                                    WHERE te.deleted_at IS NULL
+                                      AND t.deleted_at IS NULL
+                                      AND t.created_at >= NOW() - INTERVAL '30 minutes'
+                                    UNION ALL
+                                    SELECT
+                                        tr.experiment_id,
+                                        NULL::timestamptz AS task_created_at,
+                                        tr.created_at AS trial_created_at
+                                    FROM trials tr
+                                    WHERE tr.deleted_at IS NULL
+                                      AND tr.superseded_by_trial_id IS NULL
+                                      AND tr.created_at >= NOW() - INTERVAL '30 minutes'
+                                ) sub
+                                GROUP BY sub.experiment_id
+                            ) derived
+                            WHERE e.id = derived.experiment_id
+                              AND e.deleted_at IS NULL
+                              AND (
+                                  e.last_activity_at IS NULL
+                                  OR e.last_activity_at < derived.last_activity_at
+                              )
+                            """
+                        )
+                    ),
+                )
+            ).rowcount
+            or 0
+        )
+
     return {
         "worker_jobs_retried": worker_jobs_retried,
         "worker_jobs_failed": worker_jobs_failed,
@@ -450,4 +546,5 @@ async def cleanup_orphaned_queue_state(
         "terminal_trial_runtime_refs_cleared": terminal_trial_runtime_refs_cleared,
         "orphaned_active_slots_cleared": orphaned_active_slots_cleared,
         "zombie_txn_reaped": zombie_txn_reaped,
+        "experiments_last_activity_reconciled": experiments_last_activity_reconciled,
     }

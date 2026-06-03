@@ -177,6 +177,25 @@ Common optional settings:
 - provider keys such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DAYTONA_API_KEY`
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`
 
+### Observability (Pydantic Logfire)
+
+Optional. Provision a write token in Logfire and add it to the
+`oddish-prod` Modal secret so the API containers and workers both
+pick it up:
+
+- `LOGFIRE_TOKEN` — Logfire write token (the only required value).
+- `LOGFIRE_ENVIRONMENT` *(optional)* — overrides the auto-detected
+  label (`production` / `preview` / `development`). PR previews on
+  Modal are auto-tagged `preview` and ride with `oddish.pr=<number>`
+  as a span attribute, so you can filter `deployment.environment ==
+  "preview"` across all PRs and drill into one with `oddish.pr`.
+- `LOGFIRE_SERVICE_NAME` *(optional)* — defaults to `oddish-backend`.
+- `ODDISH_LOGFIRE_INSTRUMENT_SQLA` *(optional, default `0`)* — set to
+  `1` to also wrap SQLAlchemy executes with span instrumentation. We
+  already wrap asyncpg one layer down, and the SQLA wrapper walks
+  every statement's expression tree, which is meaningful overhead on
+  hot paths.
+
 Modal runtime knobs are read directly by `modal_app.py`, including:
 
 - `ODDISH_ENABLE_MODAL_WORKERS`
@@ -185,13 +204,14 @@ Modal runtime knobs are read directly by `modal_app.py`, including:
 - `ODDISH_MODAL_API_MAX_CONTAINERS`
 - `ODDISH_MODAL_API_CONCURRENCY_TARGET`
 - `ODDISH_MODAL_API_CONCURRENCY_MAX`
+- `ODDISH_MODAL_POLL_INTERVAL_SECONDS`
 - `ODDISH_MODAL_WORKER_TIMEOUT_SECONDS`
 - `ODDISH_MODAL_WORKER_MIN_CONTAINERS`
 - `ODDISH_MODAL_WORKER_BUFFER_CONTAINERS`
 - `ODDISH_MODAL_WORKER_SCALEDOWN_WINDOW_SECONDS`
 - `ODDISH_MODAL_WORKER_MAX_CONTAINERS`
-- `ODDISH_MODAL_MAX_WORKERS_PER_POLL`
-- `ODDISH_MODEL_CONCURRENCY_DEFAULT`
+- `ODDISH_MODAL_MAX_WORKERS_PER_POLL` *(optional, default `64`)*
+- `ODDISH_DEFAULT_MODEL_CONCURRENCY`
 - `MODAL_APP_NAME`
 - `MODAL_SECRET_ENVIRONMENT`
 
@@ -217,7 +237,7 @@ All routes require auth unless marked public.
 | POST | `/tasks/upload/complete` | Finalize a direct-to-S3 task upload after the client PUT succeeds |
 | POST | `/trials/import/init` | Register an off-oddish trial and return a presigned artifact URL |
 | POST | `/trials/import/complete` | Finalize an imported trial after the client PUT succeeds |
-| POST | `/tasks/sweep` | Expand one task into multiple trials |
+| POST | `/tasks/sweep` | Expand one task into multiple trials; accepts optional `max_trial_attempts` for newly-created trials |
 | GET | `/tasks` | List tasks (org-scoped, paginated/filtered) |
 | GET | `/tasks/browse` | Browse latest task versions with pagination and search |
 | GET | `/tasks/{task_id}` | Task details |

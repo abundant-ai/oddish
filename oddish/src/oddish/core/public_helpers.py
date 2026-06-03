@@ -68,8 +68,19 @@ async def get_public_experiment(
     return result.scalar_one_or_none()
 
 
-async def get_public_task(session: AsyncSession, task_id: str) -> TaskModel | None:
-    """Get a task that belongs to at least one public experiment."""
+async def get_public_task(
+    session: AsyncSession,
+    task_id: str,
+    *,
+    load_current_version: bool = False,
+) -> TaskModel | None:
+    """Get a task that belongs to at least one public experiment.
+
+    Pass ``load_current_version=True`` from callers that read
+    ``task.current_version`` (the public file-serving routes).
+    Default is False so the public task-status path doesn't pay for
+    an extra ``task_versions`` round trip it never reads.
+    """
     public_link_exists = exists(
         select(1)
         .select_from(
@@ -80,12 +91,16 @@ async def get_public_task(session: AsyncSession, task_id: str) -> TaskModel | No
         )
         .where(
             task_experiments.c.task_id == TaskModel.id,
+            task_experiments.c.deleted_at.is_(None),
             ExperimentModel.is_public == True,  # noqa: E712
         )
     )
+    options = [selectinload(TaskModel.trials), selectinload(TaskModel.experiments)]
+    if load_current_version:
+        options.append(selectinload(TaskModel.current_version))
     result = await session.execute(
         select(TaskModel)
-        .options(selectinload(TaskModel.trials), selectinload(TaskModel.experiments))
+        .options(*options)
         .where(TaskModel.id == task_id)
         .where(public_link_exists)
     )
@@ -119,6 +134,7 @@ async def get_task_status_counts(
             ExperimentModel,
             ExperimentModel.id == task_experiments.c.experiment_id,
         )
+        query = query.where(task_experiments.c.deleted_at.is_(None))
     for clause in filters:
         query = query.where(clause)
 
@@ -133,11 +149,20 @@ async def get_task_status_counts(
 async def list_task_trials_for_task(
     session: AsyncSession, task_id: str
 ) -> list[TrialResponse]:
-    """List all trials for a task with their responses."""
+    """List all trials for a task with their responses.
+
+    Superseded trials (rows replaced by a user-driven retry) are
+    hidden by default so the public trial list collapses the rerun
+    chain down to the live attempt -- matching what
+    ``get_task_status_trials`` returns for the dashboard.
+    """
     result = await session.execute(
         select(TrialModel, TaskModel.task_path)
         .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .where(TrialModel.task_id == task_id)
+        .where(
+            TrialModel.task_id == task_id,
+            TrialModel.superseded_by_trial_id.is_(None),
+        )
         .order_by(TrialModel.created_at.asc())
     )
     rows = result.all()

@@ -69,6 +69,16 @@ async def list_public_experiments(
                     "task_count"
                 ),
             )
+            .select_from(
+                task_experiments.join(
+                    TaskModel,  # type: ignore[arg-type]
+                    TaskModel.id == task_experiments.c.task_id,
+                )
+            )
+            .where(
+                task_experiments.c.deleted_at.is_(None),
+                TaskModel.deleted_at.is_(None),
+            )
             .group_by(task_experiments.c.experiment_id)
             .subquery()
         )
@@ -297,7 +307,7 @@ async def list_public_task_files(
 ) -> dict:
     """List all files in a public task's S3 directory."""
     async with get_session() as session:
-        task = await get_public_task(session, task_id)
+        task = await get_public_task(session, task_id, load_current_version=True)
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
         if version is None and task.current_version:
@@ -323,7 +333,7 @@ async def get_public_task_file_content(
 ) -> dict:
     """Get content of a specific public task file from S3."""
     async with get_session() as session:
-        task = await get_public_task(session, task_id)
+        task = await get_public_task(session, task_id, load_current_version=True)
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
         if version is None and task.current_version:

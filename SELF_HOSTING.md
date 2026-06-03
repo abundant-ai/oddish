@@ -24,7 +24,7 @@ jump to whichever workflow you need.
 
 ## Prerequisites
 
-- Python `3.14+` and [`uv`](https://docs.astral.sh/uv/)
+- Python `3.13` and [`uv`](https://docs.astral.sh/uv/)
 - Node.js `20+` and `pnpm`
 - [Modal](https://modal.com) account + CLI (`modal`)
 - A Postgres connection string
@@ -71,8 +71,11 @@ Provider keys (add the ones you plan to use):
 
 ```bash
 OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-...
 GEMINI_API_KEY=...
+
+# oddish runs Claude exclusively through AWS Bedrock. The Modal image sets
+# CLAUDE_CODE_USE_BEDROCK=1; provide the bearer token here.
+AWS_BEARER_TOKEN_BEDROCK=...
 ```
 
 See `backend/.env.example` for the full list of optional knobs (CORS, GitHub

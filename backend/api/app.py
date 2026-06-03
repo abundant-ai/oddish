@@ -9,6 +9,10 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from observability import (
+    instrument_fastapi,
+    span as _otel_span,
+)
 from oddish.config import settings
 from oddish.db import close_database_connections
 from oddish.timing import (
@@ -31,14 +35,19 @@ async def _apply_role_defaults_bg() -> None:
     orphaned transactions left by SIGKILLed workers get auto-killed by
     Postgres itself, which is the server-side half of the fix for the
     incidents where zombies held trials locks for hours.
-    """
-    try:
-        from oddish.db.connection import apply_role_defaults
 
-        result = await apply_role_defaults()
-        logger.info("applied DB role defaults: %s", result)
-    except Exception:
-        logger.warning("could not apply DB role defaults", exc_info=True)
+    Wrapped in an ``app.startup.role_defaults`` span so the ALTER ROLE
+    + pool-warmup queries (SELECT current_user, BEGIN, COMMIT) it
+    triggers don't appear as orphaned spans on container cold start.
+    """
+    with _otel_span("app.startup.role_defaults"):
+        try:
+            from oddish.db.connection import apply_role_defaults
+
+            result = await apply_role_defaults()
+            logger.info("applied DB role defaults: %s", result)
+        except Exception:
+            logger.warning("could not apply DB role defaults", exc_info=True)
 
 
 def _get_cors_origins() -> list[str]:
@@ -68,10 +77,15 @@ async def lifespan(_api: FastAPI):
     Hosted environments should rely on Alembic migrations, not runtime
     `metadata.create_all()`. Avoiding a startup-time DB handshake keeps the
     ASGI app from hard-failing when the Supabase pooler is briefly unavailable.
-    """
-    Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
 
-    role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
+    Startup + shutdown work is wrapped in named spans so the file-system
+    + DB activity they fan out to (``mkdir``, ``ALTER ROLE``, pool warmup,
+    connection close) don't appear as orphan spans on container cold start
+    / cycle.
+    """
+    with _otel_span("app.startup"):
+        Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
+        role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
 
     cc_orch = _try_get_cc_chat_orchestrator()
     if cc_orch is not None:
@@ -86,26 +100,17 @@ async def lifespan(_api: FastAPI):
 
     yield
 
-    if cc_orch is not None:
+    with _otel_span("app.shutdown"):
+        role_defaults_task.cancel()
         try:
-            await cc_orch.stop_sweeper()
-        except Exception:
-            logger.exception("cc_chat: stop_sweeper raised")
+            await role_defaults_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
         try:
-            await cc_orch.close_all()
+            await close_database_connections()
         except Exception:
-            logger.exception("cc_chat: close_all raised")
-
-    role_defaults_task.cancel()
-    try:
-        await role_defaults_task
-    except (asyncio.CancelledError, Exception):
-        pass
-
-    try:
-        await close_database_connections()
-    except Exception:
-        pass
+            pass
 
 
 def _try_get_cc_chat_orchestrator():
@@ -119,12 +124,22 @@ def _try_get_cc_chat_orchestrator():
 
 
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application with all routers."""
+    """Create and configure the FastAPI application with all routers.
+
+    ``configure_logfire()`` ran in ``api/__init__.py`` before any of
+    our handler modules were imported, which is what lets
+    ``logfire.install_auto_tracing`` actually patch ``api.routers`` /
+    ``oddish.core`` / ``oddish.queue`` / ``oddish.workers``. Calling
+    it again here would be a no-op (it's idempotent) but we leave
+    it out for clarity.
+    """
     api = FastAPI(
         title="Oddish Cloud",
         version="0.3.0",
         lifespan=lifespan,
     )
+
+    instrument_fastapi(api)
 
     cors_origins = _get_cors_origins()
     api.add_middleware(
@@ -133,6 +148,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["Server-Timing"],
     )
 
     @api.middleware("http")
@@ -161,6 +177,7 @@ def create_app() -> FastAPI:
         clerk_webhooks,
         dashboard,
         github_webhooks,
+        imports,
         orgs,
         public,
         tasks,
@@ -174,6 +191,7 @@ def create_app() -> FastAPI:
     api.include_router(github_webhooks.router)
     api.include_router(tasks.router)
     api.include_router(trials.router)
+    api.include_router(imports.router)
     api.include_router(public.router)
     api.include_router(admin.router)
 

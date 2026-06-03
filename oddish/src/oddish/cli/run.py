@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import getpass
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -18,6 +17,7 @@ from rich.progress import (
 )
 
 from harbor.models.environment_type import EnvironmentType
+from harbor.models.task.config import TaskConfig as HarborTaskConfig
 
 from oddish.cli.api import (
     TASK_UPLOAD_CONCURRENCY,
@@ -40,6 +40,30 @@ from oddish.cli.config import (
 from oddish.experiment import generate_experiment_name
 
 console = Console()
+
+
+def _task_config_requests_gpu(task_path: Path) -> bool:
+    config_path = task_path / "task.toml"
+    try:
+        task_config = HarborTaskConfig.model_validate_toml(config_path.read_text())
+    except Exception:
+        return False
+    # ``gpus`` is optional in the task schema (e.g. schema_version 1.2 leaves
+    # it unset -> None); treat an absent value as 0 GPUs instead of crashing
+    # on ``None > 0``.
+    return (task_config.environment.gpus or 0) > 0
+
+
+def _default_cloud_environment_for_task(
+    task_path: Path | None,
+    *,
+    override_gpus: int | None,
+) -> EnvironmentType:
+    if override_gpus is not None:
+        return EnvironmentType.MODAL if override_gpus > 0 else EnvironmentType.DAYTONA
+    if task_path is not None and _task_config_requests_gpu(task_path):
+        return EnvironmentType.MODAL
+    return EnvironmentType.DAYTONA
 
 
 def run(
@@ -103,6 +127,17 @@ def run(
             help="Number of trials per task (Oddish-specific; Harbor uses -k for retries)",
         ),
     ] = 1,
+    max_trial_attempts: Annotated[
+        Optional[int],
+        typer.Option(
+            "--max-trial-attempts",
+            min=1,
+            help=(
+                "Override maximum Oddish attempts per trial, including the initial run. "
+                "Can also be set in sweep config as max_trial_attempts."
+            ),
+        ),
+    ] = None,
     # Harbor-compatible filtering options
     task_names: Annotated[
         Optional[list[str]],
@@ -135,7 +170,8 @@ def run(
             "-e",
             help=(
                 "Execution environment (docker, daytona, e2b, modal, runloop, gke). "
-                "Defaults: modal for Modal Cloud, docker otherwise."
+                "Defaults: daytona for CPU-only hosted tasks, modal for GPU hosted "
+                "tasks, docker otherwise."
             ),
         ),
     ] = None,
@@ -160,7 +196,7 @@ def run(
         typer.Option(
             "--user",
             "-u",
-            help="User name (defaults to OS username)",
+            help="Override the task author (defaults to your authenticated identity).",
         ),
     ] = None,
     github_user: Annotated[
@@ -259,6 +295,29 @@ def run(
             help="Force rebuild the environment Docker image",
         ),
     ] = None,
+    environment_kwargs: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--environment-kwarg",
+            "--harbor-environment-kwarg",
+            help=(
+                "Harbor environment kwarg in KEY=VALUE format, e.g. "
+                "agent_tools_image=ghcr.io/org/harbor-agent-tools:tag "
+                "(can be used multiple times)"
+            ),
+        ),
+    ] = None,
+    force_new_version: Annotated[
+        bool,
+        typer.Option(
+            "--force-new-version",
+            help=(
+                "Allocate a new task version even when the local content is "
+                "unchanged from the latest existing version. Useful when "
+                "appending trials with a different run_analysis setting."
+            ),
+        ),
+    ] = False,
     agent_env: Annotated[
         Optional[list[str]],
         typer.Option(
@@ -282,6 +341,40 @@ def run(
             help="Environment path to download as an artifact after the trial (can be used multiple times)",
         ),
     ] = None,
+    retry: Annotated[
+        bool,
+        typer.Option(
+            "--retry",
+            help=(
+                "Re-run an existing target instead of submitting new work. "
+                "Pass a trial, task, or experiment id (positional, --task, or "
+                "--experiment). Retries failed trials by default; combine with "
+                "--analysis or --verdict to re-run those stages."
+            ),
+        ),
+    ] = False,
+    retry_analysis: Annotated[
+        bool,
+        typer.Option(
+            "--analysis",
+            help="With --retry: re-run analysis instead of retrying trials.",
+        ),
+    ] = False,
+    retry_verdict: Annotated[
+        bool,
+        typer.Option(
+            "--verdict",
+            help="With --retry: re-run the task verdict instead of trials.",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Skip confirmation prompts (used with --retry).",
+        ),
+    ] = False,
     api_url: Annotated[
         str,
         typer.Option(
@@ -349,6 +442,10 @@ def run(
             # Optional filtering (same as CLI flags)
             task_names: ["django__*"]
             n_tasks: 10
+            harbor:
+              environment:
+                kwargs:
+                  agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
 
     OTHER OPTIONS:
 
@@ -364,11 +461,33 @@ def run(
     require_api_key(api_url)
     is_modal_api = is_modal_api_url(api_url)
 
+    # Retry mode: re-run existing trials / analysis / verdict for a target
+    # instead of submitting new work. Kept on `run` (rather than a separate
+    # command) so the CLI surface stays small.
+    if retry:
+        from oddish.cli.retry import run_retry
+
+        run_retry(
+            api_url,
+            target=str(path) if path is not None else None,
+            task_id=existing_task_id,
+            experiment_id=experiment_id,
+            do_analysis=retry_analysis,
+            do_verdict=retry_verdict,
+            yes=yes,
+            json_output=json_output,
+        )
+        return
+    if retry_analysis or retry_verdict:
+        error_console.print("[red]--analysis and --verdict require --retry.[/red]")
+        raise typer.Exit(1)
+
     # Handle config file vs CLI mode for agent configs
     if config:
         # Config file mode - load agents from file
         sweep_config = load_sweep_config(config)
         configs = sweep_config["agents"]
+        harbor_config = copy.deepcopy(sweep_config.get("harbor"))
 
         # Config can override path, dataset, environment, priority, experiment ID
         if "path" in sweep_config and not path and not path_option and not dataset:
@@ -381,6 +500,8 @@ def run(
             priority = sweep_config["priority"]
         if "experiment_id" in sweep_config:
             experiment_id = sweep_config["experiment_id"]
+        if "max_trial_attempts" in sweep_config and max_trial_attempts is None:
+            max_trial_attempts = sweep_config["max_trial_attempts"]
         # Config can also specify filtering (Harbor-compatible)
         if "task_names" in sweep_config and task_names is None:
             task_names = sweep_config["task_names"]
@@ -400,6 +521,10 @@ def run(
             override_memory_mb = sweep_config["override_memory_mb"]
         if "override_gpus" in sweep_config and override_gpus is None:
             override_gpus = sweep_config["override_gpus"]
+        if "override_storage_mb" in sweep_config and override_storage_mb is None:
+            override_storage_mb = sweep_config["override_storage_mb"]
+        if "force_build" in sweep_config and force_build is None:
+            force_build = sweep_config["force_build"]
 
         # Warn if CLI agent/model/n_trials are also specified
         if agent or model or n_trials != 1:
@@ -420,6 +545,7 @@ def run(
                 "n_trials": n_trials,
             }
         ]
+        harbor_config = None
 
     # Determine task sources using Harbor's dataset models
     task_paths: list[Path] = []
@@ -458,19 +584,15 @@ def run(
     if not experiment_id and not existing_task_ids:
         experiment_id = generate_experiment_name()
 
-    # Default user to OS username
-    if not user:
-        user = getpass.getuser()
-
-    if environment is None and not existing_task_ids:
-        environment = EnvironmentType.MODAL if is_modal_api else EnvironmentType.DOCKER
+    if environment is None and not existing_task_ids and not is_modal_api:
+        environment = EnvironmentType.DOCKER
     elif (
         environment is not None
         and is_modal_api
-        and environment != EnvironmentType.MODAL
+        and environment not in {EnvironmentType.MODAL, EnvironmentType.DAYTONA}
     ):
         console.print(
-            "[yellow]Oddish Cloud runs on Modal (no Docker-in-Docker); forcing --env modal[/yellow]"
+            "[yellow]Oddish Cloud supports --env modal and --env daytona; forcing --env modal[/yellow]"
         )
         environment = EnvironmentType.MODAL
 
@@ -484,20 +606,28 @@ def run(
         *,
         append_to_task: bool,
         task_content_hash: str | None = None,
+        task_path: Path | None = None,
     ) -> dict:
         tags: dict[str, str] = {}
         if github_meta:
             tags["github_meta"] = github_meta
 
         task_configs = copy.deepcopy(configs)
+        task_environment = environment
+        if task_environment is None and is_modal_api and task_path is not None:
+            task_environment = _default_cloud_environment_for_task(
+                task_path,
+                override_gpus=override_gpus,
+            )
         return submit_sweep(
             api_url=api_url,
             task_id=task_id,
             configs=task_configs,
-            environment=environment,
+            environment=task_environment,
             user=user,
             priority=priority,
             experiment_id=experiment_id,
+            max_trial_attempts=max_trial_attempts,
             run_analysis=run_analysis,
             github_username=github_user,
             tags=tags or None,
@@ -508,6 +638,8 @@ def run(
             override_gpus=override_gpus,
             override_storage_mb=override_storage_mb,
             force_build=force_build,
+            harbor_config=harbor_config,
+            environment_kwargs=environment_kwargs,
             agent_env=agent_env,
             agent_kwargs=agent_kwargs,
             artifact_paths=artifact_paths,
@@ -527,7 +659,7 @@ def run(
     # When ``--task`` is used the upload phase is skipped -- we
     # already have a task ID and only need to submit trials against
     # it.
-    submit_targets: list[tuple[str, bool, str | None]] = []  # (task_id, append, hash)
+    submit_targets: list[tuple[str, bool, str | None, Path | None]] = []
     if task_paths:
         upload_results = upload_tasks_with_progress(
             api_url,
@@ -536,6 +668,7 @@ def run(
             quiet=quiet,
             json_output=json_output,
             progress_label="Uploading",
+            force_new_version=force_new_version,
         )
         for task_path, result in zip(task_paths, upload_results):
             is_existing = bool(result.get("existing_task", False))
@@ -550,11 +683,16 @@ def run(
                         f"[dim]Task '{task_path.name}' updated, created version {ver}[/dim]"
                     )
             submit_targets.append(
-                (result["task_id"], is_existing, result.get("content_hash"))
+                (
+                    result["task_id"],
+                    is_existing,
+                    result.get("content_hash"),
+                    task_path,
+                )
             )
     else:
         # --task path: nothing to upload; sweep always appends.
-        submit_targets = [(tid, True, None) for tid in existing_task_ids]
+        submit_targets = [(tid, True, None, None) for tid in existing_task_ids]
 
     # Phase 2: submit trials for every resolved task.
     submit_progress = Progress(
@@ -571,11 +709,12 @@ def run(
             total=len(submit_targets),
         )
         if len(submit_targets) <= 1:
-            for target_id, append, content_hash in submit_targets:
+            for target_id, append, content_hash, task_path in submit_targets:
                 result = submit_task(
                     target_id,
                     append_to_task=append,
                     task_content_hash=content_hash,
+                    task_path=task_path,
                 )
                 all_results.append(result)
                 total_trials_submitted += result["trials_count"]
@@ -590,10 +729,14 @@ def run(
                         target_id,
                         append_to_task=append,
                         task_content_hash=content_hash,
+                        task_path=task_path,
                     ): index
-                    for index, (target_id, append, content_hash) in enumerate(
-                        submit_targets
-                    )
+                    for index, (
+                        target_id,
+                        append,
+                        content_hash,
+                        task_path,
+                    ) in enumerate(submit_targets)
                 }
                 for future in as_completed(future_to_index):
                     index = future_to_index[future]

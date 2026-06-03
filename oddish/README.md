@@ -7,7 +7,7 @@ monitoring experiments, and pulling logs and artifacts back to disk. If you
 already use `harbor run`, Oddish adds persistent state, retries, queueing, and
 better operational tooling around the same task format.
 
-Python `3.14+` is required.
+Python `3.13` is required.
 
 ## Quick Start
 
@@ -19,7 +19,8 @@ export ODDISH_API_KEY="ok_..."
 # Submit a run
 oddish run -d swebench@1.0 -a codex -m openai/gpt-5.2 --n-trials 3
 
-# Watch progress
+# List and watch progress
+oddish ls
 oddish status
 oddish status <task_id> --watch
 
@@ -61,12 +62,17 @@ oddish --help
 
 Available commands:
 
-- `oddish run` uploads a local task or dataset, downloads a registry dataset, or expands a sweep config into trials
+- `oddish run` uploads a local task or dataset, downloads a registry dataset, or expands a sweep config into trials (also re-runs trials/analysis/verdict via `--retry`)
 - `oddish upload` registers task bundles (no trials) or uploads off-oddish Harbor trial results (logs, rewards, tokens) onto an existing task
+- `oddish ls` lists uploaded tasks with version, trial, reward, and experiment summaries
 - `oddish status` shows system, task, or experiment status
 - `oddish cancel` stops all in-flight runs for a task
 - `oddish pull` downloads logs, results, trajectories, and artifact files for a trial, task, or experiment
+- `oddish combine` merges several experiments into a new result experiment
 - `oddish delete` deletes a task or experiment from a self-hosted deployment
+- `oddish publish` / `oddish unpublish` toggle public read-only sharing for an experiment
+
+Every command supports `--json` for machine-readable output (CI / agents).
 
 ### `oddish run`
 
@@ -109,6 +115,7 @@ Common flags:
 - `-a, --agent` selects the agent
 - `-m, --model` selects the model
 - `--n-trials` runs multiple trials per task
+- `--max-trial-attempts` overrides the total Oddish attempt budget per trial, including the initial run
 - `-d, --dataset` pulls tasks from the Harbor registry
 - `--task` appends trials to an existing task ID without re-uploading task files
 - `-c, --config` loads a YAML or JSON sweep config
@@ -122,7 +129,7 @@ Common flags:
 - `--run-analysis` runs post-trial analysis and task verdict generation
 - `--publish` publishes the experiment for public read-only access
 - `--disable-verification` skips task verification
-- `--override-cpus`, `--override-memory-mb`, `--override-gpus`, `--override-storage-mb`, and `--force-build` override environment settings
+- `--override-cpus`, `--override-memory-mb`, `--override-gpus`, `--override-storage-mb`, `--force-build`, and `--environment-kwarg KEY=VALUE` override environment settings
 - `--ae`/`--agent-env`, `--ak`/`--agent-kwarg`, and `--artifact` pass Harbor agent/env configuration through to every submitted config
 - `--api` overrides the API URL for a single invocation
 
@@ -137,9 +144,40 @@ Supported `--env` values:
 
 When `--env` is omitted:
 
-- hosted Oddish (`*.modal.run`) defaults to `modal`
+- hosted Oddish (`*.modal.run`) defaults to `daytona` for CPU-only tasks and `modal` for tasks that request GPUs
 - other API URLs default to `docker`
 - `--task` preserves the existing task's environment unless you override it
+
+### Re-running with `oddish run --retry`
+
+`oddish run --retry` re-runs existing work instead of submitting new trials. It
+accepts a trial, task, or experiment id (positional, `--task`, or
+`--experiment`) and auto-detects the target type.
+
+```bash
+# Retry a single failed trial
+oddish run task_123-2 --retry
+
+# Retry every failed trial in a task (skip the confirmation prompt)
+oddish run task_123 --retry -y
+
+# Retry all failed trials across an experiment
+oddish run my-experiment --retry -y
+
+# Re-run analysis or the task verdict instead of trials
+oddish run task_123 --retry --analysis
+oddish run task_123 --retry --verdict
+
+# Script-friendly summary of what was queued
+oddish run my-experiment --retry -y --json
+```
+
+- default (`--retry` alone) re-queues failed trials; for task / experiment
+  targets only trials currently in a `failed` state are retried
+- `--analysis` re-runs trial analysis (per-trial for a trial target, otherwise
+  task-wide); `--verdict` re-runs the task verdict
+- `--analysis` and `--verdict` are mutually exclusive and require `--retry`
+- `-y, --yes` skips the confirmation prompt; `--json` implies non-interactive
 
 ### Sweep Configs
 
@@ -157,12 +195,25 @@ agents:
 dataset: swebench@1.0
 n_tasks: 10
 priority: low
+max_trial_attempts: 3
 ```
 
-You can also set `path`, `exclude_task_names`, and `experiment_id` in the
-config file. Per-agent overrides use `env` and `kwargs`. Timeouts and
-per-provider concurrency are no longer configured in sweep files; declare task
-timeouts in `task.toml` and API concurrency at server startup.
+You can also set `path`, `exclude_task_names`, `experiment_id`, and
+`max_trial_attempts` in the config file. `max_trial_attempts` is the total
+Oddish worker attempt budget per trial, including the initial run. When omitted,
+Oddish keeps its default retry behavior. Per-agent overrides use `env` and
+`kwargs`. Harbor execution settings can be passed through with a top-level
+`harbor` block:
+
+```yaml
+harbor:
+  environment:
+    kwargs:
+      agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
+```
+
+Timeouts and per-provider concurrency are no longer configured in sweep files;
+declare task timeouts in `task.toml` and API concurrency at server startup.
 
 ### `oddish upload`
 
@@ -228,7 +279,7 @@ Common flags:
   filter datasets (task-upload mode)
 - `-M, --message` attaches a description to the uploaded task version
   (task-upload mode)
-- `-u, --user` attributes the created task row to a user (defaults to OS username)
+- `-u, --user` attributes the created task row to a user (defaults to your authenticated identity — Clerk-linked email for API keys / dashboard sessions)
 - `-P, --priority` sets the task priority (`low` or `high`) (task-upload mode)
 - `--task` pins imported trials to an existing task ID (trial-import mode)
 - `-E, --experiment` pins imported trials to a new or existing
@@ -250,11 +301,26 @@ Notes:
 - Experiments can be heterogeneous — one experiment can mix trials
   that ran on Oddish with trials that were imported.
 
+### `oddish ls`
+
+List uploaded tasks using the same latest-version task browser API as the
+dashboard.
+
+Examples:
+
+```bash
+oddish ls
+oddish ls --query django
+oddish ls --limit 50
+oddish ls --json
+```
+
 ### `oddish status`
 
 Without arguments, `oddish status` shows recent experiments and API health. Use
 a task ID or `--experiment` to inspect a specific run, and `--watch` to resume
-live monitoring later.
+live monitoring later. Task status tables include a `Detail` column for the
+current Harbor stage or terminal reason, such as `cancelled by user`.
 
 Examples:
 
@@ -270,6 +336,9 @@ oddish status <task_id> --watch
 
 # Watch an experiment
 oddish status --experiment <experiment_id> --watch
+
+# Single JSON snapshot (no live watch) for scripts/agents
+oddish status <task_id> --json
 ```
 
 ### `oddish cancel`
@@ -281,6 +350,7 @@ when applicable. Completed trials and their results are preserved.
 ```bash
 oddish cancel <task_id>
 oddish cancel <task_id> --force   # skip confirmation
+oddish cancel <task_id> --json    # machine-readable result (implies --force)
 ```
 
 ### `oddish pull`
@@ -305,7 +375,31 @@ By default, pull output is written to `./.oddish/<target>` and includes a
 `manifest.json` describing the fetch. Use `--no-logs`, `--no-files`,
 `--structured`, `--include-task-files`, `--out`, and `--type` to control what
 gets downloaded and where it lands. `--type trial|task|experiment` forces the
-target type instead of auto-resolving it.
+target type instead of auto-resolving it. `--json` prints the pull manifest to
+stdout instead of the progress output.
+
+### `oddish combine`
+
+Merge two or more experiments into a brand-new result experiment. The sources
+are left untouched; their task memberships and finished trials (with artifacts)
+are copied into the new experiment for a single rolled-up view. Sources are
+given by experiment ID or name.
+
+```bash
+# Combine two experiments
+oddish combine <experiment_a> <experiment_b>
+
+# Name the result and combine three
+oddish combine <exp_a> <exp_b> <exp_c> --name nightly-rollup
+
+# Reference source artifacts in place instead of duplicating them
+oddish combine <exp_a> <exp_b> --no-copy-artifacts
+```
+
+Finished trials (`success`/`failed`) are copied; in-flight ones are skipped.
+Use `--copy-artifacts/--no-copy-artifacts` to choose between a fully independent
+copy (default) and a cheaper shared-artifact reference, and `--json` for
+machine-readable output.
 
 ### `oddish delete`
 
@@ -317,6 +411,21 @@ oddish delete <task_id>
 
 # Delete an entire experiment
 oddish delete --experiment <experiment_id>
+
+# Delete trials and emit a JSON result (implies --yes)
+oddish delete --trial <trial_id> --json
+```
+
+### `oddish publish` / `oddish unpublish`
+
+Toggle public, read-only sharing for an experiment. `publish` returns a
+shareable URL; public viewers never see trial analysis or task verdicts.
+(Both require a hosted/cloud deployment.)
+
+```bash
+oddish publish <experiment_id>
+oddish publish <experiment_id> --json   # prints the public URL/token
+oddish unpublish <experiment_id>
 ```
 
 ## Typical Workflow

@@ -22,6 +22,7 @@ def upgrade() -> None:
         "trials",
         ["org_id", "created_at", "model", "provider"],
         unique=False,
+        if_not_exists=True,
     )
 
 

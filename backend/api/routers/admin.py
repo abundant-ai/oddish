@@ -118,10 +118,13 @@ async def backfill_task_expansions(
     if org_id:
         filters.append(TaskModel.org_id == org_id)
 
+    # Always join to ``tasks`` so the session-level soft-delete filter
+    # excludes versions whose parent task has been tombstoned. The join
+    # used to be gated on ``org_id`` being set, which silently leaked
+    # soft-deleted tasks' versions into the backfill when no ``org_id``
+    # was supplied.
     def _apply_join(stmt):
-        if org_id:
-            return stmt.join(TaskModel, TaskModel.id == TaskVersionModel.task_id)
-        return stmt
+        return stmt.join(TaskModel, TaskModel.id == TaskVersionModel.task_id)
 
     async with get_session() as session:
         pending_total = int(

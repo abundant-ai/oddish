@@ -130,8 +130,9 @@ class TrialSpec(BaseModel):
         ):
             raise ValueError(
                 "timeout_minutes is no longer supported. "
-                "Set explicit [agent].timeout_sec, [verifier].timeout_sec, "
-                "and [environment].build_timeout_sec in task.toml."
+                "Set explicit [agent].timeout_sec, [verifier].timeout_sec "
+                "(or timeout_sec on every [[verifiers]] stage), and "
+                "[environment].build_timeout_sec in task.toml."
             )
         return self
 
@@ -161,8 +162,19 @@ class TaskSubmission(BaseModel):
         description="Human-readable task name (derived from task_path if not provided)",
     )
     trials: list[TrialSpec] = Field(..., description="List of trials to run")
-    user: str = Field(..., description="Submitting user")
+    user: str | None = Field(
+        None,
+        description="Submitting user (resolved server-side from auth when omitted)",
+    )
     priority: Priority = Field(Priority.LOW, description="Priority: 'high' or 'low'")
+    max_trial_attempts: int = Field(
+        6,
+        ge=1,
+        description=(
+            "Maximum Oddish worker attempts per trial, including the initial "
+            "attempt. For example, 3 allows the initial run plus up to 2 retries."
+        ),
+    )
     experiment_id: str | None = Field(None, description="Optional experiment ID")
     tags: dict[str, str] = Field(default_factory=dict, description="Optional tags")
     run_analysis: bool = Field(
@@ -291,8 +303,19 @@ class TaskSweepSubmission(BaseModel):
     )
 
     # Common fields
-    user: str = Field(..., description="Submitting user")
+    user: str | None = Field(
+        None,
+        description="Submitting user (resolved server-side from auth when omitted)",
+    )
     priority: Priority = Field(Priority.LOW, description="Priority: 'high' or 'low'")
+    max_trial_attempts: int = Field(
+        6,
+        ge=1,
+        description=(
+            "Maximum Oddish worker attempts per trial, including the initial "
+            "attempt. Applies to all trials created by this sweep submission."
+        ),
+    )
     experiment_id: str | None = Field(None, description="Optional experiment ID")
     tags: dict[str, str] = Field(default_factory=dict, description="Optional tags")
     timeout_minutes: int | None = Field(
@@ -339,8 +362,9 @@ class TaskSweepSubmission(BaseModel):
         ):
             raise ValueError(
                 "timeout_minutes is no longer supported. "
-                "Set explicit [agent].timeout_sec, [verifier].timeout_sec, "
-                "and [environment].build_timeout_sec in task.toml."
+                "Set explicit [agent].timeout_sec, [verifier].timeout_sec "
+                "(or timeout_sec on every [[verifiers]] stage), and "
+                "[environment].build_timeout_sec in task.toml."
             )
         return self
 
@@ -349,6 +373,60 @@ class ExperimentUpdateRequest(BaseModel):
     """Request to update experiment metadata."""
 
     name: str = Field(..., description="Experiment name")
+
+
+class ExperimentCombineRequest(BaseModel):
+    """Request to combine several experiments into one result experiment.
+
+    The named source experiments are left untouched; a brand-new result
+    experiment is created and the underlying data (task memberships and
+    finished trials, plus their artifacts) of every source is copied into
+    it.
+    """
+
+    source_experiment_ids: list[str] = Field(
+        ...,
+        description=(
+            "IDs (or names) of the experiments to combine. At least two "
+            "distinct sources are required."
+        ),
+    )
+    name: str | None = Field(
+        None,
+        description=(
+            "Name for the result experiment. A human-friendly name is "
+            "generated when omitted."
+        ),
+    )
+    copy_artifacts: bool = Field(
+        True,
+        description=(
+            "When True (default) each copied trial gets its own duplicate of "
+            "the source trial's S3 artifacts so the result experiment is fully "
+            "independent. When False the copied trials reference the source "
+            "trials' artifacts in place (cheaper, but shared storage)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_sources(self) -> "ExperimentCombineRequest":
+        # Preserve order while dropping blanks/duplicates so the same
+        # experiment can't be combined with itself into a doubled result.
+        deduped = list(
+            dict.fromkeys(
+                stripped
+                for s in self.source_experiment_ids
+                if s and (stripped := s.strip())
+            )
+        )
+        if len(deduped) < 2:
+            raise ValueError(
+                "source_experiment_ids must contain at least two distinct experiments"
+            )
+        self.source_experiment_ids = deduped
+        if self.name is not None:
+            self.name = self.name.strip() or None
+        return self
 
 
 # =============================================================================
@@ -365,6 +443,14 @@ class TaskUploadInitRequest(BaseModel):
     )
     message: str | None = Field(
         None, description="Optional description of what changed in this version"
+    )
+    force_new_version: bool = Field(
+        False,
+        description=(
+            "Allocate a new task version even when the content hash matches the "
+            "latest existing version. Used when callers need a fresh version "
+            "stamp (e.g. to flip run_analysis on)."
+        ),
     )
 
 
@@ -466,6 +552,48 @@ class TaskVersionResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class TaskVersionSummary(BaseModel):
+    """Per-version aggregates used by the task detail view."""
+
+    id: str
+    version: int
+    message: str | None = None
+    created_at: datetime
+    is_current: bool = False
+    trial_count: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    pass_count: int = 0
+    partial_count: int = 0
+    fail_count: int = 0
+    pending_count: int = 0
+    reward_sum: float = 0.0
+    reward_total: int = 0
+    cost_usd: float = 0.0
+    cost_trial_count: int = 0
+    cost_has_estimated: bool = False
+    cost_has_native: bool = False
+    last_run_at: datetime | None = None
+
+
+class TaskCostTotals(BaseModel):
+    """Task-wide cost rollup across every (non-superseded) trial."""
+
+    cost_usd: float = 0.0
+    cost_trial_count: int = 0
+    cost_has_estimated: bool = False
+    cost_has_native: bool = False
+    total_trials: int = 0
+
+
+class TaskDetailResponse(BaseModel):
+    """Task detail bundle for ``GET /tasks/{task_id}/detail``."""
+
+    task: "TaskStatusResponse"
+    versions: list[TaskVersionSummary] = Field(default_factory=list)
+    totals: TaskCostTotals = Field(default_factory=TaskCostTotals)
 
 
 class VisibleWorkerJob(BaseModel):
@@ -574,6 +702,16 @@ class TrialResponse(BaseModel):
         None,
         description="Error message if analysis failed",
     )
+    superseded_by_trial_id: str | None = Field(
+        None,
+        description=(
+            "Set when this trial has been replaced by a user-driven "
+            "retry that spawned a brand-new immutable trial. Default "
+            "list/aggregate endpoints filter superseded rows out; this "
+            "field lets the UI navigate the rerun chain when surfacing "
+            "history."
+        ),
+    )
     jobs: list[VisibleWorkerJob] = Field(
         default_factory=list,
         description="Active/recent worker_jobs rows for this trial",
@@ -621,6 +759,32 @@ class TaskBatchCancelRequest(BaseModel):
 class ExperimentUpdateResponse(BaseModel):
     id: str
     name: str
+
+
+class ExperimentCombineResponse(BaseModel):
+    """Result of combining several experiments."""
+
+    id: str = Field(..., description="ID of the newly created result experiment")
+    name: str = Field(..., description="Name of the result experiment")
+    source_experiment_ids: list[str] = Field(
+        ..., description="Resolved IDs of the experiments that were combined"
+    )
+    tasks_linked: int = Field(
+        0, description="Distinct tasks linked into the result experiment"
+    )
+    trials_copied: int = Field(
+        0, description="Finished trials copied into the result experiment"
+    )
+    trials_skipped: int = Field(
+        0,
+        description=(
+            "Source trials skipped because they were not finished "
+            "(still pending/queued/running) at combine time"
+        ),
+    )
+    artifacts_copied: int = Field(
+        0, description="S3 objects duplicated for the copied trials"
+    )
 
 
 class TaskBrowseExperiment(BaseModel):
@@ -672,6 +836,7 @@ class TaskStatusResponse(BaseModel):
     experiment_id: str
     experiment_name: str
     experiment_is_public: bool = False
+    experiment_created_at: datetime | None = None
     current_version: int | None = None
     current_version_id: str | None = None
     total: int
