@@ -1,0 +1,2025 @@
+{
+  "hard_fail": [],
+  "clean": [
+    {
+      "trial": "slack-clone-b0a98beb-339",
+      "task": "slack-clone",
+      "canonical": "task-slack-clone-b0a98beb-1i6yqu__wUyq4JG",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 1.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 1.0
+      },
+      "correctness_stdout_bytes": 74645,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "chaos_gate",
+        "chaos_pytest",
+        "crash_gate",
+        "crash_pytest"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 1.0,
+      "final_answer_bytes": 4036,
+      "n_ux_episodes": 62,
+      "top_reward_stats": {
+        "0.0": [
+          "task-slack-clone-b0a98beb-1i6yqu__wUyq4JG"
+        ]
+      }
+    },
+    {
+      "trial": "slack-clone-b0a98beb-340",
+      "task": "slack-clone",
+      "canonical": "task-slack-clone-b0a98beb-ty2qnj__2W5xMMd",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [
+        "correctness short-circuited at 'agent did not deliver /app/start.sh' (245B stdout). Verifier worked correctly; this is a legitimate agent failure with reward=0, NOT an infra issue."
+      ],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.0
+      },
+      "correctness_stdout_bytes": 245,
+      "correctness_metrics": [
+        "setup",
+        "setup_error",
+        "reward"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.0,
+      "final_answer_bytes": 1696,
+      "n_ux_episodes": 5,
+      "top_reward_stats": {
+        "0.0": [
+          "task-slack-clone-b0a98beb-ty2qnj__2W5xMMd"
+        ]
+      }
+    },
+    {
+      "trial": "slack-clone-b0a98beb-343",
+      "task": "slack-clone",
+      "canonical": "task-slack-clone-b0a98beb-5ye8_2__wPoMTwW",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [
+        "correctness short-circuited at 'agent did not deliver /app/start.sh' (245B stdout). Verifier worked correctly; this is a legitimate agent failure with reward=0, NOT an infra issue."
+      ],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.0
+      },
+      "correctness_stdout_bytes": 245,
+      "correctness_metrics": [
+        "setup",
+        "setup_error",
+        "reward"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.0,
+      "final_answer_bytes": 1956,
+      "n_ux_episodes": 5,
+      "top_reward_stats": {
+        "0.0": [
+          "task-slack-clone-b0a98beb-5ye8_2__wPoMTwW"
+        ]
+      }
+    },
+    {
+      "trial": "slack-clone-b0a98beb-344",
+      "task": "slack-clone",
+      "canonical": "task-slack-clone-b0a98beb-p5vlwq__d2Hufat",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [
+        "correctness short-circuited at 'agent did not deliver /app/start.sh' (245B stdout). Verifier worked correctly; this is a legitimate agent failure with reward=0, NOT an infra issue."
+      ],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 1.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 1.0
+      },
+      "correctness_stdout_bytes": 245,
+      "correctness_metrics": [
+        "setup",
+        "setup_error",
+        "reward"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 1.0,
+      "final_answer_bytes": 4356,
+      "n_ux_episodes": 61,
+      "top_reward_stats": {
+        "0.0": [
+          "task-slack-clone-b0a98beb-p5vlwq__d2Hufat"
+        ]
+      }
+    },
+    {
+      "trial": "slack-clone-b0a98beb-345",
+      "task": "slack-clone",
+      "canonical": "task-slack-clone-b0a98beb-4_u2j9__YsJSrXR",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [
+        "correctness short-circuited at 'agent did not deliver /app/start.sh' (245B stdout). Verifier worked correctly; this is a legitimate agent failure with reward=0, NOT an infra issue."
+      ],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.0
+      },
+      "correctness_stdout_bytes": 245,
+      "correctness_metrics": [
+        "setup",
+        "setup_error",
+        "reward"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.0,
+      "final_answer_bytes": 2004,
+      "n_ux_episodes": 5,
+      "top_reward_stats": {
+        "0.0": [
+          "task-slack-clone-b0a98beb-4_u2j9__YsJSrXR"
+        ]
+      }
+    },
+    {
+      "trial": "slack-clone-b0a98beb-348",
+      "task": "slack-clone",
+      "canonical": "task-slack-clone-b0a98beb-ccnh2q__6DBHpj4",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 1.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 1.0
+      },
+      "correctness_stdout_bytes": 63403,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "chaos_gate",
+        "chaos_pytest",
+        "crash_gate",
+        "crash_pytest"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 1.0,
+      "final_answer_bytes": 3936,
+      "n_ux_episodes": 58,
+      "top_reward_stats": {
+        "0.0": [
+          "task-slack-clone-b0a98beb-ccnh2q__6DBHpj4"
+        ]
+      }
+    },
+    {
+      "trial": "slack-clone-b0a98beb-349",
+      "task": "slack-clone",
+      "canonical": "task-slack-clone-b0a98beb-1lmywp__YsMZLJL",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 1.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 1.0
+      },
+      "correctness_stdout_bytes": 59829,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "chaos_gate",
+        "chaos_pytest",
+        "crash_gate",
+        "crash_pytest"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 1.0,
+      "final_answer_bytes": 3728,
+      "n_ux_episodes": 67,
+      "top_reward_stats": {
+        "0.0": [
+          "task-slack-clone-b0a98beb-1lmywp__YsMZLJL"
+        ]
+      }
+    },
+    {
+      "trial": "slack-clone-b0a98beb-350",
+      "task": "slack-clone",
+      "canonical": "task-slack-clone-b0a98beb-hzr7t4__APwKgtQ",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 1.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 1.0
+      },
+      "correctness_stdout_bytes": 85486,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "chaos_gate",
+        "chaos_pytest",
+        "crash_gate",
+        "crash_pytest"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 1.0,
+      "final_answer_bytes": 3780,
+      "n_ux_episodes": 53,
+      "top_reward_stats": {
+        "0.0": [
+          "task-slack-clone-b0a98beb-hzr7t4__APwKgtQ"
+        ]
+      }
+    },
+    {
+      "trial": "slack-clone-b0a98beb-354",
+      "task": "slack-clone",
+      "canonical": "task-slack-clone-b0a98beb-ga_6o3__RAqRNHb",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 1.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 1.0
+      },
+      "correctness_stdout_bytes": 60146,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "chaos_gate",
+        "chaos_pytest",
+        "crash_gate",
+        "crash_pytest"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 1.0,
+      "final_answer_bytes": 3735,
+      "n_ux_episodes": 58,
+      "top_reward_stats": {
+        "0.0": [
+          "task-slack-clone-b0a98beb-ga_6o3__RAqRNHb"
+        ]
+      }
+    },
+    {
+      "trial": "slack-clone-b0a98beb-359",
+      "task": "slack-clone",
+      "canonical": "task-slack-clone-b0a98beb-h45mor__YKHkG9n",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 1.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 1.0
+      },
+      "correctness_stdout_bytes": 71450,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "chaos_gate",
+        "chaos_pytest",
+        "crash_gate",
+        "crash_pytest"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 1.0,
+      "final_answer_bytes": 3643,
+      "n_ux_episodes": 57,
+      "top_reward_stats": {
+        "0.0": [
+          "task-slack-clone-b0a98beb-h45mor__YKHkG9n"
+        ]
+      }
+    },
+    {
+      "trial": "mastodon-clone-e9964b7a-277",
+      "task": "mastodon-clone",
+      "canonical": "task-mastodon-clone-e9964b7a-vyy__6nKKJrr",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.8857142857142857
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.8857142857142857
+      },
+      "correctness_stdout_bytes": 63878,
+      "correctness_metrics": [
+        "health",
+        "anti_cheat",
+        "gates_passed",
+        "gates_total",
+        "reward",
+        "partial_score"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.8857142857142857,
+      "final_answer_bytes": 3708,
+      "n_ux_episodes": 41,
+      "top_reward_stats": {
+        "0.0": [
+          "task-mastodon-clone-e9964b7a-vyy__6nKKJrr"
+        ]
+      }
+    },
+    {
+      "trial": "mastodon-clone-e9964b7a-278",
+      "task": "mastodon-clone",
+      "canonical": "task-mastodon-clone-e9964b7a-aw5__8bW6JP2",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.8428571428571429
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.8428571428571429
+      },
+      "correctness_stdout_bytes": 65941,
+      "correctness_metrics": [
+        "health",
+        "anti_cheat",
+        "gates_passed",
+        "gates_total",
+        "reward",
+        "partial_score"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.8428571428571429,
+      "final_answer_bytes": 4563,
+      "n_ux_episodes": 50,
+      "top_reward_stats": {
+        "0.0": [
+          "task-mastodon-clone-e9964b7a-aw5__8bW6JP2"
+        ]
+      }
+    },
+    {
+      "trial": "mastodon-clone-e9964b7a-279",
+      "task": "mastodon-clone",
+      "canonical": "task-mastodon-clone-e9964b7a-nwd__cLzrT55",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.4714285714285714
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.4714285714285714
+      },
+      "correctness_stdout_bytes": 66501,
+      "correctness_metrics": [
+        "health",
+        "anti_cheat",
+        "gates_passed",
+        "gates_total",
+        "reward",
+        "partial_score"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.4714285714285714,
+      "final_answer_bytes": 5613,
+      "n_ux_episodes": 72,
+      "top_reward_stats": {
+        "0.0": [
+          "task-mastodon-clone-e9964b7a-nwd__cLzrT55"
+        ]
+      }
+    },
+    {
+      "trial": "mastodon-clone-e9964b7a-280",
+      "task": "mastodon-clone",
+      "canonical": "task-mastodon-clone-e9964b7a-4w2__6rXkHkJ",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.7714285714285715
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.7714285714285715
+      },
+      "correctness_stdout_bytes": 66973,
+      "correctness_metrics": [
+        "health",
+        "anti_cheat",
+        "gates_passed",
+        "gates_total",
+        "reward",
+        "partial_score"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.7714285714285715,
+      "final_answer_bytes": 4496,
+      "n_ux_episodes": 70,
+      "top_reward_stats": {
+        "0.0": [
+          "task-mastodon-clone-e9964b7a-4w2__6rXkHkJ"
+        ]
+      }
+    },
+    {
+      "trial": "mastodon-clone-e9964b7a-281",
+      "task": "mastodon-clone",
+      "canonical": "task-mastodon-clone-e9964b7a-i_4__sjp4wWS",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.3142857142857143
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.3142857142857143
+      },
+      "correctness_stdout_bytes": 66335,
+      "correctness_metrics": [
+        "health",
+        "anti_cheat",
+        "gates_passed",
+        "gates_total",
+        "reward",
+        "partial_score"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.3142857142857143,
+      "final_answer_bytes": 4592,
+      "n_ux_episodes": 46,
+      "top_reward_stats": {
+        "0.0": [
+          "task-mastodon-clone-e9964b7a-i_4__sjp4wWS"
+        ]
+      }
+    },
+    {
+      "trial": "mastodon-clone-e9964b7a-284",
+      "task": "mastodon-clone",
+      "canonical": "task-mastodon-clone-e9964b7a-pyt__fAMv2WX",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.0
+      },
+      "correctness_stdout_bytes": 65882,
+      "correctness_metrics": [
+        "health",
+        "anti_cheat",
+        "gates_passed",
+        "gates_total",
+        "reward",
+        "partial_score"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.0,
+      "final_answer_bytes": 3045,
+      "n_ux_episodes": 16,
+      "top_reward_stats": {
+        "0.0": [
+          "task-mastodon-clone-e9964b7a-pyt__fAMv2WX"
+        ]
+      }
+    },
+    {
+      "trial": "mastodon-clone-e9964b7a-285",
+      "task": "mastodon-clone",
+      "canonical": "task-mastodon-clone-e9964b7a-4ez__L4VGK72",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.9428571428571428
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.9428571428571428
+      },
+      "correctness_stdout_bytes": 71010,
+      "correctness_metrics": [
+        "health",
+        "anti_cheat",
+        "gates_passed",
+        "gates_total",
+        "reward",
+        "partial_score"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.9428571428571428,
+      "final_answer_bytes": 4673,
+      "n_ux_episodes": 42,
+      "top_reward_stats": {
+        "0.0": [
+          "task-mastodon-clone-e9964b7a-4ez__L4VGK72"
+        ]
+      }
+    },
+    {
+      "trial": "mastodon-clone-e9964b7a-288",
+      "task": "mastodon-clone",
+      "canonical": "task-mastodon-clone-e9964b7a-z3f__VHekJXC",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.8857142857142857
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.8857142857142857
+      },
+      "correctness_stdout_bytes": 71788,
+      "correctness_metrics": [
+        "health",
+        "anti_cheat",
+        "gates_passed",
+        "gates_total",
+        "reward",
+        "partial_score"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.8857142857142857,
+      "final_answer_bytes": 4228,
+      "n_ux_episodes": 46,
+      "top_reward_stats": {
+        "0.0": [
+          "task-mastodon-clone-e9964b7a-z3f__VHekJXC"
+        ]
+      }
+    },
+    {
+      "trial": "mastodon-clone-e9964b7a-289",
+      "task": "mastodon-clone",
+      "canonical": "task-mastodon-clone-e9964b7a-s2j__K89Vj5a",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.9428571428571428
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.9428571428571428
+      },
+      "correctness_stdout_bytes": 60264,
+      "correctness_metrics": [
+        "health",
+        "anti_cheat",
+        "gates_passed",
+        "gates_total",
+        "reward",
+        "partial_score"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.9428571428571428,
+      "final_answer_bytes": 4287,
+      "n_ux_episodes": 42,
+      "top_reward_stats": {
+        "0.0": [
+          "task-mastodon-clone-e9964b7a-s2j__K89Vj5a"
+        ]
+      }
+    },
+    {
+      "trial": "s3-clone-23996371-257",
+      "task": "s3-clone",
+      "canonical": "task-s3-clone-23996371-zfaov46q__btqeHwS",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.9230769230769231
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.9230769230769231
+      },
+      "correctness_stdout_bytes": 59854,
+      "correctness_metrics": [
+        "admin_gate",
+        "anti_cheat",
+        "audit_gate",
+        "auth_gate",
+        "batch_delete_gate",
+        "buckets_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.9230769230769231,
+      "final_answer_bytes": 4517,
+      "n_ux_episodes": 48,
+      "top_reward_stats": {
+        "0.0": [
+          "task-s3-clone-23996371-zfaov46q__btqeHwS"
+        ]
+      }
+    },
+    {
+      "trial": "s3-clone-23996371-259",
+      "task": "s3-clone",
+      "canonical": "task-s3-clone-23996371-yc5olb0l__jDMHKF4",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.9230769230769231
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.9230769230769231
+      },
+      "correctness_stdout_bytes": 79736,
+      "correctness_metrics": [
+        "admin_gate",
+        "anti_cheat",
+        "audit_gate",
+        "auth_gate",
+        "batch_delete_gate",
+        "buckets_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.9230769230769231,
+      "final_answer_bytes": 4710,
+      "n_ux_episodes": 39,
+      "top_reward_stats": {
+        "0.0": [
+          "task-s3-clone-23996371-yc5olb0l__jDMHKF4"
+        ]
+      }
+    },
+    {
+      "trial": "s3-clone-23996371-260",
+      "task": "s3-clone",
+      "canonical": "task-s3-clone-23996371-s0zmeaw6__fWmT2ei",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 1.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 1.0
+      },
+      "correctness_stdout_bytes": 82368,
+      "correctness_metrics": [
+        "admin_gate",
+        "anti_cheat",
+        "audit_gate",
+        "auth_gate",
+        "batch_delete_gate",
+        "buckets_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 1.0,
+      "final_answer_bytes": 3848,
+      "n_ux_episodes": 37,
+      "top_reward_stats": {
+        "0.0": [
+          "task-s3-clone-23996371-s0zmeaw6__fWmT2ei"
+        ]
+      }
+    },
+    {
+      "trial": "s3-clone-23996371-265",
+      "task": "s3-clone",
+      "canonical": "task-s3-clone-23996371-6at5mj7o__aqgPvQB",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 1.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 1.0
+      },
+      "correctness_stdout_bytes": 74423,
+      "correctness_metrics": [
+        "admin_gate",
+        "anti_cheat",
+        "audit_gate",
+        "auth_gate",
+        "batch_delete_gate",
+        "buckets_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 1.0,
+      "final_answer_bytes": 4292,
+      "n_ux_episodes": 35,
+      "top_reward_stats": {
+        "0.0": [
+          "task-s3-clone-23996371-6at5mj7o__aqgPvQB"
+        ]
+      }
+    },
+    {
+      "trial": "s3-clone-23996371-267",
+      "task": "s3-clone",
+      "canonical": "task-s3-clone-23996371-pi5tfmza__NNrPM7V",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [
+        "correctness short-circuited at 'agent did not deliver /app/start.sh' (242B stdout). Verifier worked correctly; this is a legitimate agent failure with reward=0, NOT an infra issue."
+      ],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.0
+      },
+      "correctness_stdout_bytes": 242,
+      "correctness_metrics": [
+        "admin_gate",
+        "anti_cheat",
+        "audit_gate",
+        "auth_gate",
+        "batch_delete_gate",
+        "buckets_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.0,
+      "final_answer_bytes": 2115,
+      "n_ux_episodes": 4,
+      "top_reward_stats": {
+        "0.0": [
+          "task-s3-clone-23996371-pi5tfmza__NNrPM7V"
+        ]
+      }
+    },
+    {
+      "trial": "s3-clone-23996371-268",
+      "task": "s3-clone",
+      "canonical": "task-s3-clone-23996371-mi3j0ecb__skm9xSD",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 1.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 1.0
+      },
+      "correctness_stdout_bytes": 73871,
+      "correctness_metrics": [
+        "admin_gate",
+        "anti_cheat",
+        "audit_gate",
+        "auth_gate",
+        "batch_delete_gate",
+        "buckets_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 1.0,
+      "final_answer_bytes": 4417,
+      "n_ux_episodes": 40,
+      "top_reward_stats": {
+        "0.0": [
+          "task-s3-clone-23996371-mi3j0ecb__skm9xSD"
+        ]
+      }
+    },
+    {
+      "trial": "s3-clone-23996371-279",
+      "task": "s3-clone",
+      "canonical": "task-s3-clone-23996371-82wtetjo__7gLF4Uo",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 1.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 1.0
+      },
+      "correctness_stdout_bytes": 64263,
+      "correctness_metrics": [
+        "admin_gate",
+        "anti_cheat",
+        "audit_gate",
+        "auth_gate",
+        "batch_delete_gate",
+        "buckets_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 1.0,
+      "final_answer_bytes": 4494,
+      "n_ux_episodes": 40,
+      "top_reward_stats": {
+        "0.0": [
+          "task-s3-clone-23996371-82wtetjo__7gLF4Uo"
+        ]
+      }
+    },
+    {
+      "trial": "s3-clone-23996371-282",
+      "task": "s3-clone",
+      "canonical": "task-s3-clone-23996371-lpiabp41__FHQgMsB",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 1.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 1.0
+      },
+      "correctness_stdout_bytes": 58843,
+      "correctness_metrics": [
+        "admin_gate",
+        "anti_cheat",
+        "audit_gate",
+        "auth_gate",
+        "batch_delete_gate",
+        "buckets_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 1.0,
+      "final_answer_bytes": 4278,
+      "n_ux_episodes": 31,
+      "top_reward_stats": {
+        "0.0": [
+          "task-s3-clone-23996371-lpiabp41__FHQgMsB"
+        ]
+      }
+    },
+    {
+      "trial": "s3-clone-23996371-285",
+      "task": "s3-clone",
+      "canonical": "task-s3-clone-23996371-0_hrr6il__XsyYC3W",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 1.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 1.0
+      },
+      "correctness_stdout_bytes": 59146,
+      "correctness_metrics": [
+        "admin_gate",
+        "anti_cheat",
+        "audit_gate",
+        "auth_gate",
+        "batch_delete_gate",
+        "buckets_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 1.0,
+      "final_answer_bytes": 4075,
+      "n_ux_episodes": 39,
+      "top_reward_stats": {
+        "0.0": [
+          "task-s3-clone-23996371-0_hrr6il__XsyYC3W"
+        ]
+      }
+    },
+    {
+      "trial": "excel-clone-685bff89-305",
+      "task": "excel-clone",
+      "canonical": "task-excel-clone-685bff89-1ue8l0__PU38vQe",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [
+        "correctness short-circuited at 'agent did not deliver /app/start.sh' (128B stdout). Verifier worked correctly; this is a legitimate agent failure with reward=0, NOT an infra issue."
+      ],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.0
+      },
+      "correctness_stdout_bytes": 128,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "collab_gate",
+        "copy_fill_gate",
+        "csv_gate",
+        "deps_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.0,
+      "final_answer_bytes": 2826,
+      "n_ux_episodes": 6,
+      "top_reward_stats": {
+        "0.0": [
+          "task-excel-clone-685bff89-1ue8l0__PU38vQe"
+        ]
+      }
+    },
+    {
+      "trial": "excel-clone-685bff89-306",
+      "task": "excel-clone",
+      "canonical": "task-excel-clone-685bff89-hmyawg__RGFtCTY",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.9117647058823529
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.9117647058823529
+      },
+      "correctness_stdout_bytes": 81785,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "collab_gate",
+        "copy_fill_gate",
+        "csv_gate",
+        "deps_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.9117647058823529,
+      "final_answer_bytes": 6539,
+      "n_ux_episodes": 112,
+      "top_reward_stats": {
+        "0.0": [
+          "task-excel-clone-685bff89-hmyawg__RGFtCTY"
+        ]
+      }
+    },
+    {
+      "trial": "excel-clone-685bff89-307",
+      "task": "excel-clone",
+      "canonical": "task-excel-clone-685bff89-jg5y7p__4mnb49x",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.8529411764705882
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.8529411764705882
+      },
+      "correctness_stdout_bytes": 82621,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "collab_gate",
+        "copy_fill_gate",
+        "csv_gate",
+        "deps_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.8529411764705882,
+      "final_answer_bytes": 5163,
+      "n_ux_episodes": 103,
+      "top_reward_stats": {
+        "0.0": [
+          "task-excel-clone-685bff89-jg5y7p__4mnb49x"
+        ]
+      }
+    },
+    {
+      "trial": "excel-clone-685bff89-308",
+      "task": "excel-clone",
+      "canonical": "task-excel-clone-685bff89-mro_4f__46E8dWV",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [
+        "correctness short-circuited at 'agent did not deliver /app/start.sh' (128B stdout). Verifier worked correctly; this is a legitimate agent failure with reward=0, NOT an infra issue."
+      ],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.0
+      },
+      "correctness_stdout_bytes": 128,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "collab_gate",
+        "copy_fill_gate",
+        "csv_gate",
+        "deps_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.0,
+      "final_answer_bytes": 2185,
+      "n_ux_episodes": 4,
+      "top_reward_stats": {
+        "0.0": [
+          "task-excel-clone-685bff89-mro_4f__46E8dWV"
+        ]
+      }
+    },
+    {
+      "trial": "excel-clone-685bff89-309",
+      "task": "excel-clone",
+      "canonical": "task-excel-clone-685bff89-c0_g89__KMFjCKt",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.6176470588235294
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.6176470588235294
+      },
+      "correctness_stdout_bytes": 117142,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "collab_gate",
+        "copy_fill_gate",
+        "csv_gate",
+        "deps_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.6176470588235294,
+      "final_answer_bytes": 6721,
+      "n_ux_episodes": 158,
+      "top_reward_stats": {
+        "0.0": [
+          "task-excel-clone-685bff89-c0_g89__KMFjCKt"
+        ]
+      }
+    },
+    {
+      "trial": "excel-clone-685bff89-310",
+      "task": "excel-clone",
+      "canonical": "task-excel-clone-685bff89-67r9fo__YWxypEW",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.7352941176470589
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.7352941176470589
+      },
+      "correctness_stdout_bytes": 83916,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "collab_gate",
+        "copy_fill_gate",
+        "csv_gate",
+        "deps_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.7352941176470589,
+      "final_answer_bytes": 5962,
+      "n_ux_episodes": 131,
+      "top_reward_stats": {
+        "0.0": [
+          "task-excel-clone-685bff89-67r9fo__YWxypEW"
+        ]
+      }
+    },
+    {
+      "trial": "excel-clone-685bff89-311",
+      "task": "excel-clone",
+      "canonical": "task-excel-clone-685bff89-bwl5kj__jAiwfdj",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [
+        "correctness short-circuited at 'agent did not deliver /app/start.sh' (128B stdout). Verifier worked correctly; this is a legitimate agent failure with reward=0, NOT an infra issue."
+      ],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.0
+      },
+      "correctness_stdout_bytes": 128,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "collab_gate",
+        "copy_fill_gate",
+        "csv_gate",
+        "deps_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.0,
+      "final_answer_bytes": 2066,
+      "n_ux_episodes": 6,
+      "top_reward_stats": {
+        "0.0": [
+          "task-excel-clone-685bff89-bwl5kj__jAiwfdj"
+        ]
+      }
+    },
+    {
+      "trial": "excel-clone-685bff89-312",
+      "task": "excel-clone",
+      "canonical": "task-excel-clone-685bff89-_pywzx__NSJnX2i",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [
+        "correctness short-circuited at 'agent did not deliver /app/start.sh' (128B stdout). Verifier worked correctly; this is a legitimate agent failure with reward=0, NOT an infra issue."
+      ],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.0
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.0
+      },
+      "correctness_stdout_bytes": 128,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "collab_gate",
+        "copy_fill_gate",
+        "csv_gate",
+        "deps_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.0,
+      "final_answer_bytes": 2293,
+      "n_ux_episodes": 5,
+      "top_reward_stats": {
+        "0.0": [
+          "task-excel-clone-685bff89-_pywzx__NSJnX2i"
+        ]
+      }
+    },
+    {
+      "trial": "excel-clone-685bff89-314",
+      "task": "excel-clone",
+      "canonical": "task-excel-clone-685bff89-3c7_hc__qaHruxb",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.7794117647058824
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.7794117647058824
+      },
+      "correctness_stdout_bytes": 84761,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "collab_gate",
+        "copy_fill_gate",
+        "csv_gate",
+        "deps_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.7794117647058824,
+      "final_answer_bytes": 6197,
+      "n_ux_episodes": 156,
+      "top_reward_stats": {
+        "0.0": [
+          "task-excel-clone-685bff89-3c7_hc__qaHruxb"
+        ]
+      }
+    },
+    {
+      "trial": "excel-clone-685bff89-316",
+      "task": "excel-clone",
+      "canonical": "task-excel-clone-685bff89-xr5cla__NFBb3wU",
+      "verdict": "clean",
+      "flags": [],
+      "warnings": [],
+      "soft_notes": [],
+      "stages": {
+        "correctness": {
+          "rewards": {
+            "reward": 0.0
+          }
+        },
+        "ux": {
+          "rewards": {
+            "reward": 0.8529411764705882
+          }
+        }
+      },
+      "reward_json": {
+        "reward": 0.0,
+        "stage:correctness": 0.0,
+        "stage:ux": 0.8529411764705882
+      },
+      "correctness_stdout_bytes": 85452,
+      "correctness_metrics": [
+        "anti_cheat",
+        "api_gate",
+        "collab_gate",
+        "copy_fill_gate",
+        "csv_gate",
+        "deps_gate"
+      ],
+      "cua_judge_report_keys": [
+        "reward",
+        "rubric_task",
+        "verifier_kind",
+        "verifier_model",
+        "judge_model",
+        "agent_final_answer",
+        "verdicts",
+        "source_paths"
+      ],
+      "cua_judge_reward": 0.8529411764705882,
+      "final_answer_bytes": 5189,
+      "n_ux_episodes": 144,
+      "top_reward_stats": {
+        "0.0": [
+          "task-excel-clone-685bff89-xr5cla__NFBb3wU"
+        ]
+      }
+    }
+  ]
+}

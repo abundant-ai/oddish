@@ -1,0 +1,49 @@
+Auditing cd4dd88f CUA trials for verifier-side infra failures...
+task             trial                                  verdict        corr_KB ux_eps  notes
+  slack-clone      slack-clone-b0a98beb-339               clean             72.9     62  
+  slack-clone      slack-clone-b0a98beb-340               clean              0.2      5  
+  slack-clone      slack-clone-b0a98beb-343               clean              0.2      5  
+  slack-clone      slack-clone-b0a98beb-344               clean              0.2     61  
+  slack-clone      slack-clone-b0a98beb-345               clean              0.2      5  
+  slack-clone      slack-clone-b0a98beb-348               clean             61.9     58  
+  slack-clone      slack-clone-b0a98beb-349               clean             58.4     67  
+  slack-clone      slack-clone-b0a98beb-350               clean             83.5     53  
+  slack-clone      slack-clone-b0a98beb-354               clean             58.7     58  
+  slack-clone      slack-clone-b0a98beb-359               clean             69.8     57  
+  mastodon-clone   mastodon-clone-e9964b7a-277            clean             62.4     41  
+  mastodon-clone   mastodon-clone-e9964b7a-278            clean             64.4     50  
+  mastodon-clone   mastodon-clone-e9964b7a-279            clean             64.9     72  
+  mastodon-clone   mastodon-clone-e9964b7a-280            clean             65.4     70  
+  mastodon-clone   mastodon-clone-e9964b7a-281            clean             64.8     46  
+  mastodon-clone   mastodon-clone-e9964b7a-282            hard-fail          0.1      6  FLAGS: correctness/test-stdout.txt is tiny: 119 bytes and no missing-start-sh marker — possible verifier crash
+  mastodon-clone   mastodon-clone-e9964b7a-284            clean             64.3     16  
+  mastodon-clone   mastodon-clone-e9964b7a-285            clean             69.3     42  
+  mastodon-clone   mastodon-clone-e9964b7a-288            clean             70.1     46  
+  mastodon-clone   mastodon-clone-e9964b7a-289            clean             58.9     42  
+  s3-clone         s3-clone-23996371-257                  clean             58.5     48  
+  s3-clone         s3-clone-23996371-259                  clean             77.9     39  
+  s3-clone         s3-clone-23996371-260                  clean             80.4     37  
+  s3-clone         s3-clone-23996371-265                  clean             72.7     35  
+  s3-clone         s3-clone-23996371-267                  clean              0.2      4  
+  s3-clone         s3-clone-23996371-268                  clean             72.1     40  
+  s3-clone         s3-clone-23996371-279                  clean             62.8     40  
+  s3-clone         s3-clone-23996371-282                  clean             57.5     31  
+  s3-clone         s3-clone-23996371-285                  clean             57.8     39  
+  excel-clone      excel-clone-685bff89-305               clean              0.1      6  
+  excel-clone      excel-clone-685bff89-306               clean             79.9    112  
+  excel-clone      excel-clone-685bff89-307               clean             80.7    103  
+  excel-clone      excel-clone-685bff89-308               clean              0.1      4  
+  excel-clone      excel-clone-685bff89-309               clean            114.4    158  
+  excel-clone      excel-clone-685bff89-310               clean             81.9    131  
+  excel-clone      excel-clone-685bff89-311               clean              0.1      6  
+  excel-clone      excel-clone-685bff89-312               clean              0.1      5  
+  excel-clone      excel-clone-685bff89-314               clean             82.8    156  
+  excel-clone      excel-clone-685bff89-316               clean             83.4    144  
+
+Summary: 1 hard-fail, total clean+warning = 38
+
+Hard-fail trials (recommend removal or further inspection):
+  • mastodon-clone/mastodon-clone-e9964b7a-282
+      correctness/test-stdout.txt is tiny: 119 bytes and no missing-start-sh marker — possible verifier crash
+
+Detail saved to /tmp/oddish-import/audit_cua_verifier.json
