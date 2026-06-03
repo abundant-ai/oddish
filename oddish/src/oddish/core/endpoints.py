@@ -2246,7 +2246,10 @@ async def create_task_sweep_core(
         # opt in without manual intervention.
         if submission.run_analysis and not task.run_analysis:
             task.run_analysis = True
-        if submission.link and not task.link:
+        # Update the link whenever a new submission carries one (explicit
+        # --link or derived from --github-meta above). A submission with no
+        # link leaves the existing value untouched rather than clearing it.
+        if submission.link:
             task.link = submission.link
 
         new_experiment_id: str | None = None
