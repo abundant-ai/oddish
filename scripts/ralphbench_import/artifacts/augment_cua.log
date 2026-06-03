@@ -1,0 +1,115 @@
+
+=== slack-clone-b0a98beb -> slack-clone (uploading 10 trials)
+  [1/10] slack-clone-b0a98beb-330: 5.4 MB in 2.1s  canonical=task-slack-clone-b0a98beb-o26zsn__f3YJamh  provider=claude
+  [2/10] slack-clone-b0a98beb-348: 127.2 MB in 6.2s  canonical=task-slack-clone-b0a98beb-ccnh2q__6DBHpj4  provider=openrouter
+  [3/10] slack-clone-b0a98beb-359: 122.3 MB in 6.1s  canonical=task-slack-clone-b0a98beb-h45mor__YKHkG9n  provider=openrouter
+  [4/10] slack-clone-b0a98beb-349: 167.8 MB in 6.4s  canonical=task-slack-clone-b0a98beb-1lmywp__YsMZLJL  provider=openrouter
+  [5/10] slack-clone-b0a98beb-350: 109.3 MB in 5.5s  canonical=task-slack-clone-b0a98beb-hzr7t4__APwKgtQ  provider=openrouter
+  [6/10] slack-clone-b0a98beb-339: 142.9 MB in 6.5s  canonical=task-slack-clone-b0a98beb-1i6yqu__wUyq4JG  provider=gemini
+  [7/10] slack-clone-b0a98beb-344: 129.0 MB in 5.6s  canonical=task-slack-clone-b0a98beb-p5vlwq__d2Hufat  provider=gemini
+  [8/10] slack-clone-b0a98beb-345: 1.5 MB in 1.0s  canonical=task-slack-clone-b0a98beb-4_u2j9__YsJSrXR  provider=gemini
+  [9/10] slack-clone-b0a98beb-340: 1.4 MB in 1.0s  canonical=task-slack-clone-b0a98beb-ty2qnj__2W5xMMd  provider=gemini
+  [10/10] slack-clone-b0a98beb-343: 1.5 MB in 1.0s  canonical=task-slack-clone-b0a98beb-5ye8_2__wPoMTwW  provider=gemini
+  Updated _manifest.json: n_trials=75 (+10);  experiment_ids=['cd8c33d8', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                   n=5
+    claude-code  / anthropic/claude-opus-4-8                   n=5
+    codex        / openai/gpt-5.5                              n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview               n=5
+    gemini-cli   / gemini/gemini-3.5-flash                     n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6             n=5
+    nop          / default                                     n=5
+    oracle       / default                                     n=5
+    terminus-2   / anthropic/claude-opus-4-7                   n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview               n=5
+    terminus-2   / openai/gpt-5.5                              n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro         n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7             n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6             n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                     n=5
+  cd4dd88f opus-4-8 route breakdown: {'claude': 1, 'openrouter': 4}
+
+=== mastodon-clone-e9964b7a -> mastodon-clone (uploading 10 trials)
+  [1/10] mastodon-clone-e9964b7a-288: 141.1 MB in 5.4s  canonical=task-mastodon-clone-e9964b7a-z3f__VHekJXC  provider=openrouter
+  [2/10] mastodon-clone-e9964b7a-277: 91.6 MB in 4.9s  canonical=task-mastodon-clone-e9964b7a-vyy__6nKKJrr  provider=bedrock
+  [3/10] mastodon-clone-e9964b7a-278: 116.0 MB in 5.8s  canonical=task-mastodon-clone-e9964b7a-aw5__8bW6JP2  provider=bedrock
+  [4/10] mastodon-clone-e9964b7a-285: 95.4 MB in 5.2s  canonical=task-mastodon-clone-e9964b7a-4ez__L4VGK72  provider=bedrock
+  [5/10] mastodon-clone-e9964b7a-289: 76.0 MB in 5.0s  canonical=task-mastodon-clone-e9964b7a-s2j__K89Vj5a  provider=openrouter
+  [6/10] mastodon-clone-e9964b7a-280: 262.4 MB in 7.3s  canonical=task-mastodon-clone-e9964b7a-4w2__6rXkHkJ  provider=gemini
+  [7/10] mastodon-clone-e9964b7a-284: 16.6 MB in 3.0s  canonical=task-mastodon-clone-e9964b7a-pyt__fAMv2WX  provider=gemini
+  [8/10] mastodon-clone-e9964b7a-279: 274.3 MB in 8.6s  canonical=task-mastodon-clone-e9964b7a-nwd__cLzrT55  provider=gemini
+  [9/10] mastodon-clone-e9964b7a-281: 103.6 MB in 5.4s  canonical=task-mastodon-clone-e9964b7a-i_4__sjp4wWS  provider=gemini
+  [10/10] mastodon-clone-e9964b7a-282: 3.3 MB in 1.5s  canonical=task-mastodon-clone-e9964b7a-224__dfVfJGQ  provider=gemini
+  Updated _manifest.json: n_trials=75 (+10);  experiment_ids=['cd8c33d8', 'cd4dd88f']; is_multi_version=False
+    claude-code  / anthropic/claude-opus-4-7                   n=5
+    claude-code  / anthropic/claude-opus-4-8                   n=5
+    codex        / openai/gpt-5.5                              n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview               n=5
+    gemini-cli   / gemini/gemini-3.5-flash                     n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6             n=5
+    nop          / default                                     n=5
+    oracle       / default                                     n=5
+    terminus-2   / anthropic/claude-opus-4-7                   n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview               n=5
+    terminus-2   / openai/gpt-5.5                              n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro         n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7             n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6             n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                     n=5
+  cd4dd88f opus-4-8 route breakdown: {'bedrock': 3, 'openrouter': 2}
+
+=== s3-clone-23996371 -> s3-clone (uploading 9 trials)
+  [1/9] s3-clone-23996371-279: 76.9 MB in 5.0s  canonical=task-s3-clone-23996371-82wtetjo__7gLF4Uo  provider=openrouter
+  [2/9] s3-clone-23996371-282: 48.8 MB in 4.4s  canonical=task-s3-clone-23996371-lpiabp41__FHQgMsB  provider=openrouter
+  [3/9] s3-clone-23996371-285: 62.4 MB in 4.6s  canonical=task-s3-clone-23996371-0_hrr6il__XsyYC3W  provider=openrouter
+  [4/9] s3-clone-23996371-257: 102.8 MB in 5.4s  canonical=task-s3-clone-23996371-zfaov46q__btqeHwS  provider=bedrock
+  [5/9] s3-clone-23996371-268: 81.1 MB in 4.4s  canonical=task-s3-clone-23996371-mi3j0ecb__skm9xSD  provider=gemini
+  [6/9] s3-clone-23996371-265: 66.3 MB in 4.1s  canonical=task-s3-clone-23996371-6at5mj7o__aqgPvQB  provider=gemini
+  [7/9] s3-clone-23996371-260: 50.5 MB in 4.2s  canonical=task-s3-clone-23996371-s0zmeaw6__fWmT2ei  provider=gemini
+  [8/9] s3-clone-23996371-259: 76.8 MB in 4.8s  canonical=task-s3-clone-23996371-yc5olb0l__jDMHKF4  provider=gemini
+  [9/9] s3-clone-23996371-267: 1.2 MB in 1.1s  canonical=task-s3-clone-23996371-pi5tfmza__NNrPM7V  provider=gemini
+  Updated _manifest.json: n_trials=74 (+9);  experiment_ids=['cd8c33d8', 'cd4dd88f']; is_multi_version=True
+    claude-code  / anthropic/claude-opus-4-7                   n=5
+    claude-code  / anthropic/claude-opus-4-8                   n=4
+    codex        / openai/gpt-5.5                              n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview               n=5
+    gemini-cli   / gemini/gemini-3.5-flash                     n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6             n=5
+    nop          / default                                     n=5
+    oracle       / default                                     n=5
+    terminus-2   / anthropic/claude-opus-4-7                   n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview               n=5
+    terminus-2   / openai/gpt-5.5                              n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro         n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7             n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6             n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                     n=5
+  cd4dd88f opus-4-8 route breakdown: {'bedrock': 1, 'openrouter': 3}
+
+=== excel-clone-685bff89 -> excel-clone (uploading 10 trials)
+  [1/10] excel-clone-685bff89-316: 882.8 MB in 14.4s  canonical=task-excel-clone-685bff89-xr5cla__NFBb3wU  provider=openrouter
+  [2/10] excel-clone-685bff89-306: 478.1 MB in 10.7s  canonical=task-excel-clone-685bff89-hmyawg__RGFtCTY  provider=bedrock
+  [3/10] excel-clone-685bff89-314: 956.5 MB in 15.3s  canonical=task-excel-clone-685bff89-3c7_hc__qaHruxb  provider=openrouter
+  [4/10] excel-clone-685bff89-310: 766.7 MB in 13.6s  canonical=task-excel-clone-685bff89-67r9fo__YWxypEW  provider=openrouter
+  [5/10] excel-clone-685bff89-307: 440.0 MB in 10.4s  canonical=task-excel-clone-685bff89-jg5y7p__4mnb49x  provider=bedrock
+  [6/10] excel-clone-685bff89-309: 1362.5 MB in 16.9s  canonical=task-excel-clone-685bff89-c0_g89__KMFjCKt  provider=gemini
+  [7/10] excel-clone-685bff89-305: 3.5 MB in 1.3s  canonical=task-excel-clone-685bff89-1ue8l0__PU38vQe  provider=gemini
+  [8/10] excel-clone-685bff89-311: 2.2 MB in 1.1s  canonical=task-excel-clone-685bff89-bwl5kj__jAiwfdj  provider=gemini
+  [9/10] excel-clone-685bff89-312: 1.8 MB in 1.1s  canonical=task-excel-clone-685bff89-_pywzx__NSJnX2i  provider=gemini
+  [10/10] excel-clone-685bff89-308: 1.5 MB in 0.9s  canonical=task-excel-clone-685bff89-mro_4f__46E8dWV  provider=gemini
+  Updated _manifest.json: n_trials=75 (+10);  experiment_ids=['cd8c33d8', 'cd4dd88f']; is_multi_version=False
+    claude-code  / anthropic/claude-opus-4-7                   n=5
+    claude-code  / anthropic/claude-opus-4-8                   n=5
+    codex        / openai/gpt-5.5                              n=5
+    gemini-cli   / gemini/gemini-3.1-pro-preview               n=5
+    gemini-cli   / gemini/gemini-3.5-flash                     n=5
+    kimi-cli     / openrouter/moonshotai/kimi-k2.6             n=5
+    nop          / default                                     n=5
+    oracle       / default                                     n=5
+    terminus-2   / anthropic/claude-opus-4-7                   n=5
+    terminus-2   / gemini/gemini-3.1-pro-preview               n=5
+    terminus-2   / openai/gpt-5.5                              n=5
+    terminus-2   / openrouter/deepseek/deepseek-v4-pro         n=5
+    terminus-2   / openrouter/minimax/minimax-m2.7             n=5
+    terminus-2   / openrouter/moonshotai/kimi-k2.6             n=5
+    terminus-2   / openrouter/z-ai/glm-5.1                     n=5
+  cd4dd88f opus-4-8 route breakdown: {'bedrock': 2, 'openrouter': 3}
