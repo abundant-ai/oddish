@@ -757,6 +757,7 @@ async def run_harbor_trial_async(
             env_config.kwargs = {
                 "auto_stop_interval_mins": settings.daytona_auto_stop_interval_mins,
                 "auto_delete_interval_mins": settings.daytona_auto_delete_interval_mins,
+                "ephemeral": settings.daytona_ephemeral,
                 **env_config.kwargs,
             }
         uses_openai_provider = _trial_uses_openai_provider(
