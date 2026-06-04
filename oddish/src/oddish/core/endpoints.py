@@ -2214,6 +2214,18 @@ async def create_task_sweep_core(
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
 
+    # Default the task link to the GitHub PR URL when the caller didn't
+    # pass an explicit ``--link`` but the task carries GitHub PR metadata
+    # (set via ``--github-meta``). An explicit link always wins.
+    if not submission.link:
+        from oddish.integrations.github.client import GitHubMeta
+
+        github_meta = GitHubMeta.from_tags(submission.tags)
+        if github_meta and github_meta.pr_url:
+            submission = submission.model_copy(
+                update={"link": github_meta.pr_url}
+            )
+
     # Auto-detect append mode if the task already exists in the DB for this org.
     if not submission.append_to_task:
         existing = await session.get(TaskModel, submission.task_id)
@@ -2234,6 +2246,11 @@ async def create_task_sweep_core(
         # opt in without manual intervention.
         if submission.run_analysis and not task.run_analysis:
             task.run_analysis = True
+        # Update the link whenever a new submission carries one (explicit
+        # --link or derived from --github-meta above). A submission with no
+        # link leaves the existing value untouched rather than clearing it.
+        if submission.link:
+            task.link = submission.link
 
         new_experiment_id: str | None = None
         experiment: ExperimentModel | None = None

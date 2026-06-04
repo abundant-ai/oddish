@@ -736,6 +736,7 @@ def _build_task_status_response(
         user=task.user,
         github_username=task.tags.get("github_username") if task.tags else None,
         github_meta=_parse_github_meta(task.tags) if task.tags else None,
+        link=task.link,
         task_path=task.task_path,
         experiment_id=experiment_id,
         experiment_name=experiment_name,

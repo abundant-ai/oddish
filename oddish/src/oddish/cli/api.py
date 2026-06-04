@@ -694,6 +694,7 @@ def submit_sweep(
     content_hash: str | None = None,
     harbor_config: dict[str, Any] | None = None,
     environment_kwargs: list[str] | None = None,
+    link: str | None = None,
 ) -> dict:
     """Submit a task sweep to the API."""
     env_value = environment.value if environment else None
@@ -763,6 +764,8 @@ def submit_sweep(
         payload["append_to_task"] = True
     if content_hash:
         payload["content_hash"] = content_hash
+    if link:
+        payload["link"] = link
 
     with httpx.Client(
         timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()

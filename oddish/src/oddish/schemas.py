@@ -193,6 +193,10 @@ class TaskSubmission(BaseModel):
         None,
         description="Deterministic hash of task directory contents (set by CLI during upload)",
     )
+    link: str | None = Field(
+        None,
+        description="URL to associate with this task (e.g. PR, issue, CI run)",
+    )
 
     @model_validator(mode="after")
     def require_models(self):
@@ -286,6 +290,10 @@ class TaskSweepSubmission(BaseModel):
     content_hash: str | None = Field(
         None,
         description="Deterministic hash of task directory contents (set by CLI during upload)",
+    )
+    link: str | None = Field(
+        None,
+        description="URL to associate with this task (e.g. PR, issue, CI run)",
     )
 
     @model_validator(mode="after")
@@ -766,6 +774,7 @@ class TaskStatusResponse(BaseModel):
     user: str
     github_username: str | None = None
     github_meta: dict[str, str] | None = None
+    link: str | None = None
     task_path: str
     experiment_id: str
     experiment_name: str
