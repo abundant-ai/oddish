@@ -1,0 +1,37 @@
+task                        n cells  5/5   <5 pass  ovr exp     experiments / task_versions / shortfalls / overrides
+  biofabric-rust-rewrite     75    15   15    0    5    0    2 v=2  exps=['ad9a2ab3', 'cd4dd88f']  vers=['biofabric-rust-rewrite-897c0fc8-v5', 'biofabric-rust-rewrite-897c0fc8-v7']
+  embedding-eval             75    15   15    0   29    0    2 v=2  exps=['cd8c33d8', 'cd4dd88f']  vers=['embedding-eval-be1dc228-v13', 'embedding-eval-be1dc228-v14']
+  excel-clone                75    15   15    0    4    0    2 v=1  exps=['cd8c33d8', 'cd4dd88f']  vers=['excel-clone-685bff89-v11']
+  find-network-alignments    74    15   14    1    8    1    2 v=2  exps=['ad9a2ab3', 'cd4dd88f']  vers=['find-network-alignments-b2ecebb7-v4', 'find-network-alignments-b2ecebb7-v5']
+                            SHORT: claude-code/claude-opus-4-8=4/5
+                            OVERRIDES: find-network-alignments-b2ecebb7-188(claude-code/claude-opus-4-8)
+                            non-clean/non-AgentTimeout exception classes: {'NonZeroAgentExitCodeError': 1}
+  jax-pytorch-rewrite        75    15   15    0   17    0    2 v=2  exps=['ad9a2ab3', 'cd4dd88f']  vers=['jax-pytorch-rewrite-93c38683-v3', 'jax-pytorch-rewrite-93c38683-v6']
+  kubernetes-rust-rewrite    75    15   15    0    5    0    2 v=2  exps=['closed-internet-cursor', 'cd4dd88f']  vers=['kubernetes-rust-rewrite-bae0f616-v4', 'kubernetes-rust-rewrite-ecef12ce-v1']
+  mastodon-clone             75    15   15    0    5    0    2 v=1  exps=['cd8c33d8', 'cd4dd88f']  vers=['mastodon-clone-e9964b7a-v15']
+  nextjs-vite-rewrite        75    15   15    0    4    5    2 v=3  exps=['closed-internet-cursor', 'cd4dd88f']  vers=['nextjs-vite-rewrite-b0d028b0-v11', 'nextjs-vite-rewrite-c6cb4791-v1', 'nextjs-vite-rewrite-b0d028b0-v12']
+                            OVERRIDES: nextjs-vite-rewrite-b0d028b0-277(claude-code/claude-opus-4-8), nextjs-vite-rewrite-b0d028b0-279(claude-code/claude-opus-4-8), nextjs-vite-rewrite-b0d028b0-280(claude-code/claude-opus-4-8), nextjs-vite-rewrite-b0d028b0-281(claude-code/claude-opus-4-8), nextjs-vite-rewrite-b0d028b0-286(claude-code/claude-opus-4-8)
+                            non-clean/non-AgentTimeout exception classes: {'NonZeroAgentExitCodeError': 5}
+  parameter-golf             75    15   15    0    7    1    2 v=2  exps=['cd8c33d8', 'cd4dd88f']  vers=['parameter-golf-61e11605-v31', 'parameter-golf-61e11605-v32']
+                            OVERRIDES: parameter-golf-61e11605-437(claude-code/claude-opus-4-8)
+                            non-clean/non-AgentTimeout exception classes: {'NonZeroAgentExitCodeError': 1}
+  post-train-ifeval          75    15   15    0   22    0    2 v=3  exps=['6f068eca', '0042aebf']  vers=['post-train-ifeval-c9f2cfbc-v33', 'post-train-ifeval-c9f2cfbc-v34', 'post-train-ifeval-c9f2cfbc-v31']
+  ruby-rust-port             75    15   15    0    5    0    2 v=2  exps=['cd8c33d8', 'cd4dd88f']  vers=['ruby-rust-port-383776ff-v13', 'ruby-rust-port-383776ff-v14']
+  rust-c-compiler            75    15   15    0    5    0    2 v=2  exps=['ad9a2ab3', 'cd4dd88f']  vers=['rust-c-compiler-57913cbe-v6', 'rust-c-compiler-57913cbe-v10']
+  rust-java-lsp              75    15   15    0    5    0    2 v=2  exps=['ad9a2ab3', 'cd4dd88f']  vers=['rust-java-lsp-0a9c67d6-v6', 'rust-java-lsp-0a9c67d6-v7']
+  s3-clone                   75    15   15    0    5    0    2 v=2  exps=['cd8c33d8', 'cd4dd88f']  vers=['s3-clone-23996371-v13', 's3-clone-23996371-v14']
+  slack-clone                75    15   15    0    5    0    2 v=2  exps=['cd8c33d8', 'cd4dd88f']  vers=['slack-clone-b0a98beb-v24', 'slack-clone-b0a98beb-v25']
+  stripe-clone               75    15   15    0    5    0    2 v=2  exps=['45a08302', 'cd4dd88f']  vers=['stripe-clone-66061f4d-v4', 'stripe-clone-66061f4d-v5']
+  trimul-cuda                75    15   15    0    9    1    2 v=3  exps=['cd8c33d8', 'cd4dd88f']  vers=['trimul-cuda-fc34aaba-v81', 'trimul-cuda-fc34aaba-v85', 'trimul-cuda-fc34aaba-v86']
+                            OVERRIDES: trimul-cuda-fc34aaba-566(claude-code/claude-opus-4-8)
+                            non-clean/non-AgentTimeout exception classes: {'NonZeroAgentExitCodeError': 1}
+  vliw-kernel-optimization   75    15   15    0    9    0    2 v=2  exps=['ad9a2ab3', 'cd4dd88f']  vers=['vliw-kernel-optimization-e4d25121-v7', 'vliw-kernel-optimization-e4d25121-v10']
+  wasm-simd                  75    15   15    0   13    0    2 v=2  exps=['ad9a2ab3', 'cd4dd88f']  vers=['wasm-simd-40e18127-v18', 'wasm-simd-40e18127-v9']
+  zstd-decoder               75    15   15    0   19    0    2 v=1  exps=['cd8c33d8', 'cd4dd88f']  vers=['zstd-decoder-72bbfded-v13']
+
+==============================================================================
+TOTALS across 20 tasks:
+  trials:    1499
+  passes:    186
+  cells:     300  (299 at 5/5, 1 short)
+  overrides: 8
