@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import uuid
+import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,7 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialHookEvent
 from harbor.models.job.result import JobResult
 
-from oddish.config import settings, to_bedrock_model_id
+from oddish.config import OPENAI_PROVIDER_OPENAI, settings, to_bedrock_model_id
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 
@@ -520,6 +521,29 @@ def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
         config_path.write_text(task_config.model_dump_toml())
 
 
+def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
+    """Apply the env shape Claude Code expects for OpenRouter's Anthropic skin."""
+    agent_name = (agent_config.name or "").strip().lower()
+    model_name = (agent_config.model_name or "").strip().lower()
+    if agent_name != "claude-code" or not model_name.startswith("openrouter/"):
+        return
+
+    env = dict(agent_config.env or {})
+    env.setdefault(
+        "ANTHROPIC_BASE_URL",
+        os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api",
+    )
+    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${OPENROUTER_API_KEY}")
+    env.setdefault("ENABLE_TOOL_SEARCH", "false")
+
+    # Claude Code prioritizes these ambient credentials when present in the
+    # Modal image. Blank them so the OpenRouter auth/base-url route wins.
+    env["ANTHROPIC_API_KEY"] = ""
+    env["CLAUDE_CODE_USE_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    agent_config.env = env
+
+
 def _build_agent_config(
     *,
     agent: str,
@@ -573,10 +597,79 @@ def _build_agent_config(
         agent_config.model_name = model
 
     # Trial rows should already store the runtime model id. Keep this as a
-    # defensive guard for legacy rows or rich AgentConfig payloads.
+    # defensive guard for legacy rows or rich AgentConfig payloads. Explicit
+    # "openrouter/..." ids pass through here and the claude-code agent routes
+    # them through OpenRouter instead of the container's default transport.
     agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
+    _apply_claude_code_openrouter_env(agent_config)
+
+    if _agent_uses_openai_provider(agent_config):
+        if settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
+            warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
+        else:
+            agent_config.model_name = settings.resolve_azure_openai_deployment(
+                agent_config.model_name
+            )
 
     return agent_config
+
+
+def _agent_uses_openai_provider(agent_config: AgentConfig) -> bool:
+    agent = getattr(agent_config, "name", None)
+    if not agent:
+        return False
+    return (
+        settings.get_provider_for_trial(
+            agent,
+            getattr(agent_config, "model_name", None),
+        )
+        == "openai"
+    )
+
+
+def _trial_requested_model(
+    *,
+    agent: str,
+    model: str | None,
+    raw_harbor_config: dict[str, Any],
+) -> tuple[str, str | None]:
+    raw_agent_config = raw_harbor_config.get("agent_config")
+    agent_name = agent
+    model_name = model
+    if isinstance(raw_agent_config, dict):
+        agent_name = str(raw_agent_config.get("name") or agent_name)
+        if model_name is None:
+            raw_model_name = raw_agent_config.get("model_name")
+            model_name = str(raw_model_name) if raw_model_name is not None else None
+    return agent_name, model_name
+
+
+def _trial_uses_openai_provider(
+    *,
+    agent: str,
+    model: str | None,
+    raw_harbor_config: dict[str, Any],
+) -> bool:
+    agent_name, model_name = _trial_requested_model(
+        agent=agent,
+        model=model,
+        raw_harbor_config=raw_harbor_config,
+    )
+    return settings.get_provider_for_trial(agent_name, model_name) == "openai"
+
+
+@contextlib.contextmanager
+def _temporary_env(env: dict[str, str]) -> Iterator[None]:
+    old_values = {key: os.environ.get(key) for key in env}
+    try:
+        os.environ.update(env)
+        yield
+    finally:
+        for key, old_value in old_values.items():
+            if old_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_value
 
 
 # =============================================================================
@@ -666,7 +759,16 @@ async def run_harbor_trial_async(
                 "auto_delete_interval_mins": settings.daytona_auto_delete_interval_mins,
                 **env_config.kwargs,
             }
-
+        uses_openai_provider = _trial_uses_openai_provider(
+            agent=agent,
+            model=model,
+            raw_harbor_config=raw,
+        )
+        _, openai_model = _trial_requested_model(
+            agent=agent,
+            model=model,
+            raw_harbor_config=raw,
+        )
         agent_config = _build_agent_config(
             agent=agent,
             model=model,
@@ -702,21 +804,29 @@ async def run_harbor_trial_async(
 
         config = JobConfig(**job_config_kwargs)
 
-        job = await Job.create(config)
-        actual_job_dir = job.job_dir
+        openai_env = (
+            settings.get_openai_agent_env(model=openai_model)
+            if uses_openai_provider
+            else {}
+        )
+        with _temporary_env(openai_env):
+            job = await Job.create(config)
+            actual_job_dir = job.job_dir
 
-        if hook_callback:
-            job.on_trial_started(hook_callback)
-            job.on_environment_started(hook_callback)
-            job.on_agent_started(hook_callback)
-            job.on_verification_started(hook_callback)
-            job.on_trial_ended(hook_callback)
-            job.on_trial_cancelled(hook_callback)
+            if hook_callback:
+                job.on_trial_started(hook_callback)
+                job.on_environment_started(hook_callback)
+                job.on_agent_started(hook_callback)
+                job.on_verification_started(hook_callback)
+                job.on_trial_ended(hook_callback)
+                job.on_trial_cancelled(hook_callback)
 
-        with _capture_modal_output(actual_job_dir, environment) as captured_log_path:
-            modal_debug_log_path = captured_log_path
-            # Harbor's job.run() returns JobResult object directly
-            job_result = await job.run()
+            with _capture_modal_output(
+                actual_job_dir, environment
+            ) as captured_log_path:
+                modal_debug_log_path = captured_log_path
+                # Harbor's job.run() returns JobResult object directly
+                job_result = await job.run()
         duration = time.time() - start
 
         # Harbor creates job_dir = jobs_dir / job_name (job_name defaults to timestamp).

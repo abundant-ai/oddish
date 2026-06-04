@@ -336,6 +336,7 @@ class TaskModel(TimestampedMixin, Base):
         Text, nullable=True
     )  # S3 prefix for task files (mirrors latest version)
     tags: Mapped[dict] = mapped_column(JSONB, default=dict)
+    link: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Versioning: points to the latest TaskVersionModel row
     current_version_id: Mapped[str | None] = mapped_column(
@@ -879,6 +880,8 @@ class WorkerJobModel(TimestampedMixin, Base):
             postgresql_where=text("org_id IS NOT NULL"),
         ),
     )
+    provider: Mapped[str] = mapped_column(Text, nullable=True)
+    external_id: Mapped[str] = mapped_column(Text, nullable=True)
 
 
 # ---------------------------------------------------------------------------

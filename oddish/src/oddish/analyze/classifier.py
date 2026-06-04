@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -13,8 +14,10 @@ from rich.console import Console
 from oddish.config import (
     ANALYSIS_MODEL,
     BEDROCK_ENV_VARS,
+    OPENAI_PROVIDER_OPENAI,
     VERDICT_MODEL,
     looks_like_bedrock_model_id,
+    settings,
 )
 from oddish.analyze._sdk_utils import Colors, print_process_stream
 
@@ -477,9 +480,6 @@ def _compute_task_verdict_openai(
             recommendations=["Run agent trials first"],
         )
 
-    if not (api_key or os.getenv("OPENAI_API_KEY")):
-        raise RuntimeError("OPENAI_API_KEY not set for verdict synthesis")
-
     if baseline:
         if baseline.is_valid:
             baseline_summary = (
@@ -515,23 +515,24 @@ def _compute_task_verdict_openai(
         trial_classifications=trial_classifications,
     )
 
-    if console:
-        console.print("  [dim]Synthesizing verdict with OpenAI...[/dim]")
-
-    if verbose:
-        print(
-            f"\n{Colors.YELLOW}[Verdict] Synthesizing task verdict with {model}...{Colors.RESET}",
-            flush=True,
-        )
-
-    client = OpenAI(
-        api_key=api_key or os.getenv("OPENAI_API_KEY"),
+    client, runtime_model, provider_label = _build_verdict_openai_client(
+        model=model,
+        api_key=api_key,
         timeout=timeout or VERDICT_TIMEOUT,
     )
 
+    if console:
+        console.print(f"  [dim]Synthesizing verdict with {provider_label}...[/dim]")
+
+    if verbose:
+        print(
+            f"\n{Colors.YELLOW}[Verdict] Synthesizing task verdict with {provider_label} ({runtime_model})...{Colors.RESET}",
+            flush=True,
+        )
+
     try:
         completion = client.beta.chat.completions.parse(
-            model=model,
+            model=runtime_model,
             messages=[{"role": "user", "content": prompt}],
             response_format=TaskVerdictModel,
             max_completion_tokens=VERDICT_MAX_TOKENS,
@@ -581,6 +582,35 @@ def _compute_task_verdict_openai(
         harness_error_count=harness_error_count,
         classifications=classifications,
         baseline=baseline,
+    )
+
+
+def _build_verdict_openai_client(
+    *,
+    model: str,
+    api_key: str | None,
+    timeout: float,
+) -> tuple[Any, str, str]:
+    provider = settings.get_openai_provider()
+    if provider == OPENAI_PROVIDER_OPENAI:
+        warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
+        public = settings.require_public_openai_config(api_key=api_key)
+        return (
+            OpenAI(api_key=public["api_key"], timeout=timeout),
+            model,
+            "public OpenAI",
+        )
+
+    azure = settings.require_azure_openai_config()
+    deployment = settings.resolve_azure_openai_deployment(model)
+    return (
+        OpenAI(
+            api_key=azure["api_key"],
+            base_url=settings.get_azure_openai_base_url(),
+            timeout=timeout,
+        ),
+        deployment,
+        "Azure OpenAI",
     )
 
 

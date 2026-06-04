@@ -48,7 +48,10 @@ def _task_config_requests_gpu(task_path: Path) -> bool:
         task_config = HarborTaskConfig.model_validate_toml(config_path.read_text())
     except Exception:
         return False
-    return task_config.environment.gpus > 0
+    # ``gpus`` is optional in the task schema (e.g. schema_version 1.2 leaves
+    # it unset -> None); treat an absent value as 0 GPUs instead of crashing
+    # on ``None > 0``.
+    return (task_config.environment.gpus or 0) > 0
 
 
 def _default_cloud_environment_for_task(
@@ -209,6 +212,13 @@ def run(
         typer.Option(
             "--github-meta",
             help="JSON metadata to associate with this task (e.g. PR info).",
+        ),
+    ] = None,
+    link: Annotated[
+        Optional[str],
+        typer.Option(
+            "--link",
+            help="URL to associate with this task (e.g. PR, issue, CI run)",
         ),
     ] = None,
     publish: Annotated[
@@ -642,6 +652,7 @@ def run(
             artifact_paths=artifact_paths,
             append_to_task=append_to_task,
             content_hash=task_content_hash,
+            link=link,
         )
 
     # Phase 1: upload any local task directories (shared with

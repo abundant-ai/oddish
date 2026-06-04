@@ -14,6 +14,7 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
+from sqlalchemy import update
 
 from oddish.config import settings
 from oddish.db import (
@@ -23,6 +24,8 @@ from oddish.db import (
     TaskStatus,
     TaskVersionModel,
     TrialStatus,
+    WorkerJobModel,
+    WorkerJobStatus,
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
@@ -608,6 +611,29 @@ async def _handle_harbor_event(
             # Log event
             console.print(f"[dim]Trial {trial_id} event: {event.value}[/dim]")
             trial.heartbeat_at = utcnow()
+
+            # Upload sandbox id onto the trial's RUNNING worker_jobs
+            # row as soon as Harbor reports it (ENVIRONMENT_START onward).
+            # cancel_tasks_runs and cleanup_orphaned_queue_state read
+            # worker_jobs.provider / external_id to tear the remote sandbox
+            # down. Idempotent (IS DISTINCT FROM) and RUNNING-guarded
+            # so we only attempt to save sandbox id once
+            if hook_event.environment_external_id:
+                await _session.execute(
+                    update(WorkerJobModel)
+                    .where(
+                        WorkerJobModel.subject_table == "trials",
+                        WorkerJobModel.subject_id == trial_id,
+                        WorkerJobModel.status == WorkerJobStatus.RUNNING,
+                        WorkerJobModel.external_id.is_distinct_from(
+                            hook_event.environment_external_id
+                        ),
+                    )
+                    .values(
+                        provider=hook_event.environment_provider,
+                        external_id=hook_event.environment_external_id,
+                    )
+                )
 
             # Update database based on event type
             if event == TrialEvent.START:

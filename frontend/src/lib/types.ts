@@ -159,6 +159,7 @@ export interface Task {
   user: string;
   github_username?: string | null;
   github_meta?: Record<string, string> | null;
+  link?: string | null;
   task_path: string;
   experiment_id: string;
   experiment_name: string;

@@ -2,7 +2,6 @@
 
 > Harbor-compatible CLI for submitting evals, tracking progress, pulling artifacts, and cleaning up runs.
 
-
 ## Installation
 
 ```bash
@@ -59,8 +58,7 @@ oddish run --task <task_id> -a gemini-cli -m google/gemini-3.1-pro-preview
 oddish run ./my-task -c sweep.yaml
 ```
 
-<details>
-<summary>Options</summary>
+Options
 
 - `--path`, `-p PATH` - Harbor-compatible path flag for a local task or dataset directory
 - `--dataset`, `-d TEXT` - Registry dataset such as `swebench@1.0`
@@ -79,6 +77,7 @@ oddish run ./my-task -c sweep.yaml
 - `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.
 - `--github-user`, `-G TEXT` - GitHub user attribution for CI metadata. When omitted, the backend auto-fills this from the authenticated user's Clerk-linked GitHub username (if any) so CI-style attribution still works.
 - `--github-meta TEXT` - JSON metadata blob to attach to the task
+- `--link TEXT` - Associate URL with the task. 
 - `--publish` - Publish the experiment for public read-only access
 - `--watch/--no-watch`, `-w` - Watch progress after submission; enabled by default
 - `--background`, `--async`, `-b` - Submit and return immediately
@@ -100,8 +99,6 @@ oddish run ./my-task -c sweep.yaml
 - `--yes`, `-y` - Skip confirmation prompts (used with `--retry`)
 - `--api TEXT` - Override the API URL
 - `--json` - Emit JSON for scripts and CI; implies `--background`
-
-</details>
 
 ### Re-run with `--retry`
 
@@ -128,9 +125,9 @@ oddish run <experiment_id> --retry -y --json
 ```
 
 - Default (`--retry` alone) re-queues failed trials. For task and experiment
-  targets, only trials currently in a `failed` state are retried.
+targets, only trials currently in a `failed` state are retried.
 - `--analysis` re-runs trial analysis (per-trial for a trial target, otherwise
-  task-wide); `--verdict` re-runs the task verdict.
+task-wide); `--verdict` re-runs the task verdict.
 - `--analysis` and `--verdict` are mutually exclusive and require `--retry`.
 - `-y, --yes` skips the confirmation prompt; `--json` is always non-interactive.
 
@@ -174,16 +171,13 @@ oddish ls --limit 50
 oddish ls --json
 ```
 
-<details>
-<summary>Options</summary>
+Options
 
 - `--query`, `-q TEXT` - Filter tasks by name
 - `--limit`, `-n INTEGER` - Maximum number of tasks to show
 - `--offset INTEGER` - Number of tasks to skip
 - `--json` - Emit the raw task browser JSON response
 - `--api TEXT` - Override the API URL
-
-</details>
 
 ## Check Progress
 
@@ -207,16 +201,13 @@ oddish status <task_id> --json
 
 If a positional ID isn't found as a task, `status` automatically retries it as an experiment ID.
 
-<details>
-<summary>Options</summary>
+Options
 
 - `TASK_ID` - Task ID to inspect when not using `--experiment`; falls back to experiment lookup if no matching task exists
 - `--experiment`, `-e TEXT` - Inspect an experiment instead of a task
 - `--watch`, `-w` - Poll until the task or experiment finishes
 - `--api TEXT` - Override the API URL
 - `--json` - Emit a single JSON snapshot (no live watch)
-
-</details>
 
 ## Cancel In-Flight Runs
 
@@ -228,15 +219,12 @@ the task itself. Completed trials are preserved.
 oddish cancel <task_id>
 ```
 
-<details>
-<summary>Options</summary>
+Options
 
 - `TASK_ID` - Task ID to cancel
 - `--force`, `-f` - Skip the confirmation prompt
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the cancellation result as JSON (implies `--force`)
-
-</details>
 
 ## Download Outputs
 
@@ -252,8 +240,7 @@ oddish pull <experiment_id> --include-task-files --out ./downloads
 
 By default, files are written to `./.oddish/<target>`. Re-pulling is idempotent — files already on disk that match the remote size are skipped, so `--watch` only downloads new or changed artifacts on each iteration and stops when the target reaches a terminal state.
 
-<details>
-<summary>Options</summary>
+Options
 
 - `TARGET` - Trial ID, task ID, or experiment ID
 - `--type [trial|task|experiment]` - Force target type instead of auto-resolving
@@ -266,8 +253,6 @@ By default, files are written to `./.oddish/<target>`. Re-pulling is idempotent 
 - `--interval INTEGER` - Poll interval in seconds for `--watch`
 - `--api TEXT` - Override the API URL
 - `--json` - Print the pull manifest as JSON instead of progress output
-
-</details>
 
 ## Targeting a PR Preview
 
@@ -318,19 +303,15 @@ oddish combine <exp_a> <exp_b> --no-copy-artifacts
 In-flight trials (still pending/queued/running) have no result to combine
 and are skipped; the response reports how many were copied vs. skipped.
 
-<details>
-<summary>Options</summary>
+Options
 
 - `SOURCE_EXPERIMENT_IDS...` - Two or more experiment IDs or names to combine
 - `--name`, `-n TEXT` - Name for the result experiment (auto-generated if omitted)
 - `--copy-artifacts / --no-copy-artifacts` - Duplicate each copied trial's
-  artifacts so the result is fully independent (default), or reference the
-  source artifacts in place (cheaper, shared storage)
+artifacts so the result is fully independent (default), or reference the
+source artifacts in place (cheaper, shared storage)
 - `--json` - Print the raw JSON response
 - `--api-url`, `-u TEXT` - Override the API URL
-
-</details>
-
 
 ## Delete Data
 
@@ -347,8 +328,7 @@ oddish delete --experiment <experiment_id>
 oddish delete --trial <trial_id> --json
 ```
 
-<details>
-<summary>Options</summary>
+Options
 
 - `TASK_ID` - Task ID to delete when not using `--experiment`
 - `--experiment`, `-e TEXT` - Delete an experiment instead of a task
@@ -356,8 +336,6 @@ oddish delete --trial <trial_id> --json
 - `--yes`, `-y` - Skip confirmation prompts
 - `--api-url`, `-u TEXT` - Override the API URL
 - `--json` - Emit the delete result as JSON (implies `--yes`)
-
-</details>
 
 ## Share an Experiment
 
@@ -376,15 +354,11 @@ oddish publish <experiment_id> --json
 oddish unpublish <experiment_id>
 ```
 
-<details>
-<summary>Options</summary>
+Options
 
 - `EXPERIMENT_ID` - Experiment ID (or name) to publish/unpublish
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the share status as JSON
-
-</details>
-
 
 ## Drag-and-drop import (UI)
 
@@ -394,17 +368,16 @@ from the browser. Drop one or both of:
 
 - a Harbor task zip (e.g. `zip -r my-task.zip my-task`)
 - a Harbor run zip — either a single job dir (with `result.json`) or a
-  parent dir of job dirs
+parent dir of job dirs
 
 The dialog accepts:
 
 - **Task only** → registers a new task version (or no-op when content
-  is unchanged).
+is unchanged).
 - **Run only** → imports every Harbor trial in the zip into the target
-  task ID you provide.
+task ID you provide.
 - **Task + run** → uploads the task first, then imports the trials
-  against it (the UI equivalent of `oddish upload ./jobs --path
-  ./my-task`).
+against it (the UI equivalent of `oddish upload ./jobs --path ./my-task`).
 
 The optional **Experiment name** field maps to `--experiment`; leaving
 it blank auto-generates a fresh experiment, matching the CLI default.
