@@ -1,7 +1,7 @@
 {
   "experiment_id": "cd8c33d8",
-  "n_trials": 74,
-  "note": "Re-generated at 2026-05-22T21:22:35.372897+00:00 from Oddish experiment cd8c33d8 on task version mastodon-clone-e9964b7a-v15. Strict selection: up to 5 valid trials per agent/model pair, where valid = SUCCESS + numeric reward AND top-level result.json exception_stats is empty or limited to {AgentTimeoutError, VerifierTimeoutError}. Ranked by reward then trajectory_bytes then total artifact bytes then recency. Notes: shortfall claude-code|anthropic/claude-opus-4-7: 4/5 \u2014 limited by v=mastodon-clone-e9964b7a-v15 valid trials (excludes NonZeroAgentExitCodeError and other infra failures); shortfall terminus-2|openrouter/minimax/minimax-m2.7: 4/5 \u2014 limited by v=mastodon-clone-e9964b7a-v15 valid trials (excludes NonZeroAgentExitCodeError and other infra failures).\nImported clean replacement trials from cd8c33d8: . | 2026-06-03T18:38:41.429365+00:00 appended 10 trials from Oddish experiment cd4dd88f (mastodon-clone-e9964b7a-v15) for claude-code/anthropic/claude-opus-4-8 (bedrock + openrouter routes folded into one normalized cell) and gemini-cli/gemini/gemini-3.5-flash. Strict AgentTimeoutError-only validity filter. | 2026-06-03T18:56:22.071118+00:00 removed mastodon-clone-e9964b7a-282 after CUA-verifier audit: correctness/test-stdout.txt is only 119 bytes (just the artifacts-dump line, no setup/install log) and correctness/metrics.json is malformed ({'-': 'health', 'false': 'stage', ...} with swapped keys/values). No server.log / service.log / anti_cheat.json were produced, indicating the verifier framework crashed before it could even start the agent's app. mastodon gemini-3.5-flash drops to 4/5 \u2014 no spare valid candidate.",
+  "n_trials": 75,
+  "note": "Re-generated at 2026-05-22T21:22:35.372897+00:00 from Oddish experiment cd8c33d8 on task version mastodon-clone-e9964b7a-v15. Strict selection: up to 5 valid trials per agent/model pair, where valid = SUCCESS + numeric reward AND top-level result.json exception_stats is empty or limited to {AgentTimeoutError, VerifierTimeoutError}. Ranked by reward then trajectory_bytes then total artifact bytes then recency. Notes: shortfall claude-code|anthropic/claude-opus-4-7: 4/5 \u2014 limited by v=mastodon-clone-e9964b7a-v15 valid trials (excludes NonZeroAgentExitCodeError and other infra failures); shortfall terminus-2|openrouter/minimax/minimax-m2.7: 4/5 \u2014 limited by v=mastodon-clone-e9964b7a-v15 valid trials (excludes NonZeroAgentExitCodeError and other infra failures).\nImported clean replacement trials from cd8c33d8: . | 2026-06-03T18:38:41.429365+00:00 appended 10 trials from Oddish experiment cd4dd88f (mastodon-clone-e9964b7a-v15) for claude-code/anthropic/claude-opus-4-8 (bedrock + openrouter routes folded into one normalized cell) and gemini-cli/gemini/gemini-3.5-flash. Strict AgentTimeoutError-only validity filter. | 2026-06-03T18:56:22.071118+00:00 removed mastodon-clone-e9964b7a-282 after CUA-verifier audit: correctness/test-stdout.txt is only 119 bytes (just the artifacts-dump line, no setup/install log) and correctness/metrics.json is malformed ({'-': 'health', 'false': 'stage', ...} with swapped keys/values). No server.log / service.log / anti_cheat.json were produced, indicating the verifier framework crashed before it could even start the agent's app. mastodon gemini-3.5-flash drops to 4/5 \u2014 no spare valid candidate.\nBackfilled missing non-nop/oracle cost_usd fields from token counts and published model pricing. | 2026-06-04T17:59:01.426519+00:00 added 1 trials (mastodon-clone-e9964b7a-293).",
   "task": "mastodon-clone-e9964b7a",
   "task_name": "mastodon-clone",
   "task_hash": "e9964b7a",
@@ -981,7 +981,7 @@
       "input_tokens": 3412472,
       "cache_tokens": 1479456,
       "output_tokens": 55043,
-      "cost_usd": null,
+      "cost_usd": 2.68320463,
       "has_trajectory": true,
       "trajectory_bytes": 645068,
       "exception_classes": [],
@@ -996,7 +996,16 @@
       "canonical_attempt_dir": "task-mastodon-clone-e9964b7a-esu__dgBcp67",
       "original_provider": "openai",
       "task_name": "mastodon-clone",
-      "task_hash": "e9964b7a"
+      "task_hash": "e9964b7a",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "mastodon-clone-e9964b7a-199": {
       "agent": "kimi-cli",
@@ -1012,7 +1021,7 @@
       "input_tokens": 341772,
       "cache_tokens": 299712,
       "output_tokens": 29929,
-      "cost_usd": null,
+      "cost_usd": 0.35394577,
       "has_trajectory": true,
       "trajectory_bytes": 136022,
       "exception_classes": [],
@@ -1027,7 +1036,16 @@
       "canonical_attempt_dir": "task-mastodon-clone-e9964b7a-oho__LLuW2UD",
       "original_provider": "openai",
       "task_name": "mastodon-clone",
-      "task_hash": "e9964b7a"
+      "task_hash": "e9964b7a",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "mastodon-clone-e9964b7a-200": {
       "agent": "kimi-cli",
@@ -1043,7 +1061,7 @@
       "input_tokens": 1850645,
       "cache_tokens": 1704000,
       "output_tokens": 67422,
-      "cost_usd": null,
+      "cost_usd": 1.58627363,
       "has_trajectory": true,
       "trajectory_bytes": 268381,
       "exception_classes": [],
@@ -1058,7 +1076,16 @@
       "canonical_attempt_dir": "task-mastodon-clone-e9964b7a-f1y__ckgxAHz",
       "original_provider": "openai",
       "task_name": "mastodon-clone",
-      "task_hash": "e9964b7a"
+      "task_hash": "e9964b7a",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "mastodon-clone-e9964b7a-201": {
       "agent": "kimi-cli",
@@ -1074,7 +1101,7 @@
       "input_tokens": 952425,
       "cache_tokens": 891719,
       "output_tokens": 43014,
-      "cost_usd": null,
+      "cost_usd": 0.84538911,
       "has_trajectory": true,
       "trajectory_bytes": 122715,
       "exception_classes": [],
@@ -1089,7 +1116,16 @@
       "canonical_attempt_dir": "task-mastodon-clone-e9964b7a-fd6__BtrnapG",
       "original_provider": "openai",
       "task_name": "mastodon-clone",
-      "task_hash": "e9964b7a"
+      "task_hash": "e9964b7a",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "mastodon-clone-e9964b7a-202": {
       "agent": "kimi-cli",
@@ -1105,7 +1141,7 @@
       "input_tokens": 5848797,
       "cache_tokens": 4432624,
       "output_tokens": 105228,
-      "cost_usd": null,
+      "cost_usd": 4.63686753,
       "has_trajectory": true,
       "trajectory_bytes": 1208788,
       "exception_classes": [],
@@ -1120,7 +1156,16 @@
       "canonical_attempt_dir": "task-mastodon-clone-e9964b7a-l9a__dyYftBq",
       "original_provider": "openai",
       "task_name": "mastodon-clone",
-      "task_hash": "e9964b7a"
+      "task_hash": "e9964b7a",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "mastodon-clone-e9964b7a-203": {
       "agent": "terminus-2",
@@ -2301,6 +2346,38 @@
       "task_name": "mastodon-clone",
       "task_hash": "e9964b7a",
       "raw_model": "openrouter/anthropic/claude-opus-4.8"
+    },
+    "mastodon-clone-e9964b7a-293": {
+      "agent": "gemini-cli",
+      "model": "gemini/gemini-3.5-flash",
+      "provider": "gemini",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 2,
+      "max_attempts": 6,
+      "task_version_id": "mastodon-clone-e9964b7a-v15",
+      "started_at": "2026-06-03T23:23:43.868466+00:00",
+      "finished_at": "2026-06-03T23:44:25.363469+00:00",
+      "input_tokens": 13053432,
+      "cache_tokens": 12140131,
+      "output_tokens": 99553,
+      "cost_usd": 4.08694815,
+      "has_trajectory": true,
+      "trajectory_bytes": 0,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/mastodon-clone/mastodon-clone-e9964b7a-293/",
+      "source_trial_name": "mastodon-clone-293",
+      "source_oddish_task_id": "mastodon-clone-e9964b7a",
+      "source_oddish_trial_id": "mastodon-clone-e9964b7a-293",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Filling mastodon-clone / gemini-cli / gemini/gemini-3.5-flash cell to 5/5 as new completions land.",
+      "canonical_attempt_dir": "task-mastodon-clone-e9964b7a-s7w__LeiaHYv",
+      "task_name": "mastodon-clone",
+      "task_hash": "e9964b7a",
+      "raw_model": "gemini/gemini-3.5-flash",
+      "verifier_partial_score": 0.3142857142857143
     }
   },
   "task_versions": [
@@ -2331,6 +2408,14 @@
         ]
       ],
       "note": "CUA-task cd4dd88f import: claude-code/anthropic/claude-opus-4-8 + gemini-cli/gemini/gemini-3.5-flash. Strict validity (AgentTimeoutError or clean only). For the claude pair, both bedrock and openrouter route trials are folded into one normalized cell (model=\"anthropic/claude-opus-4-8\"); the actual route is recorded per-entry as provider in {bedrock, claude, openrouter}. Trials are still rolling in upstream so this cell may be short of 5 until more land."
+    },
+    {
+      "imported_at": "2026-06-04T17:59:01.426506+00:00",
+      "source_oddish_experiment_ids": [
+        "cd4dd88f"
+      ],
+      "n_trials_added": 1,
+      "note": "Top-off as new SUCCESS trials completed upstream: mastodon-clone-e9964b7a-293"
     }
   ]
 }
