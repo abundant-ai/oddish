@@ -362,6 +362,13 @@ class Settings(BaseSettings):
     daytona_auto_stop_interval_mins: int = 30
     daytona_auto_delete_interval_mins: int = 60
 
+    # Our Daytona region only permits ephemeral sandboxes -- ``daytona.create``
+    # rejects persistent ones with "Only ephemeral sandboxes are permitted in
+    # this region". Ephemeral sandboxes auto-delete when stopped, so harbor
+    # forces ``auto_delete_interval`` to 0 under this flag; the auto-stop above
+    # still applies as the idle backstop.
+    daytona_ephemeral: bool = True
+
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8000
