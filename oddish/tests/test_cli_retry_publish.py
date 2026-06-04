@@ -17,6 +17,7 @@ from oddish.cli import app
 publish_mod = importlib.import_module("oddish.cli.publish")
 retry_mod = importlib.import_module("oddish.cli.retry")
 delete_mod = importlib.import_module("oddish.cli.delete")
+cancel_mod = importlib.import_module("oddish.cli.cancel")
 
 runner = CliRunner()
 
@@ -196,6 +197,59 @@ def test_retry_verdict_dispatches_task_endpoint(monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     assert posted == ["/tasks/tsk/verdict/retry"]
+
+
+def test_cancel_analysis_dispatches_task_endpoint(monkeypatch) -> None:
+    _patch_key(monkeypatch)
+    calls: list[str] = []
+    resp = _Resp(200, {"status": "cancelled", "analysis_jobs_cancelled": 1})
+    monkeypatch.setattr(cancel_mod.httpx, "Client", lambda **kw: _Client(resp, calls))
+    monkeypatch.setattr(cancel_mod, "get_task_summary", lambda *a, **k: None)
+
+    result = runner.invoke(
+        app,
+        ["cancel", "tsk", "--analysis", "--force", "--api", "http://api.test", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["http://api.test/tasks/tsk/analysis/cancel"]
+    assert json.loads(result.stdout)["analysis_jobs_cancelled"] == 1
+
+
+def test_cancel_verdict_dispatches_task_endpoint(monkeypatch) -> None:
+    _patch_key(monkeypatch)
+    calls: list[str] = []
+    resp = _Resp(200, {"status": "cancelled", "verdict_jobs_cancelled": 1})
+    monkeypatch.setattr(cancel_mod.httpx, "Client", lambda **kw: _Client(resp, calls))
+
+    result = runner.invoke(
+        app,
+        ["cancel", "tsk", "--verdict", "--force", "--api", "http://api.test", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["http://api.test/tasks/tsk/verdict/cancel"]
+    assert json.loads(result.stdout)["verdict_jobs_cancelled"] == 1
+
+
+def test_cancel_analysis_dispatches_trial_endpoint(monkeypatch) -> None:
+    _patch_key(monkeypatch)
+    calls: list[str] = []
+    resp = _Resp(200, {"status": "cancelled", "analysis_jobs_cancelled": 1})
+    monkeypatch.setattr(cancel_mod.httpx, "Client", lambda **kw: _Client(resp, calls))
+    monkeypatch.setattr(
+        cancel_mod,
+        "get_task_summary",
+        lambda _api, task_id: {"id": task_id, "trials": [{"id": "tsk-0"}]},
+    )
+
+    result = runner.invoke(
+        app,
+        ["cancel", "tsk-0", "--analysis", "--force", "--api", "http://api.test", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["http://api.test/trials/tsk-0/analysis/cancel"]
 
 
 def test_delete_trial_json_reports_records(monkeypatch) -> None:

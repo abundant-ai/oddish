@@ -66,7 +66,7 @@ Available commands:
 - `oddish upload` registers task bundles (no trials) or uploads off-oddish Harbor trial results (logs, rewards, tokens) onto an existing task
 - `oddish ls` lists uploaded tasks with version, trial, reward, and experiment summaries
 - `oddish status` shows system, task, or experiment status
-- `oddish cancel` stops all in-flight runs for a task
+- `oddish cancel` stops in-flight task runs, analysis, or verdict jobs
 - `oddish pull` downloads logs, results, trajectories, and artifact files for a trial, task, or experiment
 - `oddish combine` merges several experiments into a new result experiment
 - `oddish delete` deletes a task or experiment from a self-hosted deployment
@@ -343,14 +343,17 @@ oddish status <task_id> --json
 
 ### `oddish cancel`
 
-Cancel all in-flight runs for a task without deleting any data. Queued jobs are
-removed, running trials are cancelled, and active Modal workers are terminated
-when applicable. Completed trials and their results are preserved.
+Cancel in-flight work without deleting any data. By default this cancels all
+active runs for a task. Use `--analysis` or `--verdict` to cancel only that
+pipeline stage. Completed trials and their results are preserved.
 
 ```bash
 oddish cancel <task_id>
 oddish cancel <task_id> --force   # skip confirmation
 oddish cancel <task_id> --json    # machine-readable result (implies --force)
+oddish cancel <task_id> --analysis
+oddish cancel <trial_id> --analysis
+oddish cancel <task_id> --verdict
 ```
 
 ### `oddish pull`
