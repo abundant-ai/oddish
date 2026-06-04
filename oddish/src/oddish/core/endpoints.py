@@ -1036,7 +1036,8 @@ async def cancel_trial_analysis_core(
         subject_ids=[trial_id],
         reason=USER_CANCELLED_MESSAGE,
     )
-    if rows or _has_active_analysis(trial):
+    had_active_analysis = _has_active_analysis(trial)
+    if rows or had_active_analysis:
         trial.analysis_status = AnalysisStatus.FAILED
         trial.analysis_error = USER_CANCELLED_MESSAGE
         trial.analysis_finished_at = now_value
@@ -1053,7 +1054,12 @@ async def cancel_trial_analysis_core(
         and _has_active_analysis(other)
         for other in (task.trials if task else [])
     )
-    if task and task.status == TaskStatus.ANALYZING and not other_active_analysis:
+    if (
+        task
+        and task.status == TaskStatus.ANALYZING
+        and (rows or had_active_analysis)
+        and not other_active_analysis
+    ):
         task.status = TaskStatus.FAILED
         task.finished_at = now_value
 
