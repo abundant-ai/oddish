@@ -51,6 +51,8 @@ import {
 } from "@/lib/experiment-agent-grouping";
 import {
   isActivePipelineStatus,
+  taskHasActiveAnalysis,
+  taskHasActiveVerdict,
   taskHasCancellableWork,
 } from "@/lib/job-status";
 import {
@@ -82,7 +84,7 @@ const PassAtKGraph = dynamic(
   () => import("./pass-at-k-graph").then((mod) => mod.PassAtKGraph),
   {
     ssr: false,
-  },
+  }
 );
 
 const PassAtOneLeaderboard = dynamic(
@@ -90,7 +92,7 @@ const PassAtOneLeaderboard = dynamic(
     import("./pass-at-one-leaderboard").then((mod) => mod.PassAtOneLeaderboard),
   {
     ssr: false,
-  },
+  }
 );
 
 export type AgentSummary = ExperimentAgentSummary;
@@ -118,11 +120,11 @@ type ExperimentTrialsTableProps = {
         model: string | null;
         trials: Trial[];
       }>;
-    },
+    }
   ) => void;
   onTaskSelect?: (
     task: Task,
-    context: { orderedTasks: Task[]; taskIndex: number },
+    context: { orderedTasks: Task[]; taskIndex: number }
   ) => void;
 };
 
@@ -147,7 +149,7 @@ const LOADING_AGENT_COLUMNS: AgentSummary[] = Array.from(
     model: null,
     queueKey: null,
     isModelScoped: false,
-  }),
+  })
 );
 const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "queued",
@@ -221,9 +223,7 @@ function isBaselineAgentName(name: string): boolean {
  * - `null` — agent has no terminal trials yet; skip this cell so still-
  *   running tasks aren't hidden prematurely.
  */
-function summarizeAgentRowFilterState(
-  trials: readonly Trial[] | undefined,
-): {
+function summarizeAgentRowFilterState(trials: readonly Trial[] | undefined): {
   hasError: boolean;
   status: "failed" | "scored" | null;
 } {
@@ -273,7 +273,7 @@ function InlineBtn({
       onClick={onClick}
       disabled={disabled}
       style={style}
-      className="h-auto gap-1.5 rounded-[5px] bg-transparent px-2 py-1 text-[11.5px] font-medium text-paper-ink-2 transition hover:bg-paper-surface-2 hover:text-paper-ink disabled:cursor-not-allowed disabled:text-paper-ink-4 disabled:hover:bg-transparent disabled:hover:text-paper-ink-4"
+      className="text-paper-ink-2 hover:bg-paper-surface-2 hover:text-paper-ink disabled:text-paper-ink-4 disabled:hover:text-paper-ink-4 h-auto gap-1.5 rounded-[5px] bg-transparent px-2 py-1 text-[11.5px] font-medium transition disabled:cursor-not-allowed disabled:hover:bg-transparent"
     >
       {children}
     </Button>
@@ -282,7 +282,7 @@ function InlineBtn({
 
 function InlineCount({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded-[3px] bg-paper-bg-2 px-1.5 py-[1px] font-mono text-[10px] text-paper-ink-2">
+    <span className="bg-paper-bg-2 text-paper-ink-2 rounded-[3px] px-1.5 py-[1px] font-mono text-[10px]">
       {children}
     </span>
   );
@@ -402,7 +402,7 @@ function getAnalysisIndicator(trial: Trial): {
 
 function groupTrialsByAgent(
   trials: Trial[] | null | undefined,
-  modelScopedAgents: ReadonlySet<string>,
+  modelScopedAgents: ReadonlySet<string>
 ) {
   const grouped = new Map<string, Trial[]>();
   if (!trials) return grouped;
@@ -470,21 +470,19 @@ export function ExperimentTrialsTable({
   const [hiddenAgents, setHiddenAgents] = useState<Set<string>>(new Set());
   const [hoverAgent, setHoverAgent] = useState<string | null>(null);
   const [dimmedStatuses, setDimmedStatuses] = useState<Set<MatrixStatus>>(
-    new Set(),
+    new Set()
   );
   const [dimmedAnalysisKeys, setDimmedAnalysisKeys] = useState<
     Set<AnalysisLegendKey>
   >(new Set());
   const [rowFilterMode, setRowFilterMode] = useState<RowFilterMode>("none");
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
-  const [copiedTaskNameId, setCopiedTaskNameId] = useState<string | null>(
-    null,
-  );
+  const [copiedTaskNameId, setCopiedTaskNameId] = useState<string | null>(null);
   const [copiedAgentNameKey, setCopiedAgentNameKey] = useState<string | null>(
-    null,
+    null
   );
   const [copiedAgentModelKey, setCopiedAgentModelKey] = useState<string | null>(
-    null,
+    null
   );
   const [copiedTable, setCopiedTable] = useState(false);
   const [deleteTargets, setDeleteTargets] = useState<Task[]>([]);
@@ -495,8 +493,10 @@ export function ExperimentTrialsTable({
   const [isCancellingSelected, setIsCancellingSelected] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
+  const [isCancellingAnalysis, setIsCancellingAnalysis] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isRunningVerdict, setIsRunningVerdict] = useState(false);
+  const [isCancellingVerdict, setIsCancellingVerdict] = useState(false);
   const [verdictError, setVerdictError] = useState<string | null>(null);
   const [taskColumnWidth, setTaskColumnWidth] = useState(DEFAULT_TASK_WIDTH);
   const [agentColumnWidths, setAgentColumnWidths] = useState<
@@ -546,8 +546,8 @@ export function ExperimentTrialsTable({
               value === "fail" ||
               value === "harness-error" ||
               value === "queued" ||
-              value === "running",
-          ),
+              value === "running"
+          )
       );
       setDimmedStatuses(next);
       prevUrlRef.current.dim = urlDim;
@@ -563,8 +563,8 @@ export function ExperimentTrialsTable({
               value === "analyzing" ||
               value === "good" ||
               value === "bad" ||
-              value === "analysis-failed",
-          ),
+              value === "analysis-failed"
+          )
       );
       setDimmedAnalysisKeys(next);
       prevUrlRef.current.analysis = urlAnalysis;
@@ -683,7 +683,7 @@ export function ExperimentTrialsTable({
 
   const visibleAgents = useMemo(
     () => sortedAgentSummaries.filter((agent) => !hiddenAgents.has(agent.key)),
-    [sortedAgentSummaries, hiddenAgents],
+    [sortedAgentSummaries, hiddenAgents]
   );
   const showLoadingMatrixColumns =
     isLoadingTrials && visibleAgents.length === 0;
@@ -693,14 +693,14 @@ export function ExperimentTrialsTable({
 
   const columnOrder = useMemo(
     () => ["task", ...renderedAgents.map((agent) => agent.key)],
-    [renderedAgents],
+    [renderedAgents]
   );
 
   const baseTableWidth = useMemo(() => {
     const agentTotal = renderedAgents.reduce(
       (sum, agent) =>
         sum + (agentColumnWidths[agent.key] ?? DEFAULT_AGENT_WIDTH),
-      0,
+      0
     );
     return taskColumnWidth + agentTotal;
   }, [renderedAgents, agentColumnWidths, taskColumnWidth, DEFAULT_AGENT_WIDTH]);
@@ -712,7 +712,7 @@ export function ExperimentTrialsTable({
   const tableMinWidth = Math.max(
     960,
     baseTableWidth,
-    columnOrder.length * AGENT_COLUMN_MIN,
+    columnOrder.length * AGENT_COLUMN_MIN
   );
 
   useEffect(() => {
@@ -763,13 +763,13 @@ export function ExperimentTrialsTable({
         : searchFiltered.filter((task) => {
             const trialsByAgent = groupTrialsByAgent(
               task.trials,
-              modelScopedAgents,
+              modelScopedAgents
             );
             // Derive per-agent error/failure state; skip agents that have no
             // terminal trials yet so running tasks aren't hidden early.
             // Partial credit (0 < reward < 1) counts as "scored".
             const perAgent = rowFilterAgentKeys.map((key) =>
-              summarizeAgentRowFilterState(trialsByAgent.get(key)),
+              summarizeAgentRowFilterState(trialsByAgent.get(key))
             );
             if (rowFilterMode === "anyError") {
               return perAgent.some((result) => result.hasError);
@@ -779,7 +779,7 @@ export function ExperimentTrialsTable({
               .filter((r): r is "failed" | "scored" => r !== null);
             if (terminalAgents.length === 0) return true;
             const failCount = terminalAgents.filter(
-              (r) => r === "failed",
+              (r) => r === "failed"
             ).length;
             if (rowFilterMode === "allFail") {
               return failCount === terminalAgents.length;
@@ -796,7 +796,7 @@ export function ExperimentTrialsTable({
       nameOf(a).localeCompare(nameOf(b), undefined, {
         numeric: true,
         sensitivity: "base",
-      }),
+      })
     );
     return taskSort === "name-desc" ? sorted.reverse() : sorted;
   }, [
@@ -829,7 +829,7 @@ export function ExperimentTrialsTable({
 
       const groupedTrialsByAgent = groupTrialsByAgent(
         task.trials,
-        modelScopedAgents,
+        modelScopedAgents
       );
       const orderedTrials: Trial[] = [];
       const trialIndexById = new Map<string, number>();
@@ -867,7 +867,7 @@ export function ExperimentTrialsTable({
 
   const selectedTaskList = useMemo(
     () => tasks.filter((task) => selectedTasks.has(task.id)),
-    [tasks, selectedTasks],
+    [tasks, selectedTasks]
   );
 
   const selectedRetryableTrials = useMemo(() => {
@@ -889,7 +889,17 @@ export function ExperimentTrialsTable({
 
   const selectedCancellableTasks = useMemo(
     () => selectedTaskList.filter((task) => taskHasCancellableWork(task)),
-    [selectedTaskList],
+    [selectedTaskList]
+  );
+
+  const selectedAnalysisCancellableTasks = useMemo(
+    () => selectedTaskList.filter((task) => taskHasActiveAnalysis(task)),
+    [selectedTaskList]
+  );
+
+  const selectedVerdictCancellableTasks = useMemo(
+    () => selectedTaskList.filter((task) => taskHasActiveVerdict(task)),
+    [selectedTaskList]
   );
 
   const selectedAnalysisRunnableTasks = useMemo(
@@ -898,15 +908,15 @@ export function ExperimentTrialsTable({
         const trials = task.trials ?? [];
         if (trials.length === 0) return false;
         const allTrialsTerminal = trials.every(
-          (trial) => trial.status === "failed" || trial.status === "success",
+          (trial) => trial.status === "failed" || trial.status === "success"
         );
         const hasAnalysisInFlight = trials.some((trial) =>
-          isActivePipelineStatus(trial.analysis_status),
+          isActivePipelineStatus(trial.analysis_status)
         );
         const verdictInFlight = isActivePipelineStatus(task.verdict_status);
         return allTrialsTerminal && !hasAnalysisInFlight && !verdictInFlight;
       }),
-    [selectedTaskList],
+    [selectedTaskList]
   );
 
   const selectedVerdictRunnableTasks = useMemo(
@@ -915,17 +925,17 @@ export function ExperimentTrialsTable({
         const trials = task.trials ?? [];
         if (trials.length === 0) return false;
         const allTrialsTerminal = trials.every(
-          (trial) => trial.status === "failed" || trial.status === "success",
+          (trial) => trial.status === "failed" || trial.status === "success"
         );
         const allAnalysesComplete = trials.every(
           (trial) =>
             trial.analysis_status === "success" ||
-            trial.analysis_status === "failed",
+            trial.analysis_status === "failed"
         );
         const verdictInFlight = isActivePipelineStatus(task.verdict_status);
         return allTrialsTerminal && allAnalysesComplete && !verdictInFlight;
       }),
-    [selectedTaskList],
+    [selectedTaskList]
   );
 
   const rowVirtualizer = useVirtualizer({
@@ -992,7 +1002,7 @@ export function ExperimentTrialsTable({
 
   const handleCopyTaskName = async (
     event: ReactMouseEvent<HTMLButtonElement>,
-    task: Task,
+    task: Task
   ) => {
     event.stopPropagation();
     await navigator.clipboard.writeText(task.name);
@@ -1039,7 +1049,7 @@ export function ExperimentTrialsTable({
             const status = getMatrixStatus(
               trial.status,
               trial.reward,
-              trial.error_message,
+              trial.error_message
             );
             return STATUS_CONFIG[status].shortLabel;
           });
@@ -1071,7 +1081,7 @@ export function ExperimentTrialsTable({
     }
     const trialCount = deleteTargets.reduce(
       (sum, task) => sum + (task.total ?? 0),
-      0,
+      0
     );
     return {
       label: `${deleteTargets.length} tasks`,
@@ -1110,7 +1120,7 @@ export function ExperimentTrialsTable({
       }
     } catch (error) {
       setDeleteError(
-        error instanceof Error ? error.message : "Failed to delete task",
+        error instanceof Error ? error.message : "Failed to delete task"
       );
     } finally {
       setIsDeleting(false);
@@ -1136,10 +1146,10 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to retry trial",
+              data.detail || data.error || "Failed to retry trial"
             );
           }
-        }),
+        })
       );
 
       const failures = results.filter((result) => result.status === "rejected");
@@ -1176,10 +1186,47 @@ export function ExperimentTrialsTable({
       onRerun?.(selectedCancellableTasks.map((task) => task.id));
     } catch (error) {
       setCancelError(
-        error instanceof Error ? error.message : "Failed to cancel tasks",
+        error instanceof Error ? error.message : "Failed to cancel tasks"
       );
     } finally {
       setIsCancellingSelected(false);
+    }
+  };
+
+  const handleCancelAnalysisForSelectedTasks = async () => {
+    if (isCancellingAnalysis || selectedAnalysisCancellableTasks.length === 0) {
+      return;
+    }
+
+    setIsCancellingAnalysis(true);
+    setAnalysisError(null);
+
+    try {
+      const results = await Promise.allSettled(
+        selectedAnalysisCancellableTasks.map(async (task) => {
+          const res = await fetch(`/api/tasks/${task.id}/analysis/cancel`, {
+            method: "POST",
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(
+              data.detail || data.error || "Failed to cancel task analysis"
+            );
+          }
+        })
+      );
+
+      const failures = results.filter((result) => result.status === "rejected");
+      if (failures.length > 0) {
+        setAnalysisError(
+          `Failed to cancel analysis for ${failures.length} task(s).`
+        );
+      } else {
+        setAnalysisError(null);
+      }
+      onRerun?.(selectedAnalysisCancellableTasks.map((task) => task.id));
+    } finally {
+      setIsCancellingAnalysis(false);
     }
   };
 
@@ -1202,16 +1249,16 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task analysis",
+              data.detail || data.error || "Failed to queue task analysis"
             );
           }
-        }),
+        })
       );
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
         setAnalysisError(
-          `Failed to queue analysis for ${failures.length} task(s).`,
+          `Failed to queue analysis for ${failures.length} task(s).`
         );
       } else {
         setAnalysisError(null);
@@ -1219,6 +1266,43 @@ export function ExperimentTrialsTable({
       onRerun?.(selectedAnalysisRunnableTasks.map((task) => task.id));
     } finally {
       setIsRunningAnalysis(false);
+    }
+  };
+
+  const handleCancelVerdictForSelectedTasks = async () => {
+    if (isCancellingVerdict || selectedVerdictCancellableTasks.length === 0) {
+      return;
+    }
+
+    setIsCancellingVerdict(true);
+    setVerdictError(null);
+
+    try {
+      const results = await Promise.allSettled(
+        selectedVerdictCancellableTasks.map(async (task) => {
+          const res = await fetch(`/api/tasks/${task.id}/verdict/cancel`, {
+            method: "POST",
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(
+              data.detail || data.error || "Failed to cancel task verdict"
+            );
+          }
+        })
+      );
+
+      const failures = results.filter((result) => result.status === "rejected");
+      if (failures.length > 0) {
+        setVerdictError(
+          `Failed to cancel verdict for ${failures.length} task(s).`
+        );
+      } else {
+        setVerdictError(null);
+      }
+      onRerun?.(selectedVerdictCancellableTasks.map((task) => task.id));
+    } finally {
+      setIsCancellingVerdict(false);
     }
   };
 
@@ -1241,16 +1325,16 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task verdict",
+              data.detail || data.error || "Failed to queue task verdict"
             );
           }
-        }),
+        })
       );
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
         setVerdictError(
-          `Failed to queue verdict for ${failures.length} task(s).`,
+          `Failed to queue verdict for ${failures.length} task(s).`
         );
       } else {
         setVerdictError(null);
@@ -1264,7 +1348,7 @@ export function ExperimentTrialsTable({
   const startResize = (
     event: ReactMouseEvent,
     columnKey: "task" | string,
-    startWidth: number,
+    startWidth: number
   ) => {
     event.preventDefault();
     const currentIndex = columnOrder.indexOf(columnKey);
@@ -1370,19 +1454,19 @@ export function ExperimentTrialsTable({
       <div className="space-y-4">
         {showPassAtK ? (
           <div className="grid items-stretch gap-4 xl:grid-cols-2">
-            <div className="rounded-lg border border-border bg-card p-4 shadow-xs">
+            <div className="border-border bg-card rounded-lg border p-4 shadow-xs">
               <Skeleton className="h-5 w-36" />
               <Skeleton className="mt-4 h-56 w-full" />
             </div>
-            <div className="rounded-lg border border-border bg-card p-4 shadow-xs">
+            <div className="border-border bg-card rounded-lg border p-4 shadow-xs">
               <Skeleton className="h-5 w-40" />
               <Skeleton className="mt-4 h-56 w-full" />
             </div>
           </div>
         ) : null}
 
-        <div className="max-w-full overflow-hidden rounded-lg border border-border bg-card shadow-xs">
-          <div className="relative z-30 space-y-3 border-b border-border bg-card/70 px-3 py-3">
+        <div className="border-border bg-card max-w-full overflow-hidden rounded-lg border shadow-xs">
+          <div className="border-border bg-card/70 relative z-30 space-y-3 border-b px-3 py-3">
             <div className="flex flex-wrap items-start gap-3">
               <Skeleton className="h-9 w-full sm:w-[320px]" />
               <div className="min-w-0 flex-1">
@@ -1402,7 +1486,7 @@ export function ExperimentTrialsTable({
                 </div>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-xs">
               <Loader2 className="h-4 w-4 animate-spin" />
               Loading experiment tasks and trial matrix...
               <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -1417,7 +1501,7 @@ export function ExperimentTrialsTable({
           <div className="overflow-x-auto p-3">
             <div className="w-full min-w-[960px] space-y-2">
               <div
-                className="grid gap-2 rounded-md bg-muted/40 p-2"
+                className="bg-muted/40 grid gap-2 rounded-md p-2"
                 style={{
                   gridTemplateColumns: `240px repeat(${INITIAL_LOADING_COLUMN_COUNT}, minmax(0, 1fr))`,
                 }}
@@ -1426,7 +1510,7 @@ export function ExperimentTrialsTable({
                 {Array.from({ length: INITIAL_LOADING_COLUMN_COUNT }).map(
                   (_, index) => (
                     <Skeleton key={index} className="h-5 w-full" />
-                  ),
+                  )
                 )}
               </div>
 
@@ -1434,7 +1518,7 @@ export function ExperimentTrialsTable({
                 (_, rowIndex) => (
                   <div
                     key={rowIndex}
-                    className="grid gap-2 rounded-md border border-border/60 p-2"
+                    className="border-border/60 grid gap-2 rounded-md border p-2"
                     style={{
                       gridTemplateColumns: `240px repeat(${INITIAL_LOADING_COLUMN_COUNT}, minmax(0, 1fr))`,
                     }}
@@ -1452,10 +1536,10 @@ export function ExperimentTrialsTable({
                           <Skeleton className="h-5 w-5 rounded-sm" />
                           <Skeleton className="h-5 w-5 rounded-sm" />
                         </div>
-                      ),
+                      )
                     )}
                   </div>
-                ),
+                )
               )}
             </div>
           </div>
@@ -1467,7 +1551,7 @@ export function ExperimentTrialsTable({
   // Partial outcomes are rendered as numeric colored tiles (not a single color
   // chip), so we don't expose them in the trial-outcome legend filter.
   const LEGEND_STATUS_ORDER = STATUS_FILTER_ORDER.filter(
-    (s) => s !== "partial",
+    (s) => s !== "partial"
   );
 
   const renderStatusChip = (status: MatrixStatus) => {
@@ -1480,7 +1564,7 @@ export function ExperimentTrialsTable({
             type="button"
             variant="ghost"
             onClick={() => toggleStatus(status)}
-            className={`h-auto select-none gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+            className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
               isDimmed ? "line-through opacity-[0.38]" : ""
             }`}
           >
@@ -1517,7 +1601,7 @@ export function ExperimentTrialsTable({
             type="button"
             variant="ghost"
             onClick={() => toggleAnalysisKey(item.key)}
-            className={`h-auto select-none gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+            className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
               isDimmed ? "line-through opacity-[0.38]" : ""
             }`}
           >
@@ -1538,7 +1622,7 @@ export function ExperimentTrialsTable({
   const renderLegendAnatomy = () => (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className="flex items-center gap-2.5 border-r border-dashed border-[color:var(--paper-line)] pl-1.5 pr-2.5 font-mono text-[9.5px] leading-tight text-[color:var(--paper-ink-3)]">
+        <div className="flex items-center gap-2.5 border-r border-dashed border-[color:var(--paper-line)] pr-2.5 pl-1.5 font-mono text-[9.5px] leading-tight text-[color:var(--paper-ink-3)]">
           <span className="relative inline-flex">
             <span
               className={`flex items-center justify-center border-transparent bg-[color:var(--paper-pass)] text-white ${STATUS_GLYPH_BOX}`}
@@ -1546,7 +1630,7 @@ export function ExperimentTrialsTable({
               <StatusIcon status="pass" />
             </span>
             {showAnalysis && (
-              <span className="absolute -right-[2px] -top-[2px] h-[7px] w-[7px] rounded-full bg-[color:var(--paper-a-good)] ring-[1.5px] ring-[color:var(--paper-surface)]" />
+              <span className="absolute -top-[2px] -right-[2px] h-[7px] w-[7px] rounded-full bg-[color:var(--paper-a-good)] ring-[1.5px] ring-[color:var(--paper-surface)]" />
             )}
           </span>
           <span className="flex flex-col gap-0.5">
@@ -1573,7 +1657,7 @@ export function ExperimentTrialsTable({
         <Button
           type="button"
           variant="ghost"
-          className="h-auto select-none gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+          className="h-auto gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
         >
           Agents
           <InlineCount>
@@ -1583,7 +1667,7 @@ export function ExperimentTrialsTable({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="max-h-64 w-64 overflow-auto p-2">
-        <div className="flex items-center justify-between px-1 pb-2 text-[10px] text-muted-foreground">
+        <div className="text-muted-foreground flex items-center justify-between px-1 pb-2 text-[10px]">
           <span>Show/hide agent columns</span>
           <Button
             type="button"
@@ -1616,7 +1700,7 @@ export function ExperimentTrialsTable({
                 <span className={`${isVisible ? "" : "line-through"}`}>
                   {agent.label}
                 </span>
-                <span className="flex items-center gap-1 font-mono text-[10px] text-muted-foreground">
+                <span className="text-muted-foreground flex items-center gap-1 font-mono text-[10px]">
                   <QueueKeyIcon
                     queueKey={agent.queueKey}
                     model={agent.model}
@@ -1637,13 +1721,13 @@ export function ExperimentTrialsTable({
     const hasAgentsToFilter = rowFilterAgentKeys.length > 0;
     return (
       <div className="flex max-w-full items-center gap-2">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[color:var(--paper-ink-3)]">
+        <span className="font-mono text-[10px] font-semibold tracking-[0.12em] text-[color:var(--paper-ink-3)] uppercase">
           View
         </span>
         <div
           role="group"
           aria-label="Row filter"
-          className="inline-flex min-w-0 max-w-full items-center rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-0.5"
+          className="inline-flex max-w-full min-w-0 items-center rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-0.5"
         >
           {ROW_FILTER_MODES.map((mode) => {
             const active = rowFilterMode === mode.value;
@@ -1657,7 +1741,7 @@ export function ExperimentTrialsTable({
                     size="sm"
                     disabled={disabled}
                     onClick={() => setRowFilterMode(mode.value)}
-                    className={`h-auto whitespace-nowrap rounded-[5px] px-2.5 py-1.5 text-[11px] font-medium leading-none transition-colors ${
+                    className={`h-auto rounded-[5px] px-2.5 py-1.5 text-[11px] leading-none font-medium whitespace-nowrap transition-colors ${
                       active
                         ? "bg-[color:var(--paper-surface-2)] text-[color:var(--paper-ink)] shadow-[inset_0_0_0_1px_var(--paper-line-2)]"
                         : "text-[color:var(--paper-ink-3)] hover:bg-[color:var(--paper-surface)] hover:text-[color:var(--paper-ink)]"
@@ -1682,7 +1766,7 @@ export function ExperimentTrialsTable({
       <div className="flex items-center gap-0.5 px-1">
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="cursor-help whitespace-nowrap pr-2 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] text-[color:var(--paper-ink-3)]">
+            <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
               Trial outcome
             </span>
           </TooltipTrigger>
@@ -1694,10 +1778,10 @@ export function ExperimentTrialsTable({
         {LEGEND_STATUS_ORDER.map((status) => renderStatusChip(status))}
       </div>
       {showAnalysis && (
-        <div className="flex items-center gap-0.5 border-l border-dashed border-[color:var(--paper-line)] pl-2 ml-1">
+        <div className="ml-1 flex items-center gap-0.5 border-l border-dashed border-[color:var(--paper-line)] pl-2">
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="cursor-help whitespace-nowrap pr-2 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] text-[color:var(--paper-ink-3)]">
+              <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
                 Trial analysis
               </span>
             </TooltipTrigger>
@@ -1750,7 +1834,7 @@ export function ExperimentTrialsTable({
         ) : null}
 
         <div className="max-w-full overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
-          <div className="relative z-30 flex flex-col gap-3 border-b border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] px-4 pb-3 pt-3.5">
+          <div className="relative z-30 flex flex-col gap-3 border-b border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] px-4 pt-3.5 pb-3">
             <div className="flex flex-wrap items-start gap-3">
               <div className="w-full sm:w-[280px]">
                 <div className="flex h-8 items-center gap-2 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] px-2.5 text-[color:var(--paper-ink-2)] focus-within:border-[color:var(--paper-ink-4)]">
@@ -1779,7 +1863,7 @@ export function ExperimentTrialsTable({
                     >
                       Clear
                     </InlineBtn>
-                    <span className="select-none text-[color:var(--paper-line)]">
+                    <span className="text-[color:var(--paper-line)] select-none">
                       │
                     </span>
                     {canRerun && (
@@ -1814,14 +1898,31 @@ export function ExperimentTrialsTable({
                         </InlineCount>
                       </InlineBtn>
                     )}
-                    <span className="select-none text-[color:var(--paper-line)]">
+                    <span className="text-[color:var(--paper-line)] select-none">
                       │
                     </span>
+                    {canRerun && (
+                      <InlineBtn
+                        onClick={handleCancelAnalysisForSelectedTasks}
+                        disabled={
+                          isCancellingAnalysis ||
+                          selectedAnalysisCancellableTasks.length === 0
+                        }
+                      >
+                        {isCancellingAnalysis
+                          ? "Cancelling"
+                          : "Cancel analysis"}
+                        <InlineCount>
+                          {selectedAnalysisCancellableTasks.length}
+                        </InlineCount>
+                      </InlineBtn>
+                    )}
                     {canRerun && (
                       <InlineBtn
                         onClick={handleRunAnalysisForSelectedTasks}
                         disabled={
                           isRunningAnalysis ||
+                          isCancellingAnalysis ||
                           selectedAnalysisRunnableTasks.length === 0
                         }
                       >
@@ -1833,9 +1934,24 @@ export function ExperimentTrialsTable({
                     )}
                     {canRerun && (
                       <InlineBtn
+                        onClick={handleCancelVerdictForSelectedTasks}
+                        disabled={
+                          isCancellingVerdict ||
+                          selectedVerdictCancellableTasks.length === 0
+                        }
+                      >
+                        {isCancellingVerdict ? "Cancelling" : "Cancel verdict"}
+                        <InlineCount>
+                          {selectedVerdictCancellableTasks.length}
+                        </InlineCount>
+                      </InlineBtn>
+                    )}
+                    {canRerun && (
+                      <InlineBtn
                         onClick={handleRunVerdictForSelectedTasks}
                         disabled={
                           isRunningVerdict ||
+                          isCancellingVerdict ||
                           selectedVerdictRunnableTasks.length === 0
                         }
                       >
@@ -1847,7 +1963,7 @@ export function ExperimentTrialsTable({
                     )}
                     {canDeleteTasks && (
                       <>
-                        <span className="select-none text-[color:var(--paper-line)]">
+                        <span className="text-[color:var(--paper-line)] select-none">
                           │
                         </span>
                         <InlineBtn
@@ -1899,7 +2015,7 @@ export function ExperimentTrialsTable({
                       type="button"
                       variant="ghost"
                       onClick={handleCopyTableAsTSV}
-                      className="h-auto select-none gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+                      className="h-auto gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
                     >
                       {copiedTable ? (
                         <>
@@ -1949,7 +2065,7 @@ export function ExperimentTrialsTable({
                     style={{ width: getDisplayedWidth("task") }}
                   >
                     <div className="flex items-center gap-2">
-                      <span className="w-5 shrink-0 text-right text-[10px] text-muted-foreground">
+                      <span className="text-muted-foreground w-5 shrink-0 text-right text-[10px]">
                         #
                       </span>
                       {!readOnly && (
@@ -1977,7 +2093,7 @@ export function ExperimentTrialsTable({
                               ? "name-asc"
                               : prev === "name-asc"
                                 ? "name-desc"
-                                : "default",
+                                : "default"
                           )
                         }
                         title={
@@ -1988,7 +2104,7 @@ export function ExperimentTrialsTable({
                               : "Clear sort (default order)"
                         }
                         aria-label="Toggle task sort"
-                        className="h-auto gap-1 rounded-sm bg-transparent px-1 py-0 text-xs font-normal transition hover:bg-background/70 hover:text-blue-400 sm:text-sm"
+                        className="hover:bg-background/70 h-auto gap-1 rounded-sm bg-transparent px-1 py-0 text-xs font-normal transition hover:text-blue-400 sm:text-sm"
                       >
                         <span>Task</span>
                         {taskSort === "name-asc" ? (
@@ -1996,12 +2112,12 @@ export function ExperimentTrialsTable({
                         ) : taskSort === "name-desc" ? (
                           <ArrowDown className="h-3 w-3" />
                         ) : (
-                          <ArrowUpDown className="h-3 w-3 text-muted-foreground/60" />
+                          <ArrowUpDown className="text-muted-foreground/60 h-3 w-3" />
                         )}
                       </Button>
                     </div>
                     <div
-                      className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize"
+                      className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize"
                       onMouseDown={(event) =>
                         startResize(event, "task", taskColumnWidth)
                       }
@@ -2030,7 +2146,7 @@ export function ExperimentTrialsTable({
                                 onClick={() =>
                                   handleCopyAgentName(agent.key, agent.agent)
                                 }
-                                className="h-auto max-w-[70px] gap-1 rounded-sm bg-transparent px-1 py-0 text-[10px] font-bold text-foreground transition hover:bg-background/70 hover:text-blue-400 sm:max-w-[110px] sm:text-xs md:max-w-none"
+                                className="text-foreground hover:bg-background/70 h-auto max-w-[70px] gap-1 rounded-sm bg-transparent px-1 py-0 text-[10px] font-bold transition hover:text-blue-400 sm:max-w-[110px] sm:text-xs md:max-w-none"
                                 aria-label={`Copy agent name ${agent.agent}`}
                                 title="Copy agent name"
                               >
@@ -2063,10 +2179,10 @@ export function ExperimentTrialsTable({
                                   onClick={() =>
                                     handleCopyAgentModel(
                                       agent.key,
-                                      agent.model!,
+                                      agent.model!
                                     )
                                   }
-                                  className="h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal text-muted-foreground transition hover:bg-background/70 hover:text-foreground sm:text-[10px]"
+                                  className="text-muted-foreground hover:bg-background/70 hover:text-foreground h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal transition sm:text-[10px]"
                                   aria-label={`Copy model id ${agent.model}`}
                                   title="Copy model id"
                                 >
@@ -2085,7 +2201,7 @@ export function ExperimentTrialsTable({
                                   </span>
                                 </Button>
                               ) : (
-                                <div className="flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal text-muted-foreground sm:text-[10px]">
+                                <div className="text-muted-foreground flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal sm:text-[10px]">
                                   <span className="min-w-0 truncate">—</span>
                                 </div>
                               )}
@@ -2101,13 +2217,13 @@ export function ExperimentTrialsTable({
                       {agentIndex < renderedAgents.length - 1 &&
                         !showLoadingMatrixColumns && (
                           <div
-                            className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize"
+                            className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize"
                             onMouseDown={(event) =>
                               startResize(
                                 event,
                                 agent.key,
                                 agentColumnWidths[agent.key] ??
-                                  DEFAULT_AGENT_WIDTH,
+                                  DEFAULT_AGENT_WIDTH
                               )
                             }
                           />
@@ -2154,13 +2270,13 @@ export function ExperimentTrialsTable({
                       className="group bg-[color:var(--paper-surface)] hover:bg-[color:var(--paper-surface-2)] [&_td]:hover:!bg-[color:var(--paper-surface-2)]"
                     >
                       <TableCell
-                        className="sticky left-0 z-10 border-b border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3.5 py-2.5 font-mono text-xs text-[color:var(--paper-ink)] [&:has([role=checkbox])]:pr-3.5"
+                        className="sticky left-0 z-10 border-r border-b border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3.5 py-2.5 font-mono text-xs text-[color:var(--paper-ink)] [&:has([role=checkbox])]:pr-3.5"
                         style={{
                           width: getDisplayedWidth("task"),
                         }}
                       >
                         <div className="flex min-w-0 items-center gap-2">
-                          <span className="w-5 shrink-0 text-right text-[10px] text-muted-foreground">
+                          <span className="text-muted-foreground w-5 shrink-0 text-right text-[10px]">
                             {index + 1}
                           </span>
                           {!readOnly && (
@@ -2209,9 +2325,9 @@ export function ExperimentTrialsTable({
                                     onClick={(event) =>
                                       handleCopyTaskName(event, task)
                                     }
-                                    className={`h-5 w-5 shrink-0 rounded-sm bg-transparent text-[color:var(--paper-ink-3)] opacity-0 transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)] focus-visible:opacity-100 group-hover/task-name:opacity-100 ${
+                                    className={`h-5 w-5 shrink-0 rounded-sm bg-transparent text-[color:var(--paper-ink-3)] opacity-0 transition group-hover/task-name:opacity-100 hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)] focus-visible:opacity-100 ${
                                       copiedTaskNameId === task.id
-                                        ? "opacity-100 text-emerald-600"
+                                        ? "text-emerald-600 opacity-100"
                                         : ""
                                     }`}
                                     aria-label={`Copy task name ${task.name}`}
@@ -2236,7 +2352,7 @@ export function ExperimentTrialsTable({
                               </Tooltip>
                             </div>
                             {task.current_version != null && (
-                              <span className="inline-flex shrink-0 items-center rounded-[3px] bg-[color:var(--paper-bg-2)] px-1 py-px font-mono text-[9.5px] font-medium leading-none text-[color:var(--paper-ink-3)]">
+                              <span className="inline-flex shrink-0 items-center rounded-[3px] bg-[color:var(--paper-bg-2)] px-1 py-px font-mono text-[9.5px] leading-none font-medium text-[color:var(--paper-ink-3)]">
                                 v{task.current_version}
                               </span>
                             )}
@@ -2248,7 +2364,7 @@ export function ExperimentTrialsTable({
                         return (
                           <TableCell
                             key={`${task.id}-${agent.key}`}
-                            className="border-b border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3.5 py-2 text-center last:border-r-0"
+                            className="border-r border-b border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3.5 py-2 text-center last:border-r-0"
                             style={{
                               width: getDisplayedWidth(agent.key),
                             }}
@@ -2260,7 +2376,7 @@ export function ExperimentTrialsTable({
                                   <Skeleton className="h-5 w-5 rounded-sm" />
                                 </div>
                               ) : (
-                                <span className="text-xs text-muted-foreground">
+                                <span className="text-muted-foreground text-xs">
                                   —
                                 </span>
                               )
@@ -2270,7 +2386,7 @@ export function ExperimentTrialsTable({
                                   const status = getMatrixStatus(
                                     trial.status,
                                     trial.reward,
-                                    trial.error_message,
+                                    trial.error_message
                                   );
                                   const config = STATUS_CONFIG[status];
                                   const isDimmed = dimmedStatuses.has(status);
@@ -2291,12 +2407,12 @@ export function ExperimentTrialsTable({
                                       : "";
                                   const baseTitle = getTrialTitle(
                                     trial,
-                                    status,
+                                    status
                                   );
                                   const isPartial = status === "partial";
                                   const partialLabel = isPartial
                                     ? formatPartialRewardBadgeValue(
-                                        trial.reward,
+                                        trial.reward
                                       )
                                     : null;
                                   const analysisTitle = analysisIndicator
@@ -2320,7 +2436,7 @@ export function ExperimentTrialsTable({
                                             trialGroups,
                                           });
                                         }}
-                                        className={`relative grid place-items-center gap-0 p-0 leading-none transition-transform hover:-translate-y-px ${STATUS_GLYPH_BOX} ${config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tabular-nums tracking-[-0.02em]" : ""}`}
+                                        className={`relative grid place-items-center gap-0 p-0 leading-none transition-transform hover:-translate-y-px ${STATUS_GLYPH_BOX} ${config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tracking-[-0.02em] tabular-nums" : ""}`}
                                         style={getRewardStyle(trial.reward)}
                                         aria-label={`Trial ${trialIndex + 1} ${config.shortLabel}`}
                                         title={fullTitle}
@@ -2334,7 +2450,7 @@ export function ExperimentTrialsTable({
                                       {analysisIndicator && (
                                         <span
                                           aria-hidden="true"
-                                          className={`pointer-events-none absolute -right-[1px] -top-[1px] h-[4px] w-[4px] rounded-full ring-[1px] ring-[color:var(--paper-surface)] ${analysisIndicator.dotClass} ${analysisIndicator.animate ? "animate-pulse" : ""}`}
+                                          className={`pointer-events-none absolute -top-[1px] -right-[1px] h-[4px] w-[4px] rounded-full ring-[1px] ring-[color:var(--paper-surface)] ${analysisIndicator.dotClass} ${analysisIndicator.animate ? "animate-pulse" : ""}`}
                                         />
                                       )}
                                     </span>
@@ -2364,7 +2480,7 @@ export function ExperimentTrialsTable({
                   <TableRow>
                     <TableCell
                       colSpan={Math.max(1, renderedAgents.length + 1)}
-                      className="py-8 text-center text-muted-foreground"
+                      className="text-muted-foreground py-8 text-center"
                     >
                       No tasks found for this experiment
                     </TableCell>
@@ -2394,7 +2510,7 @@ export function ExperimentTrialsTable({
               </AlertDialogTitle>
               <AlertDialogDescription>
                 This permanently deletes{" "}
-                <span className="font-medium text-foreground">
+                <span className="text-foreground font-medium">
                   {deleteTargetSummary.label}
                 </span>{" "}
                 and removes {deleteTargetSummary.trialCount} trials. This action

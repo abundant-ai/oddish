@@ -32,6 +32,7 @@ import {
   formatDurationSec,
   trialDurationSec,
 } from "@/lib/format";
+import { taskHasActiveVerdict } from "@/lib/job-status";
 import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
@@ -86,7 +87,7 @@ function readVersionFromQuery(): string | null {
 
 function writeVersionToQuery(
   versionId: string | null,
-  defaultId: string | null,
+  defaultId: string | null
 ) {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
@@ -209,7 +210,7 @@ function TaskDetailHeader({
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="font-mono truncate text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)]">
+            <h1 className="truncate font-mono text-[26px] leading-[1.25] font-semibold tracking-[-0.02em] text-[color:var(--paper-ink)]">
               {task.name}
             </h1>
             <Badge variant="outline" className="font-mono text-[11px]">
@@ -323,13 +324,13 @@ function VersionSwitcher({
         <Button
           type="button"
           variant="ghost"
-          className="font-mono h-8 w-[220px] justify-between rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] text-[color:var(--paper-ink)] hover:bg-[color:var(--paper-surface-2)]"
+          className="h-8 w-[220px] justify-between rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 font-mono text-[12px] text-[color:var(--paper-ink)] hover:bg-[color:var(--paper-surface-2)]"
         >
           <span className="truncate">{triggerLabel}</span>
           <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-60" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="font-mono w-[320px]">
+      <DropdownMenuContent align="start" className="w-[320px] font-mono">
         {versions.map((v) => {
           const label = v.is_current
             ? `v${v.version} · current`
@@ -366,7 +367,7 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
   const status = getMatrixStatus(
     trial.status,
     trial.reward,
-    trial.error_message,
+    trial.error_message
   );
   const config = STATUS_CONFIG[status];
   const badgeLabel =
@@ -378,7 +379,7 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
         <button
           type="button"
           onClick={onClick}
-          className={`flex h-[22px] w-[22px] items-center justify-center rounded-[4px] border font-mono font-semibold leading-none transition ${config.matrixClass} ${
+          className={`flex h-[22px] w-[22px] items-center justify-center rounded-[4px] border font-mono leading-none font-semibold transition ${config.matrixClass} ${
             status === "partial"
               ? "text-[8px] tracking-[-0.03em]"
               : "text-[10px]"
@@ -452,7 +453,7 @@ function AgentCard({
         const bTime = b.finished_at || b.started_at || b.created_at;
         return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
       }),
-    [trials],
+    [trials]
   );
 
   return (
@@ -566,7 +567,7 @@ export function TaskDetailClient({
       revalidateOnFocus: false,
       keepPreviousData: true,
       fallbackData: initialDetail ?? undefined,
-    },
+    }
   );
 
   const detail = data ?? initialDetail ?? null;
@@ -577,7 +578,7 @@ export function TaskDetailClient({
   const defaultVersionId = task?.current_version_id ?? versions[0]?.id ?? null;
 
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
-    () => initialVersionId ?? null,
+    () => initialVersionId ?? null
   );
 
   useEffect(() => {
@@ -600,7 +601,7 @@ export function TaskDetailClient({
       setSelectedVersionId(id);
       writeVersionToQuery(id, defaultVersionId);
     },
-    [defaultVersionId],
+    [defaultVersionId]
   );
 
   const trialsForVersion = useMemo(() => {
@@ -624,12 +625,12 @@ export function TaskDetailClient({
             },
           ]
         : [],
-    [task, trialsForVersion],
+    [task, trialsForVersion]
   );
 
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(tasksForGrouping),
-    [tasksForGrouping],
+    [tasksForGrouping]
   );
 
   const trialsByAgentKey = useMemo(() => {
@@ -653,7 +654,7 @@ export function TaskDetailClient({
           trials,
         };
       }),
-    [agentSummaries, trialsByAgentKey],
+    [agentSummaries, trialsByAgentKey]
   );
 
   const orderedTrials = useMemo(() => {
@@ -677,7 +678,7 @@ export function TaskDetailClient({
         trialGroups,
       });
     },
-    [orderedTrials, trialGroups],
+    [orderedTrials, trialGroups]
   );
 
   const handleOpenTaskFiles = useCallback(() => {
@@ -693,10 +694,10 @@ export function TaskDetailClient({
   const handleNavigateToTrial = useCallback(
     (trial: Trial, trialIndex: number) => {
       setDrawer((prev) =>
-        prev ? { ...prev, mode: "trial", trial, trialIndex } : prev,
+        prev ? { ...prev, mode: "trial", trial, trialIndex } : prev
       );
     },
-    [],
+    []
   );
 
   const handleRerun = useCallback(() => {
@@ -704,6 +705,7 @@ export function TaskDetailClient({
   }, [mutate]);
 
   const [isRunningJudge, setIsRunningJudge] = useState(false);
+  const [isCancellingJudge, setIsCancellingJudge] = useState(false);
   const [judgeError, setJudgeError] = useState<string | null>(null);
   const handleRunJudge = useCallback(async () => {
     if (!task?.id || isRunningJudge) return;
@@ -723,12 +725,34 @@ export function TaskDetailClient({
       void mutate();
     } catch (err) {
       setJudgeError(
-        err instanceof Error ? err.message : "Failed to queue judge",
+        err instanceof Error ? err.message : "Failed to queue judge"
       );
     } finally {
       setIsRunningJudge(false);
     }
   }, [task?.id, isRunningJudge, mutate]);
+  const handleCancelJudge = useCallback(async () => {
+    if (!task?.id || isCancellingJudge) return;
+    setIsCancellingJudge(true);
+    setJudgeError(null);
+    try {
+      const stage = taskHasActiveVerdict(task) ? "verdict" : "analysis";
+      const res = await fetch(`/api/tasks/${task.id}/${stage}/cancel`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || data.error || "Failed to cancel judge");
+      }
+      void mutate();
+    } catch (err) {
+      setJudgeError(
+        err instanceof Error ? err.message : "Failed to cancel judge"
+      );
+    } finally {
+      setIsCancellingJudge(false);
+    }
+  }, [task, isCancellingJudge, mutate]);
 
   const versionScopedScorePct =
     versionSummary.rewardTotal > 0
@@ -769,7 +793,9 @@ export function TaskDetailClient({
           task={task}
           variant="inline"
           onRunJudge={handleRunJudge}
+          onCancelJudge={handleCancelJudge}
           isRunning={isRunningJudge}
+          isCancelling={isCancellingJudge}
           error={judgeError}
         />
 
@@ -965,7 +991,7 @@ export function TaskDetailClient({
                             trial: null,
                             trialIndex: null,
                           }
-                        : prev,
+                        : prev
                     )
                   }
                   onRetry={handleRerun}
