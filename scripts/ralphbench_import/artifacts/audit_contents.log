@@ -1,0 +1,21 @@
+task                         n  no_canon  no_traj  no_reward  no_metrics  no_score
+  biofabric-rust-rewrite      75         0        0          0           0         0
+  embedding-eval              75         0        0          0           0         0
+  excel-clone                 75         0        0          0           0         0
+  find-network-alignments     74         0        0          1           0         0   examples: []
+  jax-pytorch-rewrite         75         0        0          0           0         0
+  kubernetes-rust-rewrite     75         0        0          0           0         0
+  mastodon-clone              75         0        0          0           0         0
+  nextjs-vite-rewrite         75         0        1          0           0         0   examples: []
+  parameter-golf              75         0        0          0           0         0
+  post-train-ifeval           75         0        0          0           0         0
+  ruby-rust-port              75         0        0          0           0         0
+  rust-c-compiler             75         0        0          1           0         0   examples: []
+  rust-java-lsp               75         0        0          0           0         0
+  s3-clone                    75         0        0          0           0         0
+  slack-clone                 75         0        0          0           0         0
+  stripe-clone                75         0        0          0           0         0
+  trimul-cuda                 75         0        0          0           0         0
+  vliw-kernel-optimization    75         0        0          0           0         0
+  wasm-simd                   75         0        0          0           0         0
+  zstd-decoder                75         0        0          0           0         0
