@@ -197,6 +197,7 @@ async def list_tasks_core(
                     TaskModel.priority,
                     TaskModel.user,
                     TaskModel.tags,
+                    TaskModel.link,
                     TaskModel.task_path,
                     TaskModel.current_version_id,
                     TaskModel.run_analysis,
