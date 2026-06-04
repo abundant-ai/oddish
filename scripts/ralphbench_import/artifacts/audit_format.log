@@ -1,0 +1,1246 @@
+Total trials: 1499 across 20 manifests
+
+==============================================================================
+1. Manifest top-level fields — presence per task
+==============================================================================
+field                               tasks_with  type-set
+  experiment_id                       20/20 UNIVERSAL  ['str']
+  n_trials                            20/20 UNIVERSAL  ['int']
+  note                                20/20 UNIVERSAL  ['str']
+  task                                20/20 UNIVERSAL  ['str']
+  task_name                           20/20 UNIVERSAL  ['str']
+  task_version_id                     20/20 UNIVERSAL  ['str']
+  trials                              20/20 UNIVERSAL  ['dict']
+  task_versions                       20/20 UNIVERSAL  ['list']
+  task_hashes                         20/20 UNIVERSAL  ['list']
+  task_hash                           20/20 UNIVERSAL  ['str']
+  is_multi_version                    20/20 UNIVERSAL  ['bool']
+  experiment_ids                      20/20 UNIVERSAL  ['list']
+  additional_imports                  20/20 UNIVERSAL  ['list']
+  legacy_prefix                            12/20  ['str']
+  pair_counts                               4/20  ['dict']
+  n_pass                                    4/20  ['int']
+  duplicate_fingerprint_count               4/20  ['int']
+  intentionally_tombstoned_trials           1/20  ['list']
+
+==============================================================================
+2. Per-trial entry fields
+==============================================================================
+field                                 present_in  type-set
+  agent                                        ALL  ['str']  (n=1499)
+  artifact_layout                              ALL  ['str']  (n=1499)
+  attempts                                     ALL  ['int']  (n=1499)
+  cache_tokens                                 ALL  ['NoneType', 'int']  (n=1499)
+  cost_usd                                     ALL  ['NoneType', 'float']  (n=1499)
+  finished_at                                  ALL  ['NoneType', 'str']  (n=1499)
+  has_trajectory                               ALL  ['bool']  (n=1499)
+  input_tokens                                 ALL  ['NoneType', 'int']  (n=1499)
+  max_attempts                                 ALL  ['int']  (n=1499)
+  model                                        ALL  ['str']  (n=1499)
+  origin                                       ALL  ['str']  (n=1499)
+  output_tokens                                ALL  ['NoneType', 'int']  (n=1499)
+  provider                                     ALL  ['str']  (n=1499)
+  reward                                       ALL  ['float', 'int']  (n=1499)
+  started_at                                   ALL  ['NoneType', 'str']  (n=1499)
+  status                                       ALL  ['str']  (n=1499)
+  task_version_id                              ALL  ['str']  (n=1499)
+  source_trial_name                            ALL  ['str']  (n=1499)
+  task_name                                    ALL  ['str']  (n=1499)
+  task_hash                                    ALL  ['str']  (n=1499)
+  artifact_prefix                            98.6%  ['str']  (n=1478)
+  source_oddish_task_id                      58.4%  ['str']  (n=875)
+  source_oddish_trial_id                     58.4%  ['str']  (n=875)
+  trajectory_bytes                           43.6%  ['NoneType', 'int']  (n=653)
+  source_oddish_experiment_id                40.4%  ['str']  (n=605)
+  original_provider                          35.4%  ['str']  (n=531)
+  selection_note                             34.8%  ['str']  (n=521)
+  exception_classes                          30.4%  ['list']  (n=456)
+  canonical_attempt_dir                      30.4%  ['str']  (n=456)
+  phase_timing                               22.5%  ['dict']  (n=338)
+  error_message                              21.5%  ['NoneType', 'str']  (n=322)
+  total_artifact_bytes                       16.7%  ['int']  (n=250)
+  cost_backfill                               7.9%  ['dict']  (n=119)
+  raw_model                                   7.5%  ['str']  (n=113)
+  verifier_partial_score                      4.7%  ['float']  (n=71)
+  cell_id                                     4.4%  ['str']  (n=66)
+  original_model                              0.6%  ['str']  (n=9)
+  override_validity                           0.5%  ['bool']  (n=8)
+  override_reason                             0.5%  ['str']  (n=8)
+  reward_hacking_judge                        0.3%  ['dict']  (n=5)
+  inner_trial_id                              0.3%  ['str']  (n=5)
+  retrofit_note                               0.3%  ['str']  (n=5)
+
+==============================================================================
+3. Value-shape checks (key fields)
+==============================================================================
+agents (7 unique): {'nop': 100, 'oracle': 100, 'claude-code': 199, 'codex': 100, 'gemini-cli': 200, 'kimi-cli': 100, 'terminus-2': 700}
+
+models (10 unique):
+   200  default
+   200  anthropic/claude-opus-4-7
+   200  openai/gpt-5.5
+   200  gemini/gemini-3.1-pro-preview
+   200  openrouter/moonshotai/kimi-k2.6
+   100  openrouter/deepseek/deepseek-v4-pro
+   100  openrouter/z-ai/glm-5.1
+   100  openrouter/minimax/minimax-m2.7
+   100  gemini/gemini-3.5-flash
+    99  anthropic/claude-opus-4-8
+
+providers (7 unique):
+   514  openrouter
+   300  gemini
+   200  default
+   200  openai
+   195  anthropic
+    53  claude
+    37  bedrock
+
+status values (2 unique): {'success': 1445, 'AgentTimeoutError': 54}
+
+reward shape: {'int:0': 465, 'int:1': 57, 'float:0.0': 847, 'float:1.0': 129, 'float:other': 1}
+
+timestamp formats:
+  finished_at    ISO-T-no-tz                     n=115
+  finished_at    ISO-T-tz                        n=859
+  finished_at    None                            n=3
+  finished_at    other:2026-05-01 08:32:10.50083  n=1
+  finished_at    other:2026-05-01 08:52:05.62096  n=1
+  finished_at    other:2026-05-01 08:59:07.50044  n=1
+  finished_at    other:2026-05-01 09:06:33.63142  n=1
+  finished_at    other:2026-05-01 09:21:01.09763  n=1
+  finished_at    other:2026-05-01 09:45:00.96204  n=1
+  finished_at    other:2026-05-01 11:03:39.60044  n=1
+  finished_at    other:2026-05-01 11:10:57.07389  n=1
+  finished_at    other:2026-05-01 12:41:43.14985  n=1
+  finished_at    other:2026-05-01 12:58:35.55649  n=1
+  finished_at    other:2026-05-02 03:54:39.0894+  n=1
+  finished_at    other:2026-05-02 03:57:43.73466  n=1
+  finished_at    other:2026-05-02 03:58:05.46712  n=1
+  finished_at    other:2026-05-02 03:59:20.66950  n=1
+  finished_at    other:2026-05-02 04:01:19.38857  n=1
+  finished_at    other:2026-05-02 04:02:10.10356  n=1
+  finished_at    other:2026-05-02 04:02:17.21817  n=1
+  finished_at    other:2026-05-02 04:10:15.09395  n=1
+  finished_at    other:2026-05-02 04:22:22.02630  n=1
+  finished_at    other:2026-05-02 04:26:25.31517  n=1
+  finished_at    other:2026-05-02 05:10:58.78232  n=1
+  finished_at    other:2026-05-02 05:25:29.45608  n=1
+  finished_at    other:2026-05-02 05:31:36.15381  n=1
+  finished_at    other:2026-05-02 05:35:57.31847  n=1
+  finished_at    other:2026-05-02 05:53:23.96435  n=1
+  finished_at    other:2026-05-02 06:33:22.94948  n=1
+  finished_at    other:2026-05-02 07:27:52.66847  n=1
+  finished_at    other:2026-05-02 07:28:27.01949  n=1
+  finished_at    other:2026-05-02 07:37:59.79213  n=1
+  finished_at    other:2026-05-02 07:40:39.45186  n=1
+  finished_at    other:2026-05-02 08:37:58.23953  n=1
+  finished_at    other:2026-05-02 08:38:14.22432  n=1
+  finished_at    other:2026-05-02 08:38:32.17453  n=1
+  finished_at    other:2026-05-02 08:41:09.67838  n=1
+  finished_at    other:2026-05-02 08:41:14.57083  n=1
+  finished_at    other:2026-05-02 08:41:34.22295  n=1
+  finished_at    other:2026-05-02 08:41:56.32695  n=1
+  finished_at    other:2026-05-02 08:44:08.87541  n=1
+  finished_at    other:2026-05-02 08:44:16.99099  n=1
+  finished_at    other:2026-05-02 08:44:22.65608  n=1
+  finished_at    other:2026-05-02 08:53:50.01299  n=1
+  finished_at    other:2026-05-02 08:55:56.42749  n=1
+  finished_at    other:2026-05-02 08:57:44.63051  n=1
+  finished_at    other:2026-05-02 08:59:56.20151  n=1
+  finished_at    other:2026-05-02 09:01:35.38549  n=1
+  finished_at    other:2026-05-02 09:01:46.20047  n=1
+  finished_at    other:2026-05-02 09:03:39.35380  n=1
+  finished_at    other:2026-05-02 09:03:42.22475  n=1
+  finished_at    other:2026-05-02 09:04:12.37948  n=1
+  finished_at    other:2026-05-02 09:04:16.06324  n=1
+  finished_at    other:2026-05-02 09:04:16.88725  n=1
+  finished_at    other:2026-05-02 09:04:17.32689  n=1
+  finished_at    other:2026-05-02 09:04:18.82671  n=1
+  finished_at    other:2026-05-02 09:04:46.02477  n=1
+  finished_at    other:2026-05-02 09:06:30.39923  n=1
+  finished_at    other:2026-05-02 09:09:12.30330  n=1
+  finished_at    other:2026-05-02 09:11:20.91016  n=1
+  finished_at    other:2026-05-02 09:14:38.92162  n=1
+  finished_at    other:2026-05-02 09:15:40.54319  n=1
+  finished_at    other:2026-05-02 09:16:28.06409  n=1
+  finished_at    other:2026-05-02 09:16:45.54196  n=1
+  finished_at    other:2026-05-02 09:16:47.46506  n=1
+  finished_at    other:2026-05-02 09:16:47.78469  n=1
+  finished_at    other:2026-05-02 09:17:00.21090  n=1
+  finished_at    other:2026-05-02 09:17:01.22785  n=1
+  finished_at    other:2026-05-02 09:17:18.91730  n=1
+  finished_at    other:2026-05-02 09:19:34.04652  n=1
+  finished_at    other:2026-05-02 09:19:48.05152  n=1
+  finished_at    other:2026-05-02 09:20:59.13050  n=1
+  finished_at    other:2026-05-02 09:23:59.57377  n=1
+  finished_at    other:2026-05-02 09:24:06.62609  n=1
+  finished_at    other:2026-05-02 09:24:22.49947  n=1
+  finished_at    other:2026-05-02 09:24:28.40798  n=1
+  finished_at    other:2026-05-02 09:30:36.06790  n=1
+  finished_at    other:2026-05-02 09:30:48.92171  n=1
+  finished_at    other:2026-05-02 09:32:37.20605  n=1
+  finished_at    other:2026-05-02 09:33:02.27394  n=1
+  finished_at    other:2026-05-02 09:33:38.16300  n=1
+  finished_at    other:2026-05-02 09:35:38.36714  n=1
+  finished_at    other:2026-05-02 09:36:48.87181  n=1
+  finished_at    other:2026-05-02 09:39:39.03302  n=1
+  finished_at    other:2026-05-02 09:42:02.93190  n=1
+  finished_at    other:2026-05-02 09:43:25.87935  n=1
+  finished_at    other:2026-05-02 09:54:57.14645  n=1
+  finished_at    other:2026-05-02 09:57:22.95093  n=1
+  finished_at    other:2026-05-02 10:01:46.24171  n=1
+  finished_at    other:2026-05-02 10:05:07.93124  n=1
+  finished_at    other:2026-05-02 10:09:22.98500  n=1
+  finished_at    other:2026-05-02 10:10:34.07537  n=1
+  finished_at    other:2026-05-02 10:11:25.32786  n=1
+  finished_at    other:2026-05-02 10:12:15.42156  n=1
+  finished_at    other:2026-05-02 10:12:54.61877  n=1
+  finished_at    other:2026-05-02 10:17:26.98851  n=1
+  finished_at    other:2026-05-02 10:22:26.06319  n=1
+  finished_at    other:2026-05-02 10:22:51.92257  n=1
+  finished_at    other:2026-05-02 10:24:37.97799  n=1
+  finished_at    other:2026-05-02 10:24:41.40416  n=1
+  finished_at    other:2026-05-02 10:27:21.43722  n=1
+  finished_at    other:2026-05-02 10:29:40.10165  n=1
+  finished_at    other:2026-05-02 10:35:27.30837  n=1
+  finished_at    other:2026-05-02 10:38:13.05377  n=1
+  finished_at    other:2026-05-02 10:39:59.15555  n=1
+  finished_at    other:2026-05-02 10:58:11.21228  n=1
+  finished_at    other:2026-05-02 11:03:46.34761  n=1
+  finished_at    other:2026-05-02 11:21:07.48267  n=1
+  finished_at    other:2026-05-02 11:21:12.34734  n=1
+  finished_at    other:2026-05-02 11:29:09.73707  n=1
+  finished_at    other:2026-05-02 11:33:54.99434  n=1
+  finished_at    other:2026-05-02 11:38:38.66984  n=1
+  finished_at    other:2026-05-02 11:39:44.22734  n=1
+  finished_at    other:2026-05-02 11:50:48.59030  n=1
+  finished_at    other:2026-05-02 12:27:56.85513  n=1
+  finished_at    other:2026-05-02 12:31:31.42579  n=1
+  finished_at    other:2026-05-02 13:00:55.58057  n=1
+  finished_at    other:2026-05-02 13:01:50.29516  n=1
+  finished_at    other:2026-05-02 13:05:20.92812  n=1
+  finished_at    other:2026-05-02 13:07:41.40479  n=1
+  finished_at    other:2026-05-02 14:01:56.10848  n=1
+  finished_at    other:2026-05-02 14:04:29.08204  n=1
+  finished_at    other:2026-05-02 14:09:04.89011  n=1
+  finished_at    other:2026-05-02 14:21:25.49709  n=1
+  finished_at    other:2026-05-02 14:22:18.19643  n=1
+  finished_at    other:2026-05-02 14:32:24.77364  n=1
+  finished_at    other:2026-05-02 15:41:24.03537  n=1
+  finished_at    other:2026-05-02 16:43:00.64601  n=1
+  finished_at    other:2026-05-02 16:45:09.26756  n=1
+  finished_at    other:2026-05-02 16:46:33.06671  n=1
+  finished_at    other:2026-05-02 16:47:10.38775  n=1
+  finished_at    other:2026-05-02 17:00:03.90403  n=1
+  finished_at    other:2026-05-02 17:36:41.78386  n=1
+  finished_at    other:2026-05-02 19:10:34.52040  n=1
+  finished_at    other:2026-05-02 19:38:43.56691  n=1
+  finished_at    other:2026-05-02 21:38:13.16073  n=1
+  finished_at    other:2026-05-02 21:46:41.74738  n=1
+  finished_at    other:2026-05-02 23:38:10.59285  n=1
+  finished_at    other:2026-05-03 01:21:49.72538  n=1
+  finished_at    other:2026-05-03 01:34:09.73852  n=1
+  finished_at    other:2026-05-03 02:10:04.63230  n=1
+  finished_at    other:2026-05-03 02:37:00.53384  n=1
+  finished_at    other:2026-05-03 03:37:54.42737  n=1
+  finished_at    other:2026-05-03 04:28:19.72671  n=1
+  finished_at    other:2026-05-03 04:28:29.31707  n=1
+  finished_at    other:2026-05-03 04:30:38.41435  n=1
+  finished_at    other:2026-05-03 04:32:24.46923  n=1
+  finished_at    other:2026-05-03 04:34:03.08470  n=1
+  finished_at    other:2026-05-03 04:35:03.35180  n=1
+  finished_at    other:2026-05-03 04:36:29.15689  n=1
+  finished_at    other:2026-05-03 04:39:40.73843  n=1
+  finished_at    other:2026-05-03 04:40:30.81899  n=1
+  finished_at    other:2026-05-03 04:45:39.50695  n=1
+  finished_at    other:2026-05-03 04:53:38.34405  n=1
+  finished_at    other:2026-05-03 06:07:01.46457  n=1
+  finished_at    other:2026-05-03 06:07:38.57430  n=1
+  finished_at    other:2026-05-03 06:08:24.54385  n=1
+  finished_at    other:2026-05-03 06:09:40.77203  n=1
+  finished_at    other:2026-05-03 06:09:42.09941  n=1
+  finished_at    other:2026-05-03 06:11:18.53150  n=1
+  finished_at    other:2026-05-03 06:12:10.33778  n=1
+  finished_at    other:2026-05-03 06:12:26.06656  n=1
+  finished_at    other:2026-05-03 06:13:00.39327  n=1
+  finished_at    other:2026-05-03 06:13:02.67045  n=1
+  finished_at    other:2026-05-03 06:14:11.96934  n=1
+  finished_at    other:2026-05-03 06:26:17.45500  n=1
+  finished_at    other:2026-05-03 06:36:29.99974  n=1
+  finished_at    other:2026-05-03 06:40:55.72971  n=1
+  finished_at    other:2026-05-03 06:41:20.16563  n=1
+  finished_at    other:2026-05-03 06:41:57.31654  n=1
+  finished_at    other:2026-05-03 06:44:21.91688  n=1
+  finished_at    other:2026-05-03 06:47:15.74395  n=1
+  finished_at    other:2026-05-03 06:48:08.78589  n=1
+  finished_at    other:2026-05-03 06:48:27.01092  n=1
+  finished_at    other:2026-05-03 06:51:13.50573  n=1
+  finished_at    other:2026-05-03 06:55:46.85703  n=1
+  finished_at    other:2026-05-03 06:57:00.70940  n=1
+  finished_at    other:2026-05-03 07:00:10.71966  n=1
+  finished_at    other:2026-05-03 07:01:00.04904  n=1
+  finished_at    other:2026-05-03 07:04:33.16120  n=1
+  finished_at    other:2026-05-03 07:06:05.70262  n=1
+  finished_at    other:2026-05-03 07:06:09.79257  n=1
+  finished_at    other:2026-05-03 07:06:53.75988  n=1
+  finished_at    other:2026-05-03 07:08:53.24960  n=1
+  finished_at    other:2026-05-03 07:09:24.53648  n=1
+  finished_at    other:2026-05-03 07:12:30.54704  n=1
+  finished_at    other:2026-05-03 07:15:09.56855  n=1
+  finished_at    other:2026-05-03 07:24:30.61044  n=1
+  finished_at    other:2026-05-03 07:28:46.21746  n=1
+  finished_at    other:2026-05-03 07:31:08.67997  n=1
+  finished_at    other:2026-05-03 07:31:25.24651  n=1
+  finished_at    other:2026-05-03 07:37:24.66236  n=1
+  finished_at    other:2026-05-03 07:40:02.29575  n=1
+  finished_at    other:2026-05-03 07:42:13.99260  n=1
+  finished_at    other:2026-05-03 07:54:04.80376  n=1
+  finished_at    other:2026-05-03 08:05:41.29209  n=1
+  finished_at    other:2026-05-03 08:07:03.23301  n=1
+  finished_at    other:2026-05-03 08:08:03.93935  n=1
+  finished_at    other:2026-05-03 08:09:30.80846  n=1
+  finished_at    other:2026-05-03 08:12:34.92505  n=1
+  finished_at    other:2026-05-03 08:14:50.77669  n=1
+  finished_at    other:2026-05-03 08:25:45.66838  n=1
+  finished_at    other:2026-05-03 08:33:01.63857  n=1
+  finished_at    other:2026-05-03 08:40:15.90437  n=1
+  finished_at    other:2026-05-03 08:43:19.39546  n=1
+  finished_at    other:2026-05-03 08:44:12.54911  n=1
+  finished_at    other:2026-05-03 08:45:10.72253  n=1
+  finished_at    other:2026-05-03 08:45:16.75215  n=1
+  finished_at    other:2026-05-03 08:46:50.27042  n=1
+  finished_at    other:2026-05-03 08:47:25.12709  n=1
+  finished_at    other:2026-05-03 08:47:58.72557  n=1
+  finished_at    other:2026-05-03 08:48:18.44325  n=1
+  finished_at    other:2026-05-03 08:48:28.05159  n=1
+  finished_at    other:2026-05-03 08:51:15.53364  n=1
+  finished_at    other:2026-05-03 08:53:10.62065  n=1
+  finished_at    other:2026-05-03 08:56:05.62446  n=1
+  finished_at    other:2026-05-03 08:56:43.81123  n=1
+  finished_at    other:2026-05-03 08:59:39.76493  n=1
+  finished_at    other:2026-05-03 09:00:09.97281  n=1
+  finished_at    other:2026-05-03 09:00:33.37916  n=1
+  finished_at    other:2026-05-03 09:00:40.74200  n=1
+  finished_at    other:2026-05-03 09:02:57.77618  n=1
+  finished_at    other:2026-05-03 09:08:10.30673  n=1
+  finished_at    other:2026-05-03 09:09:22.39918  n=1
+  finished_at    other:2026-05-03 09:16:52.17916  n=1
+  finished_at    other:2026-05-03 09:19:44.21474  n=1
+  finished_at    other:2026-05-03 09:20:15.67688  n=1
+  finished_at    other:2026-05-03 09:20:42.25379  n=1
+  finished_at    other:2026-05-03 09:22:15.22860  n=1
+  finished_at    other:2026-05-03 09:22:32.68727  n=1
+  finished_at    other:2026-05-03 09:24:43.26247  n=1
+  finished_at    other:2026-05-03 09:25:00.47753  n=1
+  finished_at    other:2026-05-03 09:25:16.75937  n=1
+  finished_at    other:2026-05-03 09:27:05.61750  n=1
+  finished_at    other:2026-05-03 09:27:58.02009  n=1
+  finished_at    other:2026-05-03 09:27:59.61722  n=1
+  finished_at    other:2026-05-03 09:28:08.20648  n=1
+  finished_at    other:2026-05-03 09:29:25.44248  n=1
+  finished_at    other:2026-05-03 09:29:54.06896  n=1
+  finished_at    other:2026-05-03 09:30:53.72519  n=1
+  finished_at    other:2026-05-03 09:34:12.79435  n=1
+  finished_at    other:2026-05-03 09:34:41.01502  n=1
+  finished_at    other:2026-05-03 09:35:40.08230  n=1
+  finished_at    other:2026-05-03 09:35:57.48956  n=1
+  finished_at    other:2026-05-03 09:36:20.48405  n=1
+  finished_at    other:2026-05-03 09:37:50.73729  n=1
+  finished_at    other:2026-05-03 09:38:35.39763  n=1
+  finished_at    other:2026-05-03 09:39:37.35747  n=1
+  finished_at    other:2026-05-03 09:40:13.66251  n=1
+  finished_at    other:2026-05-03 09:40:27.61729  n=1
+  finished_at    other:2026-05-03 09:41:06.64406  n=1
+  finished_at    other:2026-05-03 09:41:26.97409  n=1
+  finished_at    other:2026-05-03 09:45:25.21024  n=1
+  finished_at    other:2026-05-03 09:46:29.07416  n=1
+  finished_at    other:2026-05-03 09:46:41.16272  n=1
+  finished_at    other:2026-05-03 09:47:00.47836  n=1
+  finished_at    other:2026-05-03 09:47:54.85676  n=1
+  finished_at    other:2026-05-03 09:48:17.12025  n=1
+  finished_at    other:2026-05-03 09:51:48.92454  n=1
+  finished_at    other:2026-05-03 09:55:10.69733  n=1
+  finished_at    other:2026-05-03 09:55:10.85857  n=1
+  finished_at    other:2026-05-03 09:58:37.81291  n=1
+  finished_at    other:2026-05-03 10:00:29.72834  n=1
+  finished_at    other:2026-05-03 10:01:29.06590  n=1
+  finished_at    other:2026-05-03 10:03:34.28418  n=1
+  finished_at    other:2026-05-03 10:05:26.85361  n=1
+  finished_at    other:2026-05-03 10:05:52.20696  n=1
+  finished_at    other:2026-05-03 10:07:38.50113  n=1
+  finished_at    other:2026-05-03 10:08:03.41974  n=1
+  finished_at    other:2026-05-03 10:09:54.51236  n=1
+  finished_at    other:2026-05-03 10:14:23.03384  n=1
+  finished_at    other:2026-05-03 10:31:31.75929  n=1
+  finished_at    other:2026-05-03 10:31:36.40157  n=1
+  finished_at    other:2026-05-03 10:31:48.6703+  n=1
+  finished_at    other:2026-05-03 10:33:49.57501  n=1
+  finished_at    other:2026-05-03 10:37:15.22176  n=1
+  finished_at    other:2026-05-03 10:43:31.61544  n=1
+  finished_at    other:2026-05-03 10:45:02.04382  n=1
+  finished_at    other:2026-05-03 10:45:23.48045  n=1
+  finished_at    other:2026-05-03 10:47:41.33022  n=1
+  finished_at    other:2026-05-03 10:48:57.11613  n=1
+  finished_at    other:2026-05-03 10:52:25.27194  n=1
+  finished_at    other:2026-05-03 11:00:19.25431  n=1
+  finished_at    other:2026-05-03 11:07:24.74929  n=1
+  finished_at    other:2026-05-03 11:09:16.97950  n=1
+  finished_at    other:2026-05-03 11:11:37.72074  n=1
+  finished_at    other:2026-05-03 11:22:52.62099  n=1
+  finished_at    other:2026-05-03 11:23:52.30890  n=1
+  finished_at    other:2026-05-03 11:24:24.81889  n=1
+  finished_at    other:2026-05-03 11:24:50.08973  n=1
+  finished_at    other:2026-05-03 11:26:43.14753  n=1
+  finished_at    other:2026-05-03 11:27:39.82458  n=1
+  finished_at    other:2026-05-03 11:32:55.87431  n=1
+  finished_at    other:2026-05-03 11:37:22.01715  n=1
+  finished_at    other:2026-05-03 11:47:19.41348  n=1
+  finished_at    other:2026-05-03 12:43:09.64490  n=1
+  finished_at    other:2026-05-03 13:22:12.35708  n=1
+  finished_at    other:2026-05-03 13:32:54.92609  n=1
+  finished_at    other:2026-05-03 13:37:45.79437  n=1
+  finished_at    other:2026-05-03 13:40:27.66334  n=1
+  finished_at    other:2026-05-03 14:22:30.33051  n=1
+  finished_at    other:2026-05-03 14:40:22.13835  n=1
+  finished_at    other:2026-05-03 14:43:46.46367  n=1
+  finished_at    other:2026-05-03 15:28:01.00432  n=1
+  finished_at    other:2026-05-03 19:40:02.37824  n=1
+  finished_at    other:2026-05-03 20:04:32.65913  n=1
+  finished_at    other:2026-05-03 20:04:35.88116  n=1
+  finished_at    other:2026-05-03 20:04:46.99414  n=1
+  finished_at    other:2026-05-03 20:04:49.97952  n=1
+  finished_at    other:2026-05-03 20:04:51.62145  n=1
+  finished_at    other:2026-05-03 20:05:13.35623  n=1
+  finished_at    other:2026-05-03 20:07:33.36254  n=1
+  finished_at    other:2026-05-03 20:07:41.20965  n=1
+  finished_at    other:2026-05-03 20:07:49.97923  n=1
+  finished_at    other:2026-05-03 20:19:39.92296  n=1
+  finished_at    other:2026-05-03 20:22:17.91811  n=1
+  finished_at    other:2026-05-03 20:28:37.72369  n=1
+  finished_at    other:2026-05-03 20:31:54.87603  n=1
+  finished_at    other:2026-05-03 20:32:41.30804  n=1
+  finished_at    other:2026-05-03 20:32:57.78231  n=1
+  finished_at    other:2026-05-03 20:33:39.18048  n=1
+  finished_at    other:2026-05-03 20:42:26.06781  n=1
+  finished_at    other:2026-05-03 20:43:18.08005  n=1
+  finished_at    other:2026-05-03 20:44:10.18196  n=1
+  finished_at    other:2026-05-03 20:47:15.77540  n=1
+  finished_at    other:2026-05-03 20:49:23.1716+  n=1
+  finished_at    other:2026-05-03 21:09:04.67078  n=1
+  finished_at    other:2026-05-03 21:21:44.04181  n=1
+  finished_at    other:2026-05-03 21:29:20.32619  n=1
+  finished_at    other:2026-05-03 21:37:01.42162  n=1
+  finished_at    other:2026-05-03 21:45:26.36912  n=1
+  finished_at    other:2026-05-03 21:53:10.71770  n=1
+  finished_at    other:2026-05-04 00:21:01.59558  n=1
+  finished_at    other:2026-05-04 00:43:09.33200  n=1
+  finished_at    other:2026-05-04 00:46:28.10603  n=1
+  finished_at    other:2026-05-04 00:52:25.22465  n=1
+  finished_at    other:2026-05-04 00:53:47.67365  n=1
+  finished_at    other:2026-05-04 02:35:03.91275  n=1
+  finished_at    other:2026-05-04 03:06:02.87237  n=1
+  finished_at    other:2026-05-04 03:47:07.36522  n=1
+  finished_at    other:2026-05-04 03:48:41.41073  n=1
+  finished_at    other:2026-05-04 06:17:38.19348  n=1
+  finished_at    other:2026-05-04 07:57:55.32036  n=1
+  finished_at    other:2026-05-04 07:57:59.21363  n=1
+  finished_at    other:2026-05-04 07:59:55.88207  n=1
+  finished_at    other:2026-05-04 08:01:42.96500  n=1
+  finished_at    other:2026-05-04 08:34:12.28657  n=1
+  finished_at    other:2026-05-04 08:38:02.87189  n=1
+  finished_at    other:2026-05-04 08:40:32.96593  n=1
+  finished_at    other:2026-05-04 08:40:33.24627  n=1
+  finished_at    other:2026-05-04 08:43:32.67997  n=1
+  finished_at    other:2026-05-04 08:44:41.36542  n=1
+  finished_at    other:2026-05-04 08:51:34.26246  n=1
+  finished_at    other:2026-05-04 08:53:22.37112  n=1
+  finished_at    other:2026-05-04 08:54:05.55697  n=1
+  finished_at    other:2026-05-04 08:54:14.80063  n=1
+  finished_at    other:2026-05-04 08:54:15.42161  n=1
+  finished_at    other:2026-05-04 08:55:10.28550  n=1
+  finished_at    other:2026-05-04 08:58:04.53887  n=1
+  finished_at    other:2026-05-04 09:31:31.71623  n=1
+  finished_at    other:2026-05-04 09:50:20.13201  n=1
+  finished_at    other:2026-05-04 09:54:23.30914  n=1
+  finished_at    other:2026-05-04 10:12:25.56896  n=1
+  finished_at    other:2026-05-04 10:46:07.63320  n=1
+  finished_at    other:2026-05-04 10:46:09.03255  n=1
+  finished_at    other:2026-05-04 10:47:50.00727  n=1
+  finished_at    other:2026-05-04 10:48:35.09728  n=1
+  finished_at    other:2026-05-04 10:55:00.63243  n=1
+  finished_at    other:2026-05-04 11:05:05.57165  n=1
+  finished_at    other:2026-05-04 11:16:20.46129  n=1
+  finished_at    other:2026-05-04 11:19:54.83297  n=1
+  finished_at    other:2026-05-04 11:20:16.93450  n=1
+  finished_at    other:2026-05-04 11:26:03.73243  n=1
+  finished_at    other:2026-05-04 11:43:41.08759  n=1
+  finished_at    other:2026-05-04 12:07:40.17417  n=1
+  finished_at    other:2026-05-04 12:33:03.89172  n=1
+  finished_at    other:2026-05-04 12:40:34.87913  n=1
+  finished_at    other:2026-05-04 12:43:29.98437  n=1
+  finished_at    other:2026-05-04 12:47:30.07844  n=1
+  finished_at    other:2026-05-04 13:05:50.86880  n=1
+  finished_at    other:2026-05-04 13:13:09.86963  n=1
+  finished_at    other:2026-05-04 13:21:34.65471  n=1
+  finished_at    other:2026-05-04 13:31:07.14183  n=1
+  finished_at    other:2026-05-04 13:49:26.33617  n=1
+  finished_at    other:2026-05-04 13:54:22.05107  n=1
+  finished_at    other:2026-05-04 13:56:40.46828  n=1
+  finished_at    other:2026-05-04 14:02:16.94368  n=1
+  finished_at    other:2026-05-04 14:03:35.56047  n=1
+  finished_at    other:2026-05-04 14:03:38.91017  n=1
+  finished_at    other:2026-05-04 14:09:44.11321  n=1
+  finished_at    other:2026-05-04 14:22:13.87115  n=1
+  finished_at    other:2026-05-04 14:22:24.23564  n=1
+  finished_at    other:2026-05-04 14:27:05.73537  n=1
+  finished_at    other:2026-05-04 14:32:43.4001+  n=1
+  finished_at    other:2026-05-04 14:46:04.29132  n=1
+  finished_at    other:2026-05-04 15:18:51.16580  n=1
+  finished_at    other:2026-05-04 15:52:54.59627  n=1
+  finished_at    other:2026-05-04 15:53:53.82313  n=1
+  finished_at    other:2026-05-04 16:01:38.25023  n=1
+  finished_at    other:2026-05-04 16:40:56.98696  n=1
+  finished_at    other:2026-05-04 18:14:29.57757  n=1
+  finished_at    other:2026-05-04 18:44:37.35844  n=1
+  finished_at    other:2026-05-04 18:59:29.72407  n=1
+  finished_at    other:2026-05-04 19:55:27.66952  n=1
+  finished_at    other:2026-05-04 20:27:39.51894  n=1
+  finished_at    other:2026-05-04 21:29:31.7939+  n=1
+  finished_at    other:2026-05-04 21:32:02.01740  n=1
+  finished_at    other:2026-05-04 21:42:37.35634  n=1
+  finished_at    other:2026-05-04 21:43:08.40214  n=1
+  finished_at    other:2026-05-04 21:51:15.83475  n=1
+  finished_at    other:2026-05-04 21:55:33.46965  n=1
+  finished_at    other:2026-05-04 22:07:31.91865  n=1
+  finished_at    other:2026-05-04 23:48:58.97940  n=1
+  finished_at    other:2026-05-05 00:21:27.52510  n=1
+  finished_at    other:2026-05-05 01:06:37.92083  n=1
+  finished_at    other:2026-05-05 03:55:04.92367  n=1
+  finished_at    other:2026-05-05 08:23:23.87717  n=1
+  finished_at    other:2026-05-05 08:56:17.64129  n=1
+  finished_at    other:2026-05-05 09:33:31.18663  n=1
+  finished_at    other:2026-05-05 09:46:35.86539  n=1
+  finished_at    other:2026-05-05 10:03:03.01436  n=1
+  finished_at    other:2026-05-05 11:52:58.57445  n=1
+  finished_at    other:2026-05-05 12:49:50.43118  n=1
+  finished_at    other:2026-05-05 13:04:43.75771  n=1
+  finished_at    other:2026-05-05 13:59:48.65561  n=1
+  finished_at    other:2026-05-05 14:51:14.05973  n=1
+  finished_at    other:2026-05-05 17:31:49.76647  n=1
+  finished_at    other:2026-05-05 18:28:40.27807  n=1
+  finished_at    other:2026-05-05 18:32:18.93993  n=1
+  finished_at    other:2026-05-05 19:05:55.25870  n=1
+  finished_at    other:2026-05-05 19:51:16.58980  n=1
+  finished_at    other:2026-05-05 20:00:21.99599  n=1
+  finished_at    other:2026-05-05 20:19:44.77916  n=1
+  finished_at    other:2026-05-05 22:37:33.39899  n=1
+  finished_at    other:2026-05-05 22:58:47.75748  n=1
+  finished_at    other:2026-05-05 23:26:07.41590  n=1
+  finished_at    other:2026-05-05 23:29:06.34062  n=1
+  finished_at    other:2026-05-05 23:42:32.12434  n=1
+  finished_at    other:2026-05-05 23:58:53.44312  n=1
+  finished_at    other:2026-05-06 00:21:15.94014  n=1
+  finished_at    other:2026-05-06 00:26:48.11278  n=1
+  finished_at    other:2026-05-06 00:35:09.10295  n=1
+  finished_at    other:2026-05-06 00:37:47.20964  n=1
+  finished_at    other:2026-05-06 00:41:42.85070  n=1
+  finished_at    other:2026-05-06 01:05:43.78539  n=1
+  finished_at    other:2026-05-06 01:20:12.83815  n=1
+  finished_at    other:2026-05-06 02:23:38.33209  n=1
+  finished_at    other:2026-05-06 02:33:49.64346  n=1
+  finished_at    other:2026-05-06 02:34:19.36295  n=1
+  finished_at    other:2026-05-06 02:40:02.21129  n=1
+  finished_at    other:2026-05-06 02:41:55.95704  n=1
+  finished_at    other:2026-05-06 02:42:23.75391  n=1
+  finished_at    other:2026-05-06 02:48:15.36059  n=1
+  finished_at    other:2026-05-06 02:49:24.44271  n=1
+  finished_at    other:2026-05-06 02:51:37.72043  n=1
+  finished_at    other:2026-05-06 03:00:51.06516  n=1
+  finished_at    other:2026-05-06 03:01:53.03774  n=1
+  finished_at    other:2026-05-06 03:23:01.11188  n=1
+  finished_at    other:2026-05-06 03:31:11.55959  n=1
+  finished_at    other:2026-05-06 03:45:08.95902  n=1
+  finished_at    other:2026-05-06 03:45:13.98328  n=1
+  finished_at    other:2026-05-06 03:52:09.52020  n=1
+  finished_at    other:2026-05-06 03:56:42.04870  n=1
+  finished_at    other:2026-05-06 03:56:46.43685  n=1
+  finished_at    other:2026-05-06 03:56:58.56181  n=1
+  finished_at    other:2026-05-06 03:59:39.05508  n=1
+  finished_at    other:2026-05-06 03:59:40.86469  n=1
+  finished_at    other:2026-05-06 03:59:59.95462  n=1
+  finished_at    other:2026-05-06 04:02:13.23737  n=1
+  finished_at    other:2026-05-06 04:03:36.87136  n=1
+  finished_at    other:2026-05-06 04:04:00.34618  n=1
+  finished_at    other:2026-05-06 04:05:21.12222  n=1
+  finished_at    other:2026-05-06 04:05:37.93831  n=1
+  finished_at    other:2026-05-06 04:05:54.92235  n=1
+  finished_at    other:2026-05-06 04:06:35.65776  n=1
+  finished_at    other:2026-05-06 04:06:44.55872  n=1
+  finished_at    other:2026-05-06 04:08:11.47604  n=1
+  finished_at    other:2026-05-06 04:08:57.47664  n=1
+  finished_at    other:2026-05-06 04:09:06.17992  n=1
+  finished_at    other:2026-05-06 04:10:07.69341  n=1
+  finished_at    other:2026-05-06 04:11:03.53885  n=1
+  finished_at    other:2026-05-06 04:13:16.88150  n=1
+  finished_at    other:2026-05-06 04:13:23.21386  n=1
+  finished_at    other:2026-05-06 04:13:33.66543  n=1
+  finished_at    other:2026-05-06 04:14:17.32360  n=1
+  finished_at    other:2026-05-06 04:20:38.50254  n=1
+  finished_at    other:2026-05-06 04:22:31.04611  n=1
+  finished_at    other:2026-05-06 04:24:08.58945  n=1
+  finished_at    other:2026-05-06 04:26:03.88087  n=1
+  finished_at    other:2026-05-06 04:26:47.52014  n=1
+  finished_at    other:2026-05-06 04:29:24.96926  n=1
+  finished_at    other:2026-05-06 04:29:33.13871  n=1
+  finished_at    other:2026-05-06 04:33:03.73835  n=1
+  finished_at    other:2026-05-06 04:35:21.03260  n=1
+  finished_at    other:2026-05-06 04:36:32.26953  n=1
+  finished_at    other:2026-05-06 04:36:38.95700  n=1
+  finished_at    other:2026-05-06 04:38:26.96191  n=1
+  finished_at    other:2026-05-06 04:41:56.90480  n=1
+  finished_at    other:2026-05-06 04:42:05.35234  n=1
+  finished_at    other:2026-05-06 04:43:53.57347  n=1
+  finished_at    other:2026-05-06 04:43:55.64295  n=1
+  finished_at    other:2026-05-06 04:45:53.84590  n=1
+  finished_at    other:2026-05-06 04:51:45.13627  n=1
+  finished_at    other:2026-05-06 04:53:18.27564  n=1
+  finished_at    other:2026-05-06 04:55:51.23562  n=1
+  finished_at    other:2026-05-06 04:59:17.92514  n=1
+  finished_at    other:2026-05-06 05:00:48.22447  n=1
+  finished_at    other:2026-05-06 05:03:24.61923  n=1
+  finished_at    other:2026-05-06 05:06:06.25850  n=1
+  finished_at    other:2026-05-06 05:12:16.56269  n=1
+  finished_at    other:2026-05-06 05:19:04.13373  n=1
+  finished_at    other:2026-05-06 05:20:40.95612  n=1
+  finished_at    other:2026-05-06 05:26:35.07896  n=1
+  finished_at    other:2026-05-06 05:27:02.27809  n=1
+  finished_at    other:2026-05-06 05:31:05.94920  n=1
+  finished_at    other:2026-05-06 05:40:33.08569  n=1
+  finished_at    other:2026-05-06 05:52:26.44215  n=1
+  finished_at    other:2026-05-06 05:58:19.94941  n=1
+  finished_at    other:2026-05-06 06:05:59.19522  n=1
+  finished_at    other:2026-05-06 06:29:33.16805  n=1
+  finished_at    other:2026-05-06 08:01:09.36589  n=1
+  finished_at    other:2026-05-06 16:19:13.83496  n=1
+  finished_at    other:2026-05-06 16:52:50.38410  n=1
+  finished_at    other:2026-05-06 17:37:07.27806  n=1
+  finished_at    other:2026-05-06 17:54:34.46119  n=1
+  started_at     ISO-T-no-tz                     n=115
+  started_at     ISO-T-tz                        n=859
+  started_at     None                            n=3
+  started_at     other:2026-05-01 07:51:54.89929  n=1
+  started_at     other:2026-05-01 07:52:01.90236  n=1
+  started_at     other:2026-05-01 07:54:55.65088  n=1
+  started_at     other:2026-05-01 07:54:55.84325  n=1
+  started_at     other:2026-05-01 07:57:55.46197  n=1
+  started_at     other:2026-05-01 07:57:55.60902  n=1
+  started_at     other:2026-05-01 07:57:55.81944  n=1
+  started_at     other:2026-05-01 07:57:55.89468  n=1
+  started_at     other:2026-05-01 07:57:58.68806  n=1
+  started_at     other:2026-05-01 08:04:46.73749  n=1
+  started_at     other:2026-05-02 02:12:55.55502  n=1
+  started_at     other:2026-05-02 02:21:55.80161  n=1
+  started_at     other:2026-05-02 02:21:57.39546  n=1
+  started_at     other:2026-05-02 02:22:00.30362  n=1
+  started_at     other:2026-05-02 02:22:00.78981  n=1
+  started_at     other:2026-05-02 02:22:08.15054  n=1
+  started_at     other:2026-05-02 02:24:54.39156  n=1
+  started_at     other:2026-05-02 02:24:54.56149  n=1
+  started_at     other:2026-05-02 02:25:08.75279  n=1
+  started_at     other:2026-05-02 02:25:08.75697  n=1
+  started_at     other:2026-05-02 02:25:09.11349  n=1
+  started_at     other:2026-05-02 02:25:09.33889  n=1
+  started_at     other:2026-05-02 02:25:09.39688  n=1
+  started_at     other:2026-05-02 02:25:09.92293  n=1
+  started_at     other:2026-05-02 02:25:10.04523  n=1
+  started_at     other:2026-05-02 02:25:10.66161  n=1
+  started_at     other:2026-05-02 02:25:11.08189  n=1
+  started_at     other:2026-05-02 02:25:11.23195  n=1
+  started_at     other:2026-05-02 02:25:13.91477  n=1
+  started_at     other:2026-05-02 02:39:58.35375  n=1
+  started_at     other:2026-05-02 08:05:24.68199  n=1
+  started_at     other:2026-05-02 08:36:54.26305  n=1
+  started_at     other:2026-05-02 08:36:54.59029  n=1
+  started_at     other:2026-05-02 08:36:54.61564  n=1
+  started_at     other:2026-05-02 08:37:02.86789  n=1
+  started_at     other:2026-05-02 08:37:04.65358  n=1
+  started_at     other:2026-05-02 08:37:05.64801  n=1
+  started_at     other:2026-05-02 08:37:10.32696  n=1
+  started_at     other:2026-05-02 08:37:10.90759  n=1
+  started_at     other:2026-05-02 08:37:11.89304  n=1
+  started_at     other:2026-05-02 08:37:14.33701  n=1
+  started_at     other:2026-05-02 08:37:14.35374  n=1
+  started_at     other:2026-05-02 08:37:14.70678  n=1
+  started_at     other:2026-05-02 08:39:54.13705  n=1
+  started_at     other:2026-05-02 08:39:54.49348  n=1
+  started_at     other:2026-05-02 08:39:54.60837  n=1
+  started_at     other:2026-05-02 08:39:54.78227  n=1
+  started_at     other:2026-05-02 08:39:57.38193  n=1
+  started_at     other:2026-05-02 08:40:08.00436  n=1
+  started_at     other:2026-05-02 08:40:08.64597  n=1
+  started_at     other:2026-05-02 08:40:09.54921  n=1
+  started_at     other:2026-05-02 08:40:10.48160  n=1
+  started_at     other:2026-05-02 08:40:10.84821  n=1
+  started_at     other:2026-05-02 08:40:11.92018  n=1
+  started_at     other:2026-05-02 08:40:12.00033  n=1
+  started_at     other:2026-05-02 08:40:12.28590  n=1
+  started_at     other:2026-05-02 08:40:12.28755  n=1
+  started_at     other:2026-05-02 08:40:12.88446  n=1
+  started_at     other:2026-05-02 08:40:16.18274  n=1
+  started_at     other:2026-05-02 08:40:19.60156  n=1
+  started_at     other:2026-05-02 08:42:54.60703  n=1
+  started_at     other:2026-05-02 08:42:54.64442  n=1
+  started_at     other:2026-05-02 08:42:54.68498  n=1
+  started_at     other:2026-05-02 08:42:54.69308  n=1
+  started_at     other:2026-05-02 08:42:54.76700  n=1
+  started_at     other:2026-05-02 08:43:03.46169  n=1
+  started_at     other:2026-05-02 08:43:08.14667  n=1
+  started_at     other:2026-05-02 08:43:09.04310  n=1
+  started_at     other:2026-05-02 08:43:09.27745  n=1
+  started_at     other:2026-05-02 08:43:10.73200  n=1
+  started_at     other:2026-05-02 08:43:11.68179  n=1
+  started_at     other:2026-05-02 08:43:12.29415  n=1
+  started_at     other:2026-05-02 08:43:17.37917  n=1
+  started_at     other:2026-05-02 08:43:26.41492  n=1
+  started_at     other:2026-05-02 08:45:54.80755  n=1
+  started_at     other:2026-05-02 08:55:11.76295  n=1
+  started_at     other:2026-05-02 09:00:55.19732  n=1
+  started_at     other:2026-05-02 09:00:57.73509  n=1
+  started_at     other:2026-05-02 09:01:47.08655  n=1
+  started_at     other:2026-05-02 09:03:54.09503  n=1
+  started_at     other:2026-05-02 09:03:54.32463  n=1
+  started_at     other:2026-05-02 09:03:54.33517  n=1
+  started_at     other:2026-05-02 09:03:54.34303  n=1
+  started_at     other:2026-05-02 09:03:54.66999  n=1
+  started_at     other:2026-05-02 09:03:54.73657  n=1
+  started_at     other:2026-05-02 09:03:54.74271  n=1
+  started_at     other:2026-05-02 09:03:54.76052  n=1
+  started_at     other:2026-05-02 09:03:54.78905  n=1
+  started_at     other:2026-05-02 09:03:54.81799  n=1
+  started_at     other:2026-05-02 09:03:54.83672  n=1
+  started_at     other:2026-05-02 09:03:54.90083  n=1
+  started_at     other:2026-05-02 09:03:54.95328  n=1
+  started_at     other:2026-05-02 09:03:58.0348+  n=1
+  started_at     other:2026-05-02 09:04:02.39242  n=1
+  started_at     other:2026-05-02 09:08:53.25323  n=1
+  started_at     other:2026-05-02 09:19:01.83559  n=1
+  started_at     other:2026-05-02 09:19:01.96453  n=1
+  started_at     other:2026-05-02 09:19:02.00140  n=1
+  started_at     other:2026-05-02 09:19:02.07332  n=1
+  started_at     other:2026-05-02 09:19:02.10654  n=1
+  started_at     other:2026-05-02 09:19:02.11891  n=1
+  started_at     other:2026-05-02 09:19:03.92505  n=1
+  started_at     other:2026-05-02 09:21:55.00643  n=1
+  started_at     other:2026-05-02 09:21:55.04048  n=1
+  started_at     other:2026-05-02 09:21:55.10441  n=1
+  started_at     other:2026-05-02 09:21:55.15198  n=1
+  started_at     other:2026-05-02 09:21:55.24895  n=1
+  started_at     other:2026-05-02 09:21:56.71836  n=1
+  started_at     other:2026-05-02 09:21:56.87961  n=1
+  started_at     other:2026-05-02 09:21:57.58528  n=1
+  started_at     other:2026-05-02 09:21:57.69257  n=1
+  started_at     other:2026-05-02 09:22:00.91855  n=1
+  started_at     other:2026-05-02 09:22:09.57000  n=1
+  started_at     other:2026-05-02 09:24:55.04273  n=1
+  started_at     other:2026-05-02 09:24:55.25368  n=1
+  started_at     other:2026-05-02 09:24:57.95414  n=1
+  started_at     other:2026-05-02 09:25:00.14945  n=1
+  started_at     other:2026-05-02 09:27:55.45714  n=1
+  started_at     other:2026-05-02 09:27:55.58569  n=1
+  started_at     other:2026-05-02 09:27:58.15307  n=1
+  started_at     other:2026-05-02 09:28:07.86283  n=1
+  started_at     other:2026-05-02 09:33:55.08003  n=1
+  started_at     other:2026-05-02 09:33:55.12548  n=1
+  started_at     other:2026-05-02 09:42:54.95533  n=1
+  started_at     other:2026-05-02 10:00:55.33260  n=1
+  started_at     other:2026-05-02 11:15:55.89077  n=1
+  started_at     other:2026-05-02 11:15:56.01275  n=1
+  started_at     other:2026-05-02 11:24:55.40827  n=1
+  started_at     other:2026-05-02 11:27:54.89209  n=1
+  started_at     other:2026-05-02 12:03:54.50870  n=1
+  started_at     other:2026-05-02 12:04:38.28839  n=1
+  started_at     other:2026-05-02 14:24:56.74604  n=1
+  started_at     other:2026-05-02 15:27:55.52688  n=1
+  started_at     other:2026-05-02 20:45:59.61795  n=1
+  started_at     other:2026-05-02 22:33:54.43875  n=1
+  started_at     other:2026-05-02 22:36:54.45250  n=1
+  started_at     other:2026-05-02 23:01:01.44592  n=1
+  started_at     other:2026-05-02 23:01:01.55110  n=1
+  started_at     other:2026-05-02 23:48:58.60711  n=1
+  started_at     other:2026-05-03 00:07:00.00365  n=1
+  started_at     other:2026-05-03 04:22:01.48976  n=1
+  started_at     other:2026-05-03 04:28:00.06476  n=1
+  started_at     other:2026-05-03 04:28:03.00513  n=1
+  started_at     other:2026-05-03 04:28:03.65701  n=1
+  started_at     other:2026-05-03 04:28:03.83704  n=1
+  started_at     other:2026-05-03 04:28:04.05979  n=1
+  started_at     other:2026-05-03 04:28:04.23182  n=1
+  started_at     other:2026-05-03 04:28:04.76904  n=1
+  started_at     other:2026-05-03 04:28:05.16860  n=1
+  started_at     other:2026-05-03 04:28:06.60286  n=1
+  started_at     other:2026-05-03 04:28:07.14726  n=1
+  started_at     other:2026-05-03 04:28:08.14975  n=1
+  started_at     other:2026-05-03 04:28:09.14309  n=1
+  started_at     other:2026-05-03 04:28:10.62575  n=1
+  started_at     other:2026-05-03 04:28:12.59905  n=1
+  started_at     other:2026-05-03 04:28:14.21740  n=1
+  started_at     other:2026-05-03 04:30:56.44729  n=1
+  started_at     other:2026-05-03 04:30:56.99608  n=1
+  started_at     other:2026-05-03 04:31:00.06691  n=1
+  started_at     other:2026-05-03 04:31:01.03036  n=1
+  started_at     other:2026-05-03 06:06:54.04036  n=1
+  started_at     other:2026-05-03 06:06:54.18220  n=1
+  started_at     other:2026-05-03 06:06:54.22150  n=1
+  started_at     other:2026-05-03 06:07:02.51362  n=1
+  started_at     other:2026-05-03 06:07:03.14382  n=1
+  started_at     other:2026-05-03 06:07:03.62060  n=1
+  started_at     other:2026-05-03 06:07:04.81436  n=1
+  started_at     other:2026-05-03 06:07:04.91615  n=1
+  started_at     other:2026-05-03 06:07:07.19022  n=1
+  started_at     other:2026-05-03 06:07:07.30002  n=1
+  started_at     other:2026-05-03 06:07:07.52053  n=1
+  started_at     other:2026-05-03 06:07:07.85077  n=1
+  started_at     other:2026-05-03 06:07:08.62133  n=1
+  started_at     other:2026-05-03 06:07:08.89110  n=1
+  started_at     other:2026-05-03 06:07:08.91643  n=1
+  started_at     other:2026-05-03 06:07:10.49676  n=1
+  started_at     other:2026-05-03 06:07:11.60310  n=1
+  started_at     other:2026-05-03 06:07:11.80902  n=1
+  started_at     other:2026-05-03 06:39:54.65241  n=1
+  started_at     other:2026-05-03 06:39:56.72648  n=1
+  started_at     other:2026-05-03 06:39:56.76639  n=1
+  started_at     other:2026-05-03 06:39:57.32632  n=1
+  started_at     other:2026-05-03 06:40:02.25376  n=1
+  started_at     other:2026-05-03 06:40:02.53011  n=1
+  started_at     other:2026-05-03 06:40:02.58944  n=1
+  started_at     other:2026-05-03 06:40:04.58108  n=1
+  started_at     other:2026-05-03 06:40:05.52576  n=1
+  started_at     other:2026-05-03 06:40:09.05214  n=1
+  started_at     other:2026-05-03 06:40:10.08915  n=1
+  started_at     other:2026-05-03 06:45:56.46997  n=1
+  started_at     other:2026-05-03 06:48:56.24051  n=1
+  started_at     other:2026-05-03 06:54:54.27669  n=1
+  started_at     other:2026-05-03 06:54:56.34201  n=1
+  started_at     other:2026-05-03 06:54:56.39090  n=1
+  started_at     other:2026-05-03 06:54:56.45658  n=1
+  started_at     other:2026-05-03 06:54:56.96988  n=1
+  started_at     other:2026-05-03 06:54:57.65694  n=1
+  started_at     other:2026-05-03 06:55:03.32514  n=1
+  started_at     other:2026-05-03 06:57:54.28073  n=1
+  started_at     other:2026-05-03 06:57:56.37113  n=1
+  started_at     other:2026-05-03 06:57:56.38445  n=1
+  started_at     other:2026-05-03 07:00:54.43008  n=1
+  started_at     other:2026-05-03 07:00:56.42603  n=1
+  started_at     other:2026-05-03 07:01:01.01770  n=1
+  started_at     other:2026-05-03 07:01:01.95549  n=1
+  started_at     other:2026-05-03 07:01:02.47513  n=1
+  started_at     other:2026-05-03 07:01:06.75078  n=1
+  started_at     other:2026-05-03 07:03:54.44745  n=1
+  started_at     other:2026-05-03 07:36:56.35496  n=1
+  started_at     other:2026-05-03 07:36:59.99423  n=1
+  started_at     other:2026-05-03 08:06:54.30480  n=1
+  started_at     other:2026-05-03 08:06:54.30926  n=1
+  started_at     other:2026-05-03 08:06:54.39556  n=1
+  started_at     other:2026-05-03 08:07:02.49027  n=1
+  started_at     other:2026-05-03 08:07:05.31524  n=1
+  started_at     other:2026-05-03 08:07:08.78932  n=1
+  started_at     other:2026-05-03 08:07:08.84160  n=1
+  started_at     other:2026-05-03 08:07:09.65471  n=1
+  started_at     other:2026-05-03 08:09:56.46577  n=1
+  started_at     other:2026-05-03 08:09:56.91949  n=1
+  started_at     other:2026-05-03 08:39:54.23769  n=1
+  started_at     other:2026-05-03 08:39:54.34415  n=1
+  started_at     other:2026-05-03 08:40:02.60401  n=1
+  started_at     other:2026-05-03 08:40:02.64193  n=1
+  started_at     other:2026-05-03 08:40:04.57519  n=1
+  started_at     other:2026-05-03 08:40:04.83760  n=1
+  started_at     other:2026-05-03 08:40:05.95800  n=1
+  started_at     other:2026-05-03 08:40:07.05884  n=1
+  started_at     other:2026-05-03 08:40:09.02461  n=1
+  started_at     other:2026-05-03 08:40:10.75319  n=1
+  started_at     other:2026-05-03 08:42:54.29091  n=1
+  started_at     other:2026-05-03 08:42:54.37580  n=1
+  started_at     other:2026-05-03 08:42:57.13067  n=1
+  started_at     other:2026-05-03 08:43:01.49246  n=1
+  started_at     other:2026-05-03 08:43:02.61528  n=1
+  started_at     other:2026-05-03 08:43:02.85271  n=1
+  started_at     other:2026-05-03 08:43:03.52857  n=1
+  started_at     other:2026-05-03 08:43:05.46763  n=1
+  started_at     other:2026-05-03 08:43:05.90243  n=1
+  started_at     other:2026-05-03 08:43:07.69468  n=1
+  started_at     other:2026-05-03 08:43:09.34593  n=1
+  started_at     other:2026-05-03 08:43:10.52566  n=1
+  started_at     other:2026-05-03 08:43:11.49832  n=1
+  started_at     other:2026-05-03 08:43:12.21494  n=1
+  started_at     other:2026-05-03 08:43:20.69143  n=1
+  started_at     other:2026-05-03 08:45:56.57434  n=1
+  started_at     other:2026-05-03 08:46:00.10911  n=1
+  started_at     other:2026-05-03 08:46:00.24413  n=1
+  started_at     other:2026-05-03 08:46:01.45761  n=1
+  started_at     other:2026-05-03 08:46:09.63667  n=1
+  started_at     other:2026-05-03 08:49:01.48168  n=1
+  started_at     other:2026-05-03 08:52:00.35685  n=1
+  started_at     other:2026-05-03 09:00:57.05397  n=1
+  started_at     other:2026-05-03 09:18:54.26756  n=1
+  started_at     other:2026-05-03 09:18:54.27611  n=1
+  started_at     other:2026-05-03 09:18:54.31527  n=1
+  started_at     other:2026-05-03 09:18:54.51076  n=1
+  started_at     other:2026-05-03 09:19:01.35042  n=1
+  started_at     other:2026-05-03 09:19:06.88447  n=1
+  started_at     other:2026-05-03 09:19:07.45583  n=1
+  started_at     other:2026-05-03 09:19:07.60963  n=1
+  started_at     other:2026-05-03 09:19:08.55043  n=1
+  started_at     other:2026-05-03 09:19:09.14611  n=1
+  started_at     other:2026-05-03 09:19:10.41310  n=1
+  started_at     other:2026-05-03 09:19:10.49025  n=1
+  started_at     other:2026-05-03 09:21:55.57601  n=1
+  started_at     other:2026-05-03 09:21:56.61376  n=1
+  started_at     other:2026-05-03 09:21:56.64455  n=1
+  started_at     other:2026-05-03 09:21:56.7175+  n=1
+  started_at     other:2026-05-03 09:21:56.83349  n=1
+  started_at     other:2026-05-03 09:21:57.22192  n=1
+  started_at     other:2026-05-03 09:22:02.11077  n=1
+  started_at     other:2026-05-03 09:22:02.54671  n=1
+  started_at     other:2026-05-03 09:22:03.49707  n=1
+  started_at     other:2026-05-03 09:22:04.06895  n=1
+  started_at     other:2026-05-03 09:22:04.65904  n=1
+  started_at     other:2026-05-03 09:22:06.35898  n=1
+  started_at     other:2026-05-03 09:22:07.83377  n=1
+  started_at     other:2026-05-03 09:22:09.15718  n=1
+  started_at     other:2026-05-03 09:22:09.72943  n=1
+  started_at     other:2026-05-03 09:22:10.09812  n=1
+  started_at     other:2026-05-03 09:22:11.46451  n=1
+  started_at     other:2026-05-03 09:24:54.37818  n=1
+  started_at     other:2026-05-03 09:24:54.73869  n=1
+  started_at     other:2026-05-03 09:24:55.24963  n=1
+  started_at     other:2026-05-03 09:24:57.06620  n=1
+  started_at     other:2026-05-03 09:25:01.56659  n=1
+  started_at     other:2026-05-03 09:25:01.68571  n=1
+  started_at     other:2026-05-03 09:25:03.32528  n=1
+  started_at     other:2026-05-03 09:25:11.87034  n=1
+  started_at     other:2026-05-03 09:25:12.18098  n=1
+  started_at     other:2026-05-03 09:27:54.49339  n=1
+  started_at     other:2026-05-03 09:27:55.39258  n=1
+  started_at     other:2026-05-03 09:27:55.49658  n=1
+  started_at     other:2026-05-03 09:28:00.47327  n=1
+  started_at     other:2026-05-03 09:28:01.47859  n=1
+  started_at     other:2026-05-03 09:28:01.95007  n=1
+  started_at     other:2026-05-03 09:28:02.67580  n=1
+  started_at     other:2026-05-03 09:28:05.94349  n=1
+  started_at     other:2026-05-03 09:54:56.74577  n=1
+  started_at     other:2026-05-03 11:34:01.14191  n=1
+  started_at     other:2026-05-03 17:43:16.50205  n=1
+  started_at     other:2026-05-03 17:43:16.53845  n=1
+  started_at     other:2026-05-03 19:15:55.81916  n=1
+  started_at     other:2026-05-03 19:33:56.30661  n=1
+  started_at     other:2026-05-03 19:34:03.40664  n=1
+  started_at     other:2026-05-03 19:34:08.15094  n=1
+  started_at     other:2026-05-03 19:34:11.52180  n=1
+  started_at     other:2026-05-03 19:36:56.03108  n=1
+  started_at     other:2026-05-03 19:36:58.05552  n=1
+  started_at     other:2026-05-03 19:36:59.71701  n=1
+  started_at     other:2026-05-03 20:03:55.78396  n=1
+  started_at     other:2026-05-03 20:03:55.84147  n=1
+  started_at     other:2026-05-03 20:03:56.57640  n=1
+  started_at     other:2026-05-03 20:03:56.63827  n=1
+  started_at     other:2026-05-03 20:03:59.35831  n=1
+  started_at     other:2026-05-03 20:04:06.89611  n=1
+  started_at     other:2026-05-03 20:04:08.66483  n=1
+  started_at     other:2026-05-03 20:04:09.03955  n=1
+  started_at     other:2026-05-03 20:04:09.70201  n=1
+  started_at     other:2026-05-03 20:04:10.57456  n=1
+  started_at     other:2026-05-03 20:04:11.68494  n=1
+  started_at     other:2026-05-03 20:04:12.25339  n=1
+  started_at     other:2026-05-03 20:04:12.77848  n=1
+  started_at     other:2026-05-03 20:04:13.01131  n=1
+  started_at     other:2026-05-03 20:04:13.65511  n=1
+  started_at     other:2026-05-03 20:06:58.76420  n=1
+  started_at     other:2026-05-03 20:42:56.30512  n=1
+  started_at     other:2026-05-03 20:42:56.38385  n=1
+  started_at     other:2026-05-03 20:42:59.05460  n=1
+  started_at     other:2026-05-03 20:43:03.33923  n=1
+  started_at     other:2026-05-03 20:43:04.66129  n=1
+  started_at     other:2026-05-03 20:43:04.73745  n=1
+  started_at     other:2026-05-03 20:43:07.78323  n=1
+  started_at     other:2026-05-03 20:43:11.23430  n=1
+  started_at     other:2026-05-03 20:43:11.40615  n=1
+  started_at     other:2026-05-03 20:43:13.55559  n=1
+  started_at     other:2026-05-03 21:46:03.49881  n=1
+  started_at     other:2026-05-03 23:55:00.94470  n=1
+  started_at     other:2026-05-04 02:42:56.06430  n=1
+  started_at     other:2026-05-04 07:36:59.43525  n=1
+  started_at     other:2026-05-04 07:37:07.30556  n=1
+  started_at     other:2026-05-04 07:38:51.05275  n=1
+  started_at     other:2026-05-04 07:39:53.81631  n=1
+  started_at     other:2026-05-04 07:39:54.58462  n=1
+  started_at     other:2026-05-04 07:40:02.16165  n=1
+  started_at     other:2026-05-04 07:40:04.06874  n=1
+  started_at     other:2026-05-04 07:40:05.92433  n=1
+  started_at     other:2026-05-04 07:40:06.11929  n=1
+  started_at     other:2026-05-04 07:40:10.89203  n=1
+  started_at     other:2026-05-04 07:42:52.87645  n=1
+  started_at     other:2026-05-04 07:42:55.91885  n=1
+  started_at     other:2026-05-04 07:42:57.25087  n=1
+  started_at     other:2026-05-04 07:42:57.43879  n=1
+  started_at     other:2026-05-04 07:42:59.52213  n=1
+  started_at     other:2026-05-04 07:42:59.98192  n=1
+  started_at     other:2026-05-04 07:43:02.44684  n=1
+  started_at     other:2026-05-04 07:43:07.11181  n=1
+  started_at     other:2026-05-04 07:43:08.53955  n=1
+  started_at     other:2026-05-04 07:43:08.67427  n=1
+  started_at     other:2026-05-04 07:43:09.17576  n=1
+  started_at     other:2026-05-04 07:43:11.42145  n=1
+  started_at     other:2026-05-04 07:43:11.62239  n=1
+  started_at     other:2026-05-04 07:45:53.92424  n=1
+  started_at     other:2026-05-04 07:45:53.92688  n=1
+  started_at     other:2026-05-04 07:45:53.98217  n=1
+  started_at     other:2026-05-04 07:46:00.55771  n=1
+  started_at     other:2026-05-04 07:46:03.05292  n=1
+  started_at     other:2026-05-04 07:46:04.617+0  n=1
+  started_at     other:2026-05-04 07:46:05.66566  n=1
+  started_at     other:2026-05-04 07:46:06.43542  n=1
+  started_at     other:2026-05-04 07:46:07.79750  n=1
+  started_at     other:2026-05-04 07:46:08.49874  n=1
+  started_at     other:2026-05-04 07:46:09.90404  n=1
+  started_at     other:2026-05-04 07:46:10.81504  n=1
+  started_at     other:2026-05-04 07:48:54.12425  n=1
+  started_at     other:2026-05-04 07:48:54.22666  n=1
+  started_at     other:2026-05-04 07:49:02.76436  n=1
+  started_at     other:2026-05-04 07:49:09.16417  n=1
+  started_at     other:2026-05-04 07:49:10.16895  n=1
+  started_at     other:2026-05-04 07:49:11.17283  n=1
+  started_at     other:2026-05-04 07:51:53.10614  n=1
+  started_at     other:2026-05-04 07:51:54.18996  n=1
+  started_at     other:2026-05-04 07:51:54.58569  n=1
+  started_at     other:2026-05-04 07:51:55.94108  n=1
+  started_at     other:2026-05-04 07:52:01.74058  n=1
+  started_at     other:2026-05-04 07:52:07.44328  n=1
+  started_at     other:2026-05-04 07:52:09.11329  n=1
+  started_at     other:2026-05-04 08:36:40.69111  n=1
+  started_at     other:2026-05-04 08:36:40.77879  n=1
+  started_at     other:2026-05-04 08:38:58.46266  n=1
+  started_at     other:2026-05-04 08:38:58.50613  n=1
+  started_at     other:2026-05-04 08:38:58.51058  n=1
+  started_at     other:2026-05-04 08:38:58.54513  n=1
+  started_at     other:2026-05-04 08:38:58.54922  n=1
+  started_at     other:2026-05-04 08:38:58.62058  n=1
+  started_at     other:2026-05-04 08:38:58.62700  n=1
+  started_at     other:2026-05-04 09:27:56.39275  n=1
+  started_at     other:2026-05-04 09:33:44.04204  n=1
+  started_at     other:2026-05-04 10:13:32.59454  n=1
+  started_at     other:2026-05-04 13:03:54.15508  n=1
+  started_at     other:2026-05-04 13:48:54.25164  n=1
+  started_at     other:2026-05-04 18:45:54.40136  n=1
+  started_at     other:2026-05-04 19:06:46.75702  n=1
+  started_at     other:2026-05-04 19:06:46.75831  n=1
+  started_at     other:2026-05-04 19:27:54.20581  n=1
+  started_at     other:2026-05-04 21:41:19.12113  n=1
+  started_at     other:2026-05-04 21:41:19.16406  n=1
+  started_at     other:2026-05-04 21:41:19.25078  n=1
+  started_at     other:2026-05-04 21:41:19.26658  n=1
+  started_at     other:2026-05-04 21:41:19.29758  n=1
+  started_at     other:2026-05-04 21:41:19.53295  n=1
+  started_at     other:2026-05-04 22:10:04.33098  n=1
+  started_at     other:2026-05-05 01:33:55.71251  n=1
+  started_at     other:2026-05-05 06:48:57.41719  n=1
+  started_at     other:2026-05-05 06:48:57.42251  n=1
+  started_at     other:2026-05-05 07:48:56.74938  n=1
+  started_at     other:2026-05-05 07:49:00.97501  n=1
+  started_at     other:2026-05-05 07:49:01.04601  n=1
+  started_at     other:2026-05-05 07:49:01.10419  n=1
+  started_at     other:2026-05-05 07:51:55.10691  n=1
+  started_at     other:2026-05-05 07:52:07.73805  n=1
+  started_at     other:2026-05-05 07:54:54.06103  n=1
+  started_at     other:2026-05-05 08:22:01.05181  n=1
+  started_at     other:2026-05-05 08:51:54.24956  n=1
+  started_at     other:2026-05-05 09:06:07.52369  n=1
+  started_at     other:2026-05-05 09:06:07.59871  n=1
+  started_at     other:2026-05-05 09:34:37.79156  n=1
+  started_at     other:2026-05-05 10:27:41.28923  n=1
+  started_at     other:2026-05-05 16:04:06.89102  n=1
+  started_at     other:2026-05-05 22:34:01.47118  n=1
+  started_at     other:2026-05-05 22:34:01.69354  n=1
+  started_at     other:2026-05-05 22:34:03.81161  n=1
+  started_at     other:2026-05-05 22:34:08.53472  n=1
+  started_at     other:2026-05-05 22:34:08.56510  n=1
+  started_at     other:2026-05-05 22:37:04.45129  n=1
+  started_at     other:2026-05-05 22:37:08.73751  n=1
+  started_at     other:2026-05-05 22:37:09.03643  n=1
+  started_at     other:2026-05-05 22:37:09.68945  n=1
+  started_at     other:2026-05-05 22:37:12.24269  n=1
+  started_at     other:2026-05-05 22:55:08.69352  n=1
+  started_at     other:2026-05-06 00:03:54.26306  n=1
+  started_at     other:2026-05-06 00:03:54.35345  n=1
+  started_at     other:2026-05-06 00:03:56.48374  n=1
+  started_at     other:2026-05-06 00:07:01.43752  n=1
+  started_at     other:2026-05-06 00:09:57.47294  n=1
+  started_at     other:2026-05-06 00:24:54.16186  n=1
+  started_at     other:2026-05-06 00:24:54.29215  n=1
+  started_at     other:2026-05-06 00:24:54.44669  n=1
+  started_at     other:2026-05-06 00:42:56.13124  n=1
+  started_at     other:2026-05-06 02:32:00.85981  n=1
+  started_at     other:2026-05-06 02:32:00.89348  n=1
+  started_at     other:2026-05-06 02:32:00.92725  n=1
+  started_at     other:2026-05-06 02:32:01.73829  n=1
+  started_at     other:2026-05-06 02:32:02.72199  n=1
+  started_at     other:2026-05-06 02:32:02.87503  n=1
+  started_at     other:2026-05-06 02:32:02.88505  n=1
+  started_at     other:2026-05-06 02:32:03.60415  n=1
+  started_at     other:2026-05-06 02:32:03.62133  n=1
+  started_at     other:2026-05-06 02:32:05.22495  n=1
+  started_at     other:2026-05-06 02:34:00.80795  n=1
+  started_at     other:2026-05-06 02:40:26.56535  n=1
+  started_at     other:2026-05-06 03:00:56.71024  n=1
+  started_at     other:2026-05-06 03:54:54.30596  n=1
+  started_at     other:2026-05-06 03:54:54.37069  n=1
+  started_at     other:2026-05-06 03:54:54.56757  n=1
+  started_at     other:2026-05-06 03:54:56.35994  n=1
+  started_at     other:2026-05-06 03:55:00.06398  n=1
+  started_at     other:2026-05-06 03:55:00.71905  n=1
+  started_at     other:2026-05-06 03:55:00.73060  n=1
+  started_at     other:2026-05-06 03:55:01.11497  n=1
+  started_at     other:2026-05-06 03:55:01.21151  n=1
+  started_at     other:2026-05-06 03:55:01.24230  n=1
+  started_at     other:2026-05-06 03:55:01.27078  n=1
+  started_at     other:2026-05-06 03:55:01.28527  n=1
+  started_at     other:2026-05-06 03:55:01.33662  n=1
+  started_at     other:2026-05-06 03:55:01.44594  n=1
+  started_at     other:2026-05-06 03:55:03.72751  n=1
+  started_at     other:2026-05-06 03:55:04.08590  n=1
+  started_at     other:2026-05-06 03:55:05.90463  n=1
+  started_at     other:2026-05-06 03:55:06.68996  n=1
+  started_at     other:2026-05-06 03:55:07.46505  n=1
+  started_at     other:2026-05-06 03:55:07.63019  n=1
+  started_at     other:2026-05-06 03:55:08.80916  n=1
+  started_at     other:2026-05-06 03:55:09.03391  n=1
+  started_at     other:2026-05-06 03:55:09.69005  n=1
+  started_at     other:2026-05-06 03:57:54.66974  n=1
+  started_at     other:2026-05-06 03:57:56.88079  n=1
+  started_at     other:2026-05-06 03:57:57.52556  n=1
+  started_at     other:2026-05-06 03:57:57.78648  n=1
+  started_at     other:2026-05-06 03:57:59.68335  n=1
+  started_at     other:2026-05-06 03:58:00.15487  n=1
+  started_at     other:2026-05-06 03:58:00.92538  n=1
+  started_at     other:2026-05-06 03:58:01.1214+  n=1
+  started_at     other:2026-05-06 03:58:01.63631  n=1
+  started_at     other:2026-05-06 03:58:01.68347  n=1
+  started_at     other:2026-05-06 03:58:02.28780  n=1
+  started_at     other:2026-05-06 03:58:02.84424  n=1
+  started_at     other:2026-05-06 03:58:07.20933  n=1
+  started_at     other:2026-05-06 03:58:08.29698  n=1
+  started_at     other:2026-05-06 03:58:08.79004  n=1
+  started_at     other:2026-05-06 04:07:02.02100  n=1
+  started_at     other:2026-05-06 04:24:54.37596  n=1
+  started_at     other:2026-05-06 04:27:54.39317  n=1
+  started_at     other:2026-05-06 04:27:54.42745  n=1
+  started_at     other:2026-05-06 04:27:54.46180  n=1
+  started_at     other:2026-05-06 04:27:56.52851  n=1
+  started_at     other:2026-05-06 04:27:57.19439  n=1
+  started_at     other:2026-05-06 04:28:00.42105  n=1
+  started_at     other:2026-05-06 04:28:01.25084  n=1
+  started_at     other:2026-05-06 04:28:01.35710  n=1
+  started_at     other:2026-05-06 04:28:01.37616  n=1
+  started_at     other:2026-05-06 04:28:01.66682  n=1
+  started_at     other:2026-05-06 04:28:01.88508  n=1
+  started_at     other:2026-05-06 04:28:01.89545  n=1
+  started_at     other:2026-05-06 04:31:01.48885  n=1
+  started_at     other:2026-05-06 04:36:54.60643  n=1
+  started_at     other:2026-05-06 04:57:56.51808  n=1
+  started_at     other:2026-05-06 11:42:56.51640  n=1
+  started_at     other:2026-05-06 12:15:54.30776  n=1
+  started_at     other:2026-05-06 13:40:09.34630  n=1
+  started_at     other:2026-05-06 13:49:07.91008  n=1
+
+artifact_prefix shape: {'s3://ralphbench-logs/.../  (good)': 1478, 'MISSING': 21}
+
+source_oddish_* lineage: complete=602, partial=897, none=0
+canonical_attempt_dir: {'None/missing': 1043, 'task-* (good)': 456}
+
+exception_classes shape:
+  1043  MISSING field
+   399  []
+    49  list:['AgentTimeoutError']
+     8  list:['NonZeroAgentExitCodeError']
+
+==============================================================================
+4. Sample trial-dir structure (one trial per task)
+==============================================================================
+task                     sample trial                         tc tr cc cr
+  biofabric-rust-rewrite   biofabric-rust-rewrite-897c0fc8-86   ✓✓--
+  embedding-eval           embedding-eval-be1dc228-219          ✓✓--
+  excel-clone              excel-clone-685bff89-210             ✓✓--
+  find-network-alignments  find-network-alignments-b2ecebb7-81  ✓✓--
+  jax-pytorch-rewrite      jax-pytorch-rewrite-93c38683-45      ✓✓--
+  kubernetes-rust-rewrite  kubernetes-rust-rewrite-ecef12ce-19  ✓✓--
+  mastodon-clone           mastodon-clone-e9964b7a-162          ✓✓✓✓
+  nextjs-vite-rewrite      nextjs-vite-rewrite-c6cb4791-44      ✓✓--
+  parameter-golf           parameter-golf-61e11605-356          ✓✓--
+  post-train-ifeval        post-train-ifeval-c9f2cfbc-268       ✓✓✓✓
+  ruby-rust-port           ruby-rust-port-383776ff-153          ✓✓--
+  rust-c-compiler          rust-c-compiler-57913cbe-210         ✓✓--
+  rust-java-lsp            rust-java-lsp-0a9c67d6-164           ✓✓--
+  s3-clone                 s3-clone-23996371-131                ✓✓✓✓
+  slack-clone              slack-clone-b0a98beb-207             ✓✓✓✓
+  stripe-clone             stripe-clone-66061f4d-11             ✓✓--
+  trimul-cuda              trimul-cuda-fc34aaba-449             ✓✓--
+  vliw-kernel-optimization vliw-kernel-optimization-e4d25121-85  ✓✓--
+  wasm-simd                wasm-simd-40e18127-159               ✓✓--
+  zstd-decoder             zstd-decoder-72bbfded-318            ✓✓--
+
+==============================================================================
+Summary
+==============================================================================
+  Universal manifest top-level fields (13): ['experiment_id', 'n_trials', 'note', 'task', 'task_name', 'task_version_id', 'trials', 'task_versions', 'task_hashes', 'task_hash', 'is_multi_version', 'experiment_ids', 'additional_imports']
+  Partial top-level fields:
+    legacy_prefix: present in 12/20 tasks
+    pair_counts: present in 4/20 tasks
+    n_pass: present in 4/20 tasks
+    duplicate_fingerprint_count: present in 4/20 tasks
+    intentionally_tombstoned_trials: present in 1/20 tasks
+
+  Universal trial entry fields (20):
+    - agent
+    - artifact_layout
+    - attempts
+    - cache_tokens
+    - cost_usd
+    - finished_at
+    - has_trajectory
+    - input_tokens
+    - max_attempts
+    - model
+    - origin
+    - output_tokens
+    - provider
+    - reward
+    - started_at
+    - status
+    - task_version_id
+    - source_trial_name
+    - task_name
+    - task_hash
+
+  Partial trial entry fields:
+    artifact_prefix: present in 98.6% (1478/1499) of trials
+    source_oddish_task_id: present in 58.4% (875/1499) of trials
+    source_oddish_trial_id: present in 58.4% (875/1499) of trials
+    trajectory_bytes: present in 43.6% (653/1499) of trials
+    source_oddish_experiment_id: present in 40.4% (605/1499) of trials
+    original_provider: present in 35.4% (531/1499) of trials
+    selection_note: present in 34.8% (521/1499) of trials
+    exception_classes: present in 30.4% (456/1499) of trials
+    canonical_attempt_dir: present in 30.4% (456/1499) of trials
+    phase_timing: present in 22.5% (338/1499) of trials
+    error_message: present in 21.5% (322/1499) of trials
+    total_artifact_bytes: present in 16.7% (250/1499) of trials
+    cost_backfill: present in 7.9% (119/1499) of trials
+    raw_model: present in 7.5% (113/1499) of trials
+    verifier_partial_score: present in 4.7% (71/1499) of trials
+    cell_id: present in 4.4% (66/1499) of trials
+    original_model: present in 0.6% (9/1499) of trials
+    override_validity: present in 0.5% (8/1499) of trials
+    override_reason: present in 0.5% (8/1499) of trials
+    reward_hacking_judge: present in 0.3% (5/1499) of trials
+    inner_trial_id: present in 0.3% (5/1499) of trials
+    retrofit_note: present in 0.3% (5/1499) of trials
