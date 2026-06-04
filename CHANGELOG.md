@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-04]
+
+### Fixed
+- `oddish run` no longer crashes when a task's `task.toml` omits the `gpus` field; `_task_config_requests_gpu` now treats an absent `gpus` as 0 GPUs instead of raising `TypeError: '>' not supported between 'NoneType' and 'int'` (#181)
+- Claude Code workers using an OpenRouter model now receive the correct Anthropic-skin environment (`ANTHROPIC_BASE_URL` pointing to the OpenRouter endpoint, `ANTHROPIC_AUTH_TOKEN` set to `${OPENROUTER_API_KEY}`); conflicting Bedrock and direct-Anthropic ambient credentials are blanked so the OpenRouter route takes effect (#175)
+
+---
+
 ## [2026-06-03]
 
 ### Added
