@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import heapq
 import json
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
+from harbor import EnvironmentType
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +30,9 @@ from oddish.schemas import (
     TrialResponse,
     VisibleWorkerJob,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_trial_cost(
@@ -1041,3 +1046,70 @@ async def build_task_status_responses_from_counts(
         )
         for task in tasks
     ]
+
+
+async def cancel_job_by_worker(
+    provider: str | None,
+    external_id: str | None,
+) -> bool:
+    """Best-effort terminate the remote sandbox backing a hanging job.
+
+    Dispatches on the worker's ``provider`` (``"modal"`` / ``"daytona"``,
+    matching ``harbor``'s ``provider_name``) and tears down the sandbox
+    identified by ``external_id``. Cancellation paths call this for rows
+    they have already marked terminal in the DB, so it never raises into
+    the caller -- failures are logged and reported via the return value.
+
+    Returns ``True`` when a terminate/delete call was issued successfully,
+    ``False`` when there was nothing to do or the teardown failed.
+    """
+    if not provider or not external_id:
+        return False
+
+    try:
+        env_type = EnvironmentType(provider.lower())
+    except ValueError:
+        logger.warning(
+            "cancel_job_by_worker: unknown provider %r (external_id=%s)",
+            provider,
+            external_id,
+        )
+        return False
+
+    try:
+        # import would crash every one of those processes; importing here
+        # keeps the teardown deps confined to the worker context that
+        # actually has them installed.
+        if env_type == EnvironmentType.MODAL:
+            import modal
+
+            sandbox = await modal.Sandbox.from_id.aio(external_id)
+            await sandbox.terminate.aio()
+        elif env_type == EnvironmentType.DAYTONA:
+            from daytona import AsyncDaytona
+
+            client = AsyncDaytona()
+            try:
+                sandbox = await client.get(external_id)
+                await client.delete(sandbox)
+            finally:
+                await client.close()
+        else:
+            logger.warning(
+                "cancel_job_by_worker: no teardown for provider %r (external_id=%s)",
+                provider,
+                external_id,
+            )
+            return False
+    except Exception:
+        # Hanging-sandbox cleanup is best-effort: the DB row is already terminal.
+        # Don't raise an exception, log and let the provider's auto-stop / TTL be backstop.
+        logger.exception(
+            "cancel_job_by_worker: failed to terminate %s sandbox %s",
+            provider,
+            external_id,
+        )
+        return False
+
+    logger.info("cancel_job_by_worker: terminated %s sandbox %s", provider, external_id)
+    return True
