@@ -6,6 +6,7 @@ Handles updating PR comments when trial/analysis/verdict status changes.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -32,6 +33,52 @@ from .formatter import (
 logger = logging.getLogger(__name__)
 
 DASHBOARD_URL = os.getenv("ODDISH_DASHBOARD_URL", "https://www.oddish.app")
+
+# Comment writes are best-effort and fired from per-trial/analysis/verdict
+# hooks. Without retry, a single transient failure (GitHub 5xx/429/network, or
+# a worker container briefly cycling onto a refreshed token) silently drops
+# that update, and the comment can freeze behind the real run state until some
+# later event happens to succeed. Retry with backoff so each event — including
+# the terminal verdict refresh — durably lands.
+_COMMENT_WRITE_ATTEMPTS = 4
+_COMMENT_WRITE_BASE_DELAY_SEC = 1.0
+
+
+async def _upsert_comment_with_retry(
+    client,
+    *,
+    owner: str,
+    repo: str,
+    pr_number: int,
+    body: str,
+    attempts: int = _COMMENT_WRITE_ATTEMPTS,
+    base_delay: float = _COMMENT_WRITE_BASE_DELAY_SEC,
+    sleep=asyncio.sleep,
+) -> dict | None:
+    """Upsert the PR comment, retrying transient failures with backoff.
+
+    The GitHub client swallows HTTP errors and returns ``None``, so a falsy
+    result is treated like an exception: retry. ``sleep`` is injectable for
+    tests. Note: a *persistent* auth failure (e.g. a token with no access ->
+    404/403) will exhaust retries — that's a credential/config problem retry
+    can't fix; this only makes *transient* failures durable.
+    """
+    delay = base_delay
+    for attempt in range(1, attempts + 1):
+        try:
+            result = await client.upsert_oddish_comment(
+                owner=owner, repo=repo, pr_number=pr_number, body=body
+            )
+            if result:
+                return result
+        except Exception as e:  # noqa: BLE001 - log and retry any write error
+            logger.warning(
+                f"PR comment write attempt {attempt}/{attempts} errored: {e}"
+            )
+        if attempt < attempts:
+            await sleep(delay)
+            delay *= 2
+    return None
 
 
 async def _build_trial_summary(
@@ -205,22 +252,23 @@ async def _update_pr_comment_for_task(
                 dashboard_url=DASHBOARD_URL,
             )
 
-    try:
-        result = await client.upsert_oddish_comment(
-            owner=github_meta.owner,
-            repo=github_meta.repo,
-            pr_number=github_meta.pr_number,
-            body=comment_body,
+    result = await _upsert_comment_with_retry(
+        client,
+        owner=github_meta.owner,
+        repo=github_meta.repo,
+        pr_number=github_meta.pr_number,
+        body=comment_body,
+    )
+    if result:
+        logger.info(
+            f"Updated PR comment for {github_meta.owner}/{github_meta.repo}#{github_meta.pr_number}"
         )
-        if result:
-            logger.info(
-                f"Updated PR comment for {github_meta.owner}/{github_meta.repo}#{github_meta.pr_number}"
-            )
-            return True
-        return False
-    except Exception as e:
-        logger.error(f"Failed to update PR comment: {e}")
-        return False
+        return True
+    logger.error(
+        f"Failed to update PR comment for {github_meta.owner}/{github_meta.repo}"
+        f"#{github_meta.pr_number} after {_COMMENT_WRITE_ATTEMPTS} attempts"
+    )
+    return False
 
 
 async def notify_trial_update(trial_id: str) -> bool:
