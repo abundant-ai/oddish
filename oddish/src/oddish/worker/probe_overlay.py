@@ -99,17 +99,19 @@ def render_probe_instruction(
     # was itself read by claude-code as a prompt-injection attempt and triggered
     # refusals even with a well-framed directive. ``framing`` is intentionally
     # unused here while we A/B this against the override-style framing.
-    # Split layout: instruction.md holds ONLY the operator directive (the
-    # agent's single authoritative job). The original task spec is written to a
-    # sibling ``task_details.md`` and merely referenced here, so there is no
-    # rival "real task" competing for the instruction.md slot -- the structural
-    # source of the refusals seen with the inline/override layouts.
-    _ = (framing, original)
+    # Inline natural-flow layout: the operator directive flows straight into the
+    # task spec -- the shape proven to work in the baked-in ``probe-rust-c-compiler``
+    # task. The original "OPERATOR DIRECTIVE overrides your real task / ORIGINAL
+    # TASK (context only)" framing was read by claude-code as a prompt-injection
+    # attempt and triggered refusals; this presents the directive as the natural
+    # top of instruction.md with the spec as its subject. (A split into a separate
+    # ``task_details.md`` was tried and reverted: harbor delivers the spec to the
+    # agent only via the prompt -- a root-level file never reaches /app.)
+    _ = framing
     return (
         f"{directive}\n\n"
-        f"The complete specification of the task referenced above is in "
-        f"`task_details.md` in this directory. Read it first for the full "
-        f"requirements, then proceed.\n\n"
+        f"THIS IS THE TASK:\n\n"
+        f"{original}\n\n"
         f"---\n\n"
         f"{_RUNNING_TESTS_SECTION}\n\n"
         f"---\n\n"
