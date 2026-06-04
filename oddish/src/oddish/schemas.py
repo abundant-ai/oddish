@@ -551,6 +551,8 @@ class VisibleWorkerJob(BaseModel):
     kind: str
     status: str
     queue_key: str
+    provider: str | None = None
+    external_id: str | None = None
     subject_table: str | None = None
     subject_id: str | None = None
     attempts: int
