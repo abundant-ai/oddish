@@ -4,8 +4,8 @@
     "6f068eca",
     "0042aebf"
   ],
-  "n_trials": 68,
-  "note": "Created at 2026-06-03T18:28:22.004421+00:00. Imports the 5 codex / openai/gpt-5.5 trials for post-train-ifeval on task version post-train-ifeval-c9f2cfbc-v33 from Oddish experiment 6f068eca. This is a Tinker-based post-training task: the agent uses the external Tinker API to SFT/RL-fine-tune meta-llama/Llama-3.2-1B and must beat 45% binary_strict on IFEval (base model is ~26% with the Llama 3 chat renderer). Each manifest entry's reward_hacking_judge field records the verifier-side judge's verdict (all five were 'clean'). | 2026-06-03T19:29:23.009582+00:00 backfilled 63 trials across 13 cells (experiments ['0042aebf', '6f068eca'], versions ['post-train-ifeval-c9f2cfbc-v31', 'post-train-ifeval-c9f2cfbc-v34']).",
+  "n_trials": 71,
+  "note": "Created at 2026-06-03T18:28:22.004421+00:00. Imports the 5 codex / openai/gpt-5.5 trials for post-train-ifeval on task version post-train-ifeval-c9f2cfbc-v33 from Oddish experiment 6f068eca. This is a Tinker-based post-training task: the agent uses the external Tinker API to SFT/RL-fine-tune meta-llama/Llama-3.2-1B and must beat 45% binary_strict on IFEval (base model is ~26% with the Llama 3 chat renderer). Each manifest entry's reward_hacking_judge field records the verifier-side judge's verdict (all five were 'clean'). | 2026-06-03T19:29:23.009582+00:00 backfilled 63 trials across 13 cells (experiments ['0042aebf', '6f068eca'], versions ['post-train-ifeval-c9f2cfbc-v31', 'post-train-ifeval-c9f2cfbc-v34']).\nBackfilled missing non-nop/oracle cost_usd fields from token counts and published model pricing. | 2026-06-04T04:25:32.608229+00:00 added 3 claude-code/anthropic/claude-opus-4-7 trials (bedrock route) from experiment 0042aebf on v34. Cell is at 3/5; 2 more RUNNING upstream.",
   "task": "post-train-ifeval-c9f2cfbc",
   "task_name": "post-train-ifeval",
   "task_hash": "c9f2cfbc",
@@ -1045,7 +1045,7 @@
       "input_tokens": 15911879,
       "cache_tokens": 12004016,
       "output_tokens": 213085,
-      "cost_usd": null,
+      "cost_usd": 12.35933832,
       "has_trajectory": true,
       "trajectory_bytes": 1173205,
       "exception_classes": [],
@@ -1062,7 +1062,16 @@
       "task_hash": "c9f2cfbc",
       "raw_model": "openrouter/moonshotai/kimi-k2.6",
       "verifier_partial_score": 0.0,
-      "cell_id": "kimi-cli|openrouter/moonshotai/kimi-k2.6"
+      "cell_id": "kimi-cli|openrouter/moonshotai/kimi-k2.6",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "post-train-ifeval-c9f2cfbc-305": {
       "agent": "kimi-cli",
@@ -1078,7 +1087,7 @@
       "input_tokens": 20774039,
       "cache_tokens": 13807152,
       "output_tokens": 332103,
-      "cost_usd": null,
+      "cost_usd": 16.32408794,
       "has_trajectory": true,
       "trajectory_bytes": 2200558,
       "exception_classes": [],
@@ -1095,7 +1104,16 @@
       "task_hash": "c9f2cfbc",
       "raw_model": "openrouter/moonshotai/kimi-k2.6",
       "verifier_partial_score": 0.262477,
-      "cell_id": "kimi-cli|openrouter/moonshotai/kimi-k2.6"
+      "cell_id": "kimi-cli|openrouter/moonshotai/kimi-k2.6",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "post-train-ifeval-c9f2cfbc-307": {
       "agent": "kimi-cli",
@@ -1111,7 +1129,7 @@
       "input_tokens": 15340920,
       "cache_tokens": 13361520,
       "output_tokens": 244735,
-      "cost_usd": null,
+      "cost_usd": 12.05299675,
       "has_trajectory": true,
       "trajectory_bytes": 1170088,
       "exception_classes": [],
@@ -1128,7 +1146,16 @@
       "task_hash": "c9f2cfbc",
       "raw_model": "openrouter/moonshotai/kimi-k2.6",
       "verifier_partial_score": 0.0,
-      "cell_id": "kimi-cli|openrouter/moonshotai/kimi-k2.6"
+      "cell_id": "kimi-cli|openrouter/moonshotai/kimi-k2.6",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "post-train-ifeval-c9f2cfbc-309": {
       "agent": "terminus-2",
@@ -1647,7 +1674,7 @@
       "input_tokens": 14841436,
       "cache_tokens": 10118640,
       "output_tokens": 217599,
-      "cost_usd": null,
+      "cost_usd": 11.59366879,
       "has_trajectory": true,
       "trajectory_bytes": 1581320,
       "exception_classes": [],
@@ -1664,7 +1691,16 @@
       "task_hash": "c9f2cfbc",
       "raw_model": "openrouter/moonshotai/kimi-k2.6",
       "verifier_partial_score": 0.240296,
-      "cell_id": "kimi-cli|openrouter/moonshotai/kimi-k2.6"
+      "cell_id": "kimi-cli|openrouter/moonshotai/kimi-k2.6",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "post-train-ifeval-c9f2cfbc-345": {
       "agent": "kimi-cli",
@@ -1680,7 +1716,7 @@
       "input_tokens": 19424623,
       "cache_tokens": 13918320,
       "output_tokens": 311586,
-      "cost_usd": null,
+      "cost_usd": 15.26740993,
       "has_trajectory": true,
       "trajectory_bytes": 1712318,
       "exception_classes": [],
@@ -1697,7 +1733,16 @@
       "task_hash": "c9f2cfbc",
       "raw_model": "openrouter/moonshotai/kimi-k2.6",
       "verifier_partial_score": 0.0,
-      "cell_id": "kimi-cli|openrouter/moonshotai/kimi-k2.6"
+      "cell_id": "kimi-cli|openrouter/moonshotai/kimi-k2.6",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "post-train-ifeval-c9f2cfbc-347": {
       "agent": "terminus-2",
@@ -2296,6 +2341,105 @@
       "raw_model": "gemini/gemini-3.1-pro-preview",
       "verifier_partial_score": 0.203327,
       "cell_id": "terminus-2|gemini/gemini-3.1-pro-preview"
+    },
+    "post-train-ifeval-c9f2cfbc-372": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "bedrock",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "post-train-ifeval-c9f2cfbc-v34",
+      "started_at": "2026-06-03T22:05:45.630673+00:00",
+      "finished_at": "2026-06-04T03:34:32.016839+00:00",
+      "input_tokens": 57184374,
+      "cache_tokens": 55995387,
+      "output_tokens": 120430,
+      "cost_usd": 38.43918475,
+      "has_trajectory": true,
+      "trajectory_bytes": 0,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/post-train-ifeval/post-train-ifeval-c9f2cfbc-372/",
+      "source_trial_name": "post-train-ifeval-372",
+      "source_oddish_task_id": "post-train-ifeval-c9f2cfbc",
+      "source_oddish_trial_id": "post-train-ifeval-c9f2cfbc-372",
+      "source_oddish_experiment_id": "0042aebf",
+      "selection_note": "Filling claude-code / anthropic/claude-opus-4-7 cell on v34 (content-hash 917a39f6, same as v32/v33). Raw model 'us.anthropic.claude-opus-4-7' (US-region Bedrock inference profile, normalized to 'anthropic/claude-opus-4-7' with provider='bedrock'). Up to 5 per cell; 3 currently finished, 2 still RUNNING upstream \u2014 re-run augment to top off.",
+      "canonical_attempt_dir": "task-post-train-ifeval-c9f2cfbc__xHSP6zS",
+      "task_name": "post-train-ifeval",
+      "task_hash": "c9f2cfbc",
+      "raw_model": "us.anthropic.claude-opus-4-7",
+      "verifier_partial_score": 0.536044,
+      "cell_id": "claude-code|anthropic/claude-opus-4-7"
+    },
+    "post-train-ifeval-c9f2cfbc-374": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "bedrock",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "post-train-ifeval-c9f2cfbc-v34",
+      "started_at": "2026-06-03T22:05:46.958051+00:00",
+      "finished_at": "2026-06-04T01:27:51.389109+00:00",
+      "input_tokens": 37753139,
+      "cache_tokens": 37450846,
+      "output_tokens": 104272,
+      "cost_usd": 23.22119925,
+      "has_trajectory": true,
+      "trajectory_bytes": 0,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/post-train-ifeval/post-train-ifeval-c9f2cfbc-374/",
+      "source_trial_name": "post-train-ifeval-374",
+      "source_oddish_task_id": "post-train-ifeval-c9f2cfbc",
+      "source_oddish_trial_id": "post-train-ifeval-c9f2cfbc-374",
+      "source_oddish_experiment_id": "0042aebf",
+      "selection_note": "Filling claude-code / anthropic/claude-opus-4-7 cell on v34 (content-hash 917a39f6, same as v32/v33). Raw model 'us.anthropic.claude-opus-4-7' (US-region Bedrock inference profile, normalized to 'anthropic/claude-opus-4-7' with provider='bedrock'). Up to 5 per cell; 3 currently finished, 2 still RUNNING upstream \u2014 re-run augment to top off.",
+      "canonical_attempt_dir": "task-post-train-ifeval-c9f2cfbc__mUKmhqN",
+      "task_name": "post-train-ifeval",
+      "task_hash": "c9f2cfbc",
+      "raw_model": "us.anthropic.claude-opus-4-7",
+      "verifier_partial_score": 0.499076,
+      "cell_id": "claude-code|anthropic/claude-opus-4-7"
+    },
+    "post-train-ifeval-c9f2cfbc-375": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "bedrock",
+      "reward": 1.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "post-train-ifeval-c9f2cfbc-v34",
+      "started_at": "2026-06-03T22:05:48.266569+00:00",
+      "finished_at": "2026-06-04T04:14:38.407804+00:00",
+      "input_tokens": 129870235,
+      "cache_tokens": 129393439,
+      "output_tokens": 200091,
+      "cost_usd": 72.6783645,
+      "has_trajectory": true,
+      "trajectory_bytes": 0,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/post-train-ifeval/post-train-ifeval-c9f2cfbc-375/",
+      "source_trial_name": "post-train-ifeval-375",
+      "source_oddish_task_id": "post-train-ifeval-c9f2cfbc",
+      "source_oddish_trial_id": "post-train-ifeval-c9f2cfbc-375",
+      "source_oddish_experiment_id": "0042aebf",
+      "selection_note": "Filling claude-code / anthropic/claude-opus-4-7 cell on v34 (content-hash 917a39f6, same as v32/v33). Raw model 'us.anthropic.claude-opus-4-7' (US-region Bedrock inference profile, normalized to 'anthropic/claude-opus-4-7' with provider='bedrock'). Up to 5 per cell; 3 currently finished, 2 still RUNNING upstream \u2014 re-run augment to top off.",
+      "canonical_attempt_dir": "task-post-train-ifeval-c9f2cfbc__PFNBuYw",
+      "task_name": "post-train-ifeval",
+      "task_hash": "c9f2cfbc",
+      "raw_model": "us.anthropic.claude-opus-4-7",
+      "verifier_partial_score": 0.64695,
+      "cell_id": "claude-code|anthropic/claude-opus-4-7"
     }
   },
   "additional_imports": [
@@ -2326,6 +2470,19 @@
         "terminus-2|openrouter/z-ai/glm-5.1"
       ],
       "note": "Backfill of remaining post-train-ifeval cells. v34 (same content hash as v32/v33) for all model-bearing cells; v31 for nop/oracle baselines (older content, but only version with 5 baseline trials on the post-IFEval task). Ranked by reward then verifier binary_strict/partial_score then trajectory_bytes then total_bytes then recency. Strict validity (AgentTimeoutError or clean only)."
+    },
+    {
+      "imported_at": "2026-06-04T04:25:32.608193+00:00",
+      "source_oddish_experiment_id": "0042aebf",
+      "task_version_id_at_snapshot": "post-train-ifeval-c9f2cfbc-v34",
+      "n_trials_added": 3,
+      "pairs_added": [
+        [
+          "claude-code",
+          "anthropic/claude-opus-4-7"
+        ]
+      ],
+      "note": "Filling claude-code/anthropic/claude-opus-4-7 cell on v34. The 3 finished trials are reward=1.0 with binary_strict 0.50-0.65 (well above 0.45 threshold). 2 more still RUNNING upstream \u2014 augment is idempotent and will top off when they finish. Raw model is 'us.anthropic.claude-opus-4-7' (US-region Bedrock cross-region inference profile); normalized to 'anthropic/claude-opus-4-7' with provider='bedrock' per the existing convention."
     }
   ]
 }
