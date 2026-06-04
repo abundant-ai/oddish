@@ -354,6 +354,14 @@ class Settings(BaseSettings):
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
 
+    # Daytona sandbox auto-cleanup safety net (minutes). A sandbox idle
+    # (no SDK events) for ``daytona_auto_stop_interval_mins`` is stopped;
+    # once stopped for ``daytona_auto_delete_interval_mins`` it is deleted.
+    # This is the backstop for sandboxes that escape explicit teardown via
+    # ``cancel_job_by_worker``; 0 disables auto-stop, so keep it positive.
+    daytona_auto_stop_interval_mins: int = 30
+    daytona_auto_delete_interval_mins: int = 60
+
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8000
