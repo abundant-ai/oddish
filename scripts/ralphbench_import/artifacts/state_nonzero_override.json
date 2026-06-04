@@ -1,0 +1,118 @@
+{
+  "entries": {
+    "find-network-alignments-b2ecebb7-188": {
+      "entry": {
+        "agent": "claude-code",
+        "model": "anthropic/claude-opus-4-8",
+        "provider": "bedrock",
+        "reward": 0.0,
+        "status": "success",
+        "attempts": 1,
+        "max_attempts": 6,
+        "task_version_id": "find-network-alignments-b2ecebb7-v5",
+        "started_at": "2026-05-28T21:41:45.598705+00:00",
+        "finished_at": "2026-05-29T02:42:35.075079+00:00",
+        "input_tokens": 27951091,
+        "cache_tokens": 26240111,
+        "output_tokens": 140876,
+        "cost_usd": null,
+        "has_trajectory": true,
+        "trajectory_bytes": 0,
+        "exception_classes": [
+          "NonZeroAgentExitCodeError"
+        ],
+        "origin": "oddish",
+        "artifact_layout": "harbor-nested",
+        "artifact_prefix": "s3://ralphbench-logs/find-network-alignments/find-network-alignments-b2ecebb7-188/",
+        "source_trial_name": "find-network-alignments-188",
+        "source_oddish_task_id": "find-network-alignments-b2ecebb7",
+        "source_oddish_trial_id": "find-network-alignments-b2ecebb7-188",
+        "source_oddish_experiment_id": "cd4dd88f",
+        "selection_note": "Accepted via user-explicit override despite NonZero exit. Verifier ran end-to-end and produced complete metrics; the trial is indistinguishable from a valid run except for the agent exit code.",
+        "canonical_attempt_dir": "task-find-network-alignments-b2e__2co4jac",
+        "task_name": "find-network-alignments",
+        "task_hash": "b2ecebb7",
+        "raw_model": "global.anthropic.claude-opus-4-8",
+        "override_validity": true,
+        "override_reason": "User-explicit override (Thu 2026-06-04): NonZeroAgentExitCodeError (exit 143 = SIGTERM at 18000s wallclock \u2014 semantically an AgentTimeoutError, just caught at a lower layer). Verifier produced full alignment metrics: partial_score=0.67, S3=0.2508 (target >=0.32), full primary_alignment and yeast_alignment dicts. Trajectory 497 KB, agent log 557 KB. Reward=0 emitted cleanly."
+      },
+      "task_name": "find-network-alignments"
+    },
+    "parameter-golf-61e11605-437": {
+      "entry": {
+        "agent": "claude-code",
+        "model": "anthropic/claude-opus-4-8",
+        "provider": "bedrock",
+        "reward": 0.0,
+        "status": "success",
+        "attempts": 1,
+        "max_attempts": 6,
+        "task_version_id": "parameter-golf-61e11605-v32",
+        "started_at": "2026-05-29T01:56:48.462523+00:00",
+        "finished_at": "2026-05-29T04:51:18.704079+00:00",
+        "input_tokens": 15576676,
+        "cache_tokens": 15075845,
+        "output_tokens": 72707,
+        "cost_usd": 7.491153,
+        "has_trajectory": true,
+        "trajectory_bytes": 0,
+        "exception_classes": [
+          "NonZeroAgentExitCodeError"
+        ],
+        "origin": "oddish",
+        "artifact_layout": "harbor-nested",
+        "artifact_prefix": "s3://ralphbench-logs/parameter-golf/parameter-golf-61e11605-437/",
+        "source_trial_name": "parameter-golf-437",
+        "source_oddish_task_id": "parameter-golf-61e11605",
+        "source_oddish_trial_id": "parameter-golf-61e11605-437",
+        "source_oddish_experiment_id": "cd4dd88f",
+        "selection_note": "Accepted via user-explicit override despite NonZero exit. Verifier ran end-to-end and produced complete metrics; the trial is indistinguishable from a valid run except for the agent exit code.",
+        "canonical_attempt_dir": "task-parameter-golf-61e11605-5ay__XAMpKvE",
+        "task_name": "parameter-golf",
+        "task_hash": "61e11605",
+        "raw_model": "global.anthropic.claude-opus-4-8",
+        "override_validity": true,
+        "override_reason": "User-explicit override (Thu 2026-06-04): NonZeroAgentExitCodeError (exit 143 = SIGTERM). Verifier passed 7/8 checks (pass_rate=0.875, partial_score=1.0), full leaderboard data \u2014 agent trained a real LM (val_bpb=1.0806 vs threshold=0.983). Reward=0 came from the one held-out validation gate, not from infra."
+      },
+      "task_name": "parameter-golf"
+    },
+    "trimul-cuda-fc34aaba-566": {
+      "entry": {
+        "agent": "claude-code",
+        "model": "anthropic/claude-opus-4-8",
+        "provider": "bedrock",
+        "reward": 0.0,
+        "status": "success",
+        "attempts": 1,
+        "max_attempts": 6,
+        "task_version_id": "trimul-cuda-fc34aaba-v86",
+        "started_at": "2026-05-28T23:56:46.815024+00:00",
+        "finished_at": "2026-05-29T03:51:23.510441+00:00",
+        "input_tokens": 33558616,
+        "cache_tokens": 32510803,
+        "output_tokens": 477001,
+        "cost_usd": 21.00052545,
+        "has_trajectory": true,
+        "trajectory_bytes": 0,
+        "exception_classes": [
+          "NonZeroAgentExitCodeError"
+        ],
+        "origin": "oddish",
+        "artifact_layout": "harbor-nested",
+        "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-566/",
+        "source_trial_name": "trimul-cuda-566",
+        "source_oddish_task_id": "trimul-cuda-fc34aaba",
+        "source_oddish_trial_id": "trimul-cuda-fc34aaba-566",
+        "source_oddish_experiment_id": "cd4dd88f",
+        "selection_note": "Accepted via user-explicit override despite NonZero exit. Verifier ran end-to-end and produced complete metrics; the trial is indistinguishable from a valid run except for the agent exit code.",
+        "canonical_attempt_dir": "task-trimul-cuda-fc34aaba-p_gxby__8eF4tJ7",
+        "task_name": "trimul-cuda",
+        "task_hash": "fc34aaba",
+        "raw_model": "global.anthropic.claude-opus-4-8",
+        "override_validity": true,
+        "override_reason": "User-explicit override (Thu 2026-06-04): NonZeroAgentExitCodeError (exit 1 \u2014 claude crashed late, not a timeout). Verifier ran kernel compile + cache probe + benchmark: cache_probe_passed=True, correctness_passed=False. $9.18 of real agent cost, 1.77 MB trajectory (largest of any v86 trial in cd4dd88f for this task), 1.75 MB claude-code log. Reward=0 emitted from a fully-instrumented verifier run."
+      },
+      "task_name": "trimul-cuda"
+    }
+  }
+}

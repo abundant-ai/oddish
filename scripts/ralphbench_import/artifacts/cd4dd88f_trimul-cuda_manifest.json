@@ -1,7 +1,7 @@
 {
   "experiment_id": "cd8c33d8",
-  "n_trials": 73,
-  "note": "Generated from Oddish experiment cd8c33d8 on 20260519T005502Z. Only rewritten-task trials (latest task_version) with numeric verifier reward (including 0.0) kept; BAD_SUCCESS classifications excluded as reward-hacked; <=5 trials per (agent,model) ranked by total artifact bytes. Added missing oracle trial trimul-cuda-fc34aaba-449 from Oddish on 2026-05-19 after dashboard/bucket reconciliation; chose longer non-duplicate oracle candidate over trimul-cuda-fc34aaba-534 to keep exactly 5.\nRemoved trimul-cuda-fc34aaba-476 from active set on 20260520T012755Z: claude-code trial had no meaningful trajectory (1 step / missing kernel.py); artifacts moved to trash.\nAdded trimul-cuda-fc34aaba-549 (claude-code pass, reward=1.0) from Oddish experiment trimul-opt-20260516T054334Z-iterR32 on 2026-05-20 to replace removed trimul-cuda-fc34aaba-476 and reach 5 claude-code trials.\nMoved rerun-suspect trials to s3://ralphbench-logs/trash/rerun-suspect-trials-20260527T184724Z/ on 2026-05-27: trimul-cuda-fc34aaba-457. | 2026-06-01T21:13:51.538470+00:00 appended 9 trials from Oddish experiment cd4dd88f on task_version trimul-cuda-fc34aaba-v86 (pairs: claude-code/anthropic/claude-opus-4-8, gemini-cli/gemini/gemini-3.5-flash); strict validity filter (status=SUCCESS, numeric reward, exception_stats clean or AgentTimeoutError/VerifierTimeoutError).",
+  "n_trials": 75,
+  "note": "Generated from Oddish experiment cd8c33d8 on 20260519T005502Z. Only rewritten-task trials (latest task_version) with numeric verifier reward (including 0.0) kept; BAD_SUCCESS classifications excluded as reward-hacked; <=5 trials per (agent,model) ranked by total artifact bytes. Added missing oracle trial trimul-cuda-fc34aaba-449 from Oddish on 2026-05-19 after dashboard/bucket reconciliation; chose longer non-duplicate oracle candidate over trimul-cuda-fc34aaba-534 to keep exactly 5.\nRemoved trimul-cuda-fc34aaba-476 from active set on 20260520T012755Z: claude-code trial had no meaningful trajectory (1 step / missing kernel.py); artifacts moved to trash.\nAdded trimul-cuda-fc34aaba-549 (claude-code pass, reward=1.0) from Oddish experiment trimul-opt-20260516T054334Z-iterR32 on 2026-05-20 to replace removed trimul-cuda-fc34aaba-476 and reach 5 claude-code trials.\nMoved rerun-suspect trials to s3://ralphbench-logs/trash/rerun-suspect-trials-20260527T184724Z/ on 2026-05-27: trimul-cuda-fc34aaba-457. | 2026-06-01T21:13:51.538470+00:00 appended 9 trials from Oddish experiment cd4dd88f on task_version trimul-cuda-fc34aaba-v86 (pairs: claude-code/anthropic/claude-opus-4-8, gemini-cli/gemini/gemini-3.5-flash); strict validity filter (status=SUCCESS, numeric reward, exception_stats clean or AgentTimeoutError/VerifierTimeoutError).\nImported trimul-cuda-fc34aaba-580 from Oddish cd8c33d8 via file API because oddish pull did not resolve it.\nBackfilled missing non-nop/oracle cost_usd fields from token counts and published model pricing. | 2026-06-04T18:10:14.629536+00:00 added 1 NonZero trial(s) as user-explicit override (full verifier metrics): trimul-cuda-fc34aaba-566.",
   "task": "trimul-cuda-fc34aaba",
   "task_hash": "fc34aaba",
   "task_name": "trimul-cuda",
@@ -2862,7 +2862,7 @@
       "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-532/",
       "attempts": 1,
       "cache_tokens": 224504,
-      "cost_usd": null,
+      "cost_usd": 1.30508256,
       "error_message": null,
       "finished_at": "2026-05-17T22:07:32.513126+00:00",
       "has_trajectory": true,
@@ -2904,7 +2904,16 @@
       "total_artifact_bytes": 3271497,
       "original_provider": "openai",
       "task_name": "trimul-cuda",
-      "task_hash": "fc34aaba"
+      "task_hash": "fc34aaba",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "trimul-cuda-fc34aaba-536": {
       "agent": "kimi-cli",
@@ -2912,7 +2921,7 @@
       "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-536/",
       "attempts": 1,
       "cache_tokens": 62848,
-      "cost_usd": null,
+      "cost_usd": 0.22995964,
       "error_message": null,
       "finished_at": "2026-05-18T06:07:11.287981+00:00",
       "has_trajectory": true,
@@ -2954,7 +2963,16 @@
       "total_artifact_bytes": 1420528,
       "original_provider": "openai",
       "task_name": "trimul-cuda",
-      "task_hash": "fc34aaba"
+      "task_hash": "fc34aaba",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "trimul-cuda-fc34aaba-539": {
       "agent": "kimi-cli",
@@ -2962,7 +2980,7 @@
       "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-539/",
       "attempts": 2,
       "cache_tokens": 6860180,
-      "cost_usd": null,
+      "cost_usd": 8.69099455,
       "error_message": null,
       "finished_at": "2026-05-18T16:02:35.423968+00:00",
       "has_trajectory": true,
@@ -3004,7 +3022,16 @@
       "total_artifact_bytes": 16325182,
       "original_provider": "openai",
       "task_name": "trimul-cuda",
-      "task_hash": "fc34aaba"
+      "task_hash": "fc34aaba",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "trimul-cuda-fc34aaba-542": {
       "agent": "kimi-cli",
@@ -3012,7 +3039,7 @@
       "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-542/",
       "attempts": 2,
       "cache_tokens": 6941587,
-      "cost_usd": null,
+      "cost_usd": 8.49000907,
       "error_message": "Agent execution timed out after 25200.0 seconds Captured Modal SDK output in modal-output.log; open the trial logs to inspect the image build failure.",
       "finished_at": "2026-05-18T16:41:21.613648+00:00",
       "has_trajectory": true,
@@ -3054,7 +3081,16 @@
       "total_artifact_bytes": 17038474,
       "original_provider": "openai",
       "task_name": "trimul-cuda",
-      "task_hash": "fc34aaba"
+      "task_hash": "fc34aaba",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "trimul-cuda-fc34aaba-543": {
       "agent": "kimi-cli",
@@ -3062,7 +3098,7 @@
       "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-543/",
       "attempts": 1,
       "cache_tokens": 3946000,
-      "cost_usd": null,
+      "cost_usd": 5.93854042,
       "error_message": null,
       "finished_at": "2026-05-19T00:13:35.578786+00:00",
       "has_trajectory": true,
@@ -3104,7 +3140,16 @@
       "total_artifact_bytes": 12777193,
       "original_provider": "openai",
       "task_name": "trimul-cuda",
-      "task_hash": "fc34aaba"
+      "task_hash": "fc34aaba",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "trimul-cuda-fc34aaba-549": {
       "agent": "claude-code",
@@ -3131,6 +3176,41 @@
       "source_oddish_experiment_id": "6e80ba95",
       "task_name": "trimul-cuda",
       "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-566": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "bedrock",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "trimul-cuda-fc34aaba-v86",
+      "started_at": "2026-05-28T23:56:46.815024+00:00",
+      "finished_at": "2026-05-29T03:51:23.510441+00:00",
+      "input_tokens": 33558616,
+      "cache_tokens": 32510803,
+      "output_tokens": 477001,
+      "cost_usd": 21.00052545,
+      "has_trajectory": true,
+      "trajectory_bytes": 0,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-566/",
+      "source_trial_name": "trimul-cuda-566",
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-566",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Accepted via user-explicit override despite NonZero exit. Verifier ran end-to-end and produced complete metrics; the trial is indistinguishable from a valid run except for the agent exit code.",
+      "canonical_attempt_dir": "task-trimul-cuda-fc34aaba-p_gxby__8eF4tJ7",
+      "task_name": "trimul-cuda",
+      "task_hash": "fc34aaba",
+      "raw_model": "global.anthropic.claude-opus-4-8",
+      "override_validity": true,
+      "override_reason": "User-explicit override (Thu 2026-06-04): NonZeroAgentExitCodeError (exit 1 \u2014 claude crashed late, not a timeout). Verifier ran kernel compile + cache probe + benchmark: cache_probe_passed=True, correctness_passed=False. $9.18 of real agent cost, 1.77 MB trajectory (largest of any v86 trial in cd4dd88f for this task), 1.75 MB claude-code log. Reward=0 emitted from a fully-instrumented verifier run."
     },
     "trimul-cuda-fc34aaba-567": {
       "agent": "gemini-cli",
@@ -3401,6 +3481,33 @@
       "canonical_attempt_dir": "task-trimul-cuda-fc34aaba-mqpv1o__c63QyJN",
       "task_name": "trimul-cuda",
       "task_hash": "fc34aaba"
+    },
+    "trimul-cuda-fc34aaba-580": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-7",
+      "provider": "anthropic",
+      "reward": 0.0,
+      "status": "AgentTimeoutError",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "trimul-cuda-fc34aaba-v86",
+      "task_hash": "fc34aaba",
+      "task_name": "trimul-cuda",
+      "started_at": "2026-06-01T18:56:50.260424",
+      "finished_at": "2026-06-02T01:57:33.720250",
+      "input_tokens": 178266927,
+      "output_tokens": 576877,
+      "cache_tokens": 177659301,
+      "cost_usd": 107.04851050000003,
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/trimul-cuda/trimul-cuda-fc34aaba-580/",
+      "has_trajectory": true,
+      "source_trial_name": "task-trimul-cuda-fc34aaba-l_kgoc__4zPjtag",
+      "source_oddish_task_id": "trimul-cuda-fc34aaba",
+      "source_oddish_trial_id": "trimul-cuda-fc34aaba-580",
+      "source_oddish_experiment_id": "cd8c33d8",
+      "trajectory_bytes": 19951503
     }
   },
   "task_hashes": [
@@ -3428,6 +3535,14 @@
         ]
       ],
       "note": "Augmenting (Option A): add up to 5 trials per pair for the new agent/model pairs from this experiment. nop/oracle excluded; for nextjs-vite-rewrite, claude-code is also excluded."
+    },
+    {
+      "imported_at": "2026-06-04T18:10:14.629526+00:00",
+      "source_oddish_experiment_ids": [
+        "cd4dd88f"
+      ],
+      "n_trials_added": 1,
+      "note": "User-explicit override for NonZeroAgentExitCodeError trials whose verifier output is fully populated (real metrics.json, real reward, full trajectory, real agent cost). Same standard as the prior nextjs-vite-rewrite CC NonZero accepts."
     }
   ]
 }

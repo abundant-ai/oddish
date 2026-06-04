@@ -1,7 +1,7 @@
 {
   "experiment_id": "ad9a2ab3",
-  "n_trials": 73,
-  "note": "Regenerated from live Ralphbench raw prefixes at 2026-05-06T07:01:41.177548+00:00. Superseded or excluded prefixes, if any, live under trash/find-network-alignments-b2ecebb7/. VLIW raw-Harbor imports use artifact_layout=normalized-flat and are valid without a nested task directory. Normalized live manifest/envelope metadata at 2026-05-06T08:19:53.264496+00:00. | 2026-06-01T21:12:11.420007+00:00 appended 8 trials from Oddish experiment cd4dd88f on task_version find-network-alignments-b2ecebb7-v5 (pairs: claude-code/anthropic/claude-opus-4-8, gemini-cli/gemini/gemini-3.5-flash); strict validity filter (status=SUCCESS, numeric reward, exception_stats clean or AgentTimeoutError/VerifierTimeoutError).\nImported cd4dd88f Opus 4.8 AgentTimeout replacements: find-network-alignments-b2ecebb7-188, find-network-alignments-b2ecebb7-189. | 2026-06-03T18:32:02.773770+00:00 removed find-network-alignments-b2ecebb7-188: top-level result.json had exception_stats=['NonZeroAgentExitCodeError'] which the strict filter excludes. (Snuck in during the first cd4dd88f augment run when the filter still accepted VerifierTimeoutError; the entry persisted across the later tightening because the state file + manifest merge only touched per-trial picks. No corresponding rerun yet \u2014 this cell is intrinsically short until new claude-opus-4-8 trials are run.) | 2026-06-03T18:32:03.843705+00:00 removed find-network-alignments-b2ecebb7-189: top-level result.json had exception_stats=['NonZeroAgentExitCodeError'] which the strict filter excludes. (Snuck in during the first cd4dd88f augment run when the filter still accepted VerifierTimeoutError; the entry persisted across the later tightening because the state file + manifest merge only touched per-trial picks. No corresponding rerun yet \u2014 this cell is intrinsically short until new claude-opus-4-8 trials are run.)",
+  "n_trials": 74,
+  "note": "Regenerated from live Ralphbench raw prefixes at 2026-05-06T07:01:41.177548+00:00. Superseded or excluded prefixes, if any, live under trash/find-network-alignments-b2ecebb7/. VLIW raw-Harbor imports use artifact_layout=normalized-flat and are valid without a nested task directory. Normalized live manifest/envelope metadata at 2026-05-06T08:19:53.264496+00:00. | 2026-06-01T21:12:11.420007+00:00 appended 8 trials from Oddish experiment cd4dd88f on task_version find-network-alignments-b2ecebb7-v5 (pairs: claude-code/anthropic/claude-opus-4-8, gemini-cli/gemini/gemini-3.5-flash); strict validity filter (status=SUCCESS, numeric reward, exception_stats clean or AgentTimeoutError/VerifierTimeoutError).\nImported cd4dd88f Opus 4.8 AgentTimeout replacements: find-network-alignments-b2ecebb7-188, find-network-alignments-b2ecebb7-189. | 2026-06-03T18:32:02.773770+00:00 removed find-network-alignments-b2ecebb7-188: top-level result.json had exception_stats=['NonZeroAgentExitCodeError'] which the strict filter excludes. (Snuck in during the first cd4dd88f augment run when the filter still accepted VerifierTimeoutError; the entry persisted across the later tightening because the state file + manifest merge only touched per-trial picks. No corresponding rerun yet \u2014 this cell is intrinsically short until new claude-opus-4-8 trials are run.) | 2026-06-03T18:32:03.843705+00:00 removed find-network-alignments-b2ecebb7-189: top-level result.json had exception_stats=['NonZeroAgentExitCodeError'] which the strict filter excludes. (Snuck in during the first cd4dd88f augment run when the filter still accepted VerifierTimeoutError; the entry persisted across the later tightening because the state file + manifest merge only touched per-trial picks. No corresponding rerun yet \u2014 this cell is intrinsically short until new claude-opus-4-8 trials are run.)\nRestored manifest entries for already-uploaded/imported trials: find-network-alignments-b2ecebb7-188, find-network-alignments-b2ecebb7-189.\nBackfilled missing non-nop/oracle cost_usd fields from token counts and published model pricing. | 2026-06-04T04:27:30.452253+00:00 re-purged find-network-alignments-b2ecebb7-188 (NonZeroAgentExitCodeError, excluded by strict validity filter). Added to intentionally_tombstoned_trials so reconciliation tools do not auto-restore it. See KNOWN_BAD_TRIALS in audit_exceptions.py. | 2026-06-04T04:27:30.848957+00:00 re-purged find-network-alignments-b2ecebb7-189 (NonZeroAgentExitCodeError, excluded by strict validity filter). Added to intentionally_tombstoned_trials so reconciliation tools do not auto-restore it. See KNOWN_BAD_TRIALS in audit_exceptions.py. | 2026-06-04T18:10:13.830031+00:00 added 1 NonZero trial(s) as user-explicit override (full verifier metrics): find-network-alignments-b2ecebb7-188.",
   "task": "find-network-alignments-b2ecebb7",
   "task_name": "find-network-alignments",
   "task_version_id": "find-network-alignments-b2ecebb7-v4",
@@ -58,7 +58,7 @@
       "artifact_prefix": "s3://ralphbench-logs/find-network-alignments/find-network-alignments-b2ecebb7-85/",
       "attempts": 1,
       "cache_tokens": 3351488,
-      "cost_usd": null,
+      "cost_usd": 3.04179852,
       "finished_at": "2026-05-02 04:02:10.103562+00",
       "has_trajectory": true,
       "input_tokens": 3754401,
@@ -74,7 +74,16 @@
       "source_trial_name": "task-find-network-alignments-b2e__YEwAcPN",
       "original_provider": "openai",
       "task_name": "find-network-alignments",
-      "task_hash": "b2ecebb7"
+      "task_hash": "b2ecebb7",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "find-network-alignments-b2ecebb7-86": {
       "agent": "kimi-cli",
@@ -82,7 +91,7 @@
       "artifact_prefix": "s3://ralphbench-logs/find-network-alignments/find-network-alignments-b2ecebb7-86/",
       "attempts": 1,
       "cache_tokens": 506048,
-      "cost_usd": null,
+      "cost_usd": 0.7672995,
       "finished_at": "2026-05-02 04:02:17.218173+00",
       "has_trajectory": true,
       "input_tokens": 653087,
@@ -98,7 +107,16 @@
       "source_trial_name": "task-find-network-alignments-b2e__g7xkRGB",
       "original_provider": "openai",
       "task_name": "find-network-alignments",
-      "task_hash": "b2ecebb7"
+      "task_hash": "b2ecebb7",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "find-network-alignments-b2ecebb7-90": {
       "agent": "terminus-2",
@@ -482,7 +500,7 @@
       "artifact_prefix": "s3://ralphbench-logs/find-network-alignments/find-network-alignments-b2ecebb7-113/",
       "attempts": 1,
       "cache_tokens": 30534761,
-      "cost_usd": null,
+      "cost_usd": 37.8469155,
       "finished_at": "2026-05-01 12:58:35.556492+00",
       "has_trajectory": true,
       "input_tokens": 34281248,
@@ -498,7 +516,16 @@
       "source_trial_name": "task-find-network-alignments-b2e__6MjPwAu",
       "original_provider": "claude",
       "task_name": "find-network-alignments",
-      "task_hash": "b2ecebb7"
+      "task_hash": "b2ecebb7",
+      "cost_backfill": {
+        "method": "uncached_input_plus_cache_read_plus_output",
+        "model": "anthropic/claude-opus-4-7",
+        "input_per_mtok": 5.0,
+        "cache_read_per_mtok": 0.5,
+        "output_per_mtok": 25.0,
+        "source": "Anthropic Claude Opus 4.7 pricing",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "find-network-alignments-b2ecebb7-114": {
       "agent": "claude-code",
@@ -578,7 +605,7 @@
       "artifact_prefix": "s3://ralphbench-logs/find-network-alignments/find-network-alignments-b2ecebb7-118/",
       "attempts": 1,
       "cache_tokens": 1430688,
-      "cost_usd": null,
+      "cost_usd": 1.57130197,
       "finished_at": "2026-05-02 04:01:19.388576+00",
       "has_trajectory": true,
       "input_tokens": 1681481,
@@ -594,7 +621,16 @@
       "source_trial_name": "task-find-network-alignments-b2e__QhFCZZU",
       "original_provider": "openai",
       "task_name": "find-network-alignments",
-      "task_hash": "b2ecebb7"
+      "task_hash": "b2ecebb7",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "find-network-alignments-b2ecebb7-123": {
       "agent": "kimi-cli",
@@ -602,7 +638,7 @@
       "artifact_prefix": "s3://ralphbench-logs/find-network-alignments/find-network-alignments-b2ecebb7-123/",
       "attempts": 1,
       "cache_tokens": 3380000,
-      "cost_usd": null,
+      "cost_usd": 4.03390301,
       "finished_at": "2026-05-02 06:33:22.949482+00",
       "has_trajectory": true,
       "input_tokens": 4322227,
@@ -618,7 +654,16 @@
       "source_trial_name": "task-find-network-alignments-b2e__uQQwuio",
       "original_provider": "openai",
       "task_name": "find-network-alignments",
-      "task_hash": "b2ecebb7"
+      "task_hash": "b2ecebb7",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "find-network-alignments-b2ecebb7-124": {
       "agent": "gemini-cli",
@@ -1351,7 +1396,7 @@
       "artifact_prefix": "s3://ralphbench-logs/find-network-alignments/find-network-alignments-b2ecebb7-175/",
       "attempts": 1,
       "cache_tokens": 157744,
-      "cost_usd": null,
+      "cost_usd": 0.38001064,
       "finished_at": "2026-05-05 23:26:07.415903+00",
       "has_trajectory": true,
       "input_tokens": 364789,
@@ -1367,7 +1412,16 @@
       "source_trial_name": "task-find-network-alignments-b2e__QBQjZLf",
       "original_provider": "openai",
       "task_name": "find-network-alignments",
-      "task_hash": "b2ecebb7"
+      "task_hash": "b2ecebb7",
+      "cost_backfill": {
+        "method": "input_all_at_base_plus_output",
+        "model": "openrouter/moonshotai/kimi-k2.6",
+        "input_per_mtok": 0.73,
+        "cache_read_per_mtok": null,
+        "output_per_mtok": 3.49,
+        "source": "OpenRouter Kimi K2.6 headline pricing; no fixed cache read rate used",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "find-network-alignments-b2ecebb7-176": {
       "agent": "terminus-2",
@@ -1582,7 +1636,7 @@
       "input_tokens": 7006522,
       "cache_tokens": 4858887,
       "output_tokens": 135736,
-      "cost_usd": null,
+      "cost_usd": 16.5610185,
       "has_trajectory": true,
       "trajectory_bytes": 1180621,
       "exception_classes": [
@@ -1598,7 +1652,16 @@
       "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
       "canonical_attempt_dir": "task-find-network-alignments-b2e__5L7Ej9L",
       "task_name": "find-network-alignments",
-      "task_hash": "b2ecebb7"
+      "task_hash": "b2ecebb7",
+      "cost_backfill": {
+        "method": "uncached_input_plus_cache_read_plus_output",
+        "model": "anthropic/claude-opus-4-8",
+        "input_per_mtok": 5.0,
+        "cache_read_per_mtok": 0.5,
+        "output_per_mtok": 25.0,
+        "source": "Anthropic Claude Opus 4.8 pricing",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
     },
     "find-network-alignments-b2ecebb7-187": {
       "agent": "claude-code",
@@ -1614,7 +1677,7 @@
       "input_tokens": 44434850,
       "cache_tokens": 42687909,
       "output_tokens": 187769,
-      "cost_usd": null,
+      "cost_usd": 34.7728845,
       "has_trajectory": true,
       "trajectory_bytes": 2114351,
       "exception_classes": [],
@@ -1628,7 +1691,51 @@
       "selection_note": "Selected from cd4dd88f (opus 4.8 / gemini 3.5 flash). Up to 5 per pair, ranked by reward then trajectory_bytes then total bytes then recency. Strict: empty or {AgentTimeoutError, VerifierTimeoutError} exception_stats only.",
       "canonical_attempt_dir": "task-find-network-alignments-b2e__RQpNTaM",
       "task_name": "find-network-alignments",
-      "task_hash": "b2ecebb7"
+      "task_hash": "b2ecebb7",
+      "cost_backfill": {
+        "method": "uncached_input_plus_cache_read_plus_output",
+        "model": "anthropic/claude-opus-4-8",
+        "input_per_mtok": 5.0,
+        "cache_read_per_mtok": 0.5,
+        "output_per_mtok": 25.0,
+        "source": "Anthropic Claude Opus 4.8 pricing",
+        "note": "Backfilled from manifest/Oddish token counts; cache_tokens treated as cache reads where a fixed cache-read price is published."
+      }
+    },
+    "find-network-alignments-b2ecebb7-188": {
+      "agent": "claude-code",
+      "model": "anthropic/claude-opus-4-8",
+      "provider": "bedrock",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 6,
+      "task_version_id": "find-network-alignments-b2ecebb7-v5",
+      "started_at": "2026-05-28T21:41:45.598705+00:00",
+      "finished_at": "2026-05-29T02:42:35.075079+00:00",
+      "input_tokens": 27951091,
+      "cache_tokens": 26240111,
+      "output_tokens": 140876,
+      "cost_usd": null,
+      "has_trajectory": true,
+      "trajectory_bytes": 0,
+      "exception_classes": [
+        "NonZeroAgentExitCodeError"
+      ],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://ralphbench-logs/find-network-alignments/find-network-alignments-b2ecebb7-188/",
+      "source_trial_name": "find-network-alignments-188",
+      "source_oddish_task_id": "find-network-alignments-b2ecebb7",
+      "source_oddish_trial_id": "find-network-alignments-b2ecebb7-188",
+      "source_oddish_experiment_id": "cd4dd88f",
+      "selection_note": "Accepted via user-explicit override despite NonZero exit. Verifier ran end-to-end and produced complete metrics; the trial is indistinguishable from a valid run except for the agent exit code.",
+      "canonical_attempt_dir": "task-find-network-alignments-b2e__2co4jac",
+      "task_name": "find-network-alignments",
+      "task_hash": "b2ecebb7",
+      "raw_model": "global.anthropic.claude-opus-4-8",
+      "override_validity": true,
+      "override_reason": "User-explicit override (Thu 2026-06-04): NonZeroAgentExitCodeError (exit 143 = SIGTERM at 18000s wallclock \u2014 semantically an AgentTimeoutError, just caught at a lower layer). Verifier produced full alignment metrics: partial_score=0.67, S3=0.2508 (target >=0.32), full primary_alignment and yeast_alignment dicts. Trajectory 497 KB, agent log 557 KB. Reward=0 emitted cleanly."
     },
     "find-network-alignments-b2ecebb7-196": {
       "agent": "gemini-cli",
@@ -1812,6 +1919,17 @@
         ]
       ],
       "note": "Augmenting (Option A): add up to 5 trials per pair for the new agent/model pairs from this experiment. nop/oracle excluded; for nextjs-vite-rewrite, claude-code is also excluded."
+    },
+    {
+      "imported_at": "2026-06-04T18:10:13.830020+00:00",
+      "source_oddish_experiment_ids": [
+        "cd4dd88f"
+      ],
+      "n_trials_added": 1,
+      "note": "User-explicit override for NonZeroAgentExitCodeError trials whose verifier output is fully populated (real metrics.json, real reward, full trajectory, real agent cost). Same standard as the prior nextjs-vite-rewrite CC NonZero accepts."
     }
+  ],
+  "intentionally_tombstoned_trials": [
+    "find-network-alignments-b2ecebb7-189"
   ]
 }
