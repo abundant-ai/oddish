@@ -191,6 +191,31 @@ async def _watchdog_task(trial_name: str) -> None:
 
 _BEDROCK_REGION_PREFIXES = ("global.", "us.", "eu.", "apac.", "apn.")
 
+# Cap how long a local probe agent may run. Tasks ship 8h agent timeouts
+# (``[agent] timeout_sec`` in task.toml) which is fine for real attempts but far
+# too long for a probe -- a wedged or expired-cred probe would otherwise hold a
+# container for hours. Overridable via ODDISH_PROBE_AGENT_TIMEOUT_SEC.
+_PROBE_AGENT_TIMEOUT_SEC = int(
+    os.environ.get("ODDISH_PROBE_AGENT_TIMEOUT_SEC", "1800")
+)
+
+
+def _strip_nul(obj: object) -> object:
+    """Recursively strip NUL (``\\u0000``) chars from a JSON-able structure.
+
+    Postgres text/jsonb cannot store ``\\u0000``; agent output occasionally
+    contains one (e.g. raw bytes echoed into a transcript), which made the
+    ``trial.result`` / ``trial.analysis`` write fail with asyncpg
+    ``UntranslatableCharacterError`` and dropped the whole trial.
+    """
+    if isinstance(obj, str):
+        return obj.replace("\x00", "")
+    if isinstance(obj, dict):
+        return {k: _strip_nul(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_strip_nul(v) for v in obj]
+    return obj
+
 
 def _bedrock_agent_env(model_name: str | None) -> dict[str, str]:
     """Env that lets Claude Code invoke a Bedrock-routed model in local dev.
@@ -355,7 +380,11 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # does, so forward the host's AWS creds into the agent container -- without
     # this the in-container ``claude`` CLI has no way to invoke the Bedrock id
     # and exits 1. Mirrors ``harbor_runner._apply_claude_code_openrouter_env``.
-    agent_config = AgentConfig(name=agent_name, model_name=model_name)
+    agent_config = AgentConfig(
+        name=agent_name,
+        model_name=model_name,
+        override_timeout_sec=_PROBE_AGENT_TIMEOUT_SEC,
+    )
     bedrock_env = _bedrock_agent_env(model_name)
     if bedrock_env:
         agent_config.env = {**(agent_config.env or {}), **bedrock_env}
@@ -468,9 +497,9 @@ async def _run_harbor_trial(trial_id: str) -> None:
         trial.harbor_result_path = str(trials_dir)
         if reward_value is not None:
             trial.reward = reward_value
-        trial.result = result_payload
+        trial.result = _strip_nul(result_payload)
         if analyzer_summary is not None:
-            trial.analysis = analyzer_summary
+            trial.analysis = _strip_nul(analyzer_summary)
         trial.analysis_status = analyzer_status
         trial.analysis_error = analyzer_error
         trial.analysis_started_at = analysis_started_at
