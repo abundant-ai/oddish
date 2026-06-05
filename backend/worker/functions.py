@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 from oddish.config import Settings
 
 # Worker containers process one job each; keep DB pools minimal to avoid
@@ -36,6 +37,7 @@ from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
 from oddish.workers.queue.slots import (
     acquire_queue_slot,
+    cleanup_orphaned_queue_slots,
     cleanup_stale_queue_slots,
     release_queue_slot,
 )
@@ -137,6 +139,20 @@ async def process_single_job(queue_key: str):
             worker_id=worker_id,
             lease_seconds=WORKER_TIMEOUT_SECONDS + 30,
         )
+        if lock_slot is None:
+            orphaned_cleared = await cleanup_orphaned_queue_slots(queue_key)
+            if orphaned_cleared > 0:
+                console.print(
+                    f"metric=queue_lock_orphaned_cleared queue_key={queue_key} "
+                    f"count={orphaned_cleared}"
+                )
+                lock_slot = await acquire_queue_slot(
+                    queue_key=queue_key,
+                    limit=queue_limit,
+                    worker_id=worker_id,
+                    lease_seconds=WORKER_TIMEOUT_SECONDS + 30,
+                )
+
         if lock_slot is None:
             console.print(
                 f"metric=queue_lock_contention queue_key={queue_key} limit={queue_limit}"

@@ -122,3 +122,39 @@ async def cleanup_stale_queue_slots() -> int:
         return int(str(result).split()[-1])
     except Exception:
         return 0
+
+
+async def cleanup_orphaned_queue_slots(queue_key: str | None = None) -> int:
+    """Release active leases that no RUNNING worker_job still owns.
+
+    ``queue_slots`` is a coarse concurrency lease table. A worker can acquire a
+    lease and then die before, or while, updating ``worker_jobs``. The stale
+    expiry catches that eventually, but a long worker timeout can otherwise
+    leave queued jobs at ``attempts=0`` because every new worker exits before it
+    can claim. Match on the exact queue key, worker id, and slot so a healthy
+    RUNNING job on the same model does not protect unrelated orphaned slots.
+    """
+    async with _slot_connection() as conn:
+        result = await conn.execute(
+            """
+            UPDATE queue_slots qs
+            SET    locked_by = NULL,
+                   locked_until = NULL
+            WHERE  qs.locked_by IS NOT NULL
+              AND  qs.locked_until IS NOT NULL
+              AND  ($1::text IS NULL OR qs.queue_key = $1)
+              AND  NOT EXISTS (
+                  SELECT 1
+                  FROM   worker_jobs wj
+                  WHERE  wj.status::text = 'RUNNING'
+                    AND  wj.queue_key = qs.queue_key
+                    AND  wj.current_worker_id = qs.locked_by
+                    AND  wj.current_queue_slot = qs.slot
+              )
+            """,
+            queue_key,
+        )
+    try:
+        return int(str(result).split()[-1])
+    except Exception:
+        return 0

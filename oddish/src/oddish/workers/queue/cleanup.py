@@ -42,6 +42,7 @@ from oddish.workers.queue.worker_job_single_job import (
     calculate_trial_retry_delay_seconds,
     classify_retry_reason,
 )
+from oddish.workers.queue.slots import cleanup_orphaned_queue_slots
 from oddish.workers.queue.shared import console
 
 # See historical context: we bumped this from 10 -> 15 after a
@@ -474,31 +475,12 @@ async def cleanup_orphaned_queue_state(
         )
 
         # -----------------------------------------------------------------
-        # 6. Release queue slot leases whose worker_jobs row is no
-        #    longer RUNNING on that key.
+        # 6. Release queue slot leases whose exact owning worker_jobs row is no
+        #    longer RUNNING. This must match worker id + slot, not just queue
+        #    key: one healthy long-running job should not protect unrelated
+        #    orphaned slots on the same model queue.
         # -----------------------------------------------------------------
-        orphaned_slot_cleanup_result = cast(
-            CursorResult,
-            await session.execute(
-                text(
-                    """
-                    UPDATE queue_slots qs
-                    SET    locked_by = NULL,
-                           locked_until = NULL
-                    WHERE  qs.locked_by IS NOT NULL
-                      AND  qs.locked_until IS NOT NULL
-                      AND  qs.locked_until > NOW()
-                      AND  NOT EXISTS (
-                          SELECT 1
-                          FROM   worker_jobs wj
-                          WHERE  wj.status::text = 'RUNNING'
-                            AND  wj.queue_key = qs.queue_key
-                      )
-                    """
-                )
-            ),
-        )
-        orphaned_active_slots_cleared = int(orphaned_slot_cleanup_result.rowcount or 0)
+        orphaned_active_slots_cleared = await cleanup_orphaned_queue_slots()
 
         # -----------------------------------------------------------------
         # 7. Reconcile drift on the denormalized

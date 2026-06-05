@@ -38,6 +38,7 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 }
 
 ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+ANALYSIS_QUEUE_KEY = "analysis"
 VERDICT_MODEL = "gpt-5.2"
 NOP_ORACLE_QUEUE_KEY = "nop_oracle"
 _NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
@@ -624,7 +625,7 @@ class Settings(BaseSettings):
         return "default"
 
     def get_analysis_queue_key(self) -> str:
-        return self.normalize_queue_key(self.analysis_model)
+        return ANALYSIS_QUEUE_KEY
 
     def get_verdict_queue_key(self) -> str:
         return self.normalize_queue_key(self.verdict_model)

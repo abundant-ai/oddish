@@ -7,7 +7,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.config import NOP_ORACLE_QUEUE_KEY, Settings  # noqa: E402
+from oddish.config import (  # noqa: E402
+    ANALYSIS_QUEUE_KEY,
+    NOP_ORACLE_QUEUE_KEY,
+    Settings,
+)
 
 
 def _settings(monkeypatch, *, clear_openai_env: bool = True, **kwargs) -> Settings:
@@ -54,6 +58,16 @@ def test_model_concurrency_overrides_can_override_nop_oracle_queue(monkeypatch):
 
     assert settings.get_model_concurrency(NOP_ORACLE_QUEUE_KEY) == 12
     assert settings.get_model_concurrency("default") == 3
+
+
+def test_analysis_uses_dedicated_queue_key(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    assert settings.get_analysis_queue_key() == ANALYSIS_QUEUE_KEY
+    assert settings.get_analysis_queue_key() != settings.normalize_queue_key(
+        settings.analysis_model
+    )
+    assert ANALYSIS_QUEUE_KEY in settings.get_known_queue_keys()
 
 
 def test_claude_trial_model_is_persisted_as_bedrock_id(monkeypatch):
