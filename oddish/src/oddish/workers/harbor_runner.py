@@ -39,6 +39,7 @@ HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _MIN_REQUIRED_FREE_GB = 5.0
 _MIN_REQUIRED_FREE_INODES = 1024
+_ODDISH_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:OddishCodex"
 _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:AzureCompatibleCodex"
 
 
@@ -552,6 +553,8 @@ def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
 
 def _apply_codex_azure_compat(agent_config: AgentConfig) -> None:
     """Route Azure Codex trials through Oddish's transport-compatible wrapper."""
+    if agent_config.import_path is not None:
+        return
     agent_name = (agent_config.name or "").strip().lower()
     if agent_name != "codex":
         return
@@ -560,6 +563,18 @@ def _apply_codex_azure_compat(agent_config: AgentConfig) -> None:
 
     agent_config.name = None
     agent_config.import_path = _AZURE_COMPAT_CODEX_IMPORT_PATH
+
+
+def _apply_codex_oddish_wrapper(agent_config: AgentConfig) -> None:
+    """Route Codex trials through Oddish's compatibility wrapper."""
+    if agent_config.import_path is not None:
+        return
+    agent_name = (agent_config.name or "").strip().lower()
+    if agent_name != "codex":
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_CODEX_IMPORT_PATH
 
 
 def _build_agent_config(
@@ -629,6 +644,8 @@ def _build_agent_config(
                 agent_config.model_name
             )
             _apply_codex_azure_compat(agent_config)
+
+    _apply_codex_oddish_wrapper(agent_config)
 
     return agent_config
 
