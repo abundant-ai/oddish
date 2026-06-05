@@ -491,6 +491,27 @@ def test_azure_compatible_codex_disables_unified_exec(tmp_path):
     assert "--disable unified_exec" in seen["command"]
     assert "--enable unified_exec" not in seen["command"]
     assert "-c model_provider='\"oddish_azure_openai\"'" in seen["command"]
+    assert "-c model_verbosity='\"medium\"'" in seen["command"]
+
+
+def test_azure_compatible_codex_preserves_explicit_verbosity(tmp_path):
+    seen: dict[str, str] = {}
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen["command"] = command
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
+
+    asyncio.run(
+        agent.exec_as_agent(
+            _FakeEnvironment(),
+            "codex exec -c model_verbosity='\"medium\"' --json -- 'fix it'",
+        )
+    )
+
+    assert seen["command"].count("model_verbosity=") == 1
 
 
 def test_azure_compatible_codex_configures_http_responses_provider(

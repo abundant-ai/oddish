@@ -6,6 +6,7 @@ from harbor.agents.installed.codex import Codex
 
 
 _AZURE_CODEX_PROVIDER = "oddish_azure_openai"
+_AZURE_CODEX_VERBOSITY = "medium"
 
 
 def _toml_quote(value: str) -> str:
@@ -49,6 +50,17 @@ class AzureCompatibleCodex(Codex):
             return command
         return command.rstrip() + "\n" + provider_config
 
+    def _ensure_codex_config_override(
+        self, command: str, key: str, value: str
+    ) -> str:
+        if "codex exec " not in command or f" -c {key}=" in command:
+            return command
+        return command.replace(
+            "codex exec ",
+            f"codex exec -c {key}={shlex.quote(_toml_quote(value))} ",
+            1,
+        )
+
     async def exec_as_agent(
         self,
         environment,
@@ -60,12 +72,12 @@ class AzureCompatibleCodex(Codex):
         command = self._maybe_append_provider_config(command)
         if "codex exec " in command and "--enable unified_exec " in command:
             command = command.replace("--enable unified_exec ", "--disable unified_exec ")
-        if "codex exec " in command and " -c model_provider=" not in command:
-            command = command.replace(
-                "codex exec ",
-                f"codex exec -c model_provider={shlex.quote(_toml_quote(_AZURE_CODEX_PROVIDER))} ",
-                1,
-            )
+        command = self._ensure_codex_config_override(
+            command, "model_provider", _AZURE_CODEX_PROVIDER
+        )
+        command = self._ensure_codex_config_override(
+            command, "model_verbosity", _AZURE_CODEX_VERBOSITY
+        )
         return await super().exec_as_agent(
             environment,
             command,
