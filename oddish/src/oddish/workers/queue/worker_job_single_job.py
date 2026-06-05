@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import random
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -80,6 +81,7 @@ __all__ = [
     "ClaimedWorkerJob",
     "claim_single_worker_job",
     "run_single_worker_job",
+    "drain_worker_jobs",
 ]
 
 
@@ -553,3 +555,52 @@ async def run_single_worker_job(
                 )
 
     return True
+
+
+async def drain_worker_jobs(
+    queue_key: str,
+    *,
+    worker_id: str,
+    queue_slot: int,
+    budget_seconds: float,
+    modal_function_call_id: str | None = None,
+    post_success_hooks: PostSuccessHooks | None = None,
+    _run_job: Callable[..., Awaitable[bool]] | None = None,
+    _now: Callable[[], float] = time.monotonic,
+) -> int:
+    """Run ``worker_jobs`` back-to-back on one already-held queue slot.
+
+    The worker model spawns one container per job, which then exits -- fine for
+    long agent trials (minutes) but pathological for kinds whose jobs are
+    shorter than the dispatcher poll interval (analysis ~54s, verdict ~9s,
+    nop/oracle ~46s, vs a 180s poll): the job finishes seconds after spawn and
+    the held slot then sits idle until the next poll, so those queues can never
+    keep up no matter how high their concurrency limit.
+
+    Draining keeps the container's slot busy: it claims and runs jobs for this
+    ``queue_key`` until the queue drains or the wall-clock ``budget_seconds`` is
+    spent. The budget auto-selects which kinds batch, with no per-kind config --
+    a long job blows the budget on its first iteration and so still runs
+    one-per-container, while short jobs pack many into one slot lease. The slot
+    is acquired and released by the caller; this only reuses it across jobs and
+    so must stay well under the slot lease window.
+
+    Returns the number of jobs processed (0 if the queue was already empty).
+    """
+    run_job = _run_job or run_single_worker_job
+    deadline = _now() + budget_seconds
+    processed = 0
+    while True:
+        job_found = await run_job(
+            queue_key,
+            worker_id=worker_id,
+            queue_slot=queue_slot,
+            modal_function_call_id=modal_function_call_id,
+            post_success_hooks=post_success_hooks,
+        )
+        if not job_found:
+            break
+        processed += 1
+        if _now() >= deadline:
+            break
+    return processed
