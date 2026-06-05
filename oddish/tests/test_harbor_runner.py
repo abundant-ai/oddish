@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.workers import harbor_runner  # noqa: E402
+from oddish.workers.codex_agent import AzureCompatibleCodex  # noqa: E402
 from oddish.workers.queue import trial_handler  # noqa: E402
 
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
@@ -461,9 +462,34 @@ def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch
         raw_harbor_config={},
     )
 
+    assert agent_config.name is None
+    assert agent_config.import_path == (
+        "oddish.workers.codex_agent:AzureCompatibleCodex"
+    )
     assert agent_config.model_name == "oddish-gpt"
     assert "AZURE_OPENAI_API_KEY" not in agent_config.env
     assert "OPENAI_API_KEY" not in agent_config.env
+
+
+def test_azure_compatible_codex_disables_unified_exec(tmp_path):
+    seen: dict[str, str] = {}
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen["command"] = command
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
+
+    asyncio.run(
+        agent.exec_as_agent(
+            _FakeEnvironment(),
+            "codex exec --json --enable unified_exec -- 'fix it'",
+        )
+    )
+
+    assert "--disable unified_exec" in seen["command"]
+    assert "--enable unified_exec" not in seen["command"]
 
 
 def test_trial_uses_openai_provider_before_azure_model_rewrite(monkeypatch):
