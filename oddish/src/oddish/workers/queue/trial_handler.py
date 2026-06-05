@@ -566,10 +566,16 @@ async def _store_trial_results(
 
             if task and task.run_analysis and trial.analysis_status is None:
                 trial.analysis_status = AnalysisStatus.QUEUED
-                await enqueue_analysis_worker_job(
+                analysis_job = await enqueue_analysis_worker_job(
                     session, trial_id=trial_id, org_id=trial.org_id
                 )
-                console.print(f"[cyan]Queued analysis for {trial_id}[/cyan]")
+                if analysis_job is not None:
+                    console.print(f"[cyan]Queued analysis for {trial_id}[/cyan]")
+                else:
+                    console.print(
+                        f"[yellow]Skipped analysis for {trial_id}: no stored "
+                        "result to analyze[/yellow]"
+                    )
 
             started = await maybe_start_analysis_stage(session, trial_id)
             if started:
