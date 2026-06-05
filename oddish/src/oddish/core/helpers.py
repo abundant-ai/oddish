@@ -259,6 +259,8 @@ def build_visible_worker_job(job: WorkerJobModel) -> VisibleWorkerJob:
         kind=_normalize_worker_job_kind(job.kind),
         status=_normalize_worker_job_status(job.status),
         queue_key=settings.normalize_queue_key(job.queue_key),
+        provider=job.provider,
+        external_id=job.external_id,
         subject_table=job.subject_table,
         subject_id=job.subject_id,
         attempts=job.attempts,
