@@ -491,15 +491,29 @@ def test_azure_compatible_codex_disables_unified_exec(tmp_path):
     assert "--disable unified_exec" in seen["command"]
     assert "--enable unified_exec" not in seen["command"]
     assert "-c model_provider='\"oddish_azure_openai\"'" in seen["command"]
-    assert "-c model_verbosity='\"medium\"'" in seen["command"]
+    assert "model_verbosity" not in seen["command"]
 
 
-def test_azure_compatible_codex_preserves_explicit_verbosity(tmp_path):
-    seen: dict[str, str] = {}
+def test_azure_compatible_codex_retries_server_supported_verbosity(tmp_path):
+    seen: list[str] = []
 
     class _FakeEnvironment:
         async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
-            seen["command"] = command
+            seen.append(command)
+            if len(seen) == 1:
+                return SimpleNamespace(
+                    return_code=1,
+                    stdout=(
+                        '{"type":"error","message":"{\\n'
+                        '  \\"error\\": {\\n'
+                        '    \\"message\\": \\"Unsupported value: low. '
+                        "Supported values are: 'server-selected'.\\\",\\n"
+                        '    \\"param\\": \\"text.verbosity\\"\\n'
+                        "  }\\n"
+                        '}"}'
+                    ),
+                    stderr="",
+                )
             return SimpleNamespace(return_code=0, stdout="", stderr="")
 
     agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
@@ -507,11 +521,49 @@ def test_azure_compatible_codex_preserves_explicit_verbosity(tmp_path):
     asyncio.run(
         agent.exec_as_agent(
             _FakeEnvironment(),
-            "codex exec -c model_verbosity='\"medium\"' --json -- 'fix it'",
+            "codex exec --json -- 'fix it'",
         )
     )
 
-    assert seen["command"].count("model_verbosity=") == 1
+    assert len(seen) == 2
+    assert "model_verbosity" not in seen[0]
+    assert "-c model_verbosity='\"server-selected\"'" in seen[1]
+
+
+def test_azure_compatible_codex_replaces_explicit_unsupported_verbosity(tmp_path):
+    seen: list[str] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen.append(command)
+            if len(seen) == 1:
+                return SimpleNamespace(
+                    return_code=1,
+                    stdout=(
+                        '{"type":"error","message":"{'
+                        '\\"error\\": {'
+                        '\\"message\\": \\"Unsupported value. '
+                        "Supported values are: 'medium'.\\\","
+                        '\\"param\\": \\"text.verbosity\\"'
+                        '}}"}'
+                    ),
+                    stderr="",
+                )
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
+
+    asyncio.run(
+        agent.exec_as_agent(
+            _FakeEnvironment(),
+            "codex exec -c model_verbosity='\"low\"' --json -- 'fix it'",
+        )
+    )
+
+    assert len(seen) == 2
+    assert "-c model_verbosity='\"low\"'" in seen[0]
+    assert "-c model_verbosity='\"medium\"'" in seen[1]
+    assert seen[1].count("model_verbosity=") == 1
 
 
 def test_azure_compatible_codex_configures_http_responses_provider(
