@@ -57,6 +57,22 @@ STALE_HEARTBEAT_MINUTES = 15
 # ignored (older Supavisor, etc).
 ZOMBIE_IDLE_MINUTES = 10
 
+# Backstop for tasks wedged in ANALYZING with no live trials left to advance
+# them. The stage-advance passes below only feed ``maybe_start_*_stage`` trial
+# ids drawn from *live* (non-superseded, non-deleted) trials, so a task whose
+# trials were all superseded or deleted never leaves ANALYZING -- observed in
+# production as ~1k tasks stuck for weeks, each still holding queued ANALYSIS
+# jobs that keep the shared analysis queue artificially deep. We only finalize
+# tasks whose ``updated_at`` is older than this (so we never race a live stage
+# transition, which completes in seconds) and cap how many we finalize per
+# sweep so a large backlog drains over several ticks instead of one giant txn.
+STUCK_ANALYZING_MINUTES = 15
+STUCK_ANALYZING_BATCH_LIMIT = 200
+STUCK_ANALYZING_REASON = (
+    "Finalized by orphaned-pipeline cleanup: task was stuck in ANALYZING with "
+    "no live trials left to complete analysis."
+)
+
 
 async def reap_idle_in_transaction_zombies(
     *,
@@ -140,6 +156,8 @@ async def cleanup_orphaned_queue_state(
     terminal_trial_runtime_refs_cleared = 0
     orphaned_active_slots_cleared = 0
     verdict_pending_completed = 0
+    stuck_analyzing_tasks_failed = 0
+    stuck_analysis_jobs_cancelled = 0
 
     zombie_txn_reaped = await reap_idle_in_transaction_zombies()
 
@@ -447,7 +465,122 @@ async def cleanup_orphaned_queue_state(
                 )
 
         # -----------------------------------------------------------------
-        # 5. Clear stale claim metadata on terminal trials (pure
+        # 5. Finalize tasks wedged in ANALYZING with no live trials.
+        #    The stage-advance passes (2/3) feed ``maybe_start_*_stage``
+        #    trial ids only from live (non-superseded, non-deleted) trials,
+        #    so a task whose trials were all superseded/deleted can never
+        #    leave ANALYZING. Mark it FAILED (no live trials to complete or
+        #    judge) and cancel the dangling ANALYSIS jobs still queued
+        #    against its old trials, so the shared analysis queue actually
+        #    drains. Staleness-gated and batched so we never race a live
+        #    transition and never finalize the whole backlog in one txn.
+        # -----------------------------------------------------------------
+        stuck_analyzing_ids = [
+            row[0]
+            for row in (
+                await session.execute(
+                    text(
+                        """
+                        SELECT t.id
+                        FROM   tasks t
+                        WHERE  t.deleted_at IS NULL
+                          AND  t.status = 'ANALYZING'
+                          AND  t.updated_at < NOW() - make_interval(mins => :stale_minutes)
+                          AND  NOT EXISTS (
+                              SELECT 1 FROM trials tr
+                              WHERE  tr.task_id = t.id
+                                AND  tr.deleted_at IS NULL
+                                AND  tr.superseded_by_trial_id IS NULL
+                          )
+                        ORDER BY t.updated_at ASC
+                        LIMIT :batch_limit
+                        """
+                    ),
+                    {
+                        "stale_minutes": STUCK_ANALYZING_MINUTES,
+                        "batch_limit": STUCK_ANALYZING_BATCH_LIMIT,
+                    },
+                )
+            ).all()
+        ]
+
+        if stuck_analyzing_ids:
+            stuck_analyzing_tasks_failed = int(
+                cast(
+                    CursorResult,
+                    await session.execute(
+                        text(
+                            """
+                            UPDATE tasks
+                            SET    status = 'FAILED',
+                                   finished_at = COALESCE(finished_at, NOW())
+                            WHERE  id = ANY(:task_ids)
+                              AND  deleted_at IS NULL
+                              AND  status = 'ANALYZING'
+                            """
+                        ),
+                        {"task_ids": stuck_analyzing_ids},
+                    ),
+                ).rowcount
+                or 0
+            )
+
+            stuck_analysis_jobs_cancelled = int(
+                cast(
+                    CursorResult,
+                    await session.execute(
+                        text(
+                            """
+                            UPDATE worker_jobs w
+                            SET    status = 'CANCELLED',
+                                   finished_at = NOW(),
+                                   error_message = :reason,
+                                   current_worker_id = NULL,
+                                   current_queue_slot = NULL,
+                                   modal_function_call_id = NULL
+                            WHERE  w.kind::text = 'ANALYSIS'
+                              AND  w.subject_table = 'trials'
+                              AND  w.status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
+                              AND  w.subject_id IN (
+                                  SELECT tr.id FROM trials tr
+                                  WHERE  tr.task_id = ANY(:task_ids)
+                              )
+                            """
+                        ),
+                        {
+                            "reason": STUCK_ANALYZING_REASON,
+                            "task_ids": stuck_analyzing_ids,
+                        },
+                    ),
+                ).rowcount
+                or 0
+            )
+
+            # Mirror the cancellation onto any non-terminal analysis_status so
+            # the trial rows match the cancelled jobs (covers superseded trials
+            # whose analysis_status was left QUEUED/RUNNING).
+            await session.execute(
+                text(
+                    """
+                    UPDATE trials
+                    SET    analysis_status = 'FAILED',
+                           analysis_error = :reason,
+                           analysis_finished_at = NOW()
+                    WHERE  task_id = ANY(:task_ids)
+                      AND  deleted_at IS NULL
+                      AND  analysis_status::text IN ('PENDING', 'QUEUED', 'RUNNING')
+                    """
+                ),
+                {"reason": STUCK_ANALYZING_REASON, "task_ids": stuck_analyzing_ids},
+            )
+
+            console.print(
+                f"metric=stuck_analyzing_finalized count={stuck_analyzing_tasks_failed} "
+                f"analysis_jobs_cancelled={stuck_analysis_jobs_cancelled}"
+            )
+
+        # -----------------------------------------------------------------
+        # 6. Clear stale claim metadata on terminal trials (pure
         #    display-layer hygiene; scheduling state already lives on
         #    worker_jobs).
         # -----------------------------------------------------------------
@@ -474,7 +607,7 @@ async def cleanup_orphaned_queue_state(
         )
 
         # -----------------------------------------------------------------
-        # 6. Release queue slot leases whose worker_jobs row is no
+        # 7. Release queue slot leases whose worker_jobs row is no
         #    longer RUNNING on that key.
         # -----------------------------------------------------------------
         orphaned_slot_cleanup_result = cast(
@@ -501,7 +634,7 @@ async def cleanup_orphaned_queue_state(
         orphaned_active_slots_cleared = int(orphaned_slot_cleanup_result.rowcount or 0)
 
         # -----------------------------------------------------------------
-        # 7. Reconcile drift on the denormalized
+        # 8. Reconcile drift on the denormalized
         #    ``experiments.last_activity_at`` column. Application
         #    write paths bump it best-effort on task/trial inserts,
         #    so this pass only catches misses (process crash between
@@ -567,6 +700,8 @@ async def cleanup_orphaned_queue_state(
         "tasks_progressed_to_analysis": tasks_progressed_to_analysis,
         "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
         "verdict_pending_completed": verdict_pending_completed,
+        "stuck_analyzing_tasks_failed": stuck_analyzing_tasks_failed,
+        "stuck_analysis_jobs_cancelled": stuck_analysis_jobs_cancelled,
         "terminal_trial_runtime_refs_cleared": terminal_trial_runtime_refs_cleared,
         "orphaned_active_slots_cleared": orphaned_active_slots_cleared,
         "zombie_txn_reaped": zombie_txn_reaped,
