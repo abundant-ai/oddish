@@ -24,13 +24,33 @@ def _truncate_trajectory_text(value: Any, *, limit: int) -> str:
     return text[:limit] + " ... [truncated]"
 
 
-def read_trajectory_step_count(trajectory_path: Path) -> int:
+def read_trajectory_agent_activity_count(trajectory_path: Path) -> int:
     try:
         data = json.loads(trajectory_path.read_text(encoding="utf-8"))
     except Exception:
         return 0
     steps = data.get("steps")
-    return len(steps) if isinstance(steps, list) else 0
+    if not isinstance(steps, list):
+        return 0
+
+    activity_count = 0
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        if step.get("source") == "agent":
+            activity_count += 1
+            continue
+        if step.get("tool_calls") or step.get("observation"):
+            activity_count += 1
+    return activity_count
+
+
+def trajectory_agent_activity_count(trajectory: Trajectory) -> int:
+    activity_count = 0
+    for step in trajectory.steps:
+        if step.source == "agent" or step.tool_calls or step.observation:
+            activity_count += 1
+    return activity_count
 
 
 def convert_codex_stdout_jsonl_to_trajectory(
@@ -275,7 +295,9 @@ def write_trajectory_if_richer(
     if not trajectory:
         return None
 
-    if len(trajectory.steps) <= read_trajectory_step_count(existing_trajectory_path):
+    if trajectory_agent_activity_count(
+        trajectory
+    ) <= read_trajectory_agent_activity_count(existing_trajectory_path):
         return None
 
     existing_trajectory_path.write_text(
