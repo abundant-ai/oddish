@@ -176,6 +176,7 @@ function ExperimentHeaderMeta({
   showPassAtK,
   onToggleShowPassAtK,
   headerRight,
+  prLink,
 }: {
   isLoading: boolean;
   isInitialLoading: boolean;
@@ -183,9 +184,11 @@ function ExperimentHeaderMeta({
   showPassAtK: boolean;
   onToggleShowPassAtK: () => void;
   headerRight?: React.ReactNode;
+  prLink?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-wrap items-center justify-end gap-2">
+      {prLink}
       {isLoading && (
         <div className="inline-flex items-center gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-2 py-1 text-xs text-[color:var(--paper-ink-3)]">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -300,7 +303,20 @@ function ExperimentPrLink({
 }) {
   if (isInitialLoading) return null;
   const { prUrl, prTitle, prNumber } = pickExperimentPr(tasks);
-  if (!prUrl) return null;
+  if (!prUrl) {
+    // Placeholder so the slot is always visible in the header actions, even
+    // for experiments whose tasks carry no `github_meta.pr_url` (e.g. those
+    // not submitted via the experiments-repo /oddish flow).
+    return (
+      <span
+        title="No pull request linked to this experiment"
+        className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-[color:var(--paper-line)] bg-transparent px-2 py-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]"
+      >
+        <GitPullRequest className="h-3.5 w-3.5 shrink-0 opacity-60" aria-hidden />
+        <span>no PR linked</span>
+      </span>
+    );
+  }
 
   const label = prTitle
     ? prTitle
@@ -903,10 +919,6 @@ export function ExperimentDetailView({
           <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <div className="min-w-0">{headerLeft}</div>
-              <ExperimentPrLink
-                tasks={tasksForExperiment}
-                isInitialLoading={isInitialLoading}
-              />
               <ExperimentMetaStrip
                 tasks={tasksForExperiment}
                 isInitialLoading={isInitialLoading}
@@ -920,6 +932,12 @@ export function ExperimentDetailView({
               showPassAtK={showPassAtK}
               onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
               headerRight={headerRight}
+              prLink={
+                <ExperimentPrLink
+                  tasks={tasksForExperiment}
+                  isInitialLoading={isInitialLoading}
+                />
+              }
             />
           </div>
 
