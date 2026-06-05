@@ -1,10 +1,10 @@
-"""Regression test: cleanup finalizes tasks wedged in ANALYZING with no live trials.
+"""Regression test: cleanup unwedges ANALYZING tasks blocked by NULL-analysis trials.
 
-The stage-advance passes in ``cleanup_orphaned_queue_state`` only feed
-``maybe_start_*_stage`` trial ids drawn from live (non-superseded, non-deleted)
-trials, so a task whose trials were all superseded/deleted can never leave
-ANALYZING and keeps queued ANALYSIS jobs alive forever. The dedicated backstop
-must finalize those tasks (FAILED) and cancel the dangling analysis jobs.
+A task with run_analysis stays in ANALYZING forever when a live trial's
+``analysis_status`` is NULL (analysis was never enqueued for it), because
+``maybe_start_verdict_stage`` reads NULL as "still pending". The backstop pass
+must mark that lingering NULL analysis terminal and then advance the task to the
+verdict stage (or finalize FAILED when no live trials remain).
 """
 
 from __future__ import annotations
@@ -45,14 +45,12 @@ class _RecordingSession:
             # Stale-heartbeat sweep -> nothing reaped.
             return _Result(rows=[])
         if ":stale_minutes" in sql:
-            # The stuck-ANALYZING discovery SELECT.
-            return _Result(rows=[("task-stuck-1",), ("task-stuck-2",)])
-        if "UPDATE tasks" in sql and "status = 'FAILED'" in sql:
-            return _Result(rowcount=2)
-        if "w.kind::text = 'ANALYSIS'" in sql:
-            return _Result(rowcount=5)
+            # Discovery: one task with a live trial, one with none left.
+            return _Result(rows=[("task-live", "trial-live"), ("task-empty", None)])
         if "UPDATE trials" in sql and "analysis_status = 'FAILED'" in sql:
-            return _Result(rowcount=2)
+            return _Result(rowcount=4)
+        if "UPDATE tasks" in sql and "status = 'FAILED'" in sql:
+            return _Result(rowcount=1)
         return _Result()
 
     async def get(self, model, object_id):  # noqa: ANN001
@@ -62,10 +60,7 @@ class _RecordingSession:
         return None
 
 
-@pytest.mark.asyncio
-async def test_cleanup_finalizes_stuck_analyzing_tasks(monkeypatch):
-    session = _RecordingSession()
-
+def _patch_common(monkeypatch, session, verdict_fn):
     @asynccontextmanager
     async def fake_get_session():
         yield session
@@ -73,78 +68,67 @@ async def test_cleanup_finalizes_stuck_analyzing_tasks(monkeypatch):
     async def fake_reap_zombies():
         return 0
 
-    async def no_stage_transition(_session, _trial_id):
+    async def no_op(_session, _trial_id):
         return False
 
     monkeypatch.setattr(cleanup, "get_session", fake_get_session)
     monkeypatch.setattr(cleanup, "reap_idle_in_transaction_zombies", fake_reap_zombies)
-    monkeypatch.setattr("oddish.queue.maybe_start_analysis_stage", no_stage_transition)
-    monkeypatch.setattr("oddish.queue.maybe_start_verdict_stage", no_stage_transition)
+    monkeypatch.setattr("oddish.queue.maybe_start_analysis_stage", no_op)
+    monkeypatch.setattr("oddish.queue.maybe_start_verdict_stage", verdict_fn)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_unwedges_stuck_analyzing(monkeypatch):
+    session = _RecordingSession()
+    advanced_calls: list[str] = []
+
+    async def fake_verdict(_session, trial_id):
+        advanced_calls.append(trial_id)
+        return True
+
+    _patch_common(monkeypatch, session, fake_verdict)
 
     result = await cleanup.cleanup_orphaned_queue_state(stale_after_minutes=15)
 
-    assert result["stuck_analyzing_tasks_failed"] == 2
-    assert result["stuck_analysis_jobs_cancelled"] == 5
+    assert result["stuck_analysis_nulls_failed"] == 4
+    assert result["stuck_analyzing_advanced"] == 1  # task-live -> verdict
+    assert result["stuck_analyzing_finalized"] == 1  # task-empty -> FAILED
+    # Only the task that still has a live trial is advanced via the verdict stage.
+    assert advanced_calls == ["trial-live"]
 
-    # The discovery SELECT ran with the configured staleness + batch bounds.
     discovery = next(
         (sql, params) for sql, params in session.executed if ":stale_minutes" in sql
     )
     assert discovery[1]["stale_minutes"] == cleanup.STUCK_ANALYZING_MINUTES
     assert discovery[1]["batch_limit"] == cleanup.STUCK_ANALYZING_BATCH_LIMIT
 
-    # Both discovered task ids were finalized, and their analysis jobs cancelled.
-    finalize = next(
-        (sql, params)
-        for sql, params in session.executed
-        if "UPDATE tasks" in sql and "status = 'FAILED'" in sql
-    )
-    assert finalize[1]["task_ids"] == ["task-stuck-1", "task-stuck-2"]
-
-    cancel = next(
-        (sql, params)
-        for sql, params in session.executed
-        if "w.kind::text = 'ANALYSIS'" in sql
-    )
-    assert cancel[1]["task_ids"] == ["task-stuck-1", "task-stuck-2"]
-
 
 @pytest.mark.asyncio
-async def test_cleanup_skips_finalize_when_no_stuck_tasks(monkeypatch):
+async def test_cleanup_noop_when_no_stuck_tasks(monkeypatch):
     session = _RecordingSession()
-    # Override discovery to return no stuck tasks.
-    original_execute = session.execute
 
-    async def execute_no_stuck(statement, params=None):
+    async def execute_none(statement, params=None):
         sql = str(statement)
-        if ":stale_minutes" in sql:
-            session.executed.append((sql, params or {}))
+        session.executed.append((sql, params or {}))
+        if "SET    status = CASE" in sql:
             return _Result(rows=[])
-        return await original_execute(statement, params)
+        if ":stale_minutes" in sql:
+            return _Result(rows=[])
+        return _Result()
 
-    session.execute = execute_no_stuck  # type: ignore[method-assign]
+    session.execute = execute_none  # type: ignore[method-assign]
 
-    @asynccontextmanager
-    async def fake_get_session():
-        yield session
+    async def unexpected_verdict(_session, _trial_id):
+        raise AssertionError("no task should be advanced when none are stuck")
 
-    async def fake_reap_zombies():
-        return 0
-
-    async def no_stage_transition(_session, _trial_id):
-        return False
-
-    monkeypatch.setattr(cleanup, "get_session", fake_get_session)
-    monkeypatch.setattr(cleanup, "reap_idle_in_transaction_zombies", fake_reap_zombies)
-    monkeypatch.setattr("oddish.queue.maybe_start_analysis_stage", no_stage_transition)
-    monkeypatch.setattr("oddish.queue.maybe_start_verdict_stage", no_stage_transition)
+    _patch_common(monkeypatch, session, unexpected_verdict)
 
     result = await cleanup.cleanup_orphaned_queue_state(stale_after_minutes=15)
 
-    assert result["stuck_analyzing_tasks_failed"] == 0
-    assert result["stuck_analysis_jobs_cancelled"] == 0
-    # No finalize UPDATE should have been issued.
+    assert result["stuck_analyzing_advanced"] == 0
+    assert result["stuck_analyzing_finalized"] == 0
+    assert result["stuck_analysis_nulls_failed"] == 0
     assert not any(
-        "UPDATE tasks" in sql and "status = 'FAILED'" in sql
+        "UPDATE trials" in sql and "analysis_status = 'FAILED'" in sql
         for sql, _ in session.executed
     )
