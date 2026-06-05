@@ -78,6 +78,15 @@ DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", 
 # Max number of workers spawned per poll cycle (rate limiter, global across all queue_keys)
 MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 64)
 
+# Wall-clock budget for how long one worker container keeps claiming and running
+# jobs on its held slot before exiting. Lets short jobs (analysis / verdict /
+# nop-oracle, which finish well inside a single POLL_INTERVAL_SECONDS) batch
+# many per container instead of running one job and leaving the slot idle until
+# the next poll; long agent trials exceed it on their first job and so still run
+# one-per-container. Must stay well under WORKER_TIMEOUT_SECONDS and the slot
+# lease (WORKER_TIMEOUT_SECONDS + 30).
+WORKER_BATCH_BUDGET_SECONDS = _env_int("ODDISH_MODAL_WORKER_BATCH_BUDGET_SECONDS", 300)
+
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
 )
