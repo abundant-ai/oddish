@@ -752,6 +752,64 @@ def test_oddish_codex_writes_stdout_trajectory_when_richer(tmp_path):
     assert context.n_output_tokens == 4
 
 
+def test_oddish_codex_replaces_prompt_only_trajectory(tmp_path):
+    (tmp_path / "trajectory.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "ATIF-v1.5",
+                "agent": {"name": "codex", "version": "0.137.0"},
+                "steps": [
+                    {"step_id": 1, "source": "system", "message": "permissions"},
+                    {"step_id": 2, "source": "user", "message": "environment"},
+                    {"step_id": 3, "source": "user", "message": "instruction"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "codex.txt").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "thread.started",
+                        "thread_id": "thread-1",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "item_1",
+                            "type": "agent_message",
+                            "text": "I inspected the ticket and updated the code.",
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    context = SimpleNamespace()
+    agent = OddishCodex(logs_dir=tmp_path, model_name="gpt-5.2-codex")
+
+    agent.populate_context_post_run(context)
+
+    trajectory = json.loads((tmp_path / "trajectory.json").read_text(encoding="utf-8"))
+    assert trajectory["session_id"] == "thread-1"
+    assert trajectory["agent"]["extra"]["trajectory_source"] == "codex_stdout_jsonl"
+    assert trajectory["steps"] == [
+        {
+            "step_id": 1,
+            "source": "agent",
+            "message": "I inspected the ticket and updated the code.",
+            "model_name": "gpt-5.2-codex",
+            "extra": {"source": "codex_stdout_jsonl"},
+        }
+    ]
+
+
 def test_oddish_codex_keeps_existing_richer_trajectory(tmp_path):
     existing_steps = [
         {"step_id": index + 1, "source": "agent", "message": f"step {index}"}
