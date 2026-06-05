@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.workers import harbor_runner  # noqa: E402
+from oddish.workers.codex_agent import AzureCompatibleCodex  # noqa: E402
 from oddish.workers.queue import trial_handler  # noqa: E402
 
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
@@ -461,9 +462,146 @@ def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch
         raw_harbor_config={},
     )
 
+    assert agent_config.name is None
+    assert agent_config.import_path == (
+        "oddish.workers.codex_agent:AzureCompatibleCodex"
+    )
     assert agent_config.model_name == "oddish-gpt"
     assert "AZURE_OPENAI_API_KEY" not in agent_config.env
     assert "OPENAI_API_KEY" not in agent_config.env
+
+
+def test_azure_compatible_codex_disables_unified_exec(tmp_path):
+    seen: dict[str, str] = {}
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen["command"] = command
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
+
+    asyncio.run(
+        agent.exec_as_agent(
+            _FakeEnvironment(),
+            "codex exec --json --enable unified_exec -- 'fix it'",
+        )
+    )
+
+    assert "--disable unified_exec" in seen["command"]
+    assert "--enable unified_exec" not in seen["command"]
+    assert "-c model_provider='\"oddish_azure_openai\"'" in seen["command"]
+    assert "model_verbosity" not in seen["command"]
+
+
+def test_azure_compatible_codex_retries_server_supported_verbosity(tmp_path):
+    seen: list[str] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen.append(command)
+            if len(seen) == 1:
+                return SimpleNamespace(
+                    return_code=1,
+                    stdout=(
+                        '{"type":"error","message":"{\\n'
+                        '  \\"error\\": {\\n'
+                        '    \\"message\\": \\"Unsupported value: low. '
+                        "Supported values are: 'server-selected'.\\\",\\n"
+                        '    \\"param\\": \\"text.verbosity\\"\\n'
+                        "  }\\n"
+                        '}"}'
+                    ),
+                    stderr="",
+                )
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
+
+    asyncio.run(
+        agent.exec_as_agent(
+            _FakeEnvironment(),
+            "codex exec --json -- 'fix it'",
+        )
+    )
+
+    assert len(seen) == 2
+    assert "model_verbosity" not in seen[0]
+    assert "-c model_verbosity='\"server-selected\"'" in seen[1]
+
+
+def test_azure_compatible_codex_replaces_explicit_unsupported_verbosity(tmp_path):
+    seen: list[str] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen.append(command)
+            if len(seen) == 1:
+                return SimpleNamespace(
+                    return_code=1,
+                    stdout=(
+                        '{"type":"error","message":"{'
+                        '\\"error\\": {'
+                        '\\"message\\": \\"Unsupported value. '
+                        "Supported values are: 'medium'.\\\","
+                        '\\"param\\": \\"text.verbosity\\"'
+                        '}}"}'
+                    ),
+                    stderr="",
+                )
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
+
+    asyncio.run(
+        agent.exec_as_agent(
+            _FakeEnvironment(),
+            "codex exec -c model_verbosity='\"low\"' --json -- 'fix it'",
+        )
+    )
+
+    assert len(seen) == 2
+    assert "-c model_verbosity='\"low\"'" in seen[0]
+    assert "-c model_verbosity='\"medium\"'" in seen[1]
+    assert seen[1].count("model_verbosity=") == 1
+
+
+def test_azure_compatible_codex_configures_http_responses_provider(
+    monkeypatch, tmp_path
+):
+    seen: dict[str, str] = {}
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen["command"] = command
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    monkeypatch.setenv(
+        "OPENAI_BASE_URL",
+        "https://example.openai.azure.com/openai/v1",
+    )
+    # Codex uses the OpenAI-compatible /openai/v1 route here. Do not forward
+    # Azure SDK-style api-version values into that route.
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "unsupported-test-version")
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
+
+    asyncio.run(
+        agent.exec_as_agent(
+            _FakeEnvironment(),
+            'cat >>"$CODEX_HOME/config.toml" <<TOML\n'
+            'openai_base_url = "${OPENAI_BASE_URL}"\n'
+            "TOML\n",
+        )
+    )
+
+    assert 'model_provider = "oddish_azure_openai"' in seen["command"]
+    assert "[model_providers.oddish_azure_openai]" in seen["command"]
+    assert 'base_url = "https://example.openai.azure.com/openai/v1"' in seen["command"]
+    assert 'wire_api = "responses"' in seen["command"]
+    assert "supports_websockets = false" in seen["command"]
+    assert "query_params" not in seen["command"]
+    assert "api-version" not in seen["command"]
+    assert "unsupported-test-version" not in seen["command"]
 
 
 def test_trial_uses_openai_provider_before_azure_model_rewrite(monkeypatch):
