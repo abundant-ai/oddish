@@ -38,15 +38,6 @@ class AzureCompatibleCodex(Codex):
             'wire_api = "responses"',
             "supports_websockets = false",
         ]
-        api_version = (
-            self._get_env("AZURE_OPENAI_API_VERSION")
-            or self._get_env("OPENAI_API_VERSION")
-        )
-        if api_version:
-            lines.append(
-                f'query_params = {{ "api-version" = {_toml_quote(api_version)} }}'
-            )
-
         payload = "\n".join(lines) + "\n"
         return f"cat >>\"$CODEX_HOME/config.toml\" <<'ODDISH_AZURE_CODEX_TOML'\n{payload}ODDISH_AZURE_CODEX_TOML\n"
 
