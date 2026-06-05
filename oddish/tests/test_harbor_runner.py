@@ -524,9 +524,8 @@ def test_azure_compatible_codex_configures_http_responses_provider(
     assert 'base_url = "https://example.openai.azure.com/openai/v1"' in seen["command"]
     assert 'wire_api = "responses"' in seen["command"]
     assert "supports_websockets = false" in seen["command"]
-    assert 'query_params = { "api-version" = "2025-01-01-preview" }' in seen[
-        "command"
-    ]
+    assert "query_params" not in seen["command"]
+    assert "api-version" not in seen["command"]
 
 
 def test_trial_uses_openai_provider_before_azure_model_rewrite(monkeypatch):
