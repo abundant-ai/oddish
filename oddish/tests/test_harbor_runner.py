@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from builtins import ExceptionGroup
 from collections import namedtuple
@@ -602,6 +603,144 @@ def test_azure_compatible_codex_configures_http_responses_provider(
     assert "query_params" not in seen["command"]
     assert "api-version" not in seen["command"]
     assert "unsupported-test-version" not in seen["command"]
+
+
+def test_azure_compatible_codex_writes_stdout_trajectory_when_richer(tmp_path):
+    (tmp_path / "trajectory.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "ATIF-v1.5",
+                "agent": {"name": "codex", "version": "0.137.0"},
+                "steps": [
+                    {"step_id": 1, "source": "system", "message": "setup"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "codex.txt").write_text(
+        "\n".join(
+            [
+                "Reading additional input from stdin...",
+                json.dumps(
+                    {
+                        "type": "thread.started",
+                        "thread_id": "thread-1",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "item_1",
+                            "type": "command_execution",
+                            "command": "/bin/bash -lc ls",
+                            "aggregated_output": "README.md\n",
+                            "exit_code": 0,
+                            "status": "completed",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "item_2",
+                            "type": "reasoning",
+                            "text": "I found the active ticket.",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "item_3",
+                            "type": "agent_message",
+                            "text": "Done.",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {
+                            "input_tokens": 10,
+                            "cached_input_tokens": 3,
+                            "output_tokens": 4,
+                            "reasoning_output_tokens": 2,
+                            "total_tokens": 14,
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    context = SimpleNamespace(
+        cost_usd=None,
+        n_input_tokens=0,
+        n_cache_tokens=0,
+        n_output_tokens=0,
+    )
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="gpt-5.2-codex")
+
+    agent.populate_context_post_run(context)
+
+    trajectory = json.loads((tmp_path / "trajectory.json").read_text(encoding="utf-8"))
+    assert trajectory["session_id"] == "thread-1"
+    assert trajectory["agent"]["extra"]["trajectory_source"] == "codex_stdout_jsonl"
+    assert len(trajectory["steps"]) == 3
+    command_step = trajectory["steps"][0]
+    assert command_step["tool_calls"][0]["function_name"] == "shell"
+    assert command_step["tool_calls"][0]["arguments"]["command"] == "/bin/bash -lc ls"
+    assert command_step["observation"]["results"][0]["content"] == "README.md\n"
+    assert trajectory["steps"][1]["reasoning_content"] == "I found the active ticket."
+    assert trajectory["steps"][2]["message"] == "Done."
+    assert trajectory["final_metrics"]["total_prompt_tokens"] == 10
+    assert trajectory["final_metrics"]["total_completion_tokens"] == 4
+    assert context.n_input_tokens == 10
+    assert context.n_cache_tokens == 3
+    assert context.n_output_tokens == 4
+
+
+def test_azure_compatible_codex_keeps_existing_richer_trajectory(tmp_path):
+    existing_steps = [
+        {"step_id": index + 1, "source": "agent", "message": f"step {index}"}
+        for index in range(5)
+    ]
+    (tmp_path / "trajectory.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "ATIF-v1.5",
+                "agent": {"name": "codex", "version": "0.137.0"},
+                "steps": existing_steps,
+            }
+        ),
+        encoding="utf-8",
+    )
+    original = (tmp_path / "trajectory.json").read_text(encoding="utf-8")
+    (tmp_path / "codex.txt").write_text(
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "item_1",
+                    "type": "agent_message",
+                    "text": "short",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    context = SimpleNamespace()
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="gpt-5.2-codex")
+
+    agent.populate_context_post_run(context)
+
+    assert (tmp_path / "trajectory.json").read_text(encoding="utf-8") == original
 
 
 def test_trial_uses_openai_provider_before_azure_model_rewrite(monkeypatch):
