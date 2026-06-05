@@ -276,17 +276,29 @@ function pickExperimentCreationMeta(tasks: Task[]): {
   };
 }
 
+// Extract a PR number from a GitHub PR URL (.../pull/123 or .../pulls/123).
+function parsePrNumberFromUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const match = url.match(/\/pulls?\/(\d+)(?:[/?#]|$)/);
+  return match ? match[1] : null;
+}
+
 function pickExperimentPr(tasks: Task[]): {
   prUrl: string | null;
   prTitle: string | null;
   prNumber: string | null;
 } {
-  const task = tasks.find((t) => t.github_meta?.pr_url);
+  // The URL can arrive two ways: structured `github_meta.pr_url`, or the
+  // canonical `task.link` column (set by `--link`, or auto-derived from
+  // github_meta on the backend). `link` is what the task page renders, so we
+  // treat it as a first-class source rather than relying on github_meta alone.
+  const task = tasks.find((t) => t.github_meta?.pr_url || t.link);
   const meta = task?.github_meta;
+  const prUrl = meta?.pr_url ?? task?.link ?? null;
   return {
-    prUrl: meta?.pr_url ?? null,
+    prUrl,
     prTitle: meta?.pr_title ?? null,
-    prNumber: meta?.pr_number ?? null,
+    prNumber: meta?.pr_number ?? parsePrNumberFromUrl(prUrl),
   };
 }
 
