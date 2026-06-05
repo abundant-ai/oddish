@@ -361,13 +361,35 @@ async def enqueue_trial_worker_job(
     )
 
 
+ANALYSIS_NO_RESULT_MESSAGE = (
+    "Analysis skipped: trial has no stored result to analyze "
+    "(neither an S3 key nor a local result path)."
+)
+
+
 async def enqueue_analysis_worker_job(
     session: AsyncSession,
     *,
     trial_id: str,
     org_id: str | None,
     parent_job_id: str | None = None,
-) -> WorkerJobModel:
+) -> WorkerJobModel | None:
+    """Enqueue a trial-analysis job, unless the trial has nothing to analyze.
+
+    Analysis resolves the trial's result directory from either ``trial_s3_key``
+    or ``harbor_result_path``. A trial that has neither (e.g. one that FAILED
+    before any results were uploaded) can never be analyzed: the handler raises
+    "No trial location available" and burns every retry before giving up, which
+    is what fills the shared analysis queue with doomed jobs. Mark such trials'
+    analysis FAILED up front and skip the enqueue, returning ``None``.
+    """
+    trial = await session.get(TrialModel, trial_id)
+    if trial is not None and not trial.trial_s3_key and not trial.harbor_result_path:
+        trial.analysis_status = AnalysisStatus.FAILED
+        trial.analysis_error = ANALYSIS_NO_RESULT_MESSAGE
+        trial.analysis_finished_at = utcnow()
+        return None
+
     return await enqueue_worker_job(
         session,
         EnqueueRequest(
