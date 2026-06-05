@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.endpoints import (
+    cancel_trial_analysis_core,
     delete_trial_core,
     get_trial_by_index_core,
     get_task_for_org_core,
@@ -179,6 +180,20 @@ async def retry_trial_analysis(
 
     async with get_session() as session:
         return await rerun_trial_analysis_core(
+            session, trial_id=trial_id, org_id=auth.org_id
+        )
+
+
+@router.post("/trials/{trial_id}/analysis/cancel")
+async def cancel_trial_analysis(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Cancel active analysis for one trial."""
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        return await cancel_trial_analysis_core(
             session, trial_id=trial_id, org_id=auth.org_id
         )
 

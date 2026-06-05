@@ -239,9 +239,13 @@ async def notify_trial_update(trial_id: str) -> bool:
                 )
                 return False
 
-            return await _update_pr_comment_for_task(
-                task, experiment_id=trial.experiment_id
-            )
+            experiment_id = trial.experiment_id
+
+        # Close this session BEFORE updating the comment. _update_pr_comment_for_task
+        # opens its own session; holding this one open across that call nests two
+        # sessions and deadlocks the worker's size-1 connection pool (the inner
+        # acquire times out: "QueuePool limit of size 1 overflow 0 reached").
+        return await _update_pr_comment_for_task(task, experiment_id=experiment_id)
 
     except Exception as e:
         logger.error(f"Error in notify_trial_update for {trial_id}: {e}")
@@ -264,9 +268,12 @@ async def notify_analysis_update(trial_id: str) -> bool:
                 )
                 return False
 
-            return await _update_pr_comment_for_task(
-                task, experiment_id=trial.experiment_id
-            )
+            experiment_id = trial.experiment_id
+
+        # Close the session before the comment update (see notify_trial_update):
+        # nesting it with _update_pr_comment_for_task's session deadlocks the
+        # worker's size-1 DB pool.
+        return await _update_pr_comment_for_task(task, experiment_id=experiment_id)
 
     except Exception as e:
         logger.error(f"Error in notify_analysis_update for {trial_id}: {e}")
@@ -282,7 +289,10 @@ async def notify_verdict_update(task_id: str) -> bool:
                 logger.warning(f"Task {task_id} not found for GitHub notification")
                 return False
 
-            return await _update_pr_comment_for_task(task)
+        # Close the session before the comment update (see notify_trial_update):
+        # nesting it with _update_pr_comment_for_task's session deadlocks the
+        # worker's size-1 DB pool.
+        return await _update_pr_comment_for_task(task)
 
     except Exception as e:
         logger.error(f"Error in notify_verdict_update for {task_id}: {e}")
