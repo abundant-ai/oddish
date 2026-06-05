@@ -490,6 +490,43 @@ def test_azure_compatible_codex_disables_unified_exec(tmp_path):
 
     assert "--disable unified_exec" in seen["command"]
     assert "--enable unified_exec" not in seen["command"]
+    assert "-c model_provider='\"oddish_azure_openai\"'" in seen["command"]
+
+
+def test_azure_compatible_codex_configures_http_responses_provider(
+    monkeypatch, tmp_path
+):
+    seen: dict[str, str] = {}
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen["command"] = command
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    monkeypatch.setenv(
+        "OPENAI_BASE_URL",
+        "https://example.openai.azure.com/openai/v1",
+    )
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
+
+    asyncio.run(
+        agent.exec_as_agent(
+            _FakeEnvironment(),
+            'cat >>"$CODEX_HOME/config.toml" <<TOML\n'
+            'openai_base_url = "${OPENAI_BASE_URL}"\n'
+            "TOML\n",
+        )
+    )
+
+    assert 'model_provider = "oddish_azure_openai"' in seen["command"]
+    assert "[model_providers.oddish_azure_openai]" in seen["command"]
+    assert 'base_url = "https://example.openai.azure.com/openai/v1"' in seen["command"]
+    assert 'wire_api = "responses"' in seen["command"]
+    assert "supports_websockets = false" in seen["command"]
+    assert 'query_params = { "api-version" = "2025-01-01-preview" }' in seen[
+        "command"
+    ]
 
 
 def test_trial_uses_openai_provider_before_azure_model_rewrite(monkeypatch):
