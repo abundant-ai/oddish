@@ -6,6 +6,8 @@ import shlex
 from harbor.agents.installed.codex import Codex
 from harbor.agents.installed.base import NonZeroAgentExitCodeError
 
+from oddish.workers.codex_stdout_trajectory import write_trajectory_if_richer
+
 
 _AZURE_CODEX_PROVIDER = "oddish_azure_openai"
 _AZURE_CODEX_RETRY_CONFIG_PARAMS = {
@@ -20,42 +22,8 @@ def _toml_quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-class AzureCompatibleCodex(Codex):
-    """Codex runner variant for Azure OpenAI-compatible endpoints.
-
-    Azure OpenAI-compatible endpoints currently reject Codex CLI's websocket
-    Responses route (``wss://.../openai/v1/responses``) with a 302 before the
-    agent reads the task. Configure Codex with an explicit OpenAI-compatible
-    provider that disables websockets so it uses the HTTP Responses stream.
-    """
-
-    def _azure_provider_config_command(self) -> str:
-        base_url = self._get_env("OPENAI_BASE_URL")
-        if not base_url:
-            return ""
-
-        lines = [
-            "",
-            "# Oddish Azure OpenAI transport: Azure accepts HTTP Responses here,",
-            "# but the Codex websocket Responses route returns 302.",
-            f"model_provider = {_toml_quote(_AZURE_CODEX_PROVIDER)}",
-            f"[model_providers.{_AZURE_CODEX_PROVIDER}]",
-            'name = "Azure OpenAI (Oddish)"',
-            f"base_url = {_toml_quote(base_url)}",
-            'env_key = "OPENAI_API_KEY"',
-            'wire_api = "responses"',
-            "supports_websockets = false",
-        ]
-        payload = "\n".join(lines) + "\n"
-        return f"cat >>\"$CODEX_HOME/config.toml\" <<'ODDISH_AZURE_CODEX_TOML'\n{payload}ODDISH_AZURE_CODEX_TOML\n"
-
-    def _maybe_append_provider_config(self, command: str) -> str:
-        if 'CODEX_HOME/config.toml' not in command:
-            return command
-        provider_config = self._azure_provider_config_command()
-        if not provider_config or _AZURE_CODEX_PROVIDER in command:
-            return command
-        return command.rstrip() + "\n" + provider_config
+class OddishCodex(Codex):
+    """Oddish's Codex wrapper for compatibility with current Codex CLI output."""
 
     def _ensure_codex_config_override(
         self, command: str, key: str, value: str
@@ -110,12 +78,6 @@ class AzureCompatibleCodex(Codex):
         cwd=None,
         timeout_sec=None,
     ):
-        command = self._maybe_append_provider_config(command)
-        if "codex exec " in command and "--enable unified_exec " in command:
-            command = command.replace("--enable unified_exec ", "--disable unified_exec ")
-        command = self._ensure_codex_config_override(
-            command, "model_provider", _AZURE_CODEX_PROVIDER
-        )
         try:
             return await super().exec_as_agent(
                 environment,
@@ -137,3 +99,84 @@ class AzureCompatibleCodex(Codex):
                 cwd=cwd,
                 timeout_sec=timeout_sec,
             )
+
+    def populate_context_post_run(self, context) -> None:
+        super().populate_context_post_run(context)
+        try:
+            trajectory = write_trajectory_if_richer(
+                existing_trajectory_path=self.logs_dir / "trajectory.json",
+                output_path=self.logs_dir / self._OUTPUT_FILENAME,
+                agent_version=self._version or "unknown",
+                model_name=self.model_name,
+                compute_cost=self._compute_cost_from_pricing,
+            )
+        except Exception:
+            self.logger.exception("Failed to write Codex stdout trajectory fallback")
+            return
+
+        if trajectory and trajectory.final_metrics:
+            metrics = trajectory.final_metrics
+            context.cost_usd = metrics.total_cost_usd
+            context.n_input_tokens = metrics.total_prompt_tokens or 0
+            context.n_cache_tokens = metrics.total_cached_tokens or 0
+            context.n_output_tokens = metrics.total_completion_tokens or 0
+
+
+class AzureCompatibleCodex(OddishCodex):
+    """Codex runner variant for Azure OpenAI-compatible endpoints.
+
+    Azure OpenAI-compatible endpoints currently reject Codex CLI's websocket
+    Responses route (``wss://.../openai/v1/responses``) with a 302 before the
+    agent reads the task. Configure Codex with an explicit OpenAI-compatible
+    provider that disables websockets so it uses the HTTP Responses stream.
+    """
+
+    def _azure_provider_config_command(self) -> str:
+        base_url = self._get_env("OPENAI_BASE_URL")
+        if not base_url:
+            return ""
+
+        lines = [
+            "",
+            "# Oddish Azure OpenAI transport: Azure accepts HTTP Responses here,",
+            "# but the Codex websocket Responses route returns 302.",
+            f"model_provider = {_toml_quote(_AZURE_CODEX_PROVIDER)}",
+            f"[model_providers.{_AZURE_CODEX_PROVIDER}]",
+            'name = "Azure OpenAI (Oddish)"',
+            f"base_url = {_toml_quote(base_url)}",
+            'env_key = "OPENAI_API_KEY"',
+            'wire_api = "responses"',
+            "supports_websockets = false",
+        ]
+        payload = "\n".join(lines) + "\n"
+        return f"cat >>\"$CODEX_HOME/config.toml\" <<'ODDISH_AZURE_CODEX_TOML'\n{payload}ODDISH_AZURE_CODEX_TOML\n"
+
+    def _maybe_append_provider_config(self, command: str) -> str:
+        if 'CODEX_HOME/config.toml' not in command:
+            return command
+        provider_config = self._azure_provider_config_command()
+        if not provider_config or _AZURE_CODEX_PROVIDER in command:
+            return command
+        return command.rstrip() + "\n" + provider_config
+
+    async def exec_as_agent(
+        self,
+        environment,
+        command,
+        env=None,
+        cwd=None,
+        timeout_sec=None,
+    ):
+        command = self._maybe_append_provider_config(command)
+        if "codex exec " in command and "--enable unified_exec " in command:
+            command = command.replace("--enable unified_exec ", "--disable unified_exec ")
+        command = self._ensure_codex_config_override(
+            command, "model_provider", _AZURE_CODEX_PROVIDER
+        )
+        return await super().exec_as_agent(
+            environment,
+            command,
+            env=env,
+            cwd=cwd,
+            timeout_sec=timeout_sec,
+        )
