@@ -14,12 +14,14 @@ place and writes the staged logs underneath it.
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 
 from sqlalchemy import select
 
 from oddish.db import TrialModel, get_session, get_storage_client
 from oddish.worker.probe_overlay import (
+    HARBOR_DIR_NAME,
     MAX_BYTES_PER_FILE,
     MAX_FILES_PER_TRIAL,
     MAX_RELATED_TRIALS,
@@ -105,12 +107,45 @@ async def stage_related_trial_logs(
     return staged_any
 
 
+def stage_harbor_source(work_task_dir: Path) -> bool:
+    """Copy the *live* harbor package source into ``work_task_dir/harbor_src``.
+
+    Resolves harbor from the running interpreter (``harbor.__file__``) so the
+    staged source is byte-for-byte the code that actually builds the env and
+    scores the trial -- otherwise a bug the agent "finds" in the source might
+    not exist in the live harness, making the exploit theater. Harbor mounts the
+    task dir at ``/app``, so this lands at :data:`HARBOR_CONTAINER_DIR`. Failures
+    are logged and skipped; they never block the probe. Returns True if staged.
+    """
+    try:
+        import harbor
+
+        src = Path(harbor.__file__).resolve().parent
+    except Exception:
+        logger.exception("probe: could not locate harbor source; skipping")
+        return False
+
+    dest = work_task_dir / HARBOR_DIR_NAME
+    try:
+        shutil.copytree(
+            src,
+            dest,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".git"),
+            dirs_exist_ok=True,
+        )
+    except Exception:
+        logger.exception("probe: staging harbor source failed")
+        return False
+    return True
+
+
 async def apply_probe_overlay(
     task_dir: Path,
     *,
     task_id: str,
     trial_id: str,
     extra_instructions: str,
+    time_budget_sec: float | None = None,
 ) -> None:
     """Stage related logs and rewrite ``task_dir/instruction.md`` in place.
 
@@ -126,6 +161,13 @@ async def apply_probe_overlay(
         logger.exception("probe: staging related trial logs failed")
         has_related = False
 
+    # Stage harbor's own source as a reward-hack surface (read-only, in-mount,
+    # network-immune). Best-effort: never blocks the probe.
+    try:
+        stage_harbor_source(task_dir)
+    except Exception:
+        logger.exception("probe: staging harbor source failed")
+
     instr_path = task_dir / "instruction.md"
     original = instr_path.read_text() if instr_path.exists() else ""
 
@@ -136,5 +178,6 @@ async def apply_probe_overlay(
             original,
             related_dir=RELATED_CONTAINER_DIR,
             has_related=has_related,
+            time_budget_sec=time_budget_sec,
         )
     )

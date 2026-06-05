@@ -40,6 +40,7 @@ from oddish.worker.probe_analysis import (
     run_probe_analyzer,
 )
 from oddish.worker.probe_staging import apply_probe_overlay
+from oddish.worker.local_offline_policy import enable_local_internet, task_is_offline
 
 logger = logging.getLogger(__name__)
 
@@ -363,6 +364,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
             task_id=task_db_id,
             trial_id=trial_id,
             extra_instructions=extra_instructions,
+            time_budget_sec=_PROBE_AGENT_TIMEOUT_SEC,
         )
         actual_task_path = work_task_dir
     else:
@@ -380,6 +382,21 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # does, so forward the host's AWS creds into the agent container -- without
     # this the in-container ``claude`` CLI has no way to invoke the Bedrock id
     # and exits 1. Mirrors ``harbor_runner._apply_claude_code_openrouter_env``.
+    # Offline tasks run network_mode:none under Harbor's Docker env, which
+    # blocks the model API (Bedrock) the agent must call -- so the agent can't
+    # run locally. Prod (Modal) reaches Bedrock via a domain allowlist; local
+    # Docker has no such primitive. For LOCAL runs, relax the constraint so the
+    # container has egress and Harbor's normal install + the agent both work.
+    # Trades offline isolation for a working local run; prod keeps real
+    # isolation. Modal/cloud path untouched.
+    if work_root is not None and task_is_offline(actual_task_path):
+        if enable_local_internet(actual_task_path):
+            logger.info(
+                "probe: local offline task %s -- enabled internet so the agent "
+                "can reach Bedrock (isolation relaxed locally only)",
+                trial_id,
+            )
+
     agent_config = AgentConfig(
         name=agent_name,
         model_name=model_name,
