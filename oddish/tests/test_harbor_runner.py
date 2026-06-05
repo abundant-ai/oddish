@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.workers import harbor_runner  # noqa: E402
-from oddish.workers.codex_agent import AzureCompatibleCodex  # noqa: E402
+from oddish.workers.codex_agent import AzureCompatibleCodex, OddishCodex  # noqa: E402
 from oddish.workers.queue import trial_handler  # noqa: E402
 
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
@@ -472,6 +472,53 @@ def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch
     assert "OPENAI_API_KEY" not in agent_config.env
 
 
+def test_build_agent_config_uses_oddish_codex_wrapper_for_public_openai(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setattr(harbor_runner.settings, "openai_api_key", "openai-key")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="codex",
+        model="openai/gpt-5.2-codex",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.name is None
+    assert agent_config.import_path == "oddish.workers.codex_agent:OddishCodex"
+    assert agent_config.model_name == "openai/gpt-5.2-codex"
+
+
+def test_build_agent_config_preserves_custom_codex_import(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setattr(harbor_runner.settings, "openai_api_key", "openai-key")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="codex",
+        model="openai/gpt-5.2-codex",
+        raw_harbor_config={
+            "agent_config": {
+                "name": "codex",
+                "import_path": "custom.module:CustomCodex",
+            }
+        },
+    )
+
+    assert agent_config.name == "codex"
+    assert agent_config.import_path == "custom.module:CustomCodex"
+
+
+def test_build_agent_config_does_not_wrap_non_codex_agents(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="nop",
+        model=None,
+        raw_harbor_config={},
+    )
+
+    assert agent_config.name == "nop"
+    assert agent_config.import_path is None
+
+
 def test_azure_compatible_codex_disables_unified_exec(tmp_path):
     seen: dict[str, str] = {}
 
@@ -495,7 +542,7 @@ def test_azure_compatible_codex_disables_unified_exec(tmp_path):
     assert "model_verbosity" not in seen["command"]
 
 
-def test_azure_compatible_codex_retries_server_supported_verbosity(tmp_path):
+def test_oddish_codex_retries_server_supported_verbosity(tmp_path):
     seen: list[str] = []
 
     class _FakeEnvironment:
@@ -517,7 +564,7 @@ def test_azure_compatible_codex_retries_server_supported_verbosity(tmp_path):
                 )
             return SimpleNamespace(return_code=0, stdout="", stderr="")
 
-    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
+    agent = OddishCodex(logs_dir=tmp_path, model_name="oddish-gpt")
 
     asyncio.run(
         agent.exec_as_agent(
@@ -531,7 +578,7 @@ def test_azure_compatible_codex_retries_server_supported_verbosity(tmp_path):
     assert "-c model_verbosity='\"server-selected\"'" in seen[1]
 
 
-def test_azure_compatible_codex_replaces_explicit_unsupported_verbosity(tmp_path):
+def test_oddish_codex_replaces_explicit_unsupported_verbosity(tmp_path):
     seen: list[str] = []
 
     class _FakeEnvironment:
@@ -552,7 +599,7 @@ def test_azure_compatible_codex_replaces_explicit_unsupported_verbosity(tmp_path
                 )
             return SimpleNamespace(return_code=0, stdout="", stderr="")
 
-    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
+    agent = OddishCodex(logs_dir=tmp_path, model_name="oddish-gpt")
 
     asyncio.run(
         agent.exec_as_agent(
@@ -605,7 +652,7 @@ def test_azure_compatible_codex_configures_http_responses_provider(
     assert "unsupported-test-version" not in seen["command"]
 
 
-def test_azure_compatible_codex_writes_stdout_trajectory_when_richer(tmp_path):
+def test_oddish_codex_writes_stdout_trajectory_when_richer(tmp_path):
     (tmp_path / "trajectory.json").write_text(
         json.dumps(
             {
@@ -684,7 +731,7 @@ def test_azure_compatible_codex_writes_stdout_trajectory_when_richer(tmp_path):
         n_cache_tokens=0,
         n_output_tokens=0,
     )
-    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="gpt-5.2-codex")
+    agent = OddishCodex(logs_dir=tmp_path, model_name="gpt-5.2-codex")
 
     agent.populate_context_post_run(context)
 
@@ -705,7 +752,7 @@ def test_azure_compatible_codex_writes_stdout_trajectory_when_richer(tmp_path):
     assert context.n_output_tokens == 4
 
 
-def test_azure_compatible_codex_keeps_existing_richer_trajectory(tmp_path):
+def test_oddish_codex_keeps_existing_richer_trajectory(tmp_path):
     existing_steps = [
         {"step_id": index + 1, "source": "agent", "message": f"step {index}"}
         for index in range(5)
@@ -736,7 +783,7 @@ def test_azure_compatible_codex_keeps_existing_richer_trajectory(tmp_path):
         encoding="utf-8",
     )
     context = SimpleNamespace()
-    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="gpt-5.2-codex")
+    agent = OddishCodex(logs_dir=tmp_path, model_name="gpt-5.2-codex")
 
     agent.populate_context_post_run(context)
 
