@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-05]
+
+### Added
+- `oddish cancel` gains `--analysis` and `--verdict` flags to cancel active analysis or verdict jobs independently without stopping unrelated trials; new API endpoints `POST /tasks/{task_id}/analysis/cancel`, `POST /tasks/{task_id}/verdict/cancel`, and `POST /trials/{trial_id}/analysis/cancel`; dashboard adds per-trial, bulk-selection, and task-detail cancellation controls for both stages (#189)
+- `oddish run --link <url>` attaches a source URL (PR, issue, or CI run) to a task at submission time; auto-derived from `--github-meta` `pr_url` when `--link` is omitted; displayed in the task detail page header; re-runs update the link when a new value is provided and leave it unchanged when none is given (#178)
+
+### Fixed
+- Daytona sandbox creation no longer fails with "Only ephemeral sandboxes are permitted in this region"; a new `daytona_ephemeral` setting (default `True`) causes harbor trials to request ephemeral sandboxes, matching the Daytona region's configuration; harbor pin bumped to include matching ephemeral sandbox support (#188)
+- GitHub PR comment now auto-updates as trials, analyses, and verdicts complete; the previous implementation nested two DB sessions inside `notify_trial_update`, `notify_analysis_update`, and `notify_verdict_update`, deadlocking the worker's size-1 connection pool before the GitHub write was reached (#187)
+- `alembic upgrade head` no longer fails with "Multiple head revisions are present"; a merge migration (`74a0eab3e564`) joins the divergent `provider/external_id` and `task_link` heads into a single unified head (#186)
+
+---
+
 ## [2026-06-04]
 
 ### Fixed
