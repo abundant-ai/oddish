@@ -20,7 +20,7 @@ import {
   accumulateTrial,
 } from "@/lib/trial-aggregation";
 import type { Task, Trial } from "@/lib/types";
-import { Loader2 } from "lucide-react";
+import { ExternalLink, GitPullRequest, Loader2 } from "lucide-react";
 import {
   buildExperimentAgentSummaries,
   getExperimentAgentKey,
@@ -271,6 +271,61 @@ function pickExperimentCreationMeta(tasks: Task[]): {
     createdAt: experimentCreatedAt ?? earliest.created_at,
     author: earliest.github_username || earliest.user || null,
   };
+}
+
+function pickExperimentPr(tasks: Task[]): {
+  prUrl: string | null;
+  prTitle: string | null;
+  prNumber: string | null;
+} {
+  const task = tasks.find((t) => t.github_meta?.pr_url);
+  const meta = task?.github_meta;
+  return {
+    prUrl: meta?.pr_url ?? null,
+    prTitle: meta?.pr_title ?? null,
+    prNumber: meta?.pr_number ?? null,
+  };
+}
+
+// Dedicated header affordance linking an experiment back to the GitHub PR that
+// spawned it (lineage tracing). The PR URL rides in along every task's
+// `github_meta` (set via `oddish run --github-meta`); we surface the first task
+// that carries one. Renders nothing when no PR metadata is present.
+function ExperimentPrLink({
+  tasks,
+  isInitialLoading,
+}: {
+  tasks: Task[];
+  isInitialLoading: boolean;
+}) {
+  if (isInitialLoading) return null;
+  const { prUrl, prTitle, prNumber } = pickExperimentPr(tasks);
+  if (!prUrl) return null;
+
+  const label = prTitle
+    ? prTitle
+    : prNumber
+      ? `PR #${prNumber}`
+      : "PR";
+
+  return (
+    <a
+      href={prUrl}
+      target="_blank"
+      rel="noreferrer"
+      title={prTitle ? `${label} — view on GitHub` : "View pull request on GitHub"}
+      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-2 py-1 font-mono text-[11.5px] text-[color:var(--paper-ink-2)] transition-colors hover:border-[color:var(--paper-ink-3)] hover:text-[color:var(--paper-ink)]"
+    >
+      <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      {prTitle && prNumber && (
+        <span className="shrink-0 text-[color:var(--paper-ink-3)]">
+          #{prNumber}
+        </span>
+      )}
+      <span className="min-w-0 truncate">{label}</span>
+      <ExternalLink className="h-3 w-3 shrink-0 opacity-60" aria-hidden />
+    </a>
+  );
 }
 
 function ExperimentMetaStrip({
@@ -848,6 +903,10 @@ export function ExperimentDetailView({
           <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <div className="min-w-0">{headerLeft}</div>
+              <ExperimentPrLink
+                tasks={tasksForExperiment}
+                isInitialLoading={isInitialLoading}
+              />
               <ExperimentMetaStrip
                 tasks={tasksForExperiment}
                 isInitialLoading={isInitialLoading}
