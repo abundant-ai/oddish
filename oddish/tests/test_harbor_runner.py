@@ -507,7 +507,9 @@ def test_azure_compatible_codex_configures_http_responses_provider(
         "OPENAI_BASE_URL",
         "https://example.openai.azure.com/openai/v1",
     )
-    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+    # Codex uses the OpenAI-compatible /openai/v1 route here. Do not forward
+    # Azure SDK-style api-version values into that route.
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "unsupported-test-version")
     agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
 
     asyncio.run(
@@ -526,6 +528,7 @@ def test_azure_compatible_codex_configures_http_responses_provider(
     assert "supports_websockets = false" in seen["command"]
     assert "query_params" not in seen["command"]
     assert "api-version" not in seen["command"]
+    assert "unsupported-test-version" not in seen["command"]
 
 
 def test_trial_uses_openai_provider_before_azure_model_rewrite(monkeypatch):
