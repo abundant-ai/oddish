@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import re
 import shlex
 
 from harbor.agents.installed.codex import Codex
+from harbor.agents.installed.base import NonZeroAgentExitCodeError
 
 
 _AZURE_CODEX_PROVIDER = "oddish_azure_openai"
-_AZURE_CODEX_VERBOSITY = "medium"
+_AZURE_CODEX_RETRY_CONFIG_PARAMS = {
+    "text.verbosity": "model_verbosity",
+}
+_SUPPORTED_VALUES_RE = re.compile(
+    r"Supported values are:\s*(?P<values>(?:'[^']+'\s*,?\s*)+)"
+)
 
 
 def _toml_quote(value: str) -> str:
@@ -61,6 +68,40 @@ class AzureCompatibleCodex(Codex):
             1,
         )
 
+    def _set_codex_config_override(self, command: str, key: str, value: str) -> str:
+        quoted_value = shlex.quote(_toml_quote(value))
+        pattern = re.compile(
+            rf"(?P<prefix>\s-c\s+{re.escape(key)}=)(?:'[^']*'|\"[^\"]*\"|\S+)"
+        )
+        if pattern.search(command):
+            return pattern.sub(
+                lambda match: f"{match.group('prefix')}{quoted_value}",
+                command,
+                count=1,
+            )
+        return self._ensure_codex_config_override(command, key, value)
+
+    def _retry_command_for_unsupported_config(
+        self, command: str, error_text: str
+    ) -> str | None:
+        normalized = error_text.replace('\\"', '"').replace("\\n", "\n")
+        config_key = None
+        for api_param, codex_config_key in _AZURE_CODEX_RETRY_CONFIG_PARAMS.items():
+            if f'"param": "{api_param}"' in normalized:
+                config_key = codex_config_key
+                break
+        if not config_key:
+            return None
+
+        supported_match = _SUPPORTED_VALUES_RE.search(normalized)
+        if not supported_match:
+            return None
+        supported_values = re.findall(r"'([^']+)'", supported_match.group("values"))
+        if not supported_values:
+            return None
+
+        return self._set_codex_config_override(command, config_key, supported_values[0])
+
     async def exec_as_agent(
         self,
         environment,
@@ -75,13 +116,24 @@ class AzureCompatibleCodex(Codex):
         command = self._ensure_codex_config_override(
             command, "model_provider", _AZURE_CODEX_PROVIDER
         )
-        command = self._ensure_codex_config_override(
-            command, "model_verbosity", _AZURE_CODEX_VERBOSITY
-        )
-        return await super().exec_as_agent(
-            environment,
-            command,
-            env=env,
-            cwd=cwd,
-            timeout_sec=timeout_sec,
-        )
+        try:
+            return await super().exec_as_agent(
+                environment,
+                command,
+                env=env,
+                cwd=cwd,
+                timeout_sec=timeout_sec,
+            )
+        except NonZeroAgentExitCodeError as exc:
+            retry_command = self._retry_command_for_unsupported_config(
+                command, str(exc)
+            )
+            if retry_command is None or retry_command == command:
+                raise
+            return await super().exec_as_agent(
+                environment,
+                retry_command,
+                env=env,
+                cwd=cwd,
+                timeout_sec=timeout_sec,
+            )
