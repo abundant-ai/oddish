@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from builtins import ExceptionGroup
 from collections import namedtuple
 from contextlib import asynccontextmanager
@@ -433,6 +434,142 @@ def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
     assert seen["include_temp_root"] is False
     assert outcome.error is None
     assert outcome.job_result_path is not None
+
+
+def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "azure")
+    monkeypatch.setattr(harbor_runner.settings, "azure_openai_api_key", "az-key")
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_endpoint",
+        "https://example.openai.azure.com",
+    )
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_api_version",
+        "2025-01-01-preview",
+    )
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_deployments",
+        {"openai/gpt-5.4": "oddish-gpt"},
+    )
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="codex",
+        model="openai/gpt-5.4",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "oddish-gpt"
+    assert "AZURE_OPENAI_API_KEY" not in agent_config.env
+    assert "OPENAI_API_KEY" not in agent_config.env
+
+
+def test_trial_uses_openai_provider_before_azure_model_rewrite(monkeypatch):
+    assert harbor_runner._trial_uses_openai_provider(
+        agent="custom-agent",
+        model=None,
+        raw_harbor_config={
+            "agent_config": {
+                "name": "custom-agent",
+                "model_name": "openai/gpt-5.4",
+            }
+        },
+    )
+
+
+def test_run_harbor_trial_async_scopes_azure_env(monkeypatch, tmp_path):
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text("", encoding="utf-8")
+    jobs_dir = tmp_path / "jobs"
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_API_VERSION", raising=False)
+    monkeypatch.delenv("ODDISH_AZURE_OPENAI_DEPLOYMENTS", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "azure")
+    monkeypatch.setattr(harbor_runner.settings, "azure_openai_api_key", "az-key")
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_endpoint",
+        "https://example.openai.azure.com",
+    )
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_api_version",
+        "2025-01-01-preview",
+    )
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_deployments",
+        {"openai/gpt-5.4": "oddish-gpt"},
+    )
+    seen: dict[str, str | None] = {}
+
+    class _FakeJob:
+        def __init__(self, config):
+            self.job_dir = config["jobs_dir"] / "job-1"
+
+        @classmethod
+        async def create(cls, config):
+            seen["api_key"] = os.environ.get("AZURE_OPENAI_API_KEY")
+            seen["endpoint"] = os.environ.get("AZURE_OPENAI_ENDPOINT")
+            seen["deployment"] = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
+            seen["openai_key"] = os.environ.get("OPENAI_API_KEY")
+            seen["base_url"] = os.environ.get("OPENAI_BASE_URL")
+            return cls(config)
+
+        async def run(self):
+            self.job_dir.mkdir(parents=True, exist_ok=True)
+            (self.job_dir / "result.json").write_text("{}\n", encoding="utf-8")
+            return object()
+
+    monkeypatch.setattr(
+        harbor_runner, "_check_local_storage_preflight", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        harbor_runner, "validate_task_timeout_config", lambda path: None
+    )
+    monkeypatch.setattr(harbor_runner, "TaskConfig", lambda path: path)
+    monkeypatch.setattr(harbor_runner, "JobConfig", lambda **kwargs: kwargs)
+    monkeypatch.setattr(harbor_runner, "Job", _FakeJob)
+    monkeypatch.setattr(
+        harbor_runner,
+        "_extract_outcome_from_job_result",
+        lambda **kwargs: harbor_runner.HarborOutcome(
+            reward=1.0,
+            error=None,
+            exit_code=0,
+            duration_sec=kwargs["duration_sec"],
+            job_result_path=kwargs["job_result_path"],
+            job_dir=kwargs["job_dir"],
+        ),
+    )
+
+    outcome = asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="codex",
+            jobs_dir=jobs_dir,
+            model="openai/gpt-5.4",
+        )
+    )
+
+    assert outcome.error is None
+    assert seen == {
+        "api_key": "az-key",
+        "endpoint": "https://example.openai.azure.com",
+        "deployment": "oddish-gpt",
+        "openai_key": "az-key",
+        "base_url": "https://example.openai.azure.com/openai/v1",
+    }
+    assert os.environ.get("AZURE_OPENAI_API_KEY") is None
+    assert os.environ.get("OPENAI_API_KEY") is None
+    assert os.environ.get("OPENAI_BASE_URL") is None
 
 
 def test_run_harbor_trial_async_checks_temp_root_when_task_patch_needed(

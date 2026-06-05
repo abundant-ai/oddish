@@ -214,6 +214,13 @@ def run(
             help="JSON metadata to associate with this task (e.g. PR info).",
         ),
     ] = None,
+    link: Annotated[
+        Optional[str],
+        typer.Option(
+            "--link",
+            help="URL to associate with this task (e.g. PR, issue, CI run)",
+        ),
+    ] = None,
     publish: Annotated[
         bool,
         typer.Option(
@@ -645,6 +652,7 @@ def run(
             artifact_paths=artifact_paths,
             append_to_task=append_to_task,
             content_hash=task_content_hash,
+            link=link,
         )
 
     # Phase 1: upload any local task directories (shared with

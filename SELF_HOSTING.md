@@ -67,11 +67,23 @@ ODDISH_S3_SECRET_KEY=...
 ODDISH_S3_ENDPOINT_URL=...
 ```
 
-Provider keys (add the ones you plan to use):
+Provider keys (add the ones you plan to use). OpenAI-family jobs default to
+Azure OpenAI:
 
 ```bash
-OPENAI_API_KEY=sk-...
+# Use an OpenAI-compatible endpoint such as *.openai.azure.com/openai/v1 or
+# *.services.ai.azure.com/openai/v1. Do not use the Foundry project endpoint
+# ending in /api/projects/<project>.
+ODDISH_OPENAI_PROVIDER=azure
+AZURE_OPENAI_API_KEY=...
+AZURE_OPENAI_ENDPOINT=https://YOUR-RESOURCE.openai.azure.com/openai/v1
+AZURE_OPENAI_API_VERSION=...
+ODDISH_AZURE_OPENAI_DEPLOYMENTS='{"openai/gpt-5.2":"azure-gpt-5-2","gpt-5.2":"azure-gpt-5-2"}'
 GEMINI_API_KEY=...
+
+# To use public OpenAI instead, explicitly set:
+# ODDISH_OPENAI_PROVIDER=openai
+# OPENAI_API_KEY=sk-...
 
 # oddish runs Claude exclusively through AWS Bedrock. The Modal image sets
 # CLAUDE_CODE_USE_BEDROCK=1; provide the bearer token here.

@@ -699,6 +699,7 @@ def submit_sweep(
     evaluation_metric: str | None = None,
     ratio_unit: str | None = None,
     ratio_verb: str | None = None,
+    link: str | None = None,
 ) -> dict:
     """Submit a task sweep to the API.
 
@@ -786,6 +787,8 @@ def submit_sweep(
         payload["ratio_unit"] = ratio_unit
     if ratio_verb:
         payload["ratio_verb"] = ratio_verb
+    if link:
+        payload["link"] = link
 
     with httpx.Client(
         timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()

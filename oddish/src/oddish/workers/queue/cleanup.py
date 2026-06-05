@@ -19,6 +19,7 @@ with all trials done can't get stuck if a single stage-transition
 flush failed at handler-commit time.
 """
 
+import asyncio
 from datetime import timedelta
 from typing import cast
 
@@ -26,6 +27,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import CursorResult
 
 from oddish.config import settings
+from oddish.core.helpers import cancel_job_by_worker
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -132,6 +134,7 @@ async def cleanup_orphaned_queue_state(
     """
     worker_jobs_retried = 0
     worker_jobs_failed = 0
+    worker_sandboxes_terminated = 0
     tasks_progressed_to_analysis = 0
     tasks_progressed_to_verdict = 0
     terminal_trial_runtime_refs_cleared = 0
@@ -196,7 +199,9 @@ async def cleanup_orphaned_queue_state(
                               subject_id,
                               attempts,
                               max_attempts,
-                              error_message
+                              error_message,
+                              provider,
+                              external_id
                     """
                     ),
                     {"stale_after_minutes": stale_after_minutes},
@@ -212,11 +217,17 @@ async def cleanup_orphaned_queue_state(
         # the stale rows we just reaped, so the cost is O(stale) not
         # O(table).
         stale_trial_ids: list[str] = []
+        worker_targets: set[tuple[str, str]] = set()
         for row in stale_rows:
             if row["new_status"] == "RETRYING":
                 worker_jobs_retried += 1
             else:
                 worker_jobs_failed += 1
+
+            provider = row.get("provider")
+            external_id = row.get("external_id")
+            if provider and external_id:
+                worker_targets.add((str(provider), str(external_id)))
 
             kind = row["kind"]
             subject_id = row["subject_id"]
@@ -313,6 +324,18 @@ async def cleanup_orphaned_queue_state(
                     task.verdict_error = row["error_message"]
 
         await session.flush()
+
+        # Kill the orphaned sandboxes whose workers crashed
+        # Best-effort and concurrent: a dead sandbox can't block the rest of the reap,
+        # and the provider's auto-stop / auto-delete TTL is backstop if this fails.
+        if worker_targets:
+            results = await asyncio.gather(
+                *(
+                    cancel_job_by_worker(provider, external_id)
+                    for provider, external_id in worker_targets
+                )
+            )
+            worker_sandboxes_terminated = sum(1 for ok in results if ok)
 
         # Trigger stage transitions for tasks whose trials just got
         # failed, in case the failure marks the task "all trials done"
@@ -540,6 +563,7 @@ async def cleanup_orphaned_queue_state(
     return {
         "worker_jobs_retried": worker_jobs_retried,
         "worker_jobs_failed": worker_jobs_failed,
+        "worker_sandboxes_terminated": worker_sandboxes_terminated,
         "tasks_progressed_to_analysis": tasks_progressed_to_analysis,
         "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
         "verdict_pending_completed": verdict_pending_completed,

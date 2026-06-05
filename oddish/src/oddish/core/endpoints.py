@@ -62,6 +62,9 @@ from oddish.schemas import (
 )
 from oddish.timing import TimingRecorder, elapsed_ms, now
 
+USER_CANCELLED_MESSAGE = "Cancelled by user"
+_ACTIVE_WORKER_JOB_STATUSES_SQL = "'QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED'"
+
 
 async def _primary_experiment_for_task_model(
     task: TaskModel,
@@ -197,6 +200,7 @@ async def list_tasks_core(
                     TaskModel.priority,
                     TaskModel.user,
                     TaskModel.tags,
+                    TaskModel.link,
                     TaskModel.task_path,
                     TaskModel.current_version_id,
                     TaskModel.run_analysis,
@@ -935,6 +939,222 @@ def _reset_task_verdict(task: TaskModel) -> None:
     task.verdict_error = None
     task.verdict_started_at = None
     task.verdict_finished_at = None
+
+
+def _collect_cancel_metadata(rows: Collection[object]) -> dict[str, list[str]]:
+    modal_fc_ids: list[str] = []
+    for row in rows:
+        get = getattr(row, "get", None)
+        fc = get("modal_function_call_id") if get else None
+        if fc:
+            modal_fc_ids.append(str(fc))
+    return {"modal_function_call_ids": list(dict.fromkeys(modal_fc_ids))}
+
+
+async def _cancel_worker_jobs_for_kind(
+    session: AsyncSession,
+    *,
+    kind: str,
+    subject_table: str,
+    subject_ids: Collection[str],
+    reason: str,
+):
+    if not subject_ids:
+        return []
+    rows = (
+        await session.execute(
+            text(
+                f"""
+                WITH to_cancel AS (
+                    SELECT id,
+                           modal_function_call_id,
+                           provider,
+                           external_id
+                    FROM   worker_jobs
+                    WHERE  kind::text = :kind
+                      AND  subject_table = :subject_table
+                      AND  subject_id = ANY(:subject_ids)
+                      AND  status::text IN ({_ACTIVE_WORKER_JOB_STATUSES_SQL})
+                    FOR UPDATE
+                )
+                UPDATE worker_jobs AS w
+                SET    status = 'CANCELLED',
+                       finished_at = NOW(),
+                       error_message = :reason,
+                       current_worker_id = NULL,
+                       current_queue_slot = NULL,
+                       modal_function_call_id = NULL
+                FROM   to_cancel
+                WHERE  w.id = to_cancel.id
+                RETURNING w.id,
+                          w.subject_id,
+                          to_cancel.modal_function_call_id,
+                          to_cancel.provider,
+                          to_cancel.external_id
+                """
+            ),
+            {
+                "kind": kind,
+                "subject_table": subject_table,
+                "subject_ids": list(dict.fromkeys(subject_ids)),
+                "reason": reason,
+            },
+        )
+    ).mappings().all()
+    return rows
+
+
+def _has_active_analysis(trial: TrialModel) -> bool:
+    return trial.analysis_status in (
+        AnalysisStatus.PENDING,
+        AnalysisStatus.QUEUED,
+        AnalysisStatus.RUNNING,
+    )
+
+
+def _has_active_verdict(task: TaskModel) -> bool:
+    return task.verdict_status in (
+        VerdictStatus.PENDING,
+        VerdictStatus.QUEUED,
+        VerdictStatus.RUNNING,
+    )
+
+
+async def cancel_trial_analysis_core(
+    session: AsyncSession,
+    *,
+    trial_id: str,
+    org_id: str | None = None,
+) -> dict[str, str | int | list[str]]:
+    """Cancel in-flight analysis for one trial without cancelling the trial."""
+    trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
+    now_value = utcnow()
+    rows = await _cancel_worker_jobs_for_kind(
+        session,
+        kind="ANALYSIS",
+        subject_table="trials",
+        subject_ids=[trial_id],
+        reason=USER_CANCELLED_MESSAGE,
+    )
+    had_active_analysis = _has_active_analysis(trial)
+    if rows or had_active_analysis:
+        trial.analysis_status = AnalysisStatus.FAILED
+        trial.analysis_error = USER_CANCELLED_MESSAGE
+        trial.analysis_finished_at = now_value
+
+    task_result = await session.execute(
+        select(TaskModel)
+        .options(selectinload(TaskModel.trials))
+        .where(TaskModel.id == trial.task_id)
+    )
+    task = task_result.scalar_one_or_none()
+    other_active_analysis = any(
+        other.id != trial_id
+        and other.superseded_by_trial_id is None
+        and _has_active_analysis(other)
+        for other in (task.trials if task else [])
+    )
+    if (
+        task
+        and task.status == TaskStatus.ANALYZING
+        and (rows or had_active_analysis)
+        and not other_active_analysis
+    ):
+        task.status = TaskStatus.FAILED
+        task.finished_at = now_value
+
+    await session.commit()
+    return {
+        "status": "cancelled",
+        "trial_id": trial_id,
+        "analysis_jobs_cancelled": len(rows),
+        **_collect_cancel_metadata(rows),
+    }
+
+
+async def cancel_task_analysis_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    org_id: str | None = None,
+) -> dict[str, str | int | list[str]]:
+    """Cancel in-flight analysis jobs for a task without cancelling trials."""
+    result = await session.execute(
+        select(TaskModel)
+        .options(selectinload(TaskModel.trials))
+        .where(TaskModel.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    if not task or (org_id is not None and task.org_id != org_id):
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    live_trials = [
+        trial for trial in task.trials or [] if trial.superseded_by_trial_id is None
+    ]
+    trial_ids = [trial.id for trial in live_trials]
+    now_value = utcnow()
+    rows = await _cancel_worker_jobs_for_kind(
+        session,
+        kind="ANALYSIS",
+        subject_table="trials",
+        subject_ids=trial_ids,
+        reason=USER_CANCELLED_MESSAGE,
+    )
+    cancelled_subject_ids = {str(row["subject_id"]) for row in rows}
+    trials_updated = 0
+    for trial in live_trials:
+        if trial.id not in cancelled_subject_ids and not _has_active_analysis(trial):
+            continue
+        trial.analysis_status = AnalysisStatus.FAILED
+        trial.analysis_error = USER_CANCELLED_MESSAGE
+        trial.analysis_finished_at = now_value
+        trials_updated += 1
+
+    if task.status == TaskStatus.ANALYZING or trials_updated:
+        task.status = TaskStatus.FAILED
+        task.finished_at = now_value
+
+    await session.commit()
+    return {
+        "status": "cancelled",
+        "task_id": task_id,
+        "analysis_jobs_cancelled": len(rows),
+        "trials_cancelled": trials_updated,
+        **_collect_cancel_metadata(rows),
+    }
+
+
+async def cancel_task_verdict_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    org_id: str | None = None,
+) -> dict[str, str | int | list[str]]:
+    """Cancel an in-flight task verdict without cancelling trials or analysis."""
+    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
+    now_value = utcnow()
+    rows = await _cancel_worker_jobs_for_kind(
+        session,
+        kind="VERDICT",
+        subject_table="tasks",
+        subject_ids=[task_id],
+        reason=USER_CANCELLED_MESSAGE,
+    )
+    if rows or _has_active_verdict(task) or task.status == TaskStatus.VERDICT_PENDING:
+        task.verdict_status = VerdictStatus.FAILED
+        task.verdict_error = USER_CANCELLED_MESSAGE
+        task.verdict_finished_at = now_value
+        if task.status == TaskStatus.VERDICT_PENDING:
+            task.status = TaskStatus.FAILED
+            task.finished_at = now_value
+
+    await session.commit()
+    return {
+        "status": "cancelled",
+        "task_id": task_id,
+        "verdict_jobs_cancelled": len(rows),
+        **_collect_cancel_metadata(rows),
+    }
 
 
 def _task_has_active_analysis(task: TaskModel) -> bool:
@@ -2214,6 +2434,18 @@ async def create_task_sweep_core(
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
 
+    # Default the task link to the GitHub PR URL when the caller didn't
+    # pass an explicit ``--link`` but the task carries GitHub PR metadata
+    # (set via ``--github-meta``). An explicit link always wins.
+    if not submission.link:
+        from oddish.integrations.github.client import GitHubMeta
+
+        github_meta = GitHubMeta.from_tags(submission.tags)
+        if github_meta and github_meta.pr_url:
+            submission = submission.model_copy(
+                update={"link": github_meta.pr_url}
+            )
+
     # Auto-detect append mode if the task already exists in the DB for this org.
     if not submission.append_to_task:
         existing = await session.get(TaskModel, submission.task_id)
@@ -2234,6 +2466,11 @@ async def create_task_sweep_core(
         # opt in without manual intervention.
         if submission.run_analysis and not task.run_analysis:
             task.run_analysis = True
+        # Update the link whenever a new submission carries one (explicit
+        # --link or derived from --github-meta above). A submission with no
+        # link leaves the existing value untouched rather than clearing it.
+        if submission.link:
+            task.link = submission.link
 
         new_experiment_id: str | None = None
         experiment: ExperimentModel | None = None
