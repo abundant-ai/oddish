@@ -26,7 +26,12 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialHookEvent
 from harbor.models.job.result import JobResult
 
-from oddish.config import OPENAI_PROVIDER_OPENAI, settings, to_bedrock_model_id
+from oddish.config import (
+    OPENAI_PROVIDER_AZURE,
+    OPENAI_PROVIDER_OPENAI,
+    settings,
+    to_bedrock_model_id,
+)
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 
@@ -34,6 +39,8 @@ HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _MIN_REQUIRED_FREE_GB = 5.0
 _MIN_REQUIRED_FREE_INODES = 1024
+_ODDISH_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:OddishCodex"
+_AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:AzureCompatibleCodex"
 
 
 class _TeeTextIO:
@@ -544,6 +551,32 @@ def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
     agent_config.env = env
 
 
+def _apply_codex_azure_compat(agent_config: AgentConfig) -> None:
+    """Route Azure Codex trials through Oddish's transport-compatible wrapper."""
+    if agent_config.import_path is not None:
+        return
+    agent_name = (agent_config.name or "").strip().lower()
+    if agent_name != "codex":
+        return
+    if settings.get_openai_provider() != OPENAI_PROVIDER_AZURE:
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _AZURE_COMPAT_CODEX_IMPORT_PATH
+
+
+def _apply_codex_oddish_wrapper(agent_config: AgentConfig) -> None:
+    """Route Codex trials through Oddish's compatibility wrapper."""
+    if agent_config.import_path is not None:
+        return
+    agent_name = (agent_config.name or "").strip().lower()
+    if agent_name != "codex":
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_CODEX_IMPORT_PATH
+
+
 def _build_agent_config(
     *,
     agent: str,
@@ -610,6 +643,9 @@ def _build_agent_config(
             agent_config.model_name = settings.resolve_azure_openai_deployment(
                 agent_config.model_name
             )
+            _apply_codex_azure_compat(agent_config)
+
+    _apply_codex_oddish_wrapper(agent_config)
 
     return agent_config
 
