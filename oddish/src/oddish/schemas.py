@@ -221,6 +221,7 @@ class TaskSubmission(BaseModel):
     ratio_verb: str | None = Field(
         default=None,
         description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
+    )
     link: str | None = Field(
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
