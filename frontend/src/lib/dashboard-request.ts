@@ -5,6 +5,7 @@ type DashboardRequestParams = {
   experiments_offset?: number;
   experiments_query?: string;
   experiments_status?: string;
+  experiments_author?: string;
   usage_minutes?: number | null;
   include_tasks?: boolean;
   include_usage?: boolean;
@@ -13,6 +14,11 @@ type DashboardRequestParams = {
 
 export const DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT = 25;
 export const DASHBOARD_DEFAULT_USAGE_MINUTES = 1440;
+
+// Owner filter sentinel for the experiments table. "all" shows the whole
+// organization; "me" scopes to the current user; any other value is an
+// org member's user id.
+export const DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR = "all";
 
 export const DEFAULT_DASHBOARD_REQUEST_PARAMS: DashboardRequestParams =
   Object.freeze({
@@ -53,6 +59,12 @@ function buildDashboardSearchParams(
   if (input.experiments_status) {
     params.set("experiments_status", input.experiments_status);
   }
+  if (
+    input.experiments_author &&
+    input.experiments_author !== DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR
+  ) {
+    params.set("experiments_author", input.experiments_author);
+  }
 
   const trimmedQuery = input.experiments_query?.trim();
   if (trimmedQuery) {
@@ -85,6 +97,12 @@ export function isDefaultDashboardExperimentsView(
   offset: number,
   query: string,
   status: string,
+  author: string = DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
 ): boolean {
-  return offset === 0 && query.trim().length === 0 && status === "all";
+  return (
+    offset === 0 &&
+    query.trim().length === 0 &&
+    status === "all" &&
+    author === DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR
+  );
 }
