@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-06]
+
+### Added
+- Trial detail panel now shows a "Sandbox" button linking to the Daytona dashboard when a trial has an associated Daytona worker job; `provider` and `external_id` fields exposed in the worker job API response to enable this (#190)
+
+### Fixed
+- Codex workers running against Azure OpenAI endpoints no longer fail with 302 errors from the websocket Responses route; a new `AzureCompatibleCodex` runner disables the `unified_exec` websocket transport and injects an HTTP-only OpenAI-compatible provider config; trajectory is recovered from stdout JSONL as a fallback when the Codex session file is sparse (#193)
+- `enqueue_analysis_worker_job` now skips enqueueing analysis for trials with no stored result (neither S3 key nor local path), immediately marking analysis `FAILED` instead of burning all 6 retries on a doomed job; a staleness-gated cleanup backstop finalizes `ANALYZING` tasks with no live trials and cancels their dangling queued `ANALYSIS` worker jobs (#196)
+- Stuck-`ANALYZING` cleanup pass rescoped to correctly target tasks whose live trials have `analysis_status = NULL` (analysis was never enqueued) rather than tasks with no live trials at all; NULL analysis statuses are now marked terminal so `maybe_start_verdict_stage` can advance the task to `VERDICT_PENDING` instead of leaving it indefinitely blocked; tasks with no live trials are still finalized `FAILED` (#200)
+- Worker containers now drain short-job queues by claiming and running multiple jobs back-to-back on their held slot until the queue empties or a wall-clock budget (`ODDISH_MODAL_WORKER_BATCH_BUDGET_SECONDS`, default 300s) expires; lifts utilization for analysis (~54s), verdict (~9s), and nop-oracle (~46s) queues toward 100% without changing global spawn rates or concurrency limits; long agent trials exceed the budget on the first job and continue to run one-per-container (#201)
+
+---
+
 ## [2026-06-05]
 
 ### Added
