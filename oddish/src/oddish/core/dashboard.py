@@ -257,6 +257,50 @@ def _build_aggregates_for_experiment_ids(
     return task_agg, trial_agg
 
 
+def _build_experiments_author_filter(
+    experiments_author_user_id: str | None,
+    experiments_author_github_username: str | None,
+    *,
+    org_id: str | None,
+):
+    """EXISTS clause restricting experiments to a single owner, or ``None``.
+
+    Returns ``None`` when no owner filter is requested. Otherwise returns
+    an EXISTS over the experiment's live tasks that matches the resolved
+    ``created_by_user_id`` (the Clerk user stamped at task creation,
+    covering both web and API-key/CI runs) and falls back to the
+    ``github_username`` task tag so tasks created before the owner id was
+    resolvable still attribute. Applied to the indexed ``last_activity_at``
+    page scan so paging stays correct and cheap.
+    """
+    if experiments_author_user_id is None:
+        return None
+
+    author_conditions = [
+        TaskModel.created_by_user_id == experiments_author_user_id
+    ]
+    if experiments_author_github_username:
+        author_conditions.append(
+            TaskModel.tags["github_username"].astext
+            == experiments_author_github_username
+        )
+    author_exists = (
+        select(1)
+        .select_from(
+            task_experiments.join(
+                TaskModel,  # type: ignore[arg-type]
+                TaskModel.id == task_experiments.c.task_id,
+            )
+        )
+        .where(task_experiments.c.experiment_id == ExperimentModel.id)
+        .where(task_experiments.c.deleted_at.is_(None))
+        .where(or_(*author_conditions))
+    )
+    if org_id is not None:
+        author_exists = author_exists.where(TaskModel.org_id == org_id)
+    return author_exists.exists()
+
+
 def _experiment_row_passes_status_filter(row, *, status_filter: str) -> bool:
     if status_filter == "active":
         return int(row["active_trials"] or 0) > 0
@@ -281,6 +325,8 @@ async def load_dashboard_experiments(
     experiments_offset: int,
     experiments_query: str | None,
     experiments_status: str,
+    experiments_author_user_id: str | None = None,
+    experiments_author_github_username: str | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Load experiment summaries for the dashboard.
@@ -331,6 +377,15 @@ async def load_dashboard_experiments(
                 func.lower(ExperimentModel.id).like(query_like),
             )
         )
+    # Owner filter ("My experiments" / per-member picker): keep only
+    # experiments with at least one live task owned by the target author.
+    author_filter = _build_experiments_author_filter(
+        experiments_author_user_id,
+        experiments_author_github_username,
+        org_id=org_id,
+    )
+    if author_filter is not None:
+        page_query = page_query.where(author_filter)
     page_query = (
         page_query.order_by(
             nulls_last(ExperimentModel.last_activity_at.desc()),
@@ -814,6 +869,8 @@ async def get_dashboard_core(
     experiments_offset: int = 0,
     experiments_query: str | None = None,
     experiments_status: str = "all",
+    experiments_author_user_id: str | None = None,
+    experiments_author_github_username: str | None = None,
     usage_minutes: int | None = None,
     include_tasks: bool = True,
     include_usage: bool = True,
@@ -836,7 +893,7 @@ async def get_dashboard_core(
     experiments_cache_key = (
         f"dashboard.experiments:{org_id}:"
         f"{experiments_limit}:{experiments_offset}:{experiments_query}:"
-        f"{experiments_status}"
+        f"{experiments_status}:{experiments_author_user_id}"
     )
 
     is_usage_only_request = (
@@ -945,6 +1002,8 @@ async def get_dashboard_core(
                 experiments_offset=experiments_offset,
                 experiments_query=experiments_query,
                 experiments_status=experiments_status,
+                experiments_author_user_id=experiments_author_user_id,
+                experiments_author_github_username=experiments_author_github_username,
                 record_timing=record_timing,
             )
         if record_timing is not None:

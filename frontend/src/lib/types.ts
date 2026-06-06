@@ -315,6 +315,18 @@ export interface DashboardExperimentAuthor {
   source: "github" | "api";
 }
 
+// Organization member, as returned by GET /api/users. Used to populate
+// the dashboard experiments owner filter (member picker).
+export interface OrgUser {
+  id: string;
+  email: string;
+  name: string | null;
+  github_username: string | null;
+  role: string;
+  org_id: string;
+  created_at: string;
+}
+
 export interface DashboardExperiment {
   id: string;
   name: string;
