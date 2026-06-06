@@ -13,6 +13,7 @@ import { useSearchParams } from "next/navigation";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
+import { ExperimentManifestPanel } from "@/components/experiment-manifest-panel";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { formatCostUsd } from "@/lib/format";
 import {
@@ -89,6 +90,11 @@ interface ExperimentDetailViewProps {
   readOnly?: boolean;
   allowRetry?: boolean;
   showAnalysis?: boolean;
+  // Experiment spec (raw sweep config + CLI command) for replicate/track.
+  // Only ever passed in the authenticated view; rendering is additionally
+  // gated on ``!readOnly`` so a public/share view never shows it.
+  manifest?: string | null;
+  command?: string | null;
   apiBaseUrl?: string;
   onTaskDelete?: (task: Task) => Promise<void>;
   onTrialDelete?: (trial: Trial, task: Task | null) => Promise<void>;
@@ -524,6 +530,8 @@ export function ExperimentDetailView({
   readOnly = false,
   allowRetry = true,
   showAnalysis = true,
+  manifest,
+  command,
   apiBaseUrl = "/api",
   onTaskDelete,
   onTrialDelete,
@@ -863,6 +871,15 @@ export function ExperimentDetailView({
               headerRight={headerRight}
             />
           </div>
+
+          {/*
+           * Experiment spec (manifest + CLI command) for replicate/track.
+           * Gated on ``!readOnly`` so the public/share view never renders it;
+           * the public API also never returns these fields (defense in depth).
+           */}
+          {!readOnly && (
+            <ExperimentManifestPanel manifest={manifest} command={command} />
+          )}
 
           <ExperimentSummaryBar
             taskCount={tasksForExperiment.length}

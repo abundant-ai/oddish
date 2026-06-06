@@ -695,6 +695,8 @@ def submit_sweep(
     harbor_config: dict[str, Any] | None = None,
     environment_kwargs: list[str] | None = None,
     link: str | None = None,
+    manifest: str | None = None,
+    command: str | None = None,
 ) -> dict:
     """Submit a task sweep to the API."""
     env_value = environment.value if environment else None
@@ -766,6 +768,12 @@ def submit_sweep(
         payload["content_hash"] = content_hash
     if link:
         payload["link"] = link
+    # Experiment spec for replicate/track. Sent on every per-task sweep call;
+    # the server stores it on the experiment backfill-only (first run wins).
+    if manifest:
+        payload["manifest"] = manifest
+    if command:
+        payload["command"] = command
 
     with httpx.Client(
         timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()

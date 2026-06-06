@@ -578,3 +578,15 @@ export interface PublicExperimentInfo {
   name: string;
   public_token: string;
 }
+
+// Authenticated experiment detail. ``manifest`` (raw sweep config) and
+// ``command`` (the CLI invocation) are the experiment spec the run was
+// generated from, surfaced for replicate/track. They come only from the
+// authenticated endpoint -- the public/share API never returns them -- so a
+// public share view can't display them.
+export interface ExperimentDetail {
+  id: string;
+  name: string;
+  manifest?: string | null;
+  command?: string | null;
+}

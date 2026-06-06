@@ -295,6 +295,22 @@ class TaskSweepSubmission(BaseModel):
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
     )
+    manifest: str | None = Field(
+        None,
+        description=(
+            "Raw sweep config (the ``-c`` YAML/JSON) this run was generated "
+            "from. Stored verbatim on the experiment so it can be replicated. "
+            "Internal only -- never exposed on public/share responses."
+        ),
+    )
+    command: str | None = Field(
+        None,
+        description=(
+            "Verbatim CLI invocation (``oddish run ...``) that generated this "
+            "run. Stored on the experiment for replicate/track. Internal only "
+            "-- never exposed on public/share responses."
+        ),
+    )
 
     @model_validator(mode="after")
     def require_models(self):

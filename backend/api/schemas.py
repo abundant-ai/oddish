@@ -105,6 +105,22 @@ class ExperimentShareResponse(BaseModel):
     public_token: str | None = None
 
 
+class ExperimentDetailResponse(BaseModel):
+    """Authenticated experiment detail, including the captured spec.
+
+    ``manifest`` (the raw sweep config) and ``command`` (the verbatim CLI
+    invocation) are the experiment spec the run was generated from, surfaced so
+    the run can be replicated/tracked. They are intentionally ABSENT from the
+    public response models (``PublicExperimentResponse`` /
+    ``PublicExperimentListItem``), so a public share view never exposes them.
+    """
+
+    id: str
+    name: str
+    manifest: str | None = None
+    command: str | None = None
+
+
 class ExperimentUpdateRequest(BaseModel):
     """Request to update experiment metadata."""
 

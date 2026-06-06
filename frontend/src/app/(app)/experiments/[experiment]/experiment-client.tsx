@@ -9,7 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ExperimentShareButton } from "@/components/experiment-share-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
-import type { Task, Trial } from "@/lib/types";
+import type { ExperimentDetail, Task, Trial } from "@/lib/types";
+import { fetcher } from "@/lib/api";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 
@@ -114,6 +115,14 @@ export function ExperimentClientPage({
     fallbackData: initialTasks ?? undefined,
   });
 
+  // Experiment spec (manifest + CLI command) for replicate/track. Fetched only
+  // here, in the authenticated view; the public/share page never requests it
+  // and the public API never returns these fields.
+  const { data: experimentDetail } = useSWR<ExperimentDetail>(
+    experimentId ? `/api/experiments/${encodedId}` : null,
+    fetcher
+  );
+
   // Phase 2: Progressively fetch compact trial data in batches.
   const getTrialsPageKey = useCallback(
     (pageIndex: number, previousPageData: Task[] | null) => {
@@ -123,7 +132,7 @@ export function ExperimentClientPage({
       const offset = pageIndex * TRIALS_BATCH_SIZE;
       return `/api/experiments/${encodedId}/tasks?limit=${TRIALS_BATCH_SIZE}&offset=${offset}&include_trials=true`;
     },
-    [experimentId, encodedId],
+    [experimentId, encodedId]
   );
 
   const {
@@ -141,7 +150,7 @@ export function ExperimentClientPage({
   });
   const trialsLastPage = trialPages?.[trialPages.length - 1] ?? null;
   const hasMoreTrials = Boolean(
-    trialsLastPage && trialsLastPage.length === TRIALS_BATCH_SIZE,
+    trialsLastPage && trialsLastPage.length === TRIALS_BATCH_SIZE
   );
 
   // Merge lightweight task shells with trial-enriched data.  The backend
@@ -194,7 +203,7 @@ export function ExperimentClientPage({
   const totalTaskCount = lightweightTasks?.length ?? 0;
   const remainingTrialTaskCount = Math.max(
     0,
-    totalTaskCount - trialsLoadedCount,
+    totalTaskCount - trialsLoadedCount
   );
   const canLoadMoreTrials =
     hasMoreTrials && !isLoadingTrialPages && !isValidatingTrials;
@@ -209,7 +218,7 @@ export function ExperimentClientPage({
     const hasActiveTasks = tasksForExperiment.some((task) => {
       const activeTrials = Math.max(
         0,
-        task.total - task.completed - task.failed,
+        task.total - task.completed - task.failed
       );
       return activeTrials > 0 || ACTIVE_TASK_STATUSES.has(task.status);
     });
@@ -226,7 +235,7 @@ export function ExperimentClientPage({
     async (_taskIds?: string[]) => {
       await Promise.all([mutateLightweight(), mutateTrials()]);
     },
-    [mutateLightweight, mutateTrials],
+    [mutateLightweight, mutateTrials]
   );
 
   const loadMoreTrials = useCallback(() => {
@@ -324,13 +333,13 @@ export function ExperimentClientPage({
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: nextName }),
-        },
+        }
       );
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         throw new Error(
-          errorData.detail || errorData.error || "Failed to rename experiment",
+          errorData.detail || errorData.error || "Failed to rename experiment"
         );
       }
 
@@ -338,14 +347,14 @@ export function ExperimentClientPage({
       await mutateLightweight(
         (tasks) =>
           tasks?.map((task) => ({ ...task, experiment_name: nextName })),
-        { revalidate: false },
+        { revalidate: false }
       );
       await mutateTrials(
         (pages) =>
           pages?.map((page) =>
-            page?.map((task) => ({ ...task, experiment_name: nextName })),
+            page?.map((task) => ({ ...task, experiment_name: nextName }))
           ),
-        { revalidate: false },
+        { revalidate: false }
       );
       void refreshTaskPages();
     } catch (err) {
@@ -363,18 +372,18 @@ export function ExperimentClientPage({
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       throw new Error(
-        errorData.detail || errorData.error || "Failed to delete task",
+        errorData.detail || errorData.error || "Failed to delete task"
       );
     }
 
     await mutateLightweight(
       (tasks) => tasks?.filter((item) => item.id !== task.id),
-      { revalidate: false },
+      { revalidate: false }
     );
     await mutateTrials(
       (pages) =>
         pages?.map((page) => page?.filter((item) => item.id !== task.id)),
-      { revalidate: false },
+      { revalidate: false }
     );
     await refreshTaskPages();
   };
@@ -387,7 +396,7 @@ export function ExperimentClientPage({
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       throw new Error(
-        errorData.detail || errorData.error || "Failed to delete trial",
+        errorData.detail || errorData.error || "Failed to delete trial"
       );
     }
 
@@ -395,13 +404,13 @@ export function ExperimentClientPage({
       tasks?.map((task) =>
         task.trials?.some((t) => t.id === trial.id)
           ? { ...task, trials: task.trials.filter((t) => t.id !== trial.id) }
-          : task,
+          : task
       );
 
     await mutateLightweight(filterTrials, { revalidate: false });
     await mutateTrials(
       (pages) => pages?.map((page) => filterTrials(page) ?? page),
-      { revalidate: false },
+      { revalidate: false }
     );
     await refreshTaskPages();
   };
@@ -434,6 +443,8 @@ export function ExperimentClientPage({
           isLoading={isLoading}
           isLoadingTrials={isLoadingTrials}
           hasError={Boolean(lightweightError)}
+          manifest={experimentDetail?.manifest}
+          command={experimentDetail?.command}
           headerLeft={
             isEditingName ? (
               <div className="flex flex-wrap items-center gap-2">
@@ -469,7 +480,7 @@ export function ExperimentClientPage({
                   type="button"
                   variant="ghost"
                   onClick={handleCopyExperimentName}
-                  className="h-auto min-w-0 max-w-full cursor-pointer justify-start truncate rounded-sm bg-transparent p-0 pb-1 text-left font-mono text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)] transition hover:bg-transparent hover:text-[color:var(--paper-ink-2)]"
+                  className="h-auto max-w-full min-w-0 cursor-pointer justify-start truncate rounded-sm bg-transparent p-0 pb-1 text-left font-mono text-[26px] leading-[1.25] font-semibold tracking-[-0.02em] text-[color:var(--paper-ink)] transition hover:bg-transparent hover:text-[color:var(--paper-ink-2)]"
                   aria-label={`Copy experiment name ${displayName}`}
                   title={
                     copiedExperimentName
@@ -504,7 +515,7 @@ export function ExperimentClientPage({
           }
           headerStatus={
             isLoadingTrials ? (
-              <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <div className="text-muted-foreground flex items-center gap-1.5 text-[10px]">
                 <Loader2 className="h-3 w-3 animate-spin" />
                 <span>
                   Loading trials

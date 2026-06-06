@@ -2407,6 +2407,27 @@ async def delete_trial_core(
     }
 
 
+def _capture_experiment_spec(
+    experiment: ExperimentModel | None,
+    submission: TaskSweepSubmission,
+) -> None:
+    """Persist the raw experiment spec (manifest + CLI command) for replicate/
+    track.
+
+    Backfill-only: the originating run's spec wins, so later appends (and the
+    per-task sweep calls of a single multi-task run, which all carry the same
+    spec) never clobber what's already stored, and a submission without a spec
+    never wipes an existing one. These fields are INTERNAL: they are never
+    surfaced on public/share responses.
+    """
+    if experiment is None:
+        return
+    if submission.manifest and not experiment.manifest:
+        experiment.manifest = submission.manifest
+    if submission.command and not experiment.command:
+        experiment.command = submission.command
+
+
 async def create_task_sweep_core(
     session: AsyncSession,
     *,
@@ -2545,6 +2566,8 @@ async def create_task_sweep_core(
             experiment_id=new_experiment_id,
         )
 
+        _capture_experiment_spec(experiment, submission)
+
         return task, new_trials, True, experiment
 
     # Create mode
@@ -2581,5 +2604,7 @@ async def create_task_sweep_core(
         task.task_s3_key = task_s3_key
 
     experiment = await _primary_experiment_for_task_model(task)
+
+    _capture_experiment_spec(experiment, submission)
 
     return task, list(task.trials), False, experiment

@@ -262,6 +262,19 @@ class ExperimentModel(TimestampedMixin, Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # -------------------------------------------------------------------------
+    # Experiment spec captured at submit time so a run can be replicated/tracked.
+    # ``manifest`` is the raw sweep config (the ``-c`` YAML/JSON) the run was
+    # generated from; ``command`` is the verbatim ``oddish run ...`` invocation.
+    # Both nullable: flag-only runs have no manifest file, and experiments
+    # created before this column existed (or via combine/upload paths) carry
+    # neither. Populated backfill-only -- the originating run wins and later
+    # appends never clobber it. INTERNAL ONLY: never exposed on public/share
+    # responses (see ``PublicExperimentResponse``).
+    # -------------------------------------------------------------------------
+    manifest: Mapped[str | None] = mapped_column(Text, nullable=True)
+    command: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # ``lazy="select"`` (the default): no production read path actually
     # touches ``experiment.tasks``. Loading an experiment used to fan
     # out into a task fetch via ``task_experiments`` on every access;

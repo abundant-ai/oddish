@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
+import shlex
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated, Optional
@@ -496,6 +498,14 @@ def run(
         configs = sweep_config["agents"]
         harbor_config = copy.deepcopy(sweep_config.get("harbor"))
 
+        # Capture the raw sweep config verbatim so the experiment records the
+        # manifest it was generated from (replicate/track). Best-effort: never
+        # fail a run on a read error here -- load_sweep_config already parsed it.
+        try:
+            manifest_content: str | None = config.read_text()
+        except OSError:
+            manifest_content = None
+
         # Config can override path, dataset, environment, priority, experiment ID
         if "path" in sweep_config and not path and not path_option and not dataset:
             path_option = Path(sweep_config["path"])
@@ -553,6 +563,14 @@ def run(
             }
         ]
         harbor_config = None
+        # Flag-only runs have no manifest file; the command alone captures
+        # everything needed to replicate.
+        manifest_content = None
+
+    # Verbatim CLI invocation, normalized to start with ``oddish`` so the
+    # stored command is copy-pasteable for replication. argv[0] is the
+    # absolute interpreter/entrypoint path, which we drop.
+    command_str = "oddish " + shlex.join(sys.argv[1:])
 
     # Determine task sources using Harbor's dataset models
     task_paths: list[Path] = []
@@ -653,6 +671,8 @@ def run(
             append_to_task=append_to_task,
             content_hash=task_content_hash,
             link=link,
+            manifest=manifest_content,
+            command=command_str,
         )
 
     # Phase 1: upload any local task directories (shared with

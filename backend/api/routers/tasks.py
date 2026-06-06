@@ -36,6 +36,7 @@ from oddish.core.public_helpers import (
     list_task_files_s3,
 )
 from api.schemas import (
+    ExperimentDetailResponse,
     ExperimentShareResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
@@ -467,6 +468,40 @@ async def combine_experiments(
 
     invalidate_dashboard_cache(org_id=auth.org_id)
     return result
+
+
+@router.get(
+    "/experiments/{experiment_id}",
+    response_model=ExperimentDetailResponse,
+)
+async def get_experiment_detail(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> ExperimentDetailResponse:
+    """Get experiment detail, including the captured spec (manifest + command).
+
+    The manifest and command are internal: they are deliberately omitted from
+    the public response models, so a public share view never exposes them.
+    """
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(ExperimentModel).where(
+                ExperimentModel.id == experiment_id,
+                ExperimentModel.org_id == auth.org_id,
+            )
+        )
+        experiment = result.scalar_one_or_none()
+        if not experiment:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+
+        return ExperimentDetailResponse(
+            id=experiment.id,
+            name=experiment.name,
+            manifest=experiment.manifest,
+            command=experiment.command,
+        )
 
 
 @router.get(
