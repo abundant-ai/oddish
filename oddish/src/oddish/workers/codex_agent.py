@@ -70,6 +70,26 @@ class OddishCodex(Codex):
 
         return self._set_codex_config_override(command, config_key, supported_values[0])
 
+    def _apply_explicit_codex_config_overrides(self, command: str) -> str:
+        if "codex exec " not in command:
+            return command
+
+        explicit_flag_kwargs = getattr(self, "_flag_kwargs", {})
+        for flag in self.CLI_FLAGS:
+            if flag.kwarg not in explicit_flag_kwargs or flag.format is None:
+                continue
+            if not flag.format.startswith("-c ") or "{value}" not in flag.format:
+                continue
+
+            config_key = flag.format.removeprefix("-c ").split("{value}", 1)[0]
+            config_key = config_key.rstrip("=").strip()
+            if not config_key:
+                continue
+
+            value = self._resolved_flags.get(flag.kwarg, explicit_flag_kwargs[flag.kwarg])
+            command = self._set_codex_config_override(command, config_key, str(value))
+        return command
+
     async def exec_as_agent(
         self,
         environment,
@@ -78,6 +98,7 @@ class OddishCodex(Codex):
         cwd=None,
         timeout_sec=None,
     ):
+        command = self._apply_explicit_codex_config_overrides(command)
         try:
             return await super().exec_as_agent(
                 environment,
