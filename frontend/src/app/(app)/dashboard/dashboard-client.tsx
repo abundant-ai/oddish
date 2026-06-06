@@ -38,12 +38,14 @@ import type {
   DashboardResponse,
   JobUsage,
   ModelUsage,
+  OrgUser,
   QueueStats,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { encodeExperimentRouteParam, formatShortDateTime } from "@/lib/utils";
 import {
   buildDashboardApiPath,
+  DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
   DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT,
   DASHBOARD_DEFAULT_USAGE_MINUTES,
   isDefaultDashboardExperimentsView,
@@ -78,6 +80,7 @@ import {
   Globe,
   Key,
   Terminal,
+  Users,
 } from "lucide-react";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 
@@ -147,6 +150,7 @@ function useDashboardExperiments(
   experimentsOffset: number,
   experimentsQuery: string,
   experimentsStatus: string,
+  experimentsAuthor: string,
   fallbackData?: DashboardResponse | null,
 ) {
   const swrKey = buildDashboardApiPath({
@@ -154,6 +158,7 @@ function useDashboardExperiments(
     experiments_offset: experimentsOffset,
     experiments_query: experimentsQuery,
     experiments_status: experimentsStatus,
+    experiments_author: experimentsAuthor,
     include_tasks: false,
     include_usage: false,
   });
@@ -187,6 +192,22 @@ function formatTaskAuthor(author: DashboardExperimentAuthor | null): string {
     return `@${author.name.replace(/^@/, "")}`;
   }
   return author.name;
+}
+
+function memberDisplayName(member: OrgUser): string {
+  return member.name || member.github_username || member.email;
+}
+
+// Org member roster for the experiments owner filter. The backend gates
+// GET /users on admin/owner role, so non-admins simply get an empty list
+// and fall back to the Org / Mine toggle. Errors are swallowed for the
+// same reason -- the picker is progressive enhancement, not required.
+function useOrgMembers(): OrgUser[] {
+  const { data } = useSWR<OrgUser[]>("/api/users", fetcher, {
+    revalidateOnFocus: false,
+    shouldRetryOnError: false,
+  });
+  return Array.isArray(data) ? data : [];
 }
 
 function CommandSnippet({ command }: { command: string }) {
@@ -1129,6 +1150,9 @@ function RecentTasksCard({
   onSearchQueryChange,
   statusFilter,
   onStatusFilterChange,
+  authorFilter,
+  onAuthorFilterChange,
+  members,
   error,
   isLoading,
   hasMoreExperiments,
@@ -1143,6 +1167,9 @@ function RecentTasksCard({
   onSearchQueryChange: (value: string) => void;
   statusFilter: string;
   onStatusFilterChange: (value: string) => void;
+  authorFilter: string;
+  onAuthorFilterChange: (value: string) => void;
+  members: OrgUser[];
   error: Error | undefined;
   isLoading: boolean;
   hasMoreExperiments: boolean;
@@ -1160,10 +1187,22 @@ function RecentTasksCard({
   } | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  const hasFilters = searchQuery.trim().length > 0 || statusFilter !== "all";
+  const isMemberSelected =
+    authorFilter !== DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR &&
+    authorFilter !== "me";
+  const hasFilters =
+    searchQuery.trim().length > 0 ||
+    statusFilter !== "all" ||
+    authorFilter !== DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR;
   const statusFilterLabel =
     STATUS_FILTER_OPTIONS.find((option) => option.value === statusFilter)
       ?.label ?? "Filter status";
+  const selectedMember = isMemberSelected
+    ? members.find((member) => member.id === authorFilter)
+    : undefined;
+  const memberFilterLabel = selectedMember
+    ? memberDisplayName(selectedMember)
+    : "Members";
 
   const handleDeleteExperiment = async () => {
     if (!deleteTarget || isDeleting) return;
@@ -1207,6 +1246,77 @@ function RecentTasksCard({
           </div>
         </div>
         <div className="flex flex-1 flex-wrap gap-2 sm:justify-end">
+          {/* Owner filter: Org / Mine toggle + optional member picker. */}
+          <div className="flex items-center gap-0.5 rounded-md border border-[#6f88b4]/20 p-0.5">
+            <Button
+              type="button"
+              variant={
+                authorFilter === DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR
+                  ? "secondary"
+                  : "ghost"
+              }
+              size="sm"
+              className="h-7 px-2.5 text-[11px]"
+              onClick={() =>
+                onAuthorFilterChange(DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR)
+              }
+              aria-pressed={authorFilter === DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR}
+            >
+              Org
+            </Button>
+            <Button
+              type="button"
+              variant={authorFilter === "me" ? "secondary" : "ghost"}
+              size="sm"
+              className="h-7 px-2.5 text-[11px]"
+              onClick={() => onAuthorFilterChange("me")}
+              aria-pressed={authorFilter === "me"}
+            >
+              Mine
+            </Button>
+          </div>
+          {members.length > 0 && (
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant={isMemberSelected ? "secondary" : "outline"}
+                  size="sm"
+                  className="h-8 w-full justify-between border-[#6f88b4]/20 sm:w-[180px]"
+                >
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <Users className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                    <span className="truncate">{memberFilterLabel}</span>
+                  </span>
+                  <ChevronDown className="h-4 w-4 opacity-50" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className="max-h-[320px] w-[240px] overflow-y-auto"
+              >
+                <DropdownMenuRadioGroup
+                  value={isMemberSelected ? authorFilter : ""}
+                  onValueChange={onAuthorFilterChange}
+                >
+                  {members.map((member) => (
+                    <DropdownMenuRadioItem key={member.id} value={member.id}>
+                      <span className="flex min-w-0 flex-col">
+                        <span className="truncate">
+                          {memberDisplayName(member)}
+                        </span>
+                        {member.github_username && (
+                          <span className="truncate text-[10px] text-muted-foreground">
+                            @{member.github_username}
+                          </span>
+                        )}
+                      </span>
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           <Input
             value={searchQuery}
             onChange={(event) => onSearchQueryChange(event.target.value)}
@@ -1483,6 +1593,10 @@ export function DashboardClient({
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [authorFilter, setAuthorFilter] = useState(
+    DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
+  );
+  const members = useOrgMembers();
   const [timeRange, setTimeRange] = useState<TimeRangeKey>("24h");
   const usageMinutes = getMinutesFromTimeRange(timeRange);
   const usageFallbackData =
@@ -1493,6 +1607,7 @@ export function DashboardClient({
     experimentsOffset,
     deferredSearchQuery,
     statusFilter,
+    authorFilter,
   )
     ? initialDashboardData
     : null;
@@ -1515,6 +1630,7 @@ export function DashboardClient({
     experimentsOffset,
     deferredSearchQuery,
     statusFilter,
+    authorFilter,
     experimentsFallbackData,
   );
   const currentExperimentsPage =
@@ -1526,11 +1642,12 @@ export function DashboardClient({
     !experimentsError &&
     currentExperimentsPage === 1 &&
     deferredSearchQuery.trim().length === 0 &&
-    statusFilter === "all";
+    statusFilter === "all" &&
+    authorFilter === DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR;
 
   useEffect(() => {
     setExperimentsOffset(0);
-  }, [deferredSearchQuery, statusFilter]);
+  }, [deferredSearchQuery, statusFilter, authorFilter]);
 
   const handlePreviousExperimentsPage = () => {
     setExperimentsOffset((prev) => Math.max(0, prev - EXPERIMENTS_PAGE_SIZE));
@@ -1564,6 +1681,9 @@ export function DashboardClient({
         onSearchQueryChange={setSearchQuery}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
+        authorFilter={authorFilter}
+        onAuthorFilterChange={setAuthorFilter}
+        members={members}
         error={experimentsError}
         isLoading={isExperimentsLoading}
         hasMoreExperiments={hasMoreExperiments}

@@ -5,7 +5,10 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.core.dashboard import _experiment_row_passes_status_filter
+from oddish.core.dashboard import (
+    _build_experiments_author_filter,
+    _experiment_row_passes_status_filter,
+)
 
 
 def _row(**overrides):
@@ -33,3 +36,60 @@ def test_retrying_experiment_status_filter_ignores_other_active_trials() -> None
         _row(active_trials=3, retrying_trials=0),
         status_filter="retrying",
     )
+
+
+# ---------------------------------------------------------------------------
+# Owner filter (dashboard "Org / Mine" toggle + member picker)
+# ---------------------------------------------------------------------------
+
+
+def _compile_sql(clause) -> str:
+    from sqlalchemy.dialects import postgresql
+
+    return str(
+        clause.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+
+def test_author_filter_absent_when_no_user() -> None:
+    assert (
+        _build_experiments_author_filter(None, None, org_id="org_1") is None
+    )
+
+
+def test_author_filter_matches_created_by_and_scopes_org() -> None:
+    clause = _build_experiments_author_filter("user_123", None, org_id="org_1")
+    assert clause is not None
+    sql = _compile_sql(clause).lower()
+    assert "exists" in sql
+    assert "created_by_user_id" in sql
+    assert "user_123" in sql
+    # Org scoping is applied for defense-in-depth on the EXISTS side.
+    assert "org_id" in sql and "org_1" in sql
+    # Soft-deleted experiment links must be excluded.
+    assert "deleted_at" in sql
+    # Without a github username, the tag fallback is not added.
+    assert "github_username" not in sql
+
+
+def test_author_filter_includes_github_username_fallback() -> None:
+    clause = _build_experiments_author_filter(
+        "user_123", "octocat", org_id="org_1"
+    )
+    assert clause is not None
+    sql = _compile_sql(clause)
+    assert "github_username" in sql
+    assert "octocat" in sql
+    # Owner match is an OR of the resolved user id and the github tag.
+    assert " OR " in sql.upper()
+
+
+def test_author_filter_without_org_scope_omits_org_predicate() -> None:
+    clause = _build_experiments_author_filter("user_123", None, org_id=None)
+    assert clause is not None
+    sql = _compile_sql(clause).lower()
+    assert "created_by_user_id" in sql
+    assert "org_id" not in sql
