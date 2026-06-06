@@ -472,6 +472,32 @@ def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch
     assert "OPENAI_API_KEY" not in agent_config.env
 
 
+def test_build_agent_config_preserves_codex_kwargs_for_azure(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "azure")
+    monkeypatch.setattr(harbor_runner.settings, "azure_openai_api_key", "az-key")
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_deployments",
+        {"openai/gpt-5.5": "oddish-gpt-55"},
+    )
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="codex",
+        model="openai/gpt-5.5",
+        raw_harbor_config={
+            "agent_config": {
+                "kwargs": {"reasoning_effort": "medium"},
+            },
+        },
+    )
+
+    assert agent_config.import_path == (
+        "oddish.workers.codex_agent:AzureCompatibleCodex"
+    )
+    assert agent_config.model_name == "oddish-gpt-55"
+    assert agent_config.kwargs["reasoning_effort"] == "medium"
+
+
 def test_build_agent_config_uses_oddish_codex_wrapper_for_public_openai(monkeypatch):
     monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
     monkeypatch.setattr(harbor_runner.settings, "openai_api_key", "openai-key")
@@ -540,6 +566,34 @@ def test_azure_compatible_codex_disables_unified_exec(tmp_path):
     assert "--enable unified_exec" not in seen["command"]
     assert "-c model_provider='\"oddish_azure_openai\"'" in seen["command"]
     assert "model_verbosity" not in seen["command"]
+
+
+def test_azure_compatible_codex_honors_explicit_reasoning_effort(tmp_path):
+    seen: dict[str, str] = {}
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen["command"] = command
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent = AzureCompatibleCodex(
+        logs_dir=tmp_path,
+        model_name="oddish-gpt",
+        reasoning_effort="medium",
+    )
+
+    asyncio.run(
+        agent.exec_as_agent(
+            _FakeEnvironment(),
+            "codex exec --json --enable unified_exec "
+            "-c model_reasoning_effort=high -- 'fix it'",
+        )
+    )
+
+    assert "--disable unified_exec" in seen["command"]
+    assert "model_reasoning_effort=high" not in seen["command"]
+    assert "-c model_reasoning_effort='\"medium\"'" in seen["command"]
+    assert seen["command"].count("model_reasoning_effort=") == 1
 
 
 def test_oddish_codex_retries_server_supported_verbosity(tmp_path):
