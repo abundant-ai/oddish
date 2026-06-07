@@ -29,3 +29,14 @@ async def notify_github_verdict(task_id: str) -> None:
         await notify_verdict_update(task_id)
     except Exception as e:
         console.print(f"[yellow]GitHub notification failed (verdict): {e}[/yellow]")
+
+    # After updating the per-trial sticky comment, check whether this verdict
+    # made the experiment fully terminal and, if so, fire the consumer repo's
+    # repository_dispatch callback. Idempotent: the dispatch module single-fires
+    # against experiment_dispatch_log.
+    try:
+        from oddish.integrations.github import maybe_dispatch_for_task
+
+        await maybe_dispatch_for_task(task_id)
+    except Exception as e:
+        console.print(f"[yellow]GitHub dispatch check failed (verdict): {e}[/yellow]")
