@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2026-06-07]
 
+### Fixed
+- Harbor trials can now pull private registry base images by reading worker-scoped Docker auth from `ODDISH_DOCKER_AUTH_CONFIG` or `DOCKER_AUTH_CONFIG` and exposing it only through a temporary `DOCKER_CONFIG` during `Job.create`/`job.run`; credentials stay out of task archives, agent env, verifier images, and logs.
+
 ### Changed
 - Automated daily changelog updated with entries for 2026-06-06 changes (#202)
 
