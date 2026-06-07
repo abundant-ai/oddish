@@ -801,8 +801,45 @@ def _add_modal_docker_auth_env(env_config: EnvironmentConfig) -> None:
     if env_config.type != EnvironmentType.MODAL:
         return
     env = dict(env_config.env or {})
+    env.setdefault("DOCKER_CONFIG", "/root/.docker")
     env.setdefault("DOCKER_AUTH_CONFIG", "${DOCKER_AUTH_CONFIG}")
     env_config.env = env
+
+
+def _install_harbor_modal_docker_auth_patch() -> None:
+    """Materialize Docker auth inside Harbor's Modal DinD sandbox before builds."""
+    try:
+        from harbor.environments import modal as harbor_modal
+    except Exception:
+        return
+
+    modal_dind = getattr(harbor_modal, "_ModalDinD", None)
+    if modal_dind is None or getattr(modal_dind, "_oddish_docker_auth_patch", False):
+        return
+
+    original_compose_exec = modal_dind._compose_exec
+
+    async def _compose_exec_with_docker_auth(self, subcommand, *args, **kwargs):
+        if subcommand and subcommand[0] == "build" and os.environ.get(
+            "DOCKER_AUTH_CONFIG"
+        ):
+            result = await self._vm_exec(
+                "umask 077 && mkdir -p /root/.docker "
+                '&& printf "%s" "$DOCKER_AUTH_CONFIG" > /root/.docker/config.json '
+                "&& test -s /root/.docker/config.json",
+                env={"DOCKER_AUTH_CONFIG": os.environ["DOCKER_AUTH_CONFIG"]},
+                timeout_sec=10,
+            )
+            if result.return_code != 0:
+                raise RuntimeError(
+                    "Failed to install Docker registry auth in Modal sandbox: "
+                    f"{result.stdout or ''}{result.stderr or ''}"
+                )
+            print("Docker registry auth installed in Harbor Modal sandbox")
+        return await original_compose_exec(self, subcommand, *args, **kwargs)
+
+    modal_dind._compose_exec = _compose_exec_with_docker_auth
+    modal_dind._oddish_docker_auth_patch = True
 
 
 # =============================================================================
@@ -887,6 +924,7 @@ async def run_harbor_trial_async(
         env_config.type = environment
         _add_modal_docker_auth_passthrough(env_config)
         _add_modal_docker_auth_env(env_config)
+        _install_harbor_modal_docker_auth_patch()
 
         if environment == EnvironmentType.DAYTONA:
             env_config.kwargs = {
