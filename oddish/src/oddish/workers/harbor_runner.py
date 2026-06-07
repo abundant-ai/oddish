@@ -760,10 +760,25 @@ def _temporary_docker_config() -> Iterator[dict[str, str]]:
         return
 
     with tempfile.TemporaryDirectory(prefix="oddish-docker-config-") as tmp:
-        config_path = Path(tmp) / "config.json"
-        config_path.write_text(json.dumps(auth_config))
-        config_path.chmod(0o600)
-        yield {"DOCKER_CONFIG": tmp}
+        docker_config_dir = Path(tmp) / "docker-config"
+        home_dir = Path(tmp) / "home"
+        home_docker_dir = home_dir / ".docker"
+        docker_config_dir.mkdir()
+        home_docker_dir.mkdir(parents=True)
+
+        payload = json.dumps(auth_config)
+        for config_path in (
+            docker_config_dir / "config.json",
+            home_docker_dir / "config.json",
+        ):
+            config_path.write_text(payload)
+            config_path.chmod(0o600)
+
+        yield {
+            "DOCKER_AUTH_CONFIG": payload,
+            "DOCKER_CONFIG": str(docker_config_dir),
+            "HOME": str(home_dir),
+        }
 
 
 # =============================================================================

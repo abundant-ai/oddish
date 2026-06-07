@@ -1213,6 +1213,8 @@ def test_extract_outcome_from_job_result_exception_type_none_when_no_exc():
 
 def test_temporary_docker_config_writes_worker_registry_auth(monkeypatch):
     monkeypatch.delenv("DOCKER_CONFIG", raising=False)
+    monkeypatch.delenv("DOCKER_AUTH_CONFIG", raising=False)
+    monkeypatch.delenv("HOME", raising=False)
     monkeypatch.setenv(
         "ODDISH_DOCKER_AUTH_CONFIG",
         '{"auths":{"ghcr.io":{"auth":"dXNlcjp0b2tlbg=="}}}',
@@ -1221,15 +1223,20 @@ def test_temporary_docker_config_writes_worker_registry_auth(monkeypatch):
     with harbor_runner._temporary_docker_config() as env:
         docker_config = Path(env["DOCKER_CONFIG"])
         config_path = docker_config / "config.json"
+        home_config_path = Path(env["HOME"]) / ".docker" / "config.json"
 
         assert config_path.exists()
         assert config_path.stat().st_mode & 0o777 == 0o600
-        assert json.loads(config_path.read_text()) == {
+        expected = {
             "auths": {"ghcr.io": {"auth": "dXNlcjp0b2tlbg=="}}
         }
+        assert json.loads(config_path.read_text()) == expected
+        assert json.loads(home_config_path.read_text()) == expected
+        assert json.loads(env["DOCKER_AUTH_CONFIG"]) == expected
 
     assert not docker_config.exists()
     assert "DOCKER_CONFIG" not in os.environ
+    assert "DOCKER_AUTH_CONFIG" not in os.environ
 
 
 def test_temporary_docker_config_prefers_oddish_scoped_secret(monkeypatch):
@@ -1244,14 +1251,20 @@ def test_temporary_docker_config_prefers_oddish_scoped_secret(monkeypatch):
 
     with harbor_runner._temporary_docker_config() as env:
         payload = json.loads((Path(env["DOCKER_CONFIG"]) / "config.json").read_text())
+        env_payload = json.loads(env["DOCKER_AUTH_CONFIG"])
 
     assert payload == {"auths": {"ghcr.io": {"auth": "private"}}}
+    assert env_payload == payload
 
 
 def test_temporary_docker_config_preserves_existing_docker_config(monkeypatch, tmp_path):
     existing = tmp_path / "docker-config"
+    existing_home = tmp_path / "home"
     existing.mkdir()
+    existing_home.mkdir()
     monkeypatch.setenv("DOCKER_CONFIG", str(existing))
+    monkeypatch.setenv("DOCKER_AUTH_CONFIG", '{"auths":{}}')
+    monkeypatch.setenv("HOME", str(existing_home))
     monkeypatch.setenv(
         "ODDISH_DOCKER_AUTH_CONFIG",
         '{"auths":{"ghcr.io":{"auth":"private"}}}',
@@ -1262,6 +1275,8 @@ def test_temporary_docker_config_preserves_existing_docker_config(monkeypatch, t
             assert os.environ["DOCKER_CONFIG"] != str(existing)
 
     assert os.environ["DOCKER_CONFIG"] == str(existing)
+    assert os.environ["DOCKER_AUTH_CONFIG"] == '{"auths":{}}'
+    assert os.environ["HOME"] == str(existing_home)
 
 
 def test_load_docker_auth_config_rejects_invalid_json(monkeypatch):
