@@ -1386,3 +1386,34 @@ def test_install_harbor_modal_docker_auth_patch_materializes_config(
     assert "/root/.docker/config.json" in command
     assert env == {"DOCKER_AUTH_CONFIG": '{"auths":{"ghcr.io":{}}}'}
     assert timeout_sec == 10
+
+
+def test_install_harbor_modal_docker_auth_patch_skips_without_auth(
+    monkeypatch,
+):
+    from harbor.environments import modal as harbor_modal
+
+    class FakeModalDinD:
+        def __init__(self):
+            self.vm_calls = []
+            self.compose_calls = []
+
+        async def _vm_exec(self, command, *, env=None, timeout_sec=None):
+            self.vm_calls.append((command, env, timeout_sec))
+            raise AssertionError("auth materialization should not run")
+
+        async def _compose_exec(self, subcommand, *args, **kwargs):
+            self.compose_calls.append((subcommand, args, kwargs))
+            return "ok"
+
+    monkeypatch.setattr(harbor_modal, "_ModalDinD", FakeModalDinD)
+    monkeypatch.delenv("DOCKER_AUTH_CONFIG", raising=False)
+
+    harbor_runner._install_harbor_modal_docker_auth_patch()
+
+    instance = FakeModalDinD()
+    result = asyncio.run(instance._compose_exec(["build"], "--pull"))
+
+    assert result == "ok"
+    assert instance.vm_calls == []
+    assert instance.compose_calls == [(["build"], ("--pull",), {})]

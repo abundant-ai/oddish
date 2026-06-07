@@ -92,6 +92,18 @@ runtime_secret = modal.Secret.from_name(
 )
 runtime_secrets = [runtime_secret]
 
+DOCKER_AUTH_SECRET_NAME = os.environ.get("ODDISH_DOCKER_AUTH_SECRET_NAME", "").strip()
+if DOCKER_AUTH_SECRET_NAME:
+    runtime_secrets.append(
+        modal.Secret.from_name(
+            DOCKER_AUTH_SECRET_NAME,
+            environment_name=os.environ.get(
+                "MODAL_ENVIRONMENT",
+                MODAL_SECRET_ENVIRONMENT,
+            ),
+        )
+    )
+
 # AWS credentials for the sauron S3 mirror. Kept in a separate Modal
 # secret so it can be rotated independently of oddish-prod. Set
 # ODDISH_SAURON_AWS_SECRET_NAME to override the secret name, or to "" to
