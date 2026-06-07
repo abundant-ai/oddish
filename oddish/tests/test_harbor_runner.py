@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.workers import harbor_runner  # noqa: E402
@@ -1207,3 +1209,63 @@ def test_extract_outcome_from_job_result_exception_type_none_when_no_exc():
 
     assert outcome.exception_type is None
     assert outcome.reward == 1.0
+
+
+def test_temporary_docker_config_writes_worker_registry_auth(monkeypatch):
+    monkeypatch.delenv("DOCKER_CONFIG", raising=False)
+    monkeypatch.setenv(
+        "ODDISH_DOCKER_AUTH_CONFIG",
+        '{"auths":{"ghcr.io":{"auth":"dXNlcjp0b2tlbg=="}}}',
+    )
+
+    with harbor_runner._temporary_docker_config() as env:
+        docker_config = Path(env["DOCKER_CONFIG"])
+        config_path = docker_config / "config.json"
+
+        assert config_path.exists()
+        assert config_path.stat().st_mode & 0o777 == 0o600
+        assert json.loads(config_path.read_text()) == {
+            "auths": {"ghcr.io": {"auth": "dXNlcjp0b2tlbg=="}}
+        }
+
+    assert not docker_config.exists()
+    assert "DOCKER_CONFIG" not in os.environ
+
+
+def test_temporary_docker_config_prefers_oddish_scoped_secret(monkeypatch):
+    monkeypatch.setenv(
+        "DOCKER_AUTH_CONFIG",
+        '{"auths":{"registry.example.com":{"auth":"public"}}}',
+    )
+    monkeypatch.setenv(
+        "ODDISH_DOCKER_AUTH_CONFIG",
+        '{"auths":{"ghcr.io":{"auth":"private"}}}',
+    )
+
+    with harbor_runner._temporary_docker_config() as env:
+        payload = json.loads((Path(env["DOCKER_CONFIG"]) / "config.json").read_text())
+
+    assert payload == {"auths": {"ghcr.io": {"auth": "private"}}}
+
+
+def test_temporary_docker_config_preserves_existing_docker_config(monkeypatch, tmp_path):
+    existing = tmp_path / "docker-config"
+    existing.mkdir()
+    monkeypatch.setenv("DOCKER_CONFIG", str(existing))
+    monkeypatch.setenv(
+        "ODDISH_DOCKER_AUTH_CONFIG",
+        '{"auths":{"ghcr.io":{"auth":"private"}}}',
+    )
+
+    with harbor_runner._temporary_docker_config() as env:
+        with harbor_runner._temporary_env(env):
+            assert os.environ["DOCKER_CONFIG"] != str(existing)
+
+    assert os.environ["DOCKER_CONFIG"] == str(existing)
+
+
+def test_load_docker_auth_config_rejects_invalid_json(monkeypatch):
+    monkeypatch.setenv("ODDISH_DOCKER_AUTH_CONFIG", "not-json")
+
+    with pytest.raises(ValueError, match="valid JSON"):
+        harbor_runner._load_docker_auth_config()

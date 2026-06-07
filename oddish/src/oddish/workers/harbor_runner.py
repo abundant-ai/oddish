@@ -41,6 +41,7 @@ _MIN_REQUIRED_FREE_GB = 5.0
 _MIN_REQUIRED_FREE_INODES = 1024
 _ODDISH_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:OddishCodex"
 _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:AzureCompatibleCodex"
+_DOCKER_AUTH_CONFIG_ENV_VARS = ("ODDISH_DOCKER_AUTH_CONFIG", "DOCKER_AUTH_CONFIG")
 
 
 class _TeeTextIO:
@@ -708,6 +709,55 @@ def _temporary_env(env: dict[str, str]) -> Iterator[None]:
                 os.environ[key] = old_value
 
 
+def _load_docker_auth_config() -> dict[str, Any] | None:
+    """Load Docker registry auth from worker-only environment variables.
+
+    Docker's canonical auth file shape is intentionally reused instead of
+    inventing an Oddish task field:
+
+        {"auths": {"ghcr.io": {"auth": "base64(user:token)"}}}
+
+    The value is consumed by the Oddish worker before Harbor invokes Docker.
+    It must never be written into task archives, Harbor configs, agent env, or
+    verifier images.
+    """
+    raw: str | None = None
+    for name in _DOCKER_AUTH_CONFIG_ENV_VARS:
+        value = os.environ.get(name)
+        if value:
+            raw = value
+            break
+    if not raw:
+        return None
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "Docker registry auth config must be valid JSON"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("Docker registry auth config must be a JSON object")
+    if "auths" in parsed and not isinstance(parsed["auths"], dict):
+        raise ValueError("Docker registry auth config field 'auths' must be an object")
+    return parsed
+
+
+@contextlib.contextmanager
+def _temporary_docker_config() -> Iterator[dict[str, str]]:
+    """Expose private registry credentials to Docker for this Harbor run only."""
+    auth_config = _load_docker_auth_config()
+    if not auth_config:
+        yield {}
+        return
+
+    with tempfile.TemporaryDirectory(prefix="oddish-docker-config-") as tmp:
+        config_path = Path(tmp) / "config.json"
+        config_path.write_text(json.dumps(auth_config))
+        config_path.chmod(0o600)
+        yield {"DOCKER_CONFIG": tmp}
+
+
 # =============================================================================
 # Harbor Python API Integration (with Hooks)
 # =============================================================================
@@ -846,7 +896,9 @@ async def run_harbor_trial_async(
             if uses_openai_provider
             else {}
         )
-        with _temporary_env(openai_env):
+        with _temporary_docker_config() as docker_env, _temporary_env(
+            {**openai_env, **docker_env}
+        ):
             job = await Job.create(config)
             actual_job_dir = job.job_dir
 
