@@ -1,0 +1,7 @@
+vendor_id,vendor_name,risk_tier,country,payment_terms_days,approved_account_last4,discount_bps
+V001,Northstar Clinics,low,US,30,1822,0
+V002,Meridian Labs,medium,US,45,4410,0
+V003,Helix Imaging,high,US,30,9099,0
+V004,QuickSupply Medical,low,CA,15,3104,100
+V005,Atlas Biomed,high,SG,60,7788,0
+V006,Willow Health,low,US,30,2255,0

@@ -1,0 +1,24 @@
+# Oddish sweep for the ActionBench skill-conversion experiment.
+#
+#   oddish run -p tasks -c sweep.yaml -E actionbench-skill-conversions
+#
+# The dataset directory `tasks/` holds the two converted Harbor tasks. This
+# sweep runs the real agent (cursor-cli) plus two sanity agents:
+#   - oracle : runs solution/solve.sh, which reads the sealed channel seed
+#              directly; expected reward = 1.0 on every task (wiring check).
+#   - nop    : does nothing; expected reward = 0.0 on every task (floor check).
+#
+# cursor-cli is the measurement agent. The spec targets pass@1 ~30% and
+# pass@5 ~50%, so we run 5 trials. Adjust model_name / n_trials as needed; the
+# model id is a placeholder and can be overridden on the CLI with -m.
+
+agents:
+  - name: cursor-cli
+    model_name: anthropic/claude-sonnet-4-5
+    n_trials: 5
+  - name: oracle
+    n_trials: 1
+  - name: nop
+    n_trials: 1
+
+max_trial_attempts: 2

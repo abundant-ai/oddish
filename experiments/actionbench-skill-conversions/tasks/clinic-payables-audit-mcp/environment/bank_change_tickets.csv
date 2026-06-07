@@ -1,0 +1,4 @@
+ticket_id,vendor_id,new_account_last4,requested_date,effective_date,status,approver
+BCT-7001,V005,7711,2026-04-15,2026-04-21,rejected,OpsMgr
+BCT-7002,V003,8088,2026-04-18,2026-04-24,approved,Controller
+BCT-7003,V004,1200,2026-04-20,2026-04-25,pending,Controller

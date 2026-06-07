@@ -1,0 +1,166 @@
+{
+  "channel": "finance-ops-reconciliation",
+  "export_note": "Synthetic finance operations chat export. Some chatter is irrelevant; only FINCORR tokens are authoritative.",
+  "messages": [
+    {
+      "type": "message",
+      "ts": "2026-04-21T08:10:00Z",
+      "user": "UFIN01",
+      "text": "PAY-8805 came from the Willow Health manual queue.\nFINCORR{type:remap,payment:PAY-8805,invoice:INV-5006,priority:4}",
+      "thread_replies": [
+        {
+          "ts": "2026-04-21T08:22:15Z",
+          "user": "UFIN02",
+          "text": "Confirming after AP review.\nFINCORR{type:remap,payment:PAY-8805,invoice:INV-5006,priority:5}"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-21T09:00:00Z",
+      "user": "UFIN03",
+      "text": "The QuickSupply row lost its invoice token during bank export.",
+      "attachments": [
+        {
+          "fallback": "FINCORR{type:remap,payment:PAY-8804,invoice:INV-5004,priority:3}",
+          "text": "Use PO-404 backup only for this payment."
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-22T10:30:00Z",
+      "user": "URISK",
+      "text": "Atlas Biomed payment is under sanctions review.\nFINCORR{type:hold,invoice:INV-5005,reason:sanctions_review,priority:7}",
+      "thread_replies": [
+        {
+          "ts": "2026-04-22T11:15:00Z",
+          "user": "UFIN04",
+          "text": "Premature release note, lower priority.\nFINCORR{type:release,invoice:INV-5005,reason:cleared_by_email,priority:5}"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-23T07:45:00Z",
+      "user": "UFIN05",
+      "blocks": [
+        {
+          "type": "section",
+          "text": "Ignore until the missing invoice appears: FINCORR{type:hold,invoice:INV-9999,reason:missing_vendor_packet,priority:9}"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-21T08:33:00Z",
+      "user": "UOPS900",
+      "text": "Reminder: weekly AP reconciliation locks Friday 5pm.",
+      "thread_replies": [
+        {
+          "ts": "2026-04-21T08:34:00Z",
+          "user": "UOPS950",
+          "text": "Got it, thanks."
+        }
+      ],
+      "attachments": [
+        {
+          "fallback": "FYI",
+          "text": "Routine status note, no corrections here."
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-21T08:40:00Z",
+      "user": "UOPS901",
+      "text": "Bank file imported cleanly this morning, no rejects."
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-21T08:47:00Z",
+      "user": "UOPS902",
+      "text": "Vendor onboarding form was updated, please use the new template."
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-21T08:54:00Z",
+      "user": "UOPS903",
+      "text": "Heads up: two statement lines were truncated by the bank again."
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-21T09:01:00Z",
+      "user": "UOPS904",
+      "text": "Treasury sync notes posted, nothing material for payables.",
+      "thread_replies": [
+        {
+          "ts": "2026-04-21T09:02:00Z",
+          "user": "UOPS954",
+          "text": "Got it, thanks."
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-21T09:08:00Z",
+      "user": "UOPS905",
+      "text": "Audit liaison joins standup Thursday, no action needed.",
+      "attachments": [
+        {
+          "fallback": "FYI",
+          "text": "Routine status note, no corrections here."
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-21T09:15:00Z",
+      "user": "UOPS906",
+      "text": "Please tag exception items in the shared tracker."
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-21T09:22:00Z",
+      "user": "UOPS907",
+      "text": "FX reference rates unchanged from yesterday."
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-21T09:29:00Z",
+      "user": "UOPS908",
+      "text": "Coffee chat moved to 3pm.",
+      "thread_replies": [
+        {
+          "ts": "2026-04-21T09:30:00Z",
+          "user": "UOPS958",
+          "text": "Got it, thanks."
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-21T09:36:00Z",
+      "user": "UOPS909",
+      "text": "Q2 accrual templates finalized, link in the wiki."
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-21T09:43:00Z",
+      "user": "UOPS910",
+      "text": "Printer on 3rd floor fixed.",
+      "attachments": [
+        {
+          "fallback": "FYI",
+          "text": "Routine status note, no corrections here."
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "ts": "2026-04-21T09:50:00Z",
+      "user": "UOPS911",
+      "text": "Policy: approvals over 10k now need a second signer."
+    }
+  ]
+}
