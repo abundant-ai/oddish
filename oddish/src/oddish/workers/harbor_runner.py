@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
 import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -753,78 +751,6 @@ def _load_docker_auth_config() -> dict[str, Any] | None:
     return parsed
 
 
-def _docker_login_from_auth_config(
-    auth_config: dict[str, Any], docker_config_dir: Path, home_dir: Path
-) -> None:
-    """Materialize registry auth using Docker's native login command."""
-    auths = auth_config.get("auths")
-    if not isinstance(auths, dict):
-        return
-
-    for registry, entry in sorted(auths.items()):
-        if not isinstance(registry, str) or not registry:
-            continue
-        if not isinstance(entry, dict):
-            continue
-
-        username: str | None = None
-        password: str | None = None
-        encoded = entry.get("auth")
-        if isinstance(encoded, str) and encoded:
-            try:
-                decoded = base64.b64decode(encoded).decode("utf-8")
-            except Exception as exc:
-                raise ValueError(
-                    f"Docker registry auth for {registry!r} is not valid base64"
-                ) from exc
-            if ":" not in decoded:
-                raise ValueError(
-                    f"Docker registry auth for {registry!r} must encode username:password"
-                )
-            username, password = decoded.split(":", 1)
-        else:
-            raw_username = entry.get("username")
-            raw_password = entry.get("password") or entry.get("identitytoken")
-            if isinstance(raw_username, str) and isinstance(raw_password, str):
-                username = raw_username
-                password = raw_password
-
-        if not username or password is None:
-            continue
-
-        result = subprocess.run(
-            [
-                "docker",
-                "--config",
-                str(docker_config_dir),
-                "login",
-                registry,
-                "--username",
-                username,
-                "--password-stdin",
-            ],
-            input=password,
-            text=True,
-            capture_output=True,
-            env={
-                **os.environ,
-                "DOCKER_CONFIG": str(docker_config_dir),
-                "HOME": str(home_dir),
-            },
-            timeout=30,
-        )
-        if result.returncode != 0:
-            output = "\n".join(
-                part.strip()
-                for part in (result.stdout, result.stderr)
-                if part and part.strip()
-            )
-            raise RuntimeError(
-                f"Docker login failed for registry {registry!r}: {output or result.returncode}"
-            )
-        print(f"Docker registry login succeeded for {registry}")
-
-
 @contextlib.contextmanager
 def _temporary_docker_config() -> Iterator[dict[str, str]]:
     """Expose private registry credentials to Docker for this Harbor run only."""
@@ -848,13 +774,26 @@ def _temporary_docker_config() -> Iterator[dict[str, str]]:
             config_path.write_text(payload)
             config_path.chmod(0o600)
 
-        _docker_login_from_auth_config(auth_config, docker_config_dir, home_dir)
-
         yield {
             "DOCKER_AUTH_CONFIG": payload,
             "DOCKER_CONFIG": str(docker_config_dir),
             "HOME": str(home_dir),
         }
+
+
+def _add_modal_docker_auth_passthrough(env_config: EnvironmentConfig) -> None:
+    """Allow Harbor Modal DinD sandboxes to receive worker Docker auth env."""
+    if env_config.type != EnvironmentType.MODAL:
+        return
+    kwargs = dict(env_config.kwargs or {})
+    existing = kwargs.get("passthrough_env") or []
+    if not isinstance(existing, list):
+        existing = list(existing)
+    for name in ("ODDISH_DOCKER_AUTH_CONFIG", "DOCKER_AUTH_CONFIG"):
+        if name not in existing:
+            existing.append(name)
+    kwargs["passthrough_env"] = existing
+    env_config.kwargs = kwargs
 
 
 # =============================================================================
@@ -937,6 +876,7 @@ async def run_harbor_trial_async(
         # well-formed HarborOutcome instead of a bare exception.
         env_config = hc.environment.model_copy()
         env_config.type = environment
+        _add_modal_docker_auth_passthrough(env_config)
 
         if environment == EnvironmentType.DAYTONA:
             env_config.kwargs = {

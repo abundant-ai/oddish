@@ -11,6 +11,8 @@ from types import SimpleNamespace
 import sys
 
 import pytest
+from harbor.models.environment_type import EnvironmentType
+from harbor.models.trial.config import EnvironmentConfig
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -1219,14 +1221,6 @@ def test_temporary_docker_config_writes_worker_registry_auth(monkeypatch):
         "ODDISH_DOCKER_AUTH_CONFIG",
         '{"auths":{"ghcr.io":{"auth":"dXNlcjp0b2tlbg=="}}}',
     )
-    login_calls = []
-    monkeypatch.setattr(
-        harbor_runner,
-        "_docker_login_from_auth_config",
-        lambda auth_config, docker_config_dir, home_dir: login_calls.append(
-            (auth_config, docker_config_dir, home_dir)
-        ),
-    )
 
     with harbor_runner._temporary_docker_config() as env:
         docker_config = Path(env["DOCKER_CONFIG"])
@@ -1241,7 +1235,6 @@ def test_temporary_docker_config_writes_worker_registry_auth(monkeypatch):
         assert json.loads(config_path.read_text()) == expected
         assert json.loads(home_config_path.read_text()) == expected
         assert json.loads(env["DOCKER_AUTH_CONFIG"]) == expected
-        assert login_calls == [(expected, docker_config, Path(env["HOME"]))]
 
     assert not docker_config.exists()
     assert "DOCKER_CONFIG" not in os.environ
@@ -1256,11 +1249,6 @@ def test_temporary_docker_config_prefers_oddish_scoped_secret(monkeypatch):
     monkeypatch.setenv(
         "ODDISH_DOCKER_AUTH_CONFIG",
         '{"auths":{"ghcr.io":{"auth":"private"}}}',
-    )
-    monkeypatch.setattr(
-        harbor_runner,
-        "_docker_login_from_auth_config",
-        lambda auth_config, docker_config_dir, home_dir: None,
     )
 
     with harbor_runner._temporary_docker_config() as env:
@@ -1283,11 +1271,6 @@ def test_temporary_docker_config_preserves_existing_docker_config(monkeypatch, t
         "ODDISH_DOCKER_AUTH_CONFIG",
         '{"auths":{"ghcr.io":{"auth":"private"}}}',
     )
-    monkeypatch.setattr(
-        harbor_runner,
-        "_docker_login_from_auth_config",
-        lambda auth_config, docker_config_dir, home_dir: None,
-    )
 
     with harbor_runner._temporary_docker_config() as env:
         with harbor_runner._temporary_env(env):
@@ -1305,44 +1288,24 @@ def test_load_docker_auth_config_rejects_invalid_json(monkeypatch):
         harbor_runner._load_docker_auth_config()
 
 
-def test_docker_login_from_auth_config_uses_docker_cli(monkeypatch, tmp_path):
-    calls = []
-
-    def fake_run(args, **kwargs):
-        calls.append((args, kwargs))
-
-        class Result:
-            returncode = 0
-            stdout = "Login Succeeded"
-            stderr = ""
-
-        return Result()
-
-    monkeypatch.setattr(harbor_runner.subprocess, "run", fake_run)
-
-    docker_config = tmp_path / "docker-config"
-    home = tmp_path / "home"
-    docker_config.mkdir()
-    home.mkdir()
-
-    harbor_runner._docker_login_from_auth_config(
-        {"auths": {"ghcr.io": {"auth": "dXNlcjp0b2tlbg=="}}},
-        docker_config,
-        home,
+def test_add_modal_docker_auth_passthrough_preserves_existing_kwargs():
+    config = EnvironmentConfig(
+        type=EnvironmentType.MODAL,
+        kwargs={"passthrough_env": ["EXISTING", "DOCKER_AUTH_CONFIG"]},
     )
 
-    assert len(calls) == 1
-    args, kwargs = calls[0]
-    assert args == [
-        "docker",
-        "--config",
-        str(docker_config),
-        "login",
-        "ghcr.io",
-        "--username",
-        "user",
-        "--password-stdin",
+    harbor_runner._add_modal_docker_auth_passthrough(config)
+
+    assert config.kwargs["passthrough_env"] == [
+        "EXISTING",
+        "DOCKER_AUTH_CONFIG",
+        "ODDISH_DOCKER_AUTH_CONFIG",
     ]
-    assert kwargs["input"] == "token"
-    assert kwargs["env"]["DOCKER_CONFIG"] == str(docker_config)
-    assert kwargs["env"]["HOME"] == str(home)
+
+
+def test_add_modal_docker_auth_passthrough_skips_non_modal():
+    config = EnvironmentConfig(type=EnvironmentType.DOCKER, kwargs={})
+
+    harbor_runner._add_modal_docker_auth_passthrough(config)
+
+    assert config.kwargs == {}
