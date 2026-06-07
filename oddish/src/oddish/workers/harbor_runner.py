@@ -820,9 +820,13 @@ def _install_harbor_modal_docker_auth_patch() -> None:
     original_compose_exec = modal_dind._compose_exec
 
     async def _compose_exec_with_docker_auth(self, subcommand, *args, **kwargs):
-        if subcommand and subcommand[0] == "build" and os.environ.get(
-            "DOCKER_AUTH_CONFIG"
-        ):
+        if subcommand and subcommand[0] == "build":
+            if not os.environ.get("DOCKER_AUTH_CONFIG"):
+                print(
+                    "Docker registry auth not available in worker; "
+                    "Harbor Modal build will use default Docker credentials"
+                )
+                return await original_compose_exec(self, subcommand, *args, **kwargs)
             result = await self._vm_exec(
                 "umask 077 && mkdir -p /root/.docker "
                 '&& printf "%s" "$DOCKER_AUTH_CONFIG" > /root/.docker/config.json '

@@ -234,6 +234,8 @@ jobs:
       ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
+      ODDISH_GHCR_USERNAME: ${{ secrets.ODDISH_GHCR_USERNAME || github.actor }}
+      ODDISH_GHCR_TOKEN: ${{ secrets.ODDISH_GHCR_TOKEN }}
     defaults:
       run:
         working-directory: backend
@@ -243,6 +245,9 @@ jobs:
 
       - name: Sync backend dependencies
         run: uv sync --frozen
+
+      - name: Publish Docker registry auth secret
+        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/publish_docker_registry_secret.py"
 
       - name: Deploy preview backend
         id: deploy
