@@ -1309,3 +1309,36 @@ def test_add_modal_docker_auth_passthrough_skips_non_modal():
     harbor_runner._add_modal_docker_auth_passthrough(config)
 
     assert config.kwargs == {}
+
+
+def test_add_modal_docker_auth_env_preserves_existing_env():
+    config = EnvironmentConfig(
+        type=EnvironmentType.MODAL,
+        env={"EXISTING": "value"},
+    )
+
+    harbor_runner._add_modal_docker_auth_env(config)
+
+    assert config.env == {
+        "EXISTING": "value",
+        "DOCKER_AUTH_CONFIG": "${DOCKER_AUTH_CONFIG}",
+    }
+
+
+def test_add_modal_docker_auth_env_does_not_override_user_value():
+    config = EnvironmentConfig(
+        type=EnvironmentType.MODAL,
+        env={"DOCKER_AUTH_CONFIG": "custom"},
+    )
+
+    harbor_runner._add_modal_docker_auth_env(config)
+
+    assert config.env == {"DOCKER_AUTH_CONFIG": "custom"}
+
+
+def test_add_modal_docker_auth_env_skips_non_modal():
+    config = EnvironmentConfig(type=EnvironmentType.DOCKER, env={})
+
+    harbor_runner._add_modal_docker_auth_env(config)
+
+    assert config.env == {}

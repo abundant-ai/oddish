@@ -796,6 +796,15 @@ def _add_modal_docker_auth_passthrough(env_config: EnvironmentConfig) -> None:
     env_config.kwargs = kwargs
 
 
+def _add_modal_docker_auth_env(env_config: EnvironmentConfig) -> None:
+    """Pass Docker auth JSON into Harbor's Modal docker-compose commands."""
+    if env_config.type != EnvironmentType.MODAL:
+        return
+    env = dict(env_config.env or {})
+    env.setdefault("DOCKER_AUTH_CONFIG", "${DOCKER_AUTH_CONFIG}")
+    env_config.env = env
+
+
 # =============================================================================
 # Harbor Python API Integration (with Hooks)
 # =============================================================================
@@ -877,6 +886,7 @@ async def run_harbor_trial_async(
         env_config = hc.environment.model_copy()
         env_config.type = environment
         _add_modal_docker_auth_passthrough(env_config)
+        _add_modal_docker_auth_env(env_config)
 
         if environment == EnvironmentType.DAYTONA:
             env_config.kwargs = {
