@@ -1321,6 +1321,7 @@ def test_add_modal_docker_auth_env_preserves_existing_env():
 
     assert config.env == {
         "EXISTING": "value",
+        "DOCKER_CONFIG": "/root/.docker",
         "DOCKER_AUTH_CONFIG": "${DOCKER_AUTH_CONFIG}",
     }
 
@@ -1333,7 +1334,10 @@ def test_add_modal_docker_auth_env_does_not_override_user_value():
 
     harbor_runner._add_modal_docker_auth_env(config)
 
-    assert config.env == {"DOCKER_AUTH_CONFIG": "custom"}
+    assert config.env == {
+        "DOCKER_AUTH_CONFIG": "custom",
+        "DOCKER_CONFIG": "/root/.docker",
+    }
 
 
 def test_add_modal_docker_auth_env_skips_non_modal():
@@ -1342,3 +1346,43 @@ def test_add_modal_docker_auth_env_skips_non_modal():
     harbor_runner._add_modal_docker_auth_env(config)
 
     assert config.env == {}
+
+
+def test_install_harbor_modal_docker_auth_patch_materializes_config(
+    monkeypatch,
+):
+    from harbor.environments import modal as harbor_modal
+
+    class FakeExecResult:
+        return_code = 0
+        stdout = ""
+        stderr = ""
+
+    class FakeModalDinD:
+        def __init__(self):
+            self.vm_calls = []
+            self.compose_calls = []
+
+        async def _vm_exec(self, command, *, env, timeout_sec):
+            self.vm_calls.append((command, env, timeout_sec))
+            return FakeExecResult()
+
+        async def _compose_exec(self, subcommand, *args, **kwargs):
+            self.compose_calls.append((subcommand, args, kwargs))
+            return "ok"
+
+    monkeypatch.setattr(harbor_modal, "_ModalDinD", FakeModalDinD)
+    monkeypatch.setenv("DOCKER_AUTH_CONFIG", '{"auths":{"ghcr.io":{}}}')
+
+    harbor_runner._install_harbor_modal_docker_auth_patch()
+
+    instance = FakeModalDinD()
+    result = asyncio.run(instance._compose_exec(["build"], "--pull"))
+
+    assert result == "ok"
+    assert instance.compose_calls == [(["build"], ("--pull",), {})]
+    assert len(instance.vm_calls) == 1
+    command, env, timeout_sec = instance.vm_calls[0]
+    assert "/root/.docker/config.json" in command
+    assert env == {"DOCKER_AUTH_CONFIG": '{"auths":{"ghcr.io":{}}}'}
+    assert timeout_sec == 10
