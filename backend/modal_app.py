@@ -122,7 +122,7 @@ if MODAL_APP_NAME.startswith("oddish-pr-"):
 # Queue-key concurrency default for Modal runtime.
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
-MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 32)
+MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 48)
 NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 48)
 
 ENV_VARS = {
