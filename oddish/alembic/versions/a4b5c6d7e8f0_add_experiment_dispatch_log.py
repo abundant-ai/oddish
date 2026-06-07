@@ -7,7 +7,7 @@ INSERT ... ON CONFLICT DO NOTHING before POSTing to GitHub, so a re-fired
 verdict hook (or cleanup sweep) can't double-post.
 
 Revision ID: a4b5c6d7e8f0
-Revises: z3a4b5c6d7e8
+Revises: 74a0eab3e564
 Create Date: 2026-06-08 00:00:00.000000
 """
 
@@ -17,7 +17,7 @@ from alembic import op
 
 
 revision: str = "a4b5c6d7e8f0"
-down_revision: Union[str, Sequence[str], None] = "z3a4b5c6d7e8"
+down_revision: Union[str, Sequence[str], None] = "74a0eab3e564"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
