@@ -1,0 +1,43 @@
+schema_version = "1.1"
+
+[task]
+name = "skills/clinic-payables-audit-mcp"
+description = "ActionBench-style conversion: audit clinic vendor disbursements against invoices and vendor-risk data, applying finance-ops adjustments that must be mined from a live chat channel served over an MCP."
+authors = []
+keywords = ["finance", "healthcare", "payables", "vendor-risk", "slack", "mcp", "tool-use", "csv", "json", "actionbench"]
+
+[metadata]
+difficulty = "hard"
+category = "finance-operations"
+tags = ["finance", "payments", "vendor-risk", "reconciliation", "slack", "mcp", "tool-use", "resourcefulness", "actionbench", "skills"]
+difficulty_explanation = "ActionBench-style conversion of the clinic-payables-audit skills task. The audit logic is unchanged (bank disbursements vs invoice state, vendor master controls, approved/rejected bank-change tickets, priority conflict resolution, batch payments, early-payment discounts, duplicate detection, account-suffix controls, high-risk late-payment review, three synchronized output artifacts). What changes is the adjustments SOURCE: the finance-ops corrections live in a chat channel exposed only through the `finance-ops` MCP. The agent must paginate the full channel and open threads to recover every FINCORR token (remap/hold/release) and resolve them by priority and timestamp, making non-trivial tool use critical."
+expert_time_estimate_hours = 4
+solution_explanation = "The reference solution reads the invoice/bank/vendor/bank-change files, gathers finance corrections by paginating the finance-ops MCP channel and reading every thread, extracts FINCORR tokens recursively from message text, attachments, blocks, and replies, resolves winning remaps and hold/release adjustments by priority and timestamp, handles single and batch payments, applies early-payment discount allowances and approved bank-change tickets before classifying each outgoing payment, and writes the reconciled CSV, summary JSON, and adjustment timeline. The provided oracle reads the same channel seed directly to produce the canonical outputs."
+verification_explanation = "The verifier is reused verbatim from the source skills task and is unchanged by the conversion (the recoverable FINCORR set is identical, so the expected outputs are identical). It runs pytest against the generated outputs: reconciled CSV schema, row count, sort order, ignored deposit, remapped payments, held and duplicate classifications, amount mismatch, late high-risk exceptions, approved/rejected account-change behavior, batch invoice output, early-payment discount handling, summary totals and risk rollups, and the adjustment timeline's winning, superseded, and skipped entries."
+
+[verifier]
+timeout_sec = 600.0
+
+[agent]
+timeout_sec = 1200.0
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+
+[[environment.mcp_servers]]
+name = "finance-ops"
+transport = "stdio"
+command = "/usr/local/bin/mock-slack-mcp"
+args = ["/opt/slack-mcp/seed/finance_ops_channel.json", "finance-ops"]
+
+[verifier.env]
+
+[environment.env]
+GEMINI_CLI_TRUST_WORKSPACE = "true"
+
+[solution.env]
