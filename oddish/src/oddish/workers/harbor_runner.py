@@ -722,12 +722,15 @@ def _load_docker_auth_config() -> dict[str, Any] | None:
     verifier images.
     """
     raw: str | None = None
+    source_name: str | None = None
     for name in _DOCKER_AUTH_CONFIG_ENV_VARS:
         value = os.environ.get(name)
         if value:
             raw = value
+            source_name = name
             break
     if not raw:
+        print("Docker registry auth config not configured")
         return None
 
     try:
@@ -740,6 +743,11 @@ def _load_docker_auth_config() -> dict[str, Any] | None:
         raise ValueError("Docker registry auth config must be a JSON object")
     if "auths" in parsed and not isinstance(parsed["auths"], dict):
         raise ValueError("Docker registry auth config field 'auths' must be an object")
+    registries = sorted(parsed.get("auths", {}).keys())
+    print(
+        "Docker registry auth config loaded "
+        f"from {source_name}; registries={registries}"
+    )
     return parsed
 
 
