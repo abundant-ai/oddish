@@ -77,7 +77,7 @@ def test_author_filter_matches_created_by_and_scopes_org() -> None:
 
 def test_author_filter_includes_github_username_fallback() -> None:
     clause = _build_experiments_author_filter(
-        "user_123", "octocat", org_id="org_1"
+        "user_123", ("octocat",), org_id="org_1"
     )
     assert clause is not None
     sql = _compile_sql(clause)
@@ -85,6 +85,28 @@ def test_author_filter_includes_github_username_fallback() -> None:
     assert "octocat" in sql
     # Owner match is an OR of the resolved user id and the github tag.
     assert " OR " in sql.upper()
+
+
+def test_author_filter_supports_multiple_github_handles() -> None:
+    clause = _build_experiments_author_filter(
+        "user_123",
+        ("dot-agi", "praxs"),
+        org_id="org_1",
+    )
+    assert clause is not None
+    sql = _compile_sql(clause)
+    assert "dot-agi" in sql
+    assert "praxs" in sql
+    assert " IN " in sql.upper()
+
+
+def test_author_filter_requires_latest_task_match() -> None:
+    clause = _build_experiments_author_filter("user_123", None, org_id="org_1")
+    assert clause is not None
+    sql = _compile_sql(clause).lower()
+    # Latest-task filter correlates on the newest linked task id, not any member task.
+    assert "order by" in sql
+    assert " limit " in sql
 
 
 def test_author_filter_without_org_scope_omits_org_predicate() -> None:

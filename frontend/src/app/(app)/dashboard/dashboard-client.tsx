@@ -164,7 +164,7 @@ function useDashboardExperiments(
   });
   const hasFallbackData = fallbackData != null;
 
-  const { data, error, isLoading } = useSWR<DashboardResponse>(
+  const { data, error, isLoading, isValidating } = useSWR<DashboardResponse>(
     swrKey,
     fetcher,
     {
@@ -183,6 +183,7 @@ function useDashboardExperiments(
     swrKey,
     error,
     isLoading,
+    isValidating,
   };
 }
 
@@ -1383,6 +1384,8 @@ function RecentTasksCard({
               Check the API connection and try again.
             </AlertDescription>
           </Alert>
+        ) : isPageTransitioning ? (
+          <p className="text-muted-foreground">Loading...</p>
         ) : isLoading && experiments.length === 0 ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : !isLoading &&
@@ -1653,6 +1656,7 @@ export function DashboardClient({
     swrKey: experimentsSwrKey,
     error: experimentsError,
     isLoading: isExperimentsLoading,
+    isValidating: isExperimentsValidating,
   } = useDashboardExperiments(
     EXPERIMENTS_PAGE_SIZE,
     experimentsOffset,
@@ -1717,7 +1721,7 @@ export function DashboardClient({
         hasMoreExperiments={hasMoreExperiments}
         onPreviousExperimentsPage={handlePreviousExperimentsPage}
         onNextExperimentsPage={handleNextExperimentsPage}
-        isPageTransitioning={isExperimentsLoading}
+        isPageTransitioning={isExperimentsLoading || isExperimentsValidating}
         onRefreshData={handleRefreshCurrentPage}
         currentExperimentsPage={currentExperimentsPage}
         onViewOrgExperiments={() => setAuthorFilter("all")}
