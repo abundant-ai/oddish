@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-08]
+
+### Added
+- Fire a `repository_dispatch` webhook to consumer repos when all tasks in an experiment reach a terminal state; an `experiment_dispatch_log` table provides idempotent single-fire semantics; dispatch target and event type are read from `github_meta.dispatch` on task tags; gated by `GITHUB_DISPATCH_ALLOWED_REPOS` allowlist and authenticated via `GITHUB_DISPATCH_TOKEN` (falls back to `GITHUB_TOKEN`) (#206)
+
+### Changed
+- Raise `ODDISH_DEFAULT_MODEL_CONCURRENCY` fallback from 32 to 48, increasing per-model queue-key concurrency in the Modal runtime without changing the per-poll spawn cap (#208)
+- Experiment trials table tooltip for truncated task names now shows the full task name instead of the generic "View task files" label, with responsive max-width and word-break styling for long names (#207)
+
+---
+
 ## [2026-06-07]
 
 ### Changed
