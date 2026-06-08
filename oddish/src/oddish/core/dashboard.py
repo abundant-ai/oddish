@@ -296,17 +296,22 @@ def _build_latest_task_author_match(
     experiments_author_user_id: str,
     github_handles: list[str],
     *,
-    experiments_author_email: str | None,
+    experiments_author_emails: Sequence[str] | None,
 ):
     """Match the dashboard Author column on the experiment's latest live task.
 
     Precedence mirrors ``last_github_username or last_user`` in the response:
-    ``github_username`` tag first, then legacy ``tasks.user`` (email or known
-    GitHub handle from GH Actions / CLI ``--github-user``), then
-    ``created_by_user_id`` only when neither is present.
+    ``github_username`` tag first, then legacy ``tasks.user`` (Clerk email,
+    GitHub-linked email such as ``ps4534@nyu.edu``, or known handle strings
+    from GH Actions / CLI ``--github-user``), then ``created_by_user_id`` only
+    when neither is present.
     """
     github_tag = _task_github_tag_expr()
-    normalized_email = (experiments_author_email or "").strip()
+    normalized_emails = [
+        email.strip()
+        for email in (experiments_author_emails or ())
+        if (email or "").strip()
+    ]
 
     tiers = []
     if len(github_handles) == 1:
@@ -315,8 +320,10 @@ def _build_latest_task_author_match(
         tiers.append(github_tag.in_(github_handles))
 
     legacy_user_matches = []
-    if normalized_email:
-        legacy_user_matches.append(TaskModel.user == normalized_email)
+    if len(normalized_emails) == 1:
+        legacy_user_matches.append(TaskModel.user == normalized_emails[0])
+    elif len(normalized_emails) > 1:
+        legacy_user_matches.append(TaskModel.user.in_(normalized_emails))
     if len(github_handles) == 1:
         legacy_user_matches.append(TaskModel.user == github_handles[0])
     elif len(github_handles) > 1:
@@ -341,15 +348,15 @@ def _build_experiments_author_filter(
     experiments_author_github_usernames: Sequence[str] | None,
     *,
     org_id: str | None,
-    experiments_author_email: str | None = None,
+    experiments_author_emails: Sequence[str] | None = None,
 ):
     """EXISTS clause restricting experiments to a single owner, or ``None``.
 
     Returns ``None`` when no owner filter is requested. Otherwise requires
     the experiment's **latest live task** (same ordering as the dashboard
     Author column) to match using the same attribution precedence as the UI:
-    ``github_username`` tag first, then legacy ``tasks.user`` email, then
-    ``created_by_user_id`` only when no tag/email is present.
+    ``github_username`` tag first, then legacy ``tasks.user`` values (emails
+    and handles), then ``created_by_user_id`` only when neither is present.
     """
     if experiments_author_user_id is None:
         return None
@@ -372,7 +379,7 @@ def _build_experiments_author_filter(
             _build_latest_task_author_match(
                 experiments_author_user_id,
                 github_handles,
-                experiments_author_email=experiments_author_email,
+                experiments_author_emails=experiments_author_emails,
             )
         )
     )
@@ -407,7 +414,7 @@ async def load_dashboard_experiments(
     experiments_status: str,
     experiments_author_user_id: str | None = None,
     experiments_author_github_usernames: Sequence[str] | None = None,
-    experiments_author_email: str | None = None,
+    experiments_author_emails: Sequence[str] | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Load experiment summaries for the dashboard.
@@ -464,7 +471,7 @@ async def load_dashboard_experiments(
         experiments_author_user_id,
         experiments_author_github_usernames,
         org_id=org_id,
-        experiments_author_email=experiments_author_email,
+        experiments_author_emails=experiments_author_emails,
     )
     if author_filter is not None:
         page_query = page_query.where(author_filter)
@@ -953,7 +960,7 @@ async def get_dashboard_core(
     experiments_status: str = "all",
     experiments_author_user_id: str | None = None,
     experiments_author_github_usernames: Sequence[str] | None = None,
-    experiments_author_email: str | None = None,
+    experiments_author_emails: Sequence[str] | None = None,
     usage_minutes: int | None = None,
     include_tasks: bool = True,
     include_usage: bool = True,
@@ -978,7 +985,7 @@ async def get_dashboard_core(
         f"{experiments_limit}:{experiments_offset}:{experiments_query}:"
         f"{experiments_status}:{experiments_author_user_id}:"
         f"{','.join(experiments_author_github_usernames or ())}:"
-        f"{experiments_author_email or ''}"
+        f"{','.join(experiments_author_emails or ())}"
     )
 
     is_usage_only_request = (
@@ -1089,7 +1096,7 @@ async def get_dashboard_core(
                 experiments_status=experiments_status,
                 experiments_author_user_id=experiments_author_user_id,
                 experiments_author_github_usernames=experiments_author_github_usernames,
-                experiments_author_email=experiments_author_email,
+                experiments_author_emails=experiments_author_emails,
                 record_timing=record_timing,
             )
         if record_timing is not None:

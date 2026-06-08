@@ -122,6 +122,81 @@ async def _discover_github_handles(
     return tuple(handles)
 
 
+async def _other_member_emails(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    exclude_user_id: str,
+) -> set[str]:
+    rows = await session.execute(
+        select(UserModel.email)
+        .where(UserModel.org_id == org_id)
+        .where(UserModel.id != exclude_user_id)
+        .where(UserModel.is_active == True)  # noqa: E712
+        .where(UserModel.email.isnot(None))
+    )
+    blocked: set[str] = set()
+    for (email,) in rows:
+        normalized = (email or "").strip().lower()
+        if normalized:
+            blocked.add(normalized)
+    return blocked
+
+
+async def _discover_legacy_emails(
+    session: AsyncSession,
+    user: UserModel,
+    *,
+    org_id: str,
+    github_handles: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Collect Clerk email plus GitHub-linked legacy emails from the user's tasks.
+
+    Google/Clerk sign-in may use ``pratty@abundant.ai`` while GH Actions and
+    older CLI runs stamp ``tasks.user`` with the GitHub account email
+    (``ps4534@nyu.edu``). Both should count toward Mine.
+    """
+    blocked_emails = await _other_member_emails(
+        session, org_id=org_id, exclude_user_id=user.id
+    )
+    emails: list[str] = []
+    seen: set[str] = set()
+
+    def _accept(raw: str | None) -> None:
+        value = (raw or "").strip()
+        if not value or not _looks_like_email(value):
+            return
+        key = value.lower()
+        if key in seen or key in blocked_emails:
+            return
+        seen.add(key)
+        emails.append(value)
+
+    _accept(user.email)
+
+    tag_expr = TaskModel.tags["github_username"].astext
+    attribution_predicates = [TaskModel.created_by_user_id == user.id]
+    if github_handles:
+        if len(github_handles) == 1:
+            attribution_predicates.append(tag_expr == github_handles[0])
+        else:
+            attribution_predicates.append(tag_expr.in_(github_handles))
+
+    email_rows = await session.execute(
+        select(TaskModel.user)
+        .where(TaskModel.org_id == org_id)
+        .where(TaskModel.deleted_at.is_(None))
+        .where(TaskModel.user.isnot(None))
+        .where(TaskModel.user.contains("@"))
+        .where(or_(*attribution_predicates))
+        .distinct()
+    )
+    for (raw_user,) in email_rows:
+        _accept(raw_user)
+
+    return tuple(emails)
+
+
 def _make_timing_recorder(request: Request) -> TimingRecorder:
     def _record(name: str, duration_ms: float, description: str | None = None) -> None:
         add_server_timing_metric(request, name, duration_ms, description)
@@ -133,39 +208,47 @@ async def _resolve_experiments_author(
     session: AsyncSession,
     auth: AuthContext,
     experiments_author: str | None,
-) -> tuple[str | None, tuple[str, ...], str | None]:
-    """Resolve the dashboard owner filter to ``(user_id, github_usernames, email)``.
+) -> tuple[str | None, tuple[str, ...], tuple[str, ...]]:
+    """Resolve the dashboard owner filter to ``(user_id, github_usernames, emails)``.
 
     Accepts the ``experiments_author`` query value:
       * ``None`` / ``""`` / ``"all"`` -> no filter (whole organization)
       * ``"me"`` -> the authenticated Clerk user (``auth.user_id``)
       * a ``UserModel.id`` -> that specific organization member
 
-    Returns ``(None, (), None)`` when no filter should apply. The resolved
+    Returns ``(None, (), ())`` when no filter should apply. The resolved
     github usernames come from the user's Clerk-linked handle plus historical
     aliases discovered from their tasks (``praxs`` / ``dot-agi`` etc.), excluding
-    handles registered as another org member's primary GitHub username.
-    Unknown / cross-org ids keep the id (with empty handles/email) so the
+    handles registered as another org member's primary GitHub username. Emails
+    include the Clerk sign-in address plus legacy GitHub-linked addresses found
+    on their tasks (e.g. ``ps4534@nyu.edu`` when Clerk uses ``pratty@abundant.ai``).
+    Unknown / cross-org ids keep the id (with empty handles/emails) so the
     filter matches nothing rather than silently widening back to the full org.
     """
     normalized = (experiments_author or "").strip()
     if not normalized or normalized.lower() == "all":
-        return None, (), None
+        return None, (), ()
 
     target_user_id = auth.user_id if normalized.lower() == "me" else normalized
     if not target_user_id:
         # "me" with an API-key principal (no user) -> no personal scope.
-        return None, (), None
+        return None, (), ()
 
     user = await session.get(UserModel, target_user_id)
     if user is None or user.org_id != auth.org_id or not user.is_active:
-        return target_user_id, (), None
+        return target_user_id, (), ()
 
     github_usernames = await _discover_github_handles(
         session, user, org_id=auth.org_id
     )
+    legacy_emails = await _discover_legacy_emails(
+        session,
+        user,
+        org_id=auth.org_id,
+        github_handles=github_usernames,
+    )
 
-    return user.id, github_usernames, user.email
+    return user.id, github_usernames, legacy_emails
 
 
 @router.get("/dashboard")
@@ -205,7 +288,7 @@ async def get_dashboard(
             elapsed_ms(connect_started_at),
             "Dashboard DB connect",
         )
-        author_user_id, author_github_usernames, author_email = (
+        author_user_id, author_github_usernames, author_emails = (
             await _resolve_experiments_author(session, auth, experiments_author)
         )
         return await get_dashboard_core(
@@ -219,7 +302,7 @@ async def get_dashboard(
             experiments_status=experiments_status,
             experiments_author_user_id=author_user_id,
             experiments_author_github_usernames=author_github_usernames,
-            experiments_author_email=author_email,
+            experiments_author_emails=author_emails,
             usage_minutes=usage_minutes,
             include_tasks=include_tasks,
             include_usage=include_usage,
