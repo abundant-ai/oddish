@@ -149,6 +149,9 @@ ENV_VARS = {
     # deploy host did (the per-PR secret gate above depends on it).
     "MODAL_APP_NAME": MODAL_APP_NAME,
     "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
+    # Baked into the image for the same reason as MODAL_APP_NAME: Modal
+    # validates function dependencies again inside the remote container.
+    "ODDISH_DOCKER_AUTH_SECRET_NAME": DOCKER_AUTH_SECRET_NAME,
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
