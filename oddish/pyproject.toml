@@ -64,6 +64,8 @@ server = [
     "alembic==1.18.1",
     # S3-compatible storage
     "aioboto3==15.5.0",
+    # Document text extraction for the agent doc-store ingest pipeline.
+    "pypdf>=4.0",
 ]
 worker = [
     "oddish[server]",
