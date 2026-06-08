@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
+import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -47,8 +47,8 @@ import type {
   TaskVersionSummary,
   Trial,
 } from "@/lib/types";
-import { formatRelativeTime } from "@/lib/utils";
-import { ArrowLeft, ChevronDown, FileText, Loader2 } from "lucide-react";
+import { cn, formatRelativeTime } from "@/lib/utils";
+import { ArrowLeft, ChevronDown, ExternalLink, FileText, GitPullRequest, Loader2 } from "lucide-react";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -206,7 +206,7 @@ function TaskDetailHeader({
 }) {
   return (
     <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="font-mono truncate text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)]">
@@ -217,7 +217,35 @@ function TaskDetailHeader({
             </Badge>
           </div>
         </div>
-        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
+        {task.link ? (
+          <a
+            href={task.link}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="View pull request on GitHub"
+            className={cn(
+              badgeVariants({ variant: "outline" }),
+              "w-fit gap-1.5 font-mono text-[11px] transition-colors hover:bg-accent",
+            )}
+          >
+            <GitPullRequest className="h-3 w-3 shrink-0" aria-hidden />
+            {(() => {
+              const meta = task.github_meta;
+              const num = meta?.pr_number ?? (task.link.match(/\/pulls?\/(\d+)/)?.[1] ?? null);
+              const title = meta?.pr_title;
+              return (
+                <>
+                  {title && num && <span className="shrink-0 text-muted-foreground">#{num}</span>}
+                  <span className="min-w-0 truncate">
+                    {title ?? (num ? `PR #${num}` : "PR")}
+                  </span>
+                </>
+              );
+            })()}
+            <ExternalLink className="h-3 w-3 shrink-0 opacity-50" aria-hidden />
+          </a>
+        ) : null}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
           {task.experiment_name ? (
             <>
               <span>experiment</span>
@@ -241,19 +269,6 @@ function TaskDetailHeader({
               <span title={new Date(task.created_at).toLocaleString()}>
                 created {formatRelativeTime(task.created_at)}
               </span>
-            </>
-          ) : null}
-          {task.link ? (
-            <>
-              <span aria-hidden>·</span>
-              <a
-                href={task.link}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[color:var(--paper-ink-2)] underline-offset-2 hover:underline"
-              >
-                link
-              </a>
             </>
           ) : null}
         </div>
