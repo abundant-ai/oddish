@@ -2,9 +2,6 @@
 
 import Link from "next/link";
 import useSWR from "swr";
-import { useAuth } from "@clerk/nextjs";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800";
 
 type Attempt = {
   success?: boolean | null;
@@ -250,27 +247,16 @@ const VARIANT_CLASS: Record<ResultDisplay["variant"], string> = {
 };
 
 export function ProbeHistoryTable({ taskId }: { taskId: string }) {
-  const { getToken } = useAuth();
-
+  // Fetch through the same-origin Next proxy (/api/...) so the browser never
+  // hits the backend cross-origin — no CORS, auth attached server-side.
   const fetcher = async (url: string) => {
-    let token: string | null = null;
-    try {
-      token = await getToken({ template: "oddish" });
-    } catch {
-      // Template missing — fall back to default session token.
-    }
-    if (!token) {
-      token = await getToken();
-    }
-    const res = await fetch(url, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   };
 
   const { data, error } = useSWR<Trial[]>(
-    `${API_URL}/tasks/${taskId}/trials`,
+    `/api/tasks/${taskId}/trials`,
     fetcher,
     { refreshInterval: 5000 },
   );
