@@ -1,7 +1,7 @@
 """Core logic for shared skills.
 
 Validation (`parse_skill`) is pure (no DB) so it can be unit-tested directly.
-CRUD (added in a later task) follows the repo's router->core layering.
+CRUD follows the repo's router->core layering: functions receive an AsyncSession and never commit — the calling router owns the transaction.
 """
 
 from __future__ import annotations
