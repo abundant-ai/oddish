@@ -44,6 +44,9 @@ _NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
 OPENAI_PROVIDER_AZURE = "azure"
 OPENAI_PROVIDER_OPENAI = "openai"
 _OPENAI_PROVIDERS: set[str] = {OPENAI_PROVIDER_AZURE, OPENAI_PROVIDER_OPENAI}
+DEFAULT_MODEL_CONCURRENCY_OVERRIDES: dict[str, int] = {
+    "google/gemini-3.5-flash": 128,
+}
 
 # Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
 # "global.anthropic.claude-haiku-4-5-20251001-v1:0".
@@ -383,7 +386,9 @@ class Settings(BaseSettings):
     # values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
     default_model_concurrency: int = 8
     nop_oracle_concurrency: int = 32
-    model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
+    model_concurrency_overrides: dict[str, int] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_CONCURRENCY_OVERRIDES)
+    )
     analysis_model: str = ANALYSIS_MODEL
     verdict_model: str = VERDICT_MODEL
 
@@ -511,6 +516,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def normalize_model_overrides(self) -> "Settings":
+        normalized: dict[str, int] = {}
+        for key, value in DEFAULT_MODEL_CONCURRENCY_OVERRIDES.items():
+            queue_key = self.normalize_queue_key(str(key))
+            normalized[queue_key] = int(value)
+        for key, value in self.model_concurrency_overrides.items():
+            queue_key = self.normalize_queue_key(str(key))
+            normalized[queue_key] = int(value)
+
         raw = os.getenv("ODDISH_MODEL_CONCURRENCY_OVERRIDES")
         if raw:
             try:
@@ -523,11 +536,10 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "ODDISH_MODEL_CONCURRENCY_OVERRIDES must be a JSON object"
                 )
-            normalized: dict[str, int] = {}
             for key, value in parsed.items():
                 queue_key = self.normalize_queue_key(str(key))
                 normalized[queue_key] = int(value)
-            self.model_concurrency_overrides = normalized
+        self.model_concurrency_overrides = normalized
 
         self.azure_openai_deployments = self._normalize_azure_openai_deployments(
             self.azure_openai_deployments

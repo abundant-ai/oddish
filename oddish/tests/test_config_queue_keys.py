@@ -45,6 +45,13 @@ def test_nop_oracle_queue_has_separate_default_concurrency(monkeypatch):
     assert NOP_ORACLE_QUEUE_KEY in settings.get_known_queue_keys()
 
 
+def test_gemini_flash_has_default_high_concurrency(monkeypatch):
+    settings = _settings(monkeypatch)
+
+    assert settings.get_model_concurrency("google/gemini-3.5-flash") == 128
+    assert "google/gemini-3.5-flash" in settings.get_known_queue_keys()
+
+
 def test_model_concurrency_overrides_can_override_nop_oracle_queue(monkeypatch):
     monkeypatch.setenv(
         "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
@@ -54,6 +61,17 @@ def test_model_concurrency_overrides_can_override_nop_oracle_queue(monkeypatch):
 
     assert settings.get_model_concurrency(NOP_ORACLE_QUEUE_KEY) == 12
     assert settings.get_model_concurrency("default") == 3
+    assert settings.get_model_concurrency("google/gemini-3.5-flash") == 128
+
+
+def test_model_concurrency_overrides_can_override_default_gemini_limit(monkeypatch):
+    monkeypatch.setenv(
+        "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
+        '{"google/gemini-3.5-flash": 64}',
+    )
+    settings = Settings(_env_file=None)
+
+    assert settings.get_model_concurrency("google/gemini-3.5-flash") == 64
 
 
 def test_claude_trial_model_is_persisted_as_bedrock_id(monkeypatch):
