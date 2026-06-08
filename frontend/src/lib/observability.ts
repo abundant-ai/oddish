@@ -8,7 +8,12 @@ let configured = false;
 
 const TRACER_NAME = "oddish-frontend";
 
-const LOGFIRE_TRACE_URL = "https://logfire-api.pydantic.dev/v1/traces";
+// Browser spans are relayed through a same-origin proxy
+// (`app/api/telemetry/traces`) rather than posted straight to Logfire:
+// Logfire's ingestion host returns no `Access-Control-Allow-Origin`, so a
+// direct cross-origin export is blocked by the browser at the CORS preflight
+// (it only works server-side, e.g. from curl). See that route for details.
+const LOGFIRE_TRACE_PATH = "/api/telemetry/traces";
 
 function resolveEnvironment(): string {
   const explicit = process.env.NEXT_PUBLIC_LOGFIRE_ENVIRONMENT;
@@ -30,7 +35,9 @@ export function ensureLogfireConfigured(): void {
 
   try {
     logfire.configure({
-      traceUrl: LOGFIRE_TRACE_URL,
+      // Absolute, same-origin URL so the export never crosses origins (no
+      // CORS preflight). `window` is guaranteed defined by the guard above.
+      traceUrl: `${window.location.origin}${LOGFIRE_TRACE_PATH}`,
       traceExporterHeaders: () => ({ Authorization: token }),
       serviceName: "oddish-frontend",
       serviceVersion:

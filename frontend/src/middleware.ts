@@ -16,6 +16,9 @@ const isPublicRoute = createRouteMatcher([
   "/datasets(.*)",
   "/experiments(.*)",
   "/api/public(.*)",
+  // Same-origin Logfire trace relay — must work for signed-out pages too, so
+  // browser spans aren't dropped (and aren't bounced to a Clerk 404).
+  "/api/telemetry(.*)",
 ]);
 
 // Emit the active edge span as a `traceparent` value inside Server-Timing
