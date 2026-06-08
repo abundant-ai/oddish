@@ -125,3 +125,80 @@ async def test_cannot_mutate_other_org(org_id):
         with pytest.raises(HTTPException) as exc:
             await delete_skill_core(session, skill_id, org_id="org_other")
         assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_other_org_returns_404(org_id):
+    async with get_session() as session:
+        created = await create_skill_core(session, data=_payload(), org_id=org_id, user_id="u")
+        await session.commit()
+        skill_id = created.id
+    async with get_session() as session:
+        with pytest.raises(HTTPException) as exc:
+            await get_skill_core(session, skill_id, org_id="org_other")
+        assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_other_org_returns_404(org_id):
+    async with get_session() as session:
+        created = await create_skill_core(session, data=_payload(), org_id=org_id, user_id="u")
+        await session.commit()
+        skill_id = created.id
+    async with get_session() as session:
+        with pytest.raises(HTTPException) as exc:
+            await update_skill_core(
+                session, skill_id, data=SkillUpdate(description="x"), org_id="org_other"
+            )
+        assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_without_files_patches_fields(org_id):
+    async with get_session() as session:
+        created = await create_skill_core(session, data=_payload(), org_id=org_id, user_id="u")
+        await session.commit()
+        skill_id = created.id
+    async with get_session() as session:
+        await update_skill_core(
+            session, skill_id, data=SkillUpdate(description="patched"), org_id=org_id
+        )
+        await session.commit()
+    async with get_session() as session:
+        got = await get_skill_core(session, skill_id, org_id=org_id)
+        assert got.description == "patched"
+        assert {f.relative_path for f in got.files} == {"SKILL.md", "scripts/run.sh"}
+
+
+@pytest.mark.asyncio
+async def test_seed_skill_is_read_only():
+    seed_name = f"seed-{uuid.uuid4().hex[:8]}"
+    async with get_session() as session:
+        seed = SkillModel(
+            org_id=None,
+            created_by_user_id=None,
+            name=seed_name,
+            description="builtin",
+            is_seed=True,
+        )
+        session.add(seed)
+        await session.commit()
+        seed_id = seed.id
+    try:
+        async with get_session() as session:
+            with pytest.raises(HTTPException) as exc:
+                await delete_skill_core(session, seed_id, org_id="any_org")
+            assert exc.value.status_code == 403
+        async with get_session() as session:
+            with pytest.raises(HTTPException) as exc:
+                await update_skill_core(
+                    session, seed_id, data=SkillUpdate(description="hack"), org_id="any_org"
+                )
+            assert exc.value.status_code == 403
+    finally:
+        async with get_session() as session:
+            # hard-delete the seed row (bypass soft-delete) so it doesn't leak between runs
+            await session.execute(
+                SkillModel.__table__.delete().where(SkillModel.id == seed_id)
+            )
+            await session.commit()
