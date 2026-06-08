@@ -66,6 +66,8 @@ server = [
     "aioboto3==15.5.0",
     # Document text extraction for the agent doc-store ingest pipeline.
     "pypdf>=4.0",
+    # Doc-store MCP retrieval server (oddish.mcp.docstore_server).
+    "mcp>=1.26",
 ]
 worker = [
     "oddish[server]",
@@ -95,6 +97,7 @@ Documentation = "https://github.com/abundant-ai/oddish/blob/main/DOCS.md"
 
 [project.scripts]
 oddish = "oddish.cli:app"
+oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
 harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
