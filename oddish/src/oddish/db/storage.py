@@ -58,6 +58,11 @@ def extract_s3_key_from_path(path: str | None) -> str | None:
 def _validate_task_archive_members(
     members: list[tarfile.TarInfo], destination: Path
 ) -> None:
+    # Resolve the destination so containment is compared like-for-like: on
+    # macOS the temp dir (/tmp, /var/folders/...) is a symlink, and resolving
+    # only the member path while leaving ``destination`` symlinked would falsely
+    # trip the traversal guard. Resolving both sides keeps the check sound.
+    destination = destination.resolve()
     for member in members:
         if member.islnk() or member.issym():
             raise ValueError("links not allowed")
