@@ -323,6 +323,34 @@ function EmptyExperimentsState() {
   );
 }
 
+function MineEmptyExperimentsState({
+  onViewOrgExperiments,
+}: {
+  onViewOrgExperiments: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-dashed border-[#6f88b4]/30 bg-card/60 p-6">
+      <div className="flex flex-col items-center text-center">
+        <Users className="mb-3 h-11 w-11 text-muted-foreground/70" />
+        <p className="text-base font-medium">No experiments of yours yet</p>
+        <p className="mt-1 max-w-md text-sm text-muted-foreground">
+          Your organization may have other experiments. Switch to the org view
+          to browse everything, or submit a new job to get started.
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-4"
+          onClick={onViewOrgExperiments}
+        >
+          View org experiments
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 // =============================================================================
 // Usage Overview
 // =============================================================================
@@ -1161,6 +1189,7 @@ function RecentTasksCard({
   isPageTransitioning,
   onRefreshData,
   currentExperimentsPage,
+  onViewOrgExperiments,
 }: {
   experiments: DashboardExperiment[];
   searchQuery: string;
@@ -1178,6 +1207,7 @@ function RecentTasksCard({
   isPageTransitioning: boolean;
   onRefreshData: () => Promise<void>;
   currentExperimentsPage: number;
+  onViewOrgExperiments: () => void;
 }) {
   const [deleteTarget, setDeleteTarget] = useState<{
     id: string;
@@ -1187,13 +1217,11 @@ function RecentTasksCard({
   } | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  const isMemberSelected =
-    authorFilter !== DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR &&
-    authorFilter !== "me";
+  const isMemberSelected = authorFilter !== "all" && authorFilter !== "me";
   const hasFilters =
     searchQuery.trim().length > 0 ||
     statusFilter !== "all" ||
-    authorFilter !== DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR;
+    isMemberSelected;
   const statusFilterLabel =
     STATUS_FILTER_OPTIONS.find((option) => option.value === statusFilter)
       ?.label ?? "Filter status";
@@ -1250,17 +1278,11 @@ function RecentTasksCard({
           <div className="flex items-center gap-0.5 rounded-md border border-[#6f88b4]/20 p-0.5">
             <Button
               type="button"
-              variant={
-                authorFilter === DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR
-                  ? "secondary"
-                  : "ghost"
-              }
+              variant={authorFilter === "all" ? "secondary" : "ghost"}
               size="sm"
               className="h-7 px-2.5 text-[11px]"
-              onClick={() =>
-                onAuthorFilterChange(DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR)
-              }
-              aria-pressed={authorFilter === DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR}
+              onClick={() => onAuthorFilterChange("all")}
+              aria-pressed={authorFilter === "all"}
             >
               Org
             </Button>
@@ -1367,7 +1389,13 @@ function RecentTasksCard({
           experiments.length === 0 &&
           !hasMoreExperiments &&
           !hasFilters ? (
-          <EmptyExperimentsState />
+          authorFilter === "me" ? (
+            <MineEmptyExperimentsState
+              onViewOrgExperiments={onViewOrgExperiments}
+            />
+          ) : (
+            <EmptyExperimentsState />
+          )
         ) : experiments.length === 0 ? (
           <div className="py-8 text-center text-muted-foreground">
             <p>No experiments match the current filters.</p>
@@ -1635,7 +1663,7 @@ export function DashboardClient({
   );
   const currentExperimentsPage =
     Math.floor(experimentsOffset / EXPERIMENTS_PAGE_SIZE) + 1;
-  const isDefaultExperimentsEmpty =
+  const isDefaultOrgExperimentsEmpty =
     experiments.length === 0 &&
     !hasMoreExperiments &&
     !isExperimentsLoading &&
@@ -1643,7 +1671,7 @@ export function DashboardClient({
     currentExperimentsPage === 1 &&
     deferredSearchQuery.trim().length === 0 &&
     statusFilter === "all" &&
-    authorFilter === DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR;
+    authorFilter === "all";
 
   useEffect(() => {
     setExperimentsOffset(0);
@@ -1664,7 +1692,7 @@ export function DashboardClient({
 
   return (
     <div className="space-y-4">
-      {isDefaultExperimentsEmpty && <FirstRunCard />}
+      {isDefaultOrgExperimentsEmpty && <FirstRunCard />}
       <UsageOverviewCard
         queues={queues}
         modelUsage={modelUsage}
@@ -1692,6 +1720,7 @@ export function DashboardClient({
         isPageTransitioning={isExperimentsLoading}
         onRefreshData={handleRefreshCurrentPage}
         currentExperimentsPage={currentExperimentsPage}
+        onViewOrgExperiments={() => setAuthorFilter("all")}
       />
     </div>
   );
