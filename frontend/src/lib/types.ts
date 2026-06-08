@@ -346,6 +346,9 @@ export interface DashboardExperiment {
   verdict_failed: number;
   verdict_pending: number;
   last_created_at: string | null;
+  author: DashboardExperimentAuthor | null;
+  last_runner: DashboardExperimentAuthor | null;
+  /** @deprecated Use `last_runner`; kept for older clients. */
   last_author: DashboardExperimentAuthor | null;
   last_pr_url: string | null;
   last_pr_title: string | null;
