@@ -207,7 +207,17 @@ function TaskDetailHeader({
   return (
     <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
       <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="font-mono truncate text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)]">
+              {task.name}
+            </h1>
+            <Badge variant="outline" className="font-mono text-[11px]">
+              v{task.current_version ?? "—"}
+            </Badge>
+          </div>
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
           {task.experiment_name ? (
             <>
               <span>experiment</span>
