@@ -66,6 +66,8 @@ class PreparedTrialRun:
     experiment_name: str | None = None
     attempt_number: int = 1
     task_tags: dict | None = None
+    # Owning org, used to stage that org's shared skills into the probe sandbox.
+    org_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -436,6 +438,7 @@ async def _prepare_trial_run(
             # folders to avoid overwriting each other.
             attempt_number=_extract_trial_index(trial_id, task_id) + 1,  # 1-indexed
             task_tags=task_tags,
+            org_id=trial.org_id,
         )
 
 
@@ -889,6 +892,7 @@ async def run_trial_job(
             task_id=prepared_trial.task_id,
             trial_id=trial_id,
             extra_instructions=probe_extra_instructions,
+            org_id=prepared_trial.org_id,
         )
 
     # Ensure Harbor scratch directories exist before execution starts.

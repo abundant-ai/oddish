@@ -19,6 +19,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from oddish.core.skills import list_skills_core
 from oddish.db import TrialModel, get_session, get_storage_client
 from oddish.worker.probe_overlay import (
     HARBOR_DIR_NAME,
@@ -31,6 +32,7 @@ from oddish.worker.probe_overlay import (
     render_probe_instruction,
     select_related_trials,
 )
+from oddish.worker.skills_overlay import SkillBundle, materialize_skills
 
 logger = logging.getLogger(__name__)
 
@@ -139,12 +141,52 @@ def stage_harbor_source(work_task_dir: Path) -> bool:
     return True
 
 
+async def stage_org_skills(task_dir: Path, *, org_id: str | None) -> int:
+    """Materialize the org's shared skills (+ global seeds) under
+    ``task_dir/.claude/skills/<name>/<relative_path>``.
+
+    Harbor mounts ``task_dir`` at ``/app`` and runs claude-code with that as
+    its working directory, so skills written here surface as project skills
+    inside the sandbox -- the same in-mount convention as ``related_trials``
+    and ``harbor_src``, and network-immune (written from Postgres at stage
+    time, not fetched by the agent).
+
+    Best-effort and per-skill resilient: a DB failure stages nothing, and one
+    malformed skill is skipped without dropping the others. Returns the number
+    of skills actually staged; never raises.
+    """
+    try:
+        async with get_session() as session:
+            skills = await list_skills_core(session, org_id=org_id)
+            bundles = [
+                SkillBundle(
+                    name=s.name,
+                    files=[(f.relative_path, f.content) for f in s.files],
+                )
+                for s in skills
+            ]
+    except Exception:
+        logger.exception("probe: loading org skills failed")
+        return 0
+
+    skills_root = task_dir / ".claude" / "skills"
+    staged = 0
+    for bundle in bundles:
+        try:
+            materialize_skills([bundle], skills_root)
+            staged += 1
+        except Exception:
+            logger.exception("probe: staging skill %r failed", bundle.name)
+    return staged
+
+
 async def apply_probe_overlay(
     task_dir: Path,
     *,
     task_id: str,
     trial_id: str,
     extra_instructions: str,
+    org_id: str | None = None,
     time_budget_sec: float | None = None,
 ) -> None:
     """Stage related logs and rewrite ``task_dir/instruction.md`` in place.
@@ -167,6 +209,14 @@ async def apply_probe_overlay(
         stage_harbor_source(task_dir)
     except Exception:
         logger.exception("probe: staging harbor source failed")
+
+    # Stage the org's shared skills (+ global seeds) so claude-code discovers
+    # them in the sandbox. Best-effort; never blocks the probe.
+    n_skills = await stage_org_skills(task_dir, org_id=org_id)
+    if n_skills:
+        logger.info(
+            "probe: staged %d skill(s) for trial %s", n_skills, trial_id
+        )
 
     instr_path = task_dir / "instruction.md"
     original = instr_path.read_text() if instr_path.exists() else ""
