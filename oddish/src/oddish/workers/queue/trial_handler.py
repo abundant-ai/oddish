@@ -7,6 +7,7 @@ from functools import partial
 import json
 import os
 import shutil
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
+from oddish.worker.probe_staging import apply_probe_overlay
 from oddish.workers.harbor_runner import HarborOutcome, run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
@@ -870,6 +872,30 @@ async def run_trial_job(
         console.print(f"[dim]Downloaded task from S3: {resolved_task_s3_key}[/dim]")
     else:
         console.print(f"[dim]Using local task path: {task_path_to_run}[/dim]")
+
+    # Probe overlay: for probe trials, prepend the operator directive, append
+    # the test/related-log sections, and pre-stage prior real-attempt logs.
+    # apply_probe_overlay mutates instruction.md in place, so the task dir
+    # must be writable. resolve_task_directory only returns a writable temp
+    # dir for the S3-download case; a mounted or canonical local path
+    # (temp_task_dir is None) must be copied first. Reusing temp_task_dir for
+    # the copy root means _execute_trial's finally block cleans it up.
+    probe_extra_instructions = (prepared_trial.trial_harbor_config or {}).get(
+        "extra_instructions"
+    )
+    if probe_extra_instructions:
+        if temp_task_dir is None:
+            probe_copy_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
+            probe_copy_dir = probe_copy_root / task_path_to_run.name
+            shutil.copytree(task_path_to_run, probe_copy_dir, symlinks=True)
+            task_path_to_run = probe_copy_dir
+            temp_task_dir = probe_copy_root
+        await apply_probe_overlay(
+            task_path_to_run,
+            task_id=prepared_trial.task_id,
+            trial_id=trial_id,
+            extra_instructions=probe_extra_instructions,
+        )
 
     # Ensure Harbor scratch directories exist before execution starts.
     os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
