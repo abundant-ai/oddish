@@ -93,3 +93,17 @@ def test_author_filter_without_org_scope_omits_org_predicate() -> None:
     sql = _compile_sql(clause).lower()
     assert "created_by_user_id" in sql
     assert "org_id" not in sql
+
+
+def test_author_filter_includes_tasks_user_email_fallback() -> None:
+    clause = _build_experiments_author_filter(
+        "user_123",
+        None,
+        org_id="org_1",
+        experiments_author_email="alice@example.com",
+    )
+    assert clause is not None
+    sql = _compile_sql(clause)
+    assert "created_by_user_id" in sql
+    assert "alice@example.com" in sql
+    assert " OR " in sql.upper()

@@ -262,6 +262,7 @@ def _build_experiments_author_filter(
     experiments_author_github_username: str | None,
     *,
     org_id: str | None,
+    experiments_author_email: str | None = None,
 ):
     """EXISTS clause restricting experiments to a single owner, or ``None``.
 
@@ -284,6 +285,9 @@ def _build_experiments_author_filter(
             TaskModel.tags["github_username"].astext
             == experiments_author_github_username
         )
+    normalized_email = (experiments_author_email or "").strip()
+    if normalized_email:
+        author_conditions.append(TaskModel.user == normalized_email)
     author_exists = (
         select(1)
         .select_from(
@@ -327,6 +331,7 @@ async def load_dashboard_experiments(
     experiments_status: str,
     experiments_author_user_id: str | None = None,
     experiments_author_github_username: str | None = None,
+    experiments_author_email: str | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Load experiment summaries for the dashboard.
@@ -383,6 +388,7 @@ async def load_dashboard_experiments(
         experiments_author_user_id,
         experiments_author_github_username,
         org_id=org_id,
+        experiments_author_email=experiments_author_email,
     )
     if author_filter is not None:
         page_query = page_query.where(author_filter)
@@ -871,6 +877,7 @@ async def get_dashboard_core(
     experiments_status: str = "all",
     experiments_author_user_id: str | None = None,
     experiments_author_github_username: str | None = None,
+    experiments_author_email: str | None = None,
     usage_minutes: int | None = None,
     include_tasks: bool = True,
     include_usage: bool = True,
@@ -1004,6 +1011,7 @@ async def get_dashboard_core(
                 experiments_status=experiments_status,
                 experiments_author_user_id=experiments_author_user_id,
                 experiments_author_github_username=experiments_author_github_username,
+                experiments_author_email=experiments_author_email,
                 record_timing=record_timing,
             )
         if record_timing is not None:
