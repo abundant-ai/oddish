@@ -32,6 +32,7 @@ import {
   formatRelativeTime,
   formatShortDateTime,
   prBadge,
+  taskPrUrl,
 } from "@/lib/utils";
 import {
   ChevronLeft,
@@ -271,13 +272,15 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
               <Badge variant="outline" className="w-fit font-mono text-[11px]">
                 v{task.current_version ?? "—"}
               </Badge>
-              {task.link ? (() => {
+              {(() => {
                 const meta = task.github_meta;
-                const { label, number } = prBadge(task.link, meta?.pr_number);
+                const prUrl = taskPrUrl(task.link, meta);
+                if (!prUrl) return null;
+                const { label, number } = prBadge(prUrl, meta?.pr_number);
                 const title = meta?.pr_title;
                 return (
                   <a
-                    href={task.link}
+                    href={prUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     title={
@@ -304,7 +307,7 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
                     />
                   </a>
                 );
-              })() : null}
+              })()}
             </div>
           </div>
           <div className="shrink-0 text-right">
