@@ -158,6 +158,7 @@ def create_app() -> FastAPI:
         imports,
         orgs,
         probe_presets,
+        skills,
         public,
         tasks,
         trials,
@@ -172,6 +173,7 @@ def create_app() -> FastAPI:
     api.include_router(trials.router)
     api.include_router(imports.router)
     api.include_router(probe_presets.router)
+    api.include_router(skills.router)
     api.include_router(public.router)
     api.include_router(admin.router)
 
