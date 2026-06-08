@@ -938,8 +938,69 @@ class ProbePresetModel(TimestampedMixin, Base):
     is_seed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+class SkillModel(TimestampedMixin, Base):
+    """A Claude Code skill (a SKILL.md directory) shared within an org.
+
+    Seed skills (``is_seed=True``, ``org_id`` NULL) are global read-only
+    built-ins. Custom skills are org-scoped and record the uploading user
+    in ``created_by_user_id``. The skill's files live in ``SkillFileModel``
+    rows keyed by ``relative_path`` so the directory tree is reconstructable
+    without object storage.
+    """
+
+    __tablename__ = "skills"
+    __table_args__ = (
+        # Reuse a skill name after soft-delete: partial unique index matching
+        # the ``deleted_at IS NULL`` predicate the soft-delete listener appends.
+        # COALESCE handles NULL org_id (OSS/global) the same way presets do.
+        Index(
+            "idx_skills_unique_org_name",
+            text("COALESCE(org_id, '')"),
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    is_seed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    files: Mapped[list["SkillFileModel"]] = relationship(
+        "SkillFileModel",
+        back_populates="skill",
+        cascade="all, delete-orphan",
+        order_by="SkillFileModel.relative_path",
+        lazy="selectin",
+    )
+
+
+class SkillFileModel(Base):
+    """One file inside a skill, e.g. ``SKILL.md`` or ``scripts/run.sh``.
+
+    Not soft-deletable on its own — files are owned by their skill and
+    cascade with it. ``relative_path`` encodes the directory shape.
+    """
+
+    __tablename__ = "skill_files"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    skill_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    relative_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+    skill: Mapped["SkillModel"] = relationship("SkillModel", back_populates="files")
+
+
 from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
-    ExperimentModel, TaskModel, TrialModel, ProbePresetModel
+    ExperimentModel, TaskModel, TrialModel, ProbePresetModel, SkillModel
 )
