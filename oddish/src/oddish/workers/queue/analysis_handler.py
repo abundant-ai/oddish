@@ -116,6 +116,10 @@ async def run_analysis_job(
         task_path = task.task_path
         trial_result_path = trial.harbor_result_path
         trial_agent = trial.agent
+        # Probe trials carry the operator directive in harbor_config; their
+        # analysis is the shared probe_summary, not the generic classifier.
+        trial_harbor_config = trial.harbor_config or {}
+        trial_reward = trial.reward
 
         # Log storage locations for debugging
         console.print(f"[dim]Task S3 key: {task_s3_key or '(not set)'}[/dim]")
@@ -174,40 +178,67 @@ async def run_analysis_job(
         else:
             console.print(f"[dim]Using local trial path: {trial_dir_to_use}[/dim]")
 
-        # Run classification
-        classifier = TrialClassifier(
-            model=settings.analysis_model,
-            verbose=True,
-            timeout=ANALYSIS_TIMEOUT,  # 5 minutes
-        )
+        probe_extra_instructions = trial_harbor_config.get("extra_instructions")
+        if probe_extra_instructions:
+            # Probe trial: produce the same probe_summary the local runner does,
+            # via the shared analyzer. Keeps dev and cloud probe analysis in sync.
+            from oddish.worker.probe_analysis import (
+                extract_probe_artifacts,
+                run_probe_analyzer,
+            )
 
-        console.print(f"[cyan]Running classification for {trial_id}...[/cyan]")
-        classification = await classifier.classify_trial(
-            trial_dir=trial_dir_to_use,
-            task_dir=task_dir_to_use,
-            trial_agent=trial_agent,
-        )
-
-        # Convert to dict for storage
-        classification_result = {
-            "trial_name": classification.trial_name,
-            "classification": classification.classification.value,
-            "subtype": classification.subtype,
-            "evidence": classification.evidence,
-            "root_cause": classification.root_cause,
-            "recommendation": classification.recommendation,
-            "reward": classification.reward,
-        }
-
-        # Check if classification is a fallback (indicates Claude SDK issue)
-        if "classification failed" in (classification.evidence or "").lower():
+            console.print(f"[cyan]Running probe analysis for {trial_id}...[/cyan]")
+            artifacts = extract_probe_artifacts(trial_dir_to_use)
+            classification_result = await run_probe_analyzer(
+                extra_instructions=probe_extra_instructions,
+                agent_messages=artifacts["agent_messages"],
+                verifier_stdout=artifacts["verifier_stdout"] or "",
+                reward=trial_reward,
+                result_focus=trial_harbor_config.get("result_focus") or "",
+                evaluation_metric=trial_harbor_config.get("evaluation_metric")
+                or "none",
+                ratio_unit=trial_harbor_config.get("ratio_unit"),
+                ratio_verb=trial_harbor_config.get("ratio_verb"),
+                model=settings.analysis_model,
+            )
             console.print(
-                f"[yellow]Classification used fallback for {trial_id}:[/yellow] {classification.evidence}"
+                f"[green]Probe analysis complete:[/green] {classification_result.get('headline', '')}"
             )
         else:
-            console.print(
-                f"[green]Classification complete:[/green] {classification.classification.value} - {classification.subtype}"
+            # Run classification
+            classifier = TrialClassifier(
+                model=settings.analysis_model,
+                verbose=True,
+                timeout=ANALYSIS_TIMEOUT,  # 5 minutes
             )
+
+            console.print(f"[cyan]Running classification for {trial_id}...[/cyan]")
+            classification = await classifier.classify_trial(
+                trial_dir=trial_dir_to_use,
+                task_dir=task_dir_to_use,
+                trial_agent=trial_agent,
+            )
+
+            # Convert to dict for storage
+            classification_result = {
+                "trial_name": classification.trial_name,
+                "classification": classification.classification.value,
+                "subtype": classification.subtype,
+                "evidence": classification.evidence,
+                "root_cause": classification.root_cause,
+                "recommendation": classification.recommendation,
+                "reward": classification.reward,
+            }
+
+            # Check if classification is a fallback (indicates Claude SDK issue)
+            if "classification failed" in (classification.evidence or "").lower():
+                console.print(
+                    f"[yellow]Classification used fallback for {trial_id}:[/yellow] {classification.evidence}"
+                )
+            else:
+                console.print(
+                    f"[green]Classification complete:[/green] {classification.classification.value} - {classification.subtype}"
+                )
 
     except asyncio.CancelledError:
         analysis_error = (
