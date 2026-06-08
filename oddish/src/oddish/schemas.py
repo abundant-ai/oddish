@@ -1092,3 +1092,49 @@ class ProbePresetResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Skills — custom agent skill bundles.
+# ---------------------------------------------------------------------------
+class SkillFile(BaseModel):
+    """One file inside a skill bundle."""
+
+    relative_path: str
+    content: str
+
+
+class SkillCreate(BaseModel):
+    """Request body to create a custom skill from its files.
+
+    ``name``/``description`` are authoritative for the row, but must agree
+    with the SKILL.md frontmatter (enforced by ``parse_skill``)."""
+
+    name: str
+    description: str
+    files: list[SkillFile]
+
+
+class SkillUpdate(BaseModel):
+    """Request body to update a custom skill. All fields optional; only
+    provided fields are applied. Providing ``files`` replaces the whole set."""
+
+    name: str | None = None
+    description: str | None = None
+    files: list[SkillFile] | None = None
+
+
+class SkillResponse(BaseModel):
+    """A skill as returned to the client."""
+
+    id: str
+    org_id: str | None = None
+    created_by_user_id: str | None = None
+    name: str
+    description: str
+    is_seed: bool
+    files: list[SkillFile]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
