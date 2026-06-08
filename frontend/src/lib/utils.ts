@@ -60,6 +60,35 @@ export function decodeExperimentRouteParam(value: string) {
   }
 }
 
+// Extract a PR number from a GitHub PR URL (.../pull/123 or .../pulls/123).
+export function prNumberFromUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const match = url.match(/\/pulls?\/(\d+)(?:[/?#]|$)/);
+  return match ? match[1] : null;
+}
+
+// Extract the repo name from a GitHub URL
+// (https://github.com/<owner>/<repo>/...  ->  "<repo>").
+export function repoNameFromUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const match = url.match(/github\.com\/[^/]+\/([^/]+)/);
+  return match ? match[1] : null;
+}
+
+// Shared label/number for a PR badge given the canonical URL and optional
+// structured github_meta number. Renders as "<repo> #<num>" (e.g.
+// "experiments #42"), falling back to "PR #<num>" or "PR" when the repo can't
+// be parsed.
+export function prBadge(
+  url: string | null | undefined,
+  metaPrNumber?: string | null,
+): { number: string | null; label: string } {
+  const number = metaPrNumber ?? prNumberFromUrl(url);
+  const repo = repoNameFromUrl(url);
+  const label = repo ?? "PR";
+  return { number, label };
+}
+
 export function formatMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const seconds = Math.floor(ms / 1000);

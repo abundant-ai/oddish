@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
+import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -27,11 +27,19 @@ import {
 } from "@/lib/status-config";
 import type { TaskBrowseItem, TaskBrowseResponse } from "@/lib/types";
 import {
+  cn,
   encodeExperimentRouteParam,
   formatRelativeTime,
   formatShortDateTime,
+  prBadge,
 } from "@/lib/utils";
-import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  GitPullRequest,
+  Loader2,
+} from "lucide-react";
 
 const PAGE_SIZE = 25;
 
@@ -263,6 +271,40 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
               <Badge variant="outline" className="w-fit font-mono text-[11px]">
                 v{task.current_version ?? "—"}
               </Badge>
+              {task.link ? (() => {
+                const meta = task.github_meta;
+                const { label, number } = prBadge(task.link, meta?.pr_number);
+                const title = meta?.pr_title;
+                return (
+                  <a
+                    href={task.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={
+                      title
+                        ? `${title} — view on GitHub`
+                        : "View pull request on GitHub"
+                    }
+                    onClick={(e) => e.stopPropagation()}
+                    className={cn(
+                      badgeVariants({ variant: "outline" }),
+                      "w-fit gap-1.5 font-mono text-[11px] transition-colors hover:bg-accent",
+                    )}
+                  >
+                    <GitPullRequest className="h-3 w-3 shrink-0" aria-hidden />
+                    <span className="min-w-0 max-w-[140px] truncate">
+                      {label}
+                      {number && (
+                        <span className="text-muted-foreground"> #{number}</span>
+                      )}
+                    </span>
+                    <ExternalLink
+                      className="h-3 w-3 shrink-0 opacity-50"
+                      aria-hidden
+                    />
+                  </a>
+                );
+              })() : null}
             </div>
           </div>
           <div className="shrink-0 flex flex-col items-end gap-2">
