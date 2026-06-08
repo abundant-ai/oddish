@@ -29,6 +29,7 @@ from harbor.models.job.result import JobResult
 from oddish.config import OPENAI_PROVIDER_OPENAI, settings, to_bedrock_model_id
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
+from oddish.worker.probe_staging import stage_org_skills
 
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -686,6 +687,7 @@ async def run_harbor_trial_async(
     hook_callback: HookCallback | None = None,
     trial_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
+    org_id: str | None = None,
 ) -> HarborOutcome:
     """
     Execute a Harbor trial using Harbor's Python API with lifecycle hooks.
@@ -775,6 +777,16 @@ async def run_harbor_trial_async(
             model=model,
             raw_harbor_config=raw,
         )
+
+        # Stage the org's shared skills (+ global seeds) into a root under the
+        # job dir and hand it to Harbor via ``AgentConfig.skills``: Harbor uploads
+        # each ``<name>/`` skill into the sandbox and the claude-code agent
+        # registers them so the agent discovers them. Best-effort; never blocks.
+        if org_id is not None:
+            skills_root = unique_parent / "agent_skills"
+            n_skills = await stage_org_skills(skills_root, org_id=org_id)
+            if n_skills:
+                agent_config.skills = [*agent_config.skills, skills_root]
 
         job_config_kwargs: dict[str, Any] = {
             "tasks": [TaskConfig(path=effective_task_path)],
@@ -917,6 +929,7 @@ def run_harbor_trial(
     hook_callback: HookCallback | None = None,
     trial_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
+    org_id: str | None = None,
 ) -> HarborOutcome:
     """Synchronous wrapper around run_harbor_trial_async."""
     try:
@@ -932,6 +945,7 @@ def run_harbor_trial(
                 hook_callback=hook_callback,
                 trial_id=trial_id,
                 harbor_config=harbor_config,
+                org_id=org_id,
             )
         )
     raise RuntimeError("run_harbor_trial cannot be called from an active event loop.")

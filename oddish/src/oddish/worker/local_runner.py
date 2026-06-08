@@ -39,7 +39,7 @@ from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
 )
-from oddish.worker.probe_staging import apply_probe_overlay
+from oddish.worker.probe_staging import apply_probe_overlay, stage_org_skills
 from oddish.worker.local_offline_policy import enable_local_internet, task_is_offline
 
 logger = logging.getLogger(__name__)
@@ -353,6 +353,10 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # goal, the original task is context only.
     # ---------------------------------------------------------------
     work_root: Path | None = None
+    # Host dirs (one skills-root) handed to Harbor via ``AgentConfig.skills``;
+    # Harbor uploads each ``<name>/`` skill into the sandbox and the claude-code
+    # agent registers them so the agent discovers them.
+    agent_skill_paths: list[Path] = []
     if extra_instructions:
         work_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
         work_task_dir = work_root / task_path.name
@@ -365,10 +369,18 @@ async def _run_harbor_trial(trial_id: str) -> None:
             task_id=task_db_id,
             trial_id=trial_id,
             extra_instructions=extra_instructions,
-            org_id=trial_org_id,
             time_budget_sec=_PROBE_AGENT_TIMEOUT_SEC,
         )
         actual_task_path = work_task_dir
+        # Stage the org's shared skills into a root under work_root and hand it
+        # to Harbor below. Best-effort; never blocks the probe.
+        skills_root = work_root / "agent_skills"
+        n_skills = await stage_org_skills(skills_root, org_id=trial_org_id)
+        if n_skills:
+            agent_skill_paths = [skills_root]
+            logger.info(
+                "probe: staged %d skill(s) for trial %s", n_skills, trial_id
+            )
     else:
         actual_task_path = task_path
 
@@ -403,6 +415,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         name=agent_name,
         model_name=model_name,
         override_timeout_sec=_PROBE_AGENT_TIMEOUT_SEC,
+        skills=agent_skill_paths,
     )
     bedrock_env = _bedrock_agent_env(model_name)
     if bedrock_env:
