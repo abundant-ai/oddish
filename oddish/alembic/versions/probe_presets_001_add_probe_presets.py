@@ -1,7 +1,7 @@
 """add probe_presets table + seed built-in presets
 
 Revision ID: probe_presets_001
-Revises: 74a0eab3e564
+Revises: c1d2e3f4a5b6
 Create Date: 2026-06-03 00:00:00.000000
 """
 
@@ -13,7 +13,7 @@ from alembic import op
 
 
 revision: str = "probe_presets_001"
-down_revision: Union[str, Sequence[str], None] = "74a0eab3e564"
+down_revision: Union[str, Sequence[str], None] = "c1d2e3f4a5b6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
