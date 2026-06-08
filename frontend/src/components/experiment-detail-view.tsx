@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { badgeVariants } from "@/components/ui/badge";
-import { cn, prBadge, prNumberFromUrl } from "@/lib/utils";
+import { cn, prBadge, prNumberFromUrl, taskPrUrl } from "@/lib/utils";
 import { formatCostUsd } from "@/lib/format";
 import {
   EMPTY_TRIAL_AGGREGATE,
@@ -287,9 +287,9 @@ function pickExperimentPr(tasks: Task[]): {
   // canonical `task.link` column (set by `--link`, or auto-derived from
   // github_meta on the backend). `link` is what the task page renders, so we
   // treat it as a first-class source rather than relying on github_meta alone.
-  const task = tasks.find((t) => t.github_meta?.pr_url || t.link);
+  const task = tasks.find((t) => taskPrUrl(t.link, t.github_meta));
   const meta = task?.github_meta;
-  const prUrl = meta?.pr_url ?? task?.link ?? null;
+  const prUrl = taskPrUrl(task?.link, meta);
   return {
     prUrl,
     prTitle: meta?.pr_title ?? null,

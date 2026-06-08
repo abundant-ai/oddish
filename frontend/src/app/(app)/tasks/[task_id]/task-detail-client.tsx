@@ -48,7 +48,7 @@ import type {
   TaskVersionSummary,
   Trial,
 } from "@/lib/types";
-import { cn, formatRelativeTime, prBadge } from "@/lib/utils";
+import { cn, formatRelativeTime, prBadge, taskPrUrl } from "@/lib/utils";
 import { ArrowLeft, ChevronDown, ExternalLink, FileText, GitPullRequest, Loader2 } from "lucide-react";
 
 const TaskFilesPanel = dynamic(
@@ -247,13 +247,15 @@ function TaskDetailHeader({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        {task.link ? (() => {
+        {(() => {
           const meta = task.github_meta;
-          const { label, number } = prBadge(task.link, meta?.pr_number);
+          const prUrl = taskPrUrl(task.link, meta);
+          if (!prUrl) return null;
+          const { label, number } = prBadge(prUrl, meta?.pr_number);
           const title = meta?.pr_title;
           return (
             <a
-              href={task.link}
+              href={prUrl}
               target="_blank"
               rel="noopener noreferrer"
               title={
@@ -274,7 +276,7 @@ function TaskDetailHeader({
               <ExternalLink className="h-3 w-3 shrink-0 opacity-50" aria-hidden />
             </a>
           );
-        })() : null}
+        })()}
         <Link href="/tasks">
           <Button
             type="button"
