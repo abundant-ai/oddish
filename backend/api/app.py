@@ -60,14 +60,25 @@ def _get_cors_origins() -> list[str]:
     Defaults to localhost origins for development.
     """
     env_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
-    if env_origins:
-        return [origin.strip() for origin in env_origins.split(",") if origin.strip()]
+    configured = [origin.strip() for origin in env_origins.split(",") if origin.strip()]
 
-    # Default: localhost for development
-    return [
+    # Always-trusted prod origins. Baked in so a missing/incorrect
+    # CORS_ALLOWED_ORIGINS on a given deploy can't break the live app.
+    # (www and apex are distinct origins to the browser — list both.)
+    always = [
+        "https://www.oddish.app",
+        "https://oddish.app",
+    ]
+
+    if configured:
+        return list(dict.fromkeys(configured + always))
+
+    # Default: localhost for development (plus always-trusted prod origins)
+    return list(dict.fromkeys([
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-    ]
+        *always,
+    ]))
 
 
 @asynccontextmanager
