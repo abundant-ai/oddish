@@ -75,6 +75,18 @@ export function repoNameFromUrl(url: string | null | undefined): string | null {
   return match ? match[1] : null;
 }
 
+// Resolve the canonical PR URL for a task. The URL can arrive two ways:
+// structured `github_meta.pr_url`, or the `link` column (set by `--link`, or
+// auto-derived from github_meta). github_meta wins, falling back to link — the
+// same precedence the dashboard and experiment views use, so every PR badge
+// surfaces a link whenever either source has one.
+export function taskPrUrl(
+  link: string | null | undefined,
+  githubMeta?: Record<string, string> | null,
+): string | null {
+  return githubMeta?.pr_url ?? link ?? null;
+}
+
 // Shared label/number for a PR badge given the canonical URL and optional
 // structured github_meta number. Renders as "<repo> #<num>" (e.g.
 // "experiments #42"), falling back to "PR #<num>" or "PR" when the repo can't
