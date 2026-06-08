@@ -1175,13 +1175,15 @@ class DocumentUpdate(BaseModel):
 
 
 class DocumentCard(BaseModel):
-    """Cheap tier-1 search result — no digest/raw body."""
+    """Cheap tier-1 list/search result — no digest/raw body."""
 
     id: str
     title: str
     summary: str
     tags: list[str]
+    source_type: str
     source_url: str | None = None
+    created_by_user_id: str | None = None
     updated_at: datetime
 
     model_config = {"from_attributes": True}

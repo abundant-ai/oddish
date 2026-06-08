@@ -18,6 +18,7 @@ import {
   BookOpen,
   ChevronDown,
   FileText,
+  Files,
   LogOut,
   Shield,
   User,
@@ -84,6 +85,21 @@ export function Nav() {
               >
                 <Wrench className="h-4 w-4" />
                 <span>Skills</span>
+              </Link>
+            </Button>
+            <Button
+              variant={pathname === "/documents" ? "secondary" : "ghost"}
+              size="sm"
+              asChild
+              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+            >
+              <Link
+                href="/documents"
+                className="flex items-center gap-2"
+                data-active={pathname === "/documents"}
+              >
+                <Files className="h-4 w-4" />
+                <span>Documents</span>
               </Link>
             </Button>
           </div>
