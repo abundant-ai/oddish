@@ -124,6 +124,13 @@ if MODAL_APP_NAME.startswith("oddish-pr-"):
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
 MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 48)
 NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 48)
+# Per-model queue-key concurrency overrides. Baked into the deploy so the
+# repo is the source of truth; operators can still override the whole JSON
+# via the ODDISH_MODEL_CONCURRENCY_OVERRIDES env var / secret.
+MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
+    "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
+    '{"google/gemini-3.5-flash": 128}',
+)
 
 ENV_VARS = {
     "UV_LINK_MODE": "copy",
@@ -145,6 +152,7 @@ ENV_VARS = {
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",
     "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
     "ODDISH_DEFAULT_MODEL_CONCURRENCY": str(MODEL_CONCURRENCY_DEFAULT),
+    "ODDISH_MODEL_CONCURRENCY_OVERRIDES": MODEL_CONCURRENCY_OVERRIDES,
     # nop/oracle do not call model providers; this cap is for Modal/DB/S3
     # pressure rather than provider rate limits.
     "ODDISH_NOP_ORACLE_CONCURRENCY": str(NOP_ORACLE_CONCURRENCY),
