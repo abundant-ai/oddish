@@ -19,6 +19,10 @@ Python `3.12+` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` 
 - If you change `backend/` auth, deployment, or worker orchestration, update this file.
 - If you change `frontend/` routing, API proxy structure, or auth behavior, update this file.
 
+## Agent Workflow Preferences
+
+- After completing an approved implementation plan, **commit, push, and open a PR automatically** unless the user says otherwise.
+
 ## Repository Layout
 
 ```text
