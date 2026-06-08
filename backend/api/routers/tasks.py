@@ -222,6 +222,9 @@ async def _resolve_created_by_user_id(
         if user:
             return user.id
 
+    if auth.user_id:
+        return auth.user_id
+
     return None
 
 
