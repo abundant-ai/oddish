@@ -305,6 +305,7 @@ ODDISH_API_KEY=ok_...
 ODDISH_DEFAULT_MODEL_CONCURRENCY=8
 ODDISH_NOP_ORACLE_CONCURRENCY=32
 ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 8}'
+# google/gemini-3.5-flash has a built-in default limit of 128.
 
 # S3-compatible storage
 ODDISH_S3_BUCKET=data
