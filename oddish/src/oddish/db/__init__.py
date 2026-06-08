@@ -13,6 +13,8 @@ from oddish.db.models import (
     # ORM Models
     ExperimentModel,
     ProbePresetModel,
+    SkillModel,
+    SkillFileModel,
     TaskModel,
     TaskVersionModel,
     TrialModel,
@@ -67,6 +69,8 @@ __all__ = [
     # ORM Models
     "ExperimentModel",
     "ProbePresetModel",
+    "SkillModel",
+    "SkillFileModel",
     "QueueSlotModel",
     "TaskModel",
     "TaskVersionModel",
