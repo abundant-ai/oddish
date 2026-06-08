@@ -2314,7 +2314,9 @@ export function ExperimentTrialsTable({
                                     {task.name}
                                   </Button>
                                 </TooltipTrigger>
-                                <TooltipContent>View task files</TooltipContent>
+                                <TooltipContent className="max-w-[min(80vw,48rem)] whitespace-normal break-all font-mono">
+                                  {task.name}
+                                </TooltipContent>
                               </Tooltip>
                               <Tooltip>
                                 <TooltipTrigger asChild>
