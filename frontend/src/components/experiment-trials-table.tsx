@@ -466,7 +466,7 @@ export function ExperimentTrialsTable({
   const deferredTaskSearch = useDeferredValue(taskSearch);
   const [taskSort, setTaskSort] = useState<
     "default" | "name-asc" | "name-desc"
-  >("default");
+  >("name-asc");
   const [hiddenAgents, setHiddenAgents] = useState<Set<string>>(new Set());
   const [hoverAgent, setHoverAgent] = useState<string | null>(null);
   const [dimmedStatuses, setDimmedStatuses] = useState<Set<MatrixStatus>>(
