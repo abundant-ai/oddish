@@ -19,6 +19,7 @@ from modal_app import (
     DISPATCHER_NONPREEMPTIBLE,
     MAX_WORKERS_PER_POLL,
     POLL_INTERVAL_SECONDS,
+    WORKER_BATCH_BUDGET_SECONDS,
     WORKER_BUFFER_CONTAINERS,
     WORKER_MAX_CONTAINERS,
     WORKER_MIN_CONTAINERS,
@@ -46,7 +47,7 @@ from oddish.workers.queue.worker_job_dispatcher import (
 )
 from oddish.workers.queue.worker_job_single_job import (
     PostSuccessHooks,
-    run_single_worker_job,
+    drain_worker_jobs,
 )
 
 from .github import notify_github_analysis, notify_github_trial, notify_github_verdict
@@ -153,16 +154,22 @@ async def process_single_job(queue_key: str):
             f"[dim]Acquired queue slot {lock_slot + 1}/{queue_limit} (queue_key={queue_key})[/dim]"
         )
 
-        job_found = await run_single_worker_job(
-            queue_key=queue_key,
+        jobs_processed = await drain_worker_jobs(
+            queue_key,
             worker_id=worker_id,
             queue_slot=lock_slot,
+            budget_seconds=WORKER_BATCH_BUDGET_SECONDS,
             modal_function_call_id=fc_id,
             post_success_hooks=_POST_SUCCESS_HOOKS,
         )
-        if not job_found:
+        if jobs_processed == 0:
             console.print(
                 f"[dim]No job available after slot acquisition (queue_key={queue_key})[/dim]"
+            )
+        elif jobs_processed > 1:
+            console.print(
+                f"metric=worker_batch_drained queue_key={queue_key} "
+                f"jobs={jobs_processed}"
             )
 
     except asyncio.CancelledError:

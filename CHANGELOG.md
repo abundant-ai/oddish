@@ -6,6 +6,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-08]
+
+### Added
+- Fire a `repository_dispatch` webhook to consumer repos when all tasks in an experiment reach a terminal state; an `experiment_dispatch_log` table provides idempotent single-fire semantics; dispatch target and event type are read from `github_meta.dispatch` on task tags; gated by `GITHUB_DISPATCH_ALLOWED_REPOS` allowlist and authenticated via `GITHUB_DISPATCH_TOKEN` (falls back to `GITHUB_TOKEN`) (#206)
+
+### Changed
+- Bake a per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` default into the Modal deploy that raises the `google/gemini-3.5-flash` queue-key concurrency lease to 128 (up from the 48 default); operators can still override the whole JSON via the env var / `oddish-prod` secret (#213)
+- Raise `ODDISH_DEFAULT_MODEL_CONCURRENCY` fallback from 32 to 48, increasing per-model queue-key concurrency in the Modal runtime without changing the per-poll spawn cap (#208)
+- Experiment trials table tooltip for truncated task names now shows the full task name instead of the generic "View task files" label, with responsive max-width and word-break styling for long names (#207)
+
+---
+
+## [2026-06-07]
+
+### Changed
+- Automated daily changelog updated with entries for 2026-06-06 changes (#202)
+
+---
+
+## [2026-06-06]
+
+### Added
+- Trial detail panel now shows a "Sandbox" button linking to the Daytona dashboard when a trial has an associated Daytona worker job; `provider` and `external_id` fields exposed in the worker job API response to enable this (#190)
+
+### Fixed
+- Codex workers running against Azure OpenAI endpoints no longer fail with 302 errors from the websocket Responses route; a new `AzureCompatibleCodex` runner disables the `unified_exec` websocket transport and injects an HTTP-only OpenAI-compatible provider config; trajectory is recovered from stdout JSONL as a fallback when the Codex session file is sparse (#193)
+- `enqueue_analysis_worker_job` now skips enqueueing analysis for trials with no stored result (neither S3 key nor local path), immediately marking analysis `FAILED` instead of burning all 6 retries on a doomed job; a staleness-gated cleanup backstop finalizes `ANALYZING` tasks with no live trials and cancels their dangling queued `ANALYSIS` worker jobs (#196)
+- Stuck-`ANALYZING` cleanup pass rescoped to correctly target tasks whose live trials have `analysis_status = NULL` (analysis was never enqueued) rather than tasks with no live trials at all; NULL analysis statuses are now marked terminal so `maybe_start_verdict_stage` can advance the task to `VERDICT_PENDING` instead of leaving it indefinitely blocked; tasks with no live trials are still finalized `FAILED` (#200)
+- Worker containers now drain short-job queues by claiming and running multiple jobs back-to-back on their held slot until the queue empties or a wall-clock budget (`ODDISH_MODAL_WORKER_BATCH_BUDGET_SECONDS`, default 300s) expires; lifts utilization for analysis (~54s), verdict (~9s), and nop-oracle (~46s) queues toward 100% without changing global spawn rates or concurrency limits; long agent trials exceed the budget on the first job and continue to run one-per-container (#201)
+
+---
+
+## [2026-06-05]
+
+### Added
+- `oddish cancel` gains `--analysis` and `--verdict` flags to cancel active analysis or verdict jobs independently without stopping unrelated trials; new API endpoints `POST /tasks/{task_id}/analysis/cancel`, `POST /tasks/{task_id}/verdict/cancel`, and `POST /trials/{trial_id}/analysis/cancel`; dashboard adds per-trial, bulk-selection, and task-detail cancellation controls for both stages (#189)
+- `oddish run --link <url>` attaches a source URL (PR, issue, or CI run) to a task at submission time; auto-derived from `--github-meta` `pr_url` when `--link` is omitted; displayed in the task detail page header; re-runs update the link when a new value is provided and leave it unchanged when none is given (#178)
+
+### Fixed
+- Daytona sandbox creation no longer fails with "Only ephemeral sandboxes are permitted in this region"; a new `daytona_ephemeral` setting (default `True`) causes harbor trials to request ephemeral sandboxes, matching the Daytona region's configuration; harbor pin bumped to include matching ephemeral sandbox support (#188)
+- GitHub PR comment now auto-updates as trials, analyses, and verdicts complete; the previous implementation nested two DB sessions inside `notify_trial_update`, `notify_analysis_update`, and `notify_verdict_update`, deadlocking the worker's size-1 connection pool before the GitHub write was reached (#187)
+- `alembic upgrade head` no longer fails with "Multiple head revisions are present"; a merge migration (`74a0eab3e564`) joins the divergent `provider/external_id` and `task_link` heads into a single unified head (#186)
+
+---
+
+## [2026-06-04]
+
+### Fixed
+- `oddish run` no longer crashes when a task's `task.toml` omits the `gpus` field; `_task_config_requests_gpu` now treats an absent `gpus` as 0 GPUs instead of raising `TypeError: '>' not supported between 'NoneType' and 'int'` (#181)
+- Claude Code workers using an OpenRouter model now receive the correct Anthropic-skin environment (`ANTHROPIC_BASE_URL` pointing to the OpenRouter endpoint, `ANTHROPIC_AUTH_TOKEN` set to `${OPENROUTER_API_KEY}`); conflicting Bedrock and direct-Anthropic ambient credentials are blanked so the OpenRouter route takes effect (#175)
+
+---
+
+## [2026-06-03]
+
+### Added
+- OpenAI-family workers now route through Azure OpenAI by default; `ODDISH_OPENAI_PROVIDER` (default `azure`) selects the transport, with `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, and `ODDISH_AZURE_OPENAI_DEPLOYMENTS` for per-model deployment mapping; set `ODDISH_OPENAI_PROVIDER=openai` to use the public OpenAI API instead
+- Daytona sandboxes now auto-stop (30 min) and auto-delete (60 min) as a backstop for sandboxes that escape explicit teardown; `worker_jobs` gains `provider`/`external_id` columns and cancel/orphan-reap paths now terminate the underlying sandbox by ID, preventing idle sandbox accumulation
+
+### Changed
+- `to_bedrock_model_id()` now passes through any model ID with an explicit non-Anthropic provider prefix (e.g. `openrouter/anthropic/claude-opus-4.8`) unchanged so it runs through that provider rather than being rewritten to a Bedrock inference-profile ID; `claude-code` agent in harbor_runner updated to reflect the same pass-through semantics
+- Oddish GitHub PR comment now includes a "Performance: X/Y trials passed (Z%)" summary line and Status + Reward columns in the experiment trajectory table, surfacing actual agent scores alongside the existing classification status
+
+### Security
+- API key creation now requires the requesting user to be an admin of the Abundant organization; the API keys settings section is hidden in the UI for non-admins
+
+---
+
 ## [2026-06-02]
 
 ### Changed

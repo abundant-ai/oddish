@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.helpers import cancel_job_by_worker
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -130,7 +132,9 @@ async def cancel_tasks_runs(
                 RETURNING id,
                           kind::text AS kind,
                           subject_id,
-                          modal_function_call_id
+                          modal_function_call_id,
+                          provider,
+                          external_id
                 """
                 ),
                 {
@@ -145,6 +149,7 @@ async def cancel_tasks_runs(
     )
 
     modal_fc_ids: list[str] = []
+    worker_targets: set[tuple[str, str]] = set()
     canceled_trial_kinds: set[str] = set()
     canceled_verdict_task_ids: set[str] = set()
     canceled_analysis_trial_ids: set[str] = set()
@@ -153,6 +158,10 @@ async def cancel_tasks_runs(
         fc = row.get("modal_function_call_id")
         if fc:
             modal_fc_ids.append(str(fc))
+        provider = row.get("provider")
+        external_id = row.get("external_id")
+        if provider and external_id:
+            worker_targets.add((str(provider), str(external_id)))
         kind = row["kind"]
         subject_id = row["subject_id"]
         if kind == "TRIAL" and subject_id:
@@ -214,6 +223,16 @@ async def cancel_tasks_runs(
 
     await session.flush()
 
+    sandboxes_terminated = 0
+    if worker_targets:
+        results = await asyncio.gather(
+            *(
+                cancel_job_by_worker(provider, external_id)
+                for provider, external_id in worker_targets
+            )
+        )
+        sandboxes_terminated = sum(1 for ok in results if ok)
+
     return {
         "task_ids": found_task_ids,
         "not_found_task_ids": not_found_task_ids,
@@ -221,6 +240,7 @@ async def cancel_tasks_runs(
         "tasks_cancelled": tasks_cancelled,
         "trials_cancelled": trials_cancelled,
         "modal_function_call_ids": list(dict.fromkeys(modal_fc_ids)),
+        "sandboxes_terminated": sandboxes_terminated,
     }
 
 
@@ -341,13 +361,35 @@ async def enqueue_trial_worker_job(
     )
 
 
+ANALYSIS_NO_RESULT_MESSAGE = (
+    "Analysis skipped: trial has no stored result to analyze "
+    "(neither an S3 key nor a local result path)."
+)
+
+
 async def enqueue_analysis_worker_job(
     session: AsyncSession,
     *,
     trial_id: str,
     org_id: str | None,
     parent_job_id: str | None = None,
-) -> WorkerJobModel:
+) -> WorkerJobModel | None:
+    """Enqueue a trial-analysis job, unless the trial has nothing to analyze.
+
+    Analysis resolves the trial's result directory from either ``trial_s3_key``
+    or ``harbor_result_path``. A trial that has neither (e.g. one that FAILED
+    before any results were uploaded) can never be analyzed: the handler raises
+    "No trial location available" and burns every retry before giving up, which
+    is what fills the shared analysis queue with doomed jobs. Mark such trials'
+    analysis FAILED up front and skip the enqueue, returning ``None``.
+    """
+    trial = await session.get(TrialModel, trial_id)
+    if trial is not None and not trial.trial_s3_key and not trial.harbor_result_path:
+        trial.analysis_status = AnalysisStatus.FAILED
+        trial.analysis_error = ANALYSIS_NO_RESULT_MESSAGE
+        trial.analysis_finished_at = utcnow()
+        return None
+
     return await enqueue_worker_job(
         session,
         EnqueueRequest(

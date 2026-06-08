@@ -15,6 +15,8 @@ from cloud_policy import (
 )
 from oddish.core.endpoints import (
     browse_tasks_core,
+    cancel_task_analysis_core,
+    cancel_task_verdict_core,
     combine_experiments_core,
     create_task_sweep_core,
     delete_experiment_core,
@@ -655,6 +657,27 @@ async def retry_task_analysis(
         )
 
 
+@router.post("/tasks/{task_id}/analysis/cancel")
+async def cancel_task_analysis(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Cancel active analysis jobs for a task without cancelling trials."""
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        result = await cancel_task_analysis_core(
+            session, task_id=task_id, org_id=auth.org_id
+        )
+
+    modal_cancelled = await _cancel_modal_function_calls(
+        result.get("modal_function_call_ids", [])
+    )
+    return {
+        key: value for key, value in result.items() if key != "modal_function_call_ids"
+    } | {"modal_calls_cancelled": modal_cancelled}
+
+
 @router.post("/tasks/{task_id}/verdict/retry")
 async def retry_task_verdict(
     task_id: str,
@@ -667,6 +690,27 @@ async def retry_task_verdict(
         return await rerun_task_verdict_core(
             session, task_id=task_id, org_id=auth.org_id
         )
+
+
+@router.post("/tasks/{task_id}/verdict/cancel")
+async def cancel_task_verdict(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Cancel an active verdict job for a task."""
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        result = await cancel_task_verdict_core(
+            session, task_id=task_id, org_id=auth.org_id
+        )
+
+    modal_cancelled = await _cancel_modal_function_calls(
+        result.get("modal_function_call_ids", [])
+    )
+    return {
+        key: value for key, value in result.items() if key != "modal_function_call_ids"
+    } | {"modal_calls_cancelled": modal_cancelled}
 
 
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
