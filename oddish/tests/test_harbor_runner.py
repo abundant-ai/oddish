@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from builtins import ExceptionGroup
 from collections import namedtuple
 from contextlib import asynccontextmanager
@@ -11,6 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.workers import harbor_runner  # noqa: E402
+from oddish.workers.codex_agent import AzureCompatibleCodex, OddishCodex  # noqa: E402
 from oddish.workers.queue import trial_handler  # noqa: E402
 
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
@@ -433,6 +436,464 @@ def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
     assert seen["include_temp_root"] is False
     assert outcome.error is None
     assert outcome.job_result_path is not None
+
+
+def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "azure")
+    monkeypatch.setattr(harbor_runner.settings, "azure_openai_api_key", "az-key")
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_endpoint",
+        "https://example.openai.azure.com",
+    )
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_api_version",
+        "2025-01-01-preview",
+    )
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_deployments",
+        {"openai/gpt-5.4": "oddish-gpt"},
+    )
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="codex",
+        model="openai/gpt-5.4",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.name is None
+    assert agent_config.import_path == (
+        "oddish.workers.codex_agent:AzureCompatibleCodex"
+    )
+    assert agent_config.model_name == "oddish-gpt"
+    assert "AZURE_OPENAI_API_KEY" not in agent_config.env
+    assert "OPENAI_API_KEY" not in agent_config.env
+
+
+def test_build_agent_config_uses_oddish_codex_wrapper_for_public_openai(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setattr(harbor_runner.settings, "openai_api_key", "openai-key")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="codex",
+        model="openai/gpt-5.2-codex",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.name is None
+    assert agent_config.import_path == "oddish.workers.codex_agent:OddishCodex"
+    assert agent_config.model_name == "openai/gpt-5.2-codex"
+
+
+def test_build_agent_config_preserves_custom_codex_import(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setattr(harbor_runner.settings, "openai_api_key", "openai-key")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="codex",
+        model="openai/gpt-5.2-codex",
+        raw_harbor_config={
+            "agent_config": {
+                "name": "codex",
+                "import_path": "custom.module:CustomCodex",
+            }
+        },
+    )
+
+    assert agent_config.name == "codex"
+    assert agent_config.import_path == "custom.module:CustomCodex"
+
+
+def test_build_agent_config_does_not_wrap_non_codex_agents(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="nop",
+        model=None,
+        raw_harbor_config={},
+    )
+
+    assert agent_config.name == "nop"
+    assert agent_config.import_path is None
+
+
+def test_azure_compatible_codex_disables_unified_exec(tmp_path):
+    seen: dict[str, str] = {}
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen["command"] = command
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
+
+    asyncio.run(
+        agent.exec_as_agent(
+            _FakeEnvironment(),
+            "codex exec --json --enable unified_exec -- 'fix it'",
+        )
+    )
+
+    assert "--disable unified_exec" in seen["command"]
+    assert "--enable unified_exec" not in seen["command"]
+    assert "-c model_provider='\"oddish_azure_openai\"'" in seen["command"]
+    assert "model_verbosity" not in seen["command"]
+
+
+def test_oddish_codex_retries_server_supported_verbosity(tmp_path):
+    seen: list[str] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen.append(command)
+            if len(seen) == 1:
+                return SimpleNamespace(
+                    return_code=1,
+                    stdout=(
+                        '{"type":"error","message":"{\\n'
+                        '  \\"error\\": {\\n'
+                        '    \\"message\\": \\"Unsupported value: low. '
+                        "Supported values are: 'server-selected'.\\\",\\n"
+                        '    \\"param\\": \\"text.verbosity\\"\\n'
+                        "  }\\n"
+                        '}"}'
+                    ),
+                    stderr="",
+                )
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent = OddishCodex(logs_dir=tmp_path, model_name="oddish-gpt")
+
+    asyncio.run(
+        agent.exec_as_agent(
+            _FakeEnvironment(),
+            "codex exec --json -- 'fix it'",
+        )
+    )
+
+    assert len(seen) == 2
+    assert "model_verbosity" not in seen[0]
+    assert "-c model_verbosity='\"server-selected\"'" in seen[1]
+
+
+def test_oddish_codex_replaces_explicit_unsupported_verbosity(tmp_path):
+    seen: list[str] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen.append(command)
+            if len(seen) == 1:
+                return SimpleNamespace(
+                    return_code=1,
+                    stdout=(
+                        '{"type":"error","message":"{'
+                        '\\"error\\": {'
+                        '\\"message\\": \\"Unsupported value. '
+                        "Supported values are: 'medium'.\\\","
+                        '\\"param\\": \\"text.verbosity\\"'
+                        '}}"}'
+                    ),
+                    stderr="",
+                )
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent = OddishCodex(logs_dir=tmp_path, model_name="oddish-gpt")
+
+    asyncio.run(
+        agent.exec_as_agent(
+            _FakeEnvironment(),
+            "codex exec -c model_verbosity='\"low\"' --json -- 'fix it'",
+        )
+    )
+
+    assert len(seen) == 2
+    assert "-c model_verbosity='\"low\"'" in seen[0]
+    assert "-c model_verbosity='\"medium\"'" in seen[1]
+    assert seen[1].count("model_verbosity=") == 1
+
+
+def test_azure_compatible_codex_configures_http_responses_provider(
+    monkeypatch, tmp_path
+):
+    seen: dict[str, str] = {}
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen["command"] = command
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    monkeypatch.setenv(
+        "OPENAI_BASE_URL",
+        "https://example.openai.azure.com/openai/v1",
+    )
+    # Codex uses the OpenAI-compatible /openai/v1 route here. Do not forward
+    # Azure SDK-style api-version values into that route.
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "unsupported-test-version")
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
+
+    asyncio.run(
+        agent.exec_as_agent(
+            _FakeEnvironment(),
+            'cat >>"$CODEX_HOME/config.toml" <<TOML\n'
+            'openai_base_url = "${OPENAI_BASE_URL}"\n'
+            "TOML\n",
+        )
+    )
+
+    assert 'model_provider = "oddish_azure_openai"' in seen["command"]
+    assert "[model_providers.oddish_azure_openai]" in seen["command"]
+    assert 'base_url = "https://example.openai.azure.com/openai/v1"' in seen["command"]
+    assert 'wire_api = "responses"' in seen["command"]
+    assert "supports_websockets = false" in seen["command"]
+    assert "query_params" not in seen["command"]
+    assert "api-version" not in seen["command"]
+    assert "unsupported-test-version" not in seen["command"]
+
+
+def test_oddish_codex_writes_stdout_trajectory_when_richer(tmp_path):
+    (tmp_path / "trajectory.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "ATIF-v1.5",
+                "agent": {"name": "codex", "version": "0.137.0"},
+                "steps": [
+                    {"step_id": 1, "source": "system", "message": "setup"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "codex.txt").write_text(
+        "\n".join(
+            [
+                "Reading additional input from stdin...",
+                json.dumps(
+                    {
+                        "type": "thread.started",
+                        "thread_id": "thread-1",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "item_1",
+                            "type": "command_execution",
+                            "command": "/bin/bash -lc ls",
+                            "aggregated_output": "README.md\n",
+                            "exit_code": 0,
+                            "status": "completed",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "item_2",
+                            "type": "reasoning",
+                            "text": "I found the active ticket.",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "item_3",
+                            "type": "agent_message",
+                            "text": "Done.",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {
+                            "input_tokens": 10,
+                            "cached_input_tokens": 3,
+                            "output_tokens": 4,
+                            "reasoning_output_tokens": 2,
+                            "total_tokens": 14,
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    context = SimpleNamespace(
+        cost_usd=None,
+        n_input_tokens=0,
+        n_cache_tokens=0,
+        n_output_tokens=0,
+    )
+    agent = OddishCodex(logs_dir=tmp_path, model_name="gpt-5.2-codex")
+
+    agent.populate_context_post_run(context)
+
+    trajectory = json.loads((tmp_path / "trajectory.json").read_text(encoding="utf-8"))
+    assert trajectory["session_id"] == "thread-1"
+    assert trajectory["agent"]["extra"]["trajectory_source"] == "codex_stdout_jsonl"
+    assert len(trajectory["steps"]) == 3
+    command_step = trajectory["steps"][0]
+    assert command_step["tool_calls"][0]["function_name"] == "shell"
+    assert command_step["tool_calls"][0]["arguments"]["command"] == "/bin/bash -lc ls"
+    assert command_step["observation"]["results"][0]["content"] == "README.md\n"
+    assert trajectory["steps"][1]["reasoning_content"] == "I found the active ticket."
+    assert trajectory["steps"][2]["message"] == "Done."
+    assert trajectory["final_metrics"]["total_prompt_tokens"] == 10
+    assert trajectory["final_metrics"]["total_completion_tokens"] == 4
+    assert context.n_input_tokens == 10
+    assert context.n_cache_tokens == 3
+    assert context.n_output_tokens == 4
+
+
+def test_oddish_codex_keeps_existing_richer_trajectory(tmp_path):
+    existing_steps = [
+        {"step_id": index + 1, "source": "agent", "message": f"step {index}"}
+        for index in range(5)
+    ]
+    (tmp_path / "trajectory.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "ATIF-v1.5",
+                "agent": {"name": "codex", "version": "0.137.0"},
+                "steps": existing_steps,
+            }
+        ),
+        encoding="utf-8",
+    )
+    original = (tmp_path / "trajectory.json").read_text(encoding="utf-8")
+    (tmp_path / "codex.txt").write_text(
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "item_1",
+                    "type": "agent_message",
+                    "text": "short",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    context = SimpleNamespace()
+    agent = OddishCodex(logs_dir=tmp_path, model_name="gpt-5.2-codex")
+
+    agent.populate_context_post_run(context)
+
+    assert (tmp_path / "trajectory.json").read_text(encoding="utf-8") == original
+
+
+def test_trial_uses_openai_provider_before_azure_model_rewrite(monkeypatch):
+    assert harbor_runner._trial_uses_openai_provider(
+        agent="custom-agent",
+        model=None,
+        raw_harbor_config={
+            "agent_config": {
+                "name": "custom-agent",
+                "model_name": "openai/gpt-5.4",
+            }
+        },
+    )
+
+
+def test_run_harbor_trial_async_scopes_azure_env(monkeypatch, tmp_path):
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text("", encoding="utf-8")
+    jobs_dir = tmp_path / "jobs"
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_API_VERSION", raising=False)
+    monkeypatch.delenv("ODDISH_AZURE_OPENAI_DEPLOYMENTS", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_DEPLOYMENT", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "azure")
+    monkeypatch.setattr(harbor_runner.settings, "azure_openai_api_key", "az-key")
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_endpoint",
+        "https://example.openai.azure.com",
+    )
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_api_version",
+        "2025-01-01-preview",
+    )
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_deployments",
+        {"openai/gpt-5.4": "oddish-gpt"},
+    )
+    seen: dict[str, str | None] = {}
+
+    class _FakeJob:
+        def __init__(self, config):
+            self.job_dir = config["jobs_dir"] / "job-1"
+
+        @classmethod
+        async def create(cls, config):
+            seen["api_key"] = os.environ.get("AZURE_OPENAI_API_KEY")
+            seen["endpoint"] = os.environ.get("AZURE_OPENAI_ENDPOINT")
+            seen["deployment"] = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
+            seen["openai_key"] = os.environ.get("OPENAI_API_KEY")
+            seen["base_url"] = os.environ.get("OPENAI_BASE_URL")
+            return cls(config)
+
+        async def run(self):
+            self.job_dir.mkdir(parents=True, exist_ok=True)
+            (self.job_dir / "result.json").write_text("{}\n", encoding="utf-8")
+            return object()
+
+    monkeypatch.setattr(
+        harbor_runner, "_check_local_storage_preflight", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        harbor_runner, "validate_task_timeout_config", lambda path: None
+    )
+    monkeypatch.setattr(harbor_runner, "TaskConfig", lambda path: path)
+    monkeypatch.setattr(harbor_runner, "JobConfig", lambda **kwargs: kwargs)
+    monkeypatch.setattr(harbor_runner, "Job", _FakeJob)
+    monkeypatch.setattr(
+        harbor_runner,
+        "_extract_outcome_from_job_result",
+        lambda **kwargs: harbor_runner.HarborOutcome(
+            reward=1.0,
+            error=None,
+            exit_code=0,
+            duration_sec=kwargs["duration_sec"],
+            job_result_path=kwargs["job_result_path"],
+            job_dir=kwargs["job_dir"],
+        ),
+    )
+
+    outcome = asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="codex",
+            jobs_dir=jobs_dir,
+            model="openai/gpt-5.4",
+        )
+    )
+
+    assert outcome.error is None
+    assert seen == {
+        "api_key": "az-key",
+        "endpoint": "https://example.openai.azure.com",
+        "deployment": "oddish-gpt",
+        "openai_key": "az-key",
+        "base_url": "https://example.openai.azure.com/openai/v1",
+    }
+    assert os.environ.get("AZURE_OPENAI_API_KEY") is None
+    assert os.environ.get("OPENAI_API_KEY") is None
+    assert os.environ.get("OPENAI_BASE_URL") is None
 
 
 def test_run_harbor_trial_async_checks_temp_root_when_task_patch_needed(

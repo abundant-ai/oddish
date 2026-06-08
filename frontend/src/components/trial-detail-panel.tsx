@@ -37,14 +37,17 @@ import {
   CheckCircle2,
   XCircle,
   AlertTriangle,
+  ExternalLink,
   Route,
   Package,
   Trash2,
+  OctagonX,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
+import { trialHasActiveAnalysis } from "@/lib/job-status";
 import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
@@ -66,7 +69,7 @@ const TaskFilesPanel = dynamic(
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading files..." />,
-  },
+  }
 );
 
 const ArtifactsViewer = dynamic(
@@ -75,18 +78,18 @@ const ArtifactsViewer = dynamic(
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading artifacts..." />,
-  },
+  }
 );
 
 const TrajectoryViewer = dynamic(
   () =>
     import("@/components/trajectory-viewer").then(
-      (mod) => mod.TrajectoryViewer,
+      (mod) => mod.TrajectoryViewer
     ),
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading trajectory..." />,
-  },
+  }
 );
 
 function DrawerPanelLoading({ label }: { label: string }) {
@@ -188,6 +191,19 @@ function hasLiveQueueSnapshot(trial: Trial): boolean {
   return ["queued", "retrying", "running", "pending"].includes(trial.status);
 }
 
+function getDaytonaSandboxUrl(trial: Trial): string | null {
+  const sandboxJob = trial.jobs?.find(
+    (job) =>
+      job.provider?.toLowerCase() === "daytona" &&
+      typeof job.external_id === "string" &&
+      job.external_id.length > 0
+  );
+  if (!sandboxJob?.external_id) return null;
+  return `https://app.daytona.io/dashboard/sandboxes?sandboxId=${encodeURIComponent(
+    sandboxJob.external_id
+  )}`;
+}
+
 export function TrialDetailPanel({
   isOpen,
   onClose,
@@ -211,7 +227,7 @@ export function TrialDetailPanel({
 
   const validTabs = useMemo(
     () => new Set(["summary", "files", "trajectory", "artifacts"]),
-    [],
+    []
   );
 
   const [activeTab, setActiveTab] = useState(() => {
@@ -222,12 +238,13 @@ export function TrialDetailPanel({
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const [analysisRunning, setAnalysisRunning] = useState(false);
+  const [analysisCancelling, setAnalysisCancelling] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [filesTargetPath, setFilesTargetPath] = useState<string | null>(() =>
-    searchParams.get("file"),
+    searchParams.get("file")
   );
 
   const hydratedFromUrl = useRef(false);
@@ -275,9 +292,12 @@ export function TrialDetailPanel({
     task !== null
       ? Math.max(0, task.total - task.completed - task.failed) > 0
       : false;
+  const canCancelAnalysis =
+    showAnalysis && allowRetry && trialHasActiveAnalysis(trial);
   const canRunAnalysis =
     showAnalysis &&
     allowRetry &&
+    !canCancelAnalysis &&
     !taskHasActiveTrials &&
     (task?.run_analysis ||
       trial?.analysis_status != null ||
@@ -322,7 +342,7 @@ export function TrialDetailPanel({
       onClose();
     } catch (err) {
       setDeleteError(
-        err instanceof Error ? err.message : "Failed to delete trial",
+        err instanceof Error ? err.message : "Failed to delete trial"
       );
     } finally {
       setDeleting(false);
@@ -339,13 +359,13 @@ export function TrialDetailPanel({
         `${apiBaseUrl}/trials/${trial.id}/analysis/retry`,
         {
           method: "POST",
-        },
+        }
       );
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue analysis",
+          data.detail || data.error || "Failed to queue analysis"
         );
       }
 
@@ -353,10 +373,41 @@ export function TrialDetailPanel({
       onClose();
     } catch (err) {
       setAnalysisError(
-        err instanceof Error ? err.message : "Failed to queue analysis",
+        err instanceof Error ? err.message : "Failed to queue analysis"
       );
     } finally {
       setAnalysisRunning(false);
+    }
+  };
+
+  const handleCancelAnalysis = async () => {
+    if (!trial || !task || analysisCancelling || !canCancelAnalysis) return;
+    setAnalysisCancelling(true);
+    setAnalysisError(null);
+
+    try {
+      const res = await fetch(
+        `${apiBaseUrl}/trials/${trial.id}/analysis/cancel`,
+        {
+          method: "POST",
+        }
+      );
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          data.detail || data.error || "Failed to cancel analysis"
+        );
+      }
+
+      onRetry?.([task.id]);
+      onClose();
+    } catch (err) {
+      setAnalysisError(
+        err instanceof Error ? err.message : "Failed to cancel analysis"
+      );
+    } finally {
+      setAnalysisCancelling(false);
     }
   };
 
@@ -383,6 +434,7 @@ export function TrialDetailPanel({
       setRetrying(false);
       setRetryError(null);
       setAnalysisRunning(false);
+      setAnalysisCancelling(false);
       setAnalysisError(null);
       setDeleteDialogOpen(false);
       setDeleting(false);
@@ -394,7 +446,7 @@ export function TrialDetailPanel({
 
   const orderedList = useMemo(
     () => orderedTrials ?? task?.trials ?? [],
-    [orderedTrials, task?.trials],
+    [orderedTrials, task?.trials]
   );
   const resolvedIndex =
     typeof trialIndex === "number" && trialIndex >= 0
@@ -426,7 +478,7 @@ export function TrialDetailPanel({
       if (!nextTrial) return;
       onNavigate(nextTrial, nextIndex);
     },
-    [onNavigate, orderedList],
+    [onNavigate, orderedList]
   );
 
   useEffect(() => {
@@ -467,12 +519,13 @@ export function TrialDetailPanel({
   const trialStatus = getMatrixStatus(
     trial.status,
     trial.reward,
-    trial.error_message,
+    trial.error_message
   );
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
   const TrialStatusIcon = trialStatusConfig.icon;
   const showQueueSnapshot =
     hasLiveQueueSnapshot(trial) && getQueueSnapshotItems(trial).length > 0;
+  const daytonaSandboxUrl = getDaytonaSandboxUrl(trial);
 
   const resolvedGroups =
     trialGroups && trialGroups.length > 0
@@ -485,13 +538,13 @@ export function TrialDetailPanel({
           },
         ];
   const currentGroupIndex = resolvedGroups.findIndex((group) =>
-    group.trials.some((groupTrial) => groupTrial.id === trial.id),
+    group.trials.some((groupTrial) => groupTrial.id === trial.id)
   );
   const currentGroup =
     currentGroupIndex >= 0 ? resolvedGroups[currentGroupIndex] : null;
   const currentGroupTrials = currentGroup?.trials ?? [];
   const currentGroupTrialIndex = currentGroupTrials.findIndex(
-    (groupTrial) => groupTrial.id === trial.id,
+    (groupTrial) => groupTrial.id === trial.id
   );
 
   const navigateToGroupTrial = (groupIndex: number) => {
@@ -573,7 +626,7 @@ export function TrialDetailPanel({
                   const groupStatus = getMatrixStatus(
                     groupTrial.status,
                     groupTrial.reward,
-                    groupTrial.error_message,
+                    groupTrial.error_message
                   );
                   const groupConfig = STATUS_CONFIG[groupStatus];
                   const isPartial = groupStatus === "partial";
@@ -597,7 +650,7 @@ export function TrialDetailPanel({
                           : "",
                         isActive
                           ? "ring-primary/60 ring-offset-background ring-2 ring-offset-1"
-                          : "",
+                          : ""
                       )}
                       style={getRewardStyle(groupTrial.reward)}
                       aria-label={`Trial ${index + 1} ${groupConfig.shortLabel}`}
@@ -630,7 +683,7 @@ export function TrialDetailPanel({
             <Card
               className={cn(
                 "min-w-[145px] border",
-                OUTCOME_CARD_TONE[trialStatus],
+                OUTCOME_CARD_TONE[trialStatus]
               )}
               style={getRewardStyle(trial.reward, "panel")}
             >
@@ -655,7 +708,7 @@ export function TrialDetailPanel({
                       (trialStatus === "pending" ||
                         trialStatus === "queued" ||
                         trialStatus === "running") &&
-                        "animate-spin",
+                        "animate-spin"
                     )}
                   />
                   <div className="min-w-0">
@@ -700,6 +753,23 @@ export function TrialDetailPanel({
                 )}
               </Button>
             )}
+            {daytonaSandboxUrl && (
+              <Button
+                asChild
+                variant="outline"
+                size="sm"
+                className="h-7 min-w-[132px] px-2 text-[10px] font-semibold tracking-wide uppercase"
+              >
+                <a
+                  href={daytonaSandboxUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ExternalLink className="mr-1 h-3.5 w-3.5" />
+                  Sandbox
+                </a>
+              </Button>
+            )}
             {canRunAnalysis && (
               <Button
                 onClick={handleRunAnalysis}
@@ -717,6 +787,27 @@ export function TrialDetailPanel({
                   <>
                     <Microscope className="mr-1 h-3.5 w-3.5" />
                     {analysisLabel}
+                  </>
+                )}
+              </Button>
+            )}
+            {canCancelAnalysis && (
+              <Button
+                onClick={handleCancelAnalysis}
+                disabled={analysisCancelling}
+                variant="destructive"
+                size="sm"
+                className="h-7 min-w-[148px] px-2 text-[10px] font-semibold tracking-wide uppercase"
+              >
+                {analysisCancelling ? (
+                  <>
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    Cancelling...
+                  </>
+                ) : (
+                  <>
+                    <OctagonX className="mr-1 h-3.5 w-3.5" />
+                    Cancel analysis
                   </>
                 )}
               </Button>
@@ -860,7 +951,7 @@ export function TrialDetailPanel({
                               ? "Analyzing..."
                               : trial.analysis?.classification?.replace(
                                   "_",
-                                  " ",
+                                  " "
                                 ) || "Analysis"}
                           </span>
                           {trial.analysis?.subtype && (

@@ -36,6 +36,8 @@ export interface VisibleWorkerJob {
   kind: VisibleJobKind | string;
   status: VisibleJobStatus | string;
   queue_key: string;
+  provider?: string | null;
+  external_id?: string | null;
   subject_table?: string | null;
   subject_id?: string | null;
   attempts: number;

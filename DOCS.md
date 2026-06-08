@@ -22,7 +22,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish upload` - register a task or upload existing trials
 - `oddish ls` - list uploaded tasks
 - `oddish status` - view progress
-- `oddish cancel` - stop in-flight trials for a task
+- `oddish cancel` - stop in-flight task runs, analysis, or verdict jobs
 - `oddish pull` - download logs and artifacts
 - `oddish combine` - merge several experiments into a new one
 - `oddish delete` - delete task data
@@ -211,17 +211,25 @@ Options
 
 ## Cancel In-Flight Runs
 
-Use `oddish cancel` to stop queued or running work for a task without deleting
-the task itself. Completed trials are preserved.
+Use `oddish cancel` to stop queued or running work without deleting the task
+itself. Completed trials are preserved. By default it cancels all active task
+runs; use `--analysis` or `--verdict` to cancel only that pipeline stage.
 
 ```bash
 # Cancel all active runs for a task
 oddish cancel <task_id>
+
+# Cancel active analysis or verdict jobs only
+oddish cancel <task_id> --analysis
+oddish cancel <trial_id> --analysis
+oddish cancel <task_id> --verdict
 ```
 
 Options
 
-- `TASK_ID` - Task ID to cancel
+- `TASK_ID` - Task ID to cancel; with `--analysis`, a trial ID cancels one trial analysis
+- `--analysis` - Cancel active analysis jobs only
+- `--verdict` - Cancel the active task verdict only
 - `--force`, `-f` - Skip the confirmation prompt
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the cancellation result as JSON (implies `--force`)
