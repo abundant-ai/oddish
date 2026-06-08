@@ -71,8 +71,9 @@ def test_author_filter_matches_created_by_and_scopes_org() -> None:
     assert "org_id" in sql and "org_1" in sql
     # Soft-deleted experiment links must be excluded.
     assert "deleted_at" in sql
-    # Without a github username, the tag fallback is not added.
-    assert "github_username" not in sql
+    # created_by only applies when github tag and legacy email are absent.
+    assert "github_username" in sql
+    assert "is null" in sql or "= ''" in sql
 
 
 def test_author_filter_includes_github_username_fallback() -> None:
@@ -83,8 +84,16 @@ def test_author_filter_includes_github_username_fallback() -> None:
     sql = _compile_sql(clause)
     assert "github_username" in sql
     assert "octocat" in sql
-    # Owner match is an OR of the resolved user id and the github tag.
     assert " OR " in sql.upper()
+
+
+def test_author_filter_created_by_only_when_github_tag_missing() -> None:
+    clause = _build_experiments_author_filter("user_123", None, org_id="org_1")
+    assert clause is not None
+    sql = _compile_sql(clause).lower()
+    assert "created_by_user_id" in sql
+    assert "github_username" in sql
+    assert "is null" in sql or "= ''" in sql
 
 
 def test_author_filter_supports_multiple_github_handles() -> None:

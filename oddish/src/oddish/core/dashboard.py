@@ -283,6 +283,51 @@ def _normalize_github_handle(value: str | None) -> str | None:
     return normalized or None
 
 
+def _task_github_tag_expr():
+    return TaskModel.tags["github_username"].astext
+
+
+def _empty_github_tag_clause():
+    github_tag = _task_github_tag_expr()
+    return or_(github_tag.is_(None), github_tag == "")
+
+
+def _build_latest_task_author_match(
+    experiments_author_user_id: str,
+    github_handles: list[str],
+    *,
+    experiments_author_email: str | None,
+):
+    """Match the dashboard Author column on the experiment's latest live task.
+
+    When a task carries a ``github_username`` tag that tag wins over
+    ``created_by_user_id``, so CI runs stamped with the submitter's Clerk id
+    but tagged with someone else's GitHub handle stay out of Mine.
+    """
+    tiers = []
+    github_tag = _task_github_tag_expr()
+
+    if len(github_handles) == 1:
+        tiers.append(github_tag == github_handles[0])
+    elif len(github_handles) > 1:
+        tiers.append(github_tag.in_(github_handles))
+
+    normalized_email = (experiments_author_email or "").strip()
+    if normalized_email:
+        tiers.append(
+            and_(_empty_github_tag_clause(), TaskModel.user == normalized_email)
+        )
+
+    tiers.append(
+        and_(
+            _empty_github_tag_clause(),
+            or_(TaskModel.user.is_(None), TaskModel.user == ""),
+            TaskModel.created_by_user_id == experiments_author_user_id,
+        )
+    )
+    return or_(*tiers)
+
+
 def _build_experiments_author_filter(
     experiments_author_user_id: str | None,
     experiments_author_github_usernames: Sequence[str] | None,
@@ -294,18 +339,13 @@ def _build_experiments_author_filter(
 
     Returns ``None`` when no owner filter is requested. Otherwise requires
     the experiment's **latest live task** (same ordering as the dashboard
-    Author column) to match the resolved ``created_by_user_id``, any of
-    the user's known ``github_username`` task tags (primary + historical
-    aliases), or legacy ``tasks.user`` email. Using the latest task keeps
-    Mine from surfacing combined experiments where the user only owns an
-    older member task.
+    Author column) to match using the same attribution precedence as the UI:
+    ``github_username`` tag first, then legacy ``tasks.user`` email, then
+    ``created_by_user_id`` only when no tag/email is present.
     """
     if experiments_author_user_id is None:
         return None
 
-    author_conditions = [
-        TaskModel.created_by_user_id == experiments_author_user_id
-    ]
     github_handles = [
         handle
         for handle in (
@@ -314,24 +354,19 @@ def _build_experiments_author_filter(
         )
         if handle
     ]
-    if len(github_handles) == 1:
-        author_conditions.append(
-            TaskModel.tags["github_username"].astext == github_handles[0]
-        )
-    elif len(github_handles) > 1:
-        author_conditions.append(
-            TaskModel.tags["github_username"].astext.in_(github_handles)
-        )
-    normalized_email = (experiments_author_email or "").strip()
-    if normalized_email:
-        author_conditions.append(TaskModel.user == normalized_email)
 
     latest_task_id = _latest_live_task_id_for_experiment()
     author_exists = (
         select(1)
         .select_from(TaskModel)
         .where(TaskModel.id == latest_task_id)
-        .where(or_(*author_conditions))
+        .where(
+            _build_latest_task_author_match(
+                experiments_author_user_id,
+                github_handles,
+                experiments_author_email=experiments_author_email,
+            )
+        )
     )
     if org_id is not None:
         author_exists = author_exists.where(TaskModel.org_id == org_id)

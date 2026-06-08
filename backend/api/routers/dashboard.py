@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import APIKeyScope, AuthContext, require_auth
@@ -35,10 +35,9 @@ async def _resolve_experiments_author(
       * a ``UserModel.id`` -> that specific organization member
 
     Returns ``(None, (), None)`` when no filter should apply. The resolved
-    github usernames include the user's primary handle plus any distinct
-    ``github_username`` tags already stamped on their tasks (covers aliases
-    like ``praxs`` / ``dot-agi``). The email is returned for legacy
-    ``tasks.user`` matching on tasks created before owner ids were resolvable.
+    github usernames come from the user's primary Clerk-linked handle plus
+    exclusive historical aliases (tags only seen on their tasks, never on
+    tasks attributed to another org member).
     Unknown / cross-org ids keep the id (with empty handles/email) so the
     filter matches nothing rather than silently widening back to the full org.
     """
@@ -57,7 +56,9 @@ async def _resolve_experiments_author(
 
     github_usernames: list[str] = []
     if user.github_username:
-        github_usernames.append(user.github_username.strip().lstrip("@"))
+        normalized_primary = user.github_username.strip().lstrip("@")
+        if normalized_primary:
+            github_usernames.append(normalized_primary)
 
     alias_predicates = [TaskModel.created_by_user_id == user.id]
     if user.email:
@@ -73,8 +74,20 @@ async def _resolve_experiments_author(
     )
     for (alias,) in alias_rows:
         normalized_alias = (alias or "").strip().lstrip("@")
-        if normalized_alias and normalized_alias not in github_usernames:
-            github_usernames.append(normalized_alias)
+        if not normalized_alias or normalized_alias in github_usernames:
+            continue
+        other_owner_count = await session.scalar(
+            select(func.count())
+            .select_from(TaskModel)
+            .where(TaskModel.org_id == auth.org_id)
+            .where(TaskModel.deleted_at.is_(None))
+            .where(TaskModel.tags["github_username"].astext == normalized_alias)
+            .where(TaskModel.created_by_user_id.isnot(None))
+            .where(TaskModel.created_by_user_id != user.id)
+        )
+        if other_owner_count:
+            continue
+        github_usernames.append(normalized_alias)
 
     return user.id, tuple(github_usernames), user.email
 
