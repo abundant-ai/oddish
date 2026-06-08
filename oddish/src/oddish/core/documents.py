@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.digest import generate_digest
@@ -98,6 +98,37 @@ async def list_documents_core(
         .offset(offset)
     )
     result = await session.execute(query)
+    return list(result.scalars().all())
+
+
+async def search_documents_core(
+    session: AsyncSession,
+    *,
+    org_id: str | None,
+    query: str,
+    tags: list[str] | None = None,
+    limit: int = 20,
+) -> list[DocumentModel]:
+    """Keyword search over title + digest, title-matches ranked first.
+
+    Empty ``query`` lists all org docs by recency. ``tags`` (if given) is an
+    array-overlap filter. Ordering: title hits (0) before content-only hits
+    (1), then newest-updated first.
+    """
+    stmt = select(DocumentModel).where(DocumentModel.org_id == org_id)
+    q = (query or "").strip()
+    if q:
+        like = f"%{q}%"
+        title_hit = DocumentModel.title.ilike(like)
+        stmt = stmt.where(or_(title_hit, DocumentModel.digest_text.ilike(like)))
+        rank = case((title_hit, 0), else_=1)
+        stmt = stmt.order_by(rank, DocumentModel.updated_at.desc())
+    else:
+        stmt = stmt.order_by(DocumentModel.updated_at.desc())
+    if tags:
+        stmt = stmt.where(DocumentModel.tags.overlap(tags))
+    stmt = stmt.limit(limit)
+    result = await session.execute(stmt)
     return list(result.scalars().all())
 
 
