@@ -17,7 +17,7 @@ from oddish.core.skills import (
     update_skill_core,
 )
 from oddish.db import SkillModel, get_session
-from oddish.schemas import SkillCreate, SkillFile, SkillUpdate
+from oddish.schemas import SkillCreate, SkillFile, SkillResponse, SkillUpdate
 
 
 def _payload(name="my-skill"):
@@ -56,6 +56,23 @@ async def test_create_and_get(org_id):
         assert got.name == "my-skill"
         assert got.created_by_user_id == "user_1"
         assert {f.relative_path for f in got.files} == {"SKILL.md", "scripts/run.sh"}
+
+
+@pytest.mark.asyncio
+async def test_response_serializes_from_orm(org_id):
+    """SkillResponse must serialize a SkillModel WITH its nested ORM files.
+
+    The router does exactly this; the nested SkillFile schema needs
+    from_attributes or model_validate raises on the SkillFileModel rows.
+    """
+    async with get_session() as session:
+        created = await create_skill_core(
+            session, data=_payload(), org_id=org_id, user_id="u"
+        )
+        await session.commit()
+        resp = SkillResponse.model_validate(created)
+    assert resp.name == "my-skill"
+    assert {f.relative_path for f in resp.files} == {"SKILL.md", "scripts/run.sh"}
 
 
 @pytest.mark.asyncio
