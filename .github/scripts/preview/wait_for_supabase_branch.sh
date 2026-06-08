@@ -23,6 +23,7 @@ set -uo pipefail
 
 BRANCH_NAME="pr-${PR_NUMBER}"
 MAX_ATTEMPTS=2
+CONNECTIVITY_RETRY="${ODDISH_PREVIEW_BRANCH_CONNECTIVITY_RETRY:-0}"
 
 find_branch_json() {
   supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
@@ -199,6 +200,12 @@ while true; do
   if [ "$(date +%s)" -ge "$smoke_deadline" ]; then
     echo "psql connect failed:" >&2
     cat /tmp/psql.err >&2
+    if [ "$CONNECTIVITY_RETRY" = "0" ] && [ -n "$branch_id" ]; then
+      echo "branch $branch_id was healthy in Supabase but unreachable via the pooler; recreating once" >&2
+      delete_branch_by_id "$branch_id"
+      export ODDISH_PREVIEW_BRANCH_CONNECTIVITY_RETRY=1
+      exec "$0"
+    fi
     exit 1
   fi
 
