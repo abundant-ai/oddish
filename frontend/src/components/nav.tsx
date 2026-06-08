@@ -21,6 +21,7 @@ import {
   LogOut,
   Shield,
   User,
+  Wrench,
 } from "lucide-react";
 
 export function Nav() {
@@ -68,6 +69,21 @@ export function Nav() {
               >
                 <FileText className="h-4 w-4" />
                 <span>Tasks</span>
+              </Link>
+            </Button>
+            <Button
+              variant={pathname === "/skills" ? "secondary" : "ghost"}
+              size="sm"
+              asChild
+              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+            >
+              <Link
+                href="/skills"
+                className="flex items-center gap-2"
+                data-active={pathname === "/skills"}
+              >
+                <Wrench className="h-4 w-4" />
+                <span>Skills</span>
               </Link>
             </Button>
           </div>
