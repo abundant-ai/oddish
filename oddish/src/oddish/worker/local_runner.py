@@ -41,6 +41,7 @@ from oddish.worker.probe_analysis import (
 )
 from oddish.worker.probe_staging import apply_probe_overlay
 from oddish.worker.local_offline_policy import enable_local_internet, task_is_offline
+from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
 
 logger = logging.getLogger(__name__)
 
@@ -192,13 +193,10 @@ async def _watchdog_task(trial_name: str) -> None:
 
 _BEDROCK_REGION_PREFIXES = ("global.", "us.", "eu.", "apac.", "apn.")
 
-# Cap how long a local probe agent may run. Tasks ship 8h agent timeouts
-# (``[agent] timeout_sec`` in task.toml) which is fine for real attempts but far
-# too long for a probe -- a wedged or expired-cred probe would otherwise hold a
-# container for hours. Overridable via ODDISH_PROBE_AGENT_TIMEOUT_SEC.
-_PROBE_AGENT_TIMEOUT_SEC = int(
-    os.environ.get("ODDISH_PROBE_AGENT_TIMEOUT_SEC", "1800")
-)
+# Cap how long a local probe agent may run. Shared with the cloud runner so dev
+# and prod cap probes identically; see ``oddish.task_timeouts`` for the full
+# rationale. Overridable via ODDISH_PROBE_AGENT_TIMEOUT_SEC.
+_PROBE_AGENT_TIMEOUT_SEC = PROBE_AGENT_TIMEOUT_SEC
 
 
 def _strip_nul(obj: object) -> object:
