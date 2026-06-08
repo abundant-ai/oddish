@@ -3,12 +3,13 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import APIKeyScope, AuthContext, require_auth
 from models import UserModel
 from oddish.core.dashboard import get_dashboard_core
-from oddish.db import get_session
+from oddish.db import TaskModel, get_session
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
 
 router = APIRouter(tags=["Dashboard"])
@@ -25,35 +26,57 @@ async def _resolve_experiments_author(
     session: AsyncSession,
     auth: AuthContext,
     experiments_author: str | None,
-) -> tuple[str | None, str | None, str | None]:
-    """Resolve the dashboard owner filter to ``(user_id, github_username, email)``.
+) -> tuple[str | None, tuple[str, ...], str | None]:
+    """Resolve the dashboard owner filter to ``(user_id, github_usernames, email)``.
 
     Accepts the ``experiments_author`` query value:
       * ``None`` / ``""`` / ``"all"`` -> no filter (whole organization)
       * ``"me"`` -> the authenticated Clerk user (``auth.user_id``)
       * a ``UserModel.id`` -> that specific organization member
 
-    Returns ``(None, None, None)`` when no filter should apply. The resolved
-    github username and email are returned alongside the id so the experiments
-    query can fall back to the ``github_username`` task tag and legacy
-    ``tasks.user`` email for tasks created before the owner id was resolvable.
-    Unknown / cross-org ids keep the id (with null username/email) so the
+    Returns ``(None, (), None)`` when no filter should apply. The resolved
+    github usernames include the user's primary handle plus any distinct
+    ``github_username`` tags already stamped on their tasks (covers aliases
+    like ``praxs`` / ``dot-agi``). The email is returned for legacy
+    ``tasks.user`` matching on tasks created before owner ids were resolvable.
+    Unknown / cross-org ids keep the id (with empty handles/email) so the
     filter matches nothing rather than silently widening back to the full org.
     """
     normalized = (experiments_author or "").strip()
     if not normalized or normalized.lower() == "all":
-        return None, None, None
+        return None, (), None
 
     target_user_id = auth.user_id if normalized.lower() == "me" else normalized
     if not target_user_id:
         # "me" with an API-key principal (no user) -> no personal scope.
-        return None, None, None
+        return None, (), None
 
     user = await session.get(UserModel, target_user_id)
     if user is None or user.org_id != auth.org_id or not user.is_active:
-        return target_user_id, None, None
+        return target_user_id, (), None
 
-    return user.id, user.github_username, user.email
+    github_usernames: list[str] = []
+    if user.github_username:
+        github_usernames.append(user.github_username.strip().lstrip("@"))
+
+    alias_predicates = [TaskModel.created_by_user_id == user.id]
+    if user.email:
+        alias_predicates.append(TaskModel.user == user.email)
+
+    alias_rows = await session.execute(
+        select(TaskModel.tags["github_username"].astext)
+        .where(TaskModel.org_id == auth.org_id)
+        .where(TaskModel.deleted_at.is_(None))
+        .where(TaskModel.tags["github_username"].astext.isnot(None))
+        .where(or_(*alias_predicates))
+        .distinct()
+    )
+    for (alias,) in alias_rows:
+        normalized_alias = (alias or "").strip().lstrip("@")
+        if normalized_alias and normalized_alias not in github_usernames:
+            github_usernames.append(normalized_alias)
+
+    return user.id, tuple(github_usernames), user.email
 
 
 @router.get("/dashboard")
@@ -93,7 +116,7 @@ async def get_dashboard(
             elapsed_ms(connect_started_at),
             "Dashboard DB connect",
         )
-        author_user_id, author_github_username, author_email = (
+        author_user_id, author_github_usernames, author_email = (
             await _resolve_experiments_author(session, auth, experiments_author)
         )
         return await get_dashboard_core(
@@ -106,7 +129,7 @@ async def get_dashboard(
             experiments_query=experiments_query,
             experiments_status=experiments_status,
             experiments_author_user_id=author_user_id,
-            experiments_author_github_username=author_github_username,
+            experiments_author_github_usernames=author_github_usernames,
             experiments_author_email=author_email,
             usage_minutes=usage_minutes,
             include_tasks=include_tasks,

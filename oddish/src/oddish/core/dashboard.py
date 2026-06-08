@@ -3,6 +3,7 @@ import asyncio
 import json
 import time
 from datetime import datetime, timedelta, timezone
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import and_, case, func, nulls_last, or_, select
@@ -257,39 +258,10 @@ def _build_aggregates_for_experiment_ids(
     return task_agg, trial_agg
 
 
-def _build_experiments_author_filter(
-    experiments_author_user_id: str | None,
-    experiments_author_github_username: str | None,
-    *,
-    org_id: str | None,
-    experiments_author_email: str | None = None,
-):
-    """EXISTS clause restricting experiments to a single owner, or ``None``.
-
-    Returns ``None`` when no owner filter is requested. Otherwise returns
-    an EXISTS over the experiment's live tasks that matches the resolved
-    ``created_by_user_id`` (the Clerk user stamped at task creation,
-    covering both web and API-key/CI runs) and falls back to the
-    ``github_username`` task tag so tasks created before the owner id was
-    resolvable still attribute. Applied to the indexed ``last_activity_at``
-    page scan so paging stays correct and cheap.
-    """
-    if experiments_author_user_id is None:
-        return None
-
-    author_conditions = [
-        TaskModel.created_by_user_id == experiments_author_user_id
-    ]
-    if experiments_author_github_username:
-        author_conditions.append(
-            TaskModel.tags["github_username"].astext
-            == experiments_author_github_username
-        )
-    normalized_email = (experiments_author_email or "").strip()
-    if normalized_email:
-        author_conditions.append(TaskModel.user == normalized_email)
-    author_exists = (
-        select(1)
+def _latest_live_task_id_for_experiment():
+    """Correlated subquery: newest live task id linked to the experiment row."""
+    return (
+        select(TaskModel.id)
         .select_from(
             task_experiments.join(
                 TaskModel,  # type: ignore[arg-type]
@@ -298,6 +270,67 @@ def _build_experiments_author_filter(
         )
         .where(task_experiments.c.experiment_id == ExperimentModel.id)
         .where(task_experiments.c.deleted_at.is_(None))
+        .where(TaskModel.deleted_at.is_(None))
+        .order_by(TaskModel.created_at.desc(), TaskModel.id.desc())
+        .limit(1)
+        .correlate(ExperimentModel)
+        .scalar_subquery()
+    )
+
+
+def _normalize_github_handle(value: str | None) -> str | None:
+    normalized = (value or "").strip().lstrip("@")
+    return normalized or None
+
+
+def _build_experiments_author_filter(
+    experiments_author_user_id: str | None,
+    experiments_author_github_usernames: Sequence[str] | None,
+    *,
+    org_id: str | None,
+    experiments_author_email: str | None = None,
+):
+    """EXISTS clause restricting experiments to a single owner, or ``None``.
+
+    Returns ``None`` when no owner filter is requested. Otherwise requires
+    the experiment's **latest live task** (same ordering as the dashboard
+    Author column) to match the resolved ``created_by_user_id``, any of
+    the user's known ``github_username`` task tags (primary + historical
+    aliases), or legacy ``tasks.user`` email. Using the latest task keeps
+    Mine from surfacing combined experiments where the user only owns an
+    older member task.
+    """
+    if experiments_author_user_id is None:
+        return None
+
+    author_conditions = [
+        TaskModel.created_by_user_id == experiments_author_user_id
+    ]
+    github_handles = [
+        handle
+        for handle in (
+            _normalize_github_handle(name)
+            for name in (experiments_author_github_usernames or ())
+        )
+        if handle
+    ]
+    if len(github_handles) == 1:
+        author_conditions.append(
+            TaskModel.tags["github_username"].astext == github_handles[0]
+        )
+    elif len(github_handles) > 1:
+        author_conditions.append(
+            TaskModel.tags["github_username"].astext.in_(github_handles)
+        )
+    normalized_email = (experiments_author_email or "").strip()
+    if normalized_email:
+        author_conditions.append(TaskModel.user == normalized_email)
+
+    latest_task_id = _latest_live_task_id_for_experiment()
+    author_exists = (
+        select(1)
+        .select_from(TaskModel)
+        .where(TaskModel.id == latest_task_id)
         .where(or_(*author_conditions))
     )
     if org_id is not None:
@@ -330,7 +363,7 @@ async def load_dashboard_experiments(
     experiments_query: str | None,
     experiments_status: str,
     experiments_author_user_id: str | None = None,
-    experiments_author_github_username: str | None = None,
+    experiments_author_github_usernames: Sequence[str] | None = None,
     experiments_author_email: str | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
@@ -386,7 +419,7 @@ async def load_dashboard_experiments(
     # experiments with at least one live task owned by the target author.
     author_filter = _build_experiments_author_filter(
         experiments_author_user_id,
-        experiments_author_github_username,
+        experiments_author_github_usernames,
         org_id=org_id,
         experiments_author_email=experiments_author_email,
     )
@@ -876,7 +909,7 @@ async def get_dashboard_core(
     experiments_query: str | None = None,
     experiments_status: str = "all",
     experiments_author_user_id: str | None = None,
-    experiments_author_github_username: str | None = None,
+    experiments_author_github_usernames: Sequence[str] | None = None,
     experiments_author_email: str | None = None,
     usage_minutes: int | None = None,
     include_tasks: bool = True,
@@ -1010,7 +1043,7 @@ async def get_dashboard_core(
                 experiments_query=experiments_query,
                 experiments_status=experiments_status,
                 experiments_author_user_id=experiments_author_user_id,
-                experiments_author_github_username=experiments_author_github_username,
+                experiments_author_github_usernames=experiments_author_github_usernames,
                 experiments_author_email=experiments_author_email,
                 record_timing=record_timing,
             )
