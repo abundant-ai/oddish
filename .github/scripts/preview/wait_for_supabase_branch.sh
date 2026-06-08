@@ -25,7 +25,7 @@
 set -uo pipefail
 
 BRANCH_NAME="pr-${PR_NUMBER}"
-MAX_ATTEMPTS=2
+MAX_ATTEMPTS=3
 
 # Branch lifecycle states that we consider terminal failures and
 # recover from by deleting + recreating the branch:
