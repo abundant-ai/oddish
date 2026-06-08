@@ -777,6 +777,7 @@ async def _execute_trial(
             hook_callback=partial(_handle_harbor_event, trial_id=trial_id),
             trial_id=trial_id,
             harbor_config=prepared_trial.trial_harbor_config,
+            org_id=prepared_trial.org_id,
         )
     except asyncio.CancelledError:
         # CancelledError inherits from BaseException, not Exception, so must be caught explicitly.
@@ -892,7 +893,6 @@ async def run_trial_job(
             task_id=prepared_trial.task_id,
             trial_id=trial_id,
             extra_instructions=probe_extra_instructions,
-            org_id=prepared_trial.org_id,
         )
 
     # Ensure Harbor scratch directories exist before execution starts.

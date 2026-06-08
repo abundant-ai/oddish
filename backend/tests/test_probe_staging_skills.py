@@ -1,4 +1,9 @@
-"""Tests for staging an org's skills into a probe task dir (phase-2 injection).
+"""Tests for staging an org's skills into a Harbor skills-root.
+
+``stage_org_skills`` materializes the org's skills (+ seeds) into a root whose
+children are per-skill dirs (each with SKILL.md) — the exact layout Harbor's
+``AgentConfig.skills`` / ``resolve_skills`` expects. The runners hand that root
+to Harbor, which uploads the skills into the sandbox.
 
 Run with backend env sourced and the skills tables present:
 
@@ -40,27 +45,47 @@ async def org_id():
 
 
 @pytest.mark.asyncio
-async def test_stages_org_skills_into_claude_dir(org_id, tmp_path):
+async def test_stages_skills_into_root_per_skill_dirs(org_id, tmp_path):
     async with get_session() as session:
         await create_skill_core(session, data=_payload("alpha"), org_id=org_id, user_id="u")
         await create_skill_core(session, data=_payload("beta"), org_id=org_id, user_id="u")
         await session.commit()
 
-    n = await stage_org_skills(tmp_path, org_id=org_id)
+    skills_root = tmp_path / "agent_skills"
+    n = await stage_org_skills(skills_root, org_id=org_id)
     assert n == 2
 
-    skills_root = tmp_path / ".claude" / "skills"
+    # Layout is <root>/<name>/<relative_path> — NOT nested under .claude/skills.
     assert (skills_root / "alpha" / "SKILL.md").read_text().startswith("---")
     assert (skills_root / "alpha" / "scripts" / "run.sh").read_text() == "echo hi"
     assert (skills_root / "beta" / "SKILL.md").exists()
 
 
 @pytest.mark.asyncio
+async def test_staged_root_is_harbor_resolvable(org_id, tmp_path):
+    """The produced root must satisfy Harbor's resolve_skills contract:
+    a root whose every child dir contains SKILL.md resolves to one skill each."""
+    from harbor.skills import resolve_skills
+
+    async with get_session() as session:
+        await create_skill_core(session, data=_payload("alpha"), org_id=org_id, user_id="u")
+        await create_skill_core(session, data=_payload("beta"), org_id=org_id, user_id="u")
+        await session.commit()
+
+    skills_root = tmp_path / "agent_skills"
+    await stage_org_skills(skills_root, org_id=org_id)
+
+    resolved = resolve_skills([skills_root])
+    assert {s.name for s in resolved} == {"alpha", "beta"}
+
+
+@pytest.mark.asyncio
 async def test_no_skills_stages_nothing(org_id, tmp_path):
-    # org with no skills -> nothing written, no error
-    n = await stage_org_skills(tmp_path, org_id=org_id)
+    skills_root = tmp_path / "agent_skills"
+    n = await stage_org_skills(skills_root, org_id=org_id)
     assert n == 0
-    assert not (tmp_path / ".claude").exists()
+    # Nothing materialized (root may not even be created).
+    assert not skills_root.exists() or not any(skills_root.iterdir())
 
 
 @pytest.mark.asyncio
@@ -82,18 +107,14 @@ async def test_one_bad_skill_does_not_block_others(org_id, tmp_path, monkeypatch
         return real(bundles, root)
 
     monkeypatch.setattr(ps, "materialize_skills", flaky)
-    n = await stage_org_skills(tmp_path, org_id=org_id)
+    n = await stage_org_skills(tmp_path / "agent_skills", org_id=org_id)
     assert n == 0  # the only skill failed, but no exception propagated
 
 
 @pytest.mark.asyncio
-async def test_apply_probe_overlay_routes_org_id_to_skills(org_id, tmp_path):
-    """The full overlay (what both runners call) stages the org's skills.
-
-    Uses a bare temp task dir: related-log and harbor-source staging are
-    best-effort and degrade silently, so no real task/trial row is needed —
-    this isolates that ``org_id`` flows through to ``stage_org_skills``.
-    """
+async def test_apply_probe_overlay_does_not_stage_skills(org_id, tmp_path):
+    """Overlay must NOT write skills into the task dir (Harbor never mounts it).
+    Skill delivery is the runners' job via AgentConfig.skills."""
     from oddish.worker.probe_staging import apply_probe_overlay
 
     async with get_session() as session:
@@ -106,9 +127,8 @@ async def test_apply_probe_overlay_routes_org_id_to_skills(org_id, tmp_path):
         task_id="no-such-task",
         trial_id="no-such-trial",
         extra_instructions="follow the operator directive",
-        org_id=org_id,
     )
 
-    assert (tmp_path / ".claude" / "skills" / "gamma" / "SKILL.md").exists()
-    # instruction.md was still rewritten with the directive (overlay ran fully)
+    # No skills written into the task dir, but the directive still applied.
+    assert not (tmp_path / ".claude").exists()
     assert "follow the operator directive" in (tmp_path / "instruction.md").read_text()

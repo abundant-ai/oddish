@@ -141,15 +141,16 @@ def stage_harbor_source(work_task_dir: Path) -> bool:
     return True
 
 
-async def stage_org_skills(task_dir: Path, *, org_id: str | None) -> int:
+async def stage_org_skills(skills_root: Path, *, org_id: str | None) -> int:
     """Materialize the org's shared skills (+ global seeds) under
-    ``task_dir/.claude/skills/<name>/<relative_path>``.
+    ``skills_root/<name>/<relative_path>``.
 
-    Harbor mounts ``task_dir`` at ``/app`` and runs claude-code with that as
-    its working directory, so skills written here surface as project skills
-    inside the sandbox -- the same in-mount convention as ``related_trials``
-    and ``harbor_src``, and network-immune (written from Postgres at stage
-    time, not fetched by the agent).
+    ``skills_root`` is meant to be passed to Harbor as an ``AgentConfig.skills``
+    entry: Harbor's ``resolve_skills`` accepts a root whose every child dir holds
+    a ``SKILL.md`` (exactly this layout), uploads each ``<name>/`` skill into the
+    sandbox, and the claude-code agent registers them into Claude's config dir so
+    the agent discovers them. Skills are written from Postgres at stage time, so
+    they reach the (network-isolated) sandbox without the agent fetching anything.
 
     Best-effort and per-skill resilient: a DB failure stages nothing, and one
     malformed skill is skipped without dropping the others. Returns the number
@@ -169,7 +170,6 @@ async def stage_org_skills(task_dir: Path, *, org_id: str | None) -> int:
         logger.exception("probe: loading org skills failed")
         return 0
 
-    skills_root = task_dir / ".claude" / "skills"
     staged = 0
     for bundle in bundles:
         try:
@@ -186,7 +186,6 @@ async def apply_probe_overlay(
     task_id: str,
     trial_id: str,
     extra_instructions: str,
-    org_id: str | None = None,
     time_budget_sec: float | None = None,
 ) -> None:
     """Stage related logs and rewrite ``task_dir/instruction.md`` in place.
@@ -194,6 +193,11 @@ async def apply_probe_overlay(
     ``task_dir`` MUST be a writable temp copy of the task. Staging failures
     degrade gracefully (the related-logs section is softened); they never
     block the probe from running.
+
+    (Org skill injection is handled separately by the runners via
+    ``stage_org_skills`` + ``AgentConfig.skills`` -- NOT here, because skills
+    must reach the sandbox through Harbor's skill-upload path, not the task dir
+    which Harbor never mounts into the container.)
     """
     try:
         has_related = await stage_related_trial_logs(
@@ -209,14 +213,6 @@ async def apply_probe_overlay(
         stage_harbor_source(task_dir)
     except Exception:
         logger.exception("probe: staging harbor source failed")
-
-    # Stage the org's shared skills (+ global seeds) so claude-code discovers
-    # them in the sandbox. Best-effort; never blocks the probe.
-    n_skills = await stage_org_skills(task_dir, org_id=org_id)
-    if n_skills:
-        logger.info(
-            "probe: staged %d skill(s) for trial %s", n_skills, trial_id
-        )
 
     instr_path = task_dir / "instruction.md"
     original = instr_path.read_text() if instr_path.exists() else ""
