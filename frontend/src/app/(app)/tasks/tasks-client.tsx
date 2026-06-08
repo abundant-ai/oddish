@@ -310,18 +310,28 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
               })()}
             </div>
           </div>
-          <div className="shrink-0 text-right">
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-              Last run
-            </div>
-            <div className="mt-1 text-xs">
-              {task.last_run_at ? formatRelativeTime(task.last_run_at) : "—"}
-            </div>
-            {task.last_run_at ? (
-              <div className="text-[11px] text-muted-foreground">
-                {formatShortDateTime(task.last_run_at)}
+          <div className="shrink-0 flex flex-col items-end gap-2">
+            <Link
+              href={`/tasks/${task.id}/probe`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[11px] font-medium text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+            >
+              Probe run →
+            </Link>
+            <div className="text-right">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                Last run
               </div>
-            ) : null}
+              <div className="mt-1 text-xs">
+                {task.last_run_at ? formatRelativeTime(task.last_run_at) : "—"}
+              </div>
+              {task.last_run_at ? (
+                <div className="text-[11px] text-muted-foreground">
+                  {formatShortDateTime(task.last_run_at)}
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
       </CardHeader>
