@@ -204,6 +204,12 @@ async def list_tasks_core(
                     TaskModel.verdict_status,
                     TaskModel.verdict,
                     TaskModel.verdict_error,
+                    # Read by the experiment page's PR badge
+                    # (``pickExperimentPr``). Must be eagerly loaded; otherwise
+                    # the response builder triggers a lazy-load on this deferred
+                    # column outside the async greenlet and fails with
+                    # MissingGreenlet (same reason ``origin`` is loaded above).
+                    TaskModel.link,
                     TaskModel.created_at,
                     TaskModel.started_at,
                     TaskModel.finished_at,
