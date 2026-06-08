@@ -3,9 +3,6 @@
 import { use, useEffect, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { useAuth } from "@clerk/nextjs";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800";
 
 type AgentMessage = {
   kind: "assistant_text" | "tool_use" | "tool_result" | "result";
@@ -88,25 +85,15 @@ export default function ProbeResultPage({
   params: Promise<{ task_id: string; trial_id: string }>;
 }) {
   const { task_id, trial_id } = use(params);
-  const { getToken } = useAuth();
-
   const fetcher = async (url: string) => {
-    let token: string | null = null;
-    try {
-      token = await getToken({ template: "oddish" });
-    } catch {
-      token = await getToken();
-    }
-    const res = await fetch(url, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const res = await fetch(url, { cache: "no-store" });
     if (!res.ok)
       throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
     return res.json();
   };
 
   const { data: trials, error } = useSWR<Trial[]>(
-    `${API_URL}/tasks/${task_id}/trials`,
+    `/api/tasks/${task_id}/trials`,
     fetcher,
     {
       refreshInterval: (data) => {
