@@ -20,7 +20,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs  # type: ignore[attr-defined]
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import DeclarativeBase, mapped_column  # type: ignore[attr-defined]
@@ -999,8 +999,47 @@ class SkillFileModel(Base):
     skill: Mapped["SkillModel"] = relationship("SkillModel", back_populates="files")
 
 
+class DocumentModel(TimestampedMixin, Base):
+    """An uploaded reference document for agent retrieval.
+
+    Raw bytes live in S3 (``s3_key_raw``); the agent-facing ``digest_text``
+    and ``summary`` are Claude-generated at ingest. Org-scoped and records
+    the uploading user. ``content_text`` is the extracted raw text, retained
+    for a future semantic-search upgrade but not searched in v1.
+    """
+
+    __tablename__ = "documents"
+    __table_args__ = (
+        Index("ix_documents_org_id", "org_id"),
+        Index("ix_documents_created_by_user_id", "created_by_user_id"),
+        Index("ix_documents_updated_at", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    # source_type is one of: upload | paste | link
+    source_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    digest_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    tags: Mapped[list[str]] = mapped_column(
+        ARRAY(String(64)), nullable=False, default=list
+    )
+    content_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    s3_key_raw: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    raw_mime: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    raw_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
 from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
-    ExperimentModel, TaskModel, TrialModel, ProbePresetModel, SkillModel
+    ExperimentModel,
+    TaskModel,
+    TrialModel,
+    ProbePresetModel,
+    SkillModel,
+    DocumentModel,
 )
