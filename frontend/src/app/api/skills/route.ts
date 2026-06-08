@@ -37,10 +37,13 @@ export async function GET(request: NextRequest) {
     if (!res.ok) {
       const errorText = await res.text();
       console.error(`Backend error: ${res.status} - ${errorText}`);
-      return NextResponse.json(
-        { error: "Failed to fetch skills", details: errorText },
-        { status: res.status },
-      );
+      let payload: unknown;
+      try {
+        payload = JSON.parse(errorText);
+      } catch {
+        payload = { detail: errorText || "Failed to fetch skills" };
+      }
+      return NextResponse.json(payload, { status: res.status });
     }
 
     const data = await res.json();
@@ -88,10 +91,15 @@ export async function POST(request: NextRequest) {
     if (!res.ok) {
       const errorText = await res.text();
       console.error(`Backend error: ${res.status} - ${errorText}`);
-      return NextResponse.json(
-        { error: "Failed to create skill", details: errorText },
-        { status: res.status },
-      );
+      // Forward the upstream error body verbatim so the backend's `detail`
+      // (e.g. a 422 SKILL.md validation message) reaches the client.
+      let payload: unknown;
+      try {
+        payload = JSON.parse(errorText);
+      } catch {
+        payload = { detail: errorText || "Failed to create skill" };
+      }
+      return NextResponse.json(payload, { status: res.status });
     }
 
     const data = await res.json();
