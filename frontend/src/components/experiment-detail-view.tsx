@@ -178,6 +178,7 @@ function ExperimentHeaderMeta({
   showPassAtK,
   onToggleShowPassAtK,
   headerRight,
+  prLink,
 }: {
   isLoading: boolean;
   isInitialLoading: boolean;
@@ -185,9 +186,11 @@ function ExperimentHeaderMeta({
   showPassAtK: boolean;
   onToggleShowPassAtK: () => void;
   headerRight?: React.ReactNode;
+  prLink?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-wrap items-center justify-end gap-2">
+      {prLink}
       {isLoading && (
         <div className="inline-flex items-center gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-2 py-1 text-xs text-[color:var(--paper-ink-3)]">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -320,10 +323,10 @@ function ExperimentPrLink({
         title="No pull request linked to this experiment"
         className={cn(
           badgeVariants({ variant: "outline" }),
-          "gap-1.5 font-mono text-[11px] text-muted-foreground opacity-50",
+          "h-8 gap-1.5 rounded-[7px] px-3 font-mono text-[12px] text-muted-foreground opacity-50",
         )}
       >
-        <GitPullRequest className="h-3 w-3 shrink-0" aria-hidden />
+        <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
         no PR linked
       </span>
     );
@@ -343,10 +346,10 @@ function ExperimentPrLink({
       title={prTitle ? `${label} — view on GitHub` : "View pull request on GitHub"}
       className={cn(
         badgeVariants({ variant: "outline" }),
-        "max-w-xs gap-1.5 font-mono text-[11px] transition-colors hover:bg-accent",
+        "h-8 max-w-[200px] gap-1.5 rounded-[7px] px-3 font-mono text-[12px] transition-colors hover:bg-accent",
       )}
     >
-      <GitPullRequest className="h-3 w-3 shrink-0" aria-hidden />
+      <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
       {prTitle && prNumber && (
         <span className="shrink-0 text-muted-foreground">#{prNumber}</span>
       )}
@@ -929,12 +932,8 @@ export function ExperimentDetailView({
            * Show-graph + Publish actions parked top-right.
            */}
           <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
               <div className="min-w-0">{headerLeft}</div>
-              <ExperimentPrLink
-                tasks={tasksForExperiment}
-                isInitialLoading={isInitialLoading}
-              />
               <ExperimentMetaStrip
                 tasks={tasksForExperiment}
                 isInitialLoading={isInitialLoading}
@@ -948,6 +947,12 @@ export function ExperimentDetailView({
               showPassAtK={showPassAtK}
               onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
               headerRight={headerRight}
+              prLink={
+                <ExperimentPrLink
+                  tasks={tasksForExperiment}
+                  isInitialLoading={isInitialLoading}
+                />
+              }
             />
           </div>
 
