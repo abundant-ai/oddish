@@ -60,10 +60,9 @@ function buildDashboardSearchParams(
   if (input.experiments_status) {
     params.set("experiments_status", input.experiments_status);
   }
-  if (
-    input.experiments_author &&
-    input.experiments_author !== DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR
-  ) {
+  // Emit "me" and member ids; omit only for org-wide ("all") so SSR/SWR match
+  // the backend filter when defaulting to Mine.
+  if (input.experiments_author && input.experiments_author !== "all") {
     params.set("experiments_author", input.experiments_author);
   }
 
