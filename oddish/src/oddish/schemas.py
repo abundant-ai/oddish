@@ -1138,3 +1138,66 @@ class SkillResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Documents — agent doc-store.
+# ---------------------------------------------------------------------------
+class DocumentCreate(BaseModel):
+    """Request body to ingest a document.
+
+    Exactly one of ``content`` (text/paste) or ``file_b64`` (uploaded bytes)
+    must be provided. ``source_type`` selects the ingest path.
+    """
+
+    title: str | None = None  # falls back to filename / first line
+    source_type: str = "paste"  # upload|paste|link
+    source_url: str | None = None
+    content: str | None = None  # for paste/link text
+    file_b64: str | None = None  # base64 raw bytes for upload
+    raw_filename: str | None = None
+    raw_mime: str | None = None
+
+
+class DocumentUpdate(BaseModel):
+    """Edit metadata. All fields optional; only provided fields applied.
+    Set ``regenerate_digest=True`` to re-run the Claude digest step."""
+
+    title: str | None = None
+    summary: str | None = None
+    tags: list[str] | None = None
+    regenerate_digest: bool = False
+
+
+class DocumentCard(BaseModel):
+    """Cheap tier-1 search result — no digest/raw body."""
+
+    id: str
+    title: str
+    summary: str
+    tags: list[str]
+    source_url: str | None = None
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DocumentResponse(BaseModel):
+    """Full document as returned to the client (includes the tier-2 digest,
+    excludes raw bytes — those come from the MCP ``inspect_source`` path)."""
+
+    id: str
+    org_id: str | None = None
+    created_by_user_id: str | None = None
+    title: str
+    source_type: str
+    source_url: str | None = None
+    summary: str
+    digest_text: str
+    tags: list[str]
+    raw_mime: str | None = None
+    raw_filename: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
