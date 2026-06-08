@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -35,6 +36,20 @@ def _parse_github_meta(raw_github_meta: str | None) -> dict[str, Any] | None:
     except (TypeError, json.JSONDecodeError):
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+# Matches a PR number in a GitHub URL (.../pull/123 or .../pulls/123), mirroring
+# the frontend's ``parsePrNumberFromUrl`` so the dashboard PR badge can show
+# ``#<number>`` even when the URL came from the ``link`` column rather than
+# structured ``github_meta``.
+_PR_NUMBER_FROM_URL = re.compile(r"/pulls?/(\d+)(?:[/?#]|$)")
+
+
+def _pr_number_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    match = _PR_NUMBER_FROM_URL.search(url)
+    return match.group(1) if match else None
 
 
 def _normalize_dashboard_model(model: str | None, provider: str | None) -> str:
@@ -363,6 +378,7 @@ async def load_dashboard_experiments(
             TaskModel.user.label("last_user"),
             TaskModel.tags["github_username"].astext.label("last_github_username"),
             TaskModel.tags["github_meta"].astext.label("last_github_meta"),
+            TaskModel.link.label("last_link"),
         )
         .select_from(
             task_experiments.join(
@@ -479,6 +495,7 @@ async def load_dashboard_experiments(
             "last_github_meta": (
                 latest_task["last_github_meta"] if latest_task else None
             ),
+            "last_link": latest_task["last_link"] if latest_task else None,
         }
 
         # ``task_count`` mirrors the previous greatest(task, trial) shape
@@ -525,6 +542,21 @@ async def load_dashboard_experiments(
         last_author_name = merged["last_github_username"] or merged["last_user"]
         last_author_source = "github" if merged["last_github_username"] else "api"
 
+        # The PR URL can arrive two ways: structured ``github_meta.pr_url`` or
+        # the canonical ``link`` column (set by ``--link``, or auto-derived from
+        # github_meta). ``link`` is what the task/experiment pages render, so we
+        # treat it as a first-class fallback rather than relying on github_meta
+        # alone. The number is parsed from the URL when github_meta omits it.
+        last_pr_url = (
+            str(github_meta["pr_url"])
+            if github_meta and github_meta.get("pr_url") is not None
+            else merged["last_link"]
+        )
+        if github_meta and github_meta.get("pr_number") is not None:
+            last_pr_number = str(github_meta["pr_number"])
+        else:
+            last_pr_number = _pr_number_from_url(last_pr_url)
+
         experiments_response.append(
             {
                 "id": merged["experiment_id"],
@@ -552,21 +584,13 @@ async def load_dashboard_experiments(
                     if last_author_name
                     else None
                 ),
-                "last_pr_url": (
-                    str(github_meta["pr_url"])
-                    if github_meta and github_meta.get("pr_url") is not None
-                    else None
-                ),
+                "last_pr_url": last_pr_url,
                 "last_pr_title": (
                     str(github_meta["pr_title"])
                     if github_meta and github_meta.get("pr_title") is not None
                     else None
                 ),
-                "last_pr_number": (
-                    str(github_meta["pr_number"])
-                    if github_meta and github_meta.get("pr_number") is not None
-                    else None
-                ),
+                "last_pr_number": last_pr_number,
             }
         )
 
