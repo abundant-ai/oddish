@@ -213,6 +213,8 @@ export interface TaskBrowseItem {
   reward_sum: number;
   reward_total: number;
   last_run_at?: string | null;
+  link?: string | null;
+  github_meta?: Record<string, string> | null;
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
 }

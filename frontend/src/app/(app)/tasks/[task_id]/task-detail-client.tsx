@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
+import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -48,8 +48,8 @@ import type {
   TaskVersionSummary,
   Trial,
 } from "@/lib/types";
-import { formatRelativeTime } from "@/lib/utils";
-import { ArrowLeft, ChevronDown, FileText, Loader2 } from "lucide-react";
+import { cn, formatRelativeTime, prBadge } from "@/lib/utils";
+import { ArrowLeft, ChevronDown, ExternalLink, FileText, GitPullRequest, Loader2 } from "lucide-react";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -244,22 +244,37 @@ function TaskDetailHeader({
               </span>
             </>
           ) : null}
-          {task.link ? (
-            <>
-              <span aria-hidden>·</span>
-              <a
-                href={task.link}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[color:var(--paper-ink-2)] underline-offset-2 hover:underline"
-              >
-                link
-              </a>
-            </>
-          ) : null}
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
+        {task.link ? (() => {
+          const meta = task.github_meta;
+          const { label, number } = prBadge(task.link, meta?.pr_number);
+          const title = meta?.pr_title;
+          return (
+            <a
+              href={task.link}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={
+                title ? `${title} — view on GitHub` : "View pull request on GitHub"
+              }
+              className={cn(
+                badgeVariants({ variant: "outline" }),
+                "h-8 gap-1.5 rounded-[7px] px-3 font-mono text-[12px] transition-colors hover:bg-accent",
+              )}
+            >
+              <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              <span className="min-w-0 max-w-[160px] truncate">
+                {label}
+                {number && (
+                  <span className="text-muted-foreground"> #{number}</span>
+                )}
+              </span>
+              <ExternalLink className="h-3 w-3 shrink-0 opacity-50" aria-hidden />
+            </a>
+          );
+        })() : null}
         <Link href="/tasks">
           <Button
             type="button"
