@@ -1098,10 +1098,15 @@ class ProbePresetResponse(BaseModel):
 # Skills — custom agent skill bundles.
 # ---------------------------------------------------------------------------
 class SkillFile(BaseModel):
-    """One file inside a skill bundle."""
+    """One file inside a skill bundle.
+
+    ``from_attributes`` lets ``SkillResponse`` serialize the nested
+    ``SkillFileModel`` ORM rows (not just plain dicts on the request path)."""
 
     relative_path: str
     content: str
+
+    model_config = {"from_attributes": True}
 
 
 class SkillCreate(BaseModel):
