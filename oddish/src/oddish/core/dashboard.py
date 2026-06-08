@@ -300,22 +300,30 @@ def _build_latest_task_author_match(
 ):
     """Match the dashboard Author column on the experiment's latest live task.
 
-    When a task carries a ``github_username`` tag that tag wins over
-    ``created_by_user_id``, so CI runs stamped with the submitter's Clerk id
-    but tagged with someone else's GitHub handle stay out of Mine.
+    Precedence mirrors ``last_github_username or last_user`` in the response:
+    ``github_username`` tag first, then legacy ``tasks.user`` (email or known
+    GitHub handle from GH Actions / CLI ``--github-user``), then
+    ``created_by_user_id`` only when neither is present.
     """
-    tiers = []
     github_tag = _task_github_tag_expr()
+    normalized_email = (experiments_author_email or "").strip()
 
+    tiers = []
     if len(github_handles) == 1:
         tiers.append(github_tag == github_handles[0])
     elif len(github_handles) > 1:
         tiers.append(github_tag.in_(github_handles))
 
-    normalized_email = (experiments_author_email or "").strip()
+    legacy_user_matches = []
     if normalized_email:
+        legacy_user_matches.append(TaskModel.user == normalized_email)
+    if len(github_handles) == 1:
+        legacy_user_matches.append(TaskModel.user == github_handles[0])
+    elif len(github_handles) > 1:
+        legacy_user_matches.append(TaskModel.user.in_(github_handles))
+    if legacy_user_matches:
         tiers.append(
-            and_(_empty_github_tag_clause(), TaskModel.user == normalized_email)
+            and_(_empty_github_tag_clause(), or_(*legacy_user_matches))
         )
 
     tiers.append(
@@ -968,7 +976,9 @@ async def get_dashboard_core(
     experiments_cache_key = (
         f"dashboard.experiments:{org_id}:"
         f"{experiments_limit}:{experiments_offset}:{experiments_query}:"
-        f"{experiments_status}:{experiments_author_user_id}"
+        f"{experiments_status}:{experiments_author_user_id}:"
+        f"{','.join(experiments_author_github_usernames or ())}:"
+        f"{experiments_author_email or ''}"
     )
 
     is_usage_only_request = (

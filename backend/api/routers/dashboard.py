@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import APIKeyScope, AuthContext, require_auth
@@ -13,6 +13,113 @@ from oddish.db import TaskModel, get_session
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
 
 router = APIRouter(tags=["Dashboard"])
+
+
+def _normalize_github_handle(value: str | None) -> str | None:
+    normalized = (value or "").strip().lstrip("@")
+    return normalized or None
+
+
+def _looks_like_email(value: str) -> bool:
+    return "@" in value
+
+
+async def _other_member_github_handles(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    exclude_user_id: str,
+) -> set[str]:
+    rows = await session.execute(
+        select(UserModel.github_username)
+        .where(UserModel.org_id == org_id)
+        .where(UserModel.id != exclude_user_id)
+        .where(UserModel.is_active == True)  # noqa: E712
+        .where(UserModel.github_username.isnot(None))
+    )
+    blocked: set[str] = set()
+    for (handle,) in rows:
+        normalized = _normalize_github_handle(handle)
+        if normalized:
+            blocked.add(normalized.lower())
+    return blocked
+
+
+async def _discover_github_handles(
+    session: AsyncSession,
+    user: UserModel,
+    *,
+    org_id: str,
+) -> tuple[str, ...]:
+    """Resolve all GitHub handles that should count as Mine for this user."""
+    handles: list[str] = []
+    seen: set[str] = set()
+
+    def _add(handle: str | None) -> None:
+        normalized = _normalize_github_handle(handle)
+        if not normalized:
+            return
+        key = normalized.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        handles.append(normalized)
+
+    _add(user.github_username)
+
+    blocked_handles = await _other_member_github_handles(
+        session, org_id=org_id, exclude_user_id=user.id
+    )
+
+    def _accept(handle: str | None) -> None:
+        normalized = _normalize_github_handle(handle)
+        if not normalized or normalized.lower() in blocked_handles:
+            return
+        _add(normalized)
+
+    tag_expr = TaskModel.tags["github_username"].astext
+    attribution_predicates = [TaskModel.created_by_user_id == user.id]
+    if user.email:
+        attribution_predicates.append(TaskModel.user == user.email)
+    if user.github_username:
+        primary = _normalize_github_handle(user.github_username)
+        if primary:
+            attribution_predicates.append(TaskModel.user == primary)
+    # GH Actions / CLI runs often stamp tasks.user with the handle string.
+    attribution_predicates.append(
+        and_(
+            tag_expr.isnot(None),
+            tag_expr != "",
+            func.lower(TaskModel.user) == func.lower(tag_expr),
+        )
+    )
+
+    tag_rows = await session.execute(
+        select(tag_expr)
+        .where(TaskModel.org_id == org_id)
+        .where(TaskModel.deleted_at.is_(None))
+        .where(tag_expr.isnot(None))
+        .where(tag_expr != "")
+        .where(or_(*attribution_predicates))
+        .distinct()
+    )
+    for (tag,) in tag_rows:
+        _accept(tag)
+
+    user_field_rows = await session.execute(
+        select(TaskModel.user)
+        .where(TaskModel.org_id == org_id)
+        .where(TaskModel.deleted_at.is_(None))
+        .where(TaskModel.created_by_user_id == user.id)
+        .where(TaskModel.user.isnot(None))
+        .where(TaskModel.user != "")
+        .distinct()
+    )
+    for (raw_user,) in user_field_rows:
+        if raw_user and not _looks_like_email(raw_user):
+            _accept(raw_user)
+
+    return tuple(handles)
 
 
 def _make_timing_recorder(request: Request) -> TimingRecorder:
@@ -35,9 +142,9 @@ async def _resolve_experiments_author(
       * a ``UserModel.id`` -> that specific organization member
 
     Returns ``(None, (), None)`` when no filter should apply. The resolved
-    github usernames come from the user's primary Clerk-linked handle plus
-    exclusive historical aliases (tags only seen on their tasks, never on
-    tasks attributed to another org member).
+    github usernames come from the user's Clerk-linked handle plus historical
+    aliases discovered from their tasks (``praxs`` / ``dot-agi`` etc.), excluding
+    handles registered as another org member's primary GitHub username.
     Unknown / cross-org ids keep the id (with empty handles/email) so the
     filter matches nothing rather than silently widening back to the full org.
     """
@@ -54,42 +161,11 @@ async def _resolve_experiments_author(
     if user is None or user.org_id != auth.org_id or not user.is_active:
         return target_user_id, (), None
 
-    github_usernames: list[str] = []
-    if user.github_username:
-        normalized_primary = user.github_username.strip().lstrip("@")
-        if normalized_primary:
-            github_usernames.append(normalized_primary)
-
-    alias_predicates = [TaskModel.created_by_user_id == user.id]
-    if user.email:
-        alias_predicates.append(TaskModel.user == user.email)
-
-    alias_rows = await session.execute(
-        select(TaskModel.tags["github_username"].astext)
-        .where(TaskModel.org_id == auth.org_id)
-        .where(TaskModel.deleted_at.is_(None))
-        .where(TaskModel.tags["github_username"].astext.isnot(None))
-        .where(or_(*alias_predicates))
-        .distinct()
+    github_usernames = await _discover_github_handles(
+        session, user, org_id=auth.org_id
     )
-    for (alias,) in alias_rows:
-        normalized_alias = (alias or "").strip().lstrip("@")
-        if not normalized_alias or normalized_alias in github_usernames:
-            continue
-        other_owner_count = await session.scalar(
-            select(func.count())
-            .select_from(TaskModel)
-            .where(TaskModel.org_id == auth.org_id)
-            .where(TaskModel.deleted_at.is_(None))
-            .where(TaskModel.tags["github_username"].astext == normalized_alias)
-            .where(TaskModel.created_by_user_id.isnot(None))
-            .where(TaskModel.created_by_user_id != user.id)
-        )
-        if other_owner_count:
-            continue
-        github_usernames.append(normalized_alias)
 
-    return user.id, tuple(github_usernames), user.email
+    return user.id, github_usernames, user.email
 
 
 @router.get("/dashboard")
