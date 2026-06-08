@@ -19,10 +19,6 @@ Python `3.12+` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` 
 - If you change `backend/` auth, deployment, or worker orchestration, update this file.
 - If you change `frontend/` routing, API proxy structure, or auth behavior, update this file.
 
-## Agent Workflow Preferences
-
-- After completing an approved implementation plan, **commit, push, and open a PR automatically** unless the user says otherwise.
-
 ## Repository Layout
 
 ```text
@@ -562,19 +558,6 @@ uv run alembic upgrade head
   - **Concurrency**: `queue_slots` leases and per-queue-key health
 - `/share/[token]` — read-only public experiment view. Passes `showAnalysis={false}` to `ExperimentDetailView`, which hides all trial-analysis and task-verdict UI (matrix analysis dots, the "Trial analysis" legend section, the trial analysis card, and the task verdict badge) from public viewers.
 - `/datasets` and `/datasets/[token]` — public dataset listing and detail
-
-### Dashboard
-
-- Recent Experiments defaults to the signed-in user's experiments
-  (`experiments_author=me`); the **Org** toggle shows the full org.
-- `/dashboard` accepts `experiments_author`: `all` (implicit default when the
-  param is omitted), `me`, or an org member's user id.
-- Mine attribution: `tasks.created_by_user_id`, `tags.github_username`, then
-  `tasks.user` email; Clerk sweeps stamp `auth.user_id` as `created_by_user_id`.
-- Service-account API keys without a linked user: tasks appear only under **Org**,
-  not Mine.
-- OSS standalone server (`python -m oddish.server`) ignores
-  `experiments_author=me`; use the hosted backend for local frontend dev.
 
 ### Request Flow
 
