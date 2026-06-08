@@ -109,13 +109,14 @@ def test_author_filter_supports_multiple_github_handles() -> None:
     assert " IN " in sql.upper()
 
 
-def test_author_filter_requires_latest_task_match() -> None:
+def test_author_filter_requires_primary_task_match() -> None:
     clause = _build_experiments_author_filter("user_123", None, org_id="org_1")
     assert clause is not None
     sql = _compile_sql(clause).lower()
-    # Latest-task filter correlates on the newest linked task id, not any member task.
+    # Primary-owner filter correlates on the oldest linked task id.
     assert "order by" in sql
     assert " limit " in sql
+    assert " asc" in sql
 
 
 def test_author_filter_without_org_scope_omits_org_predicate() -> None:

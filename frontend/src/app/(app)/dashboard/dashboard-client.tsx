@@ -1410,6 +1410,7 @@ function RecentTasksCard({
                 <TableRow>
                   <TableHead>Experiment</TableHead>
                   <TableHead>Author</TableHead>
+                  <TableHead>Last run</TableHead>
                   <TableHead>PR</TableHead>
                   <TableHead>Tasks</TableHead>
                   <TableHead>Trials</TableHead>
@@ -1451,7 +1452,16 @@ function RecentTasksCard({
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                         <span className="text-foreground/80">
-                          {formatTaskAuthor(experiment.last_author)}
+                          {formatTaskAuthor(
+                            experiment.author ?? experiment.last_author,
+                          )}
+                        </span>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                        <span className="text-foreground/80">
+                          {formatTaskAuthor(
+                            experiment.last_runner ?? experiment.last_author,
+                          )}
                         </span>
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-xs">
