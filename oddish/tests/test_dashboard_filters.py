@@ -131,7 +131,7 @@ def test_author_filter_includes_tasks_user_email_fallback() -> None:
         "user_123",
         None,
         org_id="org_1",
-        experiments_author_email="alice@example.com",
+        experiments_author_emails=("alice@example.com",),
     )
     assert clause is not None
     sql = _compile_sql(clause)
@@ -152,3 +152,19 @@ def test_author_filter_matches_legacy_tasks_user_github_handles() -> None:
     assert "dot-agi" in sql
     # Legacy GH Actions runs stamp tasks.user with the handle when tag is absent.
     assert "user" in sql
+
+
+def test_author_filter_supports_multiple_legacy_emails() -> None:
+    clause = _build_experiments_author_filter(
+        "user_123",
+        ("dot-agi",),
+        org_id="org_1",
+        experiments_author_emails=(
+            "pratty@abundant.ai",
+            "ps4534@nyu.edu",
+        ),
+    )
+    assert clause is not None
+    sql = _compile_sql(clause)
+    assert "pratty@abundant.ai" in sql
+    assert "ps4534@nyu.edu" in sql
