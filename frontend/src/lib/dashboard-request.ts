@@ -18,7 +18,7 @@ export const DASHBOARD_DEFAULT_USAGE_MINUTES = 1440;
 // Owner filter sentinel for the experiments table. "all" shows the whole
 // organization; "me" scopes to the current user; any other value is an
 // org member's user id.
-export const DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR = "all";
+export const DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR = "me";
 
 export const DEFAULT_DASHBOARD_REQUEST_PARAMS: DashboardRequestParams =
   Object.freeze({
@@ -27,6 +27,7 @@ export const DEFAULT_DASHBOARD_REQUEST_PARAMS: DashboardRequestParams =
     experiments_limit: DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT,
     experiments_offset: 0,
     experiments_status: "all",
+    experiments_author: DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
   });
 
 function setBooleanParam(
