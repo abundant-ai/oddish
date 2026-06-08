@@ -14,8 +14,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
-import { badgeVariants } from "@/components/ui/badge";
-import { cn, prBadge, prNumberFromUrl } from "@/lib/utils";
+import { prBadge, prNumberFromUrl, taskPrUrl } from "@/lib/utils";
 import { formatCostUsd } from "@/lib/format";
 import {
   EMPTY_TRIAL_AGGREGATE,
@@ -287,9 +286,9 @@ function pickExperimentPr(tasks: Task[]): {
   // canonical `task.link` column (set by `--link`, or auto-derived from
   // github_meta on the backend). `link` is what the task page renders, so we
   // treat it as a first-class source rather than relying on github_meta alone.
-  const task = tasks.find((t) => t.github_meta?.pr_url || t.link);
+  const task = tasks.find((t) => taskPrUrl(t.link, t.github_meta));
   const meta = task?.github_meta;
-  const prUrl = meta?.pr_url ?? task?.link ?? null;
+  const prUrl = taskPrUrl(task?.link, meta);
   return {
     prUrl,
     prTitle: meta?.pr_title ?? null,
@@ -314,10 +313,7 @@ function ExperimentPrLink({
     return (
       <span
         title="No pull request linked to this experiment"
-        className={cn(
-          badgeVariants({ variant: "outline" }),
-          "h-8 gap-1.5 rounded-[7px] px-3 font-mono text-[12px] text-muted-foreground opacity-50",
-        )}
+        className="inline-flex h-8 select-none items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink-3)] opacity-60"
       >
         <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
         no PR linked
@@ -333,16 +329,13 @@ function ExperimentPrLink({
       target="_blank"
       rel="noreferrer"
       title={prTitle ? `${prTitle} — view on GitHub` : "View pull request on GitHub"}
-      className={cn(
-        badgeVariants({ variant: "outline" }),
-        "h-8 max-w-[200px] gap-1.5 rounded-[7px] px-3 font-mono text-[12px] transition-colors hover:bg-accent",
-      )}
+      className="inline-flex h-8 max-w-[200px] select-none items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
     >
       <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
       <span className="min-w-0 truncate">
         {label}
         {number && (
-          <span className="text-muted-foreground"> #{number}</span>
+          <span className="text-[color:var(--paper-ink-3)]"> #{number}</span>
         )}
       </span>
       <ExternalLink className="h-3 w-3 shrink-0 opacity-50" aria-hidden />
