@@ -1,7 +1,19 @@
 from __future__ import annotations
 
+import os
 import tomllib
 from pathlib import Path
+
+# Cap how long a probe agent may run. Tasks ship long agent timeouts
+# (``[agent] timeout_sec`` in task.toml, often hours) which is fine for real
+# attempts but far too long for a probe -- a wedged or expired-cred probe would
+# otherwise hold a container for hours. Probes also attach to *existing* tasks,
+# so when the task's task.toml omits timeouts entirely we hand the probe this
+# default instead of hard-failing validation. Both runners (the local
+# in-process ``worker.local_runner`` and the cloud ``workers.harbor_runner``)
+# read this single source of truth so dev and prod behave identically.
+# Overridable via ODDISH_PROBE_AGENT_TIMEOUT_SEC.
+PROBE_AGENT_TIMEOUT_SEC = int(os.environ.get("ODDISH_PROBE_AGENT_TIMEOUT_SEC", "1800"))
 
 
 class TaskTimeoutValidationError(ValueError):
