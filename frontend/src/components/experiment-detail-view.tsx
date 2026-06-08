@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { badgeVariants } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
+import { cn, prBadge, prNumberFromUrl } from "@/lib/utils";
 import { formatCostUsd } from "@/lib/format";
 import {
   EMPTY_TRIAL_AGGREGATE,
@@ -278,13 +278,6 @@ function pickExperimentCreationMeta(tasks: Task[]): {
   };
 }
 
-// Extract a PR number from a GitHub PR URL (.../pull/123 or .../pulls/123).
-function parsePrNumberFromUrl(url: string | null | undefined): string | null {
-  if (!url) return null;
-  const match = url.match(/\/pulls?\/(\d+)(?:[/?#]|$)/);
-  return match ? match[1] : null;
-}
-
 function pickExperimentPr(tasks: Task[]): {
   prUrl: string | null;
   prTitle: string | null;
@@ -300,7 +293,7 @@ function pickExperimentPr(tasks: Task[]): {
   return {
     prUrl,
     prTitle: meta?.pr_title ?? null,
-    prNumber: meta?.pr_number ?? parsePrNumberFromUrl(prUrl),
+    prNumber: meta?.pr_number ?? prNumberFromUrl(prUrl),
   };
 }
 
@@ -332,28 +325,26 @@ function ExperimentPrLink({
     );
   }
 
-  const label = prTitle
-    ? prTitle
-    : prNumber
-      ? `PR #${prNumber}`
-      : "PR";
+  const { label, number } = prBadge(prUrl, prNumber);
 
   return (
     <a
       href={prUrl}
       target="_blank"
       rel="noreferrer"
-      title={prTitle ? `${label} — view on GitHub` : "View pull request on GitHub"}
+      title={prTitle ? `${prTitle} — view on GitHub` : "View pull request on GitHub"}
       className={cn(
         badgeVariants({ variant: "outline" }),
         "h-8 max-w-[200px] gap-1.5 rounded-[7px] px-3 font-mono text-[12px] transition-colors hover:bg-accent",
       )}
     >
       <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
-      {prTitle && prNumber && (
-        <span className="shrink-0 text-muted-foreground">#{prNumber}</span>
-      )}
-      <span className="min-w-0 truncate">{label}</span>
+      <span className="min-w-0 truncate">
+        {label}
+        {number && (
+          <span className="text-muted-foreground"> #{number}</span>
+        )}
+      </span>
       <ExternalLink className="h-3 w-3 shrink-0 opacity-50" aria-hidden />
     </a>
   );

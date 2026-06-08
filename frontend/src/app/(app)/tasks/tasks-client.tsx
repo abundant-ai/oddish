@@ -31,6 +31,7 @@ import {
   encodeExperimentRouteParam,
   formatRelativeTime,
   formatShortDateTime,
+  prBadge,
 } from "@/lib/utils";
 import {
   ChevronLeft,
@@ -272,16 +273,18 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
               </Badge>
               {task.link ? (() => {
                 const meta = task.github_meta;
-                const num =
-                  meta?.pr_number ??
-                  (task.link.match(/\/pulls?\/(\d+)/)?.[1] ?? null);
+                const { label, number } = prBadge(task.link, meta?.pr_number);
                 const title = meta?.pr_title;
                 return (
                   <a
                     href={task.link}
                     target="_blank"
                     rel="noopener noreferrer"
-                    title="View pull request on GitHub"
+                    title={
+                      title
+                        ? `${title} — view on GitHub`
+                        : "View pull request on GitHub"
+                    }
                     onClick={(e) => e.stopPropagation()}
                     className={cn(
                       badgeVariants({ variant: "outline" }),
@@ -289,13 +292,11 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
                     )}
                   >
                     <GitPullRequest className="h-3 w-3 shrink-0" aria-hidden />
-                    {title && num && (
-                      <span className="shrink-0 text-muted-foreground">
-                        #{num}
-                      </span>
-                    )}
                     <span className="min-w-0 max-w-[140px] truncate">
-                      {title ?? (num ? `PR #${num}` : "PR")}
+                      {label}
+                      {number && (
+                        <span className="text-muted-foreground"> #{number}</span>
+                      )}
                     </span>
                     <ExternalLink
                       className="h-3 w-3 shrink-0 opacity-50"

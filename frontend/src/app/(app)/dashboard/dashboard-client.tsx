@@ -41,7 +41,12 @@ import type {
   QueueStats,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
-import { cn, encodeExperimentRouteParam, formatShortDateTime } from "@/lib/utils";
+import {
+  cn,
+  encodeExperimentRouteParam,
+  formatShortDateTime,
+  prBadge,
+} from "@/lib/utils";
 import {
   buildDashboardApiPath,
   DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT,
@@ -1321,24 +1326,34 @@ function RecentTasksCard({
                             href={experiment.last_pr_url}
                             target="_blank"
                             rel="noreferrer"
+                            title={
+                              experiment.last_pr_title
+                                ? `${experiment.last_pr_title} — view on GitHub`
+                                : "View pull request on GitHub"
+                            }
                             className={cn(
                               badgeVariants({ variant: "outline" }),
                               "max-w-[200px] gap-1.5 font-mono text-[11px] transition-colors hover:bg-accent",
                             )}
                           >
                             <GitPullRequest className="h-3 w-3 shrink-0" aria-hidden />
-                            {experiment.last_pr_title && experiment.last_pr_number && (
-                              <span className="shrink-0 text-muted-foreground">
-                                #{experiment.last_pr_number}
-                              </span>
-                            )}
-                            <span className="min-w-0 truncate">
-                              {experiment.last_pr_title
-                                ? experiment.last_pr_title
-                                : experiment.last_pr_number
-                                  ? `PR #${experiment.last_pr_number}`
-                                  : "PR"}
-                            </span>
+                            {(() => {
+                              const { label, number } = prBadge(
+                                experiment.last_pr_url,
+                                experiment.last_pr_number,
+                              );
+                              return (
+                                <span className="min-w-0 truncate">
+                                  {label}
+                                  {number && (
+                                    <span className="text-muted-foreground">
+                                      {" "}
+                                      #{number}
+                                    </span>
+                                  )}
+                                </span>
+                              );
+                            })()}
                             <ExternalLink className="h-3 w-3 shrink-0 opacity-50" aria-hidden />
                           </Link>
                         ) : (
