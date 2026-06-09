@@ -1,7 +1,7 @@
 """add skills + skill_files tables
 
 Revision ID: skills_001
-Revises: probe_presets_001
+Revises: trial_is_probe_001
 Create Date: 2026-06-07 00:00:00.000000
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "skills_001"
-down_revision: Union[str, Sequence[str], None] = "probe_presets_001"
+down_revision: Union[str, Sequence[str], None] = "trial_is_probe_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
