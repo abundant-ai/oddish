@@ -1,11 +1,12 @@
-"""Apply Alembic to the PR's Supabase preview branch.
+"""Apply Alembic to the PR's data-less Supabase preview branch.
 
-With Supabase data-branching enabled, the preview branch is a clone of
-prod: ``alembic_version`` already points at prod's head, every table
-already has prod-shaped rows. ``alembic upgrade head`` then only
-applies the revisions added on this PR — and those revisions run
-against real data, so a destructive migration fails *here* instead of
-at the prod cutover. That's the entire point of this step.
+A data-less branch still inherits the parent project's *schema* (only the
+data is omitted), so ``alembic upgrade head`` applies just the revisions
+this PR adds on top for both stacks (oddish + backend) -- it is not a
+from-scratch build. NOTE: because the branch carries no data, destructive
+/backfill data migrations are not exercised against real rows here; that
+coverage is deliberately traded away. Curated data is loaded afterwards by
+``seed_preview_db.py``.
 """
 
 import subprocess
