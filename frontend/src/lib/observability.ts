@@ -15,6 +15,13 @@ const TRACER_NAME = "oddish-frontend";
 // (it only works server-side, e.g. from curl). See that route for details.
 const LOGFIRE_TRACE_PATH = "/api/telemetry/traces";
 
+// Never instrument the export request itself. The OTLP exporter sends spans
+// via `fetch`, and `instrumentation-fetch` would otherwise wrap that POST in
+// a fresh span — which then gets exported, spawning another span, a
+// self-perpetuating ~1 req/s/tab heartbeat against our own relay. Excluding
+// the path breaks the loop. (XHR is covered too, belt-and-suspenders.)
+const TRACE_EXPORT_IGNORE_URLS = [/\/api\/telemetry\/traces(?:\?|$)/];
+
 function resolveEnvironment(): string {
   const explicit = process.env.NEXT_PUBLIC_LOGFIRE_ENVIRONMENT;
   if (explicit) return explicit;
@@ -70,6 +77,10 @@ export function ensureLogfireConfigured(): void {
         getWebAutoInstrumentations({
           "@opentelemetry/instrumentation-fetch": {
             clearTimingResources: true,
+            ignoreUrls: TRACE_EXPORT_IGNORE_URLS,
+          },
+          "@opentelemetry/instrumentation-xml-http-request": {
+            ignoreUrls: TRACE_EXPORT_IGNORE_URLS,
           },
         }),
       ],
