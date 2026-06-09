@@ -259,6 +259,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
           configs: [{ agent, model, n_trials: 1 }],
           user: "probe-ui",
           extra_instructions: extraInstructions,
+          probe_name: selectedPreset?.name ?? null,
           result_focus: result_focus.trim() || null,
           evaluation_metric: selectedPreset?.evaluation_metric ?? null,
           ratio_unit: selectedPreset?.ratio_unit ?? null,
