@@ -27,6 +27,11 @@ from pathlib import Path
 
 from harbor.trial.trial import Trial
 
+from oddish.config import (
+    ZAI_DEFAULT_BASE_URL,
+    is_zai_model,
+    zai_bare_model_id,
+)
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -57,11 +62,11 @@ logger = logging.getLogger(__name__)
 # one of these substrings is skipped.
 # ---------------------------------------------------------------------------
 _WATCHDOG_SAFE_PATTERNS = (
-    "claude",       # the agent itself
-    "tee /logs",    # Harbor's stdout redirect for the agent log
-    "watchdog",     # this script (don't kill yourself)
-    "sleep",        # benign
-    "ps ",          # this poll's own ps invocation
+    "claude",  # the agent itself
+    "tee /logs",  # Harbor's stdout redirect for the agent log
+    "watchdog",  # this script (don't kill yourself)
+    "sleep",  # benign
+    "ps ",  # this poll's own ps invocation
 )
 
 _WATCHDOG_SCRIPT = r"""
@@ -184,9 +189,7 @@ async def _watchdog_task(trial_name: str) -> None:
     """Background task: wait for the container, then start the watchdog."""
     container_name = await _find_trial_container(trial_name)
     if container_name is None:
-        logger.warning(
-            "watchdog: container for trial '%s' never appeared", trial_name
-        )
+        logger.warning("watchdog: container for trial '%s' never appeared", trial_name)
         return
     await _start_watchdog(container_name)
 
@@ -245,6 +248,34 @@ def _bedrock_agent_env(model_name: str | None) -> dict[str, str]:
             env[var] = val
     env.setdefault("AWS_REGION", "us-east-1")
     env["ANTHROPIC_API_KEY"] = ""
+    return env
+
+
+def _zai_agent_env(model_name: str | None) -> dict[str, str]:
+    """Env that lets Claude Code reach z.ai's GLM endpoint in local dev.
+
+    Returns ``{}`` for non-GLM models. Mirrors ``harbor_runner``'s z.ai env:
+    point Claude Code at the z.ai base URL, forward the host's ``ZAI_API_KEY``
+    as the auth token, pin the bare GLM id, and blank the ambient Bedrock creds
+    so the z.ai route wins.
+    """
+    if not is_zai_model(model_name):
+        return {}
+
+    bare_model = zai_bare_model_id(model_name or "")
+    env: dict[str, str] = {
+        "ANTHROPIC_BASE_URL": os.environ.get("ZAI_BASE_URL") or ZAI_DEFAULT_BASE_URL,
+        "ANTHROPIC_AUTH_TOKEN": os.environ.get("ZAI_API_KEY", ""),
+        "ANTHROPIC_API_KEY": "",
+        "CLAUDE_CODE_USE_BEDROCK": "",
+        "AWS_BEARER_TOKEN_BEDROCK": "",
+    }
+    if bare_model:
+        env["ANTHROPIC_MODEL"] = bare_model
+        env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = bare_model
+        env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = bare_model
+        env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = bare_model
+        env["CLAUDE_CODE_SUBAGENT_MODEL"] = bare_model
     return env
 
 
@@ -418,6 +449,9 @@ async def _run_harbor_trial(trial_id: str) -> None:
     bedrock_env = _bedrock_agent_env(model_name)
     if bedrock_env:
         agent_config.env = {**(agent_config.env or {}), **bedrock_env}
+    zai_env = _zai_agent_env(model_name)
+    if zai_env:
+        agent_config.env = {**(agent_config.env or {}), **zai_env}
 
     cfg = TrialConfig(
         task=TaskConfig(path=actual_task_path),

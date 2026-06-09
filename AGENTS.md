@@ -334,6 +334,12 @@ ODDISH_AZURE_OPENAI_DEPLOYMENTS='{"openai/gpt-5.2":"azure-gpt-5-2","gpt-5.2":"az
 # route for `anthropic/...` model ids.
 AWS_BEARER_TOKEN_BEDROCK=...
 
+# z.ai / GLM — auth token for GLM models run on the claude-code harness
+# (model ids like `zai/glm-x-preview[1m]`). Referenced as ${ZAI_API_KEY}.
+# Optionally override the endpoint via ZAI_BASE_URL.
+ZAI_API_KEY=...
+# ZAI_BASE_URL=https://api.z.ai/api/anthropic
+
 # Optional sandbox credentials
 DAYTONA_API_KEY=...
 MODAL_TOKEN_ID=...
@@ -377,6 +383,52 @@ Concurrency limits are keyed off the full `provider/model` string.
 > Trial *analysis* (the `claude -p` classifier) uses its own `ANALYSIS_MODEL`
 > (`oddish/config.py`), which is already a `global.` inference profile id. It
 > is not wired through `to_bedrock_model_id`.
+
+### GLM / z.ai routing (Claude Code harness, non-Bedrock)
+
+z.ai's GLM models are served over an **Anthropic-compatible `/messages`
+endpoint**, so they run on the `claude-code` harness — but they must *not*
+inherit claude-code's fixed Bedrock provider/queue, or they would contend with
+heavy Bedrock/Anthropic traffic for the same concurrency slots. oddish handles
+this with a dedicated z.ai route:
+
+- **Canonical id.** Any GLM/z.ai reference is canonicalized to `zai/<id>` by
+  `oddish.config.to_zai_model_id` inside `normalize_trial_model`. Recognized
+  inputs: an explicit `zai/`/`z-ai/`/`z.ai/` prefix, or a bare `glm...` id
+  (e.g. `glm-x-preview[1m]`, `glm-4.6`). `zai` is a litellm provider id, so the
+  trial's `provider` resolves to `zai` and its `queue_key` to `zai/<id>` —
+  a separate concurrency bucket from any Bedrock model. The `zai/` prefix is
+  kept on the model id handed to Harbor so its per-agent network allowlist
+  resolves `api.z.ai` for closed-internet tasks.
+- **Env injection.** For a `claude-code` agent on a GLM model,
+  `harbor_runner._apply_claude_code_zai_env` mirrors the OpenRouter path: it
+  sets `ANTHROPIC_BASE_URL` (default `https://api.z.ai/api/anthropic`,
+  overridable via `ZAI_BASE_URL`), `ANTHROPIC_AUTH_TOKEN=${ZAI_API_KEY}`
+  (resolved by Harbor's Modal env at exec time), pins `ANTHROPIC_MODEL` and all
+  size aliases to the **bare** GLM id, applies z.ai's recommended long-context
+  settings (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `API_TIMEOUT_MS`,
+  `CLAUDE_STREAM_IDLE_TIMEOUT_MS`, `CLAUDE_CODE_EAGER_FLUSH`,
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW`), and blanks the ambient
+  `ANTHROPIC_API_KEY` / `CLAUDE_CODE_USE_BEDROCK` / `AWS_BEARER_TOKEN_BEDROCK`
+  so the z.ai route wins over the image's Bedrock defaults. Any of these can be
+  overridden per-trial via the sweep `env:` / CLI `--agent-env`.
+- **Secret.** Provide `ZAI_API_KEY` in the runtime Modal secret (or the worker
+  environment). It is referenced as `${ZAI_API_KEY}` and never persisted to the
+  trial row.
+
+- **Recommended thinking/effort.** z.ai recommends "max effort" with adaptive
+  thinking. Harbor's `claude-code` agent (pinned fork commit) already renders
+  the `thinking` and `reasoning_effort` kwargs as `--thinking adaptive
+  --effort max`, so the z.ai route sets those kwargs as defaults. Override
+  either per-trial via agent kwargs (`--agent-kwarg reasoning_effort=high`).
+- **Network allowlist.** The Harbor fork's per-agent allowlist already maps
+  `zai`/`z-ai`/`glm` model prefixes (and the `glm-claude-code` agent name) to
+  `api.z.ai`, so closed-internet tasks on the Modal environment reach z.ai
+  without further changes.
+
+Run GLM on a task: `oddish run -p <task> --agent claude-code --model
+zai/glm-x-preview[1m]` (bare `glm-x-preview[1m]` works too and is canonicalized
+to `zai/...`).
 
 Storage defaults:
 

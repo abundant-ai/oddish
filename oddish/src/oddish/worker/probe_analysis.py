@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -38,22 +39,19 @@ _VERIFIER_STDOUT_CAP = 50_000
 _WATCHDOG_LOG_CAP = 20_000
 
 
-def _make_client(model: str):
-    """Pick the right Anthropic client for ``model``.
+def _make_client():
+    """Build the Anthropic client for the probe summary.
 
-    Local dev uses the direct API (``claude-sonnet-4-6``); the cloud worker
-    passes a Bedrock model id (e.g. ``global.anthropic.claude-haiku-4-5-...``)
-    and the Modal image provides AWS Bedrock creds in the environment. Routing
-    on the model id mirrors how the rest of oddish dispatches Claude jobs
-    (cf. ``config.looks_like_bedrock_model_id`` and ``analyze.classifier``).
+    The summary is a small internal Claude call, so it runs on the direct
+    Anthropic API (``ANTHROPIC_API_KEY``) in every environment -- local dev and
+    the Modal worker alike. We deliberately do NOT route it through Bedrock:
+    the installed SDK's ``AsyncAnthropicBedrock`` only speaks SigV4, but the
+    only Bedrock-capable credential in the worker is the bearer token
+    (``AWS_BEARER_TOKEN_BEDROCK``) the SDK can't consume, while the ambient AWS
+    creds are S3-scoped and SigV4-sign to a 403. Callers normalize Bedrock model
+    ids back to their plain API id via ``config.to_anthropic_api_model_id`` so
+    the model reaching this client is one the direct API accepts.
     """
-    from oddish.config import looks_like_bedrock_model_id
-
-    if looks_like_bedrock_model_id(model):
-        from anthropic import AsyncAnthropicBedrock
-
-        return AsyncAnthropicBedrock()
-
     from anthropic import AsyncAnthropic
 
     return AsyncAnthropic()
@@ -337,15 +335,15 @@ async def run_probe_analyzer(
             "not return null for this field when the operator specified a focus."
         )
 
-    # oddish runs Claude exclusively through AWS Bedrock (cf. config.py). Resolve
-    # plain model ids (e.g. DEFAULT_ANALYZER_MODEL "claude-sonnet-4-6") to their
-    # invokable Bedrock inference-profile id so _make_client routes to
-    # AsyncAnthropicBedrock and authenticates via IAM creds rather than an
-    # ANTHROPIC_API_KEY we don't carry locally or on Modal.
-    from oddish.config import to_bedrock_model_id
+    # The probe summary runs on the direct Anthropic API (see _make_client). The
+    # cloud callers pass settings.analysis_model, a Bedrock inference-profile id
+    # (e.g. "global.anthropic.claude-haiku-4-5-...-v1:0"); normalize it back to
+    # the plain API id ("claude-haiku-4-5") the direct API accepts. Plain ids
+    # (local dev's "claude-sonnet-4-6") pass through unchanged.
+    from oddish.config import to_anthropic_api_model_id
 
-    model = to_bedrock_model_id(model) or model
-    client = _make_client(model)
+    model = to_anthropic_api_model_id(model) or model
+    client = _make_client()
     msg = await client.messages.create(
         model=model,
         max_tokens=2048,
