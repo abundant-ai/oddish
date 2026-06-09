@@ -30,6 +30,10 @@ from oddish.db import (
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
+from oddish.worker.probe_analysis import (
+    extract_probe_artifacts,
+    run_probe_analyzer,
+)
 from oddish.worker.probe_staging import apply_probe_overlay
 from oddish.workers.harbor_runner import HarborOutcome, run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
