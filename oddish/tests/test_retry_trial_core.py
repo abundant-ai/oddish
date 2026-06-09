@@ -38,6 +38,7 @@ class _RecordingTrial:
         self.timeout_minutes = None
         self.environment = None
         self.harbor_config = None
+        self.is_probe = False
         self.max_attempts = 6
         self.status = TrialStatus.SUCCESS
         self.error_message = None

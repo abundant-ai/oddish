@@ -2,9 +2,6 @@
 
 import Link from "next/link";
 import useSWR from "swr";
-import { useAuth } from "@clerk/nextjs";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800";
 
 type Attempt = {
   success?: boolean | null;
@@ -35,6 +32,7 @@ type Trial = {
     ratio_unit?: string | null;
     ratio_verb?: string | null;
   } | null;
+  is_probe?: boolean;
 };
 
 function pluralize(noun: string): string {
@@ -250,27 +248,16 @@ const VARIANT_CLASS: Record<ResultDisplay["variant"], string> = {
 };
 
 export function ProbeHistoryTable({ taskId }: { taskId: string }) {
-  const { getToken } = useAuth();
-
+  // Fetch through the same-origin Next proxy (/api/...) so the browser never
+  // hits the backend cross-origin — no CORS, auth attached server-side.
   const fetcher = async (url: string) => {
-    let token: string | null = null;
-    try {
-      token = await getToken({ template: "oddish" });
-    } catch {
-      // Template missing — fall back to default session token.
-    }
-    if (!token) {
-      token = await getToken();
-    }
-    const res = await fetch(url, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   };
 
   const { data, error } = useSWR<Trial[]>(
-    `${API_URL}/tasks/${taskId}/trials`,
+    `/api/tasks/${taskId}/trials?probe=true`,
     fetcher,
     { refreshInterval: 5000 },
   );
@@ -284,15 +271,8 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
   if (!data)
     return <p className="text-sm text-muted-foreground">Loading history…</p>;
 
-  // If harbor_config is exposed (Task 15+), narrow to probe runs only.
-  // Otherwise show every trial for the task — better than hiding the whole
-  // history if the field hasn't been wired through yet.
-  const anyHaveHarborConfig = data.some(
-    (t) => t.harbor_config !== undefined && t.harbor_config !== null,
-  );
-  const probes = anyHaveHarborConfig
-    ? data.filter((t) => t.harbor_config?.mode === "probe")
-    : data;
+  // The server already filtered to probes (?probe=true); render as-is.
+  const probes = data;
 
   return (
     <div>
