@@ -328,9 +328,9 @@ async def seed(engine: AsyncEngine) -> None:
 
 async def _recompute_projections(conn, fixtures: dict[str, list[dict]]) -> None:
     """Refresh derived columns after seeding. No-op on schemas without
-    projections. When the tag feature (PR #239) lands it extends this to call
-    ``oddish.core.tags_projection.recompute_task_browse_projection`` per seeded
-    task (guarded import so this stays usable without the tag tables)."""
+    projections. A feature that adds derived projection columns (e.g. tags)
+    extends this to recompute them per seeded task via a guarded import, so
+    this stays usable on schemas without those tables."""
     return
 
 

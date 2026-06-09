@@ -1,18 +1,28 @@
-"""Gate: applying both Alembic stacks then seeding yields a consistent,
-deterministic, convergent preview DB. Requires MIGRATED_DB_URL pointing
-at a Postgres where both stacks are already at head (CI provides it)."""
+"""Gate: building the full schema then seeding yields a consistent,
+deterministic, convergent preview DB.
+
+The schema is built with ``Base.metadata.create_all`` -- oddish and backend
+models register on the same ``DeclarativeBase`` -- rather than replaying the
+Alembic chain. The real pipeline only ever applies Alembic incrementally onto
+a branch whose schema Supabase already cloned, never from an empty database,
+so a from-scratch chain replay is not a supported path.
+
+Requires ``ODDISH_DATABASE_URL`` pointing at an empty Postgres (CI provides a
+service container)."""
 import os
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import models  # noqa: F401  registers the cloud tables on the shared Base
 import preview_seed
+from oddish.db.models import Base
 
-URL = os.environ.get("MIGRATED_DB_URL")
+URL = os.environ.get("ODDISH_DATABASE_URL")
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.skipif(not URL, reason="MIGRATED_DB_URL not set"),
+    pytest.mark.skipif(not URL, reason="ODDISH_DATABASE_URL not set"),
 ]
 
 
@@ -29,6 +39,9 @@ async def _count(engine, sql):
 async def test_seed_populates_and_is_idempotent_and_convergent():
     engine = create_async_engine(URL)
     try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
         await preview_seed.seed(engine)
         assert await _count(engine, "select count(*) from organizations where id like 'seed-%'") == 1
         assert await _count(engine, "select count(*) from organizations where clerk_org_id = 'org_seedtest'") == 1
