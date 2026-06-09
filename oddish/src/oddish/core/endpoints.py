@@ -164,6 +164,13 @@ async def list_tasks_core(
                 TrialModel.harbor_stage,
                 TrialModel.reward,
                 TrialModel.error_message,
+                # Surfaced by ``build_compact_trial_response`` (probe
+                # trials read it on the experiment page). Must be loaded
+                # eagerly; otherwise the compact builder triggers a
+                # lazy-load on this deferred JSONB column outside the
+                # async greenlet and fails with MissingGreenlet (same
+                # reason ``origin`` / ``superseded_by_trial_id`` are here).
+                TrialModel.harbor_config,
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
