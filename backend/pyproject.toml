@@ -44,6 +44,9 @@ dependencies = [
     # Observability (Pydantic Logfire). Extras pull in the OpenTelemetry
     # instrumentations we wire up in ``backend/observability.py``.
     "logfire[asyncpg,fastapi,httpx,sqlalchemy,system-metrics]==4.33.0",
+
+    # Profanity filter for org-scoped tag naming policies.
+    "better-profanity>=0.7.0,<1.0",
 ]
 
 [project.optional-dependencies]

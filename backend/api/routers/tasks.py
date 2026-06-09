@@ -14,6 +14,7 @@ from cloud_policy import (
     get_default_cloud_environment,
 )
 from oddish.core.endpoints import (
+    UnknownTagFilterError,
     browse_tasks_core,
     cancel_task_analysis_core,
     cancel_task_verdict_core,
@@ -80,6 +81,10 @@ def _make_timing_recorder(request: Request) -> TimingRecorder:
         add_server_timing_metric(request, name, duration_ms, description)
 
     return _record
+
+
+def _split_tag_csv(csv: str | None) -> list[str]:
+    return [s.strip() for s in (csv or "").split(",") if s.strip()]
 
 
 MODAL_CANCEL_BATCH_SIZE = 32
@@ -418,6 +423,9 @@ async def browse_tasks(
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
     query: str | None = None,
+    tags: str | None = Query(None),
+    tags_any: str | None = Query(None),
+    tags_none: str | None = Query(None),
 ) -> TaskBrowseResponse:
     """Browse latest task versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
@@ -431,14 +439,20 @@ async def browse_tasks(
             elapsed_ms(connect_started_at),
             "Browse DB connect",
         )
-        return await browse_tasks_core(
-            session,
-            org_id=auth.org_id,
-            limit=limit,
-            offset=offset,
-            query=query,
-            record_timing=_make_timing_recorder(request),
-        )
+        try:
+            return await browse_tasks_core(
+                session,
+                org_id=auth.org_id,
+                limit=limit,
+                offset=offset,
+                query=query,
+                tags_all=_split_tag_csv(tags),
+                tags_any=_split_tag_csv(tags_any),
+                tags_none=_split_tag_csv(tags_none),
+                record_timing=_make_timing_recorder(request),
+            )
+        except UnknownTagFilterError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/experiments/combine", response_model=ExperimentCombineResponse)
