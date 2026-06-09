@@ -2,7 +2,8 @@
 
 No DB/S3/network — takes raw bytes + a content-type hint and returns plain
 text suitable for digesting and (future) search. PDFs go through ``pypdf``;
-everything else is decoded as UTF-8 (text/markdown/unknown).
+CSV is decoded as UTF-8 with the Excel BOM stripped; everything else is
+decoded as UTF-8 (text/markdown/unknown).
 """
 
 from __future__ import annotations
@@ -22,6 +23,12 @@ def extract_text(raw: bytes, *, mime: str | None, filename: str | None) -> str:
     )
     if is_pdf:
         return _extract_pdf(raw)
+    is_csv = (mime == "text/csv") or (
+        filename is not None and filename.lower().endswith(".csv")
+    )
+    if is_csv:
+        # Excel exports CSV as UTF-8 with a leading BOM; utf-8-sig strips it.
+        return raw.decode("utf-8-sig", errors="replace")
     return raw.decode("utf-8", errors="replace")
 
 
