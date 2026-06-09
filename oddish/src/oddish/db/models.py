@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     and_,
+    BigInteger,
     Boolean,
     Column,
     DateTime,
@@ -20,7 +21,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY, JSONB
 from sqlalchemy.ext.asyncio import AsyncAttrs  # type: ignore[attr-defined]
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import DeclarativeBase, mapped_column  # type: ignore[attr-defined]
@@ -162,6 +163,12 @@ class WorkerJobKind(str, Enum):
     # at ``tasks/{task_id}/v{N}/.oddish-task.tar.gz`` remains the
     # canonical, immutable artifact.
     TASK_EXPAND = "TASK_EXPAND"
+    # Recompute one or more rows' projected ``effective_tag_ids`` arrays
+    # from the truth tables (tags / tag_assignments / tag_exclusions /
+    # task_experiments). Idempotent and order-independent: every run
+    # rebuilds from source rather than applying a delta. Sibling-enqueued
+    # by every tag write in the same transaction.
+    TAG_PROJECT = "TAG_PROJECT"
 
 
 class WorkerJobStatus(str, Enum):
@@ -179,6 +186,105 @@ class WorkerJobStatus(str, Enum):
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
     BLOCKED = "BLOCKED"
+
+
+class TagState(str, Enum):
+    """Lifecycle state for a tag definition."""
+
+    ACTIVE = "ACTIVE"
+    ARCHIVED = "ARCHIVED"
+    MERGED = "MERGED"
+    DELETED = "DELETED"
+
+
+class TagVisibility(str, Enum):
+    """Whether a tag is visible on public share/dataset pages."""
+
+    PRIVATE = "PRIVATE"
+    PUBLIC = "PUBLIC"
+
+
+class TagAssignmentScope(str, Enum):
+    """What kind of target a tag assignment is bound to."""
+
+    VERSION = "VERSION"
+    TASK = "TASK"
+    EXPERIMENT = "EXPERIMENT"
+
+
+class TagAssignmentState(str, Enum):
+    """Lifecycle state for an individual tag assignment row."""
+
+    ACTIVE = "ACTIVE"
+    REMOVED = "REMOVED"
+
+
+class TagAssignmentSource(str, Enum):
+    """Where an assignment came from (direct vs experiment-derived)."""
+
+    DIRECT = "DIRECT"
+    EXPERIMENT_SNAPSHOT = "EXPERIMENT_SNAPSHOT"
+    EXPERIMENT_LIVING = "EXPERIMENT_LIVING"
+
+
+class TagGrantPrincipal(str, Enum):
+    USER = "USER"
+    ALL_MEMBERS = "ALL_MEMBERS"
+
+
+class TagGrantCapability(str, Enum):
+    RENAME = "RENAME"
+    MERGE = "MERGE"
+    DELETE = "DELETE"
+    EDIT = "EDIT"
+
+
+class TagEventAction(str, Enum):
+    CREATE = "CREATE"
+    EDIT = "EDIT"
+    RENAME = "RENAME"
+    ARCHIVE = "ARCHIVE"
+    UNARCHIVE = "UNARCHIVE"
+    MERGE = "MERGE"
+    DELETE = "DELETE"
+    APPLY = "APPLY"
+    REMOVE = "REMOVE"
+    EXCLUDE = "EXCLUDE"
+    UNEXCLUDE = "UNEXCLUDE"
+    GRANT = "GRANT"
+    REVOKE = "REVOKE"
+    SET_VISIBILITY = "SET_VISIBILITY"
+    POLICY_CHANGE = "POLICY_CHANGE"
+
+
+class TagEventActor(str, Enum):
+    USER = "USER"
+    API_KEY = "API_KEY"
+    SYSTEM = "SYSTEM"
+
+
+class TagEventSource(str, Enum):
+    UI = "UI"
+    API = "API"
+    CLI = "CLI"
+    INHERITANCE = "INHERITANCE"
+    RECONCILER = "RECONCILER"
+
+
+class SavedTagFilterVisibility(str, Enum):
+    PRIVATE = "PRIVATE"
+    ORG = "ORG"
+
+
+class TagPolicyWhoCanCreate(str, Enum):
+    ANY_MEMBER = "ANY_MEMBER"
+    ADMIN_ONLY = "ADMIN_ONLY"
+
+
+class TagPolicyProfanityMode(str, Enum):
+    ENFORCE = "ENFORCE"
+    REPORT = "REPORT"
+    OFF = "OFF"
 
 
 # =============================================================================
@@ -336,6 +442,19 @@ class TaskModel(TimestampedMixin, Base):
         Text, nullable=True
     )  # S3 prefix for task files (mirrors latest version)
     tags: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Materialized read projection — see `oddish.core.tags_projection`.
+    effective_tag_ids: Mapped[list[str]] = mapped_column(
+        PG_ARRAY(Text),
+        nullable=False,
+        default=list,
+        server_default=text("'{}'::text[]"),
+    )
+    current_version_tag_ids: Mapped[list[str]] = mapped_column(
+        PG_ARRAY(Text),
+        nullable=False,
+        default=list,
+        server_default=text("'{}'::text[]"),
+    )
     link: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Versioning: points to the latest TaskVersionModel row
@@ -449,6 +568,12 @@ class TaskVersionModel(TimestampedMixin, Base):
         DateTime(timezone=True), nullable=True
     )
     expanded_manifest_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    effective_tag_ids: Mapped[list[str]] = mapped_column(
+        PG_ARRAY(Text),
+        nullable=False,
+        default=list,
+        server_default=text("'{}'::text[]"),
+    )
 
     # Relationships
     task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]
@@ -945,8 +1070,396 @@ class ProbePresetModel(TimestampedMixin, Base):
     is_seed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+class TagModel(TimestampedMixin, Base):
+    """Org-scoped custom tag definition (the 'vocabulary' row)."""
+
+    __tablename__ = "tags"
+    __table_args__ = (
+        Index(
+            "uq_tags_org_normalized",
+            text("COALESCE(org_id, '')"),
+            "normalized_key",
+            text("COALESCE(normalized_value, '')"),
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL AND state <> 'DELETED'"),
+        ),
+        Index("idx_tags_org_state", "org_id", "state"),
+        Index("idx_tags_org_visibility", "org_id", "visibility"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    key: Mapped[str] = mapped_column(String(64), nullable=False)
+    normalized_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    value: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    normalized_value: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    color: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    visibility: Mapped[TagVisibility] = mapped_column(
+        SQLEnum(
+            TagVisibility,
+            name="tag_visibility",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+        default=TagVisibility.PRIVATE,
+        server_default=TagVisibility.PRIVATE.value,
+    )
+    state: Mapped[TagState] = mapped_column(
+        SQLEnum(
+            TagState,
+            name="tag_state",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+        default=TagState.ACTIVE,
+        server_default=TagState.ACTIVE.value,
+    )
+    merged_into_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("tags.id", ondelete="SET NULL", use_alter=True),
+        nullable=True,
+    )
+    owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    row_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class TagAssignmentModel(TimestampedMixin, Base):
+    """A tag attached to a target (version/task/experiment)."""
+
+    __tablename__ = "tag_assignments"
+    __table_args__ = (
+        Index(
+            "uq_tag_assignments_target",
+            text("COALESCE(org_id, '')"),
+            "tag_id",
+            "scope",
+            "target_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("idx_tag_assignments_tag_scope_state", "tag_id", "scope", "state"),
+        Index(
+            "idx_tag_assignments_scope_target_state", "scope", "target_id", "state"
+        ),
+        Index("idx_tag_assignments_org_tag_state", "org_id", "tag_id", "state"),
+        Index(
+            "idx_tag_assignments_source_experiment",
+            "source_experiment_id",
+            postgresql_where=text("source_experiment_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    tag_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tags.id", ondelete="CASCADE"), nullable=False
+    )
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    scope: Mapped[TagAssignmentScope] = mapped_column(
+        SQLEnum(
+            TagAssignmentScope,
+            name="tag_assignment_scope",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+    )
+    target_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    state: Mapped[TagAssignmentState] = mapped_column(
+        SQLEnum(
+            TagAssignmentState,
+            name="tag_assignment_state",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+        default=TagAssignmentState.ACTIVE,
+        server_default=TagAssignmentState.ACTIVE.value,
+    )
+    source: Mapped[TagAssignmentSource] = mapped_column(
+        SQLEnum(
+            TagAssignmentSource,
+            name="tag_assignment_source",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+        default=TagAssignmentSource.DIRECT,
+        server_default=TagAssignmentSource.DIRECT.value,
+    )
+    source_experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_assignment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    row_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    assigned_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    removed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class TagExclusionModel(TimestampedMixin, Base):
+    """Per-experiment opt-out for a living tag inheritance."""
+
+    __tablename__ = "tag_exclusions"
+    __table_args__ = (
+        Index(
+            "uq_tag_exclusions_target",
+            "experiment_id",
+            "tag_id",
+            "scope",
+            "target_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("idx_tag_exclusions_tag_id", "tag_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    tag_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tags.id", ondelete="CASCADE"), nullable=False
+    )
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    experiment_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope: Mapped[TagAssignmentScope] = mapped_column(
+        SQLEnum(
+            TagAssignmentScope,
+            name="tag_assignment_scope",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+    )
+    target_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class TagGrantModel(TimestampedMixin, Base):
+    """Per-tag delegation of a definition-plane capability."""
+
+    __tablename__ = "tag_grants"
+    __table_args__ = (
+        Index(
+            "uq_tag_grants_principal",
+            "tag_id",
+            "principal_type",
+            text("COALESCE(principal_user_id, '')"),
+            "capability",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("idx_tag_grants_tag_id", "tag_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    tag_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tags.id", ondelete="CASCADE"), nullable=False
+    )
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    principal_type: Mapped[TagGrantPrincipal] = mapped_column(
+        SQLEnum(
+            TagGrantPrincipal,
+            name="tag_grant_principal",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+    )
+    principal_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    capability: Mapped[TagGrantCapability] = mapped_column(
+        SQLEnum(
+            TagGrantCapability,
+            name="tag_grant_capability",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+    )
+    granted_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class TagEventModel(Base):
+    """Append-only audit row for every tag state change. Not soft-deleted."""
+
+    __tablename__ = "tag_events"
+    __table_args__ = (
+        Index("idx_tag_events_org_tag_occurred_at", "org_id", "tag_id", "occurred_at"),
+        Index("idx_tag_events_event_uuid", "event_uuid", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer().with_variant(BigInteger(), "postgresql"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    event_uuid: Mapped[str] = mapped_column(String(64), nullable=False)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    action: Mapped[TagEventAction] = mapped_column(
+        SQLEnum(
+            TagEventAction,
+            name="tag_event_action",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+    )
+    tag_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scope: Mapped[TagAssignmentScope | None] = mapped_column(
+        SQLEnum(
+            TagAssignmentScope,
+            name="tag_assignment_scope",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=True,
+    )
+    target_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    actor_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_type: Mapped[TagEventActor] = mapped_column(
+        SQLEnum(
+            TagEventActor,
+            name="tag_event_actor",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+        default=TagEventActor.USER,
+    )
+    source: Mapped[TagEventSource] = mapped_column(
+        SQLEnum(
+            TagEventSource,
+            name="tag_event_source",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+        default=TagEventSource.API,
+    )
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class TagPolicyModel(Base):
+    """Per-org governance configuration for tags."""
+
+    __tablename__ = "tag_policies"
+
+    org_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    max_tags_per_entity: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=10, server_default="10"
+    )
+    name_max_len: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=64, server_default="64"
+    )
+    name_charset: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="[a-z0-9._-]",
+        server_default="[a-z0-9._-]",
+    )
+    reserved_prefixes: Mapped[list[str]] = mapped_column(
+        PG_ARRAY(Text),
+        nullable=False,
+        default=list,
+        server_default=text("'{}'::text[]"),
+    )
+    who_can_create: Mapped[TagPolicyWhoCanCreate] = mapped_column(
+        SQLEnum(
+            TagPolicyWhoCanCreate,
+            name="tag_policy_who_can_create",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+        default=TagPolicyWhoCanCreate.ANY_MEMBER,
+        server_default=TagPolicyWhoCanCreate.ANY_MEMBER.value,
+    )
+    profanity_mode: Mapped[TagPolicyProfanityMode] = mapped_column(
+        SQLEnum(
+            TagPolicyProfanityMode,
+            name="tag_policy_profanity_mode",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+        default=TagPolicyProfanityMode.ENFORCE,
+        server_default=TagPolicyProfanityMode.ENFORCE.value,
+    )
+    profanity_allowlist: Mapped[list[str]] = mapped_column(
+        PG_ARRAY(Text),
+        nullable=False,
+        default=list,
+        server_default=text("'{}'::text[]"),
+    )
+    profanity_denylist: Mapped[list[str]] = mapped_column(
+        PG_ARRAY(Text),
+        nullable=False,
+        default=list,
+        server_default=text("'{}'::text[]"),
+    )
+    updated_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class SavedTagFilterModel(TimestampedMixin, Base):
+    """A named tag-filter (saved AND/OR/NOT AST) per user or org."""
+
+    __tablename__ = "saved_tag_filters"
+    __table_args__ = (
+        Index(
+            "uq_saved_tag_filters_owner_name",
+            "org_id",
+            "owner_user_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("idx_saved_tag_filters_org_visibility", "org_id", "visibility"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    filter_ast: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    visibility: Mapped[SavedTagFilterVisibility] = mapped_column(
+        SQLEnum(
+            SavedTagFilterVisibility,
+            name="saved_tag_filter_visibility",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+        default=SavedTagFilterVisibility.PRIVATE,
+        server_default=SavedTagFilterVisibility.PRIVATE.value,
+    )
+
+
 from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
-    ExperimentModel, TaskModel, TrialModel, ProbePresetModel
+    ExperimentModel,
+    TaskModel,
+    TrialModel,
+    ProbePresetModel,
+    TagModel,
+    TagAssignmentModel,
+    TagExclusionModel,
+    TagGrantModel,
+    SavedTagFilterModel,
 )
