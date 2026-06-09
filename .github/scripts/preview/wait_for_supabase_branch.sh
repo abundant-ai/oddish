@@ -89,7 +89,7 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     continue
   fi
 
-  # Polling timed out, or we've exhausted retries on a failed clone.
+  # Polling timed out, or we've exhausted retries on a failed branch.
   break
 done
 

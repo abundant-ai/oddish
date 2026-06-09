@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Ensure the PR database exists, run pending migrations, quiesce cloned work,
-# and publish the Modal DB secret needed by the backend deploy phase.
+# Ensure the PR database exists, run pending migrations, seed curated
+# fixtures, and publish the Modal DB secret needed by the backend deploy phase.
 set -euo pipefail
 
 : "${DEPLOY_BACKEND:?}"
