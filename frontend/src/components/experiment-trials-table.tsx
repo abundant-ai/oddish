@@ -22,10 +22,19 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TagPicker } from "@/components/tag-picker";
 import {
   Tooltip,
   TooltipContent,
@@ -498,6 +507,12 @@ export function ExperimentTrialsTable({
   const [isRunningVerdict, setIsRunningVerdict] = useState(false);
   const [isCancellingVerdict, setIsCancellingVerdict] = useState(false);
   const [verdictError, setVerdictError] = useState<string | null>(null);
+  const [tagBulkOpen, setTagBulkOpen] = useState(false);
+  const [tagBulkMode, setTagBulkMode] = useState<"snapshot" | "living">(
+    "snapshot"
+  );
+  const [tagBulkError, setTagBulkError] = useState<string | null>(null);
+  const [isApplyingBulkTag, setIsApplyingBulkTag] = useState(false);
   const [taskColumnWidth, setTaskColumnWidth] = useState(DEFAULT_TASK_WIDTH);
   const [agentColumnWidths, setAgentColumnWidths] = useState<
     Record<string, number>
@@ -1345,6 +1360,74 @@ export function ExperimentTrialsTable({
     }
   };
 
+  const handleApplyBulkTag = async (tagId: string) => {
+    if (isApplyingBulkTag || selectedTaskList.length === 0) return;
+    setIsApplyingBulkTag(true);
+    setTagBulkError(null);
+
+    try {
+      if (tagBulkMode === "snapshot") {
+        const results = await Promise.allSettled(
+          selectedTaskList.map(async (task) => {
+            const res = await fetch(`/api/tags/assign`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                tag_id: tagId,
+                scope: "TASK",
+                target_id: task.id,
+                task_id: task.id,
+              }),
+            });
+            if (!res.ok) {
+              const data = await res.json().catch(() => ({}));
+              throw new Error(
+                data.detail || data.error || "Failed to apply tag"
+              );
+            }
+          })
+        );
+        const failures = results.filter(
+          (result) => result.status === "rejected"
+        );
+        if (failures.length > 0) {
+          setTagBulkError(`Failed to tag ${failures.length} task(s).`);
+        }
+      } else {
+        const experimentId = selectedTaskList[0]?.experiment_id;
+        if (!experimentId) {
+          setTagBulkError("No experiment id available for living-mode tagging.");
+          return;
+        }
+        const res = await fetch(`/api/tags/assign`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tag_id: tagId,
+            scope: "EXPERIMENT",
+            target_id: experimentId,
+            task_id: null,
+            mode: "living",
+          }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(
+            data.detail || data.error || "Failed to apply living tag"
+          );
+        }
+      }
+      onRerun?.(selectedTaskList.map((task) => task.id));
+      setTagBulkOpen(false);
+    } catch (error) {
+      setTagBulkError(
+        error instanceof Error ? error.message : "Failed to apply tag"
+      );
+    } finally {
+      setIsApplyingBulkTag(false);
+    }
+  };
+
   const startResize = (
     event: ReactMouseEvent,
     columnKey: "task" | string,
@@ -1898,6 +1981,16 @@ export function ExperimentTrialsTable({
                         </InlineCount>
                       </InlineBtn>
                     )}
+                    <InlineBtn
+                      onClick={() => {
+                        setTagBulkError(null);
+                        setTagBulkOpen(true);
+                      }}
+                      disabled={selectedTasks.size === 0}
+                    >
+                      Tag
+                      <InlineCount>{selectedTasks.size}</InlineCount>
+                    </InlineBtn>
                     <span className="text-[color:var(--paper-line)] select-none">
                       │
                     </span>
@@ -2493,6 +2586,55 @@ export function ExperimentTrialsTable({
           </div>
         </div>
       </div>
+      <Dialog
+        open={tagBulkOpen}
+        onOpenChange={(open) => {
+          if (!isApplyingBulkTag) {
+            setTagBulkOpen(open);
+            if (!open) setTagBulkError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Tag selected tasks</DialogTitle>
+            <DialogDescription>
+              {tagBulkMode === "snapshot"
+                ? `Apply a tag to ${selectedTasks.size} selected task(s) at their current version.`
+                : "Apply a living tag at the experiment scope — it tracks newly added member tasks."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Tabs
+              value={tagBulkMode}
+              onValueChange={(value) =>
+                setTagBulkMode(value as "snapshot" | "living")
+              }
+            >
+              <TabsList>
+                <TabsTrigger value="snapshot">Snapshot</TabsTrigger>
+                <TabsTrigger value="living">Living</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <TagPicker
+              selectedTagIds={[]}
+              onChange={(picked) => {
+                if (picked[0]) {
+                  void handleApplyBulkTag(picked[0]);
+                }
+              }}
+              multi={false}
+              placeholder="Pick a tag…"
+            />
+            {tagBulkError && (
+              <Alert variant="destructive">
+                <AlertTitle>Tagging failed</AlertTitle>
+                <AlertDescription>{tagBulkError}</AlertDescription>
+              </Alert>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
       {canDeleteTasks && (
         <AlertDialog
           open={deleteTargets.length > 0}

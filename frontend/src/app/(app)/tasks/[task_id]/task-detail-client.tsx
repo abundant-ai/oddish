@@ -20,6 +20,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { TagEditor } from "@/components/tag-editor";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
@@ -804,6 +805,14 @@ export function TaskDetailClient({
     <TooltipProvider>
       <div className="space-y-4">
         <TaskDetailHeader task={task} onOpenTaskFiles={handleOpenTaskFiles} />
+
+        <TagEditor
+          scope="TASK"
+          targetId={task.id}
+          taskId={task.id}
+          initialTags={task.user_tags ?? []}
+          onMutate={() => mutate()}
+        />
 
         <TaskVerdictBadge
           task={task}

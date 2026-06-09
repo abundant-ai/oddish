@@ -16,6 +16,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ImportDialog } from "@/components/import-dialog";
+import { TagChip } from "@/components/tag-chip";
+import { TagFilterPopover } from "@/components/tag-filter-popover";
 import { fetcher } from "@/lib/api";
 import {
   formatPartialRewardBadgeValue,
@@ -25,7 +27,7 @@ import {
   getRewardStyle,
   STATUS_CONFIG,
 } from "@/lib/status-config";
-import type { TaskBrowseItem, TaskBrowseResponse } from "@/lib/types";
+import type { TagFilterAST, TaskBrowseItem, TaskBrowseResponse } from "@/lib/types";
 import {
   cn,
   encodeExperimentRouteParam,
@@ -336,6 +338,13 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
         </div>
       </CardHeader>
       <CardContent className="space-y-3 px-5 pb-5">
+        {(task.user_tags ?? []).length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {(task.user_tags ?? []).map((t) => (
+              <TagChip key={t.tag_id} tag={t} />
+            ))}
+          </div>
+        ) : null}
         <div className="space-y-1.5">
           <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
             Latest trials
@@ -374,11 +383,20 @@ export function TasksPageClient({
 }) {
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [offset, setOffset] = useState(0);
+  const [tagFilter, setTagFilter] = useState<TagFilterAST>({
+    all: [],
+    any: [],
+    none: [],
+  });
   const debouncedQuery = useDebouncedValue(searchQuery.trim(), 300);
 
   useEffect(() => {
     setOffset(0);
   }, [debouncedQuery]);
+
+  useEffect(() => {
+    setOffset(0);
+  }, [tagFilter]);
 
   const swrKey = useMemo(() => {
     const params = new URLSearchParams({
@@ -388,8 +406,17 @@ export function TasksPageClient({
     if (debouncedQuery) {
       params.set("query", debouncedQuery);
     }
+    if (tagFilter.all.length) {
+      params.set("tags", tagFilter.all.join(","));
+    }
+    if (tagFilter.any.length) {
+      params.set("tags_any", tagFilter.any.join(","));
+    }
+    if (tagFilter.none.length) {
+      params.set("tags_none", tagFilter.none.join(","));
+    }
     return `/api/tasks/browse?${params.toString()}`;
-  }, [debouncedQuery, offset]);
+  }, [debouncedQuery, offset, tagFilter]);
 
   const { data, error, isLoading, isValidating, mutate } =
     useSWR<TaskBrowseResponse>(swrKey, fetcher, {
@@ -397,7 +424,11 @@ export function TasksPageClient({
       revalidateOnFocus: false,
       keepPreviousData: true,
       fallbackData:
-        offset === 0 && debouncedQuery.length === 0
+        offset === 0 &&
+        debouncedQuery.length === 0 &&
+        tagFilter.all.length === 0 &&
+        tagFilter.any.length === 0 &&
+        tagFilter.none.length === 0
           ? (initialData ?? undefined)
           : undefined,
     });
@@ -434,6 +465,7 @@ export function TasksPageClient({
                 placeholder="Search tasks"
                 className="h-8 w-full border-[#6f88b4]/20 sm:w-[260px]"
               />
+              <TagFilterPopover value={tagFilter} onChange={setTagFilter} />
               <ImportDialog onImported={() => mutate()} />
             </div>
           </CardHeader>

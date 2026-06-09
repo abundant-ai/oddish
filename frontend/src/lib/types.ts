@@ -60,6 +60,22 @@ export type AnalysisClassification =
   | "GOOD_SUCCESS"
   | "BAD_SUCCESS";
 
+export interface UserTagRef {
+  tag_id: string;
+  key: string;
+  value?: string | null;
+  color?: string | null;
+  visibility: "PRIVATE" | "PUBLIC";
+  current: boolean;
+  older: boolean;
+}
+
+export interface TagFilterAST {
+  all: string[];
+  any: string[];
+  none: string[];
+}
+
 // Trial analysis result
 interface TrialAnalysis {
   trial_name?: string;
@@ -183,6 +199,7 @@ export interface Task {
   current_version?: number | null;
   current_version_id?: string | null;
   trials?: Trial[] | null;
+  user_tags?: UserTagRef[];
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -218,6 +235,7 @@ export interface TaskBrowseItem {
   github_meta?: Record<string, string> | null;
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
+  user_tags: UserTagRef[];
 }
 
 export interface TaskBrowseResponse {

@@ -13,6 +13,7 @@ import { useSearchParams } from "next/navigation";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
+import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { prBadge, prNumberFromUrl, taskPrUrl } from "@/lib/utils";
 import { formatCostUsd } from "@/lib/format";
@@ -923,6 +924,15 @@ export function ExperimentDetailView({
                 isInitialLoading={isInitialLoading}
                 experimentId={experimentId}
               />
+              {experimentId && (
+                <TagEditor
+                  scope="EXPERIMENT"
+                  targetId={experimentId}
+                  initialTags={[]}
+                  experimentMode="living"
+                  onMutate={() => onRerun?.()}
+                />
+              )}
             </div>
             <ExperimentHeaderMeta
               isLoading={isLoading}
