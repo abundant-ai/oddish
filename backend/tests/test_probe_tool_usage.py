@@ -13,6 +13,7 @@ from pathlib import Path
 
 from oddish.worker.probe_analysis import (
     _classify_tool_use,
+    _normalize_probe_summary,
     _parse_agent_messages,
     _summarize_tool_usage,
     extract_probe_artifacts,
@@ -157,4 +158,65 @@ def test_extract_probe_artifacts_includes_tool_usage(tmp_path):
     ]
     assert artifacts["tool_usage"]["mcp_tools"] == [
         {"server": "ctx7", "tool": "resolve-library-id", "count": 1}
+    ]
+
+
+# --------------------------------------------------------------------------
+# _normalize_probe_summary: tool_insights ("why it was useful") section
+# --------------------------------------------------------------------------
+
+
+def _normalize(parsed: dict) -> dict:
+    return _normalize_probe_summary(parsed, result_focus="", model="m")
+
+
+def test_normalize_keeps_valid_tool_insights():
+    out = _normalize(
+        {
+            "tool_insights": [
+                {
+                    "name": "deep-research",
+                    "kind": "skill",
+                    "note": "pulled in external docs the agent cited",
+                },
+                {
+                    "name": "ctx7.query-docs",
+                    "kind": "mcp",
+                    "note": "fetched the library API the agent needed",
+                },
+            ]
+        }
+    )
+    assert out["tool_insights"] == [
+        {
+            "name": "deep-research",
+            "kind": "skill",
+            "note": "pulled in external docs the agent cited",
+        },
+        {
+            "name": "ctx7.query-docs",
+            "kind": "mcp",
+            "note": "fetched the library API the agent needed",
+        },
+    ]
+
+
+def test_normalize_defaults_tool_insights_to_empty():
+    # The common run: no skills / MCP, model omits the field entirely.
+    assert _normalize({"headline": "x"})["tool_insights"] == []
+
+
+def test_normalize_drops_incomplete_and_coerces_bad_kind():
+    out = _normalize(
+        {
+            "tool_insights": [
+                {"name": "", "kind": "skill", "note": "no name -> dropped"},
+                {"name": "x", "kind": "skill", "note": ""},  # no note -> dropped
+                {"name": "weird-tool", "kind": "wat", "note": "bad kind -> skill"},
+                "not-a-dict",
+            ]
+        }
+    )
+    assert out["tool_insights"] == [
+        {"name": "weird-tool", "kind": "skill", "note": "bad kind -> skill"}
     ]
