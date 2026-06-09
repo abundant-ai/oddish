@@ -32,6 +32,7 @@ type Trial = {
     ratio_unit?: string | null;
     ratio_verb?: string | null;
   } | null;
+  is_probe?: boolean;
 };
 
 function pluralize(noun: string): string {
@@ -256,7 +257,7 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
   };
 
   const { data, error } = useSWR<Trial[]>(
-    `/api/tasks/${taskId}/trials`,
+    `/api/tasks/${taskId}/trials?probe=true`,
     fetcher,
     { refreshInterval: 5000 },
   );
@@ -270,15 +271,8 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
   if (!data)
     return <p className="text-sm text-muted-foreground">Loading history…</p>;
 
-  // If harbor_config is exposed (Task 15+), narrow to probe runs only.
-  // Otherwise show every trial for the task — better than hiding the whole
-  // history if the field hasn't been wired through yet.
-  const anyHaveHarborConfig = data.some(
-    (t) => t.harbor_config !== undefined && t.harbor_config !== null,
-  );
-  const probes = anyHaveHarborConfig
-    ? data.filter((t) => t.harbor_config?.mode === "probe")
-    : data;
+  // The server already filtered to probes (?probe=true); render as-is.
+  const probes = data;
 
   return (
     <div>

@@ -7,7 +7,7 @@ import {
 } from "@/lib/backend-config";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ task_id: string }> },
 ) {
   try {
@@ -16,7 +16,9 @@ export async function GET(
 
     const { task_id } = await params;
 
-    const url = getBackendUrl("tasks", `/${task_id}/trials`);
+    const probe = new URL(request.url).searchParams.get("probe");
+    const queryParams = probe !== null ? { probe } : undefined;
+    const url = getBackendUrl("tasks", `/${task_id}/trials`, queryParams);
     const res = await fetch(url, {
       cache: "no-store",
       headers: getAuthHeaders(token),
