@@ -30,6 +30,12 @@ from oddish.core.helpers import (
 )
 from collections.abc import Collection
 from harbor.models.environment_type import EnvironmentType
+from oddish.core.tag_filter_ast import (
+    TagFilterAST,
+    build_filter_predicates,
+    resolve_names_to_ids,
+)
+from oddish.core.tags_projection import list_effective_user_tags_for_task_versions
 from oddish.core.trial_io import (
     read_trial_logs,
     read_trial_logs_structured,
@@ -60,11 +66,23 @@ from oddish.schemas import (
     TaskVersionResponse,
     TaskVersionSummary,
     TrialResponse,
+    UserTagRef,
 )
 from oddish.timing import TimingRecorder, elapsed_ms, now
 
 USER_CANCELLED_MESSAGE = "Cancelled by user"
 _ACTIVE_WORKER_JOB_STATUSES_SQL = "'QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED'"
+
+
+class UnknownTagFilterError(ValueError):
+    """Raised when the browse caller filters by a tag name that does not
+    resolve to a tag id (typo, deleted tag, wrong org). The router maps it
+    to HTTP 400 so the CLI/UI shows a clear error instead of silently
+    returning unfiltered rows."""
+
+    def __init__(self, unknown: set[str]):
+        self.unknown = set(unknown)
+        super().__init__("unknown tag: " + ", ".join(sorted(self.unknown)))
 
 
 async def _primary_experiment_for_task_model(
@@ -171,7 +189,6 @@ async def list_tasks_core(
                 # async greenlet and fails with MissingGreenlet (same
                 # reason ``origin`` / ``superseded_by_trial_id`` are here).
                 TrialModel.harbor_config,
-                TrialModel.is_probe,
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
@@ -412,6 +429,9 @@ async def browse_tasks_core(
     limit: int = 25,
     offset: int = 0,
     query: str | None = None,
+    tags_all: list[str] | None = None,
+    tags_any: list[str] | None = None,
+    tags_none: list[str] | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
     """List latest-version task summaries for the task browser."""
@@ -446,6 +466,28 @@ async def browse_tasks_core(
         ranked_tasks = ranked_tasks.where(TaskModel.org_id == org_id)
     if normalized_query:
         ranked_tasks = ranked_tasks.where(TaskModel.name.ilike(f"%{normalized_query}%"))
+
+    # Resolve tag-name filters → tag IDs and append AND/OR/NOT predicates over
+    # ``tasks.effective_tag_ids``. The predicates reference the ``tasks`` table
+    # literally, and ``ranked_tasks`` uses ``select_from(TaskModel)`` (i.e. the
+    # ``tasks`` table), so the text predicates are applied here -- before the
+    # subquery is materialised. Unknown names raise so the CLI/UI shows a
+    # clear error instead of silently returning unfiltered rows.
+    if tags_all or tags_any or tags_none:
+        ast = TagFilterAST(
+            all=list(tags_all or []),
+            any_=list(tags_any or []),
+            none=list(tags_none or []),
+        )
+        resolved_filter, unknown_names = await resolve_names_to_ids(
+            session, org_id=org_id, ast=ast
+        )
+        if unknown_names:
+            raise UnknownTagFilterError(unknown_names)
+        if not resolved_filter.is_empty():
+            for predicate in build_filter_predicates(resolved_filter):
+                ranked_tasks = ranked_tasks.where(predicate)
+
     ranked_tasks_subquery = ranked_tasks.subquery()
 
     version_counts = (
@@ -637,6 +679,18 @@ async def browse_tasks_core(
                 )
             )
 
+    # Hydrate effective user tags for each visible task, batched in a
+    # single round trip. Used to populate ``TaskBrowseItem.user_tags`` so
+    # the browser can render the tag chips alongside the row.
+    visible_task_ids = [str(row["task_id"]) for row in visible_rows]
+    user_tags_by_task = (
+        await list_effective_user_tags_for_task_versions(
+            session, task_ids=visible_task_ids, public_only=False
+        )
+        if visible_task_ids
+        else {}
+    )
+
     build_started_at = now()
     response = TaskBrowseResponse(
         items=[
@@ -665,6 +719,18 @@ async def browse_tasks_core(
                 github_meta=_parse_github_meta(row["tags"]),
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),
+                user_tags=[
+                    UserTagRef(
+                        tag_id=t.tag_id,
+                        key=t.key,
+                        value=t.value,
+                        color=t.color,
+                        visibility=t.visibility,
+                        current=t.current,
+                        older=t.older,
+                    )
+                    for t in user_tags_by_task.get(str(row["task_id"]), [])
+                ],
             )
             for row in visible_rows
         ],

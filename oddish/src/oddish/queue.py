@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.core.helpers import cancel_job_by_worker
+from oddish.core.tags_enqueue import enqueue_tag_project_worker_job
+from oddish.core.tags_projection import recompute_task_browse_projection
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -685,7 +687,59 @@ async def create_task(
     await session.flush()
     await session.refresh(task, attribute_names=["trials"])
     await bump_experiment_last_activity(session, experiment_ids=experiment.id)
+    await recompute_task_browse_projection(session, task_id=task_id)
     return task
+
+
+async def _recompute_tag_projection_on_membership_change(
+    session,
+    *,
+    task_id: str,
+    experiment_id: str,
+    org_id: str | None,
+) -> None:
+    """Invalidation hook for ``_link_task_to_experiment``.
+
+    A task joining (or being restored into) an experiment may inherit one
+    or more living EXPERIMENT tags. We:
+      * recompute the task's browse-level projection synchronously so the
+        UI sees the chip immediately,
+      * enqueue a TAG_PROJECT job that recomputes every version of the
+        task asynchronously (chunked).
+    """
+    await recompute_task_browse_projection(session, task_id=task_id)
+    await enqueue_tag_project_worker_job(
+        session,
+        scope="TASK",
+        target_id=task_id,
+        task_id=task_id,
+        org_id=org_id,
+        mode="task_all_versions",
+    )
+
+
+async def _recompute_tag_projection_on_membership_removed(
+    session,
+    *,
+    task_id: str,
+    experiment_id: str,
+    org_id: str | None,
+) -> None:
+    """Invalidation hook for the un-link path (a task leaving an
+    experiment loses any living EXPERIMENT tags it inherited). Mirrors the
+    re-link hook: recompute the task's browse projection synchronously and
+    enqueue a TAG_PROJECT(task_all_versions) job. The hourly reconciler is
+    a backstop.
+    """
+    await recompute_task_browse_projection(session, task_id=task_id)
+    await enqueue_tag_project_worker_job(
+        session,
+        scope="TASK",
+        target_id=task_id,
+        task_id=task_id,
+        org_id=org_id,
+        mode="task_all_versions",
+    )
 
 
 async def _link_task_to_experiment(
@@ -701,6 +755,16 @@ async def _link_task_to_experiment(
             index_elements=["task_id", "experiment_id"],
             set_={"deleted_at": None},
         )
+    )
+    org_id = await session.scalar(
+        text("SELECT org_id FROM tasks WHERE id = :task_id"),
+        {"task_id": task_id},
+    )
+    await _recompute_tag_projection_on_membership_change(
+        session,
+        task_id=task_id,
+        experiment_id=experiment_id,
+        org_id=org_id,
     )
 
 
