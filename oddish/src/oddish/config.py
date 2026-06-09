@@ -160,6 +160,7 @@ def looks_like_bedrock_model_id(model: str | None) -> bool:
 #   https://platform.claude.com/docs/en/build-with-claude/claude-on-amazon-bedrock-legacy
 _ANTHROPIC_TO_BEDROCK_MODEL_IDS: dict[str, str] = {
     # Current models
+    "claude-fable-5": "global.anthropic.claude-fable-5",
     "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
     "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
     "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
