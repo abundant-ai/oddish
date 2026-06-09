@@ -315,9 +315,16 @@ async def run_probe_analyzer(
             },
             ...
           ],
+          "tool_insights": [
+            {"name": str, "kind": "skill"|"mcp", "note": str}, ...
+          ],
           "model": str,
           "generated_at": ISO8601,
         }
+
+    ``tool_insights`` is an optional curiosity section: a per-skill / per-MCP
+    "why it was useful" bullet. Empty unless the agent actually used skills or
+    MCP servers (external context / tools beyond the builtins).
     """
     transcript_lines = []
     for i, m in enumerate(agent_messages, 1):
@@ -419,6 +426,37 @@ async def run_probe_analyzer(
             "not return null for this field when the operator specified a focus."
         )
 
+    # Optional curiosity section: if the agent reached for any skills or MCP
+    # servers (external context / tools beyond the builtins), ask the model to
+    # annotate each with a one-line "why it was useful". Grounded in the
+    # deterministic usage roll-up so the names are exact and we only ask about
+    # tools that were actually invoked. Skipped entirely otherwise, so the base
+    # prompt stays unchanged for the common no-skill/no-MCP run.
+    tool_usage = _summarize_tool_usage(agent_messages)
+    if tool_usage["used_skills"] or tool_usage["used_mcp"]:
+        used_lines = [
+            f"- skill: {s['name']} ({s['count']}x)" for s in tool_usage["skills"]
+        ] + [
+            f"- mcp: {t['server']}.{t['tool']} ({t['count']}x)"
+            for t in tool_usage["mcp_tools"]
+        ]
+        prompt += (
+            "\n\n## Tools & skills used (optional)\n\n"
+            "Beyond the builtin tools, the agent reached for these skills / MCP "
+            "servers (external context / tools):\n"
+            f"{chr(10).join(used_lines)}\n\n"
+            "Add a top-level `tool_insights` array to your JSON: one entry per "
+            "skill / MCP tool that MEANINGFULLY helped the agent (drop any it "
+            "invoked but whose output it ignored or that errored out). Each entry:\n"
+            "{\n"
+            '  "name": "exact name from the list above (skill slug or server.tool)",\n'
+            '  "kind": "skill" | "mcp",\n'
+            '  "note": "1 sentence — what it gave the agent / why it was useful here"\n'
+            "}\n"
+            "Base every note on the transcript, not on what the tool is for in "
+            "general. Return `tool_insights: []` if none meaningfully helped."
+        )
+
     # The probe summary runs on the direct Anthropic API (see _make_client). The
     # cloud callers pass settings.analysis_model, a Bedrock inference-profile id
     # (e.g. "global.anthropic.claude-haiku-4-5-...-v1:0"); normalize it back to
@@ -488,6 +526,25 @@ def _normalize_probe_summary(
                 }
             )
 
+    # Optional skill / MCP "why it was useful" bullets. Only ``skill`` and
+    # ``mcp`` kinds are kept; entries missing a name or note are dropped.
+    tool_insights: list[dict] = []
+    for entry in parsed.get("tool_insights") or []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name", "")).strip()
+        note = str(entry.get("note", "")).strip()
+        kind = str(entry.get("kind", "")).strip().lower()
+        if not name or not note:
+            continue
+        tool_insights.append(
+            {
+                "name": name,
+                "kind": kind if kind in ("skill", "mcp") else "skill",
+                "note": note,
+            }
+        )
+
     return {
         "kind": "probe_summary",
         "headline": str(parsed.get("headline", "")),
@@ -503,6 +560,7 @@ def _normalize_probe_summary(
         ),
         "result_focus_question": result_focus or None,
         "attempts": attempts,
+        "tool_insights": tool_insights,
         "hypotheses": [
             str(h).strip()
             for h in (parsed.get("hypotheses") or [])
