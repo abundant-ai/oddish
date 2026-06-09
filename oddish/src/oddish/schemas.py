@@ -200,6 +200,13 @@ class TaskSubmission(BaseModel):
             "for every trial in this submission. Used for probe / adversarial probes."
         ),
     )
+    probe_name: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable name for a probe run (e.g. the preset name the operator "
+            "selected). Surfaced in probe-history UIs in place of the model name."
+        ),
+    )
     result_focus: str | None = Field(
         default=None,
         description=(
@@ -281,6 +288,13 @@ class TaskSweepSubmission(BaseModel):
         description=(
             "Operator-supplied prompt content to prepend to the task's instruction "
             "for every trial in this submission. Used for probe / adversarial probes."
+        ),
+    )
+    probe_name: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable name for a probe run (e.g. the preset name the operator "
+            "selected). Surfaced in probe-history UIs in place of the model name."
         ),
     )
     result_focus: str | None = Field(
@@ -609,6 +623,8 @@ class VisibleWorkerJob(BaseModel):
     kind: str
     status: str
     queue_key: str
+    provider: str | None = None
+    external_id: str | None = None
     subject_table: str | None = None
     subject_id: str | None = None
     attempts: int
@@ -663,6 +679,14 @@ class TrialResponse(BaseModel):
             "Harbor passthrough config (agent env/kwargs, environment "
             "resources, probe mode marker, extra_instructions, etc.). "
             "Surfaced for clients that need to render mode-specific UI."
+        ),
+    )
+    is_probe: bool = Field(
+        False,
+        description=(
+            "True if this trial is a probe (operator-directed instruction "
+            "overlay) rather than a real solution attempt. Indexed for "
+            "server-side filtering."
         ),
     )
 
@@ -821,6 +845,8 @@ class TaskBrowseItem(BaseModel):
     reward_sum: float
     reward_total: int
     last_run_at: datetime | None = None
+    link: str | None = None
+    github_meta: dict[str, str] | None = None
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
 

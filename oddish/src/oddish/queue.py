@@ -361,13 +361,35 @@ async def enqueue_trial_worker_job(
     )
 
 
+ANALYSIS_NO_RESULT_MESSAGE = (
+    "Analysis skipped: trial has no stored result to analyze "
+    "(neither an S3 key nor a local result path)."
+)
+
+
 async def enqueue_analysis_worker_job(
     session: AsyncSession,
     *,
     trial_id: str,
     org_id: str | None,
     parent_job_id: str | None = None,
-) -> WorkerJobModel:
+) -> WorkerJobModel | None:
+    """Enqueue a trial-analysis job, unless the trial has nothing to analyze.
+
+    Analysis resolves the trial's result directory from either ``trial_s3_key``
+    or ``harbor_result_path``. A trial that has neither (e.g. one that FAILED
+    before any results were uploaded) can never be analyzed: the handler raises
+    "No trial location available" and burns every retry before giving up, which
+    is what fills the shared analysis queue with doomed jobs. Mark such trials'
+    analysis FAILED up front and skip the enqueue, returning ``None``.
+    """
+    trial = await session.get(TrialModel, trial_id)
+    if trial is not None and not trial.trial_s3_key and not trial.harbor_result_path:
+        trial.analysis_status = AnalysisStatus.FAILED
+        trial.analysis_error = ANALYSIS_NO_RESULT_MESSAGE
+        trial.analysis_finished_at = utcnow()
+        return None
+
     return await enqueue_worker_job(
         session,
         EnqueueRequest(
@@ -450,6 +472,8 @@ def _build_harbor_config_for_trial(
     if submission.extra_instructions:
         base["mode"] = "probe"
         base["extra_instructions"] = submission.extra_instructions
+        if submission.probe_name:
+            base["probe_name"] = submission.probe_name
 
     if submission.result_focus:
         base["result_focus"] = submission.result_focus
@@ -645,6 +669,7 @@ async def create_task(
             timeout_minutes=spec.timeout_minutes,
             environment=spec.environment,
             harbor_config=harbor_config,
+            is_probe=(harbor_config or {}).get("mode") == "probe",
             max_attempts=submission.max_trial_attempts,
             status=TrialStatus.QUEUED,
         )
@@ -793,6 +818,7 @@ async def append_trials_to_task(
             timeout_minutes=spec.timeout_minutes,
             environment=spec.environment,
             harbor_config=harbor_config,
+            is_probe=(harbor_config or {}).get("mode") == "probe",
             max_attempts=submission.max_trial_attempts,
             status=TrialStatus.QUEUED,
         )

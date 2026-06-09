@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-09]
+
+### Added
+- `oddish probe` CLI command with full cloud probe agent support: probe presets stored in Postgres with CRUD backend endpoints and UI on task pages; probe trials bypass strict `task.toml` timeout validation and use a capped 30-minute agent timeout; local and cloud runners share the same probe implementation (#218)
+
+### Changed
+- Experiment trials table on the experiment page now defaults to A→Z task name sort instead of insertion order; the sort header toggle still cycles through all options (#220)
+
+### Fixed
+- Probe UI no longer shows "Failed to fetch" CORS errors; browser fetches for probe presets and sweep submissions moved from direct cross-origin backend calls to the same-origin Next.js BFF proxy (`/api/probe-presets`, `/api/tasks/sweep`), removing CORS as a failure point; reverts the hardcoded prod-origin CORS allowlist from #221 since it is no longer needed (#222)
+- Probe trials on tasks whose `task.toml` omits agent timeout settings no longer hard-fail validation; a shared `PROBE_AGENT_TIMEOUT_SEC` constant (default 30 min, overridable via `ODDISH_PROBE_AGENT_TIMEOUT_SEC`) is applied by both local and cloud runners (#225)
+- PR lineage badges now render consistently across dashboard, experiment page, task detail header, and task browser cards; fixed blank badge on the experiment page caused by `TaskModel.link` missing from the `compact_trials` `load_only` set; fixed missing badge on task cards when the PR URL lived only in `github_meta.pr_url`; added shared `taskPrUrl(link, github_meta)` resolver in `lib/utils.ts`; dashboard PR column now falls back to the `link` column when `github_meta` is absent (#197, #223)
+- Fresh-database `alembic upgrade head` no longer fails with duplicate column or foreign-key errors; three incremental migrations (`add_column last_activity_at`, `fk_tasks_current_version_id`, `fk_trials_experiment_id`) are now idempotent; a merge migration joins the two divergent heads into a single chain (#215)
+- Resolved Alembic double-head in the oddish migration chain caused by `probe_presets_001` and `dispatch_log` branching from the same migration tip; `probe_presets_001` re-parented onto `c1d2e3f4a5b6` to restore linear history (#219)
+
+### Removed
+- Repository dispatch emitter (`github/dispatch.py`) and `experiment_dispatch_log` table dropped; the `repository_dispatch` event path requires `Contents:write` permission that the production token lacks (#211)
+
+---
+
+## [2026-06-08]
+
+### Added
+- Fire a `repository_dispatch` webhook to consumer repos when all tasks in an experiment reach a terminal state; an `experiment_dispatch_log` table provides idempotent single-fire semantics; dispatch target and event type are read from `github_meta.dispatch` on task tags; gated by `GITHUB_DISPATCH_ALLOWED_REPOS` allowlist and authenticated via `GITHUB_DISPATCH_TOKEN` (falls back to `GITHUB_TOKEN`) (#206)
+
+### Changed
+- Bake a per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` default into the Modal deploy that raises the `google/gemini-3.5-flash` queue-key concurrency lease to 128 (up from the 48 default); operators can still override the whole JSON via the env var / `oddish-prod` secret (#213)
+- Raise `ODDISH_DEFAULT_MODEL_CONCURRENCY` fallback from 32 to 48, increasing per-model queue-key concurrency in the Modal runtime without changing the per-poll spawn cap (#208)
+- Experiment trials table tooltip for truncated task names now shows the full task name instead of the generic "View task files" label, with responsive max-width and word-break styling for long names (#207)
+
+---
+
+## [2026-06-07]
+
+### Changed
+- Automated daily changelog updated with entries for 2026-06-06 changes (#202)
+
+---
+
+## [2026-06-06]
+
+### Added
+- Trial detail panel now shows a "Sandbox" button linking to the Daytona dashboard when a trial has an associated Daytona worker job; `provider` and `external_id` fields exposed in the worker job API response to enable this (#190)
+
+### Fixed
+- Codex workers running against Azure OpenAI endpoints no longer fail with 302 errors from the websocket Responses route; a new `AzureCompatibleCodex` runner disables the `unified_exec` websocket transport and injects an HTTP-only OpenAI-compatible provider config; trajectory is recovered from stdout JSONL as a fallback when the Codex session file is sparse (#193)
+- `enqueue_analysis_worker_job` now skips enqueueing analysis for trials with no stored result (neither S3 key nor local path), immediately marking analysis `FAILED` instead of burning all 6 retries on a doomed job; a staleness-gated cleanup backstop finalizes `ANALYZING` tasks with no live trials and cancels their dangling queued `ANALYSIS` worker jobs (#196)
+- Stuck-`ANALYZING` cleanup pass rescoped to correctly target tasks whose live trials have `analysis_status = NULL` (analysis was never enqueued) rather than tasks with no live trials at all; NULL analysis statuses are now marked terminal so `maybe_start_verdict_stage` can advance the task to `VERDICT_PENDING` instead of leaving it indefinitely blocked; tasks with no live trials are still finalized `FAILED` (#200)
+- Worker containers now drain short-job queues by claiming and running multiple jobs back-to-back on their held slot until the queue empties or a wall-clock budget (`ODDISH_MODAL_WORKER_BATCH_BUDGET_SECONDS`, default 300s) expires; lifts utilization for analysis (~54s), verdict (~9s), and nop-oracle (~46s) queues toward 100% without changing global spawn rates or concurrency limits; long agent trials exceed the budget on the first job and continue to run one-per-container (#201)
+
+---
+
 ## [2026-06-05]
 
 ### Added

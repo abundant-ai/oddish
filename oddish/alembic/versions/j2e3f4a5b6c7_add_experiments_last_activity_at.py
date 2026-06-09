@@ -42,6 +42,7 @@ def upgrade() -> None:
             sa.DateTime(timezone=True),
             nullable=True,
         ),
+        if_not_exists=True,
     )
 
     # One-shot backfill. Greatest-of(latest task created_at via the

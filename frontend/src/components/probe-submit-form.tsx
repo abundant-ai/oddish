@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useAuth } from "@clerk/nextjs";
 import {
   Dialog,
   DialogContent,
@@ -27,8 +26,6 @@ const MODELS_BY_AGENT: Record<string, { value: string; label: string }[]> = {
     { value: "google/gemini-3.1-pro-preview", label: "gemini-3.1-pro-preview" },
   ],
 };
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800";
 
 // Keep "cheat_ratio" in the union as a legacy alias — old stored presets
 // and seeds may still carry it. We normalize to "ratio" at read time.
@@ -73,7 +70,6 @@ function normalizePreset(p: Preset): Preset {
 
 export function ProbeSubmitForm({ taskId }: { taskId: string }) {
   const router = useRouter();
-  const { getToken } = useAuth();
   const [agent, setAgent] = useState("claude-code");
   const [model, setModel] = useState(MODELS_BY_AGENT["claude-code"][0].value);
   const [extraInstructions, setExtraInstructions] = useState("");
@@ -103,23 +99,9 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
   const selectedPreset =
     presets.find((p) => p.id === selectedPresetId) ?? null;
 
-  const getAuthToken = useCallback(async (): Promise<string | null> => {
-    // Mirror the submit flow: prefer the configured Clerk template, fall
-    // back to the default session token if the template is missing.
-    try {
-      const t = await getToken({ template: "oddish" });
-      if (t) return t;
-    } catch {
-      // fall through to the default session token
-    }
-    return await getToken();
-  }, [getToken]);
-
   const reloadPresets = useCallback(async () => {
     try {
-      const token = await getAuthToken();
-      const res = await fetch(`${API_URL}/probe-presets`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      const res = await fetch(`/api/probe-presets`, {
         cache: "no-store",
       });
       if (!res.ok) {
@@ -144,7 +126,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     } finally {
       setPresetsLoaded(true);
     }
-  }, [getAuthToken]);
+  }, []);
 
   useEffect(() => {
     void reloadPresets();
@@ -213,16 +195,14 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     // backend assigns the id.
     const isEditCustom = editingPresetId !== null && !selectedPreset?.is_seed;
     try {
-      const token = await getAuthToken();
       const res = await fetch(
         isEditCustom
-          ? `${API_URL}/probe-presets/${editingPresetId}`
-          : `${API_URL}/probe-presets`,
+          ? `/api/probe-presets/${editingPresetId}`
+          : `/api/probe-presets`,
         {
           method: isEditCustom ? "PUT" : "POST",
           headers: {
             "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
           body: JSON.stringify(body),
         },
@@ -249,10 +229,8 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     if (!selectedPreset || selectedPreset.is_seed) return;
     if (!confirm(`Delete preset "${selectedPreset.name}"?`)) return;
     try {
-      const token = await getAuthToken();
-      const res = await fetch(`${API_URL}/probe-presets/${selectedPreset.id}`, {
+      const res = await fetch(`/api/probe-presets/${selectedPreset.id}`, {
         method: "DELETE",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (!res.ok) {
         setError(`Failed to delete preset: HTTP ${res.status}`);
@@ -270,27 +248,10 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     setSubmitting(true);
     setError(null);
     try {
-      // Match the codebase's getClerkToken pattern: prefer the configured
-      // template (CLERK_JWT_TEMPLATE=oddish in .env.local), fall back to
-      // the default session token if the template is missing.
-      let token: string | null = null;
-      try {
-        token = await getToken({ template: "oddish" });
-      } catch (err) {
-        console.warn(
-          "Failed to get Clerk token for template 'oddish', falling back to session token.",
-          err,
-        );
-      }
-      if (!token) {
-        token = await getToken();
-      }
-
-      const res = await fetch(`${API_URL}/tasks/sweep`, {
+      const res = await fetch(`/api/tasks/sweep`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
           task_id: taskId,
@@ -298,6 +259,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
           configs: [{ agent, model, n_trials: 1 }],
           user: "probe-ui",
           extra_instructions: extraInstructions,
+          probe_name: selectedPreset?.name ?? null,
           result_focus: result_focus.trim() || null,
           evaluation_metric: selectedPreset?.evaluation_metric ?? null,
           ratio_unit: selectedPreset?.ratio_unit ?? null,

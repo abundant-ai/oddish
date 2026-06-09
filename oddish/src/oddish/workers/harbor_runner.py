@@ -26,15 +26,25 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialHookEvent
 from harbor.models.job.result import JobResult
 
-from oddish.config import OPENAI_PROVIDER_OPENAI, settings, to_bedrock_model_id
+from oddish.config import (
+    OPENAI_PROVIDER_AZURE,
+    OPENAI_PROVIDER_OPENAI,
+    settings,
+    to_bedrock_model_id,
+)
 from oddish.schemas import HarborConfig
-from oddish.task_timeouts import validate_task_timeout_config
 from oddish.worker.probe_staging import stage_org_skills
+from oddish.task_timeouts import (
+    PROBE_AGENT_TIMEOUT_SEC,
+    validate_task_timeout_config,
+)
 
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _MIN_REQUIRED_FREE_GB = 5.0
 _MIN_REQUIRED_FREE_INODES = 1024
+_ODDISH_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:OddishCodex"
+_AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:AzureCompatibleCodex"
 
 
 class _TeeTextIO:
@@ -545,11 +555,38 @@ def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
     agent_config.env = env
 
 
+def _apply_codex_azure_compat(agent_config: AgentConfig) -> None:
+    """Route Azure Codex trials through Oddish's transport-compatible wrapper."""
+    if agent_config.import_path is not None:
+        return
+    agent_name = (agent_config.name or "").strip().lower()
+    if agent_name != "codex":
+        return
+    if settings.get_openai_provider() != OPENAI_PROVIDER_AZURE:
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _AZURE_COMPAT_CODEX_IMPORT_PATH
+
+
+def _apply_codex_oddish_wrapper(agent_config: AgentConfig) -> None:
+    """Route Codex trials through Oddish's compatibility wrapper."""
+    if agent_config.import_path is not None:
+        return
+    agent_name = (agent_config.name or "").strip().lower()
+    if agent_name != "codex":
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_CODEX_IMPORT_PATH
+
+
 def _build_agent_config(
     *,
     agent: str,
     model: str | None,
     raw_harbor_config: dict[str, Any],
+    is_probe: bool = False,
 ) -> AgentConfig:
     """Build Harbor's full AgentConfig, preserving rich per-trial fields."""
     raw_agent_config = raw_harbor_config.get("agent_config")
@@ -592,6 +629,12 @@ def _build_agent_config(
     ):
         agent_config.max_timeout_sec = legacy_overrides["max_timeout_sec"]
 
+    # Probe trials inherit an existing task's task.toml, which may carry a
+    # multi-hour agent timeout (or none at all). Cap them at the probe default
+    # unless the trial explicitly set its own override above.
+    if is_probe and agent_config.override_timeout_sec is None:
+        agent_config.override_timeout_sec = PROBE_AGENT_TIMEOUT_SEC
+
     if agent_config.import_path is None:
         agent_config.name = agent
     if model is not None:
@@ -611,6 +654,9 @@ def _build_agent_config(
             agent_config.model_name = settings.resolve_azure_openai_deployment(
                 agent_config.model_name
             )
+            _apply_codex_azure_compat(agent_config)
+
+    _apply_codex_oddish_wrapper(agent_config)
 
     return agent_config
 
@@ -707,7 +753,15 @@ async def run_harbor_trial_async(
     """
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
-    validate_task_timeout_config(task_path)
+
+    # Probes attach to an existing task and inherit its task.toml, which may
+    # predate the timeout requirement. Rather than hard-fail (the failure that
+    # broke probes in prod), skip strict validation and hand the probe a capped
+    # default agent timeout below -- mirroring ``worker.local_runner``, which
+    # never validated and already applies the same cap.
+    is_probe = raw.get("mode") == "probe"
+    if not is_probe:
+        validate_task_timeout_config(task_path)
 
     # ── Task patching ────────────────────────────────────────────────────
     needs_task_patch = bool(hc.docker_image or hc.mcp_servers)
@@ -776,6 +830,7 @@ async def run_harbor_trial_async(
             agent=agent,
             model=model,
             raw_harbor_config=raw,
+            is_probe=is_probe,
         )
 
         # Stage the org's shared skills (+ global seeds) into a root under the
