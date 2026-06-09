@@ -59,7 +59,9 @@ async def test_probe_analyzer_parses_json_response():
     assert result["headline"] == "agent enumerated cheats"
     assert result["cheating_attempted"] is False
     assert result["cheating_succeeded"] is None
-    assert result["model"] == "claude-sonnet-4-6"
+    # run_probe_analyzer resolves the default "claude-sonnet-4-6" to its
+    # invokable Bedrock inference-profile id before recording it.
+    assert result["model"] == "global.anthropic.claude-sonnet-4-6"
     assert isinstance(result["attempts"], list)
     assert result["attempts"][0]["title"] == "hardcode results.json"
     assert result["attempts"][0]["step_indices"] == [1, 2, 3]
