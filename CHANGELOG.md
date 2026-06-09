@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-09]
+
+### Added
+- `oddish probe` CLI command with full cloud probe agent support: probe presets stored in Postgres with CRUD backend endpoints and UI on task pages; probe trials bypass strict `task.toml` timeout validation and use a capped 30-minute agent timeout; local and cloud runners share the same probe implementation (#218)
+
+### Changed
+- Experiment trials table on the experiment page now defaults to A→Z task name sort instead of insertion order; the sort header toggle still cycles through all options (#220)
+
+### Fixed
+- Probe UI no longer shows "Failed to fetch" CORS errors; browser fetches for probe presets and sweep submissions moved from direct cross-origin backend calls to the same-origin Next.js BFF proxy (`/api/probe-presets`, `/api/tasks/sweep`), removing CORS as a failure point; reverts the hardcoded prod-origin CORS allowlist from #221 since it is no longer needed (#222)
+- Probe trials on tasks whose `task.toml` omits agent timeout settings no longer hard-fail validation; a shared `PROBE_AGENT_TIMEOUT_SEC` constant (default 30 min, overridable via `ODDISH_PROBE_AGENT_TIMEOUT_SEC`) is applied by both local and cloud runners (#225)
+- PR lineage badges now render consistently across dashboard, experiment page, task detail header, and task browser cards; fixed blank badge on the experiment page caused by `TaskModel.link` missing from the `compact_trials` `load_only` set; fixed missing badge on task cards when the PR URL lived only in `github_meta.pr_url`; added shared `taskPrUrl(link, github_meta)` resolver in `lib/utils.ts`; dashboard PR column now falls back to the `link` column when `github_meta` is absent (#197, #223)
+- Fresh-database `alembic upgrade head` no longer fails with duplicate column or foreign-key errors; three incremental migrations (`add_column last_activity_at`, `fk_tasks_current_version_id`, `fk_trials_experiment_id`) are now idempotent; a merge migration joins the two divergent heads into a single chain (#215)
+- Resolved Alembic double-head in the oddish migration chain caused by `probe_presets_001` and `dispatch_log` branching from the same migration tip; `probe_presets_001` re-parented onto `c1d2e3f4a5b6` to restore linear history (#219)
+
+### Removed
+- Repository dispatch emitter (`github/dispatch.py`) and `experiment_dispatch_log` table dropped; the `repository_dispatch` event path requires `Contents:write` permission that the production token lacks (#211)
+
+---
+
 ## [2026-06-08]
 
 ### Added
