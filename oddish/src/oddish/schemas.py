@@ -667,6 +667,14 @@ class TrialResponse(BaseModel):
             "Surfaced for clients that need to render mode-specific UI."
         ),
     )
+    is_probe: bool = Field(
+        False,
+        description=(
+            "True if this trial is a probe (operator-directed instruction "
+            "overlay) rather than a real solution attempt. Indexed for "
+            "server-side filtering."
+        ),
+    )
 
     # Token usage & cost
     input_tokens: int | None = Field(
