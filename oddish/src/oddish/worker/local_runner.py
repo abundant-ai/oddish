@@ -27,6 +27,11 @@ from pathlib import Path
 
 from harbor.trial.trial import Trial
 
+from oddish.config import (
+    ZAI_DEFAULT_BASE_URL,
+    is_zai_model,
+    zai_bare_model_id,
+)
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -39,7 +44,7 @@ from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
 )
-from oddish.worker.probe_staging import apply_probe_overlay
+from oddish.worker.probe_staging import apply_probe_overlay, stage_org_skills
 from oddish.worker.local_offline_policy import enable_local_internet, task_is_offline
 from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
 
@@ -57,11 +62,11 @@ logger = logging.getLogger(__name__)
 # one of these substrings is skipped.
 # ---------------------------------------------------------------------------
 _WATCHDOG_SAFE_PATTERNS = (
-    "claude",       # the agent itself
-    "tee /logs",    # Harbor's stdout redirect for the agent log
-    "watchdog",     # this script (don't kill yourself)
-    "sleep",        # benign
-    "ps ",          # this poll's own ps invocation
+    "claude",  # the agent itself
+    "tee /logs",  # Harbor's stdout redirect for the agent log
+    "watchdog",  # this script (don't kill yourself)
+    "sleep",  # benign
+    "ps ",  # this poll's own ps invocation
 )
 
 _WATCHDOG_SCRIPT = r"""
@@ -184,9 +189,7 @@ async def _watchdog_task(trial_name: str) -> None:
     """Background task: wait for the container, then start the watchdog."""
     container_name = await _find_trial_container(trial_name)
     if container_name is None:
-        logger.warning(
-            "watchdog: container for trial '%s' never appeared", trial_name
-        )
+        logger.warning("watchdog: container for trial '%s' never appeared", trial_name)
         return
     await _start_watchdog(container_name)
 
@@ -245,6 +248,34 @@ def _bedrock_agent_env(model_name: str | None) -> dict[str, str]:
             env[var] = val
     env.setdefault("AWS_REGION", "us-east-1")
     env["ANTHROPIC_API_KEY"] = ""
+    return env
+
+
+def _zai_agent_env(model_name: str | None) -> dict[str, str]:
+    """Env that lets Claude Code reach z.ai's GLM endpoint in local dev.
+
+    Returns ``{}`` for non-GLM models. Mirrors ``harbor_runner``'s z.ai env:
+    point Claude Code at the z.ai base URL, forward the host's ``ZAI_API_KEY``
+    as the auth token, pin the bare GLM id, and blank the ambient Bedrock creds
+    so the z.ai route wins.
+    """
+    if not is_zai_model(model_name):
+        return {}
+
+    bare_model = zai_bare_model_id(model_name or "")
+    env: dict[str, str] = {
+        "ANTHROPIC_BASE_URL": os.environ.get("ZAI_BASE_URL") or ZAI_DEFAULT_BASE_URL,
+        "ANTHROPIC_AUTH_TOKEN": os.environ.get("ZAI_API_KEY", ""),
+        "ANTHROPIC_API_KEY": "",
+        "CLAUDE_CODE_USE_BEDROCK": "",
+        "AWS_BEARER_TOKEN_BEDROCK": "",
+    }
+    if bare_model:
+        env["ANTHROPIC_MODEL"] = bare_model
+        env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = bare_model
+        env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = bare_model
+        env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = bare_model
+        env["CLAUDE_CODE_SUBAGENT_MODEL"] = bare_model
     return env
 
 
@@ -328,6 +359,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         harbor_config = trial.harbor_config or {}
         agent_name = trial.agent
         model_name = trial.model
+        trial_org_id = trial.org_id
         extra_instructions = harbor_config.get("extra_instructions")
 
     # Resolve the task files. Cloud-created tasks store their files in S3
@@ -350,6 +382,10 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # goal, the original task is context only.
     # ---------------------------------------------------------------
     work_root: Path | None = None
+    # Host dirs (one skills-root) handed to Harbor via ``AgentConfig.skills``;
+    # Harbor uploads each ``<name>/`` skill into the sandbox and the claude-code
+    # agent registers them so the agent discovers them.
+    agent_skill_paths: list[Path] = []
     if extra_instructions:
         work_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
         work_task_dir = work_root / task_path.name
@@ -365,6 +401,15 @@ async def _run_harbor_trial(trial_id: str) -> None:
             time_budget_sec=_PROBE_AGENT_TIMEOUT_SEC,
         )
         actual_task_path = work_task_dir
+        # Stage the org's shared skills into a root under work_root and hand it
+        # to Harbor below. Best-effort; never blocks the probe.
+        skills_root = work_root / "agent_skills"
+        n_skills = await stage_org_skills(skills_root, org_id=trial_org_id)
+        if n_skills:
+            agent_skill_paths = [skills_root]
+            logger.info(
+                "probe: staged %d skill(s) for trial %s", n_skills, trial_id
+            )
     else:
         actual_task_path = task_path
 
@@ -399,10 +444,14 @@ async def _run_harbor_trial(trial_id: str) -> None:
         name=agent_name,
         model_name=model_name,
         override_timeout_sec=_PROBE_AGENT_TIMEOUT_SEC,
+        skills=agent_skill_paths,
     )
     bedrock_env = _bedrock_agent_env(model_name)
     if bedrock_env:
         agent_config.env = {**(agent_config.env or {}), **bedrock_env}
+    zai_env = _zai_agent_env(model_name)
+    if zai_env:
+        agent_config.env = {**(agent_config.env or {}), **zai_env}
 
     cfg = TrialConfig(
         task=TaskConfig(path=actual_task_path),
