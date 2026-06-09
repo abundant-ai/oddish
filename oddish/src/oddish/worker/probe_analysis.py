@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -46,13 +47,39 @@ def _make_client(model: str):
     and the Modal image provides AWS Bedrock creds in the environment. Routing
     on the model id mirrors how the rest of oddish dispatches Claude jobs
     (cf. ``config.looks_like_bedrock_model_id`` and ``analyze.classifier``).
+
+    For Bedrock we resolve credentials the SAME way the claude-code agent does
+    (Harbor ``agents/installed/claude_code.py``): prefer the bearer token
+    (``AWS_BEARER_TOKEN_BEDROCK``), fall back to the standard IAM/SigV4 chain,
+    and force ``AWS_REGION`` to ``us-east-1`` when unset. A bare
+    ``AsyncAnthropicBedrock()`` instead lets the SDK pick creds implicitly --
+    which silently falls into SigV4 with whatever ambient AWS creds win (the
+    S3-scoped ``aws-credentials`` Modal secret) and inherits whatever region
+    happens to be set, producing ``403 UnrecognizedClientException: The
+    security token included in the request is invalid``. Mirroring the agent's
+    resolution keeps the inline summary on the same auth route that just
+    succeeded for the agent in this very job.
     """
     from oddish.config import looks_like_bedrock_model_id
 
     if looks_like_bedrock_model_id(model):
         from anthropic import AsyncAnthropicBedrock
 
-        return AsyncAnthropicBedrock()
+        region = os.environ.get("AWS_REGION") or "us-east-1"
+        token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip()
+        # Diagnostic: surface which auth route + region we resolved without
+        # leaking secret values. Lets the worker log confirm the mechanism.
+        logger.info(
+            "probe analyzer Bedrock client: auth=%s region=%s "
+            "(access_key=%s session_token=%s)",
+            "bearer" if token else "sigv4",
+            region,
+            bool(os.environ.get("AWS_ACCESS_KEY_ID")),
+            bool(os.environ.get("AWS_SESSION_TOKEN")),
+        )
+        if token:
+            return AsyncAnthropicBedrock(api_key=token, aws_region=region)
+        return AsyncAnthropicBedrock(aws_region=region)
 
     from anthropic import AsyncAnthropic
 
