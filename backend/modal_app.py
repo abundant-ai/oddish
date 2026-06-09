@@ -78,6 +78,15 @@ DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", 
 # Max number of workers spawned per poll cycle (rate limiter, global across all queue_keys)
 MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 64)
 
+# Wall-clock budget for how long one worker container keeps claiming and running
+# jobs on its held slot before exiting. Lets short jobs (analysis / verdict /
+# nop-oracle, which finish well inside a single POLL_INTERVAL_SECONDS) batch
+# many per container instead of running one job and leaving the slot idle until
+# the next poll; long agent trials exceed it on their first job and so still run
+# one-per-container. Must stay well under WORKER_TIMEOUT_SECONDS and the slot
+# lease (WORKER_TIMEOUT_SECONDS + 30).
+WORKER_BATCH_BUDGET_SECONDS = _env_int("ODDISH_MODAL_WORKER_BATCH_BUDGET_SECONDS", 300)
+
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
 )
@@ -113,8 +122,15 @@ if MODAL_APP_NAME.startswith("oddish-pr-"):
 # Queue-key concurrency default for Modal runtime.
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
-MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 32)
+MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 48)
 NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 48)
+# Per-model queue-key concurrency overrides. Baked into the deploy so the
+# repo is the source of truth; operators can still override the whole JSON
+# via the ODDISH_MODEL_CONCURRENCY_OVERRIDES env var / secret.
+MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
+    "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
+    '{"google/gemini-3.5-flash": 128}',
+)
 
 ENV_VARS = {
     "UV_LINK_MODE": "copy",
@@ -136,6 +152,7 @@ ENV_VARS = {
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",
     "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
     "ODDISH_DEFAULT_MODEL_CONCURRENCY": str(MODEL_CONCURRENCY_DEFAULT),
+    "ODDISH_MODEL_CONCURRENCY_OVERRIDES": MODEL_CONCURRENCY_OVERRIDES,
     # nop/oracle do not call model providers; this cap is for Modal/DB/S3
     # pressure rather than provider rate limits.
     "ODDISH_NOP_ORACLE_CONCURRENCY": str(NOP_ORACLE_CONCURRENCY),

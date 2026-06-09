@@ -57,6 +57,24 @@ STALE_HEARTBEAT_MINUTES = 15
 # ignored (older Supavisor, etc).
 ZOMBIE_IDLE_MINUTES = 10
 
+# Backstop for tasks wedged in ANALYZING because a live trial never produced an
+# analysis verdict. The stage-advance passes treat a live trial whose
+# ``analysis_status`` is NULL as "analysis still pending", so a task with a
+# FAILED trial that never had analysis enqueued (observed on ~1k pre-existing
+# tasks) can never reach the verdict stage. For stale ANALYZING tasks with
+# nothing analysis- or trial-side still in flight, we mark the lingering NULL
+# analysis terminal (it will never run) so the normal advance carries them to
+# VERDICT_PENDING; tasks with no live trials left are finalized FAILED. Only
+# tasks idle longer than this are touched (so we never race a live transition,
+# which completes in seconds) and we cap the batch so a large backlog drains
+# over several ticks instead of one giant transaction.
+STUCK_ANALYZING_MINUTES = 15
+STUCK_ANALYZING_BATCH_LIMIT = 200
+STUCK_ANALYZING_REASON = (
+    "Analysis never produced a verdict for this trial; marked terminal by "
+    "orphaned-pipeline cleanup so the task could leave the ANALYZING stage."
+)
+
 
 async def reap_idle_in_transaction_zombies(
     *,
@@ -140,6 +158,9 @@ async def cleanup_orphaned_queue_state(
     terminal_trial_runtime_refs_cleared = 0
     orphaned_active_slots_cleared = 0
     verdict_pending_completed = 0
+    stuck_analyzing_advanced = 0
+    stuck_analyzing_finalized = 0
+    stuck_analysis_nulls_failed = 0
 
     zombie_txn_reaped = await reap_idle_in_transaction_zombies()
 
@@ -447,7 +468,125 @@ async def cleanup_orphaned_queue_state(
                 )
 
         # -----------------------------------------------------------------
-        # 5. Clear stale claim metadata on terminal trials (pure
+        # 5. Unwedge tasks stuck in ANALYZING by a live trial that never got
+        #    an analysis verdict. The advance passes (2/3) treat a live trial
+        #    with analysis_status NULL as "analysis still pending", so a task
+        #    whose FAILED trials never had analysis enqueued sits in ANALYZING
+        #    forever. For stale tasks with nothing analysis- or trial-side in
+        #    flight, mark that lingering NULL analysis terminal (it will never
+        #    run) and let the normal advance carry the task to VERDICT_PENDING;
+        #    tasks with no live trials left are finalized FAILED. Staleness-
+        #    gated and batched so we never race a live transition.
+        # -----------------------------------------------------------------
+        stuck_rows = (
+            await session.execute(
+                text(
+                    """
+                    SELECT t.id AS task_id,
+                           (
+                               SELECT MIN(tr.id)
+                               FROM   trials tr
+                               WHERE  tr.task_id = t.id
+                                 AND  tr.deleted_at IS NULL
+                                 AND  tr.superseded_by_trial_id IS NULL
+                           ) AS live_trial_id
+                    FROM   tasks t
+                    WHERE  t.deleted_at IS NULL
+                      AND  t.status = 'ANALYZING'
+                      AND  t.updated_at < NOW() - make_interval(mins => :stale_minutes)
+                      AND  NOT EXISTS (
+                          SELECT 1 FROM trials a
+                          WHERE  a.task_id = t.id
+                            AND  a.deleted_at IS NULL
+                            AND  a.superseded_by_trial_id IS NULL
+                            AND  (
+                                a.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
+                                OR a.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
+                            )
+                      )
+                    ORDER BY t.updated_at ASC
+                    LIMIT :batch_limit
+                    """
+                ),
+                {
+                    "stale_minutes": STUCK_ANALYZING_MINUTES,
+                    "batch_limit": STUCK_ANALYZING_BATCH_LIMIT,
+                },
+            )
+        ).all()
+
+        if stuck_rows:
+            stuck_task_ids = [row[0] for row in stuck_rows]
+
+            # 5a. A live trial with NULL analysis blocks the advance forever
+            #     (it reads as "still pending"). It will never run now, so mark
+            #     it terminal; SUCCESS/FAILED analyses are left intact.
+            stuck_analysis_nulls_failed = int(
+                cast(
+                    CursorResult,
+                    await session.execute(
+                        text(
+                            """
+                            UPDATE trials
+                            SET    analysis_status = 'FAILED',
+                                   analysis_error = :reason,
+                                   analysis_finished_at = NOW()
+                            WHERE  task_id = ANY(:task_ids)
+                              AND  deleted_at IS NULL
+                              AND  superseded_by_trial_id IS NULL
+                              AND  analysis_status IS NULL
+                            """
+                        ),
+                        {"reason": STUCK_ANALYZING_REASON, "task_ids": stuck_task_ids},
+                    ),
+                ).rowcount
+                or 0
+            )
+            await session.flush()
+
+            # 5b. With every live trial's analysis now terminal, the normal
+            #     advance moves the task to VERDICT_PENDING (the verdict is
+            #     computed from the surviving trials). Tasks with no live
+            #     trials left have nothing to judge -> finalize FAILED.
+            no_live_trial_ids: list[str] = []
+            for task_id, live_trial_id in stuck_rows:
+                if live_trial_id is None:
+                    no_live_trial_ids.append(str(task_id))
+                    continue
+                if await maybe_start_verdict_stage(session, str(live_trial_id)):
+                    stuck_analyzing_advanced += 1
+
+            if no_live_trial_ids:
+                stuck_analyzing_finalized = int(
+                    cast(
+                        CursorResult,
+                        await session.execute(
+                            text(
+                                """
+                                UPDATE tasks
+                                SET    status = 'FAILED',
+                                       finished_at = COALESCE(finished_at, NOW())
+                                WHERE  id = ANY(:task_ids)
+                                  AND  deleted_at IS NULL
+                                  AND  status = 'ANALYZING'
+                                """
+                            ),
+                            {"task_ids": no_live_trial_ids},
+                        ),
+                    ).rowcount
+                    or 0
+                )
+
+            if stuck_analyzing_advanced or stuck_analyzing_finalized:
+                console.print(
+                    "metric=stuck_analyzing_unwedged "
+                    f"advanced={stuck_analyzing_advanced} "
+                    f"finalized={stuck_analyzing_finalized} "
+                    f"analysis_nulls_failed={stuck_analysis_nulls_failed}"
+                )
+
+        # -----------------------------------------------------------------
+        # 6. Clear stale claim metadata on terminal trials (pure
         #    display-layer hygiene; scheduling state already lives on
         #    worker_jobs).
         # -----------------------------------------------------------------
@@ -474,7 +613,7 @@ async def cleanup_orphaned_queue_state(
         )
 
         # -----------------------------------------------------------------
-        # 6. Release queue slot leases whose worker_jobs row is no
+        # 7. Release queue slot leases whose worker_jobs row is no
         #    longer RUNNING on that key.
         # -----------------------------------------------------------------
         orphaned_slot_cleanup_result = cast(
@@ -501,7 +640,7 @@ async def cleanup_orphaned_queue_state(
         orphaned_active_slots_cleared = int(orphaned_slot_cleanup_result.rowcount or 0)
 
         # -----------------------------------------------------------------
-        # 7. Reconcile drift on the denormalized
+        # 8. Reconcile drift on the denormalized
         #    ``experiments.last_activity_at`` column. Application
         #    write paths bump it best-effort on task/trial inserts,
         #    so this pass only catches misses (process crash between
@@ -567,6 +706,9 @@ async def cleanup_orphaned_queue_state(
         "tasks_progressed_to_analysis": tasks_progressed_to_analysis,
         "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
         "verdict_pending_completed": verdict_pending_completed,
+        "stuck_analyzing_advanced": stuck_analyzing_advanced,
+        "stuck_analyzing_finalized": stuck_analyzing_finalized,
+        "stuck_analysis_nulls_failed": stuck_analysis_nulls_failed,
         "terminal_trial_runtime_refs_cleared": terminal_trial_runtime_refs_cleared,
         "orphaned_active_slots_cleared": orphaned_active_slots_cleared,
         "zombie_txn_reaped": zombie_txn_reaped,

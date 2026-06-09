@@ -37,6 +37,7 @@ import {
   CheckCircle2,
   XCircle,
   AlertTriangle,
+  ExternalLink,
   Route,
   Package,
   Trash2,
@@ -188,6 +189,19 @@ function getQueueSnapshotItems(trial: Trial): string[] {
 
 function hasLiveQueueSnapshot(trial: Trial): boolean {
   return ["queued", "retrying", "running", "pending"].includes(trial.status);
+}
+
+function getDaytonaSandboxUrl(trial: Trial): string | null {
+  const sandboxJob = trial.jobs?.find(
+    (job) =>
+      job.provider?.toLowerCase() === "daytona" &&
+      typeof job.external_id === "string" &&
+      job.external_id.length > 0
+  );
+  if (!sandboxJob?.external_id) return null;
+  return `https://app.daytona.io/dashboard/sandboxes?sandboxId=${encodeURIComponent(
+    sandboxJob.external_id
+  )}`;
 }
 
 export function TrialDetailPanel({
@@ -511,6 +525,7 @@ export function TrialDetailPanel({
   const TrialStatusIcon = trialStatusConfig.icon;
   const showQueueSnapshot =
     hasLiveQueueSnapshot(trial) && getQueueSnapshotItems(trial).length > 0;
+  const daytonaSandboxUrl = getDaytonaSandboxUrl(trial);
 
   const resolvedGroups =
     trialGroups && trialGroups.length > 0
@@ -736,6 +751,23 @@ export function TrialDetailPanel({
                     Retry Trial
                   </>
                 )}
+              </Button>
+            )}
+            {daytonaSandboxUrl && (
+              <Button
+                asChild
+                variant="outline"
+                size="sm"
+                className="h-7 min-w-[132px] px-2 text-[10px] font-semibold tracking-wide uppercase"
+              >
+                <a
+                  href={daytonaSandboxUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ExternalLink className="mr-1 h-3.5 w-3.5" />
+                  Sandbox
+                </a>
               </Button>
             )}
             {canRunAnalysis && (
