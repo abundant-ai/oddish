@@ -12,6 +12,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import pytest  # noqa: E402
+
+from oddish.task_timeouts import TaskTimeoutValidationError  # noqa: E402
 from oddish.workers import harbor_runner  # noqa: E402
 from oddish.workers.codex_agent import AzureCompatibleCodex, OddishCodex  # noqa: E402
 from oddish.workers.queue import trial_handler  # noqa: E402
@@ -436,6 +439,123 @@ def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
     assert seen["include_temp_root"] is False
     assert outcome.error is None
     assert outcome.job_result_path is not None
+
+
+def test_run_harbor_trial_async_probe_skips_timeout_validation(monkeypatch, tmp_path):
+    """A probe (mode=probe) against a task whose task.toml omits timeouts must
+    run instead of hard-failing — mirroring the local runner, which skips
+    validation and applies a capped default agent timeout. Regression guard for
+    the cloud/local asymmetry that broke probes in prod."""
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    # Empty task.toml: declares NO agent/verifier/build timeouts, so the real
+    # validator (left unmocked here on purpose) would raise for a non-probe.
+    (task_path / "task.toml").write_text("", encoding="utf-8")
+    jobs_dir = tmp_path / "jobs"
+    captured: dict[str, object] = {}
+
+    class _FakeJob:
+        def __init__(self, config):
+            captured["config"] = config
+            self.job_dir = config["jobs_dir"] / "job-1"
+
+        @classmethod
+        async def create(cls, config):
+            return cls(config)
+
+        async def run(self):
+            self.job_dir.mkdir(parents=True, exist_ok=True)
+            (self.job_dir / "result.json").write_text("{}\n", encoding="utf-8")
+            return object()
+
+    monkeypatch.setattr(
+        harbor_runner, "_check_local_storage_preflight", lambda *a, **k: None
+    )
+    monkeypatch.setattr(harbor_runner, "TaskConfig", lambda path: path)
+    monkeypatch.setattr(harbor_runner, "JobConfig", lambda **kwargs: kwargs)
+    monkeypatch.setattr(harbor_runner, "Job", _FakeJob)
+    monkeypatch.setattr(
+        harbor_runner,
+        "_extract_outcome_from_job_result",
+        lambda **kwargs: harbor_runner.HarborOutcome(
+            reward=1.0,
+            error=None,
+            exit_code=0,
+            duration_sec=kwargs["duration_sec"],
+            job_result_path=kwargs["job_result_path"],
+            job_dir=kwargs["job_dir"],
+        ),
+    )
+
+    outcome = asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="claude-code",
+            jobs_dir=jobs_dir,
+            harbor_config={"mode": "probe", "extra_instructions": "look around"},
+        )
+    )
+
+    assert outcome.error is None
+    agent_config = captured["config"]["agents"][0]
+    assert agent_config.override_timeout_sec == harbor_runner.PROBE_AGENT_TIMEOUT_SEC
+
+
+def test_run_harbor_trial_async_non_probe_still_validates(tmp_path):
+    """Non-probe trials keep the strict contract: a task.toml without timeouts
+    must still raise. The 'skip validation' relaxation is probe-only."""
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text("", encoding="utf-8")
+
+    with pytest.raises(TaskTimeoutValidationError):
+        asyncio.run(
+            harbor_runner.run_harbor_trial_async(
+                task_path=task_path,
+                agent="nop",
+                jobs_dir=tmp_path / "jobs",
+            )
+        )
+
+
+def test_build_agent_config_injects_probe_timeout_default(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model=None,
+        raw_harbor_config={},
+        is_probe=True,
+    )
+
+    assert agent_config.override_timeout_sec == harbor_runner.PROBE_AGENT_TIMEOUT_SEC
+
+
+def test_build_agent_config_probe_respects_explicit_override(monkeypatch):
+    """An explicit per-trial override must win over the probe default."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model=None,
+        raw_harbor_config={"agent_config": {"override_timeout_sec": 42}},
+        is_probe=True,
+    )
+
+    assert agent_config.override_timeout_sec == 42
+
+
+def test_build_agent_config_non_probe_leaves_timeout_unset(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model=None,
+        raw_harbor_config={},
+        is_probe=False,
+    )
+
+    assert agent_config.override_timeout_sec is None
 
 
 def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch):

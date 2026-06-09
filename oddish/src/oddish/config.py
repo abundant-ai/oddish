@@ -204,6 +204,51 @@ def to_bedrock_model_id(model: str | None) -> str | None:
     return bedrock_id
 
 
+# Reverse of _ANTHROPIC_TO_BEDROCK_MODEL_IDS, used to route a model back to the
+# direct Anthropic API. Several Anthropic ids (a dated alias and its dateless
+# form) map to one Bedrock id; prefer the shorter, dateless alias so callers get
+# the canonical API id (e.g. "claude-haiku-4-5", not "claude-haiku-4-5-20251001").
+_BEDROCK_TO_ANTHROPIC_MODEL_IDS: dict[str, str] = {}
+for _anthropic_id, _bedrock_id in _ANTHROPIC_TO_BEDROCK_MODEL_IDS.items():
+    _existing = _BEDROCK_TO_ANTHROPIC_MODEL_IDS.get(_bedrock_id)
+    if _existing is None or len(_anthropic_id) < len(_existing):
+        _BEDROCK_TO_ANTHROPIC_MODEL_IDS[_bedrock_id] = _anthropic_id
+del _anthropic_id, _bedrock_id, _existing
+
+
+def to_anthropic_api_model_id(model: str | None) -> str | None:
+    """Resolve a Claude model reference to its direct Anthropic API id.
+
+    The practical inverse of ``to_bedrock_model_id``: a Bedrock inference-profile
+    id (``global.anthropic.claude-haiku-4-5-20251001-v1:0``) maps back to the
+    plain API id (``claude-haiku-4-5``). Used by callers that run on the direct
+    Anthropic API (``ANTHROPIC_API_KEY``) rather than Bedrock -- e.g. the probe
+    summary analyzer. Plain Claude ids keep their value (minus an
+    ``anthropic/``/``claude/`` provider prefix); non-Claude ids pass through.
+    """
+    if model is None:
+        return None
+    stripped = model.strip()
+    if not stripped:
+        return model
+
+    # Drop a redundant "bedrock/" transport prefix before matching.
+    if stripped.lower().startswith("bedrock/"):
+        stripped = stripped.split("/", 1)[1]
+
+    # Known Bedrock inference-profile / foundation-model id -> plain API id.
+    mapped = _BEDROCK_TO_ANTHROPIC_MODEL_IDS.get(stripped.lower())
+    if mapped:
+        return mapped
+
+    # Strip an "anthropic/"/"claude/" provider prefix to expose a bare API id;
+    # any other provider prefix is a deliberate transport choice -- pass through.
+    provider_prefix, bare = split_provider_model_name(stripped)
+    if provider_prefix and provider_prefix.strip().lower() in {"anthropic", "claude"}:
+        return bare
+    return stripped
+
+
 def _to_bedrock_model_id_if_known(model: str) -> str:
     """Best-effort Bedrock canonicalization for read-side legacy metadata.
 
@@ -336,7 +381,13 @@ def _infer_provider_prefix(model_name: str) -> str | None:
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Load .env first, then layer .env.local over it (later file wins on
+        # duplicate keys). Both are resolved relative to the process CWD, so a
+        # local backend run from backend/ picks up backend/.env and
+        # backend/.env.local automatically; in Modal containers neither file
+        # exists, so the entries are no-ops and config comes from real env vars.
+        # Exported process env vars still outrank both files.
+        env_file=(".env", ".env.local"),
         env_prefix="ODDISH_",
         extra="ignore",
     )
@@ -347,6 +398,11 @@ class Settings(BaseSettings):
 
     # Worker behavior
     auto_start_workers: bool = True
+
+    # Local dev: dispatch trials to the in-process runner
+    # (``worker.local_runner``) instead of the Modal/cloud queue. Set
+    # ODDISH_LOCAL_MODE=1 to exercise probe trials end-to-end on a dev box.
+    local_mode: bool = False
 
     # Local execution scratch paths
     harbor_jobs_dir: str = "/tmp/harbor-jobs"
