@@ -106,8 +106,12 @@ if SAURON_AWS_SECRET_NAME:
         )
     )
 
-if LOCAL_DOTENV_VARS:
-    runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
+# NOTE: backend/.env is a local-only file (gitignored, never copied into the
+# image). It must NOT be turned into a Modal Secret here: the deploy host would
+# append a from_dict secret that the container can't reconstruct, so the object
+# count diverges and every container crash-loops with "Function has N
+# dependencies but container got N+1 object ids". Local code still reads .env
+# values via _lookup_env()/LOCAL_DOTENV_VARS; they just never become a Secret.
 # Per-PR DB override created by the modal-preview workflow. Gating on
 # MODAL_APP_NAME (baked into the image) keeps the secret list identical
 # at deploy and container init.
