@@ -1,42 +1,27 @@
 #!/usr/bin/env bash
-# Ensure the PR's Supabase preview branch (cloned from prod via
-# --with-data) exists and is healthy, and emit its DB URL.
+# Ensure the PR's Supabase preview branch (data-less) exists and is
+# healthy, and emit its DB URL. The branch starts empty; Alembic applies
+# the full schema (bootstrap_preview_db.py) and a curated seed
+# (seed_preview_db.py) populates it. On later pushes the branch is reused;
+# the seed is idempotent + convergent so re-running is safe.
 #
-# On first invocation for a PR, creates the branch with prod data so
-# the subsequent `alembic upgrade head` runs against prod-shaped data
-# (the migration-safety check). On later pushes within the same PR
-# the existing branch is reused — append-only migrations apply
-# incrementally, which is the common case. If the dev rewrites
-# Alembic history mid-PR and the incremental upgrade can't handle it,
-# delete the branch via the Supabase dashboard (or close+reopen the
-# PR) to force a fresh prod clone.
-#
-# If Supabase's clone+migrate fails for a transient reason
-# (MIGRATIONS_FAILED / FUNCTIONS_FAILED, or the underlying project
-# entering RESTORE_FAILED while the prod data clone is restored into
-# it), the failed branch is torn down and recreated once before
-# giving up, so a flaky run doesn't poison every subsequent push to
-# the PR. A polling timeout also counts as a failed attempt so a
-# stuck-in-CREATING branch doesn't burn the whole retry budget.
-#
-# Disable the Supabase GitHub integration's auto-branching for this
-# repo so it doesn't create a parallel data-less branch in the same
-# project on PR open.
+# If a branch lands in a terminal-failed state (status MIGRATIONS_FAILED /
+# FUNCTIONS_FAILED, or preview_project_status INIT_FAILED / PAUSE_FAILED)
+# or never becomes ready within the deadline, it is torn down and recreated
+# (up to MAX_ATTEMPTS) so a flaky run doesn't poison every push to the PR.
 set -uo pipefail
 
 BRANCH_NAME="pr-${PR_NUMBER}"
 MAX_ATTEMPTS=3
 
-# Branch lifecycle states that we consider terminal failures and
-# recover from by deleting + recreating the branch:
+# Branch lifecycle states we treat as terminal failures and recover from
+# by deleting + recreating the branch:
 # - `status` is the branch's migration/functions pipeline state.
-# - `preview_project_status` is the underlying preview project's
-#   state. RESTORE_FAILED in particular shows up only there when
-#   the --with-data restore of the prod clone fails after the
-#   functions/migrations pipeline already reported success
-#   (status=FUNCTIONS_DEPLOYED preview=RESTORE_FAILED). Without
-#   matching it here we'd poll the branch until the readiness
-#   deadline, then exit without retrying.
+# - `preview_project_status` is the underlying preview project's compute
+#   state; INIT_FAILED / PAUSE_FAILED there mean the branch will never
+#   become ready, so we match them to retry instead of polling until the
+#   deadline. (RESTORE_FAILED is also matched but only applies to branches
+#   created with data; data-less preview branches have no restore.)
 is_failed_status() {
   case "$1" in
     MIGRATIONS_FAILED|FUNCTIONS_FAILED) return 0 ;;
@@ -84,9 +69,8 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   fi
 
   if [ -z "$existing" ] || [ "$existing" = "null" ]; then
-    echo "creating $BRANCH_NAME with --with-data (attempt $attempt/$MAX_ATTEMPTS)" >&2
+    echo "creating $BRANCH_NAME (data-less, attempt $attempt/$MAX_ATTEMPTS)" >&2
     supabase branches create "$BRANCH_NAME" \
-      --with-data \
       --project-ref "$SUPABASE_PROJECT_REF"
     branch_was_created=true
   else
@@ -94,9 +78,9 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     branch_was_created=false
   fi
 
-  # Wait until the branch is ready. First creation includes the prod
-  # clone, so give it 20 min; subsequent runs short-circuit fast.
-  deadline=$(($(date +%s) + 1200))
+  # Data-less branch: only Supabase's no-op migration runner + compute
+  # provisioning, so it goes ACTIVE_HEALTHY in 1-2 min. 5 min is slack.
+  deadline=$(($(date +%s) + 300))
   branch_failed=0
   branch_id="" branch_ref="" status="" preview=""
 
@@ -140,7 +124,7 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     continue
   fi
 
-  # Exhausted retries.
+  # Exhausted retries (terminal failure or deadline on every attempt).
   break
 done
 
