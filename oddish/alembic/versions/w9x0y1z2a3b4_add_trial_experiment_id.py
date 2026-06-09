@@ -21,13 +21,23 @@ def upgrade() -> None:
     op.add_column(
         "trials",
         sa.Column("experiment_id", sa.String(64), nullable=True), if_not_exists=True)
-    op.create_foreign_key(
-        "fk_trials_experiment_id",
-        "trials",
-        "experiments",
-        ["experiment_id"],
-        ["id"],
-        ondelete="SET NULL",
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'fk_trials_experiment_id'
+            ) THEN
+                ALTER TABLE trials
+                ADD CONSTRAINT fk_trials_experiment_id
+                FOREIGN KEY (experiment_id)
+                REFERENCES experiments(id)
+                ON DELETE SET NULL;
+            END IF;
+        END
+        $$;
+        """
     )
     op.create_index("idx_trials_experiment_id", "trials", ["experiment_id"], if_not_exists=True)
 

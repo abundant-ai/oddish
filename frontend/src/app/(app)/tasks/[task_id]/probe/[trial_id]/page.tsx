@@ -3,15 +3,18 @@
 import { use, useEffect, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { useAuth } from "@clerk/nextjs";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800";
 
 type AgentMessage = {
   kind: "assistant_text" | "tool_use" | "tool_result" | "result";
   text: string;
   name?: string;        // tool name when kind === "tool_use" (e.g. "Bash", "Read")
   is_error?: boolean;
+};
+
+type Artifacts = {
+  trajectory?: unknown;
+  verifier_stdout?: string;
+  agent_messages?: AgentMessage[];
 };
 
 function kindLabel(m: AgentMessage): string {
@@ -70,11 +73,7 @@ type Trial = {
     ratio_verb?: string | null;
   } | null;
   result: {
-    _artifacts?: {
-      trajectory?: unknown;
-      verifier_stdout?: string;
-      agent_messages?: AgentMessage[];
-    };
+    _artifacts?: Artifacts;
   } | null;
   analysis: ProbeSummary | null;
   analysis_status: string | null;
@@ -88,25 +87,15 @@ export default function ProbeResultPage({
   params: Promise<{ task_id: string; trial_id: string }>;
 }) {
   const { task_id, trial_id } = use(params);
-  const { getToken } = useAuth();
-
   const fetcher = async (url: string) => {
-    let token: string | null = null;
-    try {
-      token = await getToken({ template: "oddish" });
-    } catch {
-      token = await getToken();
-    }
-    const res = await fetch(url, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const res = await fetch(url, { cache: "no-store" });
     if (!res.ok)
       throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
     return res.json();
   };
 
   const { data: trials, error } = useSWR<Trial[]>(
-    `${API_URL}/tasks/${task_id}/trials`,
+    `/api/tasks/${task_id}/trials`,
     fetcher,
     {
       refreshInterval: (data) => {
@@ -126,6 +115,20 @@ export default function ProbeResultPage({
     const t = setTimeout(() => setWaitedTooLong(true), 30_000);
     return () => clearTimeout(t);
   }, [trial_id]);
+
+  // Cloud trials don't inline `_artifacts` into `result` (only the local runner
+  // does); the agent transcript + verifier output live in object storage. When
+  // a finished trial has no inlined artifacts, pull them on demand so the panels
+  // below render the real output instead of "(no messages yet)".
+  const candidate = (trials ?? []).find((t) => t.id === trial_id);
+  const needsArtifacts =
+    !!candidate &&
+    !candidate.result?._artifacts &&
+    (candidate.status === "success" || candidate.status === "failed");
+  const { data: fetchedArtifacts } = useSWR<Artifacts>(
+    needsArtifacts ? `/api/trials/${trial_id}/probe-artifacts` : null,
+    fetcher,
+  );
 
   if (error)
     return (
@@ -167,7 +170,7 @@ export default function ProbeResultPage({
 
   const extra = trial.harbor_config?.extra_instructions ?? "";
   const summary = trial.analysis;
-  const artifacts = trial.result?._artifacts;
+  const artifacts = trial.result?._artifacts ?? fetchedArtifacts;
   const messages = artifacts?.agent_messages ?? [];
   const verifierStdout = artifacts?.verifier_stdout;
   const cheatFound =

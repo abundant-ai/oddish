@@ -7,18 +7,16 @@ import {
 } from "@/lib/backend-config";
 
 export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ task_id: string }> },
+  _request: Request,
+  { params }: { params: Promise<{ trial_id: string }> },
 ) {
   try {
     const { getToken } = await auth();
     const token = await getClerkToken(getToken);
 
-    const { task_id } = await params;
+    const { trial_id } = await params;
 
-    const probe = new URL(request.url).searchParams.get("probe");
-    const queryParams = probe !== null ? { probe } : undefined;
-    const url = getBackendUrl("tasks", `/${task_id}/trials`, queryParams);
+    const url = getBackendUrl("trials", `/${trial_id}/probe-artifacts`);
     const res = await fetch(url, {
       cache: "no-store",
       headers: getAuthHeaders(token),
