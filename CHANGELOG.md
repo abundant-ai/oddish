@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [2026-06-09]
 
 ### Added
+- GLM / z.ai routing for the `claude-code` harness: GLM models (`zai/glm-x-preview[1m]`, bare `glm-...`, or `z-ai/`/`z.ai/` prefixes) canonicalize to a `zai/<id>` id so they get their own `zai` provider and `zai/<id>` queue bucket instead of inheriting claude-code's fixed Bedrock provider/queue (keeping GLM trials from contending with Bedrock traffic for concurrency slots); `harbor_runner` injects the z.ai Anthropic-skin env (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN=${ZAI_API_KEY}`, model + size aliases, z.ai's recommended long-context settings) and blanks the ambient Bedrock/Anthropic credentials so the z.ai route wins
 - `oddish probe` CLI command with full cloud probe agent support: probe presets stored in Postgres with CRUD backend endpoints and UI on task pages; probe trials bypass strict `task.toml` timeout validation and use a capped 30-minute agent timeout; local and cloud runners share the same probe implementation (#218)
 
 ### Changed

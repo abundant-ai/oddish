@@ -29,10 +29,15 @@ from harbor.models.job.result import JobResult
 from oddish.config import (
     OPENAI_PROVIDER_AZURE,
     OPENAI_PROVIDER_OPENAI,
+    ZAI_DEFAULT_BASE_URL,
+    is_zai_model,
     settings,
     to_bedrock_model_id,
+    to_zai_model_id,
+    zai_bare_model_id,
 )
 from oddish.schemas import HarborConfig
+from oddish.worker.probe_staging import stage_org_skills
 from oddish.task_timeouts import (
     PROBE_AGENT_TIMEOUT_SEC,
     validate_task_timeout_config,
@@ -554,6 +559,76 @@ def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
     agent_config.env = env
 
 
+# z.ai recommends these long-context / streaming settings for GLM under Claude
+# Code. They are applied with setdefault so a sweep can override any of them.
+_ZAI_RECOMMENDED_ENV: dict[str, str] = {
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000",
+    "API_TIMEOUT_MS": "3600000",
+    "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "3600000",
+    "CLAUDE_CODE_EAGER_FLUSH": "1",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
+}
+
+
+def _apply_claude_code_zai_env(agent_config: AgentConfig) -> None:
+    """Apply the env Claude Code needs to talk to z.ai's GLM endpoint.
+
+    GLM is served over an Anthropic-compatible ``/messages`` API, so it runs on
+    the claude-code harness but must hit z.ai instead of the Bedrock route the
+    Modal image defaults to. Mirrors ``_apply_claude_code_openrouter_env``:
+    point Claude Code at the z.ai base URL, authenticate with ``${ZAI_API_KEY}``
+    (resolved by Harbor's Modal env at exec time, same as OpenRouter), blank the
+    ambient Bedrock/Anthropic credentials so the z.ai route wins, and pin the
+    model plus every size alias to the bare GLM id (the image runs in Bedrock
+    mode by default, so Claude Code would otherwise not set the aliases).
+    """
+    agent_name = (agent_config.name or "").strip().lower()
+    if "claude-code" not in agent_name:
+        return
+    if not is_zai_model(agent_config.model_name):
+        return
+
+    bare_model = zai_bare_model_id(agent_config.model_name or "")
+    env = dict(agent_config.env or {})
+    env.setdefault(
+        "ANTHROPIC_BASE_URL",
+        os.environ.get("ZAI_BASE_URL") or ZAI_DEFAULT_BASE_URL,
+    )
+    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${ZAI_API_KEY}")
+    env.setdefault("ENABLE_TOOL_SEARCH", "false")
+
+    # Pin the GLM id for the primary model and all size aliases that Claude Code
+    # may route to (Haiku/Sonnet/Opus/subagent), so a single account serves all.
+    if bare_model:
+        env["ANTHROPIC_MODEL"] = bare_model
+        for alias in (
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ):
+            env.setdefault(alias, bare_model)
+
+    for key, value in _ZAI_RECOMMENDED_ENV.items():
+        env.setdefault(key, value)
+
+    # The Modal image bakes in the Bedrock route; blank those ambient creds so
+    # the z.ai base-url/auth-token route wins.
+    env["ANTHROPIC_API_KEY"] = ""
+    env["CLAUDE_CODE_USE_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    agent_config.env = env
+
+    # z.ai recommends "max effort" with adaptive thinking. Harbor's claude-code
+    # agent renders these kwargs as `--effort max --thinking adaptive`. Set as
+    # defaults so a plain GLM run matches z.ai's recommended setup; a sweep can
+    # override either via agent kwargs.
+    kwargs = dict(agent_config.kwargs or {})
+    kwargs.setdefault("thinking", "adaptive")
+    kwargs.setdefault("reasoning_effort", "max")
+    agent_config.kwargs = kwargs
+
+
 def _apply_codex_azure_compat(agent_config: AgentConfig) -> None:
     """Route Azure Codex trials through Oddish's transport-compatible wrapper."""
     if agent_config.import_path is not None:
@@ -643,8 +718,16 @@ def _build_agent_config(
     # defensive guard for legacy rows or rich AgentConfig payloads. Explicit
     # "openrouter/..." ids pass through here and the claude-code agent routes
     # them through OpenRouter instead of the container's default transport.
-    agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
+    # GLM/z.ai models canonicalize to "zai/<id>" (kept off the Bedrock route);
+    # everything else flows through the Bedrock chokepoint as before. Keeping
+    # the "zai/" prefix on model_name lets Harbor's per-agent network allowlist
+    # resolve the z.ai endpoint for closed-internet tasks.
+    if is_zai_model(agent_config.model_name):
+        agent_config.model_name = to_zai_model_id(agent_config.model_name)
+    else:
+        agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
     _apply_claude_code_openrouter_env(agent_config)
+    _apply_claude_code_zai_env(agent_config)
 
     if _agent_uses_openai_provider(agent_config):
         if settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
@@ -732,6 +815,7 @@ async def run_harbor_trial_async(
     hook_callback: HookCallback | None = None,
     trial_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
+    org_id: str | None = None,
 ) -> HarborOutcome:
     """
     Execute a Harbor trial using Harbor's Python API with lifecycle hooks.
@@ -830,6 +914,16 @@ async def run_harbor_trial_async(
             raw_harbor_config=raw,
             is_probe=is_probe,
         )
+
+        # Stage the org's shared skills (+ global seeds) into a root under the
+        # job dir and hand it to Harbor via ``AgentConfig.skills``: Harbor uploads
+        # each ``<name>/`` skill into the sandbox and the claude-code agent
+        # registers them so the agent discovers them. Best-effort; never blocks.
+        if org_id is not None:
+            skills_root = unique_parent / "agent_skills"
+            n_skills = await stage_org_skills(skills_root, org_id=org_id)
+            if n_skills:
+                agent_config.skills = [*agent_config.skills, skills_root]
 
         job_config_kwargs: dict[str, Any] = {
             "tasks": [TaskConfig(path=effective_task_path)],
@@ -972,6 +1066,7 @@ def run_harbor_trial(
     hook_callback: HookCallback | None = None,
     trial_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
+    org_id: str | None = None,
 ) -> HarborOutcome:
     """Synchronous wrapper around run_harbor_trial_async."""
     try:
@@ -987,6 +1082,7 @@ def run_harbor_trial(
                 hook_callback=hook_callback,
                 trial_id=trial_id,
                 harbor_config=harbor_config,
+                org_id=org_id,
             )
         )
     raise RuntimeError("run_harbor_trial cannot be called from an active event loop.")
