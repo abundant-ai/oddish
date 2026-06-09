@@ -70,6 +70,8 @@ class PreparedTrialRun:
     experiment_name: str | None = None
     attempt_number: int = 1
     task_tags: dict | None = None
+    # Owning org, used to stage that org's shared skills into the probe sandbox.
+    org_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -440,6 +442,7 @@ async def _prepare_trial_run(
             # folders to avoid overwriting each other.
             attempt_number=_extract_trial_index(trial_id, task_id) + 1,  # 1-indexed
             task_tags=task_tags,
+            org_id=trial.org_id,
         )
 
 
@@ -859,6 +862,7 @@ async def _execute_trial(
             hook_callback=partial(_handle_harbor_event, trial_id=trial_id),
             trial_id=trial_id,
             harbor_config=prepared_trial.trial_harbor_config,
+            org_id=prepared_trial.org_id,
         )
     except asyncio.CancelledError:
         # CancelledError inherits from BaseException, not Exception, so must be caught explicitly.
