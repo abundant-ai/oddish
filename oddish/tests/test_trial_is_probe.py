@@ -13,7 +13,7 @@ import pytest_asyncio
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.db import TaskModel, TrialModel, get_session  # noqa: E402
-from oddish.queue import create_task  # noqa: E402
+from oddish.queue import append_trials_to_task, create_task  # noqa: E402
 from oddish.schemas import TaskSubmission, TrialSpec  # noqa: E402
 
 _RUN = uuid.uuid4().hex[:8]
@@ -117,3 +117,31 @@ def test_trial_response_exposes_is_probe():
 
     response = build_compact_trial_response(trial, task_path="tasks/task-1")
     assert response.is_probe is True
+
+
+@pytest.mark.asyncio
+async def test_list_task_trials_filters_by_probe(cleanup_task_ids):
+    from oddish.core.public_helpers import list_task_trials_for_task
+
+    # create_task seeds one probe trial; append_trials_to_task adds one normal
+    # trial to the SAME task, in the same session. append takes the TaskModel
+    # via the keyword-only `task=` param (not task_id).
+    async with get_session() as session:
+        task = await create_task(
+            session, _submission(name="is-probe-filter", extra_instructions="poke")
+        )
+        await append_trials_to_task(
+            session,
+            task=task,
+            submission=_submission(name="is-probe-filter", extra_instructions=None),
+        )
+    cleanup_task_ids.append(task.id)
+
+    async with get_session() as session:
+        only_probes = await list_task_trials_for_task(session, task.id, probe=True)
+        only_normal = await list_task_trials_for_task(session, task.id, probe=False)
+        everything = await list_task_trials_for_task(session, task.id)
+
+    assert only_probes and all(t.is_probe for t in only_probes)
+    assert only_normal and all(not t.is_probe for t in only_normal)
+    assert len(everything) == len(only_probes) + len(only_normal)
