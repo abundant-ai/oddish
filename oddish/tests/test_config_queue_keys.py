@@ -117,6 +117,42 @@ def test_openrouter_claude_model_routes_through_openrouter(monkeypatch):
     assert settings.normalize_queue_key(model) == model
 
 
+def test_glm_model_routes_to_zai_not_bedrock(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # GLM runs on the claude-code harness but must NOT inherit claude-code's
+    # fixed Bedrock provider/queue -- it gets its own z.ai bucket so it does not
+    # contend with heavy Bedrock traffic for concurrency slots.
+    for raw in (
+        "glm-x-preview[1m]",
+        "zai/glm-x-preview[1m]",
+        "z-ai/glm-x-preview[1m]",
+        "GLM-X-Preview[1M]",
+    ):
+        assert (
+            settings.normalize_trial_model("claude-code", raw)
+            == "zai/glm-x-preview[1m]"
+        ), raw
+        assert settings.get_provider_for_trial("claude-code", raw) == "zai", raw
+        assert (
+            settings.get_queue_key_for_trial("claude-code", raw)
+            == "zai/glm-x-preview[1m]"
+        ), raw
+
+
+def test_glm_queue_key_has_independent_concurrency(monkeypatch):
+    monkeypatch.setenv(
+        "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
+        '{"zai/glm-x-preview[1m]": 4, "global.anthropic.claude-opus-4-8": 64}',
+    )
+    settings = Settings(_env_file=None)
+
+    # The GLM bucket is keyed separately from any Bedrock model, so capping GLM
+    # concurrency does not throttle (and is not throttled by) Bedrock trials.
+    assert settings.get_model_concurrency("zai/glm-x-preview[1m]") == 4
+    assert settings.get_model_concurrency("global.anthropic.claude-opus-4-8") == 64
+
+
 def test_legacy_unmapped_claude_queue_key_does_not_break_reads(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
     legacy_key = "anthropic/claude-sonnet-4-6-20250514"
