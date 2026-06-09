@@ -130,6 +130,18 @@ export default function ProbeResultPage({
     fetcher,
   );
 
+  // The raw `result.json` artifact lives in object storage, not the `result` DB
+  // column (which is empty for cloud trials). Fetch it on demand from the
+  // backend so the raw-JSON panel below shows the real artifact. Returns 404
+  // when the trial produced no result.json yet — the panel handles that.
+  const isFinished =
+    !!candidate &&
+    (candidate.status === "success" || candidate.status === "failed");
+  const { data: resultJson, error: resultJsonError } = useSWR<unknown>(
+    isFinished ? `/api/trials/${trial_id}/result` : null,
+    fetcher,
+  );
+
   if (error)
     return (
       <div className="container mx-auto max-w-3xl py-8">
@@ -646,10 +658,16 @@ export default function ProbeResultPage({
       <section className="rounded border p-4">
         <details>
           <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Raw trial.result JSON
+            Raw result.json
           </summary>
           <pre className="mt-2 overflow-auto rounded bg-muted p-3 font-mono text-xs max-h-[600px]">
-            {JSON.stringify(trial.result ?? {}, null, 2)}
+            {resultJson !== undefined
+              ? JSON.stringify(resultJson, null, 2)
+              : resultJsonError
+                ? "(no result.json available)"
+                : isFinished
+                  ? "Loading…"
+                  : "(trial not finished)"}
           </pre>
         </details>
       </section>
