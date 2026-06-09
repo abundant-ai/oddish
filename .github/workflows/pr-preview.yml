@@ -375,12 +375,7 @@ jobs:
       - name: Sync backend dependencies
         run: uv sync --frozen
 
-      - name: Apply both Alembic stacks
-        run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_preview_db.py"
-
       - name: Run preview seed gate test
-        env:
-          MIGRATED_DB_URL: postgresql+asyncpg://oddish:oddish@postgres:5432/oddish_gate
         run: uv run pytest tests/test_preview_seed.py -v
 
   stop-preview:

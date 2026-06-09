@@ -1,11 +1,12 @@
 """Apply Alembic to the PR's data-less Supabase preview branch.
 
-The branch starts empty, so ``alembic upgrade head`` builds the full
-schema from scratch for both stacks (oddish + backend). NOTE: because
-the branch has no data at migration time, destructive/backfill data
-migrations are NOT exercised against real rows here -- that coverage is
-deliberately traded away (see the schema+seed design spec). Curated
-data is loaded afterwards by ``seed_preview_db.py``.
+A data-less branch still inherits the parent project's *schema* (only the
+data is omitted), so ``alembic upgrade head`` applies just the revisions
+this PR adds on top for both stacks (oddish + backend) -- it is not a
+from-scratch build. NOTE: because the branch carries no data, destructive
+/backfill data migrations are not exercised against real rows here; that
+coverage is deliberately traded away. Curated data is loaded afterwards by
+``seed_preview_db.py``.
 """
 
 import subprocess
