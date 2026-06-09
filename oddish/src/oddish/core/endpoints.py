@@ -864,6 +864,7 @@ async def retry_trial_core(
         timeout_minutes=old_trial.timeout_minutes,
         environment=old_trial.environment,
         harbor_config=old_trial.harbor_config,
+        is_probe=old_trial.is_probe,
         max_attempts=old_trial.max_attempts,
         status=TrialStatus.QUEUED,
     )
@@ -2131,6 +2132,7 @@ _COMBINE_TRIAL_RESULT_FIELDS = (
     "timeout_minutes",
     "environment",
     "harbor_config",
+    "is_probe",
     "status",
     "origin",
     "attempts",
