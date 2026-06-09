@@ -336,7 +336,13 @@ def _infer_provider_prefix(model_name: str) -> str | None:
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Load .env first, then layer .env.local over it (later file wins on
+        # duplicate keys). Both are resolved relative to the process CWD, so a
+        # local backend run from backend/ picks up backend/.env and
+        # backend/.env.local automatically; in Modal containers neither file
+        # exists, so the entries are no-ops and config comes from real env vars.
+        # Exported process env vars still outrank both files.
+        env_file=(".env", ".env.local"),
         env_prefix="ODDISH_",
         extra="ignore",
     )
