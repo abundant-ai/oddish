@@ -56,6 +56,66 @@ BEDROCK_ENV_VARS: tuple[str, ...] = (
     "CLAUDE_CODE_USE_BEDROCK",
 )
 
+# z.ai / GLM routing. Z.ai's GLM models are served over an Anthropic-compatible
+# /messages endpoint, so they run on the claude-code harness -- but they must
+# NOT be bucketed under the Bedrock provider/queue (claude-code's fixed default
+# provider) or they would contend with heavy Bedrock/Anthropic traffic for the
+# same concurrency slots. We canonicalize every GLM/z.ai reference to a
+# ``zai/<id>`` id so provider detection, queue keys, and Harbor's per-agent
+# network allowlist all resolve to z.ai instead of falling through to Bedrock.
+ZAI_PROVIDER = "zai"
+ZAI_DEFAULT_BASE_URL = "https://api.z.ai/api/anthropic"
+# Provider prefixes that mean "this is a z.ai/GLM model". Canonicalized to
+# ``zai`` (the litellm provider id, which Harbor's allowlist also recognizes).
+_ZAI_PROVIDER_PREFIXES: frozenset[str] = frozenset({"zai", "z-ai", "z.ai"})
+
+
+def is_zai_model(model: str | None) -> bool:
+    """Return True if *model* should route to z.ai's GLM endpoint.
+
+    Matches an explicit ``zai/``/``z-ai/``/``z.ai/`` provider prefix or a bare
+    ``glm...`` model id (e.g. ``glm-x-preview[1m]``, ``glm-4.6``).
+    """
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, bare = split_provider_model_name(raw)
+    if provider_prefix and provider_prefix.strip().lower() in _ZAI_PROVIDER_PREFIXES:
+        return True
+    tail = bare if provider_prefix else raw
+    return tail.split("/")[-1].startswith("glm")
+
+
+def zai_bare_model_id(model: str) -> str:
+    """Strip any z.ai provider prefix, returning the bare GLM model id.
+
+    ``zai/glm-x-preview[1m]`` -> ``glm-x-preview[1m]``; a bare id is returned
+    unchanged. This is the id Claude Code must send as ``ANTHROPIC_MODEL``.
+    """
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if provider_prefix and provider_prefix.strip().lower() in _ZAI_PROVIDER_PREFIXES:
+        return bare.strip()
+    return raw
+
+
+def to_zai_model_id(model: str | None) -> str | None:
+    """Canonicalize a GLM/z.ai reference to ``zai/<bare-id>``.
+
+    Non-z.ai models are returned unchanged. This is the single chokepoint that
+    keeps GLM trials off the Bedrock provider/queue: the ``zai`` prefix is a
+    recognized litellm provider, so downstream provider detection and queue-key
+    derivation resolve to ``zai`` instead of claude-code's fixed Bedrock
+    fallback, and Harbor's network allowlist maps the ``zai`` prefix to
+    ``api.z.ai``.
+    """
+    if not is_zai_model(model):
+        return model
+    assert model is not None
+    return f"{ZAI_PROVIDER}/{zai_bare_model_id(model)}"
+
 
 def looks_like_bedrock_model_id(model: str | None) -> bool:
     """Return True if *model* is a Bedrock-style id that should route through AWS.
@@ -321,6 +381,12 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     "google": "gemini",
     "vertex_ai": "gemini",
     "palm": "gemini",
+    # z.ai / GLM. All spellings collapse to the canonical "zai" provider so
+    # GLM trials get their own queue/provider bucket instead of Bedrock's.
+    "zai": ZAI_PROVIDER,
+    "z-ai": ZAI_PROVIDER,
+    "z.ai": ZAI_PROVIDER,
+    "glm": ZAI_PROVIDER,
 }
 
 
@@ -375,6 +441,8 @@ def _infer_provider_prefix(model_name: str) -> str | None:
         return "anthropic"
     if lowered.startswith("gemini"):
         return "google"
+    if lowered.startswith("glm"):
+        return ZAI_PROVIDER
 
     return None
 
@@ -637,6 +705,13 @@ class Settings(BaseSettings):
         normalized_agent = (agent or "").strip().lower()
         if normalized_agent in _NOP_ORACLE_AGENTS:
             return "default"
+
+        # GLM/z.ai models run on the claude-code harness but route to z.ai, not
+        # Bedrock. Canonicalize to "zai/<id>" before the Bedrock chokepoint so
+        # they get a z.ai provider/queue bucket instead of claude-code's fixed
+        # Bedrock fallback.
+        if is_zai_model(cleaned):
+            return to_zai_model_id(cleaned)
 
         return to_bedrock_model_id(cleaned)
 
