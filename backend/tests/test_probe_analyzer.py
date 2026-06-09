@@ -1,9 +1,8 @@
 """Tests for ``worker.probe_analysis.run_probe_analyzer``.
 
-The analyzer makes a single Claude API call and parses a JSON response.
-We patch ``probe_analysis._make_client`` so the test runs offline regardless
-of how the model id routes (Bedrock vs. direct API); credential/region
-routing is covered separately by the ``_make_client`` tests below.
+The analyzer makes a single Claude API call and parses a JSON response. It runs
+on the direct Anthropic API (``ANTHROPIC_API_KEY``) in every environment, so we
+patch ``anthropic.AsyncAnthropic`` and assert no Bedrock client is built.
 """
 
 from __future__ import annotations
@@ -15,9 +14,7 @@ import pytest
 from oddish.worker.probe_analysis import run_probe_analyzer
 
 
-@pytest.mark.asyncio
-async def test_probe_analyzer_parses_json_response():
-    """Happy path: model returns clean JSON, analyzer fills the dict."""
+def _fake_client() -> MagicMock:
     fake_response = MagicMock()
     fake_response.content = [
         MagicMock(
@@ -36,10 +33,15 @@ async def test_probe_analyzer_parses_json_response():
     ]
     fake_client = MagicMock()
     fake_client.messages.create = AsyncMock(return_value=fake_response)
+    return fake_client
 
-    with patch(
-        "oddish.worker.probe_analysis._make_client", return_value=fake_client
-    ):
+
+@pytest.mark.asyncio
+async def test_probe_analyzer_parses_json_response():
+    """Happy path: model returns clean JSON, analyzer fills the dict."""
+    fake_client = _fake_client()
+
+    with patch("anthropic.AsyncAnthropic", return_value=fake_client):
         result = await run_probe_analyzer(
             extra_instructions="find cheats",
             agent_messages=[
@@ -68,45 +70,29 @@ async def test_probe_analyzer_parses_json_response():
     assert result["result_focus_question"] == "Did the agent find spec ambiguities?"
 
 
-def test_make_client_bedrock_prefers_bearer_token(monkeypatch):
-    """Bedrock model id + bearer token -> bearer auth, explicit region.
+@pytest.mark.asyncio
+async def test_probe_analyzer_routes_bedrock_model_through_direct_api():
+    """A cloud Bedrock model id is normalized to the plain id and run on the
+    direct Anthropic API -- never the SigV4-only ``AsyncAnthropicBedrock``."""
+    fake_client = _fake_client()
 
-    Mirrors the claude-code agent's resolution so the inline summary rides the
-    same Bedrock auth route that just worked for the agent, instead of letting
-    the SDK fall into SigV4 with the ambient S3-scoped creds.
-    """
-    from oddish.worker import probe_analysis
+    with (
+        patch("anthropic.AsyncAnthropic", return_value=fake_client) as direct,
+        patch("anthropic.AsyncAnthropicBedrock") as bedrock,
+    ):
+        result = await run_probe_analyzer(
+            extra_instructions="",
+            agent_messages=[{"kind": "assistant_text", "text": "..."}],
+            verifier_stdout="",
+            reward=1.0,
+            result_focus="",
+            evaluation_metric="none",
+            model="global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        )
 
-    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "abc123")
-    monkeypatch.delenv("AWS_REGION", raising=False)
-
-    captured = {}
-
-    class FakeBedrock:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    with patch("anthropic.AsyncAnthropicBedrock", FakeBedrock):
-        probe_analysis._make_client("global.anthropic.claude-haiku-4-5-20251001-v1:0")
-
-    assert captured == {"api_key": "abc123", "aws_region": "us-east-1"}
-
-
-def test_make_client_bedrock_sigv4_fallback_without_bearer(monkeypatch):
-    """Bedrock model id, no bearer token -> SigV4 client, region honored."""
-    from oddish.worker import probe_analysis
-
-    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
-    monkeypatch.setenv("AWS_REGION", "us-west-2")
-
-    captured = {}
-
-    class FakeBedrock:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    with patch("anthropic.AsyncAnthropicBedrock", FakeBedrock):
-        probe_analysis._make_client("global.anthropic.claude-haiku-4-5-20251001-v1:0")
-
-    assert captured == {"aws_region": "us-west-2"}
-    assert "api_key" not in captured
+    direct.assert_called_once()
+    bedrock.assert_not_called()
+    # The Bedrock inference-profile id is resolved to its plain API id, both for
+    # the actual API call and for the model recorded on the summary.
+    assert result["model"] == "claude-haiku-4-5"
+    assert fake_client.messages.create.await_args.kwargs["model"] == "claude-haiku-4-5"
