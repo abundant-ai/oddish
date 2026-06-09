@@ -60,9 +60,10 @@ if [ "$RUN_MIGRATIONS" = "true" ] || [ "$branch_was_created" = "true" ]; then
   "$script_dir/run_preview_migrations.sh"
 fi
 
-if [ "$branch_was_created" = "true" ]; then
-  "$script_dir/cancel_cloned_preview_work.sh"
-fi
+# Seed runs on EVERY prepare (not gated by RUN_MIGRATIONS/branch_was_created):
+# branches are reused across pushes, so a backend-only push would otherwise
+# skip seeding and leave stale fixtures. The seed is idempotent + convergent.
+( cd "$GITHUB_WORKSPACE/backend" && uv run python "$script_dir/seed_preview_db.py" )
 
 if [ "$DEPLOY_BACKEND" = "true" ] || [ "$branch_was_created" = "true" ]; then
   "$script_dir/publish_modal_db_secret.sh"
