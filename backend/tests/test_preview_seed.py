@@ -1,5 +1,5 @@
-"""Gate: building the full schema then seeding yields a consistent,
-deterministic, convergent preview DB.
+"""Local unit test for the preview seed: building the full schema then
+seeding yields a consistent, deterministic, convergent preview DB.
 
 The schema is built with ``Base.metadata.create_all`` -- oddish and backend
 models register on the same ``DeclarativeBase`` -- rather than replaying the
@@ -7,8 +7,10 @@ Alembic chain. The real pipeline only ever applies Alembic incrementally onto
 a branch whose schema Supabase already cloned, never from an empty database,
 so a from-scratch chain replay is not a supported path.
 
-Requires ``ODDISH_DATABASE_URL`` pointing at an empty Postgres (CI provides a
-service container)."""
+Run against an empty Postgres by setting ``ODDISH_DATABASE_URL`` (the test
+builds the schema itself); it skips otherwise. The deploy-path gate is the
+real seed step in the prepare-preview-database job, which seeds the actual
+branch -- if the seed breaks against the real schema, that job fails."""
 import os
 
 import pytest
