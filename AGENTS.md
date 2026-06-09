@@ -416,11 +416,19 @@ this with a dedicated z.ai route:
   environment). It is referenced as `${ZAI_API_KEY}` and never persisted to the
   trial row.
 
+- **Recommended thinking/effort.** z.ai recommends "max effort" with adaptive
+  thinking. Harbor's `claude-code` agent (pinned fork commit) already renders
+  the `thinking` and `reasoning_effort` kwargs as `--thinking adaptive
+  --effort max`, so the z.ai route sets those kwargs as defaults. Override
+  either per-trial via agent kwargs (`--agent-kwarg reasoning_effort=high`).
+- **Network allowlist.** The Harbor fork's per-agent allowlist already maps
+  `zai`/`z-ai`/`glm` model prefixes (and the `glm-claude-code` agent name) to
+  `api.z.ai`, so closed-internet tasks on the Modal environment reach z.ai
+  without further changes.
+
 Run GLM on a task: `oddish run -p <task> --agent claude-code --model
 zai/glm-x-preview[1m]` (bare `glm-x-preview[1m]` works too and is canonicalized
-to `zai/...`). z.ai's recommended `--thinking adaptive --effort max` request
-shape is not emitted by Harbor's `claude-code` agent at the pinned commit; the
-companion harbor-fork branch adds that.
+to `zai/...`).
 
 Storage defaults:
 

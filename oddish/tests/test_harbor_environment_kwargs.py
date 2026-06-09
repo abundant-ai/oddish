@@ -239,6 +239,42 @@ def test_claude_code_glm_agent_config_sets_zai_anthropic_skin_env(
     assert agent_config.env["ANTHROPIC_API_KEY"] == ""
     assert agent_config.env["CLAUDE_CODE_USE_BEDROCK"] == ""
     assert agent_config.env["AWS_BEARER_TOKEN_BEDROCK"] == ""
+    # z.ai's recommended "max effort" + adaptive thinking, rendered by Harbor's
+    # claude-code agent as `--effort max --thinking adaptive`.
+    assert agent_config.kwargs["thinking"] == "adaptive"
+    assert agent_config.kwargs["reasoning_effort"] == "max"
+
+
+def test_claude_code_glm_recommended_kwargs_render_as_cli_flags() -> None:
+    """The kwargs Oddish sets for GLM produce z.ai's recommended CLI flags."""
+    import tempfile
+
+    from harbor.agents.installed.claude_code import ClaudeCode
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="zai/glm-x-preview[1m]",
+        raw_harbor_config={},
+    )
+    agent = ClaudeCode(
+        logs_dir=Path(tempfile.mkdtemp()),
+        model_name=agent_config.model_name,
+        **agent_config.kwargs,
+    )
+    flags = agent.build_cli_flags()
+    assert "--effort max" in flags
+    assert "--thinking adaptive" in flags
+
+
+def test_claude_code_glm_kwargs_are_overridable() -> None:
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="zai/glm-x-preview[1m]",
+        raw_harbor_config={"agent_config": {"kwargs": {"reasoning_effort": "high"}}},
+    )
+
+    assert agent_config.kwargs["reasoning_effort"] == "high"
+    assert agent_config.kwargs["thinking"] == "adaptive"
 
 
 def test_claude_code_bare_glm_model_is_canonicalized_to_zai(monkeypatch) -> None:

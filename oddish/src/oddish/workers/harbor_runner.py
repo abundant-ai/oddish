@@ -618,6 +618,15 @@ def _apply_claude_code_zai_env(agent_config: AgentConfig) -> None:
     env["AWS_BEARER_TOKEN_BEDROCK"] = ""
     agent_config.env = env
 
+    # z.ai recommends "max effort" with adaptive thinking. Harbor's claude-code
+    # agent renders these kwargs as `--effort max --thinking adaptive`. Set as
+    # defaults so a plain GLM run matches z.ai's recommended setup; a sweep can
+    # override either via agent kwargs.
+    kwargs = dict(agent_config.kwargs or {})
+    kwargs.setdefault("thinking", "adaptive")
+    kwargs.setdefault("reasoning_effort", "max")
+    agent_config.kwargs = kwargs
+
 
 def _apply_codex_azure_compat(agent_config: AgentConfig) -> None:
     """Route Azure Codex trials through Oddish's transport-compatible wrapper."""
