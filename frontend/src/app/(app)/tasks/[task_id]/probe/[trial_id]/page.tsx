@@ -11,6 +11,12 @@ type AgentMessage = {
   is_error?: boolean;
 };
 
+type Artifacts = {
+  trajectory?: unknown;
+  verifier_stdout?: string;
+  agent_messages?: AgentMessage[];
+};
+
 function kindLabel(m: AgentMessage): string {
   if (m.kind === "tool_use") return m.name ? `tool: ${m.name}` : "tool call";
   if (m.kind === "tool_result") return "tool result";
@@ -67,11 +73,7 @@ type Trial = {
     ratio_verb?: string | null;
   } | null;
   result: {
-    _artifacts?: {
-      trajectory?: unknown;
-      verifier_stdout?: string;
-      agent_messages?: AgentMessage[];
-    };
+    _artifacts?: Artifacts;
   } | null;
   analysis: ProbeSummary | null;
   analysis_status: string | null;
@@ -114,6 +116,20 @@ export default function ProbeResultPage({
     return () => clearTimeout(t);
   }, [trial_id]);
 
+  // Cloud trials don't inline `_artifacts` into `result` (only the local runner
+  // does); the agent transcript + verifier output live in object storage. When
+  // a finished trial has no inlined artifacts, pull them on demand so the panels
+  // below render the real output instead of "(no messages yet)".
+  const candidate = (trials ?? []).find((t) => t.id === trial_id);
+  const needsArtifacts =
+    !!candidate &&
+    !candidate.result?._artifacts &&
+    (candidate.status === "success" || candidate.status === "failed");
+  const { data: fetchedArtifacts } = useSWR<Artifacts>(
+    needsArtifacts ? `/api/trials/${trial_id}/probe-artifacts` : null,
+    fetcher,
+  );
+
   if (error)
     return (
       <div className="container mx-auto max-w-3xl py-8">
@@ -154,7 +170,7 @@ export default function ProbeResultPage({
 
   const extra = trial.harbor_config?.extra_instructions ?? "";
   const summary = trial.analysis;
-  const artifacts = trial.result?._artifacts;
+  const artifacts = trial.result?._artifacts ?? fetchedArtifacts;
   const messages = artifacts?.agent_messages ?? [];
   const verifierStdout = artifacts?.verifier_stdout;
   const cheatFound =
