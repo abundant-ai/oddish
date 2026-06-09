@@ -33,6 +33,12 @@ type Attempt = {
   step_indices?: number[];
 };
 
+type ToolInsight = {
+  name?: string;
+  kind?: "skill" | "mcp";
+  note?: string;
+};
+
 type ProbeSummary = {
   kind?: string;
   headline?: string;
@@ -42,6 +48,7 @@ type ProbeSummary = {
   cheating_succeeded?: boolean | null;
   evidence?: string;
   attempts?: Attempt[];
+  tool_insights?: ToolInsight[];
   model?: string;
   generated_at?: string;
   result_focus_question?: string | null;
@@ -439,6 +446,29 @@ export default function ProbeResultPage({
             <p className="text-xs text-muted-foreground italic">
               Evidence: {summary.evidence}
             </p>
+          ) : null}
+          {summary.tool_insights && summary.tool_insights.length > 0 ? (
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-1">
+                Tools &amp; skills used
+              </p>
+              <ul className="space-y-1 text-sm">
+                {summary.tool_insights.map((t, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className="mt-0.5 shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">
+                      {t.kind === "mcp" ? "MCP" : "Skill"}
+                    </span>
+                    <span>
+                      {t.name ? (
+                        <span className="font-mono text-xs">{t.name}</span>
+                      ) : null}
+                      {t.name && t.note ? " — " : null}
+                      {t.note}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
         </section>
       ) : trial.analysis_status === "FAILED" ||
