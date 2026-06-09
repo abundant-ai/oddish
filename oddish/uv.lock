@@ -920,8 +920,8 @@ wheels = [
 
 [[package]]
 name = "harbor"
-version = "0.8.0"
-source = { git = "https://github.com/rishidesai/harbor?branch=main#17f38e4785ef3e14af90d70a384040c79ba4e0de" }
+version = "0.13.1"
+source = { git = "https://github.com/rishidesai/harbor?branch=main#2da861eb5268ceb6cef283cdc53b123a0aae5d91" }
 dependencies = [
     { name = "claude-agent-sdk" },
     { name = "datasets" },
@@ -1652,6 +1652,7 @@ all = [
     { name = "daytona" },
     { name = "fastapi" },
     { name = "google-generativeai" },
+    { name = "mcp" },
     { name = "modal" },
     { name = "openai" },
     { name = "pre-commit" },
@@ -1675,6 +1676,7 @@ server = [
     { name = "alembic" },
     { name = "asyncpg" },
     { name = "fastapi" },
+    { name = "mcp" },
     { name = "pypdf" },
     { name = "python-jose", extra = ["cryptography"] },
     { name = "python-multipart" },
@@ -1689,6 +1691,7 @@ worker = [
     { name = "daytona" },
     { name = "fastapi" },
     { name = "google-generativeai" },
+    { name = "mcp" },
     { name = "modal" },
     { name = "openai" },
     { name = "pypdf" },
@@ -1741,6 +1744,7 @@ requires-dist = [
     { name = "harbor", git = "https://github.com/rishidesai/harbor?branch=main" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "litellm", specifier = "==1.83.14" },
+    { name = "mcp", marker = "extra == 'server'", specifier = ">=1.26" },
     { name = "modal", marker = "extra == 'worker'", specifier = "==1.4.2" },
     { name = "oddish", extras = ["server"], marker = "extra == 'worker'" },
     { name = "oddish", extras = ["worker", "dev"], marker = "extra == 'all'" },
