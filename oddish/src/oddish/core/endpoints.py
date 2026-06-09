@@ -171,6 +171,7 @@ async def list_tasks_core(
                 # async greenlet and fails with MissingGreenlet (same
                 # reason ``origin`` / ``superseded_by_trial_id`` are here).
                 TrialModel.harbor_config,
+                TrialModel.is_probe,
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
@@ -864,6 +865,7 @@ async def retry_trial_core(
         timeout_minutes=old_trial.timeout_minutes,
         environment=old_trial.environment,
         harbor_config=old_trial.harbor_config,
+        is_probe=old_trial.is_probe,
         max_attempts=old_trial.max_attempts,
         status=TrialStatus.QUEUED,
     )
@@ -2131,6 +2133,7 @@ _COMBINE_TRIAL_RESULT_FIELDS = (
     "timeout_minutes",
     "environment",
     "harbor_config",
+    "is_probe",
     "status",
     "origin",
     "attempts",

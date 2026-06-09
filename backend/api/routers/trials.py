@@ -80,6 +80,10 @@ async def get_trial(
 async def list_task_trials(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    probe: bool | None = Query(
+        None,
+        description="Filter by trial kind: true=probes only, false=real attempts only, omitted=all.",
+    ),
 ) -> list[TrialResponse]:
     """List all trials for a task (org-scoped)."""
     auth.require_scope(APIKeyScope.READ)
@@ -87,7 +91,7 @@ async def list_task_trials(
     async with get_session() as session:
         await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
 
-        return await list_task_trials_for_task(session, task_id)
+        return await list_task_trials_for_task(session, task_id, probe=probe)
 
 
 # =============================================================================

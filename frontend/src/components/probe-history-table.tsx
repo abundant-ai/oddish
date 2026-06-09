@@ -31,7 +31,9 @@ type Trial = {
     evaluation_metric?: EvaluationMetric;
     ratio_unit?: string | null;
     ratio_verb?: string | null;
+    probe_name?: string | null;
   } | null;
+  is_probe?: boolean;
 };
 
 function pluralize(noun: string): string {
@@ -40,6 +42,16 @@ function pluralize(noun: string): string {
   if (/[sxz]$|[cs]h$/.test(n)) return n + "es";
   if (/[^aeiou]y$/.test(n)) return n.slice(0, -1) + "ies";
   return n + "s";
+}
+
+// What to show in the run-identity column for a probe.
+// Newer probe runs carry the operator-selected preset name in
+// harbor_config.probe_name. Older runs (and runs launched without a
+// preset) won't — decide what to fall back to.
+function probeLabel(t: Trial): string {
+  // Prefer the operator-selected preset name; fall back to the model so
+  // older runs (and preset-less runs) still show something meaningful.
+  return t.harbor_config?.probe_name?.trim() || t.agent;
 }
 
 function statusLabel(t: Trial): string {
@@ -256,7 +268,7 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
   };
 
   const { data, error } = useSWR<Trial[]>(
-    `/api/tasks/${taskId}/trials`,
+    `/api/tasks/${taskId}/trials?probe=true`,
     fetcher,
     { refreshInterval: 5000 },
   );
@@ -270,15 +282,8 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
   if (!data)
     return <p className="text-sm text-muted-foreground">Loading history…</p>;
 
-  // If harbor_config is exposed (Task 15+), narrow to probe runs only.
-  // Otherwise show every trial for the task — better than hiding the whole
-  // history if the field hasn't been wired through yet.
-  const anyHaveHarborConfig = data.some(
-    (t) => t.harbor_config !== undefined && t.harbor_config !== null,
-  );
-  const probes = anyHaveHarborConfig
-    ? data.filter((t) => t.harbor_config?.mode === "probe")
-    : data;
+  // The server already filtered to probes (?probe=true); render as-is.
+  const probes = data;
 
   return (
     <div>
@@ -290,7 +295,7 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
           <thead className="text-left text-muted-foreground">
             <tr>
               <th className="py-2 pr-4 font-medium">Timestamp</th>
-              <th className="py-2 pr-4 font-medium">Agent</th>
+              <th className="py-2 pr-4 font-medium">Probe</th>
               <th className="py-2 pr-4 font-medium">Status</th>
               <th className="py-2 pr-4 font-medium">Result</th>
               <th className="py-2 font-medium"></th>
@@ -302,7 +307,7 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
                 <td className="py-2 pr-4 font-mono text-xs">
                   {t.started_at ? new Date(t.started_at).toLocaleString() : "—"}
                 </td>
-                <td className="py-2 pr-4">{t.agent}</td>
+                <td className="py-2 pr-4">{probeLabel(t)}</td>
                 <td className="py-2 pr-4">{statusLabel(t)}</td>
                 <td className="py-2 pr-4">
                   {(() => {

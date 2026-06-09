@@ -472,6 +472,8 @@ def _build_harbor_config_for_trial(
     if submission.extra_instructions:
         base["mode"] = "probe"
         base["extra_instructions"] = submission.extra_instructions
+        if submission.probe_name:
+            base["probe_name"] = submission.probe_name
 
     if submission.result_focus:
         base["result_focus"] = submission.result_focus
@@ -667,6 +669,7 @@ async def create_task(
             timeout_minutes=spec.timeout_minutes,
             environment=spec.environment,
             harbor_config=harbor_config,
+            is_probe=(harbor_config or {}).get("mode") == "probe",
             max_attempts=submission.max_trial_attempts,
             status=TrialStatus.QUEUED,
         )
@@ -815,6 +818,7 @@ async def append_trials_to_task(
             timeout_minutes=spec.timeout_minutes,
             environment=spec.environment,
             harbor_config=harbor_config,
+            is_probe=(harbor_config or {}).get("mode") == "probe",
             max_attempts=submission.max_trial_attempts,
             status=TrialStatus.QUEUED,
         )
