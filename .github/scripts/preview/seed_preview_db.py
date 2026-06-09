@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "backend"))
 
+from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from preview_seed import seed
@@ -18,7 +19,15 @@ from preview_seed import seed
 
 async def _main() -> None:
     url = os.environ["ODDISH_DATABASE_URL"]
-    engine = create_async_engine(url)
+    # The branch URL is the Supabase pooler (transaction-mode pgbouncer /
+    # Supavisor), which can't reuse asyncpg's cached named prepared
+    # statements -- disable the cache and use NullPool, mirroring
+    # oddish.db.connection._base_connect_args.
+    engine = create_async_engine(
+        url,
+        connect_args={"statement_cache_size": 0},
+        poolclass=pool.NullPool,
+    )
     try:
         await seed(engine)
     finally:

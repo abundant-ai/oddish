@@ -344,7 +344,10 @@ def _scaffold(table_name: str) -> str:
     from sqlalchemy.ext.asyncio import create_async_engine
 
     async def _reflect():
-        eng = create_async_engine(os.environ["MIGRATED_DB_URL"])
+        eng = create_async_engine(
+            os.environ["MIGRATED_DB_URL"],
+            connect_args={"statement_cache_size": 0},
+        )
         md = MetaData()
         async with eng.begin() as conn:
             await conn.run_sync(md.reflect, only=[table_name])
