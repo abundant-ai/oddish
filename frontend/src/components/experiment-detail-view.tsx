@@ -14,13 +14,14 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
+import { prBadge, prNumberFromUrl, taskPrUrl } from "@/lib/utils";
 import { formatCostUsd } from "@/lib/format";
 import {
   EMPTY_TRIAL_AGGREGATE,
   accumulateTrial,
 } from "@/lib/trial-aggregation";
 import type { Task, Trial } from "@/lib/types";
-import { Loader2 } from "lucide-react";
+import { ExternalLink, GitPullRequest, Loader2 } from "lucide-react";
 import {
   buildExperimentAgentSummaries,
   getExperimentAgentKey,
@@ -176,6 +177,7 @@ function ExperimentHeaderMeta({
   showPassAtK,
   onToggleShowPassAtK,
   headerRight,
+  prLink,
 }: {
   isLoading: boolean;
   isInitialLoading: boolean;
@@ -183,9 +185,11 @@ function ExperimentHeaderMeta({
   showPassAtK: boolean;
   onToggleShowPassAtK: () => void;
   headerRight?: React.ReactNode;
+  prLink?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-wrap items-center justify-end gap-2">
+      {prLink}
       {isLoading && (
         <div className="inline-flex items-center gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-2 py-1 text-xs text-[color:var(--paper-ink-3)]">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -271,6 +275,72 @@ function pickExperimentCreationMeta(tasks: Task[]): {
     createdAt: experimentCreatedAt ?? earliest.created_at,
     author: earliest.github_username || earliest.user || null,
   };
+}
+
+function pickExperimentPr(tasks: Task[]): {
+  prUrl: string | null;
+  prTitle: string | null;
+  prNumber: string | null;
+} {
+  // The URL can arrive two ways: structured `github_meta.pr_url`, or the
+  // canonical `task.link` column (set by `--link`, or auto-derived from
+  // github_meta on the backend). `link` is what the task page renders, so we
+  // treat it as a first-class source rather than relying on github_meta alone.
+  const task = tasks.find((t) => taskPrUrl(t.link, t.github_meta));
+  const meta = task?.github_meta;
+  const prUrl = taskPrUrl(task?.link, meta);
+  return {
+    prUrl,
+    prTitle: meta?.pr_title ?? null,
+    prNumber: meta?.pr_number ?? prNumberFromUrl(prUrl),
+  };
+}
+
+// Dedicated header affordance linking an experiment back to the GitHub PR that
+// spawned it (lineage tracing). The PR URL rides in along every task's
+// `github_meta` (set via `oddish run --github-meta`); we surface the first task
+// that carries one. Renders nothing when no PR metadata is present.
+function ExperimentPrLink({
+  tasks,
+  isInitialLoading,
+}: {
+  tasks: Task[];
+  isInitialLoading: boolean;
+}) {
+  if (isInitialLoading) return null;
+  const { prUrl, prTitle, prNumber } = pickExperimentPr(tasks);
+  if (!prUrl) {
+    return (
+      <span
+        title="No pull request linked to this experiment"
+        className="inline-flex h-8 select-none items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink-3)] opacity-60"
+      >
+        <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        no PR linked
+      </span>
+    );
+  }
+
+  const { label, number } = prBadge(prUrl, prNumber);
+
+  return (
+    <a
+      href={prUrl}
+      target="_blank"
+      rel="noreferrer"
+      title={prTitle ? `${prTitle} — view on GitHub` : "View pull request on GitHub"}
+      className="inline-flex h-8 max-w-[200px] select-none items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
+    >
+      <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      <span className="min-w-0 truncate">
+        {label}
+        {number && (
+          <span className="text-[color:var(--paper-ink-3)]"> #{number}</span>
+        )}
+      </span>
+      <ExternalLink className="h-3 w-3 shrink-0 opacity-50" aria-hidden />
+    </a>
+  );
 }
 
 function ExperimentMetaStrip({
@@ -861,6 +931,12 @@ export function ExperimentDetailView({
               showPassAtK={showPassAtK}
               onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
               headerRight={headerRight}
+              prLink={
+                <ExperimentPrLink
+                  tasks={tasksForExperiment}
+                  isInitialLoading={isInitialLoading}
+                />
+              }
             />
           </div>
 

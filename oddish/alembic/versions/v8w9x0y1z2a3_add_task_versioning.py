@@ -59,13 +59,23 @@ def upgrade() -> None:
     op.add_column(
         "tasks",
         sa.Column("current_version_id", sa.String(128), nullable=True), if_not_exists=True)
-    op.create_foreign_key(
-        "fk_tasks_current_version_id",
-        "tasks",
-        "task_versions",
-        ["current_version_id"],
-        ["id"],
-        ondelete="SET NULL",
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'fk_tasks_current_version_id'
+            ) THEN
+                ALTER TABLE tasks
+                ADD CONSTRAINT fk_tasks_current_version_id
+                FOREIGN KEY (current_version_id)
+                REFERENCES task_versions(id)
+                ON DELETE SET NULL;
+            END IF;
+        END
+        $$;
+        """
     )
 
     # --- trials: pin each trial to a task version ---

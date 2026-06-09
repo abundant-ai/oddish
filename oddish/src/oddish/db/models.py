@@ -502,6 +502,13 @@ class TrialModel(TimestampedMixin, Base):
     # Harbor passthrough config (agent env/kwargs, verifier, environment resources)
     harbor_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # Derived, indexed projection of ``harbor_config["mode"] == "probe"`` so
+    # probe runs can be filtered server-side. Source of truth stays in
+    # harbor_config; this is set at trial creation in queue.py.
+    is_probe: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), index=True
+    )
+
     # Status
     status: Mapped[TrialStatus] = mapped_column(
         SQLEnum(TrialStatus), default=TrialStatus.PENDING, nullable=False
