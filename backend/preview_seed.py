@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import sys
 
 from sqlalchemy import (
-    Boolean, DateTime, Float, Integer, MetaData, Numeric, String, Text, delete,
+    JSON, Boolean, Date, DateTime, Float, Integer, MetaData, Numeric, String,
+    Text, and_, delete, false, select,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as _PgUUID
@@ -37,26 +39,52 @@ def _filler(column):
     omits and that has no DB default. Keeps the seed from breaking on a
     newly-added column; the value is meaningless, so curate it in FIXTURES
     only if the column matters. Unknown types raise so the CI gate forces an
-    explicit decision."""
+    explicit decision.
+
+    Every successful fill emits a stderr line so a new column landing in
+    main can't silently soak up a wrong-but-passing default -- against the
+    project's "no surprises" priority. Curate in FIXTURES if the value
+    matters."""
     t = column.type
     if isinstance(t, Boolean):
-        return False
-    if isinstance(t, (Integer, Numeric, Float)):
-        return 0
-    if isinstance(t, DateTime):
-        return SEED_EPOCH
-    if isinstance(t, JSONB):
-        return {}
-    if isinstance(t, _PgUUID):
-        return "00000000-0000-0000-0000-000000000000"
-    if getattr(t, "enums", None):  # reflected PG ENUM
-        return t.enums[0]
-    if isinstance(t, (String, Text)):
-        return ""
-    raise RuntimeError(
-        f"No auto-fill rule for {column.table.name}.{column.name} ({t!r}); "
-        f"add it to FIXTURES explicitly."
+        val = False
+    elif isinstance(t, (Integer, Numeric, Float)):
+        val = 0
+    elif isinstance(t, DateTime):
+        val = SEED_EPOCH
+    elif isinstance(t, Date):
+        val = SEED_EPOCH.date()
+    elif isinstance(t, (JSONB, JSON)):
+        val = {}
+    elif isinstance(t, _PgUUID):
+        val = "00000000-0000-0000-0000-000000000000"
+    elif getattr(t, "enums", None):  # reflected PG ENUM
+        val = t.enums[0]
+    elif isinstance(t, (String, Text)):
+        val = ""
+    else:
+        raise RuntimeError(
+            f"No auto-fill rule for {column.table.name}.{column.name} ({t!r}); "
+            f"add it to FIXTURES explicitly."
+        )
+    print(
+        f"preview_seed: auto-filled {column.table.name}.{column.name}={val!r} "
+        f"(no fixture value / no server_default) -- curate if it matters",
+        file=sys.stderr,
     )
+    return val
+
+
+def _seed_owned(table):
+    """Return a WHERE clause that selects rows owned by the seed: every
+    string-typed primary-key column begins with ``SEED_ID_PREFIX``. For an
+    association table, ALL endpoints must be seeded -- prevents the
+    reconcile pass from dropping a seed-task link to a real experiment."""
+    str_pks = [
+        c for c in table.primary_key.columns
+        if isinstance(c.type, (String, Text))
+    ]
+    return and_(*[c.like(f"{SEED_ID_PREFIX}%") for c in str_pks]) if str_pks else false()
 
 
 def _fixtures() -> dict[str, list[dict]]:
@@ -111,8 +139,12 @@ def _fixtures() -> dict[str, list[dict]]:
              "message": "v2", "created_by_user_id": owner_id,
              "expanded_at": None, "expanded_manifest_key": None, **ts},
         ],
-        # task_experiments (composite PK, no id column) is handled in
-        # _recompute_projections so the id-keyed engine pass doesn't touch it.
+        "task_experiments": [
+            {"task_id": task_a, "experiment_id": exp_id,
+             "created_at": SEED_EPOCH, "deleted_at": None},
+            {"task_id": task_b, "experiment_id": exp_id,
+             "created_at": SEED_EPOCH, "deleted_at": SEED_EPOCH},
+        ],
         "trials": [
             {"id": "seed-task-a-1", "name": "seed-task-a-1", "task_id": task_a,
              "task_version_id": "seed-task-a-v2", "experiment_id": exp_id,
@@ -237,11 +269,15 @@ async def seed(engine: AsyncEngine) -> None:
         ordered = _topo_order(md)
 
         # Upsert parents-first, auto-filling any NOT-NULL column the fixture
-        # omits that has no DB default.
+        # omits that has no DB default. Generalized to ANY primary key
+        # (single-col ``id``, composite like ``task_experiments``, ...): we
+        # key ON CONFLICT on the full PK tuple and never blast PK columns in
+        # the UPDATE clause.
         for table in ordered:
             rows = fixtures.get(table.name, [])
             if not rows:
                 continue
+            pk_cols = [c.name for c in table.primary_key.columns]
             needs_value = [
                 c for c in table.columns
                 if not c.nullable and c.server_default is None and not c.primary_key
@@ -252,9 +288,9 @@ async def seed(engine: AsyncEngine) -> None:
                     if c.name not in filled:
                         filled[c.name] = _filler(c)
                 stmt = pg_insert(table).values(**filled)
-                set_ = {k: stmt.excluded[k] for k in filled if k != "id"}
+                set_ = {k: stmt.excluded[k] for k in filled if k not in pk_cols}
                 await conn.execute(
-                    stmt.on_conflict_do_update(index_elements=["id"], set_=set_)
+                    stmt.on_conflict_do_update(index_elements=pk_cols, set_=set_)
                 )
 
         # Linkage pass for circular FKs.
@@ -266,77 +302,56 @@ async def seed(engine: AsyncEngine) -> None:
             )
 
         # Reconcile removals: delete seed-owned rows no longer in FIXTURES,
-        # children-first.
+        # children-first. Match by full PK tuple so an association row with
+        # mixed seed/non-seed endpoints (e.g. seed-task-a linked to a real
+        # experiment) is left alone -- ``_seed_owned`` requires every string
+        # PK column to start with ``SEED_ID_PREFIX``.
         for table in reversed(ordered):
             if table.name not in fixtures:
                 continue
-            keep = [r["id"] for r in fixtures[table.name]]
-            await conn.execute(
-                delete(table)
-                .where(table.c.id.like(f"{SEED_ID_PREFIX}%"))
-                .where(table.c.id.notin_(keep))
+            pk_cols = list(table.primary_key.columns)
+            keep = {tuple(r[c.name] for c in pk_cols) for r in fixtures[table.name]}
+            existing = await conn.execute(
+                select(*pk_cols).where(_seed_owned(table))
             )
+            for row in existing.fetchall():
+                key = tuple(row)
+                if key not in keep:
+                    await conn.execute(
+                        delete(table).where(
+                            and_(*[c == v for c, v in zip(pk_cols, key)])
+                        )
+                    )
 
         await _recompute_projections(conn, fixtures)
 
 
 async def _recompute_projections(conn, fixtures: dict[str, list[dict]]) -> None:
-    """Refresh derived rows/projections after the main id-keyed pass.
-
-    Currently handles the ``task_experiments`` M2M (composite PK, no ``id``
-    column) which the generic engine skips, plus the reconciliation of its
-    seed-owned rows. When the tag feature (PR #239) lands this extends to call
+    """Refresh derived columns after seeding. No-op on schemas without
+    projections. When the tag feature (PR #239) lands it extends this to call
     ``oddish.core.tags_projection.recompute_task_browse_projection`` per seeded
     task (guarded import so this stays usable without the tag tables)."""
-    from sqlalchemy import MetaData as _MetaData
-
-    md = _MetaData()
-    await conn.run_sync(md.reflect)
-    tx = md.tables.get("task_experiments")
-    if tx is None:
-        return
-
-    # Curated M2M rows. Soft-deleted row carries deleted_at=SEED_EPOCH so the
-    # gate test can assert the tombstone path is reachable in previews.
-    desired = [
-        {"task_id": "seed-task-a", "experiment_id": "seed-exp-1",
-         "created_at": SEED_EPOCH, "deleted_at": None},
-        {"task_id": "seed-task-b", "experiment_id": "seed-exp-1",
-         "created_at": SEED_EPOCH, "deleted_at": SEED_EPOCH},
-    ]
-    for row in desired:
-        stmt = pg_insert(tx).values(**row)
-        set_ = {k: stmt.excluded[k] for k in row
-                if k not in ("task_id", "experiment_id")}
-        await conn.execute(
-            stmt.on_conflict_do_update(
-                index_elements=["task_id", "experiment_id"], set_=set_
-            )
-        )
-
-    # Reconcile: drop seed-owned M2M rows no longer in `desired`. The
-    # seed-ownership marker on a join table is "both endpoints are seeded".
-    keep_keys = {(r["task_id"], r["experiment_id"]) for r in desired}
-    res = await conn.execute(
-        tx.select().where(tx.c.task_id.like(f"{SEED_ID_PREFIX}%"))
-    )
-    for row in res.fetchall():
-        if (row.task_id, row.experiment_id) not in keep_keys:
-            await conn.execute(
-                delete(tx).where(tx.c.task_id == row.task_id)
-                .where(tx.c.experiment_id == row.experiment_id)
-            )
+    return
 
 
 def _scaffold(table_name: str) -> str:
     """Print a ready-to-edit FIXTURES entry for one table, reflected from a
-    migrated DB (MIGRATED_DB_URL)."""
-    from sqlalchemy import create_engine
+    migrated DB (MIGRATED_DB_URL). Uses async reflection because backend ships
+    asyncpg, not psycopg2 -- a sync ``create_engine`` on the stripped URL
+    would raise ModuleNotFoundError at the import."""
+    import asyncio
 
-    url = os.environ["MIGRATED_DB_URL"].replace("+asyncpg", "")
-    md = MetaData()
-    md.reflect(bind=create_engine(url), only=[table_name])
-    table = md.tables[table_name]
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    async def _reflect():
+        eng = create_async_engine(os.environ["MIGRATED_DB_URL"])
+        md = MetaData()
+        async with eng.begin() as conn:
+            await conn.run_sync(md.reflect, only=[table_name])
+        await eng.dispose()
+        return md.tables[table_name]
+
+    table = asyncio.run(_reflect())
     out = [f'        "{table_name}": [', "            {"]
     for c in table.columns:
         if c.name == "id":
