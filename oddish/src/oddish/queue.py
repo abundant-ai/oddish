@@ -472,6 +472,8 @@ def _build_harbor_config_for_trial(
     if submission.extra_instructions:
         base["mode"] = "probe"
         base["extra_instructions"] = submission.extra_instructions
+        if submission.probe_name:
+            base["probe_name"] = submission.probe_name
 
     if submission.result_focus:
         base["result_focus"] = submission.result_focus
