@@ -171,6 +171,7 @@ async def list_tasks_core(
                 # async greenlet and fails with MissingGreenlet (same
                 # reason ``origin`` / ``superseded_by_trial_id`` are here).
                 TrialModel.harbor_config,
+                TrialModel.is_probe,
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
