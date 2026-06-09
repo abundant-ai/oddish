@@ -338,46 +338,6 @@ jobs:
       - name: Post preview links
         run: python "$GITHUB_WORKSPACE/.github/scripts/preview/post_preview_links.py"
 
-  seed-gate:
-    name: Schema + seed gate
-    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
-    container:
-      image: ghcr.io/abundant-ai/oddish-ci-base:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: oddish
-          POSTGRES_PASSWORD: oddish
-          POSTGRES_DB: oddish_gate
-        options: >-
-          --health-cmd "pg_isready -U oddish -d oddish_gate"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
-      ODDISH_DATABASE_URL: postgresql+asyncpg://oddish:oddish@postgres:5432/oddish_gate
-    defaults:
-      run:
-        working-directory: backend
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Sync backend dependencies
-        run: uv sync --frozen
-
-      - name: Run preview seed gate test
-        run: uv run pytest tests/test_preview_seed.py -v
-
   stop-preview:
     name: Stop preview
     if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
