@@ -2,6 +2,14 @@
 
 The canonical engineering guide for this repo is **`AGENTS.md`** at the repo root. Read it first; it covers the three packages (`oddish/` CLI+server, `backend/` hosted cloud layer, `frontend/` Next.js dashboard), required toolchains, and maintenance rules. End-user CLI docs are in `DOCS.md`.
 
+## Git workflow — NEVER commit or push to `main`
+
+**Never directly commit or push to `main`.** Always check out a new branch first
+(`git checkout -b <type>/<short-desc>`), commit there, push that branch, and open
+a PR for review. This applies to every change, no matter how small — even a
+one-line fix. If you find yourself on `main` with staged or unstaged changes,
+create a branch and move the work onto it before committing.
+
 ## What this project is
 
 Oddish runs evals on [Harbor](https://github.com/laude-institute/harbor) tasks in the cloud: provider-aware queuing, real-time monitoring, Postgres-backed state, S3 log storage. End users replace `harbor run` with `oddish run`. The hosted layer (`backend/` + `frontend/`) is deployed on Modal and surfaces a dashboard at oddish.app.
