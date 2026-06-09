@@ -32,6 +32,11 @@ class _Result:
     def all(self) -> list[Any]:
         return self._rows
 
+    def scalar(self) -> Any:
+        # The only ``.scalar()`` call in the sweep is the advisory-lock
+        # acquire; returning truthy means "lock acquired -> run normally".
+        return True
+
 
 class _RecordingSession:
     def __init__(self) -> None:
