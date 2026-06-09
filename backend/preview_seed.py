@@ -268,6 +268,21 @@ async def seed(engine: AsyncEngine) -> None:
         # known back-edge; the linkage pass below sets ``current_version_id``.
         ordered = _topo_order(md)
 
+        # The seeded org carries a real external clerk_org_id (so a reviewer's
+        # Clerk JWT matches it). The generic upsert keys on the primary key
+        # only, so it can't resolve the separate UNIQUE(clerk_org_id): a reused
+        # or once-``--with-data`` branch may already hold that mapping on a
+        # different row (cloned prod data). Free it first so the seeded org can
+        # claim it -- a no-op on a clean data-less branch.
+        orgs = md.tables.get("organizations")
+        if orgs is not None:
+            await conn.execute(
+                orgs.update()
+                .where(orgs.c.clerk_org_id == org["clerk_org_id"])
+                .where(orgs.c.id != org["id"])
+                .values(clerk_org_id=None)
+            )
+
         # Upsert parents-first, auto-filling any NOT-NULL column the fixture
         # omits that has no DB default. Generalized to ANY primary key
         # (single-col ``id``, composite like ``task_experiments``, ...): we
