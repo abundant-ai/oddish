@@ -620,8 +620,10 @@ export function TaskDetailClient({
 
   const trialsForVersion = useMemo(() => {
     if (!task?.trials || selectedVersionId == null) return [] as Trial[];
-    return task.trials.filter((t) => t.task_version_id === selectedVersionId);
-  }, [task, selectedVersionId]);
+    return task.trials.filter(
+      (t) => t.task_version_id === selectedVersionId && !t.is_probe,
+    );
+  }, [task?.trials, selectedVersionId]);
 
   const selectedVersion = versions.find((v) => v.id === selectedVersionId);
   const versionSummary: TrialAggregate = useMemo(() => {
