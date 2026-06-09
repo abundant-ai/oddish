@@ -94,6 +94,24 @@ def test_opus_4_8_maps_to_global_inference_profile(monkeypatch):
     assert settings.normalize_queue_key("anthropic/claude-opus-4-8") == expected
 
 
+def test_fable_5_maps_to_global_inference_profile(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    expected = "global.anthropic.claude-fable-5"
+
+    assert settings.normalize_trial_model("claude-code", "claude-fable-5") == expected
+    assert (
+        settings.normalize_trial_model("claude-code", "anthropic/claude-fable-5")
+        == expected
+    )
+    assert (
+        settings.normalize_trial_model("claude-code", "anthropic.claude-fable-5")
+        == expected
+    )
+    assert settings.normalize_queue_key("claude-fable-5") == expected
+    assert settings.normalize_queue_key("anthropic/claude-fable-5") == expected
+
+
 def test_bedrock_queue_key_normalization_collapses_aliases(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
