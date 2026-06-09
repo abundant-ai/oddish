@@ -8,18 +8,12 @@ let configured = false;
 
 const TRACER_NAME = "oddish-frontend";
 
-// Browser spans are relayed through a same-origin proxy
-// (`app/api/telemetry/traces`) rather than posted straight to Logfire:
-// Logfire's ingestion host returns no `Access-Control-Allow-Origin`, so a
-// direct cross-origin export is blocked by the browser at the CORS preflight
-// (it only works server-side, e.g. from curl). See that route for details.
+// Relay browser spans same-origin: Logfire's ingest host sends no CORS
+// headers, so a direct cross-origin export is blocked at preflight.
 const LOGFIRE_TRACE_PATH = "/api/telemetry/traces";
 
-// Never instrument the export request itself. The OTLP exporter sends spans
-// via `fetch`, and `instrumentation-fetch` would otherwise wrap that POST in
-// a fresh span — which then gets exported, spawning another span, a
-// self-perpetuating ~1 req/s/tab heartbeat against our own relay. Excluding
-// the path breaks the loop. (XHR is covered too, belt-and-suspenders.)
+// Don't trace the export POST itself, or each export spawns a span that gets
+// exported — a self-perpetuating loop.
 const TRACE_EXPORT_IGNORE_URLS = [/\/api\/telemetry\/traces(?:\?|$)/];
 
 function resolveEnvironment(): string {
@@ -42,8 +36,6 @@ export function ensureLogfireConfigured(): void {
 
   try {
     logfire.configure({
-      // Absolute, same-origin URL so the export never crosses origins (no
-      // CORS preflight). `window` is guaranteed defined by the guard above.
       traceUrl: `${window.location.origin}${LOGFIRE_TRACE_PATH}`,
       traceExporterHeaders: () => ({ Authorization: token }),
       serviceName: "oddish-frontend",
