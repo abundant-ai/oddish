@@ -184,12 +184,12 @@ function DocumentIngestForm({ onSaved, onCancel }: IngestFormProps) {
         {sourceType === "upload" ? (
           <div className="space-y-1.5">
             <Label htmlFor="doc-file" className="text-xs font-medium">
-              File <span className="text-muted-foreground">(PDF, text, markdown)</span>
+              File <span className="text-muted-foreground">(PDF, text, markdown, CSV)</span>
             </Label>
             <input
               id="doc-file"
               type="file"
-              accept=".pdf,.txt,.md,.markdown,text/*,application/pdf"
+              accept=".pdf,.txt,.md,.markdown,.csv,text/*,text/csv,application/pdf"
               onChange={(e) => setFile(e.target.files?.[0] ?? null)}
               className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border file:border-[#6f88b4]/20 file:bg-muted file:px-3 file:py-1.5 file:text-xs"
             />
