@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import {
   getAuthHeaders,
@@ -6,22 +6,24 @@ import {
   getClerkToken,
 } from "@/lib/backend-config";
 
-export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ task_id: string }> },
-) {
+export async function POST(request: NextRequest) {
   try {
     const { getToken } = await auth();
     const token = await getClerkToken(getToken);
+    if (!token) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-    const { task_id } = await params;
-
-    const probe = new URL(request.url).searchParams.get("probe");
-    const queryParams = probe !== null ? { probe } : undefined;
-    const url = getBackendUrl("tasks", `/${task_id}/trials`, queryParams);
+    const body = await request.json();
+    const url = getBackendUrl("tasks", "/sweep");
     const res = await fetch(url, {
+      method: "POST",
       cache: "no-store",
-      headers: getAuthHeaders(token),
+      headers: {
+        "Content-Type": "application/json",
+        ...getAuthHeaders(token),
+      },
+      body: JSON.stringify(body),
     });
 
     const text = await res.text();

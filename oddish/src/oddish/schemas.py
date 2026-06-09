@@ -667,6 +667,14 @@ class TrialResponse(BaseModel):
             "Surfaced for clients that need to render mode-specific UI."
         ),
     )
+    is_probe: bool = Field(
+        False,
+        description=(
+            "True if this trial is a probe (operator-directed instruction "
+            "overlay) rather than a real solution attempt. Indexed for "
+            "server-side filtering."
+        ),
+    )
 
     # Token usage & cost
     input_tokens: int | None = Field(
@@ -823,6 +831,8 @@ class TaskBrowseItem(BaseModel):
     reward_sum: float
     reward_total: int
     last_run_at: datetime | None = None
+    link: str | None = None
+    github_meta: dict[str, str] | None = None
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
 

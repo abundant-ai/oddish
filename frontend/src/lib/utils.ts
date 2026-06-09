@@ -60,6 +60,47 @@ export function decodeExperimentRouteParam(value: string) {
   }
 }
 
+// Extract a PR number from a GitHub PR URL (.../pull/123 or .../pulls/123).
+export function prNumberFromUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const match = url.match(/\/pulls?\/(\d+)(?:[/?#]|$)/);
+  return match ? match[1] : null;
+}
+
+// Extract the repo name from a GitHub URL
+// (https://github.com/<owner>/<repo>/...  ->  "<repo>").
+export function repoNameFromUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const match = url.match(/github\.com\/[^/]+\/([^/]+)/);
+  return match ? match[1] : null;
+}
+
+// Resolve the canonical PR URL for a task. The URL can arrive two ways:
+// structured `github_meta.pr_url`, or the `link` column (set by `--link`, or
+// auto-derived from github_meta). github_meta wins, falling back to link — the
+// same precedence the dashboard and experiment views use, so every PR badge
+// surfaces a link whenever either source has one.
+export function taskPrUrl(
+  link: string | null | undefined,
+  githubMeta?: Record<string, string> | null,
+): string | null {
+  return githubMeta?.pr_url ?? link ?? null;
+}
+
+// Shared label/number for a PR badge given the canonical URL and optional
+// structured github_meta number. Renders as "<repo> #<num>" (e.g.
+// "experiments #42"), falling back to "PR #<num>" or "PR" when the repo can't
+// be parsed.
+export function prBadge(
+  url: string | null | undefined,
+  metaPrNumber?: string | null,
+): { number: string | null; label: string } {
+  const number = metaPrNumber ?? prNumberFromUrl(url);
+  const repo = repoNameFromUrl(url);
+  const label = repo ?? "PR";
+  return { number, label };
+}
+
 export function formatMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const seconds = Math.floor(ms / 1000);
