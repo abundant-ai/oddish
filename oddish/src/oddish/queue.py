@@ -469,6 +469,23 @@ def _build_harbor_config_for_trial(
     if agent_config_payload:
         base["agent_config"] = agent_config_payload
 
+    if submission.extra_instructions:
+        base["mode"] = "probe"
+        base["extra_instructions"] = submission.extra_instructions
+        if submission.probe_name:
+            base["probe_name"] = submission.probe_name
+
+    if submission.result_focus:
+        base["result_focus"] = submission.result_focus
+
+    if submission.evaluation_metric:
+        base["evaluation_metric"] = submission.evaluation_metric
+
+    if submission.ratio_unit:
+        base["ratio_unit"] = submission.ratio_unit
+    if submission.ratio_verb:
+        base["ratio_verb"] = submission.ratio_verb
+
     return base or None
 
 
@@ -652,6 +669,7 @@ async def create_task(
             timeout_minutes=spec.timeout_minutes,
             environment=spec.environment,
             harbor_config=harbor_config,
+            is_probe=(harbor_config or {}).get("mode") == "probe",
             max_attempts=submission.max_trial_attempts,
             status=TrialStatus.QUEUED,
         )
@@ -800,6 +818,7 @@ async def append_trials_to_task(
             timeout_minutes=spec.timeout_minutes,
             environment=spec.environment,
             harbor_config=harbor_config,
+            is_probe=(harbor_config or {}).get("mode") == "probe",
             max_attempts=submission.max_trial_attempts,
             status=TrialStatus.QUEUED,
         )

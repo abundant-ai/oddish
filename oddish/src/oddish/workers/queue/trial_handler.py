@@ -7,6 +7,7 @@ from functools import partial
 import json
 import os
 import shutil
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -29,6 +30,11 @@ from oddish.db import (
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
+from oddish.worker.probe_analysis import (
+    extract_probe_artifacts,
+    run_probe_analyzer,
+)
+from oddish.worker.probe_staging import apply_probe_overlay
 from oddish.workers.harbor_runner import HarborOutcome, run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
@@ -437,12 +443,67 @@ async def _prepare_trial_run(
         )
 
 
+async def _generate_probe_summary_inline(
+    *,
+    trial_id: str,
+    job_dir: Path,
+    harbor_config: dict,
+    reward: float | None,
+) -> dict:
+    """Run the probe analyzer in-process, right after a probe trial finishes.
+
+    The probe summary is the whole point of a probe, but probes never set
+    ``task.run_analysis`` (they're appended to an existing task that owns that
+    flag), so the generic completion path below won't enqueue an ANALYSIS job
+    for them -- which is why probe trials previously had no summary in the
+    cloud. Instead we generate it inline here: same job, same session,
+    mirroring ``worker.local_runner``, while the local Harbor artifacts still
+    exist on disk (before ``_cleanup_uploaded_job_dir`` prunes them). Returns
+    the analysis fields ``_store_trial_results`` writes onto the trial row.
+
+    Never raises: an analyzer failure is captured as ``analysis_status=FAILED``
+    so the trial result itself still persists.
+    """
+    started_at = utcnow()
+    summary: dict | None = None
+    status = AnalysisStatus.FAILED
+    error: str | None = None
+    try:
+        artifacts = extract_probe_artifacts(job_dir)
+        summary = await run_probe_analyzer(
+            extra_instructions=harbor_config.get("extra_instructions") or "",
+            agent_messages=artifacts["agent_messages"],
+            verifier_stdout=artifacts["verifier_stdout"] or "",
+            reward=reward,
+            result_focus=harbor_config.get("result_focus") or "",
+            evaluation_metric=harbor_config.get("evaluation_metric") or "none",
+            ratio_unit=harbor_config.get("ratio_unit"),
+            ratio_verb=harbor_config.get("ratio_verb"),
+            model=settings.analysis_model,
+        )
+        status = AnalysisStatus.SUCCESS
+        console.print(
+            f"[green]Probe analysis complete:[/green] {summary.get('headline', '')}"
+        )
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        console.print(f"[red]Probe analysis failed for {trial_id}: {error}[/red]")
+    return {
+        "analysis": summary,
+        "analysis_status": status,
+        "analysis_error": error,
+        "analysis_started_at": started_at,
+        "analysis_finished_at": utcnow(),
+    }
+
+
 async def _store_trial_results(
     *,
     trial_id: str,
     outcome: HarborOutcome | None,
     trial_s3_key: str | None,
     execution_error: str | None,
+    probe_analysis: dict | None = None,
 ) -> None:
     async with _trial_session(trial_id, allow_missing=True) as (session, trial):
         if not trial:
@@ -552,6 +613,19 @@ async def _store_trial_results(
         trial.current_queue_slot = None
         trial.heartbeat_at = utcnow()
 
+        # Probe trials are analyzed inline (in the same job, before the local
+        # artifacts were cleaned up). Persist that summary onto the row here so
+        # it lands in the same write as reward/status, and so we know below to
+        # skip the generic ANALYSIS enqueue.
+        is_probe = bool((trial.harbor_config or {}).get("extra_instructions"))
+        if probe_analysis is not None:
+            if probe_analysis["analysis"] is not None:
+                trial.analysis = probe_analysis["analysis"]
+            trial.analysis_status = probe_analysis["analysis_status"]
+            trial.analysis_error = probe_analysis["analysis_error"]
+            trial.analysis_started_at = probe_analysis["analysis_started_at"]
+            trial.analysis_finished_at = probe_analysis["analysis_finished_at"]
+
         if trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED):
             task = await session.get(TaskModel, trial.task_id)
             # Check if all trials done → transition task status.
@@ -564,7 +638,14 @@ async def _store_trial_results(
                 maybe_start_analysis_stage,
             )
 
-            if task and task.run_analysis and trial.analysis_status is None:
+            # Probes already have their summary (generated inline above); only
+            # non-probe trials on run_analysis tasks get a separate ANALYSIS job.
+            if (
+                not is_probe
+                and task
+                and task.run_analysis
+                and trial.analysis_status is None
+            ):
                 trial.analysis_status = AnalysisStatus.QUEUED
                 analysis_job = await enqueue_analysis_worker_job(
                     session, trial_id=trial_id, org_id=trial.org_id
@@ -871,6 +952,30 @@ async def run_trial_job(
     else:
         console.print(f"[dim]Using local task path: {task_path_to_run}[/dim]")
 
+    # Probe overlay: for probe trials, prepend the operator directive, append
+    # the test/related-log sections, and pre-stage prior real-attempt logs.
+    # apply_probe_overlay mutates instruction.md in place, so the task dir
+    # must be writable. resolve_task_directory only returns a writable temp
+    # dir for the S3-download case; a mounted or canonical local path
+    # (temp_task_dir is None) must be copied first. Reusing temp_task_dir for
+    # the copy root means _execute_trial's finally block cleans it up.
+    probe_extra_instructions = (prepared_trial.trial_harbor_config or {}).get(
+        "extra_instructions"
+    )
+    if probe_extra_instructions:
+        if temp_task_dir is None:
+            probe_copy_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
+            probe_copy_dir = probe_copy_root / task_path_to_run.name
+            shutil.copytree(task_path_to_run, probe_copy_dir, symlinks=True)
+            task_path_to_run = probe_copy_dir
+            temp_task_dir = probe_copy_root
+        await apply_probe_overlay(
+            task_path_to_run,
+            task_id=prepared_trial.task_id,
+            trial_id=trial_id,
+            extra_instructions=probe_extra_instructions,
+        )
+
     # Ensure Harbor scratch directories exist before execution starts.
     os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
 
@@ -931,6 +1036,24 @@ async def run_trial_job(
             except Exception as e:
                 console.print(f"[yellow]Sauron mirror failed (non-fatal): {e}[/yellow]")
 
+        # Probe trials get their summary generated inline, in this same job,
+        # while the local Harbor artifacts still exist on disk -- mirroring the
+        # local runner. Probes never set task.run_analysis, so this is the only
+        # place their summary is produced in the cloud. Must run before the
+        # cleanup below prunes job_dir.
+        probe_analysis = None
+        if (
+            probe_extra_instructions
+            and execution.outcome
+            and execution.outcome.job_dir
+        ):
+            probe_analysis = await _generate_probe_summary_inline(
+                trial_id=trial_id,
+                job_dir=execution.outcome.job_dir,
+                harbor_config=prepared_trial.trial_harbor_config or {},
+                reward=execution.outcome.reward,
+            )
+
         # Cleanup local Harbor artifacts AFTER both uploads complete.
         if oddish_uploaded and execution.outcome and execution.outcome.job_dir:
             _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
@@ -941,6 +1064,7 @@ async def run_trial_job(
                 outcome=execution.outcome,
                 trial_s3_key=trial_s3_key,
                 execution_error=execution.execution_error,
+                probe_analysis=probe_analysis,
             )
         )
     finally:

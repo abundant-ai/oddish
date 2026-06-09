@@ -193,6 +193,42 @@ class TaskSubmission(BaseModel):
         None,
         description="Deterministic hash of task directory contents (set by CLI during upload)",
     )
+    extra_instructions: str | None = Field(
+        default=None,
+        description=(
+            "Operator-supplied prompt content to prepend to the task's instruction "
+            "for every trial in this submission. Used for probe / adversarial probes."
+        ),
+    )
+    probe_name: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable name for a probe run (e.g. the preset name the operator "
+            "selected). Surfaced in probe-history UIs in place of the model name."
+        ),
+    )
+    result_focus: str | None = Field(
+        default=None,
+        description=(
+            "Optional question the operator wants answered about this trial. "
+            "The analyzer answers it in its result_focus_findings field."
+        ),
+    )
+    evaluation_metric: str | None = Field(
+        default=None,
+        description=(
+            "How to render the trial's result. One of 'cheat_ratio', "
+            "'result_focus', 'none'. Default null = no specific metric."
+        ),
+    )
+    ratio_unit: str | None = Field(
+        default=None,
+        description="Noun (singular) for what's counted in a ratio metric, e.g. 'cheat', 'bug'.",
+    )
+    ratio_verb: str | None = Field(
+        default=None,
+        description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
+    )
     link: str | None = Field(
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
@@ -246,6 +282,42 @@ class TaskSweepSubmission(BaseModel):
 
     configs: list[AgentModelPair] = Field(
         ..., description="List of agent/model pairs with individual trial counts"
+    )
+    extra_instructions: str | None = Field(
+        default=None,
+        description=(
+            "Operator-supplied prompt content to prepend to the task's instruction "
+            "for every trial in this submission. Used for probe / adversarial probes."
+        ),
+    )
+    probe_name: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable name for a probe run (e.g. the preset name the operator "
+            "selected). Surfaced in probe-history UIs in place of the model name."
+        ),
+    )
+    result_focus: str | None = Field(
+        default=None,
+        description=(
+            "Optional question the operator wants answered about this trial. "
+            "The analyzer answers it in its result_focus_findings field."
+        ),
+    )
+    evaluation_metric: str | None = Field(
+        default=None,
+        description=(
+            "How to render the trial's result. One of 'cheat_ratio', "
+            "'result_focus', 'none'. Default null = no specific metric."
+        ),
+    )
+    ratio_unit: str | None = Field(
+        default=None,
+        description="Noun (singular) for what's counted in a ratio metric, e.g. 'cheat', 'bug'.",
+    )
+    ratio_verb: str | None = Field(
+        default=None,
+        description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
     )
 
     # Common fields
@@ -601,6 +673,22 @@ class TrialResponse(BaseModel):
     )
     error_message: str | None
     result: dict | None
+    harbor_config: dict | None = Field(
+        None,
+        description=(
+            "Harbor passthrough config (agent env/kwargs, environment "
+            "resources, probe mode marker, extra_instructions, etc.). "
+            "Surfaced for clients that need to render mode-specific UI."
+        ),
+    )
+    is_probe: bool = Field(
+        False,
+        description=(
+            "True if this trial is a probe (operator-directed instruction "
+            "overlay) rather than a real solution attempt. Indexed for "
+            "server-side filtering."
+        ),
+    )
 
     # Token usage & cost
     input_tokens: int | None = Field(
@@ -757,6 +845,8 @@ class TaskBrowseItem(BaseModel):
     reward_sum: float
     reward_total: int
     last_run_at: datetime | None = None
+    link: str | None = None
+    github_meta: dict[str, str] | None = None
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
 
@@ -978,3 +1068,53 @@ class PublicExperimentListItem(BaseModel):
     public_token: str
     task_count: int
     created_at: str
+
+
+# ---------------------------------------------------------------------------
+# Probe presets — operator-directive templates for probe trials.
+# ---------------------------------------------------------------------------
+class ProbePresetCreate(BaseModel):
+    """Request body to create a custom probe preset."""
+
+    name: str
+    agent: str
+    model: str
+    operator_prompt: str
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
+    ratio_unit: str | None = None
+    ratio_verb: str | None = None
+
+
+class ProbePresetUpdate(BaseModel):
+    """Request body to update a custom probe preset. All fields optional;
+    only provided fields are applied."""
+
+    name: str | None = None
+    agent: str | None = None
+    model: str | None = None
+    operator_prompt: str | None = None
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
+    ratio_unit: str | None = None
+    ratio_verb: str | None = None
+
+
+class ProbePresetResponse(BaseModel):
+    """A probe preset as returned to the client."""
+
+    id: str
+    org_id: str | None = None
+    name: str
+    agent: str
+    model: str
+    operator_prompt: str
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
+    ratio_unit: str | None = None
+    ratio_verb: str | None = None
+    is_seed: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}

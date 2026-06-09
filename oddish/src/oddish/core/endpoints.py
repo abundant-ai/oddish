@@ -17,6 +17,7 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.orm import load_only, selectinload
 
 from oddish.core.helpers import (
+    _parse_github_meta,
     build_task_status_response_compact,
     build_task_status_response,
     build_task_status_responses_from_counts,
@@ -163,6 +164,14 @@ async def list_tasks_core(
                 TrialModel.harbor_stage,
                 TrialModel.reward,
                 TrialModel.error_message,
+                # Surfaced by ``build_compact_trial_response`` (probe
+                # trials read it on the experiment page). Must be loaded
+                # eagerly; otherwise the compact builder triggers a
+                # lazy-load on this deferred JSONB column outside the
+                # async greenlet and fails with MissingGreenlet (same
+                # reason ``origin`` / ``superseded_by_trial_id`` are here).
+                TrialModel.harbor_config,
+                TrialModel.is_probe,
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
@@ -207,6 +216,12 @@ async def list_tasks_core(
                     TaskModel.verdict_status,
                     TaskModel.verdict,
                     TaskModel.verdict_error,
+                    # Read by the experiment page's PR badge
+                    # (``pickExperimentPr``). Must be eagerly loaded; otherwise
+                    # the response builder triggers a lazy-load on this deferred
+                    # column outside the async greenlet and fails with
+                    # MissingGreenlet (same reason ``origin`` is loaded above).
+                    TaskModel.link,
                     TaskModel.created_at,
                     TaskModel.started_at,
                     TaskModel.finished_at,
@@ -411,6 +426,8 @@ async def browse_tasks_core(
             TaskModel.current_version_id.label("current_version_id"),
             current_version.version.label("current_version"),
             TaskModel.created_at.label("created_at"),
+            TaskModel.link.label("link"),
+            TaskModel.tags.label("tags"),
             func.row_number()
             .over(
                 partition_by=TaskModel.name,
@@ -472,6 +489,8 @@ async def browse_tasks_core(
             ranked_tasks_subquery.c.name,
             ranked_tasks_subquery.c.current_version,
             ranked_tasks_subquery.c.current_version_id,
+            ranked_tasks_subquery.c.link,
+            ranked_tasks_subquery.c.tags,
             func.coalesce(version_counts.c.version_count, 0).label("version_count"),
             func.coalesce(trial_aggregates.c.total_trials, 0).label("total_trials"),
             func.coalesce(trial_aggregates.c.completed_trials, 0).label(
@@ -642,6 +661,8 @@ async def browse_tasks_core(
                 reward_sum=float(row["reward_sum"] or 0.0),
                 reward_total=int(row["reward_total"] or 0),
                 last_run_at=row["last_run_at"],
+                link=row["link"],
+                github_meta=_parse_github_meta(row["tags"]),
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),
             )
@@ -844,6 +865,7 @@ async def retry_trial_core(
         timeout_minutes=old_trial.timeout_minutes,
         environment=old_trial.environment,
         harbor_config=old_trial.harbor_config,
+        is_probe=old_trial.is_probe,
         max_attempts=old_trial.max_attempts,
         status=TrialStatus.QUEUED,
     )
@@ -2111,6 +2133,7 @@ _COMBINE_TRIAL_RESULT_FIELDS = (
     "timeout_minutes",
     "environment",
     "harbor_config",
+    "is_probe",
     "status",
     "origin",
     "attempts",
@@ -2545,6 +2568,15 @@ async def create_task_sweep_core(
             experiment_id=new_experiment_id,
         )
 
+        # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
+        # to the in-process runner instead of going through the Modal queue.
+        from oddish.config import settings
+        if settings.local_mode:
+            import asyncio
+            from oddish.worker.local_runner import run_trial_locally
+            for trial in new_trials:
+                asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
+
         return task, new_trials, True, experiment
 
     # Create mode
@@ -2582,4 +2614,15 @@ async def create_task_sweep_core(
 
     experiment = await _primary_experiment_for_task_model(task)
 
-    return task, list(task.trials), False, experiment
+    new_trials = list(task.trials)
+
+    # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
+    # to the in-process runner instead of going through the Modal queue.
+    from oddish.config import settings
+    if settings.local_mode:
+        import asyncio
+        from oddish.worker.local_runner import run_trial_locally
+        for trial in new_trials:
+            asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
+
+    return task, new_trials, False, experiment

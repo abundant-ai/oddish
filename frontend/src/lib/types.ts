@@ -112,6 +112,7 @@ export interface Trial {
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
   has_trajectory?: boolean;
+  is_probe?: boolean;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -213,6 +214,8 @@ export interface TaskBrowseItem {
   reward_sum: number;
   reward_total: number;
   last_run_at?: string | null;
+  link?: string | null;
+  github_meta?: Record<string, string> | null;
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
 }
