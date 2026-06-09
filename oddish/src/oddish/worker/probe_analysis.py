@@ -38,6 +38,73 @@ DEFAULT_ANALYZER_MODEL = "claude-sonnet-4-6"
 _VERIFIER_STDOUT_CAP = 50_000
 _WATCHDOG_LOG_CAP = 20_000
 
+# Claude Code names every MCP tool ``mcp__<server>__<tool>``; the Skill tool is
+# just ``Skill`` with the skill slug in its input. We classify each tool_use by
+# source so probe consumers can tell, deterministically, whether the agent
+# reached for a skill or an MCP server (the LLM summary never asks about this).
+_MCP_TOOL_PREFIX = "mcp__"
+
+
+def _classify_tool_use(name: str, inp: dict) -> tuple[str, dict]:
+    """Classify a single tool_use block by where the tool comes from.
+
+    Returns ``(tool_kind, extras)`` where ``tool_kind`` is one of
+    ``"skill"`` | ``"mcp"`` | ``"builtin"``. ``extras`` carries the parsed
+    skill slug (for skills) or the MCP server + tool (for ``mcp__`` tools),
+    ready to merge into the timeline entry. Never raises.
+    """
+    if name == "Skill":
+        skill = ""
+        if isinstance(inp, dict):
+            skill = str(inp.get("skill") or "").strip()
+        return "skill", ({"skill_name": skill} if skill else {})
+    if name.startswith(_MCP_TOOL_PREFIX):
+        server, _, tool = name[len(_MCP_TOOL_PREFIX) :].partition("__")
+        return "mcp", {"mcp_server": server, "mcp_tool": tool or server}
+    return "builtin", {}
+
+
+def _summarize_tool_usage(agent_messages: list[dict]) -> dict:
+    """Aggregate skill + MCP usage across an already-parsed timeline.
+
+    Deterministic pass over ``agent_messages`` (the output of
+    :func:`_parse_agent_messages`). Returns::
+
+        {
+          "used_skills": bool,
+          "used_mcp": bool,
+          "skills": [{"name": str, "count": int}, ...],
+          "mcp_tools": [{"server": str, "tool": str, "count": int}, ...],
+        }
+
+    Entries are ordered by first appearance so the summary reads like the
+    run did. Never raises.
+    """
+    skills: dict[str, int] = {}
+    mcp_tools: dict[tuple[str, str], int] = {}
+    for m in agent_messages:
+        if m.get("kind") != "tool_use":
+            continue
+        tool_kind = m.get("tool_kind")
+        if tool_kind == "skill":
+            name = str(m.get("skill_name") or "(unknown)")
+            skills[name] = skills.get(name, 0) + 1
+        elif tool_kind == "mcp":
+            key = (
+                str(m.get("mcp_server") or "(unknown)"),
+                str(m.get("mcp_tool") or "(unknown)"),
+            )
+            mcp_tools[key] = mcp_tools.get(key, 0) + 1
+    return {
+        "used_skills": bool(skills),
+        "used_mcp": bool(mcp_tools),
+        "skills": [{"name": n, "count": c} for n, c in skills.items()],
+        "mcp_tools": [
+            {"server": server, "tool": tool, "count": c}
+            for (server, tool), c in mcp_tools.items()
+        ],
+    }
+
 
 def _make_client():
     """Build the Anthropic client for the probe summary.
@@ -119,8 +186,19 @@ def _parse_agent_messages(agent_log_path: Path) -> list[dict]:
                             except Exception:
                                 payload = str(inp)[:1500]
                             text = f"[{name}]\n{payload}"
+                        # Tag the source of the tool (skill / mcp / builtin)
+                        # so probe consumers can see skill + MCP usage without
+                        # re-parsing the raw transcript. ``extras`` adds the
+                        # skill slug or the mcp server+tool when applicable.
+                        tool_kind, extras = _classify_tool_use(name, inp)
                         agent_messages.append(
-                            {"kind": "tool_use", "name": name, "text": text}
+                            {
+                                "kind": "tool_use",
+                                "name": name,
+                                "text": text,
+                                "tool_kind": tool_kind,
+                                **extras,
+                            }
                         )
             elif event.get("type") == "user":
                 content = event.get("message", {}).get("content", [])
@@ -156,7 +234,12 @@ def extract_probe_artifacts(trial_dir: Path) -> dict:
           "verifier_stdout": str | None,
           "agent_messages": [ {kind, text, ...}, ... ],
           "watchdog_log": str | None,
+          "tool_usage": {used_skills, used_mcp, skills[], mcp_tools[]},
         }
+
+    ``agent_messages`` tool_use entries carry a ``tool_kind``
+    ("skill" | "mcp" | "builtin") plus the parsed skill slug / MCP
+    server+tool; ``tool_usage`` is the deterministic roll-up of those.
 
     Any individually-missing artifact is None / empty; this never raises.
     """
@@ -194,6 +277,7 @@ def extract_probe_artifacts(trial_dir: Path) -> dict:
         "verifier_stdout": verifier_stdout,
         "agent_messages": agent_messages,
         "watchdog_log": watchdog_log,
+        "tool_usage": _summarize_tool_usage(agent_messages),
     }
 
 
