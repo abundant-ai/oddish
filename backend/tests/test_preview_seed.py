@@ -42,6 +42,8 @@ async def test_seed_populates_and_is_idempotent_and_convergent():
     engine = create_async_engine(URL)
     try:
         async with engine.begin() as conn:
+            await conn.execute(text("drop schema public cascade"))
+            await conn.execute(text("create schema public"))
             await conn.run_sync(Base.metadata.create_all)
 
         await preview_seed.seed(engine)
@@ -67,5 +69,43 @@ async def test_seed_populates_and_is_idempotent_and_convergent():
         async with engine.connect() as c:
             name = (await c.execute(text("select name from organizations where id='seed-org'"))).scalar_one()
         assert name == "Edited Org"
+    finally:
+        await engine.dispose()
+
+
+async def test_seed_reclaims_clerk_org_id_from_a_preexisting_row():
+    """A reused or once---with-data branch may already hold a row with the
+    seeded clerk_org_id on a different id (e.g. cloned prod data). The seed
+    must free that UNIQUE(clerk_org_id) mapping rather than fail with a
+    duplicate-key error."""
+    engine = create_async_engine(URL)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("drop schema public cascade"))
+            await conn.execute(text("create schema public"))
+            await conn.run_sync(Base.metadata.create_all)
+            await conn.execute(text(
+                "insert into organizations "
+                "(id, name, slug, clerk_org_id, plan, settings, is_active, "
+                "created_at, updated_at) values "
+                "('preexisting-org', 'Real Org', 'real-org', 'org_seedtest', "
+                "'free', '{}'::jsonb, true, "
+                "'2025-01-01T00:00:00+00', '2025-01-01T00:00:00+00')"
+            ))
+
+        await preview_seed.seed(engine)
+
+        # the seeded org claimed the clerk_org_id ...
+        assert await _count(
+            engine,
+            "select count(*) from organizations where id='seed-org' "
+            "and clerk_org_id='org_seedtest'",
+        ) == 1
+        # ... and the pre-existing row was freed (mapping nulled, no duplicate)
+        assert await _count(
+            engine,
+            "select count(*) from organizations where id='preexisting-org' "
+            "and clerk_org_id is null",
+        ) == 1
     finally:
         await engine.dispose()
