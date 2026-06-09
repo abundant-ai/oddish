@@ -25,6 +25,7 @@ from typing import cast
 
 from sqlalchemy import text
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import DBAPIError
 
 from oddish.config import settings
 from oddish.core.helpers import cancel_job_by_worker
@@ -74,6 +75,43 @@ STUCK_ANALYZING_REASON = (
     "Analysis never produced a verdict for this trial; marked terminal by "
     "orphaned-pipeline cleanup so the task could leave the ANALYZING stage."
 )
+
+# The sweep is a single multi-table transaction (worker_jobs -> tasks ->
+# trials -> queue_slots -> experiments). Concurrent writers -- trial
+# handlers committing terminal state, or an overlapping sweep -- can
+# acquire the same row locks in a different order, producing a cyclic
+# wait that Postgres breaks with a ``deadlock detected`` error (SQLSTATE
+# 40P01). Three defenses, in order of how completely each closes the
+# window:
+#   1. ``pg_try_advisory_xact_lock`` so two sweeps never run the bulk
+#      UPDATEs concurrently (cleanup-vs-cleanup).
+#   2. ``ORDER BY <pk> FOR UPDATE SKIP LOCKED`` on the bulk reconciling
+#      UPDATEs so cleanup and a handler never fight for the same trial /
+#      slot row -- cleanup just skips a row a handler holds and catches
+#      it next sweep (cleanup-vs-handler).
+#   3. A deadlock-retry wrapper as the catch-all for anything 1 and 2
+#      don't cover. The whole sweep is idempotent reconciliation, so
+#      re-running it from a fresh session is always safe.
+#
+# Advisory-lock key: an arbitrary stable bigint unique to this sweep.
+# ``pg_advisory_xact_lock`` is auto-released at transaction end, so it is
+# safe through Supabase's transaction-mode pooler (unlike session-level
+# advisory locks, which would leak across pooled connections).
+CLEANUP_ADVISORY_LOCK_KEY = 0x0DD1_5C1E_A409  # "oddish cleanup" mnemonic
+CLEANUP_MAX_ATTEMPTS = 4
+CLEANUP_RETRY_BASE_SECONDS = 0.25
+
+# SQLSTATEs we treat as transient and retry: deadlock_detected and
+# serialization_failure. Both mean "your transaction lost a race; try
+# again" rather than a real data error.
+_RETRYABLE_SQLSTATES = frozenset({"40P01", "40001"})
+
+
+def _is_retryable_txn_error(exc: BaseException) -> bool:
+    """True if ``exc`` is a deadlock / serialization failure worth retrying."""
+    orig = getattr(exc, "orig", None)
+    sqlstate = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return sqlstate in _RETRYABLE_SQLSTATES
 
 
 async def reap_idle_in_transaction_zombies(
@@ -144,6 +182,39 @@ async def cleanup_orphaned_queue_state(
 ) -> dict[str, int]:
     """Reconcile stale scheduling state so the queue can make progress.
 
+    Thin retry wrapper around :func:`_cleanup_orphaned_queue_state_once`.
+    The sweep is a large multi-table transaction that can lose a lock
+    race against a concurrent trial handler (deadlock, SQLSTATE 40P01);
+    the sweep is idempotent reconciliation, so we just re-run it from a
+    fresh session with bounded exponential backoff. See the module-level
+    notes on ``CLEANUP_ADVISORY_LOCK_KEY`` for the full defense strategy.
+    """
+    for attempt in range(1, CLEANUP_MAX_ATTEMPTS + 1):
+        try:
+            return await _cleanup_orphaned_queue_state_once(
+                stale_after_minutes=stale_after_minutes
+            )
+        except DBAPIError as exc:
+            if attempt >= CLEANUP_MAX_ATTEMPTS or not _is_retryable_txn_error(exc):
+                raise
+            backoff = CLEANUP_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+            console.print(
+                "[yellow]metric=cleanup_deadlock_retry "
+                f"attempt={attempt}/{CLEANUP_MAX_ATTEMPTS} "
+                f"backoff_seconds={backoff:.2f}[/yellow]"
+            )
+            await asyncio.sleep(backoff)
+    # The loop either returns a result or raises on the final attempt; this
+    # is unreachable but keeps the type checker happy about the return type.
+    raise AssertionError("cleanup retry loop exited without returning")
+
+
+async def _cleanup_orphaned_queue_state_once(
+    *,
+    stale_after_minutes: int = STALE_HEARTBEAT_MINUTES,
+) -> dict[str, int]:
+    """Run one reconciliation sweep. See the wrapper for retry semantics.
+
     The only scheduling failure mode after the unified refactor is a
     ``worker_jobs`` row stuck in ``RUNNING`` with a stale heartbeat
     (worker crashed without committing its terminal state). Everything
@@ -170,6 +241,46 @@ async def cleanup_orphaned_queue_state(
     from oddish.queue import maybe_start_analysis_stage, maybe_start_verdict_stage
 
     async with get_session() as session:
+        # -----------------------------------------------------------------
+        # 0. Guard against two sweeps running the bulk UPDATEs at once.
+        #    poll_queue is scheduled on a fixed Period; if one cycle runs
+        #    long the scheduler can overlap the next, and two sweeps
+        #    contending on the unordered bulk UPDATEs deadlock trivially.
+        #    A transaction-scoped advisory lock makes the second sweep a
+        #    no-op for this tick (the next tick re-runs it). Auto-released
+        #    on commit/rollback, so it's pooler-safe.
+        # -----------------------------------------------------------------
+        sweep_lock_acquired = bool(
+            (
+                await session.execute(
+                    text("SELECT pg_try_advisory_xact_lock(:key)"),
+                    {"key": CLEANUP_ADVISORY_LOCK_KEY},
+                )
+            ).scalar()
+        )
+        if not sweep_lock_acquired:
+            console.print(
+                "[dim]cleanup: another sweep holds the advisory lock; "
+                "skipping this tick[/dim]"
+            )
+            return {
+                "worker_jobs_retried": worker_jobs_retried,
+                "worker_jobs_failed": worker_jobs_failed,
+                "worker_sandboxes_terminated": worker_sandboxes_terminated,
+                "tasks_progressed_to_analysis": tasks_progressed_to_analysis,
+                "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
+                "verdict_pending_completed": verdict_pending_completed,
+                "stuck_analyzing_advanced": stuck_analyzing_advanced,
+                "stuck_analyzing_finalized": stuck_analyzing_finalized,
+                "stuck_analysis_nulls_failed": stuck_analysis_nulls_failed,
+                "terminal_trial_runtime_refs_cleared": (
+                    terminal_trial_runtime_refs_cleared
+                ),
+                "orphaned_active_slots_cleared": orphaned_active_slots_cleared,
+                "zombie_txn_reaped": zombie_txn_reaped,
+                "experiments_last_activity_reconciled": 0,
+            }
+
         # -----------------------------------------------------------------
         # 1. Stale-heartbeat sweep on worker_jobs.
         #    Transitions RUNNING rows whose heartbeat stalled to
@@ -590,6 +701,12 @@ async def cleanup_orphaned_queue_state(
         #    display-layer hygiene; scheduling state already lives on
         #    worker_jobs).
         # -----------------------------------------------------------------
+        # The target set is locked through a sub-select ordered by primary
+        # key with ``FOR UPDATE SKIP LOCKED``: every transaction takes these
+        # row locks in the same (id) order, so cleanup can't form a lock
+        # cycle with a concurrent trial handler, and any row a handler is
+        # actively writing is skipped this sweep and caught on the next one.
+        # Safe here because this step is pure display-layer hygiene.
         terminal_trial_cleanup_result = cast(
             CursorResult,
             await session.execute(
@@ -598,12 +715,18 @@ async def cleanup_orphaned_queue_state(
                     UPDATE trials
                     SET    current_worker_id = NULL,
                            current_queue_slot = NULL
-                    WHERE  status::text IN ('SUCCESS', 'FAILED')
-                      AND  deleted_at IS NULL
-                      AND  (
-                          current_worker_id IS NOT NULL
-                          OR current_queue_slot IS NOT NULL
-                      )
+                    WHERE  id IN (
+                        SELECT id
+                        FROM   trials
+                        WHERE  status::text IN ('SUCCESS', 'FAILED')
+                          AND  deleted_at IS NULL
+                          AND  (
+                              current_worker_id IS NOT NULL
+                              OR current_queue_slot IS NOT NULL
+                          )
+                        ORDER BY id
+                        FOR UPDATE SKIP LOCKED
+                    )
                     """
                 )
             ),
@@ -616,23 +739,33 @@ async def cleanup_orphaned_queue_state(
         # 7. Release queue slot leases whose worker_jobs row is no
         #    longer RUNNING on that key.
         # -----------------------------------------------------------------
+        # Same lock-ordering discipline as the trials cleanup above: lock
+        # the target slots through a PK-ordered ``FOR UPDATE SKIP LOCKED``
+        # sub-select so this never deadlocks against a handler claiming or
+        # releasing a slot, and a slot mid-claim is skipped, not fought for.
         orphaned_slot_cleanup_result = cast(
             CursorResult,
             await session.execute(
                 text(
                     """
-                    UPDATE queue_slots qs
+                    UPDATE queue_slots
                     SET    locked_by = NULL,
                            locked_until = NULL
-                    WHERE  qs.locked_by IS NOT NULL
-                      AND  qs.locked_until IS NOT NULL
-                      AND  qs.locked_until > NOW()
-                      AND  NOT EXISTS (
-                          SELECT 1
-                          FROM   worker_jobs wj
-                          WHERE  wj.status::text = 'RUNNING'
-                            AND  wj.queue_key = qs.queue_key
-                      )
+                    WHERE  (queue_key, slot) IN (
+                        SELECT qs.queue_key, qs.slot
+                        FROM   queue_slots qs
+                        WHERE  qs.locked_by IS NOT NULL
+                          AND  qs.locked_until IS NOT NULL
+                          AND  qs.locked_until > NOW()
+                          AND  NOT EXISTS (
+                              SELECT 1
+                              FROM   worker_jobs wj
+                              WHERE  wj.status::text = 'RUNNING'
+                                AND  wj.queue_key = qs.queue_key
+                          )
+                        ORDER BY qs.queue_key, qs.slot
+                        FOR UPDATE OF qs SKIP LOCKED
+                    )
                     """
                 )
             ),

@@ -37,6 +37,11 @@ class _FakeResult:
     def mappings(self) -> "_FakeResult":
         return self
 
+    def scalar(self) -> Any:
+        # The only ``.scalar()`` call in the sweep is the advisory-lock
+        # acquire; returning truthy means "lock acquired -> run normally".
+        return True
+
 
 class _FakeSession:
     def __init__(self, trial: SimpleNamespace) -> None:
