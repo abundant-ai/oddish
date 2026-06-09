@@ -70,3 +70,50 @@ async def test_create_task_marks_probe_trials(cleanup_task_ids):
 
     assert probe_trials and all(row.is_probe for row in probe_trials)
     assert normal_trials and all(not row.is_probe for row in normal_trials)
+
+
+def test_trial_response_exposes_is_probe():
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from oddish.core.helpers import build_compact_trial_response
+
+    _now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    trial = SimpleNamespace(
+        id="t-1",
+        name="t-1",
+        task_id="task-1",
+        task_version_id=None,
+        experiment_id="exp-1",
+        agent="nop",
+        provider="local",
+        queue_key="nop",
+        model=None,
+        status="queued",
+        origin="oddish",
+        attempts=0,
+        max_attempts=1,
+        harbor_stage=None,
+        reward=None,
+        error_message=None,
+        result=None,
+        harbor_config={"mode": "probe"},
+        is_probe=True,
+        input_tokens=None,
+        cache_tokens=None,
+        output_tokens=None,
+        cost_usd=None,
+        phase_timing=None,
+        has_trajectory=False,
+        analysis=None,
+        analysis_status=None,
+        analysis_error=None,
+        superseded_by_trial_id=None,
+        created_at=_now,
+        started_at=None,
+        finished_at=None,
+    )
+
+    response = build_compact_trial_response(trial, task_path="tasks/task-1")
+    assert response.is_probe is True
