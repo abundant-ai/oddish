@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-10]
+
+### Added
+- Skills library and agent doc store: org-scoped skills with CRUD, a frontend Skills page, probe sandbox injection (`.claude/skills/` via overlay), and Harbor `AgentConfig.skills` delivery; a document library with text/markdown/PDF/CSV ingestion, LLM digest generation (summary + tags), and keyword+tag search; `oddish-docstore` MCP server exposes `search`, `get`, and `inspect` tools; Skills and Documents added to the app nav (#217)
+- `is_probe` boolean column on `trials` with migration and backfill from `harbor_config->>'mode'`; `?probe=true/false` filter on `GET /tasks/{id}/trials`; probe history table now filters server-side (`?probe=true`) instead of client-side; inline probe summary generated in the cloud trial handler after each probe trial completes (#231)
+- Probe skill and MCP tool usage captured as structured signal in probe artifacts: `_classify_tool_use` tags every transcript `tool_use` entry as `skill`, `mcp`, or `builtin`; `_summarize_tool_usage` produces a deterministic `tool_usage` roll-up (skill slugs and MCP server/tool pairs, ordered by first appearance) surfaced under `extract_probe_artifacts` (#244)
+- Probe summary "Tools & skills used" section: when an agent invoked skills or MCP servers, `run_probe_analyzer` appends per-tool `tool_insights` entries (name, kind, one-sentence note grounded in the transcript); rendered as a labeled list with `Skill`/`MCP` chips on the probe result page (#245)
+
+### Changed
+- PR preview databases switched from prod-clone (`--with-data`) to data-less Supabase branches populated by a deterministic seed (`backend/preview_seed.py`): reflection-driven, idempotent and convergent (upsert + full-PK reconcile), spanning both Alembic stacks without ORM imports; `seed-gate` CI job validates schema/seed drift on every PR; preview branch readiness deadline cut from 20 min to 5 min (#243)
+- Harbor dependency bumped to 0.13.1 (from 0.8.0), adding the `glm-claude-code` agent (z.ai base URL, `ZAI_API_KEY` auth, recommended streaming env, Claude Code version pin 2.1.167), closed-internet IPv4 fixes for `api.z.ai`, and harbor-framework v0.13.1 (#247)
+- `Settings` now auto-loads `.env.local` layered over `.env` for local backend development; later file wins on duplicate keys, exported env vars still outrank both (#230)
+
+### Fixed
+- Probe result page now shows agent transcript and verifier output for cloud trials; cloud runs do not inline `_artifacts` into `trial.result`, so a new `GET /trials/{id}/probe-artifacts` endpoint and BFF proxy download artifacts on demand from object storage and cache them for finished trials (#227)
+- Cloud probe summary no longer fails with auth errors (`PermissionDeniedError` / `TypeError`); the probe analyzer now always runs on the direct Anthropic API (`ANTHROPIC_API_KEY`) instead of Bedrock; Bedrock inference-profile model IDs are normalized to their plain API form via new `to_anthropic_api_model_id()` helper (#236)
+- Cloud probe summary `NameError` fixed: `extract_probe_artifacts` and `run_probe_analyzer` imports were missing from `trial_handler.py`, causing every cloud probe run's inline summary to fail with `NameError: name 'extract_probe_artifacts' is not defined` (#232)
+- Experiment page no longer returns 500 `MissingGreenlet` errors for tasks with trials; `TrialModel.harbor_config` and `TrialModel.is_probe` added to the compact-trials `load_only` allowlist so deferred JSONB columns are not lazy-loaded outside the async greenlet (#228, #235)
+- Preview branches stuck in `RESTORE_FAILED`, `INIT_FAILED`, or `PAUSE_FAILED` states are now detected immediately and torn down for recreation instead of polling until the 20-minute deadline; deadline timeouts also trigger delete-and-recreate; retry budget raised to 3; seed reclaims `clerk_org_id` from pre-existing rows on reused branches to avoid duplicate-key errors (#224)
+
+---
+
 ## [2026-06-09]
 
 ### Added
