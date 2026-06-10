@@ -30,16 +30,14 @@ def _user(**overrides) -> UserModel:
     return UserModel(**base)
 
 
-def test_baseline_profile_includes_clerk_and_github_email() -> None:
+def test_baseline_profile_includes_registered_identity() -> None:
     profile = _baseline_profile(
         _user(),
         blocked_handles=set(),
         blocked_emails=set(),
-        github_email="ps4534@nyu.edu",
     )
     assert profile.github_handles == ("praxs",)
     assert "pratty@abundant.ai" in profile.legacy_emails
-    assert "ps4534@nyu.edu" in profile.legacy_emails
 
 
 def test_baseline_profile_blocks_other_member_handles() -> None:

@@ -1333,9 +1333,10 @@ async def get_dashboard_core(
     return response
 
 
-# Public aliases for callers outside ``oddish`` (currently the cloud
-# ``backend.dashboard_owner_backfill`` module) so the per-task author
-# attribution helpers can be reused without reaching into private names.
+# Public aliases: the primary-task attribution helpers are part of the Mine
+# owner contract — anything stamping or backfilling experiment owners must
+# apply the exact same precedence this filter uses, so they are exported
+# rather than copied.
 build_primary_task_author_match = _build_primary_task_author_match
 first_live_task_id_for_experiment = _first_live_task_id_for_experiment
 normalize_github_handle = _normalize_github_handle
