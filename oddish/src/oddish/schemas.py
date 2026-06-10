@@ -1309,3 +1309,119 @@ class ProfanityReportListResponse(BaseModel):
 class ProfanityReportCreateRequest(BaseModel):
     tag_id: str
     reason: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Skills — custom agent skill bundles.
+# ---------------------------------------------------------------------------
+class SkillFile(BaseModel):
+    """One file inside a skill bundle.
+
+    ``from_attributes`` lets ``SkillResponse`` serialize the nested
+    ``SkillFileModel`` ORM rows (not just plain dicts on the request path)."""
+
+    relative_path: str
+    content: str
+
+    model_config = {"from_attributes": True}
+
+
+class SkillCreate(BaseModel):
+    """Request body to create a custom skill from its files.
+
+    ``name``/``description`` are authoritative for the row, but must agree
+    with the SKILL.md frontmatter (enforced by ``parse_skill``)."""
+
+    name: str
+    description: str
+    files: list[SkillFile]
+
+
+class SkillUpdate(BaseModel):
+    """Request body to update a custom skill. All fields optional; only
+    provided fields are applied. Providing ``files`` replaces the whole set."""
+
+    name: str | None = None
+    description: str | None = None
+    files: list[SkillFile] | None = None
+
+
+class SkillResponse(BaseModel):
+    """A skill as returned to the client."""
+
+    id: str
+    org_id: str | None = None
+    created_by_user_id: str | None = None
+    name: str
+    description: str
+    is_seed: bool
+    files: list[SkillFile]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Documents — agent doc-store.
+# ---------------------------------------------------------------------------
+class DocumentCreate(BaseModel):
+    """Request body to ingest a document.
+
+    Exactly one of ``content`` (text/paste) or ``file_b64`` (uploaded bytes)
+    must be provided. ``source_type`` selects the ingest path.
+    """
+
+    title: str | None = None  # falls back to filename / first line
+    source_type: str = "paste"  # upload|paste|link
+    source_url: str | None = None
+    content: str | None = None  # for paste/link text
+    file_b64: str | None = None  # base64 raw bytes for upload
+    raw_filename: str | None = None
+    raw_mime: str | None = None
+
+
+class DocumentUpdate(BaseModel):
+    """Edit metadata. All fields optional; only provided fields applied.
+    Set ``regenerate_digest=True`` to re-run the Claude digest step."""
+
+    title: str | None = None
+    summary: str | None = None
+    tags: list[str] | None = None
+    regenerate_digest: bool = False
+
+
+class DocumentCard(BaseModel):
+    """Cheap tier-1 list/search result — no digest/raw body."""
+
+    id: str
+    title: str
+    summary: str
+    tags: list[str]
+    source_type: str
+    source_url: str | None = None
+    created_by_user_id: str | None = None
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DocumentResponse(BaseModel):
+    """Full document as returned to the client (includes the tier-2 digest,
+    excludes raw bytes — those come from the MCP ``inspect_source`` path)."""
+
+    id: str
+    org_id: str | None = None
+    created_by_user_id: str | None = None
+    title: str
+    source_type: str
+    source_url: str | None = None
+    summary: str
+    digest_text: str
+    tags: list[str]
+    raw_mime: str | None = None
+    raw_filename: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}

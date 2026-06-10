@@ -38,6 +38,73 @@ DEFAULT_ANALYZER_MODEL = "claude-sonnet-4-6"
 _VERIFIER_STDOUT_CAP = 50_000
 _WATCHDOG_LOG_CAP = 20_000
 
+# Claude Code names every MCP tool ``mcp__<server>__<tool>``; the Skill tool is
+# just ``Skill`` with the skill slug in its input. We classify each tool_use by
+# source so probe consumers can tell, deterministically, whether the agent
+# reached for a skill or an MCP server (the LLM summary never asks about this).
+_MCP_TOOL_PREFIX = "mcp__"
+
+
+def _classify_tool_use(name: str, inp: dict) -> tuple[str, dict]:
+    """Classify a single tool_use block by where the tool comes from.
+
+    Returns ``(tool_kind, extras)`` where ``tool_kind`` is one of
+    ``"skill"`` | ``"mcp"`` | ``"builtin"``. ``extras`` carries the parsed
+    skill slug (for skills) or the MCP server + tool (for ``mcp__`` tools),
+    ready to merge into the timeline entry. Never raises.
+    """
+    if name == "Skill":
+        skill = ""
+        if isinstance(inp, dict):
+            skill = str(inp.get("skill") or "").strip()
+        return "skill", ({"skill_name": skill} if skill else {})
+    if name.startswith(_MCP_TOOL_PREFIX):
+        server, _, tool = name[len(_MCP_TOOL_PREFIX) :].partition("__")
+        return "mcp", {"mcp_server": server, "mcp_tool": tool or server}
+    return "builtin", {}
+
+
+def _summarize_tool_usage(agent_messages: list[dict]) -> dict:
+    """Aggregate skill + MCP usage across an already-parsed timeline.
+
+    Deterministic pass over ``agent_messages`` (the output of
+    :func:`_parse_agent_messages`). Returns::
+
+        {
+          "used_skills": bool,
+          "used_mcp": bool,
+          "skills": [{"name": str, "count": int}, ...],
+          "mcp_tools": [{"server": str, "tool": str, "count": int}, ...],
+        }
+
+    Entries are ordered by first appearance so the summary reads like the
+    run did. Never raises.
+    """
+    skills: dict[str, int] = {}
+    mcp_tools: dict[tuple[str, str], int] = {}
+    for m in agent_messages:
+        if m.get("kind") != "tool_use":
+            continue
+        tool_kind = m.get("tool_kind")
+        if tool_kind == "skill":
+            name = str(m.get("skill_name") or "(unknown)")
+            skills[name] = skills.get(name, 0) + 1
+        elif tool_kind == "mcp":
+            key = (
+                str(m.get("mcp_server") or "(unknown)"),
+                str(m.get("mcp_tool") or "(unknown)"),
+            )
+            mcp_tools[key] = mcp_tools.get(key, 0) + 1
+    return {
+        "used_skills": bool(skills),
+        "used_mcp": bool(mcp_tools),
+        "skills": [{"name": n, "count": c} for n, c in skills.items()],
+        "mcp_tools": [
+            {"server": server, "tool": tool, "count": c}
+            for (server, tool), c in mcp_tools.items()
+        ],
+    }
+
 
 def _make_client():
     """Build the Anthropic client for the probe summary.
@@ -119,8 +186,19 @@ def _parse_agent_messages(agent_log_path: Path) -> list[dict]:
                             except Exception:
                                 payload = str(inp)[:1500]
                             text = f"[{name}]\n{payload}"
+                        # Tag the source of the tool (skill / mcp / builtin)
+                        # so probe consumers can see skill + MCP usage without
+                        # re-parsing the raw transcript. ``extras`` adds the
+                        # skill slug or the mcp server+tool when applicable.
+                        tool_kind, extras = _classify_tool_use(name, inp)
                         agent_messages.append(
-                            {"kind": "tool_use", "name": name, "text": text}
+                            {
+                                "kind": "tool_use",
+                                "name": name,
+                                "text": text,
+                                "tool_kind": tool_kind,
+                                **extras,
+                            }
                         )
             elif event.get("type") == "user":
                 content = event.get("message", {}).get("content", [])
@@ -156,7 +234,12 @@ def extract_probe_artifacts(trial_dir: Path) -> dict:
           "verifier_stdout": str | None,
           "agent_messages": [ {kind, text, ...}, ... ],
           "watchdog_log": str | None,
+          "tool_usage": {used_skills, used_mcp, skills[], mcp_tools[]},
         }
+
+    ``agent_messages`` tool_use entries carry a ``tool_kind``
+    ("skill" | "mcp" | "builtin") plus the parsed skill slug / MCP
+    server+tool; ``tool_usage`` is the deterministic roll-up of those.
 
     Any individually-missing artifact is None / empty; this never raises.
     """
@@ -194,6 +277,7 @@ def extract_probe_artifacts(trial_dir: Path) -> dict:
         "verifier_stdout": verifier_stdout,
         "agent_messages": agent_messages,
         "watchdog_log": watchdog_log,
+        "tool_usage": _summarize_tool_usage(agent_messages),
     }
 
 
@@ -231,9 +315,16 @@ async def run_probe_analyzer(
             },
             ...
           ],
+          "tool_insights": [
+            {"name": str, "kind": "skill"|"mcp", "note": str}, ...
+          ],
           "model": str,
           "generated_at": ISO8601,
         }
+
+    ``tool_insights`` is an optional curiosity section: a per-skill / per-MCP
+    "why it was useful" bullet. Empty unless the agent actually used skills or
+    MCP servers (external context / tools beyond the builtins).
     """
     transcript_lines = []
     for i, m in enumerate(agent_messages, 1):
@@ -335,6 +426,37 @@ async def run_probe_analyzer(
             "not return null for this field when the operator specified a focus."
         )
 
+    # Optional curiosity section: if the agent reached for any skills or MCP
+    # servers (external context / tools beyond the builtins), ask the model to
+    # annotate each with a one-line "why it was useful". Grounded in the
+    # deterministic usage roll-up so the names are exact and we only ask about
+    # tools that were actually invoked. Skipped entirely otherwise, so the base
+    # prompt stays unchanged for the common no-skill/no-MCP run.
+    tool_usage = _summarize_tool_usage(agent_messages)
+    if tool_usage["used_skills"] or tool_usage["used_mcp"]:
+        used_lines = [
+            f"- skill: {s['name']} ({s['count']}x)" for s in tool_usage["skills"]
+        ] + [
+            f"- mcp: {t['server']}.{t['tool']} ({t['count']}x)"
+            for t in tool_usage["mcp_tools"]
+        ]
+        prompt += (
+            "\n\n## Tools & skills used (optional)\n\n"
+            "Beyond the builtin tools, the agent reached for these skills / MCP "
+            "servers (external context / tools):\n"
+            f"{chr(10).join(used_lines)}\n\n"
+            "Add a top-level `tool_insights` array to your JSON: one entry per "
+            "skill / MCP tool that MEANINGFULLY helped the agent (drop any it "
+            "invoked but whose output it ignored or that errored out). Each entry:\n"
+            "{\n"
+            '  "name": "exact name from the list above (skill slug or server.tool)",\n'
+            '  "kind": "skill" | "mcp",\n'
+            '  "note": "1 sentence — what it gave the agent / why it was useful here"\n'
+            "}\n"
+            "Base every note on the transcript, not on what the tool is for in "
+            "general. Return `tool_insights: []` if none meaningfully helped."
+        )
+
     # The probe summary runs on the direct Anthropic API (see _make_client). The
     # cloud callers pass settings.analysis_model, a Bedrock inference-profile id
     # (e.g. "global.anthropic.claude-haiku-4-5-...-v1:0"); normalize it back to
@@ -404,6 +526,25 @@ def _normalize_probe_summary(
                 }
             )
 
+    # Optional skill / MCP "why it was useful" bullets. Only ``skill`` and
+    # ``mcp`` kinds are kept; entries missing a name or note are dropped.
+    tool_insights: list[dict] = []
+    for entry in parsed.get("tool_insights") or []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name", "")).strip()
+        note = str(entry.get("note", "")).strip()
+        kind = str(entry.get("kind", "")).strip().lower()
+        if not name or not note:
+            continue
+        tool_insights.append(
+            {
+                "name": name,
+                "kind": kind if kind in ("skill", "mcp") else "skill",
+                "note": note,
+            }
+        )
+
     return {
         "kind": "probe_summary",
         "headline": str(parsed.get("headline", "")),
@@ -419,6 +560,7 @@ def _normalize_probe_summary(
         ),
         "result_focus_question": result_focus or None,
         "attempts": attempts,
+        "tool_insights": tool_insights,
         "hypotheses": [
             str(h).strip()
             for h in (parsed.get("hypotheses") or [])

@@ -19,6 +19,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from oddish.core.skills import list_skills_core
 from oddish.db import TrialModel, get_session, get_storage_client
 from oddish.worker.probe_overlay import (
     HARBOR_DIR_NAME,
@@ -31,6 +32,7 @@ from oddish.worker.probe_overlay import (
     render_probe_instruction,
     select_related_trials,
 )
+from oddish.worker.skills_overlay import SkillBundle, materialize_skills
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +141,45 @@ def stage_harbor_source(work_task_dir: Path) -> bool:
     return True
 
 
+async def stage_org_skills(skills_root: Path, *, org_id: str | None) -> int:
+    """Materialize the org's shared skills (+ global seeds) under
+    ``skills_root/<name>/<relative_path>``.
+
+    ``skills_root`` is meant to be passed to Harbor as an ``AgentConfig.skills``
+    entry: Harbor's ``resolve_skills`` accepts a root whose every child dir holds
+    a ``SKILL.md`` (exactly this layout), uploads each ``<name>/`` skill into the
+    sandbox, and the claude-code agent registers them into Claude's config dir so
+    the agent discovers them. Skills are written from Postgres at stage time, so
+    they reach the (network-isolated) sandbox without the agent fetching anything.
+
+    Best-effort and per-skill resilient: a DB failure stages nothing, and one
+    malformed skill is skipped without dropping the others. Returns the number
+    of skills actually staged; never raises.
+    """
+    try:
+        async with get_session() as session:
+            skills = await list_skills_core(session, org_id=org_id)
+            bundles = [
+                SkillBundle(
+                    name=s.name,
+                    files=[(f.relative_path, f.content) for f in s.files],
+                )
+                for s in skills
+            ]
+    except Exception:
+        logger.exception("probe: loading org skills failed")
+        return 0
+
+    staged = 0
+    for bundle in bundles:
+        try:
+            materialize_skills([bundle], skills_root)
+            staged += 1
+        except Exception:
+            logger.exception("probe: staging skill %r failed", bundle.name)
+    return staged
+
+
 async def apply_probe_overlay(
     task_dir: Path,
     *,
@@ -152,6 +193,11 @@ async def apply_probe_overlay(
     ``task_dir`` MUST be a writable temp copy of the task. Staging failures
     degrade gracefully (the related-logs section is softened); they never
     block the probe from running.
+
+    (Org skill injection is handled separately by the runners via
+    ``stage_org_skills`` + ``AgentConfig.skills`` -- NOT here, because skills
+    must reach the sandbox through Harbor's skill-upload path, not the task dir
+    which Harbor never mounts into the container.)
     """
     try:
         has_related = await stage_related_trial_logs(

@@ -24,6 +24,7 @@ from oddish.db.models import (
     TagPolicyWhoCanCreate,
     TagPolicyProfanityMode,
     # ORM Models
+    DocumentModel,
     ExperimentModel,
     ProbePresetModel,
     TagModel,
@@ -33,6 +34,8 @@ from oddish.db.models import (
     TagEventModel,
     TagPolicyModel,
     SavedTagFilterModel,
+    SkillModel,
+    SkillFileModel,
     TaskModel,
     TaskVersionModel,
     TrialModel,
@@ -100,6 +103,9 @@ __all__ = [
     # ORM Models
     "ExperimentModel",
     "ProbePresetModel",
+    "DocumentModel",
+    "SkillModel",
+    "SkillFileModel",
     "QueueSlotModel",
     "TagModel",
     "TagAssignmentModel",
