@@ -66,6 +66,7 @@ harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
 [tool.setuptools]
 py-modules = [
     "cloud_policy",
+    "dashboard_attribution",
     "deploy",
     "endpoints",
     "modal_app",
