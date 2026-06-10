@@ -41,6 +41,9 @@ interface PassAtKGraphProps {
   onHoverAgent?: (key: string | null) => void;
 }
 
+type TooltipValue = number | string | ReadonlyArray<number | string>;
+type TooltipName = number | string;
+
 function buildAgentStats(
   tasks: Task[],
   agentSummaries: AgentSummary[]
@@ -141,7 +144,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
     }, [tasks, agentSummaries]);
 
   const renderTooltip = useCallback(
-    (props: TooltipContentProps<number, string>) => {
+    (props: TooltipContentProps<TooltipValue, TooltipName>) => {
       const { active, payload, label } = props;
       if (!active || !payload || payload.length === 0) return null;
 
