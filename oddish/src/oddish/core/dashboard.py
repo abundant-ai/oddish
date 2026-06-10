@@ -374,21 +374,26 @@ def _build_primary_task_author_match(
         if (email or "").strip()
     ]
 
+    lowered_handles = [handle.lower() for handle in github_handles if handle]
+    lowered_tag = func.lower(github_tag)
+    lowered_user = func.lower(TaskModel.user)
+
     tiers = []
-    if len(github_handles) == 1:
-        tiers.append(github_tag == github_handles[0])
-    elif len(github_handles) > 1:
-        tiers.append(github_tag.in_(github_handles))
+    if len(lowered_handles) == 1:
+        tiers.append(lowered_tag == lowered_handles[0])
+    elif len(lowered_handles) > 1:
+        tiers.append(lowered_tag.in_(lowered_handles))
 
     legacy_user_matches = []
-    if len(normalized_emails) == 1:
-        legacy_user_matches.append(TaskModel.user == normalized_emails[0])
-    elif len(normalized_emails) > 1:
-        legacy_user_matches.append(TaskModel.user.in_(normalized_emails))
-    if len(github_handles) == 1:
-        legacy_user_matches.append(TaskModel.user == github_handles[0])
-    elif len(github_handles) > 1:
-        legacy_user_matches.append(TaskModel.user.in_(github_handles))
+    lowered_emails = [email.lower() for email in normalized_emails]
+    if len(lowered_emails) == 1:
+        legacy_user_matches.append(lowered_user == lowered_emails[0])
+    elif len(lowered_emails) > 1:
+        legacy_user_matches.append(lowered_user.in_(lowered_emails))
+    if len(lowered_handles) == 1:
+        legacy_user_matches.append(lowered_user == lowered_handles[0])
+    elif len(lowered_handles) > 1:
+        legacy_user_matches.append(lowered_user.in_(lowered_handles))
     if legacy_user_matches:
         tiers.append(
             and_(_empty_github_tag_clause(), or_(*legacy_user_matches))

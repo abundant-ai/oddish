@@ -35,3 +35,15 @@ def test_seed_attribution_cache_merges_without_dropping_aliases() -> None:
     assert set(user.attribution_cache["github_handles"]) == {"praxs", "dot-agi"}
     assert "ps4534@nyu.edu" in user.attribution_cache["legacy_emails"]
     assert "pratty@abundant.ai" in user.attribution_cache["legacy_emails"]
+    assert user.attribution_cache["refreshed_at"] == "2026-01-01T00:00:00+00:00"
+
+
+def test_seed_attribution_cache_omits_refreshed_at_until_discovery() -> None:
+    user = _user(attribution_cache=None)
+    _seed_attribution_cache_from_github(
+        user,
+        github_username="praxs",
+        github_email="ps4534@nyu.edu",
+    )
+    assert user.attribution_cache is not None
+    assert "refreshed_at" not in user.attribution_cache
