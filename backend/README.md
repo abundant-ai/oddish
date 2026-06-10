@@ -50,8 +50,9 @@ Dispatcher + single-job pattern backed by the unified `worker_jobs` table:
 
 1. `poll_queue()` runs on a 180s Modal schedule. It calls
    `cleanup_orphaned_queue_state` (zombie-txn reap, stale-heartbeat sweep,
-   stage safety nets, orphaned-slot release), discovers active queue keys
-   via `discover_active_worker_job_queue_keys`, and launches up to
+   stage safety nets, orphaned-slot release), runs the experiments owner
+   backfill (dashboard Mine fast path), discovers active queue keys via
+   `discover_active_worker_job_queue_keys`, and launches up to
    `MAX_WORKERS_PER_POLL` single-job containers.
 2. `process_single_job(queue_key)` acquires a `queue_slots` lease for the
    queue key and calls `run_single_worker_job`, which atomically claims one
