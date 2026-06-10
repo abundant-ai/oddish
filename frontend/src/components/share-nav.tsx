@@ -5,7 +5,12 @@ export function ShareNav() {
   return (
     <nav className="bg-card/80 sticky top-[var(--preview-banner-h,0px)] z-40 border-b border-[#6f88b4]/15 backdrop-blur-xs">
       <div className="mx-auto flex h-14 max-w-(--breakpoint-2xl) items-center justify-between px-4">
-        <div className="flex items-center gap-2">
+        <a
+          href="https://abundant.ai"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-2 transition-opacity hover:opacity-80"
+        >
           <Image
             src="/oddish.png"
             alt="Oddish"
@@ -15,7 +20,7 @@ export function ShareNav() {
           />
           <span className="text-sm font-semibold">Oddish</span>
           <span className="text-muted-foreground text-sm">by Abundant AI</span>
-        </div>
+        </a>
         <ThemeToggle />
       </div>
     </nav>
