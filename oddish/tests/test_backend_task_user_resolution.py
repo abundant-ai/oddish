@@ -74,6 +74,13 @@ class _SessionStub:
     async def get(self, model: type, key: str) -> Any:
         return self.objects.get((model, key))
 
+    async def execute(self, _stmt: Any) -> Any:
+        class _Result:
+            def scalar_one_or_none(self) -> None:
+                return None
+
+        return _Result()
+
 
 def _load_helpers() -> dict[str, Any]:
     """Extract the resolution helpers from the router source.
@@ -103,7 +110,9 @@ def _load_helpers() -> dict[str, Any]:
         for needle in (
             "async def _resolve_actor_user(",
             "async def _resolve_actor_user_string(",
+            "async def _lookup_user_by_github_username(",
             "async def _resolve_created_by_user_id(",
+            "async def _resolve_experiment_owner_user_id(",
         )
     )
 
@@ -133,6 +142,7 @@ _HELPERS = _load_helpers()
 _resolve_actor_user = _HELPERS["_resolve_actor_user"]
 _resolve_actor_user_string = _HELPERS["_resolve_actor_user_string"]
 _resolve_created_by_user_id = _HELPERS["_resolve_created_by_user_id"]
+_resolve_experiment_owner_user_id = _HELPERS["_resolve_experiment_owner_user_id"]
 
 
 def _run(coro):
@@ -312,3 +322,38 @@ def test_created_by_user_id_falls_back_to_auth_user_id():
         _resolve_created_by_user_id(session, submission, auth)
     )
     assert result == "u-clerk"
+
+
+def test_experiment_owner_prefers_github_user_over_api_key_owner():
+    api_user = _UserStub(id="u-ci", github_username=None)
+    gh_user = _UserStub(id="u-gh", github_username="praxs")
+    api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
+    auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
+    session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
+
+    async def _fake_execute(stmt):
+        class _Result:
+            def scalar_one_or_none(self):
+                return gh_user
+
+        return _Result()
+
+    session.execute = _fake_execute  # type: ignore[attr-defined]
+    submission = _SubmissionStub(github_username="praxs")
+
+    created_by = _run(_resolve_created_by_user_id(session, submission, auth))
+    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
+
+    assert created_by == "u-ci"
+    assert owner == "u-gh"
+
+
+def test_experiment_owner_falls_back_to_api_key_when_no_github_user():
+    api_user = _UserStub(id="u-ci")
+    api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
+    auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
+    session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
+    submission = _SubmissionStub(github_username="unknown-gh")
+
+    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
+    assert owner == "u-ci"
