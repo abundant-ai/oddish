@@ -99,6 +99,7 @@ interface ExperimentDetailViewProps {
   readOnly?: boolean;
   allowRetry?: boolean;
   showAnalysis?: boolean;
+  showSourceLink?: boolean;
   apiBaseUrl?: string;
   onTaskDelete?: (task: Task) => Promise<void>;
   onTrialDelete?: (trial: Trial, task: Task | null) => Promise<void>;
@@ -719,6 +720,7 @@ export function ExperimentDetailView({
   readOnly = false,
   allowRetry = true,
   showAnalysis = true,
+  showSourceLink = true,
   apiBaseUrl = "/api",
   onTaskDelete,
   onTrialDelete,
@@ -1057,10 +1059,12 @@ export function ExperimentDetailView({
               onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
               headerRight={headerRight}
               prLink={
-                <ExperimentPrLink
-                  tasks={tasksForExperiment}
-                  isInitialLoading={isInitialLoading}
-                />
+                showSourceLink ? (
+                  <ExperimentPrLink
+                    tasks={tasksForExperiment}
+                    isInitialLoading={isInitialLoading}
+                  />
+                ) : null
               }
             />
           </div>

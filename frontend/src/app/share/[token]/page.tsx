@@ -86,6 +86,7 @@ export default function PublicExperimentPage() {
             readOnly
             allowRetry={false}
             showAnalysis={false}
+            showSourceLink={false}
             apiBaseUrl={PUBLIC_API_URL}
           />
         </div>
