@@ -1057,10 +1057,15 @@ export function ExperimentDetailView({
               onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
               headerRight={headerRight}
               prLink={
-                <ExperimentPrLink
-                  tasks={tasksForExperiment}
-                  isInitialLoading={isInitialLoading}
-                />
+                // The PR chip links into GitHub for the experiment's source
+                // branch — internal context that shouldn't surface on the
+                // public share view.
+                readOnly ? undefined : (
+                  <ExperimentPrLink
+                    tasks={tasksForExperiment}
+                    isInitialLoading={isInitialLoading}
+                  />
+                )
               }
             />
           </div>
