@@ -17,6 +17,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # ``000_initial_schema`` bootstraps a fresh database via
+    # ``Base.metadata.create_all`` (every current model table), so on the
+    # from-scratch path used by data-less preview branches these tables already
+    # exist when this revision runs. Skip to stay idempotent, matching the
+    # ``CREATE TABLE IF NOT EXISTS`` convention the other migrations use.
+    if sa.inspect(op.get_bind()).has_table("skills"):
+        return
     op.create_table(
         "skills",
         sa.Column("id", sa.String(64), primary_key=True),
