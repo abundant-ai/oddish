@@ -2456,6 +2456,7 @@ async def create_task_sweep_core(
     )
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
+    from oddish.core.auto_probe import maybe_enqueue_auto_probe
 
     # Default the task link to the GitHub PR URL when the caller didn't
     # pass an explicit ``--link`` but the task carries GitHub PR metadata
@@ -2577,6 +2578,9 @@ async def create_task_sweep_core(
             for trial in new_trials:
                 asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
 
+        await maybe_enqueue_auto_probe(
+            session, task=task, experiment=experiment, org_id=org_id
+        )
         return task, new_trials, True, experiment
 
     # Create mode
@@ -2625,4 +2629,7 @@ async def create_task_sweep_core(
         for trial in new_trials:
             asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
 
+    await maybe_enqueue_auto_probe(
+        session, task=task, experiment=experiment, org_id=org_id
+    )
     return task, new_trials, False, experiment
