@@ -6,7 +6,7 @@ of new value"). Mirrors the TASK_EXPAND precedent in
 ``c4b5a6d7e8f9_add_task_version_expansion``.
 
 Revision ID: aa03ta04kind
-Revises: aa02ta03gin
+Revises: trial_is_probe_001
 Create Date: 2026-06-06 12:15:00.000000
 """
 from typing import Sequence, Union
@@ -15,7 +15,7 @@ from alembic import op
 
 
 revision: str = "aa03ta04kind"
-down_revision: Union[str, Sequence[str], None] = "aa02ta03gin"
+down_revision: Union[str, Sequence[str], None] = "trial_is_probe_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

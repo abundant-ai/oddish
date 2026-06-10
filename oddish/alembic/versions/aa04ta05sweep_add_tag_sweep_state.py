@@ -5,7 +5,7 @@ ran. Deliberately separate from tag_policies: tag_policies.org_id is an
 org FK in cloud, so a sentinel marker row there would violate it.
 
 Revision ID: aa04ta05sweep
-Revises: aa03ta04kind
+Revises: aa02ta03gin
 Create Date: 2026-06-06 12:25:00.000000
 """
 from typing import Sequence, Union
@@ -14,7 +14,7 @@ from alembic import op
 
 
 revision: str = "aa04ta05sweep"
-down_revision: Union[str, Sequence[str], None] = "aa03ta04kind"
+down_revision: Union[str, Sequence[str], None] = "aa02ta03gin"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

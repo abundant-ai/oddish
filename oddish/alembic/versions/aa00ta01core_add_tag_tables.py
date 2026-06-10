@@ -8,7 +8,7 @@ Partial-unique indexes use the validated ``COALESCE(org_id, '')``
 expression form so soft-deleted rows free up their name slot.
 
 Revision ID: aa00ta01core
-Revises: trial_is_probe_001
+Revises: aa03ta04kind
 Create Date: 2026-06-06 12:00:00.000000
 """
 from typing import Sequence, Union
@@ -17,7 +17,7 @@ from alembic import op
 
 
 revision: str = "aa00ta01core"
-down_revision: Union[str, Sequence[str], None] = "trial_is_probe_001"
+down_revision: Union[str, Sequence[str], None] = "aa03ta04kind"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

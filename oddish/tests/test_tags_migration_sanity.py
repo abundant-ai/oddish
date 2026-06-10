@@ -109,7 +109,11 @@ def test_gin_index_migration_uses_concurrently_and_autocommit():
 def test_tag_project_enum_add_is_autocommit_and_not_referenced():
     src = _read("aa03ta04kind_add_tag_project_worker_kind.py")
     assert 'revision: str = "aa03ta04kind"' in src
-    assert '"aa02ta03gin"' in src
+    # The enum-add must run BEFORE aa00ta01core, which references 'TAG_PROJECT'
+    # in its uq_worker_jobs_tag_project_active index -- a newly added enum
+    # value can't be used until the transaction that added it has committed.
+    assert '"trial_is_probe_001"' in src
+    assert '"aa03ta04kind"' in _read("aa00ta01core_add_tag_tables.py")
     assert "with op.get_context().autocommit_block():" in src
     assert (
         "ALTER TYPE worker_job_kind ADD VALUE IF NOT EXISTS 'TAG_PROJECT'" in src
@@ -146,6 +150,6 @@ def test_cloud_fk_migration_present():
 def test_sweep_state_migration_present():
     src = _read("aa04ta05sweep_add_tag_sweep_state.py")
     assert 'revision: str = "aa04ta05sweep"' in src
-    assert '"aa03ta04kind"' in src
+    assert '"aa02ta03gin"' in src
     assert "CREATE TABLE IF NOT EXISTS tag_projection_sweep_state" in src
     assert "last_full_sweep_at" in src
