@@ -1078,10 +1078,14 @@ export function ExperimentDetailView({
             </Alert>
           ) : (
             <Tabs defaultValue="tasks" className="space-y-3">
-              <TabsList>
-                <TabsTrigger value="tasks">Tasks</TabsTrigger>
-                <TabsTrigger value="probe">Probe</TabsTrigger>
-              </TabsList>
+              {/* Probing requires an authenticated session, so the public
+                  share view renders the tasks content without the toggle. */}
+              {!readOnly && (
+                <TabsList>
+                  <TabsTrigger value="tasks">Tasks</TabsTrigger>
+                  <TabsTrigger value="probe">Probe</TabsTrigger>
+                </TabsList>
+              )}
               <TabsContent value="tasks" className="space-y-3">
                 {inlineAlert}
                 <ExperimentTrialsTable
