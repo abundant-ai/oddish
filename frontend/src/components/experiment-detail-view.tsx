@@ -727,7 +727,7 @@ export function ExperimentDetailView({
 }: ExperimentDetailViewProps) {
   const searchParams = useSearchParams();
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
-  const [showPassAtK, setShowPassAtK] = useState(false);
+  const [showPassAtK, setShowPassAtK] = useState(readOnly);
   const [showTask, setShowTask] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
     try {
@@ -1067,10 +1067,15 @@ export function ExperimentDetailView({
               onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
               headerRight={headerRight}
               prLink={
-                <ExperimentPrLink
-                  tasks={tasksForExperiment}
-                  isInitialLoading={isInitialLoading}
-                />
+                // The PR chip links into GitHub for the experiment's source
+                // branch — internal context that shouldn't surface on the
+                // public share view.
+                readOnly ? undefined : (
+                  <ExperimentPrLink
+                    tasks={tasksForExperiment}
+                    isInitialLoading={isInitialLoading}
+                  />
+                )
               }
             />
           </div>
@@ -1088,10 +1093,14 @@ export function ExperimentDetailView({
             </Alert>
           ) : (
             <Tabs defaultValue="tasks" className="space-y-3">
-              <TabsList>
-                <TabsTrigger value="tasks">Tasks</TabsTrigger>
-                <TabsTrigger value="probe">Probe</TabsTrigger>
-              </TabsList>
+              {/* Probing requires an authenticated session, so the public
+                  share view renders the tasks content without the toggle. */}
+              {!readOnly && (
+                <TabsList>
+                  <TabsTrigger value="tasks">Tasks</TabsTrigger>
+                  <TabsTrigger value="probe">Probe</TabsTrigger>
+                </TabsList>
+              )}
               <TabsContent value="tasks" className="space-y-3">
                 {inlineAlert}
                 <ExperimentTrialsTable

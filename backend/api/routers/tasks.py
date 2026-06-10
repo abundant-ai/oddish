@@ -6,7 +6,7 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_policy import (
@@ -30,7 +30,10 @@ from oddish.core.endpoints import (
     rerun_task_analysis_core,
     rerun_task_verdict_core,
 )
-from oddish.core.dashboard import invalidate_dashboard_cache
+from oddish.core.dashboard import (
+    EXPERIMENTS_UNATTRIBUTED_OWNER,
+    invalidate_dashboard_cache,
+)
 from oddish.core.experiments import list_experiment_probes_core
 from oddish.core.public_helpers import (
     ensure_experiment_public,
@@ -205,11 +208,31 @@ async def _resolve_submission_identity(
     )
 
 
+async def _lookup_user_by_github_username(
+    session: AsyncSession,
+    *,
+    github_username: str,
+    org_id: str,
+) -> UserModel | None:
+    normalized = (github_username or "").strip().lstrip("@")
+    if not normalized:
+        return None
+    user_result = await session.execute(
+        select(UserModel).where(
+            func.lower(UserModel.github_username) == normalized.lower(),
+            UserModel.org_id == org_id,
+            UserModel.is_active == True,  # noqa: E712
+        )
+    )
+    return user_result.scalar_one_or_none()
+
+
 async def _resolve_created_by_user_id(
     session: AsyncSession,
     submission: TaskSweepSubmission,
     auth: AuthContext,
 ) -> str | None:
+    """Who submitted the task (API key owner wins for CI/service accounts)."""
     if auth.api_key_id:
         api_key = auth.api_key
         if api_key is None:
@@ -218,18 +241,74 @@ async def _resolve_created_by_user_id(
             return api_key.created_by_user_id
 
     if submission.github_username:
-        user_result = await session.execute(
-            select(UserModel).where(
-                UserModel.github_username == submission.github_username,
-                UserModel.org_id == auth.org_id,
-                UserModel.is_active == True,  # noqa: E712
-            )
+        user = await _lookup_user_by_github_username(
+            session,
+            github_username=submission.github_username,
+            org_id=auth.org_id,
         )
-        user = user_result.scalar_one_or_none()
         if user:
             return user.id
 
+    if auth.user_id:
+        return auth.user_id
+
     return None
+
+
+async def _resolve_experiment_owner_user_id(
+    session: AsyncSession,
+    submission: TaskSweepSubmission,
+    auth: AuthContext,
+) -> str | None:
+    """Primary experiment owner for dashboard Mine (GitHub author beats submitter)."""
+    if submission.github_username:
+        user = await _lookup_user_by_github_username(
+            session,
+            github_username=submission.github_username,
+            org_id=auth.org_id,
+        )
+        if user:
+            return user.id
+        # Explicit --github-user with no linked org member: leave owner unset so
+        # the legacy primary-task Mine filter can match the github tag.
+        return None
+
+    if auth.user_id:
+        return auth.user_id
+
+    if auth.api_key_id:
+        api_key = auth.api_key
+        if api_key is None:
+            api_key = await session.get(APIKeyModel, auth.api_key_id)
+        if api_key and api_key.created_by_user_id:
+            return api_key.created_by_user_id
+
+    return None
+
+
+def _stamp_experiment_owner(
+    experiment: ExperimentModel | None,
+    owner_user_id: str | None,
+    *,
+    claim_unowned: bool = True,
+) -> None:
+    """Stamp the dashboard Mine owner on an experiment.
+
+    ``claim_unowned=False`` (append/rerun path) replaces only the sweep's
+    ``__unattributed__`` sentinel: a NULL owner means the sweep has not yet
+    attributed the experiment's primary task, and the appender is not
+    necessarily that author — claiming NULL here would race the sweep's
+    precedence-correct claim and hide the experiment from its real owner.
+    """
+    if experiment is None or not owner_user_id:
+        return
+    claimable = (
+        (None, EXPERIMENTS_UNATTRIBUTED_OWNER)
+        if claim_unowned
+        else (EXPERIMENTS_UNATTRIBUTED_OWNER,)
+    )
+    if experiment.owner_user_id in claimable:
+        experiment.owner_user_id = owner_user_id
 
 
 async def _maybe_publish_experiment(
@@ -324,6 +403,13 @@ async def create_task_sweep(
             org_id=auth.org_id,
             default_environment=get_default_cloud_environment(submission),
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
+        )
+
+        owner_user_id = await _resolve_experiment_owner_user_id(
+            session, submission, auth
+        )
+        _stamp_experiment_owner(
+            experiment, owner_user_id, claim_unowned=not is_append
         )
 
         if not is_append:

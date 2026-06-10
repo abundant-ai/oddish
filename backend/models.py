@@ -136,6 +136,8 @@ class UserModel(TimestampedMixin, Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     github_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Cached dashboard Mine aliases (handles + legacy emails); refreshed lazily.
+    attribution_cache: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Status
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

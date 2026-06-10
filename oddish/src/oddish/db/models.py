@@ -338,6 +338,23 @@ class ExperimentModel(TimestampedMixin, Base):
             "last_activity_at",
             postgresql_where=text("deleted_at IS NULL"),
         ),
+        Index(
+            "idx_experiments_org_owner_user_live",
+            "org_id",
+            "owner_user_id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        # Mine page fast path: seek by ``(org_id, owner_user_id)`` and
+        # walk the index in ``last_activity_at DESC NULLS LAST, id ASC``
+        # order so the dashboard query doesn't pay a separate sort.
+        Index(
+            "idx_experiments_org_owner_activity_live",
+            "org_id",
+            "owner_user_id",
+            text("last_activity_at DESC NULLS LAST"),
+            text("id ASC"),
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         # Mirror the partial-unique pattern used on ``tasks`` so a
         # soft-deleted experiment doesn't take its name slot with it.
         # Experiments don't currently have a name uniqueness constraint,
@@ -363,6 +380,9 @@ class ExperimentModel(TimestampedMixin, Base):
     last_activity_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # Primary owner for dashboard Mine filter (stamped from the first task submit).
+    owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Public sharing (nullable until published)
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -412,6 +432,36 @@ class TaskModel(TimestampedMixin, Base):
             text("COALESCE(org_id, '')"),
             "name",
             unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        # Attribution discovery scan + legacy Mine EXISTS fallback:
+        # who created this task by Clerk user id? Partial on
+        # ``created_by_user_id IS NOT NULL`` keeps the index tight,
+        # matching the discovery query predicate exactly.
+        Index(
+            "idx_tasks_org_created_by_live",
+            "org_id",
+            "created_by_user_id",
+            postgresql_where=text(
+                "deleted_at IS NULL AND created_by_user_id IS NOT NULL"
+            ),
+        ),
+        # Legacy Mine fallback: functional index on case-insensitive
+        # ``user`` column so the EXISTS subquery rides an index for
+        # the Harbor-submitter handle branch of attribution.
+        Index(
+            "idx_tasks_org_lower_user_live",
+            "org_id",
+            text('lower("user")'),
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        # Legacy Mine fallback: functional index on the GitHub
+        # username carried in the ``tags`` JSONB blob so the EXISTS
+        # subquery rides an index for the GitHub-identity branch.
+        Index(
+            "idx_tasks_org_lower_github_tag_live",
+            "org_id",
+            text("lower((tags ->> 'github_username'))"),
             postgresql_where=text("deleted_at IS NULL"),
         ),
     )

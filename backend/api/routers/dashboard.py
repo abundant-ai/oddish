@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Request
 
 from auth import APIKeyScope, AuthContext, require_auth
+from dashboard_attribution import resolve_experiments_author
 from oddish.core.dashboard import get_dashboard_core
 from oddish.db import get_session
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
@@ -29,6 +30,13 @@ async def get_dashboard(
     experiments_offset: int = Query(0, ge=0),
     experiments_query: str | None = Query(None),
     experiments_status: str = Query("all"),
+    experiments_author: str | None = Query(
+        None,
+        description=(
+            "Owner filter for the experiments table: 'all' (default), "
+            "'me' for the current user, or an org member's user id."
+        ),
+    ),
     usage_minutes: int | None = Query(None, ge=1, le=86400),
     include_tasks: bool = Query(True),
     include_usage: bool = Query(True),
@@ -49,6 +57,16 @@ async def get_dashboard(
             elapsed_ms(connect_started_at),
             "Dashboard DB connect",
         )
+        resolve_started_at = now()
+        author_user_id, author_github_usernames, author_emails = (
+            await resolve_experiments_author(session, auth, experiments_author)
+        )
+        add_server_timing_metric(
+            request,
+            "dashboard_author_resolve",
+            elapsed_ms(resolve_started_at),
+            "Dashboard author filter resolve",
+        )
         return await get_dashboard_core(
             session,
             org_id=auth.org_id,
@@ -58,6 +76,9 @@ async def get_dashboard(
             experiments_offset=experiments_offset,
             experiments_query=experiments_query,
             experiments_status=experiments_status,
+            experiments_author_user_id=author_user_id,
+            experiments_author_github_usernames=author_github_usernames,
+            experiments_author_emails=author_emails,
             usage_minutes=usage_minutes,
             include_tasks=include_tasks,
             include_usage=include_usage,

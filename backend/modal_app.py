@@ -264,6 +264,8 @@ image = (
         "api",
         "auth",
         "cloud_policy",
+        "dashboard_attribution",
+        "dashboard_owner_backfill",
         "endpoints",
         "modal_app",
         "models",
