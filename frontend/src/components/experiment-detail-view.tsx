@@ -1080,7 +1080,7 @@ export function ExperimentDetailView({
             <Tabs defaultValue="tasks" className="space-y-3">
               <TabsList>
                 <TabsTrigger value="tasks">Tasks</TabsTrigger>
-                <TabsTrigger value="probe">Probe</TabsTrigger>
+                {!readOnly && <TabsTrigger value="probe">Probe</TabsTrigger>}
               </TabsList>
               <TabsContent value="tasks" className="space-y-3">
                 {inlineAlert}
@@ -1134,9 +1134,11 @@ export function ExperimentDetailView({
                   }}
                 />
               </TabsContent>
-              <TabsContent value="probe">
-                <ExperimentProbeTab experimentId={experimentId} />
-              </TabsContent>
+              {!readOnly && (
+                <TabsContent value="probe">
+                  <ExperimentProbeTab experimentId={experimentId} />
+                </TabsContent>
+              )}
             </Tabs>
           )}
         </div>

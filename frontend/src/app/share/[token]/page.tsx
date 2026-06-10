@@ -68,7 +68,7 @@ export default function PublicExperimentPage() {
 
   return (
     <>
-      <Nav />
+      <Nav publicView />
 
       <main className="mx-auto w-full max-w-(--breakpoint-2xl) px-4 py-4">
         <div className="space-y-4">
