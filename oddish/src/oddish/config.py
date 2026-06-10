@@ -182,6 +182,13 @@ def looks_like_bedrock_model_id(model: str | None) -> bool:
 #   https://platform.claude.com/docs/en/build-with-claude/claude-on-amazon-bedrock-legacy
 _ANTHROPIC_TO_BEDROCK_MODEL_IDS: dict[str, str] = {
     # Current models
+    #
+    # Fable 5 is a Covered Model: Bedrock only serves it once the AWS
+    # account's data retention mode is set to "provider_data_share" (a
+    # one-time `PUT /data-retention` opt-in; API-only, no console UI).
+    # Without it, Bedrock rejects every call with "data retention mode
+    # 'default' is not available for this model".
+    "claude-fable-5": "global.anthropic.claude-fable-5",
     "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
     "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
     "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
