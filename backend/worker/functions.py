@@ -31,6 +31,7 @@ from modal_app import (
     runtime_secrets,
     worker_volumes,
 )
+from dashboard_owner_backfill import backfill_experiment_owners
 from oddish.config import settings
 from oddish.db import close_database_connections, WorkerJobKind
 from oddish.workers.jobs import ensure_builtin_handlers_registered
@@ -247,6 +248,13 @@ async def poll_queue():
                     for key, value in cleanup_counts.items()
                     if value > 0
                 )
+            )
+
+        backfill_counts = await backfill_experiment_owners()
+        if any(backfill_counts.values()):
+            console.print(
+                "metric=experiments_owner_backfill "
+                + " ".join(f"{key}={value}" for key, value in backfill_counts.items())
             )
 
         queue_keys = await discover_active_worker_job_queue_keys()

@@ -175,7 +175,7 @@ function useDashboardExperiments(
     swrKey,
     fetcher,
     {
-      refreshInterval: 30000,
+      refreshInterval: 45000,
       revalidateOnFocus: false,
       revalidateOnMount: !hasFallbackData,
       revalidateIfStale: !hasFallbackData,
@@ -1384,223 +1384,230 @@ function RecentTasksCard({
         </div>
       </CardHeader>
       <CardContent>
-        {error ? (
+        {error && experiments.length === 0 ? (
           <Alert variant="destructive">
             <AlertTitle>Failed to load experiments</AlertTitle>
             <AlertDescription>
               Check the API connection and try again.
             </AlertDescription>
           </Alert>
-        ) : isPageTransitioning ? (
+        ) : isLoading ? (
           <p className="text-muted-foreground">Loading...</p>
-        ) : isLoading && experiments.length === 0 ? (
-          <p className="text-muted-foreground">Loading...</p>
-        ) : !isLoading &&
-          experiments.length === 0 &&
-          !hasMoreExperiments &&
-          !hasFilters ? (
-          authorFilter === "me" ? (
-            <MineEmptyExperimentsState
-              onViewOrgExperiments={onViewOrgExperiments}
-            />
-          ) : (
-            <EmptyExperimentsState />
-          )
-        ) : experiments.length === 0 ? (
-          <div className="py-8 text-center text-muted-foreground">
-            <p>No experiments match the current filters.</p>
-          </div>
         ) : (
-          <div className="max-h-[68vh] min-h-[560px] overflow-y-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Experiment</TableHead>
-                  <TableHead>Author</TableHead>
-                  <TableHead>Last run</TableHead>
-                  <TableHead>PR</TableHead>
-                  <TableHead>Tasks</TableHead>
-                  <TableHead>Trials</TableHead>
-                  <TableHead>Avg score</TableHead>
-                  <TableHead className="text-right">Last task</TableHead>
-                  <TableHead className="text-right">Delete</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody className="[&_td]:text-xs">
-                {experiments.map((experiment) => {
-                  const passRate =
-                    experiment.reward_total > 0
-                      ? Math.round(
-                          (experiment.reward_sum / experiment.reward_total) *
-                            100,
-                        )
-                      : null;
-                  const retryingTrials = Number(experiment.retrying_trials) || 0;
-
-                  return (
-                    <TableRow key={experiment.id}>
-                      <TableCell>
-                        <div className="flex items-center gap-1.5">
-                          <Link
-                            href={`/experiments/${encodeExperimentRouteParam(
-                              experiment.id,
-                            )}`}
-                            className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
-                          >
-                            {experiment.name}
-                          </Link>
-                          {experiment.is_public && (
-                            <Globe
-                              className="h-3.5 w-3.5 text-muted-foreground"
-                              aria-label="Published experiment"
-                            />
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                        <span className="text-foreground/80">
-                          {formatTaskAuthor(
-                            experiment.author ?? experiment.last_author,
-                          )}
-                        </span>
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                        <span className="text-foreground/80">
-                          {formatTaskAuthor(
-                            experiment.last_runner ?? experiment.last_author,
-                          )}
-                        </span>
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap text-xs">
-                        {experiment.last_pr_url ? (
-                          <Link
-                            href={experiment.last_pr_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            title={
-                              experiment.last_pr_title
-                                ? `${experiment.last_pr_title} — view on GitHub`
-                                : "View pull request on GitHub"
-                            }
-                            className={cn(
-                              badgeVariants({ variant: "outline" }),
-                              "max-w-[200px] gap-1.5 font-mono text-[11px] transition-colors hover:bg-accent",
-                            )}
-                          >
-                            <GitPullRequest className="h-3 w-3 shrink-0" aria-hidden />
-                            {(() => {
-                              const { label, number } = prBadge(
-                                experiment.last_pr_url,
-                                experiment.last_pr_number,
-                              );
-                              return (
-                                <span className="min-w-0 truncate">
-                                  {label}
-                                  {number && (
-                                    <span className="text-muted-foreground">
-                                      {" "}
-                                      #{number}
-                                    </span>
-                                  )}
-                                </span>
-                              );
-                            })()}
-                            <ExternalLink className="h-3 w-3 shrink-0 opacity-50" aria-hidden />
-                          </Link>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell>{experiment.task_count}</TableCell>
-                      <TableCell className="whitespace-nowrap font-mono text-xs">
-                        {experiment.completed_trials}/{experiment.total_trials}
-                        {retryingTrials > 0 && (
-                          <span className="text-amber-500 dark:text-amber-300">
-                            {" "}
-                            ({retryingTrials}R)
-                          </span>
-                        )}
-                        {experiment.failed_trials > 0 && (
-                          <span className="text-rose-400">
-                            {" "}
-                            ({experiment.failed_trials}F)
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {passRate === null ? (
-                          <span className="text-muted-foreground">—</span>
-                        ) : (
-                          <span
-                            className={
-                              passRate >= 80
-                                ? "text-[#5c8e43] dark:text-[#85b85c]"
-                                : passRate >= 35
-                                  ? "text-yellow-400"
-                                  : "text-rose-400"
-                            }
-                          >
-                            {passRate}%
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap text-right text-xs text-muted-foreground">
-                        {experiment.last_created_at
-                          ? formatShortDateTime(experiment.last_created_at)
-                          : "—"}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() =>
-                            setDeleteTarget({
-                              id: experiment.id,
-                              name: experiment.name,
-                              taskCount: experiment.task_count,
-                              totalTrials: experiment.total_trials,
-                            })
-                          }
-                          disabled={
-                            experiment.id === "uncategorized" ||
-                            experiment.name === "Uncategorized"
-                          }
-                          className="h-8 w-8 text-destructive hover:text-destructive"
-                          aria-label={`Delete ${experiment.name}`}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </TableCell>
+          <>
+            {error ? (
+              <p className="mb-2 text-xs text-destructive">
+                Refresh failed — showing the last loaded results.
+              </p>
+            ) : null}
+            {!isLoading &&
+            experiments.length === 0 &&
+            !hasMoreExperiments &&
+            !hasFilters ? (
+              authorFilter === "me" ? (
+                <MineEmptyExperimentsState
+                  onViewOrgExperiments={onViewOrgExperiments}
+                />
+              ) : (
+                <EmptyExperimentsState />
+              )
+            ) : experiments.length === 0 ? (
+              <div className="py-8 text-center text-muted-foreground">
+                <p>No experiments match the current filters.</p>
+              </div>
+            ) : (
+              <div className="max-h-[68vh] min-h-[560px] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Experiment</TableHead>
+                      <TableHead>Author</TableHead>
+                      <TableHead>Last run</TableHead>
+                      <TableHead>PR</TableHead>
+                      <TableHead>Tasks</TableHead>
+                      <TableHead>Trials</TableHead>
+                      <TableHead>Avg score</TableHead>
+                      <TableHead className="text-right">Last task</TableHead>
+                      <TableHead className="text-right">Delete</TableHead>
                     </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-            <div className="mt-3 flex items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8 px-3 text-[11px]"
-                onClick={onPreviousExperimentsPage}
-                disabled={currentExperimentsPage <= 1 || isPageTransitioning}
-              >
-                <ChevronLeft className="mr-1 h-3.5 w-3.5" />
-                Previous page
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8 px-3 text-[11px]"
-                onClick={onNextExperimentsPage}
-                disabled={!hasMoreExperiments || isPageTransitioning}
-              >
-                Next page
-                <ChevronRight className="ml-1 h-3.5 w-3.5" />
-              </Button>
-            </div>
-          </div>
+                  </TableHeader>
+                  <TableBody className="[&_td]:text-xs">
+                    {experiments.map((experiment) => {
+                      const passRate =
+                        experiment.reward_total > 0
+                          ? Math.round(
+                              (experiment.reward_sum / experiment.reward_total) *
+                                100,
+                            )
+                          : null;
+                      const retryingTrials = Number(experiment.retrying_trials) || 0;
+
+                      return (
+                        <TableRow key={experiment.id}>
+                          <TableCell>
+                            <div className="flex items-center gap-1.5">
+                              <Link
+                                href={`/experiments/${encodeExperimentRouteParam(
+                                  experiment.id,
+                                )}`}
+                                className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
+                              >
+                                {experiment.name}
+                              </Link>
+                              {experiment.is_public && (
+                                <Globe
+                                  className="h-3.5 w-3.5 text-muted-foreground"
+                                  aria-label="Published experiment"
+                                />
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                            <span className="text-foreground/80">
+                              {formatTaskAuthor(
+                                experiment.author ?? experiment.last_author,
+                              )}
+                            </span>
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                            <span className="text-foreground/80">
+                              {formatTaskAuthor(
+                                experiment.last_runner ?? experiment.last_author,
+                              )}
+                            </span>
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-xs">
+                            {experiment.last_pr_url ? (
+                              <Link
+                                href={experiment.last_pr_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                title={
+                                  experiment.last_pr_title
+                                    ? `${experiment.last_pr_title} — view on GitHub`
+                                    : "View pull request on GitHub"
+                                }
+                                className={cn(
+                                  badgeVariants({ variant: "outline" }),
+                                  "max-w-[200px] gap-1.5 font-mono text-[11px] transition-colors hover:bg-accent",
+                                )}
+                              >
+                                <GitPullRequest className="h-3 w-3 shrink-0" aria-hidden />
+                                {(() => {
+                                  const { label, number } = prBadge(
+                                    experiment.last_pr_url,
+                                    experiment.last_pr_number,
+                                  );
+                                  return (
+                                    <span className="min-w-0 truncate">
+                                      {label}
+                                      {number && (
+                                        <span className="text-muted-foreground">
+                                          {" "}
+                                          #{number}
+                                        </span>
+                                      )}
+                                    </span>
+                                  );
+                                })()}
+                                <ExternalLink className="h-3 w-3 shrink-0 opacity-50" aria-hidden />
+                              </Link>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell>{experiment.task_count}</TableCell>
+                          <TableCell className="whitespace-nowrap font-mono text-xs">
+                            {experiment.completed_trials}/{experiment.total_trials}
+                            {retryingTrials > 0 && (
+                              <span className="text-amber-500 dark:text-amber-300">
+                                {" "}
+                                ({retryingTrials}R)
+                              </span>
+                            )}
+                            {experiment.failed_trials > 0 && (
+                              <span className="text-rose-400">
+                                {" "}
+                                ({experiment.failed_trials}F)
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {passRate === null ? (
+                              <span className="text-muted-foreground">—</span>
+                            ) : (
+                              <span
+                                className={
+                                  passRate >= 80
+                                    ? "text-[#5c8e43] dark:text-[#85b85c]"
+                                    : passRate >= 35
+                                      ? "text-yellow-400"
+                                      : "text-rose-400"
+                                }
+                              >
+                                {passRate}%
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-right text-xs text-muted-foreground">
+                            {experiment.last_created_at
+                              ? formatShortDateTime(experiment.last_created_at)
+                              : "—"}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() =>
+                                setDeleteTarget({
+                                  id: experiment.id,
+                                  name: experiment.name,
+                                  taskCount: experiment.task_count,
+                                  totalTrials: experiment.total_trials,
+                                })
+                              }
+                              disabled={
+                                experiment.id === "uncategorized" ||
+                                experiment.name === "Uncategorized"
+                              }
+                              className="h-8 w-8 text-destructive hover:text-destructive"
+                              aria-label={`Delete ${experiment.name}`}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+                <div className="mt-3 flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 px-3 text-[11px]"
+                    onClick={onPreviousExperimentsPage}
+                    disabled={currentExperimentsPage <= 1 || isPageTransitioning}
+                  >
+                    <ChevronLeft className="mr-1 h-3.5 w-3.5" />
+                    Previous page
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 px-3 text-[11px]"
+                    onClick={onNextExperimentsPage}
+                    disabled={!hasMoreExperiments || isPageTransitioning}
+                  >
+                    Next page
+                    <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </CardContent>
       <AlertDialog
@@ -1673,14 +1680,15 @@ export function DashboardClient({
     usageMinutes === DASHBOARD_DEFAULT_USAGE_MINUTES
       ? initialDashboardData
       : null;
-  const experimentsFallbackData = isDefaultDashboardExperimentsView(
-    experimentsOffset,
-    deferredSearchQuery,
-    statusFilter,
-    authorFilter,
-  )
-    ? initialDashboardData
-    : null;
+  const experimentsFallbackData =
+    isDefaultDashboardExperimentsView(
+      experimentsOffset,
+      deferredSearchQuery,
+      statusFilter,
+      authorFilter,
+    ) && initialDashboardData?.experiments != null
+      ? initialDashboardData
+      : null;
   const {
     queues,
     modelUsage,
