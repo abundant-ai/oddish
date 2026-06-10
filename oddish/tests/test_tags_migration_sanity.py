@@ -128,9 +128,9 @@ def test_cloud_fk_migration_present():
     cloud_dir = (
         Path(__file__).resolve().parents[2] / "backend" / "alembic" / "versions"
     )
-    src = (cloud_dir / "m9n0p1q2r3s4_add_tag_cloud_fks.py").read_text()
-    assert 'revision: str = "m9n0p1q2r3s4"' in src
-    assert '"l8m9n0p1q2r3"' in src
+    src = (cloud_dir / "n0p1q2r3s4t5_add_tag_cloud_fks.py").read_text()
+    assert 'revision: str = "n0p1q2r3s4t5"' in src
+    assert '"m9n0p1q2r3s4"' in src
     # Each FK is added NOT VALID to avoid full-table validation locks; the
     # ADD CONSTRAINT statements are gated by IF NOT EXISTS via DO block.
     for table in (

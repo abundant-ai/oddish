@@ -5,8 +5,8 @@ columns on the new tag tables into validated foreign keys. ``NOT VALID``
 lets the constraint go live without scanning the existing (empty) rows;
 the constraint behaves identically to a validated FK for new INSERT/UPDATE.
 
-Revision ID: m9n0p1q2r3s4
-Revises: l8m9n0p1q2r3
+Revision ID: n0p1q2r3s4t5
+Revises: m9n0p1q2r3s4
 Create Date: 2026-06-06 12:20:00.000000
 """
 from typing import Sequence, Union
@@ -14,8 +14,8 @@ from typing import Sequence, Union
 from alembic import op
 
 
-revision: str = "m9n0p1q2r3s4"
-down_revision: Union[str, Sequence[str], None] = "l8m9n0p1q2r3"
+revision: str = "n0p1q2r3s4t5"
+down_revision: Union[str, Sequence[str], None] = "m9n0p1q2r3s4"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
