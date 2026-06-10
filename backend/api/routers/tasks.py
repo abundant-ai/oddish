@@ -284,12 +284,25 @@ async def _resolve_experiment_owner_user_id(
 def _stamp_experiment_owner(
     experiment: ExperimentModel | None,
     owner_user_id: str | None,
+    *,
+    claim_unowned: bool = True,
 ) -> None:
-    if (
-        experiment is not None
-        and owner_user_id
-        and experiment.owner_user_id in (None, EXPERIMENTS_UNATTRIBUTED_OWNER)
-    ):
+    """Stamp the dashboard Mine owner on an experiment.
+
+    ``claim_unowned=False`` (append/rerun path) replaces only the sweep's
+    ``__unattributed__`` sentinel: a NULL owner means the sweep has not yet
+    attributed the experiment's primary task, and the appender is not
+    necessarily that author — claiming NULL here would race the sweep's
+    precedence-correct claim and hide the experiment from its real owner.
+    """
+    if experiment is None or not owner_user_id:
+        return
+    claimable = (
+        (None, EXPERIMENTS_UNATTRIBUTED_OWNER)
+        if claim_unowned
+        else (EXPERIMENTS_UNATTRIBUTED_OWNER,)
+    )
+    if experiment.owner_user_id in claimable:
         experiment.owner_user_id = owner_user_id
 
 
@@ -390,7 +403,9 @@ async def create_task_sweep(
         owner_user_id = await _resolve_experiment_owner_user_id(
             session, submission, auth
         )
-        _stamp_experiment_owner(experiment, owner_user_id)
+        _stamp_experiment_owner(
+            experiment, owner_user_id, claim_unowned=not is_append
+        )
 
         if not is_append:
             created_by_user_id = await _resolve_created_by_user_id(

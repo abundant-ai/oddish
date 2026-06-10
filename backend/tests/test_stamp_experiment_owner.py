@@ -32,3 +32,17 @@ def test_ignores_missing_inputs() -> None:
     _stamp_experiment_owner(experiment, None)
     assert experiment.owner_user_id is None
     _stamp_experiment_owner(None, "user_1")  # must not raise
+
+
+def test_append_path_reclaims_sentinel_only() -> None:
+    sentineled = _experiment(EXPERIMENTS_UNATTRIBUTED_OWNER)
+    _stamp_experiment_owner(sentineled, "user_1", claim_unowned=False)
+    assert sentineled.owner_user_id == "user_1"
+
+
+def test_append_path_leaves_null_for_sweep_attribution() -> None:
+    # An appender is not necessarily the primary author; NULL owners belong
+    # to the sweep's precedence-based claim, not to whoever reruns first.
+    unowned = _experiment(None)
+    _stamp_experiment_owner(unowned, "user_1", claim_unowned=False)
+    assert unowned.owner_user_id is None

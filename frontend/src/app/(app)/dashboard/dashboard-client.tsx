@@ -1441,7 +1441,7 @@ function RecentTasksCard({
                             )
                           : null;
                       const retryingTrials = Number(experiment.retrying_trials) || 0;
-    
+
                       return (
                         <TableRow key={experiment.id}>
                           <TableCell>
