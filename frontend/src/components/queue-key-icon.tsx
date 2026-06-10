@@ -5,6 +5,7 @@ import {
   Baichuan,
   ChatGLM,
   Cohere,
+  Cursor,
   DeepSeek,
   Gemini,
   Inflection,
@@ -34,6 +35,7 @@ type KnownProvider =
   | "openai"
   | "anthropic"
   | "gemini"
+  | "cursor"
   | "deepseek"
   | "mistral"
   | "xai"
@@ -134,6 +136,9 @@ function matchProviderFromSource(raw: string): KnownProvider {
     hasToken(probe, "gemma")
   ) {
     return "gemini";
+  }
+  if (probe.includes("cursor")) {
+    return "cursor";
   }
   // 01.AI's Yi family: `yi-large`, `01-ai/yi-...`.
   if (hasToken(probe, "yi") || probe.includes("01-ai/")) {
@@ -263,6 +268,9 @@ export function QueueKeyIcon({
   }
   if (resolvedProvider === "openrouter") {
     return <OpenRouter size={size} className={className} />;
+  }
+  if (resolvedProvider === "cursor") {
+    return <Cursor size={size} className={className} />;
   }
 
   return <Sparkles size={size} className={className} />;
