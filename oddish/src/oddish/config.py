@@ -40,15 +40,8 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 VERDICT_MODEL = "gpt-5.2"
 
-# Probe model rotation — cheap, capable-at-tool-use models spread across
-# providers to avoid hitting any single provider's rate limits. Non-Bedrock
-# ids route through the OpenRouter Anthropic shim (see
-# ``workers.harbor_runner._apply_claude_code_openrouter_env``); the agent is
-# always claude-code, so OddishClaudeCode's harbor install applies to all.
 PROBE_MODEL_ROTATION: list[str] = [
     "claude-haiku-4-5",
-    "openrouter/google/gemini-2.5-flash",
-    "openrouter/deepseek/deepseek-chat",
 ]
 
 
