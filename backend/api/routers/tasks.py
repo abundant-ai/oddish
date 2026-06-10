@@ -228,6 +228,18 @@ async def _resolve_created_by_user_id(
     return None
 
 
+def _stamp_experiment_owner(
+    experiment: ExperimentModel | None,
+    owner_user_id: str | None,
+) -> None:
+    if (
+        experiment is not None
+        and owner_user_id
+        and experiment.owner_user_id is None
+    ):
+        experiment.owner_user_id = owner_user_id
+
+
 async def _maybe_publish_experiment(
     session: AsyncSession,
     task: TaskModel,
@@ -328,6 +340,7 @@ async def create_task_sweep(
             )
             if created_by_user_id:
                 task.created_by_user_id = created_by_user_id
+                _stamp_experiment_owner(experiment, created_by_user_id)
 
             await _maybe_publish_experiment(session, task, submission, auth)
 

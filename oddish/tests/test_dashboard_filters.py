@@ -6,6 +6,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core.dashboard import (
+    UNRESOLVED_EXPERIMENTS_OWNER,
     _build_experiments_author_filter,
     _experiment_row_passes_status_filter,
 )
@@ -153,6 +154,24 @@ def test_author_filter_matches_legacy_tasks_user_github_handles() -> None:
     assert "dot-agi" in sql
     # Legacy GH Actions runs stamp tasks.user with the handle when tag is absent.
     assert "user" in sql
+
+
+def test_author_filter_uses_owner_user_id_fast_path() -> None:
+    clause = _build_experiments_author_filter("user_123", None, org_id="org_1")
+    assert clause is not None
+    sql = _compile_sql(clause).lower()
+    assert "owner_user_id" in sql
+
+
+def test_author_filter_unresolved_owner_matches_nothing() -> None:
+    clause = _build_experiments_author_filter(
+        UNRESOLVED_EXPERIMENTS_OWNER,
+        None,
+        org_id="org_1",
+    )
+    assert clause is not None
+    sql = _compile_sql(clause).lower()
+    assert "false" in sql
 
 
 def test_author_filter_supports_multiple_legacy_emails() -> None:
