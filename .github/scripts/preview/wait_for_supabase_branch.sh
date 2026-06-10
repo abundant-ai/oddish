@@ -1,28 +1,40 @@
 #!/usr/bin/env bash
-# Ensure the PR's Supabase preview branch (cloned from prod via
-# --with-data) exists and is healthy, and emit its DB URL.
+# Ensure the PR's Supabase preview branch (data-less) exists and is
+# healthy, and emit its DB URL. The branch starts empty; Alembic applies
+# the full schema (bootstrap_preview_db.py) and a curated seed
+# (seed_preview_db.py) populates it. On later pushes the branch is reused;
+# the seed is idempotent + convergent so re-running is safe.
 #
-# On first invocation for a PR, creates the branch with prod data so
-# the subsequent `alembic upgrade head` runs against prod-shaped data
-# (the migration-safety check). On later pushes within the same PR
-# the existing branch is reused — append-only migrations apply
-# incrementally, which is the common case. If the dev rewrites
-# Alembic history mid-PR and the incremental upgrade can't handle it,
-# delete the branch via the Supabase dashboard (or close+reopen the
-# PR) to force a fresh prod clone.
-#
-# If Supabase's clone+migrate fails for a transient reason
-# (MIGRATIONS_FAILED / FUNCTIONS_FAILED), the failed branch is torn
-# down and recreated once before giving up, so a flaky run doesn't
-# poison every subsequent push to the PR.
-#
-# Disable the Supabase GitHub integration's auto-branching for this
-# repo so it doesn't create a parallel data-less branch in the same
-# project on PR open.
+# If a branch lands in a terminal-failed state (status MIGRATIONS_FAILED /
+# FUNCTIONS_FAILED, or preview_project_status INIT_FAILED / PAUSE_FAILED)
+# or never becomes ready within the deadline, it is torn down and recreated
+# (up to MAX_ATTEMPTS) so a flaky run doesn't poison every push to the PR.
 set -uo pipefail
 
 BRANCH_NAME="pr-${PR_NUMBER}"
-MAX_ATTEMPTS=2
+MAX_ATTEMPTS=3
+
+# Branch lifecycle states we treat as terminal failures and recover from
+# by deleting + recreating the branch:
+# - `status` is the branch's migration/functions pipeline state.
+# - `preview_project_status` is the underlying preview project's compute
+#   state; INIT_FAILED / PAUSE_FAILED there mean the branch will never
+#   become ready, so we match them to retry instead of polling until the
+#   deadline. (RESTORE_FAILED is also matched but only applies to branches
+#   created with data; data-less preview branches have no restore.)
+is_failed_status() {
+  case "$1" in
+    MIGRATIONS_FAILED|FUNCTIONS_FAILED) return 0 ;;
+  esac
+  return 1
+}
+
+is_failed_preview() {
+  case "$1" in
+    RESTORE_FAILED|INIT_FAILED|PAUSE_FAILED) return 0 ;;
+  esac
+  return 1
+}
 
 find_branch_json() {
   supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
@@ -47,20 +59,18 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   # prior workflow run, tear it down so we can recreate cleanly.
   if [ -n "$existing" ] && [ "$existing" != "null" ]; then
     cur_status=$(jq -r '.status' <<<"$existing")
+    cur_preview=$(jq -r '.preview_project_status' <<<"$existing")
     cur_id=$(jq -r '.id' <<<"$existing")
-    case "$cur_status" in
-      MIGRATIONS_FAILED|FUNCTIONS_FAILED)
-        echo "existing branch $cur_id is $cur_status; recreating" >&2
-        delete_branch_by_id "$cur_id"
-        existing=""
-        ;;
-    esac
+    if is_failed_status "$cur_status" || is_failed_preview "$cur_preview"; then
+      echo "existing branch $cur_id is in failed state (status=$cur_status preview=$cur_preview); recreating" >&2
+      delete_branch_by_id "$cur_id"
+      existing=""
+    fi
   fi
 
   if [ -z "$existing" ] || [ "$existing" = "null" ]; then
-    echo "creating $BRANCH_NAME with --with-data (attempt $attempt/$MAX_ATTEMPTS)" >&2
+    echo "creating $BRANCH_NAME (data-less, attempt $attempt/$MAX_ATTEMPTS)" >&2
     supabase branches create "$BRANCH_NAME" \
-      --with-data \
       --project-ref "$SUPABASE_PROJECT_REF"
     branch_was_created=true
   else
@@ -68,9 +78,9 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     branch_was_created=false
   fi
 
-  # Wait until the branch is ready. First creation includes the prod
-  # clone, so give it 20 min; subsequent runs short-circuit fast.
-  deadline=$(($(date +%s) + 1200))
+  # Data-less branch: only Supabase's no-op migration runner + compute
+  # provisioning, so it goes ACTIVE_HEALTHY in 1-2 min. 5 min is slack.
+  deadline=$(($(date +%s) + 300))
   branch_failed=0
   branch_id="" branch_ref="" status="" preview=""
 
@@ -81,22 +91,12 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
       read -r branch_id branch_ref status preview < <(
         jq -r '[.id, .project_ref, .status, .preview_project_status] | @tsv' <<<"$branch_json"
       )
-      # A failed prod-data restore surfaces in preview_project_status
-      # ($preview), NOT status — so a branch can sit at FUNCTIONS_DEPLOYED
-      # with preview=RESTORE_FAILED. The case below only inspects $status,
-      # so that branch never trips branch_failed and the loop spins until
-      # the 20-min deadline, then exits 1 with no recreate.
-      # TODO(human): catch a failed preview restore here. Decide which
-      # $preview values are terminal (e.g. RESTORE_FAILED) and, when one
-      # matches, set branch_failed=1 and break so the recreate-once retry
-      # (line ~102) fires instead of timing out.
-
+      if is_failed_status "$status" || is_failed_preview "$preview"; then
+        echo "branch $branch_id failed: status=$status preview=$preview" >&2
+        branch_failed=1
+        break
+      fi
       case "$status" in
-        MIGRATIONS_FAILED|FUNCTIONS_FAILED)
-          echo "branch $branch_id failed: $status" >&2
-          branch_failed=1
-          break
-          ;;
         MIGRATIONS_PASSED|FUNCTIONS_DEPLOYED)
           [ "$preview" = "ACTIVE_HEALTHY" ] && { ready=1; break; }
           ;;
@@ -109,13 +109,22 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     break
   fi
 
-  if [ "$branch_failed" -eq 1 ] && [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+  # If the inner loop fell out via the readiness deadline rather
+  # than a terminal failure, treat that as a failed attempt too —
+  # otherwise a branch stuck mid-creation burns the whole retry
+  # budget on a single 20-minute wait.
+  if [ "$branch_failed" -eq 0 ]; then
+    echo "branch ${branch_id:-<unknown>} did not become ready within deadline (status=$status preview=$preview); treating as failed" >&2
+    branch_failed=1
+  fi
+
+  if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
     # Tear down the poisoned branch so the next attempt starts fresh.
     [ -n "$branch_id" ] && delete_branch_by_id "$branch_id"
     continue
   fi
 
-  # Polling timed out, or we've exhausted retries on a failed clone.
+  # Exhausted retries (terminal failure or deadline on every attempt).
   break
 done
 
