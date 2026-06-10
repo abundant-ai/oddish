@@ -175,7 +175,7 @@ function useDashboardExperiments(
     swrKey,
     fetcher,
     {
-      refreshInterval: 30000,
+      refreshInterval: 45000,
       revalidateOnFocus: false,
       revalidateOnMount: !hasFallbackData,
       revalidateIfStale: !hasFallbackData,
@@ -1384,34 +1384,39 @@ function RecentTasksCard({
         </div>
       </CardHeader>
       <CardContent>
-        {error ? (
+        {error && experiments.length === 0 ? (
           <Alert variant="destructive">
             <AlertTitle>Failed to load experiments</AlertTitle>
             <AlertDescription>
               Check the API connection and try again.
             </AlertDescription>
           </Alert>
-        ) : isPageTransitioning ? (
+        ) : isLoading ? (
           <p className="text-muted-foreground">Loading...</p>
-        ) : isLoading && experiments.length === 0 ? (
-          <p className="text-muted-foreground">Loading...</p>
-        ) : !isLoading &&
-          experiments.length === 0 &&
-          !hasMoreExperiments &&
-          !hasFilters ? (
-          authorFilter === "me" ? (
-            <MineEmptyExperimentsState
-              onViewOrgExperiments={onViewOrgExperiments}
-            />
-          ) : (
-            <EmptyExperimentsState />
-          )
-        ) : experiments.length === 0 ? (
-          <div className="py-8 text-center text-muted-foreground">
-            <p>No experiments match the current filters.</p>
-          </div>
         ) : (
-          <div className="max-h-[68vh] min-h-[560px] overflow-y-auto">
+          <>
+            {error ? (
+              <p className="mb-2 text-xs text-destructive">
+                Refresh failed — showing the last loaded results.
+              </p>
+            ) : null}
+            {!isLoading &&
+            experiments.length === 0 &&
+            !hasMoreExperiments &&
+            !hasFilters ? (
+              authorFilter === "me" ? (
+                <MineEmptyExperimentsState
+                  onViewOrgExperiments={onViewOrgExperiments}
+                />
+              ) : (
+                <EmptyExperimentsState />
+              )
+            ) : experiments.length === 0 ? (
+              <div className="py-8 text-center text-muted-foreground">
+                <p>No experiments match the current filters.</p>
+              </div>
+            ) : (
+              <div className="max-h-[68vh] min-h-[560px] overflow-y-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -1576,31 +1581,33 @@ function RecentTasksCard({
                 })}
               </TableBody>
             </Table>
-            <div className="mt-3 flex items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8 px-3 text-[11px]"
-                onClick={onPreviousExperimentsPage}
-                disabled={currentExperimentsPage <= 1 || isPageTransitioning}
-              >
-                <ChevronLeft className="mr-1 h-3.5 w-3.5" />
-                Previous page
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8 px-3 text-[11px]"
-                onClick={onNextExperimentsPage}
-                disabled={!hasMoreExperiments || isPageTransitioning}
-              >
-                Next page
-                <ChevronRight className="ml-1 h-3.5 w-3.5" />
-              </Button>
-            </div>
-          </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 px-3 text-[11px]"
+                    onClick={onPreviousExperimentsPage}
+                    disabled={currentExperimentsPage <= 1 || isPageTransitioning}
+                  >
+                    <ChevronLeft className="mr-1 h-3.5 w-3.5" />
+                    Previous page
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 px-3 text-[11px]"
+                    onClick={onNextExperimentsPage}
+                    disabled={!hasMoreExperiments || isPageTransitioning}
+                  >
+                    Next page
+                    <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </CardContent>
       <AlertDialog
@@ -1673,14 +1680,15 @@ export function DashboardClient({
     usageMinutes === DASHBOARD_DEFAULT_USAGE_MINUTES
       ? initialDashboardData
       : null;
-  const experimentsFallbackData = isDefaultDashboardExperimentsView(
-    experimentsOffset,
-    deferredSearchQuery,
-    statusFilter,
-    authorFilter,
-  )
-    ? initialDashboardData
-    : null;
+  const experimentsFallbackData =
+    isDefaultDashboardExperimentsView(
+      experimentsOffset,
+      deferredSearchQuery,
+      statusFilter,
+      authorFilter,
+    ) && initialDashboardData?.experiments != null
+      ? initialDashboardData
+      : null;
   const {
     queues,
     modelUsage,
