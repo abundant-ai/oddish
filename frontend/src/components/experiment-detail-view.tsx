@@ -726,7 +726,7 @@ export function ExperimentDetailView({
 }: ExperimentDetailViewProps) {
   const searchParams = useSearchParams();
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
-  const [showPassAtK, setShowPassAtK] = useState(false);
+  const [showPassAtK, setShowPassAtK] = useState(readOnly);
   const [showTask, setShowTask] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
     try {
