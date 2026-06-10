@@ -261,12 +261,18 @@ async def get_dashboard(
     experiments_offset: int = Query(0, ge=0),
     experiments_query: str | None = Query(None),
     experiments_status: str = Query("all"),
+    experiments_author: str | None = Query(None),
     usage_minutes: int | None = Query(None, ge=1, le=86400),
     include_tasks: bool = Query(True),
     include_usage: bool = Query(True),
     include_experiments: bool = Query(True),
 ) -> dict:
     """Combined dashboard: queues, pipeline stats, model usage, tasks, and experiments."""
+    normalized = (experiments_author or "").strip()
+    author_user_id = None
+    if normalized not in {"", "all", "me"}:
+        author_user_id = normalized
+
     async with get_session() as session:
         return await get_dashboard_core(
             session,
@@ -276,6 +282,7 @@ async def get_dashboard(
             experiments_offset=experiments_offset,
             experiments_query=experiments_query,
             experiments_status=experiments_status,
+            experiments_author_user_id=author_user_id,
             usage_minutes=usage_minutes,
             include_tasks=include_tasks,
             include_usage=include_usage,

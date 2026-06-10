@@ -4,9 +4,10 @@ import json
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import and_, case, func, nulls_last, or_, select
+from sqlalchemy import and_, case, false, func, nulls_last, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -26,6 +27,9 @@ from oddish.db import (
 )
 from oddish.queue import get_queue_and_pipeline_stats_with_concurrency
 from oddish.timing import TimingRecorder, elapsed_ms, now
+
+# Sentinel user id: Mine filter requested but no resolvable Clerk/API-key owner.
+UNRESOLVED_EXPERIMENTS_OWNER = "__unresolved_owner__"
 
 
 def _parse_github_meta(raw_github_meta: str | None) -> dict[str, Any] | None:
@@ -272,6 +276,193 @@ def _build_aggregates_for_experiment_ids(
     return task_agg, trial_agg
 
 
+def _first_live_task_id_for_experiment():
+    """Correlated subquery: oldest live task id linked to the experiment row."""
+    return (
+        select(TaskModel.id)
+        .select_from(
+            task_experiments.join(
+                TaskModel,  # type: ignore[arg-type]
+                TaskModel.id == task_experiments.c.task_id,
+            )
+        )
+        .where(task_experiments.c.experiment_id == ExperimentModel.id)
+        .where(task_experiments.c.deleted_at.is_(None))
+        .where(TaskModel.deleted_at.is_(None))
+        .order_by(TaskModel.created_at.asc(), TaskModel.id.asc())
+        .limit(1)
+        .correlate(ExperimentModel)
+        .scalar_subquery()
+    )
+
+
+def _latest_live_task_id_for_experiment():
+    """Correlated subquery: newest live task id linked to the experiment row."""
+    return (
+        select(TaskModel.id)
+        .select_from(
+            task_experiments.join(
+                TaskModel,  # type: ignore[arg-type]
+                TaskModel.id == task_experiments.c.task_id,
+            )
+        )
+        .where(task_experiments.c.experiment_id == ExperimentModel.id)
+        .where(task_experiments.c.deleted_at.is_(None))
+        .where(TaskModel.deleted_at.is_(None))
+        .order_by(TaskModel.created_at.desc(), TaskModel.id.desc())
+        .limit(1)
+        .correlate(ExperimentModel)
+        .scalar_subquery()
+    )
+
+
+def _normalize_github_handle(value: str | None) -> str | None:
+    normalized = (value or "").strip().lstrip("@")
+    return normalized or None
+
+
+def _task_github_tag_expr():
+    return TaskModel.tags["github_username"].astext
+
+
+def _empty_github_tag_clause():
+    github_tag = _task_github_tag_expr()
+    return or_(github_tag.is_(None), github_tag == "")
+
+
+def _absent_legacy_user_clause():
+    """Treat null, empty, and placeholder ``unknown`` as no legacy user string."""
+    return or_(
+        TaskModel.user.is_(None),
+        TaskModel.user == "",
+        func.lower(TaskModel.user) == "unknown",
+    )
+
+
+def _dashboard_author_from_task(
+    *,
+    github_username: str | None,
+    user: str | None,
+) -> dict[str, str] | None:
+    name = github_username or user
+    if not name:
+        return None
+    return {
+        "name": name,
+        "source": "github" if github_username else "api",
+    }
+
+
+def _build_primary_task_author_match(
+    experiments_author_user_id: str,
+    github_handles: list[str],
+    *,
+    experiments_author_emails: Sequence[str] | None,
+):
+    """Match the dashboard Author column on the experiment's oldest live task.
+
+    Precedence mirrors ``primary_github_username or primary_user`` in the response:
+    ``github_username`` tag first, then legacy ``tasks.user`` (Clerk email,
+    GitHub-linked email such as ``ps4534@nyu.edu``, or known handle strings
+    from GH Actions / CLI ``--github-user``), then ``created_by_user_id`` only
+    when neither is present.
+    """
+    github_tag = _task_github_tag_expr()
+    normalized_emails = [
+        email.strip()
+        for email in (experiments_author_emails or ())
+        if (email or "").strip()
+    ]
+
+    lowered_handles = [handle.lower() for handle in github_handles if handle]
+    lowered_tag = func.lower(github_tag)
+    lowered_user = func.lower(TaskModel.user)
+
+    tiers = []
+    if len(lowered_handles) == 1:
+        tiers.append(lowered_tag == lowered_handles[0])
+    elif len(lowered_handles) > 1:
+        tiers.append(lowered_tag.in_(lowered_handles))
+
+    legacy_user_matches = []
+    lowered_emails = [email.lower() for email in normalized_emails]
+    if len(lowered_emails) == 1:
+        legacy_user_matches.append(lowered_user == lowered_emails[0])
+    elif len(lowered_emails) > 1:
+        legacy_user_matches.append(lowered_user.in_(lowered_emails))
+    if len(lowered_handles) == 1:
+        legacy_user_matches.append(lowered_user == lowered_handles[0])
+    elif len(lowered_handles) > 1:
+        legacy_user_matches.append(lowered_user.in_(lowered_handles))
+    if legacy_user_matches:
+        tiers.append(
+            and_(_empty_github_tag_clause(), or_(*legacy_user_matches))
+        )
+
+    tiers.append(
+        and_(
+            _empty_github_tag_clause(),
+            _absent_legacy_user_clause(),
+            TaskModel.created_by_user_id == experiments_author_user_id,
+        )
+    )
+    return or_(*tiers)
+
+
+def _build_experiments_author_filter(
+    experiments_author_user_id: str | None,
+    experiments_author_github_usernames: Sequence[str] | None,
+    *,
+    org_id: str | None,
+    experiments_author_emails: Sequence[str] | None = None,
+):
+    """EXISTS clause restricting experiments to a single owner, or ``None``.
+
+    Returns ``None`` when no owner filter is requested. Otherwise requires
+    the experiment's **oldest live task** (primary owner) to match using the
+    same attribution precedence as the dashboard Author column:
+    ``github_username`` tag first, then legacy ``tasks.user`` values (emails
+    and handles), then ``created_by_user_id`` only when neither is present.
+    """
+    if experiments_author_user_id is None:
+        return None
+    if experiments_author_user_id == UNRESOLVED_EXPERIMENTS_OWNER:
+        return false()
+
+    github_handles = [
+        handle
+        for handle in (
+            _normalize_github_handle(name)
+            for name in (experiments_author_github_usernames or ())
+        )
+        if handle
+    ]
+
+    # Fast path: indexed owner column when stamped at submit time.
+    owner_match = ExperimentModel.owner_user_id == experiments_author_user_id
+
+    primary_task_id = _first_live_task_id_for_experiment()
+    legacy_exists = (
+        select(1)
+        .select_from(TaskModel)
+        .where(TaskModel.id == primary_task_id)
+        .where(
+            _build_primary_task_author_match(
+                experiments_author_user_id,
+                github_handles,
+                experiments_author_emails=experiments_author_emails,
+            )
+        )
+    )
+    if org_id is not None:
+        legacy_exists = legacy_exists.where(TaskModel.org_id == org_id)
+    legacy_match = and_(
+        ExperimentModel.owner_user_id.is_(None),
+        legacy_exists.exists(),
+    )
+    return or_(owner_match, legacy_match)
+
+
 def _experiment_row_passes_status_filter(row, *, status_filter: str) -> bool:
     if status_filter == "active":
         return int(row["active_trials"] or 0) > 0
@@ -296,6 +487,9 @@ async def load_dashboard_experiments(
     experiments_offset: int,
     experiments_query: str | None,
     experiments_status: str,
+    experiments_author_user_id: str | None = None,
+    experiments_author_github_usernames: Sequence[str] | None = None,
+    experiments_author_emails: Sequence[str] | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Load experiment summaries for the dashboard.
@@ -314,6 +508,8 @@ async def load_dashboard_experiments(
     trim post-aggregation. The over-fetch ceiling caps worst-case
     work even on huge orgs.
     """
+    if experiments_author_user_id == UNRESOLVED_EXPERIMENTS_OWNER:
+        return [], False
 
     # ------------------------------------------------------------------
     # Step 1: page experiment ids by ``last_activity_at`` (indexed).
@@ -346,6 +542,16 @@ async def load_dashboard_experiments(
                 func.lower(ExperimentModel.id).like(query_like),
             )
         )
+    # Owner filter ("My experiments" / per-member picker): keep only
+    # experiments whose primary (oldest) live task belongs to the target author.
+    author_filter = _build_experiments_author_filter(
+        experiments_author_user_id,
+        experiments_author_github_usernames,
+        org_id=org_id,
+        experiments_author_emails=experiments_author_emails,
+    )
+    if author_filter is not None:
+        page_query = page_query.where(author_filter)
     page_query = (
         page_query.order_by(
             nulls_last(ExperimentModel.last_activity_at.desc()),
@@ -370,15 +576,15 @@ async def load_dashboard_experiments(
     experiment_ids = [str(row["experiment_id"]) for row in page_rows]
 
     # ------------------------------------------------------------------
-    # Step 1.5: latest task author info, scoped to the page.
+    # Step 1.5: primary (oldest) and latest task author info for the page.
     # ------------------------------------------------------------------
-    latest_task_query = (
+    task_author_base = (
         select(
             task_experiments.c.experiment_id.label("experiment_id"),
-            TaskModel.user.label("last_user"),
-            TaskModel.tags["github_username"].astext.label("last_github_username"),
-            TaskModel.tags["github_meta"].astext.label("last_github_meta"),
-            TaskModel.link.label("last_link"),
+            TaskModel.user.label("task_user"),
+            TaskModel.tags["github_username"].astext.label("task_github_username"),
+            TaskModel.tags["github_meta"].astext.label("task_github_meta"),
+            TaskModel.link.label("task_link"),
         )
         .select_from(
             task_experiments.join(
@@ -390,14 +596,23 @@ async def load_dashboard_experiments(
         .where(task_experiments.c.deleted_at.is_(None))
     )
     if org_id is not None:
-        latest_task_query = latest_task_query.where(TaskModel.org_id == org_id)
-    latest_task_query = latest_task_query.order_by(
+        task_author_base = task_author_base.where(TaskModel.org_id == org_id)
+
+    primary_task_query = task_author_base.order_by(
+        task_experiments.c.experiment_id.asc(),
+        TaskModel.created_at.asc(),
+        TaskModel.id.asc(),
+    ).distinct(task_experiments.c.experiment_id)
+
+    latest_task_query = task_author_base.order_by(
         task_experiments.c.experiment_id.asc(),
         TaskModel.created_at.desc(),
         TaskModel.id.desc(),
     ).distinct(task_experiments.c.experiment_id)
 
+    primary_task_rows = (await session.execute(primary_task_query)).mappings().all()
     latest_task_rows = (await session.execute(latest_task_query)).mappings().all()
+    primary_task_by_id = {str(row["experiment_id"]): row for row in primary_task_rows}
     latest_task_by_id = {str(row["experiment_id"]): row for row in latest_task_rows}
 
     # ------------------------------------------------------------------
@@ -466,6 +681,7 @@ async def load_dashboard_experiments(
 
         exp_id = str(page_row["experiment_id"])
         agg = aggregates_by_id.get(exp_id)
+        primary_task = primary_task_by_id.get(exp_id)
         latest_task = latest_task_by_id.get(exp_id)
 
         # Synthesise zero-valued aggregates when the experiment has no
@@ -488,14 +704,18 @@ async def load_dashboard_experiments(
             "reward_success": int(agg["reward_success"]) if agg else 0,
             "reward_sum": float(agg["reward_sum"] or 0.0) if agg else 0.0,
             "reward_total": int(agg["reward_total"]) if agg else 0,
-            "last_user": latest_task["last_user"] if latest_task else None,
+            "primary_user": primary_task["task_user"] if primary_task else None,
+            "primary_github_username": (
+                primary_task["task_github_username"] if primary_task else None
+            ),
+            "last_user": latest_task["task_user"] if latest_task else None,
             "last_github_username": (
-                latest_task["last_github_username"] if latest_task else None
+                latest_task["task_github_username"] if latest_task else None
             ),
             "last_github_meta": (
-                latest_task["last_github_meta"] if latest_task else None
+                latest_task["task_github_meta"] if latest_task else None
             ),
-            "last_link": latest_task["last_link"] if latest_task else None,
+            "last_link": latest_task["task_link"] if latest_task else None,
         }
 
         # ``task_count`` mirrors the previous greatest(task, trial) shape
@@ -507,10 +727,13 @@ async def load_dashboard_experiments(
 
         # Author-search post-filter: name/id matches already passed in
         # step 1, so any miss here means the user typed an author and
-        # this experiment's latest task didn't match.
+        # neither the primary owner nor the latest runner matched.
         if normalized_query and not (
             normalized_query in str(merged["experiment_name"] or "").lower()
             or normalized_query in exp_id.lower()
+            or normalized_query in str(merged["primary_user"] or "").lower()
+            or normalized_query
+            in str(merged["primary_github_username"] or "").lower()
             or normalized_query in str(merged["last_user"] or "").lower()
             or normalized_query in str(merged["last_github_username"] or "").lower()
         ):
@@ -539,8 +762,14 @@ async def load_dashboard_experiments(
             last_created_at = max(candidates) if candidates else None
 
         github_meta = _parse_github_meta(merged["last_github_meta"])
-        last_author_name = merged["last_github_username"] or merged["last_user"]
-        last_author_source = "github" if merged["last_github_username"] else "api"
+        author = _dashboard_author_from_task(
+            github_username=merged["primary_github_username"],
+            user=merged["primary_user"],
+        )
+        last_runner = _dashboard_author_from_task(
+            github_username=merged["last_github_username"],
+            user=merged["last_user"],
+        )
 
         # The PR URL can arrive two ways: structured ``github_meta.pr_url`` or
         # the canonical ``link`` column (set by ``--link``, or auto-derived from
@@ -579,11 +808,9 @@ async def load_dashboard_experiments(
                 "last_created_at": (
                     last_created_at.isoformat() if last_created_at else None
                 ),
-                "last_author": (
-                    {"name": last_author_name, "source": last_author_source}
-                    if last_author_name
-                    else None
-                ),
+                "author": author,
+                "last_runner": last_runner,
+                "last_author": last_runner,
                 "last_pr_url": last_pr_url,
                 "last_pr_title": (
                     str(github_meta["pr_title"])
@@ -838,6 +1065,9 @@ async def get_dashboard_core(
     experiments_offset: int = 0,
     experiments_query: str | None = None,
     experiments_status: str = "all",
+    experiments_author_user_id: str | None = None,
+    experiments_author_github_usernames: Sequence[str] | None = None,
+    experiments_author_emails: Sequence[str] | None = None,
     usage_minutes: int | None = None,
     include_tasks: bool = True,
     include_usage: bool = True,
@@ -860,7 +1090,9 @@ async def get_dashboard_core(
     experiments_cache_key = (
         f"dashboard.experiments:{org_id}:"
         f"{experiments_limit}:{experiments_offset}:{experiments_query}:"
-        f"{experiments_status}"
+        f"{experiments_status}:{experiments_author_user_id}:"
+        f"{','.join(experiments_author_github_usernames or ())}:"
+        f"{','.join(experiments_author_emails or ())}"
     )
 
     is_usage_only_request = (
@@ -892,13 +1124,11 @@ async def get_dashboard_core(
         ju: list[dict[str, Any]] = []
         if include_usage:
             usage_started_at = now()
-            mu, ju = await asyncio.gather(
-                get_model_usage_core(
-                    session, org_id=org_id, usage_minutes=usage_minutes
-                ),
-                get_worker_job_usage_core(
-                    session, org_id=org_id, usage_minutes=usage_minutes
-                ),
+            mu = await get_model_usage_core(
+                session, org_id=org_id, usage_minutes=usage_minutes
+            )
+            ju = await get_worker_job_usage_core(
+                session, org_id=org_id, usage_minutes=usage_minutes
             )
             if record_timing is not None:
                 record_timing(
@@ -969,6 +1199,9 @@ async def get_dashboard_core(
                 experiments_offset=experiments_offset,
                 experiments_query=experiments_query,
                 experiments_status=experiments_status,
+                experiments_author_user_id=experiments_author_user_id,
+                experiments_author_github_usernames=experiments_author_github_usernames,
+                experiments_author_emails=experiments_author_emails,
                 record_timing=record_timing,
             )
         if record_timing is not None:
