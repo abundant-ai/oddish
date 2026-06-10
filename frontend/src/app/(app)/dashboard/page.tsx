@@ -31,6 +31,7 @@ async function getInitialDashboardData(): Promise<DashboardResponse | null> {
     const response = await fetch(url, {
       cache: "no-store",
       headers: getAuthHeaders(token),
+      signal: AbortSignal.timeout(5_000),
     });
     if (!response.ok) {
       console.error(
