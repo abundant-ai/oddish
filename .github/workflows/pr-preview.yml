@@ -180,6 +180,7 @@ jobs:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
       UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+      ODDISH_PREVIEW_CLERK_ORG_ID: ${{ vars.ODDISH_PREVIEW_CLERK_ORG_ID }}
     defaults:
       run:
         working-directory: backend
