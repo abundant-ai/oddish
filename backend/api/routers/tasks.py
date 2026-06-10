@@ -29,7 +29,10 @@ from oddish.core.endpoints import (
     rerun_task_analysis_core,
     rerun_task_verdict_core,
 )
-from oddish.core.dashboard import invalidate_dashboard_cache
+from oddish.core.dashboard import (
+    EXPERIMENTS_UNATTRIBUTED_OWNER,
+    invalidate_dashboard_cache,
+)
 from oddish.core.experiments import list_experiment_probes_core
 from oddish.core.public_helpers import (
     ensure_experiment_public,
@@ -285,7 +288,7 @@ def _stamp_experiment_owner(
     if (
         experiment is not None
         and owner_user_id
-        and experiment.owner_user_id is None
+        and experiment.owner_user_id in (None, EXPERIMENTS_UNATTRIBUTED_OWNER)
     ):
         experiment.owner_user_id = owner_user_id
 
@@ -384,16 +387,17 @@ async def create_task_sweep(
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
         )
 
+        owner_user_id = await _resolve_experiment_owner_user_id(
+            session, submission, auth
+        )
+        _stamp_experiment_owner(experiment, owner_user_id)
+
         if not is_append:
             created_by_user_id = await _resolve_created_by_user_id(
                 session, submission, auth
             )
-            owner_user_id = await _resolve_experiment_owner_user_id(
-                session, submission, auth
-            )
             if created_by_user_id:
                 task.created_by_user_id = created_by_user_id
-            _stamp_experiment_owner(experiment, owner_user_id)
 
             await _maybe_publish_experiment(session, task, submission, auth)
 
