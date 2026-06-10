@@ -49,6 +49,9 @@ _MIN_REQUIRED_FREE_GB = 5.0
 _MIN_REQUIRED_FREE_INODES = 1024
 _ODDISH_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:OddishCodex"
 _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:AzureCompatibleCodex"
+_ODDISH_CLAUDE_CODE_IMPORT_PATH = (
+    "oddish.workers.claude_code_agent:OddishClaudeCode"
+)
 
 
 class _TeeTextIO:
@@ -655,6 +658,20 @@ def _apply_codex_oddish_wrapper(agent_config: AgentConfig) -> None:
     agent_config.import_path = _ODDISH_CODEX_IMPORT_PATH
 
 
+def _apply_claude_code_probe_harbor(
+    agent_config: AgentConfig, is_probe: bool
+) -> None:
+    """Install the harbor package in the sandbox for probe claude-code trials."""
+    if not is_probe or agent_config.import_path is not None:
+        return
+    agent_name = (agent_config.name or "").strip().lower()
+    if agent_name != "claude-code":
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_CLAUDE_CODE_IMPORT_PATH
+
+
 def _build_agent_config(
     *,
     agent: str,
@@ -739,6 +756,7 @@ def _build_agent_config(
             _apply_codex_azure_compat(agent_config)
 
     _apply_codex_oddish_wrapper(agent_config)
+    _apply_claude_code_probe_harbor(agent_config, is_probe)
 
     return agent_config
 
