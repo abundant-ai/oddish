@@ -599,3 +599,12 @@ export interface PublicExperimentInfo {
   name: string;
   public_token: string;
 }
+
+export interface ExperimentProbeRow {
+  task_id: string;
+  task_name: string;
+  version: number | null;
+  model: string | null;
+  status: string;
+  probe_trial_id: string;
+}

@@ -1312,6 +1312,21 @@ class ProfanityReportCreateRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Experiment probe rows — aggregated probe trial status per task.
+# ---------------------------------------------------------------------------
+
+
+class ExperimentProbeRow(BaseModel):
+    """One row per task in an experiment, summarising the most recent probe trial
+    for the task's current version.
+    """
+
+    task_id: str
+    task_name: str
+    version: int | None
+    model: str | None
+    status: str
+    probe_trial_id: str
 # Skills — custom agent skill bundles.
 # ---------------------------------------------------------------------------
 class SkillFile(BaseModel):
