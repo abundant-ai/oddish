@@ -1,0 +1,173 @@
+{
+  "experiment_id": "e0ef4703",
+  "experiment_ids": [
+    "e0ef4703"
+  ],
+  "n_trials": 4,
+  "note": "Created at 2026-06-10T23:45:17.391654+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only.",
+  "task": "find-network-alignments-b2ecebb7",
+  "task_name": "find-network-alignments",
+  "task_hash": "b2ecebb7",
+  "task_version_id": "find-network-alignments-b2ecebb7-v5",
+  "task_versions": [
+    "find-network-alignments-b2ecebb7-v5"
+  ],
+  "task_hashes": [
+    "b2ecebb7"
+  ],
+  "is_multi_version": false,
+  "pair_counts": {
+    "glm-claude-code|zai/glm-x-preview[1m]": 4
+  },
+  "n_pass": 0,
+  "duplicate_fingerprint_count": 0,
+  "trials": {
+    "find-network-alignments-b2ecebb7-223": {
+      "agent": "glm-claude-code",
+      "model": "zai/glm-x-preview[1m]",
+      "provider": "zai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 1,
+      "task_version_id": "find-network-alignments-b2ecebb7-v5",
+      "started_at": "2026-06-09T23:29:56.105052+00:00",
+      "finished_at": "2026-06-10T02:37:54.513095+00:00",
+      "input_tokens": 44008511,
+      "cache_tokens": 43408704,
+      "output_tokens": 273973,
+      "cost_usd": 31.313753,
+      "has_trajectory": true,
+      "trajectory_bytes": 2075669,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://zai-swe-marathon/find-network-alignments/find-network-alignments-b2ecebb7-223/",
+      "source_trial_name": "find-network-alignments-223",
+      "source_oddish_task_id": "find-network-alignments-b2ecebb7",
+      "source_oddish_trial_id": "find-network-alignments-b2ecebb7-223",
+      "source_oddish_experiment_id": "e0ef4703",
+      "canonical_attempt_dir": "task-find-network-alignments-b2e__9hSo8Ta",
+      "task_name": "find-network-alignments",
+      "task_hash": "b2ecebb7",
+      "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version find-network-alignments-b2ecebb7-v5. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
+      "raw_model": "zai/glm-x-preview[1m]",
+      "verifier_partial_score": 0.8729729340898537
+    },
+    "find-network-alignments-b2ecebb7-224": {
+      "agent": "glm-claude-code",
+      "model": "zai/glm-x-preview[1m]",
+      "provider": "zai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 1,
+      "task_version_id": "find-network-alignments-b2ecebb7-v5",
+      "started_at": "2026-06-10T00:51:05.926203+00:00",
+      "finished_at": "2026-06-10T05:53:13.339669+00:00",
+      "input_tokens": 62800377,
+      "cache_tokens": 62444544,
+      "output_tokens": 281945,
+      "cost_usd": null,
+      "has_trajectory": true,
+      "trajectory_bytes": 2774707,
+      "exception_classes": [
+        "AgentTimeoutError"
+      ],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://zai-swe-marathon/find-network-alignments/find-network-alignments-b2ecebb7-224/",
+      "source_trial_name": "find-network-alignments-224",
+      "source_oddish_task_id": "find-network-alignments-b2ecebb7",
+      "source_oddish_trial_id": "find-network-alignments-b2ecebb7-224",
+      "source_oddish_experiment_id": "e0ef4703",
+      "canonical_attempt_dir": "task-find-network-alignments-b2e__x7pW3sK",
+      "task_name": "find-network-alignments",
+      "task_hash": "b2ecebb7",
+      "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version find-network-alignments-b2ecebb7-v5. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
+      "raw_model": "zai/glm-x-preview[1m]",
+      "verifier_partial_score": 0.8013521837328441
+    },
+    "find-network-alignments-b2ecebb7-225": {
+      "agent": "glm-claude-code",
+      "model": "zai/glm-x-preview[1m]",
+      "provider": "zai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 1,
+      "task_version_id": "find-network-alignments-b2ecebb7-v5",
+      "started_at": "2026-06-10T06:02:51.239055+00:00",
+      "finished_at": "2026-06-10T10:11:30.156572+00:00",
+      "input_tokens": 53644030,
+      "cache_tokens": 52560192,
+      "output_tokens": 277821,
+      "cost_usd": 38.671196,
+      "has_trajectory": true,
+      "trajectory_bytes": 2792249,
+      "exception_classes": [],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://zai-swe-marathon/find-network-alignments/find-network-alignments-b2ecebb7-225/",
+      "source_trial_name": "find-network-alignments-225",
+      "source_oddish_task_id": "find-network-alignments-b2ecebb7",
+      "source_oddish_trial_id": "find-network-alignments-b2ecebb7-225",
+      "source_oddish_experiment_id": "e0ef4703",
+      "canonical_attempt_dir": "task-find-network-alignments-b2e__YzpuXWx",
+      "task_name": "find-network-alignments",
+      "task_hash": "b2ecebb7",
+      "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version find-network-alignments-b2ecebb7-v5. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
+      "raw_model": "zai/glm-x-preview[1m]",
+      "verifier_partial_score": 0.9804150748099948
+    },
+    "find-network-alignments-b2ecebb7-227": {
+      "agent": "glm-claude-code",
+      "model": "zai/glm-x-preview[1m]",
+      "provider": "zai",
+      "reward": 0.0,
+      "status": "success",
+      "attempts": 1,
+      "max_attempts": 1,
+      "task_version_id": "find-network-alignments-b2ecebb7-v5",
+      "started_at": "2026-06-10T06:02:51.646816+00:00",
+      "finished_at": "2026-06-10T11:03:44.622675+00:00",
+      "input_tokens": 26731428,
+      "cache_tokens": 26157568,
+      "output_tokens": 189201,
+      "cost_usd": null,
+      "has_trajectory": true,
+      "trajectory_bytes": 1754946,
+      "exception_classes": [
+        "AgentTimeoutError"
+      ],
+      "origin": "oddish",
+      "artifact_layout": "harbor-nested",
+      "artifact_prefix": "s3://zai-swe-marathon/find-network-alignments/find-network-alignments-b2ecebb7-227/",
+      "source_trial_name": "find-network-alignments-227",
+      "source_oddish_task_id": "find-network-alignments-b2ecebb7",
+      "source_oddish_trial_id": "find-network-alignments-b2ecebb7-227",
+      "source_oddish_experiment_id": "e0ef4703",
+      "canonical_attempt_dir": "task-find-network-alignments-b2e__7W4bhet",
+      "task_name": "find-network-alignments",
+      "task_hash": "b2ecebb7",
+      "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version find-network-alignments-b2ecebb7-v5. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
+      "raw_model": "zai/glm-x-preview[1m]",
+      "verifier_partial_score": 0.9481005754845223
+    }
+  },
+  "additional_imports": [
+    {
+      "imported_at": "2026-06-10T23:45:17.391671+00:00",
+      "source_oddish_experiment_id": "e0ef4703",
+      "task_version_id_at_snapshot": "find-network-alignments-b2ecebb7-v5",
+      "n_trials_added": 4,
+      "pairs_added": [
+        [
+          "glm-claude-code",
+          "zai/glm-x-preview[1m]"
+        ]
+      ],
+      "note": "Initial population of zai-swe-marathon bucket."
+    }
+  ]
+}

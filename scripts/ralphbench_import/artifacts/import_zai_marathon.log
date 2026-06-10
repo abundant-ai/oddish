@@ -1,0 +1,35 @@
+task                                latest                                   n  pass
+  biofabric-rust-rewrite              biofabric-rust-rewrite-897c0fc8-v7       5  pass=0
+  embedding-eval                      embedding-eval-be1dc228-v14              2  pass=1
+  excel-clone                         excel-clone-685bff89-v11                 4  pass=0
+  find-network-alignments             find-network-alignments-b2ecebb7-v5      4  pass=0
+  jax-pytorch-rewrite                 jax-pytorch-rewrite-93c38683-v7          5  pass=1
+  mastodon-clone                      mastodon-clone-e9964b7a-v15              5  pass=0
+  parameter-golf                      parameter-golf-61e11605-v32              5  pass=1
+  post-train-ifeval                   post-train-ifeval-c9f2cfbc-v35           5  pass=5
+  rust-c-compiler                     rust-c-compiler-57913cbe-v10             5  pass=0
+  s3-clone                            s3-clone-23996371-v14                    4  pass=0
+  slack-clone                         slack-clone-b0a98beb-v26                 3  pass=0
+  stripe-clone                        stripe-clone-66061f4d-v5                 5  pass=0
+  trimul-cuda                         trimul-cuda-fc34aaba-v88                 4  pass=0
+  vliw-kernel-optimization            vliw-kernel-optimization-e4d25121-v10    5  pass=0
+  wasm-simd                           wasm-simd-40e18127-v19                   5  pass=5
+  zstd-decoder                        zstd-decoder-72bbfded-v13                4  pass=0
+
+Grand total picks: 70
+  manifest: s3://zai-swe-marathon/biofabric-rust-rewrite/_manifest.json (n_trials=5, n_pass=0)
+  manifest: s3://zai-swe-marathon/embedding-eval/_manifest.json (n_trials=2, n_pass=1)
+  manifest: s3://zai-swe-marathon/excel-clone/_manifest.json (n_trials=4, n_pass=0)
+  manifest: s3://zai-swe-marathon/find-network-alignments/_manifest.json (n_trials=4, n_pass=0)
+  manifest: s3://zai-swe-marathon/jax-pytorch-rewrite/_manifest.json (n_trials=5, n_pass=1)
+  manifest: s3://zai-swe-marathon/mastodon-clone/_manifest.json (n_trials=5, n_pass=0)
+  manifest: s3://zai-swe-marathon/parameter-golf/_manifest.json (n_trials=5, n_pass=1)
+  manifest: s3://zai-swe-marathon/post-train-ifeval/_manifest.json (n_trials=5, n_pass=5)
+  manifest: s3://zai-swe-marathon/rust-c-compiler/_manifest.json (n_trials=5, n_pass=0)
+  manifest: s3://zai-swe-marathon/s3-clone/_manifest.json (n_trials=4, n_pass=0)
+  manifest: s3://zai-swe-marathon/slack-clone/_manifest.json (n_trials=3, n_pass=0)
+  manifest: s3://zai-swe-marathon/stripe-clone/_manifest.json (n_trials=5, n_pass=0)
+  manifest: s3://zai-swe-marathon/trimul-cuda/_manifest.json (n_trials=4, n_pass=0)
+  manifest: s3://zai-swe-marathon/vliw-kernel-optimization/_manifest.json (n_trials=5, n_pass=0)
+  manifest: s3://zai-swe-marathon/wasm-simd/_manifest.json (n_trials=5, n_pass=5)
+  manifest: s3://zai-swe-marathon/zstd-decoder/_manifest.json (n_trials=4, n_pass=0)
