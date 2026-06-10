@@ -43,12 +43,12 @@ interface PassAtKGraphProps {
 
 function buildAgentStats(
   tasks: Task[],
-  agentSummaries: AgentSummary[],
+  agentSummaries: AgentSummary[]
 ): { agentStats: Record<string, AgentPassAtKStats>; maxN: number } {
   const modelScopedAgents = new Set(
     agentSummaries
       .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent),
+      .map((summary) => summary.agent)
   );
 
   let maxN = 1;
@@ -73,14 +73,14 @@ function buildAgentStats(
 
   const agentStats: Record<string, AgentPassAtKStats> = {};
   for (const summary of agentSummaries) {
-    const taskResults: { task: string; c: number }[] = [];
+    const taskResults: { task: string; n: number; c: number }[] = [];
     for (const task of tasks) {
       const trials = taskAgentTrials[task.id]?.[summary.key] ?? [];
       if (trials.length === 0) continue;
       const c = trials.filter((t) => t.reward === 1).length;
-      taskResults.push({ task: task.id, c });
+      taskResults.push({ task: task.id, n: trials.length, c });
     }
-    agentStats[summary.key] = { n: maxN, taskResults };
+    agentStats[summary.key] = { taskResults };
   }
 
   return { agentStats, maxN };
@@ -98,7 +98,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   const [chartSize, setChartSize] = useState({ width: 0, height: 0 });
   const visibleAgentSummaries = useMemo(
     () => agentSummaries.filter((summary) => !hiddenAgents.has(summary.key)),
-    [agentSummaries, hiddenAgents],
+    [agentSummaries, hiddenAgents]
   );
 
   useEffect(() => {
@@ -141,7 +141,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
     }, [tasks, agentSummaries]);
 
   const renderTooltip = useCallback(
-    (props: TooltipContentProps) => {
+    (props: TooltipContentProps<number, string>) => {
       const { active, payload, label } = props;
       if (!active || !payload || payload.length === 0) return null;
 
@@ -220,7 +220,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
         </div>
       );
     },
-    [agentColorByKey, agentLabelByKey, hoverAgent],
+    [agentColorByKey, agentLabelByKey, hoverAgent]
   );
 
   if (!hasMultipleAttempts) {
