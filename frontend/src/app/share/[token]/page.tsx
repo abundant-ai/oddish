@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { useParams } from "next/navigation";
 import useSWR from "swr";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
-import { Nav } from "@/components/nav";
+import { ShareNav } from "@/components/share-nav";
 import type { Task, PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { PUBLIC_API_URL } from "@/lib/utils";
@@ -68,7 +68,7 @@ export default function PublicExperimentPage() {
 
   return (
     <>
-      <Nav />
+      <ShareNav />
 
       <main className="mx-auto w-full max-w-(--breakpoint-2xl) px-4 py-4">
         <div className="space-y-4">

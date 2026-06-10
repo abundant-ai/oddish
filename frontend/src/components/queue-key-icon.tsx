@@ -5,6 +5,7 @@ import {
   Baichuan,
   ChatGLM,
   Cohere,
+  Cursor,
   DeepSeek,
   Gemini,
   Inflection,
@@ -39,6 +40,7 @@ type KnownProvider =
   | "xai"
   | "meta"
   | "cohere"
+  | "cursor"
   | "qwen"
   | "glm"
   | "kimi"
@@ -78,6 +80,13 @@ function matchProviderFromSource(raw: string): KnownProvider {
 
   if (probe.includes("deepseek")) {
     return "deepseek";
+  }
+  // Cursor's CLI agent and its in-house Composer model family: `cursor`,
+  // `cursor-cli`, `composer-1`. Cursor runs on third-party models still get
+  // the model vendor's icon because resolveProvider() checks the model
+  // string before the agent name.
+  if (hasToken(probe, "cursor") || hasToken(probe, "composer")) {
+    return "cursor";
   }
   // Alibaba's Qwen family: `qwen2.5-coder`, `Qwen/Qwen3-...`, `qwen3-coder-plus`.
   if (hasToken(probe, "qwen")) {
@@ -221,6 +230,9 @@ export function QueueKeyIcon({
   }
   if (resolvedProvider === "deepseek") {
     return <DeepSeek size={size} className={className} />;
+  }
+  if (resolvedProvider === "cursor") {
+    return <Cursor size={size} className={className} />;
   }
   if (resolvedProvider === "mistral") {
     return <Mistral size={size} className={className} />;
