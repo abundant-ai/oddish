@@ -8,10 +8,7 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth.provisioning import (
-    ensure_user_github_identity,
-    fetch_github_identity_from_clerk,
-)
+from auth.provisioning import fetch_github_identity_from_clerk
 from auth.types import AuthContext
 from models import APIKeyModel, UserModel
 from oddish.core.dashboard import UNRESOLVED_EXPERIMENTS_OWNER
@@ -195,6 +192,37 @@ def _baseline_profile(
     )
 
 
+def _row_has_strong_attribution_match(
+    tag: str | None,
+    raw_user: str | None,
+    *,
+    seen_handles: set[str],
+    seen_emails: set[str],
+    clerk_email: str | None = None,
+) -> bool:
+    """Ignore created_by-only CI rows tagged with another contributor's handle."""
+    tag_normalized = _normalize_github_handle(tag)
+    raw_handle = (
+        None
+        if not raw_user or _looks_like_email(raw_user)
+        else _normalize_github_handle(raw_user)
+    )
+    if tag_normalized and tag_normalized.lower() in seen_handles:
+        return True
+    if raw_handle and raw_handle.lower() in seen_handles:
+        return True
+    if raw_user and _looks_like_email(raw_user) and raw_user.lower() in seen_emails:
+        return True
+    if (
+        clerk_email
+        and raw_user
+        and _looks_like_email(raw_user)
+        and raw_user.lower() == clerk_email.strip().lower()
+    ):
+        return True
+    return False
+
+
 async def _discover_attribution_from_tasks(
     session: AsyncSession,
     user: UserModel,
@@ -253,8 +281,22 @@ async def _discover_attribution_from_tasks(
         .limit(200)
     )
     for tag, raw_user in rows:
+        if not _row_has_strong_attribution_match(
+            tag,
+            raw_user,
+            seen_handles=seen_handles,
+            seen_emails=seen_emails,
+            clerk_email=user.email,
+        ):
+            continue
+
+        raw_handle = (
+            None
+            if not raw_user or _looks_like_email(raw_user)
+            else _normalize_github_handle(raw_user)
+        )
         _add_handle(tag)
-        if raw_user and not _looks_like_email(raw_user):
+        if raw_handle:
             _add_handle(raw_user)
         else:
             _add_email(raw_user)
@@ -291,8 +333,12 @@ async def _load_attribution_profile(
 
     github_email: str | None = None
     if user.clerk_user_id:
-        await ensure_user_github_identity(session, user)
-        _, github_email = await fetch_github_identity_from_clerk(user.clerk_user_id)
+        username, github_email = await fetch_github_identity_from_clerk(
+            user.clerk_user_id
+        )
+        if username and not user.github_username:
+            user.github_username = username
+            await session.flush()
 
     blocked_handles = await _other_member_github_handles(
         session, org_id=org_id, exclude_user_id=user.id
