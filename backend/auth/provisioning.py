@@ -72,15 +72,44 @@ def _seed_attribution_cache_from_github(
     github_username: str | None,
     github_email: str | None,
 ) -> None:
-    """Prime dashboard Mine aliases when Clerk links GitHub at provision time."""
-    handles: list[str] = []
-    emails: list[str] = []
-    if github_username:
-        handles.append(github_username)
-    if user.email:
-        emails.append(user.email)
-    if github_email and github_email not in emails:
-        emails.append(github_email)
+    """Merge Clerk GitHub identity into the dashboard Mine alias cache."""
+    raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
+    handles: list[str] = [
+        str(value).strip()
+        for value in (raw.get("github_handles") or ())
+        if str(value).strip()
+    ]
+    emails: list[str] = [
+        str(value).strip()
+        for value in (raw.get("legacy_emails") or ())
+        if str(value).strip()
+    ]
+    seen_handles = {handle.lower() for handle in handles}
+    seen_emails = {email.lower() for email in emails}
+
+    def _add_handle(value: str | None) -> None:
+        normalized = (value or "").strip().lstrip("@")
+        if not normalized:
+            return
+        key = normalized.lower()
+        if key in seen_handles:
+            return
+        seen_handles.add(key)
+        handles.append(normalized)
+
+    def _add_email(value: str | None) -> None:
+        normalized = (value or "").strip()
+        if not normalized or "@" not in normalized:
+            return
+        key = normalized.lower()
+        if key in seen_emails:
+            return
+        seen_emails.add(key)
+        emails.append(normalized)
+
+    _add_handle(github_username)
+    _add_email(user.email)
+    _add_email(github_email)
     if not handles and not emails:
         return
     user.attribution_cache = {

@@ -132,6 +132,7 @@ def _load_helpers() -> dict[str, Any]:
         "AuthContext": object,
         "APIKeyModel": _APIKeyStub,
         "UserModel": _UserStub,
+        "func": __import__("sqlalchemy").func,
         "select": _select_stub,
     }
     exec(compile(snippet, str(router_path), "exec"), namespace)
@@ -348,12 +349,21 @@ def test_experiment_owner_prefers_github_user_over_api_key_owner():
     assert owner == "u-gh"
 
 
-def test_experiment_owner_falls_back_to_api_key_when_no_github_user():
-    api_user = _UserStub(id="u-ci")
+def test_experiment_owner_unset_when_explicit_github_not_linked():
     api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
     auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
     session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
     submission = _SubmissionStub(github_username="unknown-gh")
+
+    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
+    assert owner is None
+
+
+def test_experiment_owner_falls_back_to_api_key_without_github_username():
+    api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
+    auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
+    session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
+    submission = _SubmissionStub(github_username=None)
 
     owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
     assert owner == "u-ci"
