@@ -195,7 +195,6 @@ def _baseline_profile(
     *,
     blocked_handles: set[str],
     blocked_emails: set[str],
-    github_email: str | None = None,
 ) -> AttributionProfile:
     handles: list[str] = []
     emails: list[str] = []
@@ -224,7 +223,6 @@ def _baseline_profile(
 
     _add_handle(user.github_username)
     _add_email(user.email)
-    _add_email(github_email)
     return AttributionProfile(
         github_handles=tuple(handles),
         legacy_emails=tuple(emails),
