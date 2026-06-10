@@ -25,7 +25,7 @@ import {
   Wrench,
 } from "lucide-react";
 
-export function Nav() {
+export function Nav({ publicView = false }: { publicView?: boolean }) {
   const pathname = usePathname();
   const { user, isLoaded, isSignedIn } = useUser();
   const { signOut } = useClerk();
@@ -54,24 +54,26 @@ export function Nav() {
                   height={24}
                   className="drop-shadow-xs"
                 />
-                <span>Dashboard</span>
+                <span>{publicView ? "Oddish by Abundant" : "Dashboard"}</span>
               </Link>
             </Button>
-            <Button
-              variant={pathname === "/tasks" ? "secondary" : "ghost"}
-              size="sm"
-              asChild
-              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
-            >
-              <Link
-                href="/tasks"
-                className="flex items-center gap-2"
-                data-active={pathname === "/tasks"}
+            {!publicView && (
+              <Button
+                variant={pathname === "/tasks" ? "secondary" : "ghost"}
+                size="sm"
+                asChild
+                className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
               >
-                <FileText className="h-4 w-4" />
-                <span>Tasks</span>
-              </Link>
-            </Button>
+                <Link
+                  href="/tasks"
+                  className="flex items-center gap-2"
+                  data-active={pathname === "/tasks"}
+                >
+                  <FileText className="h-4 w-4" />
+                  <span>Tasks</span>
+                </Link>
+              </Button>
+            )}
             <Button
               variant={pathname === "/skills" ? "secondary" : "ghost"}
               size="sm"
