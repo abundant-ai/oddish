@@ -330,6 +330,15 @@ def _empty_github_tag_clause():
     return or_(github_tag.is_(None), github_tag == "")
 
 
+def _absent_legacy_user_clause():
+    """Treat null, empty, and placeholder ``unknown`` as no legacy user string."""
+    return or_(
+        TaskModel.user.is_(None),
+        TaskModel.user == "",
+        func.lower(TaskModel.user) == "unknown",
+    )
+
+
 def _dashboard_author_from_task(
     *,
     github_username: str | None,
@@ -388,7 +397,7 @@ def _build_latest_task_author_match(
     tiers.append(
         and_(
             _empty_github_tag_clause(),
-            or_(TaskModel.user.is_(None), TaskModel.user == ""),
+            _absent_legacy_user_clause(),
             TaskModel.created_by_user_id == experiments_author_user_id,
         )
     )
@@ -1110,13 +1119,11 @@ async def get_dashboard_core(
         ju: list[dict[str, Any]] = []
         if include_usage:
             usage_started_at = now()
-            mu, ju = await asyncio.gather(
-                get_model_usage_core(
-                    session, org_id=org_id, usage_minutes=usage_minutes
-                ),
-                get_worker_job_usage_core(
-                    session, org_id=org_id, usage_minutes=usage_minutes
-                ),
+            mu = await get_model_usage_core(
+                session, org_id=org_id, usage_minutes=usage_minutes
+            )
+            ju = await get_worker_job_usage_core(
+                session, org_id=org_id, usage_minutes=usage_minutes
             )
             if record_timing is not None:
                 record_timing(

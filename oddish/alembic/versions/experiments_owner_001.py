@@ -25,27 +25,9 @@ def upgrade() -> None:
         "ON experiments (org_id, owner_user_id) "
         "WHERE deleted_at IS NULL"
     )
-    # Best-effort backfill from the oldest live task on each experiment.
-    op.execute(
-        """
-        UPDATE experiments e
-        SET owner_user_id = sub.owner_user_id
-        FROM (
-            SELECT DISTINCT ON (te.experiment_id)
-                   te.experiment_id,
-                   t.created_by_user_id AS owner_user_id
-            FROM task_experiments te
-            JOIN tasks t ON t.id = te.task_id
-            WHERE te.deleted_at IS NULL
-              AND t.deleted_at IS NULL
-              AND t.created_by_user_id IS NOT NULL
-            ORDER BY te.experiment_id, t.created_at ASC, t.id ASC
-        ) sub
-        WHERE e.id = sub.experiment_id
-          AND e.owner_user_id IS NULL
-          AND e.deleted_at IS NULL
-        """
-    )
+    # Owner is stamped on new sweeps with GitHub-first precedence. Historical
+    # experiments keep owner_user_id NULL and use the legacy primary-task
+    # Mine filter until re-submitted or manually corrected.
 
 
 def downgrade() -> None:

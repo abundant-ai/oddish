@@ -58,11 +58,13 @@ def test_memory_cache_round_trip() -> None:
 
 
 def test_db_cache_fresh_reads_persisted_profile() -> None:
+    from datetime import datetime, timezone
+
     user = _user(
         attribution_cache={
             "github_handles": ["praxs"],
             "legacy_emails": ["ps4534@nyu.edu"],
-            "refreshed_at": "2026-06-10T00:00:00+00:00",
+            "refreshed_at": datetime.now(timezone.utc).isoformat(),
         }
     )
     profile = _db_cache_fresh(user)

@@ -88,6 +88,13 @@ def test_author_filter_includes_github_username_fallback() -> None:
     assert " OR " in sql.upper()
 
 
+def test_author_filter_treats_unknown_user_as_absent_for_created_by() -> None:
+    clause = _build_experiments_author_filter("user_123", None, org_id="org_1")
+    assert clause is not None
+    sql = _compile_sql(clause).lower()
+    assert "unknown" in sql
+
+
 def test_author_filter_created_by_only_when_github_tag_missing() -> None:
     clause = _build_experiments_author_filter("user_123", None, org_id="org_1")
     assert clause is not None
