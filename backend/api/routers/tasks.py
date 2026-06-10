@@ -30,6 +30,7 @@ from oddish.core.endpoints import (
     rerun_task_verdict_core,
 )
 from oddish.core.dashboard import invalidate_dashboard_cache
+from oddish.core.experiments import list_experiment_probes_core
 from oddish.core.public_helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
@@ -58,6 +59,7 @@ from oddish.queue import (
 from oddish.schemas import (
     ExperimentCombineRequest,
     ExperimentCombineResponse,
+    ExperimentProbeRow,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
     TaskDetailResponse,
@@ -670,6 +672,42 @@ async def unpublish_experiment(
             name=experiment.name,
             is_public=False,
             public_token=experiment.public_token,
+        )
+
+
+@router.get(
+    "/experiments/{experiment_id}/probes",
+    response_model=list[ExperimentProbeRow],
+)
+async def list_experiment_probes(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> list[ExperimentProbeRow]:
+    """List probe trials for each task in the experiment.
+
+    Returns at most one row per task — the most recent probe trial for the
+    task's current version.  Tasks with no probe trials are omitted.
+    Each row includes: ``task_id``, ``task_name``, ``version``, ``model``,
+    ``status``, ``probe_trial_id``.
+
+    Raises 404 if the experiment does not exist for the authenticated org.
+    """
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(ExperimentModel).where(
+                ExperimentModel.id == experiment_id,
+                ExperimentModel.org_id == auth.org_id,
+            )
+        )
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+
+        return await list_experiment_probes_core(
+            session,
+            experiment_id=experiment_id,
+            org_id=auth.org_id,
         )
 
 
