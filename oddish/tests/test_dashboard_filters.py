@@ -86,6 +86,19 @@ def test_author_filter_includes_github_username_fallback() -> None:
     assert "github_username" in sql
     assert "octocat" in sql
     assert " OR " in sql.upper()
+    assert "lower(" in sql.lower()
+
+
+def test_author_filter_github_handles_are_case_insensitive() -> None:
+    clause = _build_experiments_author_filter(
+        "user_123",
+        ("Praxs",),
+        org_id="org_1",
+    )
+    assert clause is not None
+    sql = _compile_sql(clause).lower()
+    assert "lower(" in sql
+    assert "praxs" in sql
 
 
 def test_author_filter_treats_unknown_user_as_absent_for_created_by() -> None:

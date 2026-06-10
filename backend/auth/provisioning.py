@@ -112,15 +112,29 @@ def _seed_attribution_cache_from_github(
     _add_email(github_email)
     if not handles and not emails:
         return
-    user.attribution_cache = {
+    cache: dict[str, object] = {
         "github_handles": handles,
         "legacy_emails": emails,
-        "refreshed_at": datetime.now(timezone.utc).isoformat(),
     }
+    prior_refreshed = raw.get("refreshed_at")
+    if isinstance(prior_refreshed, str):
+        # Preserve discovery timestamps; only _persist_profile sets a new one.
+        cache["refreshed_at"] = prior_refreshed
+    user.attribution_cache = cache
 
 
 async def _refresh_user_github_identity(user: UserModel) -> None:
     if not user.clerk_user_id:
+        return
+    raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
+    if user.github_username and isinstance(raw.get("refreshed_at"), str):
+        return
+    if user.github_username:
+        _seed_attribution_cache_from_github(
+            user,
+            github_username=user.github_username,
+            github_email=None,
+        )
         return
     username, github_email = await fetch_github_identity_from_clerk(user.clerk_user_id)
     if username and not user.github_username:

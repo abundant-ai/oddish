@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.provisioning import (
@@ -230,21 +230,19 @@ async def _discover_attribution_from_tasks(
         seen_emails.add(key)
         emails.append(value)
 
-    tag_expr = TaskModel.tags["github_username"].astext
+    tag_expr = func.lower(TaskModel.tags["github_username"].astext)
+    user_expr = func.lower(TaskModel.user)
     attribution_predicates = [TaskModel.created_by_user_id == user.id]
     if user.email:
-        attribution_predicates.append(TaskModel.user == user.email)
+        attribution_predicates.append(user_expr == user.email.lower())
     if baseline.github_handles:
-        if len(baseline.github_handles) == 1:
-            attribution_predicates.append(tag_expr == baseline.github_handles[0])
-            attribution_predicates.append(
-                TaskModel.user == baseline.github_handles[0]
-            )
+        lowered_handles = [handle.lower() for handle in baseline.github_handles]
+        if len(lowered_handles) == 1:
+            attribution_predicates.append(tag_expr == lowered_handles[0])
+            attribution_predicates.append(user_expr == lowered_handles[0])
         else:
-            attribution_predicates.append(tag_expr.in_(baseline.github_handles))
-            attribution_predicates.append(
-                TaskModel.user.in_(baseline.github_handles)
-            )
+            attribution_predicates.append(tag_expr.in_(lowered_handles))
+            attribution_predicates.append(user_expr.in_(lowered_handles))
 
     rows = await session.execute(
         select(tag_expr, TaskModel.user)
