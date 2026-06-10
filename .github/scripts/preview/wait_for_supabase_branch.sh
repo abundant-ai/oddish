@@ -81,6 +81,16 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
       read -r branch_id branch_ref status preview < <(
         jq -r '[.id, .project_ref, .status, .preview_project_status] | @tsv' <<<"$branch_json"
       )
+      # A failed prod-data restore surfaces in preview_project_status
+      # ($preview), NOT status — so a branch can sit at FUNCTIONS_DEPLOYED
+      # with preview=RESTORE_FAILED. The case below only inspects $status,
+      # so that branch never trips branch_failed and the loop spins until
+      # the 20-min deadline, then exits 1 with no recreate.
+      # TODO(human): catch a failed preview restore here. Decide which
+      # $preview values are terminal (e.g. RESTORE_FAILED) and, when one
+      # matches, set branch_failed=1 and break so the recreate-once retry
+      # (line ~102) fires instead of timing out.
+
       case "$status" in
         MIGRATIONS_FAILED|FUNCTIONS_FAILED)
           echo "branch $branch_id failed: $status" >&2
