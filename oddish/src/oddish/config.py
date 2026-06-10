@@ -39,6 +39,35 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 
 ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 VERDICT_MODEL = "gpt-5.2"
+
+# Probe model rotation — cheap, capable-at-tool-use models spread across
+# providers to avoid hitting any single provider's rate limits. Non-Bedrock
+# ids route through the OpenRouter Anthropic shim (see
+# ``workers.harbor_runner._apply_claude_code_openrouter_env``); the agent is
+# always claude-code, so OddishClaudeCode's harbor install applies to all.
+PROBE_MODEL_ROTATION: list[str] = [
+    "claude-haiku-4-5",
+    "openrouter/google/gemini-2.5-flash",
+    "openrouter/deepseek/deepseek-chat",
+]
+
+
+def next_probe_model(index: int) -> str:
+    """Round-robin selection over ``PROBE_MODEL_ROTATION``."""
+    return PROBE_MODEL_ROTATION[index % len(PROBE_MODEL_ROTATION)]
+
+
+# Directive injected into every auto-probe (the operator supplies nothing).
+# Mirrors the established default probe preset; change requires a deploy.
+AUTO_PROBE_INSTRUCTIONS: str = (
+    "You are probing this task's harness, not solving the task. Explore the "
+    "environment, the verifier, and (via `import harbor`) the harness itself. "
+    "Report anything that would let an agent score well without genuinely "
+    "completing the task: reward hacks, leaked solutions, verifier gaps, or "
+    "environment quirks. Be concise and concrete."
+)
+
+
 NOP_ORACLE_QUEUE_KEY = "nop_oracle"
 _NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
 OPENAI_PROVIDER_AZURE = "azure"
