@@ -31,6 +31,12 @@ from oddish.timing import TimingRecorder, elapsed_ms, now
 # Sentinel user id: Mine filter requested but no resolvable Clerk/API-key owner.
 UNRESOLVED_EXPERIMENTS_OWNER = "__unresolved_owner__"
 
+# Sentinel owner: stamped by the cloud sweep on live experiments that no org
+# member's attribution profile claims. Lets the Mine filter switch to the
+# indexed owner_user_id fast path once an org has zero NULL owners, while
+# never matching a real user id.
+EXPERIMENTS_UNATTRIBUTED_OWNER = "__unattributed__"
+
 
 def _parse_github_meta(raw_github_meta: str | None) -> dict[str, Any] | None:
     if not raw_github_meta:
@@ -415,6 +421,7 @@ def _build_experiments_author_filter(
     *,
     org_id: str | None,
     experiments_author_emails: Sequence[str] | None = None,
+    include_legacy_fallback: bool = True,
 ):
     """EXISTS clause restricting experiments to a single owner, or ``None``.
 
@@ -423,11 +430,22 @@ def _build_experiments_author_filter(
     same attribution precedence as the dashboard Author column:
     ``github_username`` tag first, then legacy ``tasks.user`` values (emails
     and handles), then ``created_by_user_id`` only when neither is present.
+
+    When ``include_legacy_fallback`` is False (the org has zero NULL-owner
+    live experiments) only the indexed ``owner_user_id`` seek is emitted.
     """
     if experiments_author_user_id is None:
         return None
-    if experiments_author_user_id == UNRESOLVED_EXPERIMENTS_OWNER:
+    if experiments_author_user_id in (
+        UNRESOLVED_EXPERIMENTS_OWNER,
+        EXPERIMENTS_UNATTRIBUTED_OWNER,
+    ):
         return false()
+
+    # Fast path: indexed owner column when stamped at submit time.
+    owner_match = ExperimentModel.owner_user_id == experiments_author_user_id
+    if not include_legacy_fallback:
+        return owner_match
 
     github_handles = [
         handle
@@ -437,9 +455,6 @@ def _build_experiments_author_filter(
         )
         if handle
     ]
-
-    # Fast path: indexed owner column when stamped at submit time.
-    owner_match = ExperimentModel.owner_user_id == experiments_author_user_id
 
     primary_task_id = _first_live_task_id_for_experiment()
     legacy_exists = (
@@ -477,6 +492,28 @@ def _experiment_row_passes_status_filter(row, *, status_filter: str) -> bool:
     if status_filter == "completed":
         return int(row["active_trials"] or 0) == 0
     return True
+
+
+async def _org_has_unowned_live_experiments(
+    session: AsyncSession, org_id: str | None
+) -> bool:
+    """One indexed probe: does this org still have live experiments with no owner?
+
+    Rides ``idx_experiments_org_owner_user_live``. While any NULL-owner rows
+    remain the Mine filter keeps the legacy EXISTS fallback for correctness;
+    after the sweep backfill converges this returns False and the filter
+    becomes a pure indexed owner_user_id seek.
+    """
+    probe = (
+        select(1)
+        .select_from(ExperimentModel)
+        .where(ExperimentModel.owner_user_id.is_(None))
+        .where(ExperimentModel.deleted_at.is_(None))
+        .limit(1)
+    )
+    if org_id is not None:
+        probe = probe.where(ExperimentModel.org_id == org_id)
+    return (await session.execute(probe)).first() is not None
 
 
 async def load_dashboard_experiments(
@@ -544,11 +581,24 @@ async def load_dashboard_experiments(
         )
     # Owner filter ("My experiments" / per-member picker): keep only
     # experiments whose primary (oldest) live task belongs to the target author.
+    include_legacy_fallback = True
+    if experiments_author_user_id is not None:
+        probe_started_at = now()
+        include_legacy_fallback = await _org_has_unowned_live_experiments(
+            session, org_id
+        )
+        if record_timing is not None:
+            record_timing(
+                "dashboard_experiments_owner_probe",
+                elapsed_ms(probe_started_at),
+                "Dashboard unowned-experiments probe",
+            )
     author_filter = _build_experiments_author_filter(
         experiments_author_user_id,
         experiments_author_github_usernames,
         org_id=org_id,
         experiments_author_emails=experiments_author_emails,
+        include_legacy_fallback=include_legacy_fallback,
     )
     if author_filter is not None:
         page_query = page_query.where(author_filter)
@@ -1281,3 +1331,12 @@ async def get_dashboard_core(
             "Dashboard core total",
         )
     return response
+
+
+# Public aliases: the primary-task attribution helpers are part of the Mine
+# owner contract — anything stamping or backfilling experiment owners must
+# apply the exact same precedence this filter uses, so they are exported
+# rather than copied.
+build_primary_task_author_match = _build_primary_task_author_match
+first_live_task_id_for_experiment = _first_live_task_id_for_experiment
+normalize_github_handle = _normalize_github_handle

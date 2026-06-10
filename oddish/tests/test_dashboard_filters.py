@@ -6,6 +6,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core.dashboard import (
+    EXPERIMENTS_UNATTRIBUTED_OWNER,
     UNRESOLVED_EXPERIMENTS_OWNER,
     _build_experiments_author_filter,
     _experiment_row_passes_status_filter,
@@ -208,3 +209,37 @@ def test_author_filter_supports_multiple_legacy_emails() -> None:
     sql = _compile_sql(clause)
     assert "pratty@abundant.ai" in sql
     assert "ps4534@nyu.edu" in sql
+
+
+def test_author_filter_owner_only_when_legacy_fallback_disabled() -> None:
+    clause = _build_experiments_author_filter(
+        "user_1",
+        ["praxs"],
+        org_id="org_1",
+        experiments_author_emails=("pratty@abundant.ai",),
+        include_legacy_fallback=False,
+    )
+    sql = _compile_sql(clause)
+    assert "owner_user_id = 'user_1'" in sql
+    assert "EXISTS" not in sql
+
+
+def test_author_filter_keeps_legacy_fallback_by_default() -> None:
+    clause = _build_experiments_author_filter(
+        "user_1",
+        ["praxs"],
+        org_id="org_1",
+    )
+    sql = _compile_sql(clause)
+    assert "EXISTS" in sql
+    assert "owner_user_id IS NULL" in sql
+    assert "owner_user_id = 'user_1'" in sql
+
+
+def test_author_filter_never_matches_unattributed_sentinel() -> None:
+    clause = _build_experiments_author_filter(
+        EXPERIMENTS_UNATTRIBUTED_OWNER,
+        [],
+        org_id="org_1",
+    )
+    assert "false" in _compile_sql(clause).lower()

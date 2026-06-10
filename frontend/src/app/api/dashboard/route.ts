@@ -10,6 +10,8 @@ import {
   ServerTimingCollector,
 } from "@/lib/server-timing";
 
+export const maxDuration = 30;
+
 export async function GET(request: NextRequest) {
   const timings = new ServerTimingCollector();
   const requestStartedAt = performance.now();
@@ -72,6 +74,7 @@ export async function GET(request: NextRequest) {
         fetch(url, {
           cache: "no-store",
           headers: getAuthHeaders(token),
+          signal: AbortSignal.timeout(25_000),
         }),
       "Backend fetch",
     );
