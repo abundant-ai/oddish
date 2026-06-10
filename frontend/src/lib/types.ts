@@ -318,6 +318,18 @@ export interface DashboardExperimentAuthor {
   source: "github" | "api";
 }
 
+// Organization member, as returned by GET /api/users. Used to populate
+// the dashboard experiments owner filter (member picker).
+export interface OrgUser {
+  id: string;
+  email: string;
+  name: string | null;
+  github_username: string | null;
+  role: string;
+  org_id: string;
+  created_at: string;
+}
+
 export interface DashboardExperiment {
   id: string;
   name: string;
@@ -337,6 +349,9 @@ export interface DashboardExperiment {
   verdict_failed: number;
   verdict_pending: number;
   last_created_at: string | null;
+  author: DashboardExperimentAuthor | null;
+  last_runner: DashboardExperimentAuthor | null;
+  /** @deprecated Use `last_runner`; kept for older clients. */
   last_author: DashboardExperimentAuthor | null;
   last_pr_url: string | null;
   last_pr_title: string | null;

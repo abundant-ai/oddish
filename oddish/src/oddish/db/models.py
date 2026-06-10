@@ -232,6 +232,12 @@ class ExperimentModel(TimestampedMixin, Base):
             "last_activity_at",
             postgresql_where=text("deleted_at IS NULL"),
         ),
+        Index(
+            "idx_experiments_org_owner_user_live",
+            "org_id",
+            "owner_user_id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         # Mirror the partial-unique pattern used on ``tasks`` so a
         # soft-deleted experiment doesn't take its name slot with it.
         # Experiments don't currently have a name uniqueness constraint,
@@ -257,6 +263,9 @@ class ExperimentModel(TimestampedMixin, Base):
     last_activity_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # Primary owner for dashboard Mine filter (stamped from the first task submit).
+    owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Public sharing (nullable until published)
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
