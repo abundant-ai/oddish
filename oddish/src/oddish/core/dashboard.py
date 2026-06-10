@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import and_, case, func, nulls_last, or_, select
+from sqlalchemy import and_, case, false, func, nulls_last, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -27,6 +27,9 @@ from oddish.db import (
 )
 from oddish.queue import get_queue_and_pipeline_stats_with_concurrency
 from oddish.timing import TimingRecorder, elapsed_ms, now
+
+# Sentinel user id: Mine filter requested but no resolvable Clerk/API-key owner.
+UNRESOLVED_EXPERIMENTS_OWNER = "__unresolved_owner__"
 
 
 def _parse_github_meta(raw_github_meta: str | None) -> dict[str, Any] | None:
@@ -409,6 +412,8 @@ def _build_experiments_author_filter(
     """
     if experiments_author_user_id is None:
         return None
+    if experiments_author_user_id == UNRESOLVED_EXPERIMENTS_OWNER:
+        return false()
 
     github_handles = [
         handle
@@ -419,8 +424,11 @@ def _build_experiments_author_filter(
         if handle
     ]
 
+    # Fast path: indexed owner column when stamped at submit time.
+    owner_match = ExperimentModel.owner_user_id == experiments_author_user_id
+
     primary_task_id = _first_live_task_id_for_experiment()
-    author_exists = (
+    legacy_exists = (
         select(1)
         .select_from(TaskModel)
         .where(TaskModel.id == primary_task_id)
@@ -433,8 +441,12 @@ def _build_experiments_author_filter(
         )
     )
     if org_id is not None:
-        author_exists = author_exists.where(TaskModel.org_id == org_id)
-    return author_exists.exists()
+        legacy_exists = legacy_exists.where(TaskModel.org_id == org_id)
+    legacy_match = and_(
+        ExperimentModel.owner_user_id.is_(None),
+        legacy_exists.exists(),
+    )
+    return or_(owner_match, legacy_match)
 
 
 def _experiment_row_passes_status_filter(row, *, status_filter: str) -> bool:
@@ -482,6 +494,8 @@ async def load_dashboard_experiments(
     trim post-aggregation. The over-fetch ceiling caps worst-case
     work even on huge orgs.
     """
+    if experiments_author_user_id == UNRESOLVED_EXPERIMENTS_OWNER:
+        return [], False
 
     # ------------------------------------------------------------------
     # Step 1: page experiment ids by ``last_activity_at`` (indexed).
