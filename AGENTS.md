@@ -766,3 +766,89 @@ curl ${NEXT_PUBLIC_API_URL:-http://localhost:8000}/openapi.json
 - Verify Clerk keys in `frontend/.env.local`.
 - If org-scoped backend access fails, confirm `CLERK_JWT_TEMPLATE` is set and includes `org_id`.
 - If using production Clerk keys locally, use `frontend/run-prod-clerk-local.sh`.
+
+## Cursor Cloud specific instructions
+
+### Toolchain
+
+- Install **uv** and ensure `$HOME/.local/bin` is on `PATH`.
+- Both Python packages require **CPython 3.13** (`uv python install 3.13`; see `oddish/pyproject.toml`).
+- Frontend uses **pnpm** with a frozen lockfile (`pnpm install --frozen-lockfile`).
+
+### Local infrastructure (core stack)
+
+Cloud VMs do not ship with Postgres/S3. Use Docker (installed once during setup):
+
+```bash
+sudo service docker start
+
+sudo docker run -d --name oddish-db \
+  -e POSTGRES_USER=oddish -e POSTGRES_PASSWORD=oddish -e POSTGRES_DB=oddish \
+  -p 5432:5432 postgres:16-alpine
+
+sudo docker run -d --name oddish-minio \
+  -p 9000:9000 -p 9001:9001 \
+  -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+  minio/minio server /data --console-address ":9001"
+```
+
+Create the S3 bucket once (MinIO root user):
+
+```bash
+cd oddish && uv run python - <<'PY'
+import boto3
+from botocore.client import Config
+s3 = boto3.client("s3", endpoint_url="http://127.0.0.1:9000",
+    aws_access_key_id="minioadmin", aws_secret_access_key="minioadmin",
+    region_name="us-east-1", config=Config(signature_version="s3v4"))
+s3.create_bucket(Bucket="data")
+PY
+```
+
+Copy env templates and point both `oddish/.env` and `backend/.env` at the
+containers above (`ODDISH_DATABASE_URL=postgresql+asyncpg://oddish:oddish@localhost:5432/oddish`,
+`ODDISH_S3_*` → MinIO on port 9000).
+
+Run migrations once per fresh DB:
+
+```bash
+cd oddish && uv run python -m oddish.db setup
+cd backend && uv run alembic upgrade head
+```
+
+### Recommended dev loop (no Clerk/Modal)
+
+For agents validating the execution core without hosted secrets:
+
+```bash
+cd oddish && uv run python -m oddish.server --host 0.0.0.0 --port 8000
+export ODDISH_API_URL=http://localhost:8000
+export ODDISH_API_KEY=local-dev-key   # CLI requires a value; standalone server does not validate it
+curl http://localhost:8000/health
+```
+
+Hello-world eval (no LLM keys; uses `nop` agent):
+
+```bash
+oddish run -d terminal-bench@2.0 -a nop --n-trials 1 --experiment dev-env-demo
+oddish status --experiment <experiment_id>
+```
+
+Harbor trial sandboxes may hit transient retries inside nested Docker VMs;
+upload → queue → status still validates the core path.
+
+### Frontend in Cloud Agents
+
+- `pnpm lint` and `pnpm build` work with placeholder Clerk keys.
+- `pnpm dev` / `pnpm start` require **real Clerk test keys** in
+  `frontend/.env.local`; otherwise pages return 500 at runtime.
+- Full-stack (Clerk + Modal backend) needs external secrets — see
+  `SELF_HOSTING.md`.
+
+### Lint / test commands
+
+| Package | Command |
+|---------|---------|
+| `oddish/` | `uv run pytest` |
+| `backend/` | `set -a && source .env && set +a && uv run pytest` |
+| `frontend/` | `pnpm lint`, `pnpm build` (no test suite wired yet) |
