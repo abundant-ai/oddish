@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -8,11 +10,12 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth.provisioning import fetch_github_identity_from_clerk
 from auth.types import AuthContext
 from models import APIKeyModel, UserModel
 from oddish.core.dashboard import UNRESOLVED_EXPERIMENTS_OWNER
-from oddish.db import TaskModel
+from oddish.db import TaskModel, get_session
+
+logger = logging.getLogger(__name__)
 
 # Re-export for router imports.
 __all__ = [
@@ -90,23 +93,59 @@ def invalidate_attribution_cache(*, org_id: str, user_id: str) -> None:
     _memory_cache.pop(_cache_key(org_id, user_id), None)
 
 
-def _db_cache_fresh(user: UserModel) -> AttributionProfile | None:
+def _db_cache_profile(user: UserModel) -> tuple[AttributionProfile | None, bool]:
+    """Return ``(profile, fresh)`` from the user's persisted attribution cache."""
     raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else None
-    if not raw:
-        return None
-    refreshed_at = raw.get("refreshed_at")
+    profile = AttributionProfile.from_dict(raw)
+    if profile is None:
+        return None, False
+    refreshed_at = raw.get("refreshed_at") if raw else None
     if not isinstance(refreshed_at, str):
-        return None
+        return profile, False
     try:
         refreshed = datetime.fromisoformat(refreshed_at.replace("Z", "+00:00"))
     except ValueError:
-        return None
+        return profile, False
     if refreshed.tzinfo is None:
         refreshed = refreshed.replace(tzinfo=timezone.utc)
     age = (datetime.now(timezone.utc) - refreshed).total_seconds()
-    if age > _DB_TTL_SECONDS:
-        return None
-    return AttributionProfile.from_dict(raw)
+    return profile, age <= _DB_TTL_SECONDS
+
+
+_refresh_in_flight: set[str] = set()
+# Strong refs so fire-and-forget refresh tasks aren't garbage-collected
+# mid-flight (asyncio only keeps weak refs to tasks).
+_refresh_tasks: set[asyncio.Task] = set()
+
+
+def _schedule_profile_refresh(*, org_id: str, user_id: str) -> None:
+    """Fire-and-forget profile recompute on a fresh session.
+
+    Serves stale profiles instantly from the request path; this keeps the
+    Clerk-free discovery scan out of dashboard latency entirely.
+    """
+    key = _cache_key(org_id, user_id)
+    if key in _refresh_in_flight:
+        return
+    _refresh_in_flight.add(key)
+
+    async def _run() -> None:
+        try:
+            async with get_session() as session:
+                user = await session.get(UserModel, user_id)
+                if user is None or not user.is_active or user.org_id != org_id:
+                    return
+                await _compute_and_persist_profile(session, user, org_id=org_id)
+        except Exception:
+            logger.warning(
+                "Background attribution refresh failed for %s", key, exc_info=True
+            )
+        finally:
+            _refresh_in_flight.discard(key)
+
+    task = asyncio.create_task(_run())
+    _refresh_tasks.add(task)
+    task.add_done_callback(_refresh_tasks.discard)
 
 
 async def _other_member_github_handles(
@@ -316,30 +355,15 @@ async def _persist_profile(
     _memory_set(user.org_id, user.id, profile)
 
 
-async def _load_attribution_profile(
+async def _compute_and_persist_profile(
     session: AsyncSession,
     user: UserModel,
     *,
     org_id: str,
 ) -> AttributionProfile:
-    cached = _memory_get(org_id, user.id)
-    if cached is not None:
-        return cached
-
-    db_cached = _db_cache_fresh(user)
-    if db_cached is not None:
-        _memory_set(org_id, user.id, db_cached)
-        return db_cached
-
-    github_email: str | None = None
-    if user.clerk_user_id:
-        username, github_email = await fetch_github_identity_from_clerk(
-            user.clerk_user_id
-        )
-        if username and not user.github_username:
-            user.github_username = username
-            await session.flush()
-
+    previous_raw = (
+        user.attribution_cache if isinstance(user.attribution_cache, dict) else None
+    )
     blocked_handles = await _other_member_github_handles(
         session, org_id=org_id, exclude_user_id=user.id
     )
@@ -347,10 +371,7 @@ async def _load_attribution_profile(
         session, org_id=org_id, exclude_user_id=user.id
     )
     baseline = _baseline_profile(
-        user,
-        blocked_handles=blocked_handles,
-        blocked_emails=blocked_emails,
-        github_email=github_email,
+        user, blocked_handles=blocked_handles, blocked_emails=blocked_emails
     )
     profile = await _discover_attribution_from_tasks(
         session,
@@ -361,7 +382,45 @@ async def _load_attribution_profile(
         blocked_emails=blocked_emails,
     )
     await _persist_profile(session, user, profile)
+    if _profile_gained_identities(profile, previous_raw):
+        from dashboard_owner_backfill import reclaim_experiments_for_user
+
+        await reclaim_experiments_for_user(session, user=user, profile=profile)
     return profile
+
+
+def _profile_gained_identities(
+    profile: AttributionProfile, previous_raw: dict[str, Any] | None
+) -> bool:
+    previous = AttributionProfile.from_dict(previous_raw)
+    if previous is None:
+        return bool(profile.github_handles or profile.legacy_emails)
+    return not (
+        {h.lower() for h in profile.github_handles}
+        <= {h.lower() for h in previous.github_handles}
+        and {e.lower() for e in profile.legacy_emails}
+        <= {e.lower() for e in previous.legacy_emails}
+    )
+
+
+async def _load_attribution_profile(
+    session: AsyncSession,
+    user: UserModel,
+    *,
+    org_id: str,
+) -> AttributionProfile:
+    cached = _memory_get(org_id, user.id)
+    if cached is not None:
+        return cached
+
+    db_profile, fresh = _db_cache_profile(user)
+    if db_profile is not None:
+        _memory_set(org_id, user.id, db_profile)
+        if not fresh:
+            _schedule_profile_refresh(org_id=org_id, user_id=user.id)
+        return db_profile
+
+    return await _compute_and_persist_profile(session, user, org_id=org_id)
 
 
 async def _resolve_target_user_id(
