@@ -353,15 +353,15 @@ def _dashboard_author_from_task(
     }
 
 
-def _build_latest_task_author_match(
+def _build_primary_task_author_match(
     experiments_author_user_id: str,
     github_handles: list[str],
     *,
     experiments_author_emails: Sequence[str] | None,
 ):
-    """Match the dashboard Author column on the experiment's latest live task.
+    """Match the dashboard Author column on the experiment's oldest live task.
 
-    Precedence mirrors ``last_github_username or last_user`` in the response:
+    Precedence mirrors ``primary_github_username or primary_user`` in the response:
     ``github_username`` tag first, then legacy ``tasks.user`` (Clerk email,
     GitHub-linked email such as ``ps4534@nyu.edu``, or known handle strings
     from GH Actions / CLI ``--github-user``), then ``created_by_user_id`` only
@@ -442,7 +442,7 @@ def _build_experiments_author_filter(
         .select_from(TaskModel)
         .where(TaskModel.id == primary_task_id)
         .where(
-            _build_latest_task_author_match(
+            _build_primary_task_author_match(
                 experiments_author_user_id,
                 github_handles,
                 experiments_author_emails=experiments_author_emails,

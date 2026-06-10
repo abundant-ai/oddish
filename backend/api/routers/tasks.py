@@ -6,7 +6,7 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_policy import (
@@ -206,9 +206,12 @@ async def _lookup_user_by_github_username(
     github_username: str,
     org_id: str,
 ) -> UserModel | None:
+    normalized = (github_username or "").strip().lstrip("@")
+    if not normalized:
+        return None
     user_result = await session.execute(
         select(UserModel).where(
-            UserModel.github_username == github_username,
+            func.lower(UserModel.github_username) == normalized.lower(),
             UserModel.org_id == org_id,
             UserModel.is_active == True,  # noqa: E712
         )
@@ -258,6 +261,9 @@ async def _resolve_experiment_owner_user_id(
         )
         if user:
             return user.id
+        # Explicit --github-user with no linked org member: leave owner unset so
+        # the legacy primary-task Mine filter can match the github tag.
+        return None
 
     if auth.user_id:
         return auth.user_id
