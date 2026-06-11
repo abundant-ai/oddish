@@ -109,10 +109,13 @@ export function TagPicker({
       return;
     }
     // Backend may normalize the typed key — select by the returned id.
+    // Selection (which triggers the caller's apply) goes FIRST so a quick
+    // navigation can't orphan a created-but-never-applied tag; the list
+    // refresh can lag behind harmlessly.
     const created = body as BackendTagListItem;
     setCreateColor(null);
-    await mutate();
     toggle(created.id);
+    await mutate();
   }
 
   return (
