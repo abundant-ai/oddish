@@ -678,6 +678,7 @@ def submit_sweep(
     experiment_id: str | None,
     max_trial_attempts: int | None = None,
     run_analysis: bool = False,
+    run_probe: bool = False,
     github_username: str | None = None,
     tags: dict[str, str] | None = None,
     publish_experiment: bool | None = False,
@@ -756,6 +757,7 @@ def submit_sweep(
         "configs": configs,
         "priority": priority,
         "run_analysis": run_analysis,
+        "run_probe": run_probe,
     }
     if user:
         payload["user"] = user
