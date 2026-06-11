@@ -1172,7 +1172,7 @@ export function TaskFilesPanel({
                 Files
               </div>
               {renderFileTree(fileTree)}
-              {showAnalysis !== false && (
+              {showAnalysis !== false && !filesUrl && (
                 <div className="border-border mt-2 border-t pt-2">
                   <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
                     Probe
