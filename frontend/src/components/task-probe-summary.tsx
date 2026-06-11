@@ -44,7 +44,7 @@ export function TaskProbeSummary({
           className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs underline"
         >
           View full probe run
-          <ExternalLink className="h-3 w-3" />
+          <ExternalLink className="h-3 w-3" aria-hidden="true" />
         </Link>
       </div>
 
@@ -160,6 +160,11 @@ export function TaskProbeSummary({
                 <span className="bg-muted text-muted-foreground rounded px-2 py-1 font-medium">
                   {tally.investigation} investigation step
                   {tally.investigation === 1 ? "" : "s"}
+                </span>
+              ) : null}
+              {tally.cheatTotal > 0 ? (
+                <span className="text-muted-foreground">
+                  {tally.succeeded > 0 ? "task is gameable" : "task is robust"}
                 </span>
               ) : null}
             </div>
