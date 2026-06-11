@@ -34,6 +34,11 @@ MAX_BYTES_PER_FILE = 2 * 1024 * 1024  # 2 MiB
 HARBOR_DIR_NAME = "harbor_src"
 HARBOR_CONTAINER_DIR = f"/app/{HARBOR_DIR_NAME}"
 
+# Whole task dir (minus environment/, already in the image) staged for probes
+# so the agent can read the very tests/solution/instruction it is probing.
+TASK_SOURCE_DIR_NAME = "task_source"
+TASK_SOURCE_CONTAINER_DIR = f"/app/{TASK_SOURCE_DIR_NAME}"
+
 
 # System framing prepended to instruction.md when a trial carries an operator
 # directive (extra_instructions). Reorients the agent so the operator's

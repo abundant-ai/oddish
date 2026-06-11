@@ -29,6 +29,7 @@ from oddish.worker.probe_overlay import (
     PROBE_SYSTEM_FRAMING,
     RELATED_CONTAINER_DIR,
     RELATED_DIR_NAME,
+    TASK_SOURCE_DIR_NAME,
     render_probe_instruction,
     select_related_trials,
 )
@@ -38,7 +39,11 @@ logger = logging.getLogger(__name__)
 
 
 async def stage_related_trial_logs(
-    work_task_dir: Path, task_id: str, current_trial_id: str
+    work_task_dir: Path,
+    task_id: str,
+    current_trial_id: str,
+    *,
+    target_trial_id: str | None = None,
 ) -> bool:
     """Download prior real (non-probe) attempts' logs into the work dir.
 
@@ -54,7 +59,9 @@ async def stage_related_trial_logs(
         )
         siblings = list(result.scalars().all())
 
-    related = select_related_trials(siblings, current_trial_id=current_trial_id)
+    related = select_related_trials(
+        siblings, current_trial_id=current_trial_id, target_trial_id=target_trial_id
+    )
     if not related:
         return False
 
@@ -107,6 +114,45 @@ async def stage_related_trial_logs(
             staged_any = True
 
     return staged_any
+
+
+# excluded from task_source: environment/ is already baked into the image, and
+# the staging subdirs themselves must never be copied into a copy of themselves.
+_TASK_SOURCE_EXCLUDE = {
+    "environment",
+    TASK_SOURCE_DIR_NAME,
+    RELATED_DIR_NAME,
+    HARBOR_DIR_NAME,
+}
+
+
+def collect_task_source(work_task_dir: Path) -> int:
+    """Copy the task dir (minus environment/ and staging subdirs) into
+    ``<work_task_dir>/task_source/``. Returns the number of files copied.
+
+    Oversize files are skipped (mirrors the related-logs caps). Best-effort:
+    per-file failures are logged and skipped.
+    """
+    dest_root = work_task_dir / TASK_SOURCE_DIR_NAME
+    copied = 0
+    for entry in sorted(work_task_dir.iterdir()):
+        if entry.name in _TASK_SOURCE_EXCLUDE or entry.name.startswith("."):
+            continue
+        for src in [entry] if entry.is_file() else entry.rglob("*"):
+            if not src.is_file():
+                continue
+            try:
+                if src.stat().st_size > MAX_BYTES_PER_FILE:
+                    logger.info("probe: skipping large task file %s", src)
+                    continue
+                rel = src.relative_to(work_task_dir)
+                dst = dest_root / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(src.read_bytes())
+                copied += 1
+            except Exception:
+                logger.exception("probe: copying task file %s failed", src)
+    return copied
 
 
 def stage_harbor_source(work_task_dir: Path) -> bool:
@@ -186,6 +232,8 @@ async def apply_probe_overlay(
     task_id: str,
     trial_id: str,
     extra_instructions: str,
+    probe_scope: str | None = None,
+    target_trial_id: str | None = None,
     time_budget_sec: float | None = None,
 ) -> None:
     """Stage related logs and rewrite ``task_dir/instruction.md`` in place.
@@ -199,13 +247,22 @@ async def apply_probe_overlay(
     must reach the sandbox through Harbor's skill-upload path, not the task dir
     which Harbor never mounts into the container.)
     """
+    if probe_scope == "task":
+        has_related = False  # task scope uses the S3 MCP server, not staging
+    else:
+        try:
+            has_related = await stage_related_trial_logs(
+                task_dir, task_id, trial_id, target_trial_id=target_trial_id
+            )
+        except Exception:
+            logger.exception("probe: staging related trial logs failed")
+            has_related = False
+
+    # Every probe gets the whole task dir (minus environment/).
     try:
-        has_related = await stage_related_trial_logs(
-            task_dir, task_id, trial_id
-        )
+        collect_task_source(task_dir)
     except Exception:
-        logger.exception("probe: staging related trial logs failed")
-        has_related = False
+        logger.exception("probe: collecting task source failed")
 
     # Stage harbor's own source as a reward-hack surface (read-only, in-mount,
     # network-immune). Best-effort: never blocks the probe.
