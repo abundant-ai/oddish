@@ -160,15 +160,21 @@ def select_related_trials(
     trials: list[_TrialLike],
     *,
     current_trial_id: str,
+    target_trial_id: str | None = None,
 ) -> list[_TrialLike]:
     """Pick the "real attempt" siblings whose logs are worth staging.
 
-    Excludes the current trial and any other probe-mode trial
-    (``harbor_config.mode == "probe"``), leaving genuine solution attempts.
+    Excludes the current trial and any other probe-mode trial. When
+    ``target_trial_id`` is given (trial-scope probe), narrows to exactly that
+    one trial (still excluding the current trial).
     """
     selected = []
     for trial in trials:
         if trial.id == current_trial_id:
+            continue
+        if target_trial_id is not None:
+            if trial.id == target_trial_id:
+                selected.append(trial)
             continue
         config = getattr(trial, "harbor_config", None) or {}
         if config.get("mode") == "probe":
