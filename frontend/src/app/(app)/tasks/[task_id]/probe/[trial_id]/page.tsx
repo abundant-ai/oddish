@@ -3,6 +3,12 @@
 import { use, useEffect, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
+import {
+  normalizeMetric,
+  ratioUnitVerb,
+  tallyAttempts,
+  pluralize,
+} from "@/lib/probe-summary";
 
 type AgentMessage = {
   kind: "assistant_text" | "tool_use" | "tool_result" | "result";
@@ -55,13 +61,6 @@ type ProbeSummary = {
   result_focus_findings?: string | null;
 };
 
-function pluralize(noun: string): string {
-  const n = noun.trim();
-  if (!n) return "";
-  if (/[sxz]$|[cs]h$/.test(n)) return n + "es";
-  if (/[^aeiou]y$/.test(n)) return n.slice(0, -1) + "ies";
-  return n + "s";
-}
 
 type Trial = {
   id: string;
@@ -245,10 +244,7 @@ export default function ProbeResultPage({
             </h2>
             <div className="flex items-center gap-2">
               {(() => {
-                const rawMetric =
-                  trial.harbor_config?.evaluation_metric ?? "none";
-                const metric =
-                  rawMetric === "cheat_ratio" ? "ratio" : rawMetric;
+                const metric = normalizeMetric(trial.harbor_config?.evaluation_metric);
                 const label =
                   metric === "ratio"
                     ? "ratio metric"
@@ -267,10 +263,7 @@ export default function ProbeResultPage({
             </div>
           </div>
           {(() => {
-            const rawMetric =
-              trial.harbor_config?.evaluation_metric ?? "none";
-            const metric =
-              rawMetric === "cheat_ratio" ? "ratio" : rawMetric;
+            const metric = normalizeMetric(trial.harbor_config?.evaluation_metric);
             // Always render the result_focus block when metric is result_focus,
             // even if findings are missing — show an "awaiting answer" placeholder.
             if (metric === "result_focus") {
@@ -350,25 +343,13 @@ export default function ProbeResultPage({
             </div>
           ) : null}
           {(() => {
-            const rawMetric =
-              trial.harbor_config?.evaluation_metric ?? "none";
-            const metric =
-              rawMetric === "cheat_ratio" ? "ratio" : rawMetric;
-            const unit =
-              trial.harbor_config?.ratio_unit ??
-              (rawMetric === "cheat_ratio" ? "cheat" : "attempt");
-            const verb =
-              trial.harbor_config?.ratio_verb ??
-              (rawMetric === "cheat_ratio" ? "succeeded" : null);
+            const metric = normalizeMetric(trial.harbor_config?.evaluation_metric);
+            const { unit, verb } = ratioUnitVerb(trial.harbor_config);
             const plural = pluralize(unit);
             const verbStr = verb ? ` ${verb}` : "";
             // For ratio probes, render the breakdown chips even when
             // attempts is missing/empty so the column shape is consistent.
-            const all = summary.attempts ?? [];
-            const succeeded = all.filter((a) => a.success === true).length;
-            const blocked = all.filter((a) => a.success === false).length;
-            const investigation = all.length - succeeded - blocked;
-            const cheatTotal = succeeded + blocked;
+            const { succeeded, blocked, investigation, cheatTotal } = tallyAttempts(summary.attempts);
 
             if (metric === "ratio") {
               return (
