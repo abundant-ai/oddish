@@ -454,6 +454,7 @@ async def enqueue_task_expand_worker_job(
 def _build_harbor_config_for_trial(
     submission: TaskSubmission,
     spec: TrialSpec,
+    experiment_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Build the harbor_config JSONB payload for a single trial row."""
     base = submission.harbor.model_dump(mode="json", exclude_defaults=True)
@@ -474,6 +475,12 @@ def _build_harbor_config_for_trial(
         base["extra_instructions"] = submission.extra_instructions
         if submission.probe_name:
             base["probe_name"] = submission.probe_name
+        if submission.probe_scope:
+            base["probe_scope"] = submission.probe_scope
+            if submission.probe_scope == "trial" and submission.probe_target_trial_id:
+                base["probe_target_trial_id"] = submission.probe_target_trial_id
+        # NOTE: task-scope probes also get an mcp_servers entry — see Task 14
+        # (_attach_s3_mcp_server) which mutates `base` using experiment_id.
 
     if submission.result_focus:
         base["result_focus"] = submission.result_focus
@@ -653,7 +660,9 @@ async def create_task(
         trial_id = f"{task_id}-{i}"
         trial_name = f"{task_name}-{i}"
 
-        harbor_config = _build_harbor_config_for_trial(submission, spec)
+        harbor_config = _build_harbor_config_for_trial(
+            submission, spec, experiment_id=experiment.id
+        )
 
         trial = TrialModel(
             id=trial_id,
@@ -670,6 +679,7 @@ async def create_task(
             environment=spec.environment,
             harbor_config=harbor_config,
             is_probe=(harbor_config or {}).get("mode") == "probe",
+            probe_scope=(harbor_config or {}).get("probe_scope"),
             max_attempts=submission.max_trial_attempts,
             status=TrialStatus.QUEUED,
         )
@@ -802,7 +812,9 @@ async def append_trials_to_task(
         trial_id = f"{task.id}-{next_index}"
         trial_name = f"{task.name}-{next_index}"
 
-        harbor_config = _build_harbor_config_for_trial(submission, spec)
+        harbor_config = _build_harbor_config_for_trial(
+            submission, spec, experiment_id=trial_experiment_id
+        )
 
         trial = TrialModel(
             id=trial_id,
@@ -819,6 +831,7 @@ async def append_trials_to_task(
             environment=spec.environment,
             harbor_config=harbor_config,
             is_probe=(harbor_config or {}).get("mode") == "probe",
+            probe_scope=(harbor_config or {}).get("probe_scope"),
             max_attempts=submission.max_trial_attempts,
             status=TrialStatus.QUEUED,
         )
