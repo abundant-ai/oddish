@@ -3,14 +3,19 @@
 Runs in GitHub Actions after Alembic has applied both stacks to a
 data-less Supabase preview branch. Populates a small curated set of rows
 so the preview UI renders and the feature under review is testable,
-without cloning production.
+plus (best-effort) a small pseudo-random sample of production data so
+reviewers can check against real prod items without cloning everything.
 
 Invariants:
-- Deterministic: every row sets its id and timestamps explicitly (no
-  uuid4()/utcnow()), so runs and branches are byte-identical.
-- Idempotent + convergent: rows are upserted (ON CONFLICT DO UPDATE) and
-  any seed-owned row (id prefixed ``seed-``) absent from FIXTURES is
-  deleted (reconcile), so edits and removals converge on reused branches.
+- Deterministic: curated rows pin ids/timestamps; the prod sample is
+  ordered by ``md5(id || sample_key)`` with the PR number as the key, so
+  re-runs within a PR draw the same rows while different PRs draw
+  different ones.
+- Idempotent + convergent: rows are upserted (ON CONFLICT DO UPDATE);
+  seed-owned rows (id prefixed ``seed-``) absent from FIXTURES are
+  deleted, and previously sampled rows absent from the current draw are
+  deleted before upsert, so edits, removals, and prod drift all converge
+  on reused branches.
 - Cross-stack via reflection: the live post-Alembic schema is reflected,
   so inserts span both Alembic stacks in FK topological order without
   importing any ORM models.
@@ -18,12 +23,13 @@ Invariants:
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import os
 import sys
 
 from sqlalchemy import (
     JSON, Boolean, Date, DateTime, Float, Integer, MetaData, Numeric, String,
-    Text, and_, delete, false, select,
+    Text, and_, delete, false, select, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as _PgUUID
@@ -32,6 +38,17 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 SEED_EPOCH = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
 SEED_ID_PREFIX = "seed-"
+SEED_ORG_ID = "seed-org"
+
+# Prod-sample sizing. Small by design: enough real items to check against,
+# never the whole dataset.
+SAMPLE_RECENT_EXPERIMENTS = 3
+SAMPLE_RANDOM_EXPERIMENTS = 2
+SAMPLE_TRIALS_PER_EXPERIMENT = 25
+# Statuses considered terminal; only terminal rows are sampled so the
+# preview never imports in-flight work (nothing for its workers to act on).
+_TERMINAL_TASK_STATUSES = ("COMPLETED", "FAILED")
+_TERMINAL_TRIAL_STATUSES = ("SUCCESS", "FAILED")
 
 
 def _filler(column):
@@ -90,7 +107,7 @@ def _seed_owned(table):
 def _fixtures() -> dict[str, list[dict]]:
     """Curated rows keyed by table name. Every id starts with
     ``SEED_ID_PREFIX`` and every row sets created_at/updated_at = SEED_EPOCH."""
-    org_id = "seed-org"
+    org_id = SEED_ORG_ID
     owner_id = "seed-usr-owner"
     member_id = "seed-usr-member"
     exp_id = "seed-exp-1"
@@ -249,7 +266,159 @@ def _topo_order(md: MetaData) -> list:
     return ordered
 
 
-async def seed(engine: AsyncEngine) -> None:
+async def sample_prod_subset(
+    source: AsyncEngine, *, sample_key: str
+) -> dict:
+    """Draw a small, deterministic pseudo-random subset of production data.
+
+    Read-only by construction: only SELECTs are issued, and the caller builds
+    the source engine with ``default_transaction_read_only=on``. Rows are
+    ordered by ``md5(id || sample_key)`` so the draw is stable for a given key
+    (the PR number) but differs across PRs.
+
+    The closure is anchored on live experiments and walks task_experiments ->
+    tasks -> task_versions -> trials -> referenced users, keeping terminal
+    rows only. Every row is remapped into the seeded org (so the reviewer's
+    Clerk login sees it) and identity fields are anonymized; production
+    ``organizations`` rows are never imported.
+
+    Returns ``{"rows": {table: [row, ...]}, "current_versions": {task: ver}}``
+    for :func:`seed` to merge through its normal upsert machinery.
+    """
+    async def rows_of(conn, sql: str, **params) -> list[dict]:
+        res = await conn.execute(text(sql), params)
+        return [dict(r._mapping) for r in res.fetchall()]
+
+    async with source.connect() as conn:
+        exps = await rows_of(
+            conn,
+            "SELECT * FROM experiments"
+            " WHERE deleted_at IS NULL AND org_id IS NOT NULL"
+            " ORDER BY last_activity_at DESC NULLS LAST, created_at DESC"
+            " LIMIT :n",
+            n=SAMPLE_RECENT_EXPERIMENTS,
+        )
+        exps += await rows_of(
+            conn,
+            "SELECT * FROM experiments"
+            " WHERE deleted_at IS NULL AND org_id IS NOT NULL"
+            " ORDER BY md5(id || :key) LIMIT :n",
+            key=sample_key,
+            n=SAMPLE_RANDOM_EXPERIMENTS,
+        )
+        exps = list({e["id"]: e for e in exps}.values())
+        exp_ids = [e["id"] for e in exps]
+        if not exp_ids:
+            return {"rows": {}, "current_versions": {}}
+
+        links = await rows_of(
+            conn,
+            "SELECT * FROM task_experiments"
+            " WHERE experiment_id = ANY(:ids) AND deleted_at IS NULL",
+            ids=exp_ids,
+        )
+        task_ids = sorted({l["task_id"] for l in links})
+        tasks = await rows_of(
+            conn,
+            "SELECT * FROM tasks"
+            " WHERE id = ANY(:ids) AND deleted_at IS NULL"
+            " AND status::text = ANY(:statuses)"
+            " ORDER BY md5(id || :key)",
+            ids=task_ids,
+            statuses=list(_TERMINAL_TASK_STATUSES),
+            key=sample_key,
+        ) if task_ids else []
+        # Dedupe by name: after the org remap every task lands in the seeded
+        # org, where idx_tasks_unique_org_name enforces (org, name) unique.
+        # md5 order above makes "which duplicate wins" deterministic.
+        seen_names: set[str] = set()
+        tasks = [
+            t for t in tasks
+            if not (t["name"] in seen_names or seen_names.add(t["name"]))
+        ]
+        kept_task_ids = [t["id"] for t in tasks]
+
+        versions = await rows_of(
+            conn,
+            "SELECT * FROM task_versions WHERE task_id = ANY(:ids)",
+            ids=kept_task_ids,
+        ) if kept_task_ids else []
+
+        trials = await rows_of(
+            conn,
+            "SELECT * FROM ("
+            "  SELECT t.*, row_number() OVER ("
+            "    PARTITION BY t.experiment_id ORDER BY md5(t.id || :key)"
+            "  ) AS _rn FROM trials t"
+            "  WHERE t.experiment_id = ANY(:exp_ids)"
+            "    AND t.task_id = ANY(:task_ids)"
+            "    AND t.deleted_at IS NULL"
+            "    AND t.status::text = ANY(:statuses)"
+            ") s WHERE s._rn <= :cap",
+            key=sample_key,
+            exp_ids=exp_ids,
+            task_ids=kept_task_ids,
+            statuses=list(_TERMINAL_TRIAL_STATUSES),
+            cap=SAMPLE_TRIALS_PER_EXPERIMENT,
+        ) if kept_task_ids else []
+        for t in trials:
+            t.pop("_rn", None)
+
+        user_ids = sorted({
+            v
+            for rows in (exps, tasks, versions, trials)
+            for row in rows
+            for k, v in row.items()
+            if k.endswith("_user_id") and v
+        })
+        users = await rows_of(
+            conn,
+            "SELECT * FROM users WHERE id = ANY(:ids)",
+            ids=user_ids,
+        ) if user_ids else []
+
+    # --- transforms: remap into the seeded org, anonymize identity fields,
+    # and never let sampled data become publicly shareable from a preview.
+    links = [l for l in links if l["task_id"] in set(kept_task_ids)]
+    for e in exps:
+        e["org_id"] = SEED_ORG_ID
+        e["is_public"] = False
+        e["public_token"] = None
+    current_versions: dict[str, str] = {}
+    version_ids = {v["id"] for v in versions}
+    for t in tasks:
+        t["org_id"] = SEED_ORG_ID
+        t["user"] = "owner@preview.local"
+        if t.get("current_version_id") in version_ids:
+            current_versions[t["id"]] = t["current_version_id"]
+        t["current_version_id"] = None
+    trial_ids = {t["id"] for t in trials}
+    for t in trials:
+        t["org_id"] = SEED_ORG_ID
+        if t.get("superseded_by_trial_id") not in trial_ids:
+            t["superseded_by_trial_id"] = None
+    for u in users:
+        u["org_id"] = SEED_ORG_ID
+        u["email"] = f"user-{u['id']}@preview.local"
+        u["name"] = f"Prod User {u['id'][:8]}"
+        u["clerk_user_id"] = None
+        u["avatar_url"] = None
+        u["github_username"] = None
+
+    return {
+        "rows": {
+            "users": users,
+            "experiments": exps,
+            "tasks": tasks,
+            "task_versions": versions,
+            "task_experiments": links,
+            "trials": trials,
+        },
+        "current_versions": current_versions,
+    }
+
+
+async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
     fixtures = _fixtures()
     org = fixtures["organizations"][0]
     if not org["clerk_org_id"]:
@@ -283,13 +452,29 @@ async def seed(engine: AsyncEngine) -> None:
                 .values(clerk_org_id=None)
             )
 
+        # Reconcile previously sampled rows BEFORE upserting: rows from an
+        # earlier draw that are absent from the current one are deleted
+        # (children-first), so reused branches track prod drift and a stale
+        # task can't collide with a fresh same-named one on
+        # idx_tasks_unique_org_name. Only runs when a sample is provided --
+        # a transient prod outage (sampled=None) must not wipe the realism
+        # data a previous push loaded. JIT reviewer users are untouched
+        # (users are never sample-reconciled).
+        sample_rows = (sampled or {}).get("rows", {})
+        if sampled is not None:
+            await _reconcile_sampled(md, conn, sample_rows)
+
         # Upsert parents-first, auto-filling any NOT-NULL column the fixture
         # omits that has no DB default. Generalized to ANY primary key
         # (single-col ``id``, composite like ``task_experiments``, ...): we
         # key ON CONFLICT on the full PK tuple and never blast PK columns in
-        # the UPDATE clause.
+        # the UPDATE clause. Sampled rows ride the same path; their keys are
+        # filtered to the target's columns (prod may trail the branch schema)
+        # and raw-SELECT JSON strings are coerced back to objects so the
+        # typed JSONB bind doesn't double-encode them.
         for table in ordered:
-            rows = fixtures.get(table.name, [])
+            rows = list(fixtures.get(table.name, []))
+            rows += sample_rows.get(table.name, [])
             if not rows:
                 continue
             pk_cols = [c.name for c in table.primary_key.columns]
@@ -298,7 +483,22 @@ async def seed(engine: AsyncEngine) -> None:
                 if not c.nullable and c.server_default is None and not c.primary_key
             ]
             for row in rows:
-                filled = dict(row)
+                filled = {}
+                for k, v in row.items():
+                    col = table.columns.get(k)
+                    if col is None:
+                        print(
+                            f"preview_seed: dropped {table.name}.{k} (no such "
+                            f"column on the target schema)",
+                            file=sys.stderr,
+                        )
+                        continue
+                    if isinstance(col.type, (JSONB, JSON)) and isinstance(v, str):
+                        try:
+                            v = json.loads(v)
+                        except ValueError:
+                            pass
+                    filled[k] = v
                 for c in needs_value:
                     if c.name not in filled:
                         filled[c.name] = _filler(c)
@@ -308,9 +508,13 @@ async def seed(engine: AsyncEngine) -> None:
                     stmt.on_conflict_do_update(index_elements=pk_cols, set_=set_)
                 )
 
-        # Linkage pass for circular FKs.
+        # Linkage pass for circular FKs: curated map plus the sampled tasks'
+        # captured current_version_id values.
+        current_versions = dict(_CURRENT_VERSION)
+        if sampled:
+            current_versions.update(sampled.get("current_versions", {}))
         tasks = md.tables["tasks"]
-        for task_id, version_id in _CURRENT_VERSION.items():
+        for task_id, version_id in current_versions.items():
             await conn.execute(
                 tasks.update().where(tasks.c.id == task_id)
                 .values(current_version_id=version_id)
@@ -339,6 +543,71 @@ async def seed(engine: AsyncEngine) -> None:
                     )
 
         await _recompute_projections(conn, fixtures)
+
+
+async def _reconcile_sampled(md: MetaData, conn, sample_rows: dict) -> None:
+    """Delete previously sampled rows absent from the current draw.
+
+    Sampled rows are identified as non-``seed-`` rows living in the seeded
+    org (the only way such rows arrive on a data-less branch). Deletes run
+    children-first so no FK ordering is assumed. ``users`` are deliberately
+    excluded: JIT-provisioned reviewer accounts live there and must survive;
+    a stale sampled user row is harmless (anonymized, tiny).
+    """
+    def _kept_ids(name: str) -> list:
+        return [r["id"] for r in sample_rows.get(name, [])]
+
+    def _not_seed(col):
+        return ~col.like(f"{SEED_ID_PREFIX}%")
+
+    trials = md.tables.get("trials")
+    if trials is not None:
+        await conn.execute(
+            delete(trials)
+            .where(trials.c.org_id == SEED_ORG_ID)
+            .where(_not_seed(trials.c.id))
+            .where(~trials.c.id.in_(_kept_ids("trials")))
+        )
+
+    links = md.tables.get("task_experiments")
+    if links is not None:
+        kept_pairs = {
+            (l["task_id"], l["experiment_id"])
+            for l in sample_rows.get("task_experiments", [])
+        }
+        res = await conn.execute(
+            select(links.c.task_id, links.c.experiment_id)
+            .where(_not_seed(links.c.task_id))
+            .where(_not_seed(links.c.experiment_id))
+        )
+        for task_id, exp_id in res.fetchall():
+            if (task_id, exp_id) not in kept_pairs:
+                await conn.execute(
+                    delete(links)
+                    .where(links.c.task_id == task_id)
+                    .where(links.c.experiment_id == exp_id)
+                )
+
+    versions = md.tables.get("task_versions")
+    if versions is not None:
+        # tasks.current_version_id is ON DELETE SET NULL; the linkage pass
+        # re-points kept tasks afterwards.
+        await conn.execute(
+            delete(versions)
+            .where(_not_seed(versions.c.task_id))
+            .where(~versions.c.id.in_(_kept_ids("task_versions")))
+        )
+
+    for name in ("tasks", "experiments"):
+        table = md.tables.get(name)
+        if table is None:
+            continue
+        await conn.execute(
+            delete(table)
+            .where(table.c.org_id == SEED_ORG_ID)
+            .where(_not_seed(table.c.id))
+            .where(~table.c.id.in_(_kept_ids(name)))
+        )
 
 
 async def _recompute_projections(conn, fixtures: dict[str, list[dict]]) -> None:
