@@ -54,14 +54,13 @@ export function TagColorBar({ value, onChange, className }: TagColorBarProps) {
           "relative h-4 w-4 cursor-pointer rounded-full transition-transform hover:scale-110",
           customActive && "ring-2 ring-ring ring-offset-1 ring-offset-popover",
         )}
-        style={
-          customActive
-            ? { backgroundColor: value }
-            : {
-                background:
-                  "conic-gradient(#ef4444, #f59e0b, #22c55e, #3b82f6, #8b5cf6, #ef4444)",
-              }
-        }
+        style={{
+          // Always the rainbow — the slot must stay recognizable as the
+          // picker even while a custom color is active (the ring marks
+          // that); the picked color itself shows in the preview/recents.
+          background:
+            "conic-gradient(#ef4444, #f59e0b, #22c55e, #3b82f6, #8b5cf6, #ec4899, #ef4444)",
+        }}
       >
         <input
           type="color"
