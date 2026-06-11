@@ -202,9 +202,11 @@ function KpiTile({
 function TaskDetailHeader({
   task,
   onOpenTaskFiles,
+  tagEditor,
 }: {
   task: Task;
   onOpenTaskFiles: () => void;
+  tagEditor?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
@@ -217,6 +219,7 @@ function TaskDetailHeader({
             <Badge variant="outline" className="font-mono text-[11px]">
               v{task.current_version ?? "—"}
             </Badge>
+            {tagEditor}
           </div>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
@@ -804,14 +807,18 @@ export function TaskDetailClient({
   return (
     <TooltipProvider>
       <div className="space-y-4">
-        <TaskDetailHeader task={task} onOpenTaskFiles={handleOpenTaskFiles} />
-
-        <TagEditor
-          scope="TASK"
-          targetId={task.id}
-          taskId={task.id}
-          initialTags={task.user_tags ?? []}
-          onMutate={() => mutate()}
+        <TaskDetailHeader
+          task={task}
+          onOpenTaskFiles={handleOpenTaskFiles}
+          tagEditor={
+            <TagEditor
+              scope="TASK"
+              targetId={task.id}
+              taskId={task.id}
+              initialTags={task.user_tags ?? []}
+              onMutate={() => mutate()}
+            />
+          }
         />
 
         <TaskVerdictBadge

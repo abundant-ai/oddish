@@ -1043,21 +1043,23 @@ export function ExperimentDetailView({
            */}
           <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
             <div className="flex min-w-0 flex-1 flex-col gap-1">
-              <div className="min-w-0">{headerLeft}</div>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                {headerLeft}
+                {experimentId && (
+                  <TagEditor
+                    scope="EXPERIMENT"
+                    targetId={experimentId}
+                    initialTags={[]}
+                    experimentMode="living"
+                    onMutate={() => onRerun?.()}
+                  />
+                )}
+              </div>
               <ExperimentMetaStrip
                 tasks={tasksForExperiment}
                 isInitialLoading={isInitialLoading}
                 experimentId={experimentId}
               />
-              {experimentId && (
-                <TagEditor
-                  scope="EXPERIMENT"
-                  targetId={experimentId}
-                  initialTags={[]}
-                  experimentMode="living"
-                  onMutate={() => onRerun?.()}
-                />
-              )}
             </div>
             <ExperimentHeaderMeta
               isLoading={isLoading}
