@@ -7,19 +7,17 @@ that were originally skipped by the open-internet gate:
   - zstd-decoder
 
 Each of these tasks runs *only* with a tight Modal CIDR allowlist (1-3
-prefixes) in e0ef4703 — there is no open-internet sibling variant. We are
-adding them anyway, but with a tighter validity rule than the rest of the
-bucket so that closed-internet noise doesn't slip in:
+prefixes) in e0ef4703 — there is no open-internet sibling variant. The
+closed-task validity rule (after user correction of an earlier typo) is:
 
-  Stricter rule (closed-internet trials only):
-    - status='SUCCESS'
-    - reward=1.0
-      OR
-      (reward=0.0 AND exception_classes == {'AgentTimeoutError'})
+  status='SUCCESS' AND reward IS NOT NULL AND
+  exception_classes ⊆ {'AgentTimeoutError'}
 
-  Any other case (reward=0 with no exception, reward=0 with a non-timeout
-  exception, etc.) is REJECTED. This rules out 'clean fail' trials where
-  we can't distinguish a real attempt from a flaky / weird run.
+That is: any reward in [0.0, 1.0] is OK, exceptions must be empty OR only
+AgentTimeoutError. NonZeroAgentExitCodeError / VerifierTimeoutError / etc.
+are still rejected. This is the same rule the open-internet bucket uses;
+the only differentiator between the two halves of the bucket is whether
+the trial ran with a tight CIDR allowlist at runtime.
 
 Bucket convention unchanged: cap at 5 trials per (agent, model) per task.
 Each entry carries the runtime `network_policy` + `network_allowlist_size`
@@ -54,13 +52,13 @@ from augment_cd4dd88f import make_src, list_keys, pick_canonical
 SRC_BUCKET = os.environ['ODDISH_S3_BUCKET']
 
 
+VALID_EXC = {'AgentTimeoutError'}
+
 def is_strict_closed_valid(reward, excs):
-    """Tighter rule for closed-internet trials."""
-    if reward == 1.0:
-        return True
-    if reward == 0.0 and excs == {'AgentTimeoutError'}:
-        return True
-    return False
+    """Closed-task validity rule (post-correction): same shape as the
+    open-bucket strict rule — exception_classes ⊆ {AgentTimeoutError},
+    any numeric reward. Reward=0 with no exception is now allowed."""
+    return not (set(excs) - VALID_EXC)
 
 
 def main():
@@ -139,13 +137,31 @@ def main():
             ),
         })
 
-    state_path = '/tmp/oddish-import/state_zai_closed.json'
+    # Existing bucket manifests (for the closed tasks where we already have
+    # entries from the prior closed-task import round).
+    existing_manifests = {}
+    for tn in CLOSED_TASKS:
+        try:
+            body = dst.get_object(Bucket=DST_BUCKET,
+                Key=f"{tn}/_manifest.json")['Body'].read()
+            existing_manifests[tn] = json.loads(body)
+        except Exception:
+            existing_manifests[tn] = None
+
+    state_path = '/tmp/oddish-import/state_zai_closed_v2.json'
     state = {'tasks': {}}
     if os.path.exists(state_path):
         state = json.load(open(state_path))
 
     summary = []
     for (tid, task_name, vid), cands in sorted(by_task.items()):
+        # Already-imported trial IDs (from previous closed-task round)
+        em = existing_manifests.get(task_name)
+        existing_ids = set(em['trials'].keys()) if em else set()
+        capacity = max(0, MAX_PER_CELL - len(existing_ids))
+        if capacity == 0:
+            summary.append((task_name, 0, f'capacity 0 (cell already {len(existing_ids)}/5)'))
+            continue
         # Rank: reward=1.0 first, then trajectory_bytes, then recency
         def _ep(c):
             return datetime.fromisoformat(c['started_at']).timestamp() if c['started_at'] else 0
@@ -154,7 +170,9 @@ def main():
             -float(c.get('trajectory_bytes') or 0),
             -_ep(c),
         ))
-        picks = cands[:MAX_PER_CELL]
+        # Exclude trials already in bucket
+        cands = [c for c in cands if c['id'] not in existing_ids]
+        picks = cands[:capacity]
         task_hash = tid.rsplit('-',1)[-1]
         sel_meta = {'task_id': tid, 'task_name': task_name,
                     'task_hash': task_hash, 'task_version_id': vid}
@@ -189,54 +207,80 @@ def main():
             summary.append((task_name, 0, 'no strict-closed-valid picks'))
             continue
 
-        # Manifest write (fresh — these are new task prefixes for the bucket)
-        new_entries = ts['new_entries']
+        # Merge with existing manifest if present, otherwise create fresh
+        em = existing_manifests.get(task_name)
+        if em is not None:
+            merged = dict(em['trials'])
+            merged.update(ts['new_entries'])
+        else:
+            merged = dict(ts['new_entries'])
         def _idx(t):
             tail = t.rsplit('-',1)[-1]
             return (int(tail) if tail.isdigit() else 1<<30, t)
-        sorted_entries = dict(sorted(new_entries.items(), key=lambda kv: _idx(kv[0])))
+        sorted_entries = dict(sorted(merged.items(), key=lambda kv: _idx(kv[0])))
         pair_counts = Counter((e['agent'], e['model']) for e in sorted_entries.values())
         n_pass = sum(1 for e in sorted_entries.values() if e.get('reward') == 1.0)
         n_timeout = sum(1 for e in sorted_entries.values()
                         if e.get('reward') == 0.0 and
                         set(e.get('exception_classes', [])) == {'AgentTimeoutError'})
-        manifest = {
-            'experiment_id': EXPERIMENT_ID,
-            'experiment_ids': [EXPERIMENT_ID],
-            'n_trials': len(sorted_entries),
-            'note': (
-                f"Created at {datetime.now(timezone.utc).isoformat()} from Oddish "
-                f"experiment {EXPERIMENT_ID}. CLOSED-INTERNET task variant. Up to 5 "
-                f"trials matching the closed-task validity rule: reward=1.0 OR "
-                f"(reward=0.0 AND exception_classes=={{AgentTimeoutError}}). "
-                f"All other reward=0 cases rejected. Each trial entry carries "
-                f"network_policy + network_allowlist_size for downstream filtering."
-            ),
-            'task': tid, 'task_name': task_name,
-            'task_hash': task_hash, 'task_version_id': vid,
-            'task_versions': [vid], 'task_hashes': [task_hash],
-            'is_multi_version': False,
-            'is_closed_internet_task': True,
-            'closed_task_validity_rule': (
-                'reward=1.0 OR (reward=0.0 AND exception_classes=={AgentTimeoutError})'
-            ),
-            'pair_counts': {f"{a}|{m}": n for (a,m), n in pair_counts.items()},
-            'n_pass': n_pass,
-            'n_timeout_failure': n_timeout,
-            'duplicate_fingerprint_count': 0,
-            'trials': sorted_entries,
-            'additional_imports': [{
-                'imported_at': datetime.now(timezone.utc).isoformat(),
-                'source_oddish_experiment_id': EXPERIMENT_ID,
-                'task_version_id_at_snapshot': vid,
-                'n_trials_added': len(sorted_entries),
-                'pairs_added': [['glm-claude-code',
-                                  list(sorted_entries.values())[0]['model']]],
-                'note': ('Closed-internet task added under tighter closed-task '
-                         'validity rule. Ignored claude-code-version-pin '
-                         'concern per user instruction.'),
-            }],
-        }
+        n_clean_fail = sum(1 for e in sorted_entries.values()
+                           if e.get('reward') == 0.0 and
+                           not set(e.get('exception_classes', [])))
+        new_rule = ('exception_classes ⊆ {AgentTimeoutError} '
+                    '(reward=0 with empty or AgentTimeoutError-only exceptions; '
+                    'any reward=1; everything else rejected). Same shape as '
+                    'the open-bucket strict rule — the only differentiator '
+                    'between open- and closed-task halves of the bucket is the '
+                    'runtime Modal CIDR allowlist size.')
+        if em is None:
+            manifest = {
+                'experiment_id': EXPERIMENT_ID,
+                'experiment_ids': [EXPERIMENT_ID],
+                'note': (
+                    f"Created at {datetime.now(timezone.utc).isoformat()} from "
+                    f"Oddish experiment {EXPERIMENT_ID}. CLOSED-INTERNET task "
+                    f"variant. Up to 5 trials matching the closed-task validity "
+                    f"rule: {new_rule}"
+                ),
+                'task': tid, 'task_name': task_name,
+                'task_hash': task_hash,
+                'task_versions': [vid], 'task_hashes': [task_hash],
+                'is_multi_version': False,
+                'is_closed_internet_task': True,
+                'duplicate_fingerprint_count': 0,
+                'additional_imports': [],
+            }
+        else:
+            manifest = dict(em)
+            # bump the rule string + note since the rule was corrected
+            old_note = manifest.get('note','').rstrip()
+            if 'rule v2' not in old_note:
+                manifest['note'] = (
+                    old_note + '\n' +
+                    f'Validity rule corrected on '
+                    f'{datetime.now(timezone.utc).isoformat()} (rule v2): {new_rule}'
+                )
+        manifest['task_version_id'] = vid
+        manifest['closed_task_validity_rule'] = new_rule
+        manifest['n_trials'] = len(sorted_entries)
+        manifest['pair_counts'] = {f"{a}|{m}": n for (a,m), n in pair_counts.items()}
+        manifest['n_pass'] = n_pass
+        manifest['n_timeout_failure'] = n_timeout
+        manifest['n_clean_fail'] = n_clean_fail
+        manifest['trials'] = sorted_entries
+        manifest.setdefault('additional_imports', []).append({
+            'imported_at': datetime.now(timezone.utc).isoformat(),
+            'source_oddish_experiment_id': EXPERIMENT_ID,
+            'task_version_id_at_snapshot': vid,
+            'n_trials_added': len(ts['new_entries']),
+            'pairs_added': [['glm-claude-code',
+                              list(ts['new_entries'].values())[0]['model']]]
+                            if ts['new_entries'] else [],
+            'note': ('Closed-internet task under v2 closed-task validity rule '
+                     '(exception_classes ⊆ {AgentTimeoutError}). Reward=0 with '
+                     'no exception now allowed (previously rejected by a '
+                     'rule-string typo).'),
+        })
         body = json.dumps(manifest, indent=2, default=str).encode('utf-8')
         dst.put_object(Bucket=DST_BUCKET, Key=f"{task_name}/_manifest.json",
                        Body=body, ContentType='application/json')
