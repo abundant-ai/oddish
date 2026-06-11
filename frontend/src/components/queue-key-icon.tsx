@@ -3,7 +3,6 @@
 import {
   Anthropic,
   Baichuan,
-  ChatGLM,
   Cohere,
   Cursor,
   DeepSeek,
@@ -20,6 +19,7 @@ import {
   Qwen,
   XAI,
   Yi,
+  ZAI,
 } from "@lobehub/icons";
 import { Sparkles } from "lucide-react";
 
@@ -250,7 +250,7 @@ export function QueueKeyIcon({
     return <Qwen size={size} className={className} />;
   }
   if (resolvedProvider === "glm") {
-    return <ChatGLM size={size} className={className} />;
+    return <ZAI size={size} className={className} />;
   }
   if (resolvedProvider === "kimi") {
     return <Kimi size={size} className={className} />;
