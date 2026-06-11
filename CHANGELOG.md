@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-11]
+
+### Added
+- Auto-enqueue one probe trial per task version on sweep submit using round-robin model rotation; new `GET /experiments/{experiment_id}/probes` endpoint lists the latest probe trial per task; experiment page fetches and displays the default probe preset (#248)
+- Dashboard experiment owner filter (Org / Mine / admin member picker) via `experiments_author` parameter on `/dashboard`; defaults the Recent Experiments table to the signed-in user's experiments; legacy rows matched via GitHub username and email for accurate attribution (#214)
+- Self-healing experiments owner backfill runs on every queue-poll tick, converging `owner_user_id` so the dashboard Mine filter stays on its indexed fast path; adaptive filter uses a pure indexed `owner_user_id` seek once all experiments in the org are attributed, with an `__unattributed__` sentinel for unowned rows (#255)
+- `ShareNav` component for public experiment share pages with Oddish logo, "by Abundant AI" branding, and theme toggle; replaces the full app `Nav` on share pages (#260)
+- Cursor provider icon support: `cursor` and `cursor-cli` agents and the `composer-*` model family now resolve to the Cursor icon in the queue key icon display (#260)
+- Claude Fable 5 mapped to Bedrock global cross-region inference profile (`global.anthropic.claude-fable-5`); note this is a Covered Model requiring AWS account data retention mode set to `provider_data_share` (#254)
+
+### Changed
+- Pass@k graph and leaderboard default to visible on public experiment share pages; authenticated views are unchanged (#256)
+- Tasks/Probe tab toggle hidden on public share view — probing requires an authenticated session (#260)
+- OpenRouter models (Gemini 2.5 Flash, DeepSeek Chat) removed from probe model rotation; only `claude-haiku-4-5` remains (#253)
+
+### Fixed
+- Pass@k calculation now uses per-agent per-task attempt count instead of the global maximum, fixing incorrect curves when agents in the same experiment have different trial counts (e.g. oracle with 1 trial shown as `33%/67%/100%` instead of its observed flat rate) (#258)
+- Dashboard Mine filter no longer degenerates into a near-full-table scan; an adaptive indexed owner seek is used once `owner_user_id` is backfilled; attribution profiles are served from cache instantly with background refresh; frontend keeps existing rows visible during polling revalidation instead of blanking to "Loading…" (#255)
+- GitHub PR branch link (experiment PR chip) hidden on public share view to avoid exposing internal repository context to anonymous viewers (#261)
+- `skills_001` and `documents_001` Alembic migrations made idempotent for data-less preview branches, fixing "relation already exists" errors that caused PR preview deploys to fail at `alembic upgrade head` (#251)
+
+---
+
 ## [2026-06-10]
 
 ### Added
