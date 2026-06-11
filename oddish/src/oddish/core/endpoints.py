@@ -1689,6 +1689,24 @@ async def get_task_detail_core(
         current_version_id=task_status.current_version_id,
     )
 
+    # Hydrate effective user tags so the detail page renders the same
+    # chips the browse list does.
+    user_tags_by_task = await list_effective_user_tags_for_task_versions(
+        session, task_ids=[task.id], public_only=False
+    )
+    task_status.user_tags = [
+        UserTagRef(
+            tag_id=t.tag_id,
+            key=t.key,
+            value=t.value,
+            color=t.color,
+            visibility=t.visibility,
+            current=t.current,
+            older=t.older,
+        )
+        for t in user_tags_by_task.get(task.id, [])
+    ]
+
     return TaskDetailResponse(
         task=task_status,
         versions=versions_sorted,

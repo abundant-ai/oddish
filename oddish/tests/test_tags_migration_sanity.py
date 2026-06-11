@@ -153,3 +153,121 @@ def test_sweep_state_migration_present():
     assert '"aa02ta03gin"' in src
     assert "CREATE TABLE IF NOT EXISTS tag_projection_sweep_state" in src
     assert "last_full_sweep_at" in src
+
+
+# Tables whose CREATE TABLE column DEFAULTs we hold to model parity.
+_TAG_TABLES = (
+    "tags",
+    "tag_assignments",
+    "tag_exclusions",
+    "tag_grants",
+    "tag_events",
+    "tag_policies",
+    "saved_tag_filters",
+)
+
+
+def _migration_default_columns(src: str, table: str) -> list[str]:
+    """Column names declared with a DEFAULT inside ``CREATE TABLE <table>``.
+
+    The column bodies are indented 12 spaces and the closing ``)`` sits alone
+    at 8 spaces, so we capture up to ``\\n        )`` -- inner parens like
+    ``NOW()``, ``tags(id)`` and ``'{}'::jsonb`` never appear at that indent.
+    """
+    import re
+
+    body = re.search(
+        rf"CREATE TABLE IF NOT EXISTS {table} \((.*?)\n        \)",
+        src,
+        re.DOTALL,
+    )
+    assert body is not None, f"CREATE TABLE for {table!r} not found in migration"
+    cols: list[str] = []
+    for line in body.group(1).splitlines():
+        m = re.match(r"\s*(\w+)\s+\S.*\bDEFAULT\b", line)
+        if m:
+            cols.append(m.group(1))
+    return cols
+
+
+def test_migration_table_defaults_have_model_server_defaults():
+    """create_all / migration parity guard for tag-table column DEFAULTs.
+
+    Fresh databases are bootstrapped by alembic ``000_initial_schema`` via
+    ``Base.metadata.create_all()`` -- tables come from the MODELS, and the tag
+    migrations' ``CREATE TABLE IF NOT EXISTS`` then no-op. So any column whose
+    DEFAULT lives only in the migration DDL (and not as a model
+    ``server_default``) silently loses its DB default on fresh databases. That
+    crashed ``POST /tags`` in the deployed preview (NotNullViolation on
+    ``tag_policies.updated_at``). This test pins every migration-declared
+    DEFAULT to a non-None model ``server_default`` so the bug class can't
+    silently return.
+    """
+    import oddish.db as db
+    from oddish.db import Base
+    from oddish.db.models import TimestampedMixin
+
+    src = _read("aa00ta01core_add_tag_tables.py")
+
+    # Resolve each tag table to its mapped class so we can tell which
+    # created_at/updated_at columns are contributed by TimestampedMixin.
+    model_by_table = {}
+    for name in dir(db):
+        obj = getattr(db, name, None)
+        if getattr(obj, "__tablename__", None) in _TAG_TABLES:
+            model_by_table[obj.__tablename__] = obj
+    unresolved = sorted(set(_TAG_TABLES) - set(model_by_table))
+    assert not unresolved, f"could not resolve models for tables: {unresolved}"
+
+    # TimestampedMixin defines created_at/updated_at WITHOUT a server_default;
+    # the tag cores always set those columns explicitly in their raw-SQL
+    # INSERTs, so a missing DB default is harmless there. Exclude exactly those
+    # mixin-provided columns. tag_events and tag_policies do NOT use the mixin,
+    # so their timestamp columns (e.g. the fixed tag_policies.updated_at) are
+    # still asserted.
+    missing: list[str] = []
+    checked = 0
+    for table in _TAG_TABLES:
+        from_mixin = issubclass(model_by_table[table], TimestampedMixin)
+        columns = Base.metadata.tables[table].columns
+        for col_name in _migration_default_columns(src, table):
+            if col_name in ("created_at", "updated_at") and from_mixin:
+                continue
+            checked += 1
+            if columns[col_name].server_default is None:
+                missing.append(f"{table}.{col_name}")
+
+    assert not missing, (
+        "migration declares a column DEFAULT but the model column has no "
+        "server_default -- create_all on a fresh DB would drop the default: "
+        f"{missing}"
+    )
+    assert checked, "parser found no DEFAULT columns -- the regex likely broke"
+
+
+def test_six_bugfixed_columns_keep_their_server_defaults():
+    """Belt-and-suspenders pin for the six columns fixed by the production bug.
+
+    Each must still be parsed from the migration DDL AND carry a non-None
+    model ``server_default``, so a regex or column rename can't silently drop
+    them from the parity loop above.
+    """
+    from oddish.db import Base
+
+    src = _read("aa00ta01core_add_tag_tables.py")
+
+    fixed = {
+        "tag_policies": ("updated_at",),
+        "tag_assignments": ("assigned_at",),
+        "tag_events": ("actor_type", "source", "occurred_at"),
+        "saved_tag_filters": ("filter_ast",),
+    }
+    for table, cols in fixed.items():
+        declared = set(_migration_default_columns(src, table))
+        for col in cols:
+            assert col in declared, (
+                f"{table}.{col} is no longer parsed as a DEFAULT column"
+            )
+            assert (
+                Base.metadata.tables[table].columns[col].server_default is not None
+            ), f"{table}.{col} lost its server_default (regression of the fix)"

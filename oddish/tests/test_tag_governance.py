@@ -176,6 +176,35 @@ def test_create_tag_core_admin_only_policy_blocks_member(monkeypatch):
         )
 
 
+def test_create_tag_core_rejects_invalid_visibility():
+    from oddish.core import tags_core
+
+    session = _FakeSession()
+
+    import pytest
+
+    # The visibility guard runs right after the ADMIN_ONLY check and BEFORE any
+    # session use, so 'ORG' (a saved-filter visibility, not a tag visibility) is
+    # rejected as TagNameError without ever touching the DB. who_can_create is
+    # ANY_MEMBER so the ADMIN_ONLY gate passes and we reach the visibility guard.
+    with pytest.raises(tags_core.TagNameError):
+        _run(
+            tags_core.create_tag_core(
+                session,
+                key="my-tag",
+                value=None,
+                org_id="org-1",
+                actor_user_id="u-1",
+                policy={"who_can_create": "ANY_MEMBER"},
+                is_admin=False,
+                visibility="ORG",
+            )
+        )
+    # Guard fires before any DB access; 'PRIVATE'/'PUBLIC' are the only accepted
+    # values and would pass this gate.
+    assert session.executed == []
+
+
 def test_set_tag_visibility_core_writes_update_and_event(monkeypatch):
     from oddish.core import tags_core
 

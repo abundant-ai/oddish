@@ -83,6 +83,7 @@ export function TagEditor({
               setPickerOpen(false);
             }}
             multi={false}
+            allowCreate
           />
         ) : (
           <Button variant="outline" size="sm" onClick={() => setPickerOpen(true)}>

@@ -318,6 +318,7 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
                 selectedTagIds={selectedTagIds}
                 onChange={setSelectedTagIds}
                 placeholder="Add tags…"
+                allowCreate
               />
             </div>
 

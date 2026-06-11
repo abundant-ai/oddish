@@ -38,6 +38,9 @@ export interface TagPickerProps {
   onChange: (next: string[]) => void;
   placeholder?: string;
   multi?: boolean;
+  // Opt-in: offer "Create <query>" when the typed name matches no existing
+  // tag. Only enable in assignment contexts, never in browse/filter ones.
+  allowCreate?: boolean;
 }
 
 export function TagPicker({
@@ -45,13 +48,22 @@ export function TagPicker({
   onChange,
   placeholder = "Select tag…",
   multi = true,
+  allowCreate = false,
 }: TagPickerProps) {
   const [open, setOpen] = useState(false);
-  const { data } = useSWR<TagListResponse>("/api/tags", fetcher, {
+  const [query, setQuery] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+  const { data, mutate } = useSWR<TagListResponse>("/api/tags", fetcher, {
     revalidateOnFocus: false,
   });
   const items = data?.items ?? [];
   const selected = useMemo(() => new Set(selectedTagIds), [selectedTagIds]);
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const showCreate =
+    allowCreate &&
+    normalizedQuery.length > 0 &&
+    !items.some((it) => it.key === normalizedQuery);
 
   function toggle(tagId: string) {
     if (multi) {
@@ -65,6 +77,28 @@ export function TagPicker({
     setOpen(false);
   }
 
+  async function createTag(rawKey: string) {
+    const res = await fetch("/api/tags", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: rawKey, visibility: "PRIVATE" }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      const detail =
+        body && typeof body === "object"
+          ? ((body as { detail?: string; error?: string }).detail ??
+            (body as { detail?: string; error?: string }).error)
+          : null;
+      setCreateError(detail ?? "Could not create tag.");
+      return;
+    }
+    // Backend may normalize the typed key — select by the returned id.
+    const created = body as BackendTagListItem;
+    await mutate();
+    toggle(created.id);
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -74,7 +108,14 @@ export function TagPicker({
       </PopoverTrigger>
       <PopoverContent className="w-72 p-0">
         <Command>
-          <CommandInput placeholder="Search tags…" />
+          <CommandInput
+            placeholder="Search tags…"
+            value={query}
+            onValueChange={(next) => {
+              setQuery(next);
+              setCreateError(null);
+            }}
+          />
           <CommandList>
             <CommandEmpty>No tags.</CommandEmpty>
             <CommandGroup>
@@ -92,8 +133,19 @@ export function TagPicker({
                     <span>{it.key}</span>
                   </CommandItem>
                 ))}
+              {showCreate ? (
+                <CommandItem value={query} onSelect={() => createTag(query)}>
+                  <span className="mr-2">+</span>
+                  <span>Create &quot;{query}&quot;</span>
+                </CommandItem>
+              ) : null}
             </CommandGroup>
           </CommandList>
+          {createError ? (
+            <div className="border-t px-3 py-2 text-xs text-destructive">
+              {createError}
+            </div>
+          ) : null}
         </Command>
       </PopoverContent>
     </Popover>
