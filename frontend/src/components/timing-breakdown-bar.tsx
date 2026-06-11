@@ -21,6 +21,15 @@ function formatDateShort(value: string): string {
   return d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
+function formatTimeZone(value: string): string {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const parts = new Intl.DateTimeFormat([], {
+    timeZoneName: "short",
+  }).formatToParts(d);
+  return parts.find((p) => p.type === "timeZoneName")?.value ?? "";
+}
+
 interface TimingBreakdownBarProps {
   createdAt: string | null | undefined;
   startedAt: string | null | undefined;
@@ -109,6 +118,7 @@ export function TimingBreakdownBar({
   });
 
   const liveBadge = " (live)";
+  const timeZone = formatTimeZone(createdAt);
   const endTimestamp =
     finishedAt != null
       ? formatTimestamp(finishedAt)
@@ -159,6 +169,7 @@ export function TimingBreakdownBar({
             <span className="font-mono tabular-nums">
               {formatDateShort(createdAt)} {formatTimestamp(createdAt)} →{" "}
               {endTimestamp}
+              {timeZone ? ` ${timeZone}` : ""}
             </span>
           </div>
         </div>
