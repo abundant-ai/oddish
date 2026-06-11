@@ -4,7 +4,7 @@
     "e0ef4703"
   ],
   "n_trials": 5,
-  "note": "Created at 2026-06-10T23:45:16.931408+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only.",
+  "note": "Created at 2026-06-10T23:45:16.931408+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. | Backfilled network_policy on 5 entries.",
   "task": "biofabric-rust-rewrite-897c0fc8",
   "task_name": "biofabric-rust-rewrite",
   "task_hash": "897c0fc8",
@@ -51,7 +51,9 @@
       "task_name": "biofabric-rust-rewrite",
       "task_hash": "897c0fc8",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version biofabric-rust-rewrite-897c0fc8-v7. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
-      "raw_model": "zai/glm-x-preview[1m]"
+      "raw_model": "zai/glm-x-preview[1m]",
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "biofabric-rust-rewrite-897c0fc8-257": {
       "agent": "glm-claude-code",
@@ -82,7 +84,9 @@
       "task_name": "biofabric-rust-rewrite",
       "task_hash": "897c0fc8",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version biofabric-rust-rewrite-897c0fc8-v7. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
-      "raw_model": "zai/glm-x-preview[1m]"
+      "raw_model": "zai/glm-x-preview[1m]",
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "biofabric-rust-rewrite-897c0fc8-258": {
       "agent": "glm-claude-code",
@@ -113,7 +117,9 @@
       "task_name": "biofabric-rust-rewrite",
       "task_hash": "897c0fc8",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version biofabric-rust-rewrite-897c0fc8-v7. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
-      "raw_model": "zai/glm-x-preview[1m]"
+      "raw_model": "zai/glm-x-preview[1m]",
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "biofabric-rust-rewrite-897c0fc8-259": {
       "agent": "glm-claude-code",
@@ -144,7 +150,9 @@
       "task_name": "biofabric-rust-rewrite",
       "task_hash": "897c0fc8",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version biofabric-rust-rewrite-897c0fc8-v7. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
-      "raw_model": "zai/glm-x-preview[1m]"
+      "raw_model": "zai/glm-x-preview[1m]",
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "biofabric-rust-rewrite-897c0fc8-260": {
       "agent": "glm-claude-code",
@@ -175,7 +183,9 @@
       "task_name": "biofabric-rust-rewrite",
       "task_hash": "897c0fc8",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version biofabric-rust-rewrite-897c0fc8-v7. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
-      "raw_model": "zai/glm-x-preview[1m]"
+      "raw_model": "zai/glm-x-preview[1m]",
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     }
   },
   "additional_imports": [

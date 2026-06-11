@@ -4,7 +4,7 @@
     "e0ef4703"
   ],
   "n_trials": 5,
-  "note": "Created at 2026-06-10T23:45:18.154707+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only.",
+  "note": "Created at 2026-06-10T23:45:18.154707+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. | Backfilled network_policy on 5 entries.",
   "task": "rust-c-compiler-57913cbe",
   "task_name": "rust-c-compiler",
   "task_hash": "57913cbe",
@@ -52,7 +52,9 @@
       "task_hash": "57913cbe",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version rust-c-compiler-57913cbe-v10. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.9686800894854586
+      "verifier_partial_score": 0.9686800894854586,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "rust-c-compiler-57913cbe-356": {
       "agent": "glm-claude-code",
@@ -84,7 +86,9 @@
       "task_hash": "57913cbe",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version rust-c-compiler-57913cbe-v10. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.9530201342281879
+      "verifier_partial_score": 0.9530201342281879,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "rust-c-compiler-57913cbe-357": {
       "agent": "glm-claude-code",
@@ -116,7 +120,9 @@
       "task_hash": "57913cbe",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version rust-c-compiler-57913cbe-v10. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.9530201342281879
+      "verifier_partial_score": 0.9530201342281879,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "rust-c-compiler-57913cbe-358": {
       "agent": "glm-claude-code",
@@ -147,7 +153,9 @@
       "task_name": "rust-c-compiler",
       "task_hash": "57913cbe",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version rust-c-compiler-57913cbe-v10. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
-      "raw_model": "zai/glm-x-preview[1m]"
+      "raw_model": "zai/glm-x-preview[1m]",
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "rust-c-compiler-57913cbe-359": {
       "agent": "glm-claude-code",
@@ -179,7 +187,9 @@
       "task_hash": "57913cbe",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version rust-c-compiler-57913cbe-v10. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.9608501118568232
+      "verifier_partial_score": 0.9608501118568232,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     }
   },
   "additional_imports": [

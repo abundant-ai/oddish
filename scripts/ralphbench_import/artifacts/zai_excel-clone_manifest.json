@@ -4,7 +4,7 @@
     "e0ef4703"
   ],
   "n_trials": 4,
-  "note": "Created at 2026-06-10T23:45:17.236722+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only.",
+  "note": "Created at 2026-06-10T23:45:17.236722+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. | Backfilled network_policy on 4 entries.",
   "task": "excel-clone-685bff89",
   "task_name": "excel-clone",
   "task_hash": "685bff89",
@@ -52,7 +52,9 @@
       "task_hash": "685bff89",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version excel-clone-685bff89-v11. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.5
+      "verifier_partial_score": 0.5,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "excel-clone-685bff89-330": {
       "agent": "glm-claude-code",
@@ -84,7 +86,9 @@
       "task_hash": "685bff89",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version excel-clone-685bff89-v11. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.5556
+      "verifier_partial_score": 0.5556,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "excel-clone-685bff89-332": {
       "agent": "glm-claude-code",
@@ -116,7 +120,9 @@
       "task_hash": "685bff89",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version excel-clone-685bff89-v11. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.6111
+      "verifier_partial_score": 0.6111,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "excel-clone-685bff89-333": {
       "agent": "glm-claude-code",
@@ -148,7 +154,9 @@
       "task_hash": "685bff89",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version excel-clone-685bff89-v11. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.5
+      "verifier_partial_score": 0.5,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     }
   },
   "additional_imports": [

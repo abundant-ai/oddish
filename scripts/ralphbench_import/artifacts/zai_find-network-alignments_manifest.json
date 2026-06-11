@@ -4,7 +4,7 @@
     "e0ef4703"
   ],
   "n_trials": 4,
-  "note": "Created at 2026-06-10T23:45:17.391654+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only.",
+  "note": "Created at 2026-06-10T23:45:17.391654+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. | Backfilled network_policy on 4 entries.",
   "task": "find-network-alignments-b2ecebb7",
   "task_name": "find-network-alignments",
   "task_hash": "b2ecebb7",
@@ -52,7 +52,9 @@
       "task_hash": "b2ecebb7",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version find-network-alignments-b2ecebb7-v5. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.8729729340898537
+      "verifier_partial_score": 0.8729729340898537,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "find-network-alignments-b2ecebb7-224": {
       "agent": "glm-claude-code",
@@ -86,7 +88,9 @@
       "task_hash": "b2ecebb7",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version find-network-alignments-b2ecebb7-v5. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.8013521837328441
+      "verifier_partial_score": 0.8013521837328441,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "find-network-alignments-b2ecebb7-225": {
       "agent": "glm-claude-code",
@@ -118,7 +122,9 @@
       "task_hash": "b2ecebb7",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version find-network-alignments-b2ecebb7-v5. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.9804150748099948
+      "verifier_partial_score": 0.9804150748099948,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "find-network-alignments-b2ecebb7-227": {
       "agent": "glm-claude-code",
@@ -152,7 +158,9 @@
       "task_hash": "b2ecebb7",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version find-network-alignments-b2ecebb7-v5. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.9481005754845223
+      "verifier_partial_score": 0.9481005754845223,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     }
   },
   "additional_imports": [

@@ -4,7 +4,7 @@
     "e0ef4703"
   ],
   "n_trials": 5,
-  "note": "Created at 2026-06-10T23:45:17.541665+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only.",
+  "note": "Created at 2026-06-10T23:45:17.541665+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. | Backfilled network_policy on 5 entries.",
   "task": "jax-pytorch-rewrite-93c38683",
   "task_name": "jax-pytorch-rewrite",
   "task_hash": "93c38683",
@@ -52,7 +52,9 @@
       "task_hash": "93c38683",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version jax-pytorch-rewrite-93c38683-v7. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 1.0
+      "verifier_partial_score": 1.0,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "jax-pytorch-rewrite-93c38683-165": {
       "agent": "glm-claude-code",
@@ -84,7 +86,9 @@
       "task_hash": "93c38683",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version jax-pytorch-rewrite-93c38683-v7. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.0
+      "verifier_partial_score": 0.0,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "jax-pytorch-rewrite-93c38683-166": {
       "agent": "glm-claude-code",
@@ -116,7 +120,9 @@
       "task_hash": "93c38683",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version jax-pytorch-rewrite-93c38683-v7. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.0
+      "verifier_partial_score": 0.0,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "jax-pytorch-rewrite-93c38683-168": {
       "agent": "glm-claude-code",
@@ -148,7 +154,9 @@
       "task_hash": "93c38683",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version jax-pytorch-rewrite-93c38683-v7. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.0
+      "verifier_partial_score": 0.0,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "jax-pytorch-rewrite-93c38683-169": {
       "agent": "glm-claude-code",
@@ -180,7 +188,9 @@
       "task_hash": "93c38683",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version jax-pytorch-rewrite-93c38683-v7. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.0
+      "verifier_partial_score": 0.0,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     }
   },
   "additional_imports": [

@@ -4,7 +4,7 @@
     "e0ef4703"
   ],
   "n_trials": 5,
-  "note": "Created at 2026-06-10T23:45:18.929244+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only.",
+  "note": "Created at 2026-06-10T23:45:18.929244+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. | Backfilled network_policy on 5 entries.",
   "task": "vliw-kernel-optimization-e4d25121",
   "task_name": "vliw-kernel-optimization",
   "task_hash": "e4d25121",
@@ -52,7 +52,9 @@
       "task_hash": "e4d25121",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version vliw-kernel-optimization-e4d25121-v10. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.9986
+      "verifier_partial_score": 0.9986,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "vliw-kernel-optimization-e4d25121-223": {
       "agent": "glm-claude-code",
@@ -84,7 +86,9 @@
       "task_hash": "e4d25121",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version vliw-kernel-optimization-e4d25121-v10. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.9969
+      "verifier_partial_score": 0.9969,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "vliw-kernel-optimization-e4d25121-224": {
       "agent": "glm-claude-code",
@@ -116,7 +120,9 @@
       "task_hash": "e4d25121",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version vliw-kernel-optimization-e4d25121-v10. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.9941
+      "verifier_partial_score": 0.9941,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "vliw-kernel-optimization-e4d25121-225": {
       "agent": "glm-claude-code",
@@ -148,7 +154,9 @@
       "task_hash": "e4d25121",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version vliw-kernel-optimization-e4d25121-v10. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.9968
+      "verifier_partial_score": 0.9968,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "vliw-kernel-optimization-e4d25121-226": {
       "agent": "glm-claude-code",
@@ -180,7 +188,9 @@
       "task_hash": "e4d25121",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version vliw-kernel-optimization-e4d25121-v10. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.9955
+      "verifier_partial_score": 0.9955,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     }
   },
   "additional_imports": [

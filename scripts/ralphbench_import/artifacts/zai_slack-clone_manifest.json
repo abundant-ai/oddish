@@ -4,7 +4,7 @@
     "e0ef4703"
   ],
   "n_trials": 3,
-  "note": "Created at 2026-06-10T23:45:18.460792+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only.",
+  "note": "Created at 2026-06-10T23:45:18.460792+00:00 from Oddish experiment e0ef4703 ('glm-x-preview smoke test'). Imports up to 5 strict-valid glm-claude-code / zai/glm-x-preview[1m] trials for the open-internet variant of this task (canonical task hash). Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. | Backfilled network_policy on 3 entries.",
   "task": "slack-clone-b0a98beb",
   "task_name": "slack-clone",
   "task_hash": "b0a98beb",
@@ -52,7 +52,9 @@
       "task_hash": "b0a98beb",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version slack-clone-b0a98beb-v26. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.2
+      "verifier_partial_score": 0.2,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "slack-clone-b0a98beb-377": {
       "agent": "glm-claude-code",
@@ -84,7 +86,9 @@
       "task_hash": "b0a98beb",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version slack-clone-b0a98beb-v26. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.2
+      "verifier_partial_score": 0.2,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     },
     "slack-clone-b0a98beb-380": {
       "agent": "glm-claude-code",
@@ -116,7 +120,9 @@
       "task_hash": "b0a98beb",
       "selection_note": "Imported from Oddish experiment e0ef4703 (glm-x-preview smoke test) for agent=glm-claude-code, model=zai/glm-x-preview[1m] on task version slack-clone-b0a98beb-v26. Strict validity: SUCCESS + numeric reward + exception_stats empty or AgentTimeoutError-only. Open-internet task variant (canonical task hash, not the closed-internet variant).",
       "raw_model": "zai/glm-x-preview[1m]",
-      "verifier_partial_score": 0.2
+      "verifier_partial_score": 0.2,
+      "network_policy": "open (no allowlist)",
+      "network_allowlist_size": null
     }
   },
   "additional_imports": [

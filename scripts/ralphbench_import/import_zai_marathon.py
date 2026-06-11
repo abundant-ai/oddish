@@ -31,6 +31,14 @@ EXPERIMENT_ID = 'e0ef4703'
 AGENT = 'glm-claude-code'
 VALID_EXC = {'AgentTimeoutError'}
 
+# Open-internet threshold. A trial is open-internet if its trial.log either
+# omits the "Using Modal CIDR allowlist with N prefixes" line (= no
+# allowlist applied = fully unrestricted egress) OR includes a permissive
+# allowlist with >= MIN_OPEN_CIDRS prefixes. Trials below that threshold
+# are restricted to a small number of CIDRs (typically just the model API
+# endpoint) and are excluded from this bucket per user's open-internet rule.
+MIN_OPEN_CIDRS = 10
+
 # Reuse upload primitives from augment_cd4dd88f, but with a different dst client.
 sys.path.insert(0, os.path.dirname(__file__))
 from augment_cd4dd88f import make_src, list_keys, pick_canonical, transform_top
@@ -77,7 +85,8 @@ def upload_one_trial(src, dst, sel_meta, trial, dst_task_name):
             total += fut.result()
     return canonical, total
 
-def build_entry(trial, sel_meta, canonical, dst_task_name, partial_score=None):
+def build_entry(trial, sel_meta, canonical, dst_task_name, partial_score=None,
+                network_policy=None, network_allowlist_size=None):
     e = {
         'agent': trial['agent'],
         'model': trial['model'],
@@ -108,10 +117,36 @@ def build_entry(trial, sel_meta, canonical, dst_task_name, partial_score=None):
         'task_hash': sel_meta['task_hash'],
         'selection_note': trial.get('selection_note', ''),
         'raw_model': trial.get('raw_model', trial['model']),
+        'network_policy': network_policy or 'unknown',
+        'network_allowlist_size': network_allowlist_size,
     }
     if partial_score is not None:
         e['verifier_partial_score'] = partial_score
     return e
+
+def classify_network_policy(src, src_prefix, canonical):
+    """Read trial.log and classify the actual runtime network policy.
+
+    Returns (policy_string, allowlist_size_or_None, is_open_internet_bool).
+    Open-internet = no CIDR allowlist line at all (= unrestricted) OR
+    allowlist size >= MIN_OPEN_CIDRS. Anything smaller is closed-internet.
+    """
+    if not canonical:
+        return 'unknown (no canonical)', None, False
+    import re as _re
+    try:
+        log = src.get_object(Bucket=SRC_BUCKET,
+            Key=src_prefix + canonical + '/trial.log')['Body'].read().decode('utf-8','replace')
+    except Exception:
+        return 'unknown (no trial.log)', None, False
+    m = _re.search(r'Using Modal CIDR allowlist with (\d+) prefixes', log)
+    if m is None:
+        # No allowlist applied → unrestricted egress
+        return 'open (no allowlist)', None, True
+    n = int(m.group(1))
+    if n >= MIN_OPEN_CIDRS:
+        return f'open (allowlist {n} CIDRs)', n, True
+    return f'closed ({n} CIDR allowlist)', n, False
 
 def fetch_partial_score(src, src_prefix, canonical):
     """Read the verifier metrics.json for the canonical attempt and return a
@@ -238,13 +273,34 @@ def main():
         for p in picks:
             if p['id'] in ts['new_entries']:
                 continue
+            # Open-internet gate: classify before upload. Closed-internet
+            # trials are skipped entirely (per user's open-internet rule).
+            policy, allowlist_n, is_open = classify_network_policy(
+                src, p['trial_s3_key'], None)
+            # classify_network_policy needs the canonical attempt subdir; we
+            # don't know it until upload_one_trial picks it. Refetch using
+            # the canonical from the trial's source listing.
+            from augment_cd4dd88f import pick_canonical
+            src_keys = list_keys(src, p['trial_s3_key'])
+            canon_src = pick_canonical(src, p['trial_s3_key'], src_keys)
+            policy, allowlist_n, is_open = classify_network_policy(
+                src, p['trial_s3_key'], canon_src)
+            if not is_open:
+                ts['failures'].append({'trial_id': p['id'],
+                    'reason': f'closed-internet ({policy})'})
+                print(f"  {p['id']}: SKIPPED — {policy}")
+                with open(state_path, 'w') as f:
+                    json.dump(state, f, indent=2)
+                continue
             try:
                 canonical, nb = upload_one_trial(src, dst, sel_meta, p, task_name)
                 if canonical is None:
                     ts['failures'].append({'trial_id': p['id'], 'reason': 'no keys'})
                     continue
                 score = fetch_partial_score(src, p['trial_s3_key'], canonical)
-                entry = build_entry(p, sel_meta, canonical, task_name, partial_score=score)
+                entry = build_entry(p, sel_meta, canonical, task_name,
+                                    partial_score=score, network_policy=policy,
+                                    network_allowlist_size=allowlist_n)
                 ts['new_entries'][p['id']] = entry
                 with open(state_path, 'w') as f:
                     json.dump(state, f, indent=2)
