@@ -68,13 +68,34 @@ function normalizePreset(p: Preset): Preset {
   return p;
 }
 
-export function ProbeSubmitForm({ taskId }: { taskId: string }) {
+type TrialOption = { id: string; name: string };
+
+export function ProbeSubmitForm({
+  taskId,
+  initialScope,
+  initialTargetTrialId,
+}: {
+  taskId: string;
+  initialScope?: "task" | "trial";
+  initialTargetTrialId?: string | null;
+}) {
   const router = useRouter();
   const [agent, setAgent] = useState("claude-code");
   const [model, setModel] = useState(MODELS_BY_AGENT["claude-code"][0].value);
   const [extraInstructions, setExtraInstructions] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Probe scope: "task" probes the whole experiment; "trial" probes a single
+  // existing non-probe trial. Prefilled from ?scope/?target_trial deep links.
+  const [probeScope, setProbeScope] = useState<"task" | "trial">(
+    initialScope ?? "task",
+  );
+  const [targetTrialId, setTargetTrialId] = useState<string | null>(
+    initialTargetTrialId ?? null,
+  );
+  const [trials, setTrials] = useState<TrialOption[]>([]);
+  const [trialsLoaded, setTrialsLoaded] = useState(false);
 
   const [presets, setPresets] = useState<Preset[]>([]);
   const [presetsLoaded, setPresetsLoaded] = useState(false);
@@ -131,6 +152,37 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
   useEffect(() => {
     void reloadPresets();
   }, [reloadPresets]);
+
+  // Load this task's real (non-probe) trials for the "Specific trial" dropdown.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/tasks/${taskId}/trials?probe=false`, {
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          console.warn("task trials fetch failed:", res.status);
+          return;
+        }
+        const data = await res.json();
+        if (cancelled || !Array.isArray(data)) return;
+        setTrials(
+          (data as { id: string; name?: string | null }[]).map((t) => ({
+            id: t.id,
+            name: t.name ?? t.id,
+          })),
+        );
+      } catch (err) {
+        console.warn("task trials fetch error:", err);
+      } finally {
+        if (!cancelled) setTrialsLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [taskId]);
 
   function loadPreset(id: string) {
     setSelectedPresetId(id);
@@ -258,6 +310,9 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
           append_to_task: true,
           configs: [{ agent, model, n_trials: 1 }],
           user: "probe-ui",
+          probe_scope: probeScope,
+          probe_target_trial_id:
+            probeScope === "trial" ? targetTrialId : null,
           extra_instructions: extraInstructions,
           probe_name: selectedPreset?.name ?? null,
           result_focus: result_focus.trim() || null,
@@ -548,6 +603,56 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
           </div>
         );
       })()}
+      <div className="space-y-2">
+        <span className="text-sm font-medium">Probe scope</span>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setProbeScope("task")}
+            className={`rounded border px-3 py-1.5 text-sm ${
+              probeScope === "task"
+                ? "bg-primary text-primary-foreground"
+                : "bg-background hover:bg-muted"
+            }`}
+          >
+            Whole task (experiment-wide)
+          </button>
+          <button
+            type="button"
+            onClick={() => setProbeScope("trial")}
+            className={`rounded border px-3 py-1.5 text-sm ${
+              probeScope === "trial"
+                ? "bg-primary text-primary-foreground"
+                : "bg-background hover:bg-muted"
+            }`}
+          >
+            Specific trial
+          </button>
+        </div>
+        {probeScope === "trial" ? (
+          <label className="block">
+            <span className="text-sm font-medium">Target trial</span>
+            <select
+              value={targetTrialId ?? ""}
+              onChange={(e) => setTargetTrialId(e.target.value || null)}
+              className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+            >
+              <option value="">
+                {trialsLoaded
+                  ? trials.length
+                    ? "— Select a trial —"
+                    : "No non-probe trials available"
+                  : "Loading trials…"}
+              </option>
+              {trials.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+      </div>
       <div className="flex gap-4">
         <label className="flex-1">
           <span className="text-sm font-medium">Agent</span>
@@ -617,7 +722,11 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
       )}
       <button
         type="submit"
-        disabled={submitting || !extraInstructions.trim()}
+        disabled={
+          submitting ||
+          !extraInstructions.trim() ||
+          (probeScope === "trial" && !targetTrialId)
+        }
         className="rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
       >
         {submitting ? "Submitting..." : "Submit"}
