@@ -183,8 +183,10 @@ def select_related_trials(
             if trial.id == target_trial_id:
                 selected.append(trial)
             continue
-        config = getattr(trial, "harbor_config", None) or {}
-        if config.get("mode") == "probe":
+        is_p = getattr(trial, "is_probe", None)
+        if is_p is None:
+            is_p = (getattr(trial, "harbor_config", None) or {}).get("mode") == "probe"
+        if is_p:
             continue
         selected.append(trial)
     return selected
