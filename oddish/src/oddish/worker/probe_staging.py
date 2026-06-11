@@ -29,7 +29,6 @@ from oddish.worker.probe_overlay import (
     PROBE_SYSTEM_FRAMING,
     RELATED_CONTAINER_DIR,
     RELATED_DIR_NAME,
-    TASK_FILES_DIR_NAME,
     render_probe_instruction,
     select_related_trials,
 )
@@ -106,63 +105,6 @@ async def stage_related_trial_logs(
             dest.write_bytes(content)
             staged_for_trial += 1
             staged_any = True
-
-    return staged_any
-
-
-def stage_full_task_files(work_task_dir: Path) -> bool:
-    """Copy the task's own files into ``environment/task_files/``.
-
-    Harbor only surfaces ``environment/`` to the agent (uploaded into the
-    workdir for prebuilt-image tasks, the Docker build context otherwise); the
-    rest of the task dir -- ``tests/``, ``solution/``, ``task.toml``, the
-    original ``instruction.md`` -- is normally harness-only. Probes deliberately
-    widen this: staging the full task definition under
-    ``environment/<TASK_FILES_DIR_NAME>/`` lets the agent read exactly how the
-    task is built and graded. Returns True if anything was staged.
-
-    Must run before :func:`stage_related_trial_logs` / :func:`stage_harbor_source`
-    so the oddish-injected ``related_trials/``/``harbor_src/`` scaffolding is not
-    swept in -- only the task's genuine files are.
-
-    Caveat: for Dockerfile/compose tasks ``environment/`` is the build context,
-    so these reach the agent only if the task's build copies them in; for
-    prebuilt-image tasks they are uploaded into the workdir and always visible.
-    Best-effort and per-entry resilient; never raises.
-    """
-    env_dir = work_task_dir / "environment"
-    if not env_dir.is_dir():
-        logger.warning(
-            "probe: no environment/ under %s; skipping full task-file staging",
-            work_task_dir,
-        )
-        return False
-
-    dest_root = env_dir / TASK_FILES_DIR_NAME
-    staged_any = False
-    for entry in work_task_dir.iterdir():
-        # Skip environment/ itself and hidden entries (e.g. a stray .git).
-        if entry.name == "environment" or entry.name.startswith("."):
-            continue
-        dest = dest_root / entry.name
-        try:
-            if entry.is_dir():
-                shutil.copytree(
-                    entry,
-                    dest,
-                    symlinks=True,
-                    ignore=shutil.ignore_patterns(
-                        "__pycache__", "*.pyc", "*.pyo", ".git"
-                    ),
-                    dirs_exist_ok=True,
-                )
-            else:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(entry, dest)
-        except Exception:
-            logger.exception("probe: staging task file %s failed", entry.name)
-            continue
-        staged_any = True
 
     return staged_any
 
@@ -257,15 +199,6 @@ async def apply_probe_overlay(
     must reach the sandbox through Harbor's skill-upload path, not the task dir
     which Harbor never mounts into the container.)
     """
-    # Stage the task's own files (tests/solution/config/instructions) into
-    # environment/ first, so the agent gets the full task definition -- and so
-    # the related_trials/harbor_src scaffolding staged below is not swept in.
-    try:
-        has_task_files = stage_full_task_files(task_dir)
-    except Exception:
-        logger.exception("probe: staging full task files failed")
-        has_task_files = False
-
     try:
         has_related = await stage_related_trial_logs(
             task_dir, task_id, trial_id
@@ -291,7 +224,6 @@ async def apply_probe_overlay(
             original,
             related_dir=RELATED_CONTAINER_DIR,
             has_related=has_related,
-            has_task_files=has_task_files,
             time_budget_sec=time_budget_sec,
         )
     )
