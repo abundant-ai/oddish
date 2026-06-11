@@ -3,10 +3,13 @@ import { ProbeHistoryTable } from "@/components/probe-history-table";
 
 export default async function ProbePage({
   params,
+  searchParams,
 }: {
   params: Promise<{ task_id: string }>;
+  searchParams: Promise<{ scope?: string; target_trial?: string }>;
 }) {
   const { task_id } = await params;
+  const { scope, target_trial } = await searchParams;
   return (
     <div className="container mx-auto max-w-3xl py-8 space-y-8">
       <div>
@@ -19,7 +22,11 @@ export default async function ProbePage({
           Task: <span className="font-mono">{task_id}</span>
         </p>
       </div>
-      <ProbeSubmitForm taskId={task_id} />
+      <ProbeSubmitForm
+        taskId={task_id}
+        initialScope={scope === "trial" ? "trial" : "task"}
+        initialTargetTrialId={target_trial ?? null}
+      />
       <ProbeHistoryTable taskId={task_id} />
     </div>
   );
