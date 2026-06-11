@@ -78,6 +78,8 @@ type Trial = {
     evaluation_metric?: "ratio" | "result_focus" | "none" | "cheat_ratio";
     ratio_unit?: string | null;
     ratio_verb?: string | null;
+    probe_scope?: "trial" | "task" | null;
+    probe_target_trial_id?: string | null;
   } | null;
   result: {
     _artifacts?: Artifacts;
@@ -212,6 +214,37 @@ export default function ProbeResultPage({
               model: <code className="text-xs">{trial.model}</code>
             </span>
           ) : null}
+          {(() => {
+            // Scope is stamped into harbor_config at queue time. Shows whether
+            // the agent saw a single trial or the whole experiment.
+            const scope = trial.harbor_config?.probe_scope;
+            if (scope === "task") {
+              return (
+                <span
+                  className="rounded bg-muted px-2 py-1 text-xs font-medium"
+                  title="Probed the whole experiment"
+                >
+                  scope: Task
+                </span>
+              );
+            }
+            if (scope === "trial") {
+              const target = trial.harbor_config?.probe_target_trial_id;
+              return (
+                <span
+                  className="rounded bg-muted px-2 py-1 text-xs font-medium"
+                  title={
+                    target
+                      ? `Probed a single trial (${target})`
+                      : "Probed a single trial"
+                  }
+                >
+                  scope: {target ? `Trial → ${target}` : "Trial"}
+                </span>
+              );
+            }
+            return null;
+          })()}
           {trial.reward !== null && trial.reward !== undefined ? (
             <span>
               reward: <strong>{trial.reward.toFixed(2)}</strong>

@@ -32,9 +32,28 @@ type Trial = {
     ratio_unit?: string | null;
     ratio_verb?: string | null;
     probe_name?: string | null;
+    probe_scope?: "trial" | "task" | null;
+    probe_target_trial_id?: string | null;
   } | null;
   is_probe?: boolean;
 };
+
+type ScopeDisplay = { text: string; title: string };
+
+// Scope is stamped into harbor_config at queue time (probe_scope +
+// probe_target_trial_id). Legacy/non-scoped probe rows carry neither —
+// render nothing for those.
+function scopeDisplay(t: Trial): ScopeDisplay | null {
+  const scope = t.harbor_config?.probe_scope;
+  if (scope === "task") return { text: "Task", title: "Probed the whole experiment" };
+  if (scope === "trial") {
+    const target = t.harbor_config?.probe_target_trial_id;
+    return target
+      ? { text: `Trial → ${target}`, title: `Probed a single trial (${target})` }
+      : { text: "Trial", title: "Probed a single trial" };
+  }
+  return null;
+}
 
 function pluralize(noun: string): string {
   const n = noun.trim();
@@ -296,6 +315,7 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
             <tr>
               <th className="py-2 pr-4 font-medium">Timestamp</th>
               <th className="py-2 pr-4 font-medium">Probe</th>
+              <th className="py-2 pr-4 font-medium">Scope</th>
               <th className="py-2 pr-4 font-medium">Status</th>
               <th className="py-2 pr-4 font-medium">Result</th>
               <th className="py-2 font-medium"></th>
@@ -308,6 +328,20 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
                   {t.started_at ? new Date(t.started_at).toLocaleString() : "—"}
                 </td>
                 <td className="py-2 pr-4">{probeLabel(t)}</td>
+                <td className="py-2 pr-4">
+                  {(() => {
+                    const s = scopeDisplay(t);
+                    if (!s) return <span className="text-muted-foreground">—</span>;
+                    return (
+                      <span
+                        className="rounded bg-muted px-2 py-0.5 text-[11px] font-medium"
+                        title={s.title}
+                      >
+                        {s.text}
+                      </span>
+                    );
+                  })()}
+                </td>
                 <td className="py-2 pr-4">{statusLabel(t)}</td>
                 <td className="py-2 pr-4">
                   {(() => {
