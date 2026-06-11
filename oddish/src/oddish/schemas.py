@@ -1136,6 +1136,23 @@ class ExperimentProbeRow(BaseModel):
     model: str | None
     status: str
     probe_trial_id: str
+
+
+class OrgProbeRow(BaseModel):
+    """One row per task in the org that has at least one probe trial.
+
+    Summarises a task's probe activity for the QA "Probe Runs" listing:
+    total probe-run count plus the timestamp and status of the most recent
+    probe trial. Ordered most-recent-first by the core query.
+    """
+
+    task_id: str
+    task_name: str
+    run_count: int
+    last_run_at: datetime | None
+    last_status: str
+
+
 # Skills — custom agent skill bundles.
 # ---------------------------------------------------------------------------
 class SkillFile(BaseModel):

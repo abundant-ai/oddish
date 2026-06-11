@@ -1,5 +1,5 @@
-import { SkillsClient } from "./skills-client";
+import { redirect } from "next/navigation";
 
-export default function SkillsPage() {
-  return <SkillsClient />;
+export default function SkillsRedirect() {
+  redirect("/qa/skills");
 }
