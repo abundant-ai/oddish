@@ -1251,7 +1251,10 @@ class TagAssignmentModel(TimestampedMixin, Base):
     )
     assigned_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     assigned_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=text("now()"),
+        nullable=False,
     )
     removed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -1384,6 +1387,7 @@ class TagEventModel(Base):
         ),
         nullable=False,
         default=TagEventActor.USER,
+        server_default=TagEventActor.USER.value,
     )
     source: Mapped[TagEventSource] = mapped_column(
         SQLEnum(
@@ -1394,13 +1398,17 @@ class TagEventModel(Base):
         ),
         nullable=False,
         default=TagEventSource.API,
+        server_default=TagEventSource.API.value,
     )
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     payload: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
     occurred_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=text("now()"),
+        nullable=False,
     )
 
 
@@ -1462,7 +1470,11 @@ class TagPolicyModel(Base):
     )
     updated_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=text("now()"),
+        nullable=False,
     )
 
 
@@ -1486,7 +1498,9 @@ class SavedTagFilterModel(TimestampedMixin, Base):
     org_id: Mapped[str] = mapped_column(String(64), nullable=False)
     owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
-    filter_ast: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    filter_ast: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     visibility: Mapped[SavedTagFilterVisibility] = mapped_column(
         SQLEnum(
             SavedTagFilterVisibility,

@@ -559,6 +559,11 @@ async def create_tag_core(
     if policy.get("who_can_create") == "ADMIN_ONLY" and not is_admin:
         raise TagPolicyError("only admins may create new tags in this org")
 
+    if visibility not in ("PRIVATE", "PUBLIC"):
+        raise TagNameError(
+            f"invalid visibility {visibility!r}; expected 'PRIVATE' or 'PUBLIC'"
+        )
+
     normalized_key = normalize_tag_key(key)
     normalized_value = normalize_tag_value(value)
 

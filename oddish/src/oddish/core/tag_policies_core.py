@@ -13,8 +13,8 @@ async def get_or_create_tag_policy(session, *, org_id: str) -> dict:
     await session.execute(
         text(
             """
-            INSERT INTO tag_policies (org_id)
-            VALUES (:org_id)
+            INSERT INTO tag_policies (org_id, updated_at)
+            VALUES (:org_id, NOW())
             ON CONFLICT (org_id) DO NOTHING
             """
         ),
@@ -76,7 +76,7 @@ async def update_tag_policy_core(
     set_pairs.append("updated_at = NOW()")
     await session.execute(
         text(
-            "INSERT INTO tag_policies (org_id) VALUES (:org_id) "
+            "INSERT INTO tag_policies (org_id, updated_at) VALUES (:org_id, NOW()) "
             "ON CONFLICT (org_id) DO UPDATE SET " + ", ".join(set_pairs)
         ),
         params,
