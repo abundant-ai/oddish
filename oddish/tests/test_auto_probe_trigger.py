@@ -153,9 +153,10 @@ async def seeded_sweep_task_id(cleanup_task_ids):
 
 
 @pytest.mark.asyncio
-async def test_sweep_triggers_auto_probe_end_to_end(seeded_sweep_task_id):
-    """create_task_sweep_core must enqueue exactly one probe trial on first
-    sweep and still exactly one on a second sweep (dedup holds end-to-end)."""
+async def test_sweep_triggers_auto_probe_when_opted_in(seeded_sweep_task_id):
+    """With ``run_probe=True``, create_task_sweep_core must enqueue exactly one
+    probe trial on first sweep and still exactly one on a second sweep (dedup
+    holds end-to-end). Auto-probe is opt-in: it only fires when run_probe is set."""
     from oddish.core.endpoints import create_task_sweep_core
 
     submission = TaskSweepSubmission(
@@ -169,6 +170,7 @@ async def test_sweep_triggers_auto_probe_end_to_end(seeded_sweep_task_id):
             )
         ],
         user="test",
+        run_probe=True,
     )
 
     # First sweep: probe should be enqueued.
@@ -187,4 +189,33 @@ async def test_sweep_triggers_auto_probe_end_to_end(seeded_sweep_task_id):
         second = await _probe_trials(s, seeded_sweep_task_id)
     assert len(second) == 1, (
         f"Expected dedup to hold (still 1 probe trial), got {len(second)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sweep_does_not_probe_by_default(seeded_sweep_task_id):
+    """Auto-probe is off by default: a sweep without ``run_probe`` must NOT
+    enqueue any probe trial."""
+    from oddish.core.endpoints import create_task_sweep_core
+
+    submission = TaskSweepSubmission(
+        task_id=seeded_sweep_task_id,
+        append_to_task=True,
+        configs=[
+            AgentModelPair(
+                agent="claude-code",
+                model="anthropic/claude-sonnet-4-6",
+                n_trials=1,
+            )
+        ],
+        user="test",
+    )
+
+    async with get_session() as s:
+        await create_task_sweep_core(s, submission=submission, org_id=None)
+
+    async with get_session() as s:
+        probes = await _probe_trials(s, seeded_sweep_task_id)
+    assert len(probes) == 0, (
+        f"Expected no probe trials by default, got {len(probes)}"
     )

@@ -764,6 +764,7 @@ def _build_task_status_response(
         reward_sum=formatted_reward_sum,
         reward_total=formatted_reward_total,
         run_analysis=task.run_analysis,
+        run_probe=task.run_probe,
         verdict_status=task.verdict_status,
         verdict=task.verdict,
         verdict_error=task.verdict_error,
