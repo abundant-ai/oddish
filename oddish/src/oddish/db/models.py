@@ -517,6 +517,10 @@ class TaskModel(TimestampedMixin, Base):
     # Analysis settings
     run_analysis: Mapped[bool] = mapped_column(default=False, nullable=False)
 
+    # Auto-probe opt-in: when True, sweeps on this task enqueue a probe trial
+    # for the task's current version. Off by default (probes are opt-in).
+    run_probe: Mapped[bool] = mapped_column(default=False, nullable=False)
+
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

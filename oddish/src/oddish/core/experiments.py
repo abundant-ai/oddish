@@ -15,7 +15,7 @@ from oddish.db import (
     TrialModel,
     task_experiments,
 )
-from oddish.schemas import ExperimentProbeRow
+from oddish.schemas import ExperimentProbeRow, OrgProbeRow
 
 
 async def list_experiment_probes_core(
@@ -84,3 +84,49 @@ async def list_experiment_probes_core(
             )
         )
     return rows
+
+
+async def list_org_probes_core(
+    session: AsyncSession,
+    *,
+    org_id: str | None,
+) -> list[OrgProbeRow]:
+    """Return one row per task in the org that has at least one probe trial.
+
+    Each row carries the task's total probe-run count plus the timestamp and
+    status of its most recent probe trial. Rows are ordered most-recent-first
+    by ``last_run_at``. Tasks with no probe trials are omitted.
+
+    ``org_id`` is required in the cloud (multi-tenant). Pass ``None`` only in
+    single-tenant / OSS contexts where no org scoping exists.
+    """
+    stmt = (
+        select(TaskModel, TrialModel)
+        .join(
+            TrialModel,
+            (TrialModel.task_id == TaskModel.id) & TrialModel.is_probe.is_(True),
+        )
+        .order_by(TrialModel.created_at.desc())
+    )
+    if org_id is not None:
+        stmt = stmt.where(TaskModel.org_id == org_id)
+
+    result = await session.execute(stmt)
+
+    # Trials arrive newest-first globally, so the first time we see a task is
+    # its most recent probe trial — that sets last_run_at/last_status and the
+    # row's position. Later trials for the same task only bump the count.
+    rows: dict[str, OrgProbeRow] = {}
+    for task, trial in result.all():
+        existing = rows.get(task.id)
+        if existing is None:
+            rows[task.id] = OrgProbeRow(
+                task_id=task.id,
+                task_name=task.name,
+                run_count=1,
+                last_run_at=trial.created_at,
+                last_status=getattr(trial.status, "value", trial.status),
+            )
+        else:
+            existing.run_count += 1
+    return list(rows.values())

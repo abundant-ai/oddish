@@ -219,6 +219,12 @@ async def list_tasks_core(
                     TaskModel.task_path,
                     TaskModel.current_version_id,
                     TaskModel.run_analysis,
+                    # Surfaced as ``run_probe`` on every task response. Must
+                    # be eagerly loaded; otherwise ``_build_task_status_response``
+                    # triggers a lazy-load on this deferred column outside the
+                    # async greenlet and the whole compact-trials fetch 500s
+                    # with MissingGreenlet (same reason ``link`` is here).
+                    TaskModel.run_probe,
                     TaskModel.verdict_status,
                     TaskModel.verdict,
                     TaskModel.verdict_error,
@@ -1044,9 +1050,10 @@ async def _cancel_worker_jobs_for_kind(
     if not subject_ids:
         return []
     rows = (
-        await session.execute(
-            text(
-                f"""
+        (
+            await session.execute(
+                text(
+                    f"""
                 WITH to_cancel AS (
                     SELECT id,
                            modal_function_call_id,
@@ -1074,15 +1081,18 @@ async def _cancel_worker_jobs_for_kind(
                           to_cancel.provider,
                           to_cancel.external_id
                 """
-            ),
-            {
-                "kind": kind,
-                "subject_table": subject_table,
-                "subject_ids": list(dict.fromkeys(subject_ids)),
-                "reason": reason,
-            },
+                ),
+                {
+                    "kind": kind,
+                    "subject_table": subject_table,
+                    "subject_ids": list(dict.fromkeys(subject_ids)),
+                    "reason": reason,
+                },
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return rows
 
 
@@ -2544,9 +2554,7 @@ async def create_task_sweep_core(
 
         github_meta = GitHubMeta.from_tags(submission.tags)
         if github_meta and github_meta.pr_url:
-            submission = submission.model_copy(
-                update={"link": github_meta.pr_url}
-            )
+            submission = submission.model_copy(update={"link": github_meta.pr_url})
 
     # Auto-detect append mode if the task already exists in the DB for this org.
     if not submission.append_to_task:
@@ -2568,6 +2576,10 @@ async def create_task_sweep_core(
         # opt in without manual intervention.
         if submission.run_analysis and not task.run_analysis:
             task.run_analysis = True
+        # Same opt-in flip for auto-probe: a task first run without probes can
+        # later opt in on append. Off by default (probes are opt-in).
+        if submission.run_probe and not task.run_probe:
+            task.run_probe = True
         # Update the link whenever a new submission carries one (explicit
         # --link or derived from --github-meta above). A submission with no
         # link leaves the existing value untouched rather than clearing it.
@@ -2634,6 +2646,7 @@ async def create_task_sweep_core(
                 "experiment_id": new_experiment_id or fallback_experiment_id,
                 "tags": task.tags or {},
                 "run_analysis": task.run_analysis,
+                "run_probe": task.run_probe,
                 "user": task.user,
             }
         )
@@ -2650,15 +2663,18 @@ async def create_task_sweep_core(
         # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
         # to the in-process runner instead of going through the Modal queue.
         from oddish.config import settings
+
         if settings.local_mode:
             import asyncio
             from oddish.worker.local_runner import run_trial_locally
+
             for trial in new_trials:
                 asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
 
-        await maybe_enqueue_auto_probe(
-            session, task=task, experiment=experiment, org_id=org_id
-        )
+        if task.run_probe:
+            await maybe_enqueue_auto_probe(
+                session, task=task, experiment=experiment, org_id=org_id
+            )
         return task, new_trials, True, experiment
 
     # Create mode
@@ -2701,13 +2717,16 @@ async def create_task_sweep_core(
     # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
     # to the in-process runner instead of going through the Modal queue.
     from oddish.config import settings
+
     if settings.local_mode:
         import asyncio
         from oddish.worker.local_runner import run_trial_locally
+
         for trial in new_trials:
             asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
 
-    await maybe_enqueue_auto_probe(
-        session, task=task, experiment=experiment, org_id=org_id
-    )
+    if task.run_probe:
+        await maybe_enqueue_auto_probe(
+            session, task=task, experiment=experiment, org_id=org_id
+        )
     return task, new_trials, False, experiment

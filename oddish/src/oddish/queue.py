@@ -591,6 +591,7 @@ async def create_task(
         task_s3_key=task_s3_key,
         tags=submission.tags,
         run_analysis=submission.run_analysis,
+        run_probe=submission.run_probe,
         link=submission.link,
     )
     session.add(task)

@@ -192,6 +192,7 @@ export interface Task {
   reward_sum?: number | null;
   reward_total?: number | null;
   run_analysis?: boolean;
+  run_probe?: boolean;
   verdict_status?: JobStatus | null;
   verdict?: TaskVerdict | null;
   verdict_error?: string | null;

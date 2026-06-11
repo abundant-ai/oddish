@@ -33,7 +33,10 @@ from oddish.core.dashboard import (
     EXPERIMENTS_UNATTRIBUTED_OWNER,
     invalidate_dashboard_cache,
 )
-from oddish.core.experiments import list_experiment_probes_core
+from oddish.core.experiments import (
+    list_experiment_probes_core,
+    list_org_probes_core,
+)
 from oddish.core.public_helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
@@ -63,6 +66,7 @@ from oddish.schemas import (
     ExperimentCombineRequest,
     ExperimentCombineResponse,
     ExperimentProbeRow,
+    OrgProbeRow,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
     TaskDetailResponse,
@@ -744,6 +748,21 @@ async def list_experiment_probes(
             experiment_id=experiment_id,
             org_id=auth.org_id,
         )
+
+
+@router.get("/probes", response_model=list[OrgProbeRow])
+async def list_org_probes(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> list[OrgProbeRow]:
+    """List the authenticated org's tasks that have probe runs.
+
+    One row per task with at least one probe trial — task id/name, total
+    probe-run count, and the timestamp + status of the most recent probe
+    trial. Ordered most-recent-first.
+    """
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        return await list_org_probes_core(session, org_id=auth.org_id)
 
 
 @router.post("/tasks/cancel")
