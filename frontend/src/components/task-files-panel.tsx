@@ -1183,7 +1183,7 @@ export function TaskFilesPanel({
                     onClick={() => probeAvailable && setProbeSelected(true)}
                     className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
                       probeSelected
-                        ? "bg-accent text-accent-foreground"
+                        ? "bg-primary/20 text-primary"
                         : probeAvailable
                           ? "hover:bg-muted/50 cursor-pointer"
                           : "text-muted-foreground cursor-not-allowed opacity-60"
