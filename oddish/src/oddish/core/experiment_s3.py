@@ -18,9 +18,16 @@ def _normalize(key: str) -> str:
     return posixpath.normpath(key).lstrip("/")
 
 
+def _normalize_prefix(prefix: str) -> str:
+    # Allowed prefixes are directory prefixes; keep them slash-terminated so
+    # `tasks/abc/trials/abc-1/` cannot match `tasks/abc/trials/abc-10/...`.
+    norm = posixpath.normpath(prefix).lstrip("/")
+    return norm if norm.endswith("/") else norm + "/"
+
+
 def is_within_scope(key: str, prefixes: list[str]) -> bool:
     norm = _normalize(key)
-    return any(norm.startswith(_normalize(p)) for p in prefixes)
+    return any(norm.startswith(_normalize_prefix(p)) for p in prefixes)
 
 
 async def experiment_prefixes(experiment_id: str) -> list[str]:
