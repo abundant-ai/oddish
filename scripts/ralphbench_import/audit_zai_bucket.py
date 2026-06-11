@@ -109,10 +109,17 @@ def audit_trial(task_name, tid, entry):
         if hit:
             flags.append(f"exception.txt judge-infra: '{hit[0]}'")
 
-    # 5. Network policy still open?
-    if entry.get('network_policy', 'unknown') != 'open (no allowlist)':
-        if not (entry.get('network_policy') or '').startswith('open'):
-            flags.append(f"network_policy not open: {entry.get('network_policy')!r}")
+    # 5. Network policy. Open is expected for normal tasks; tasks explicitly
+    #    flagged is_closed_internet_task in the manifest are allowed to carry
+    #    a closed allowlist and get a note instead of a flag.
+    pol = entry.get('network_policy') or ''
+    is_closed_task = entry.get('_is_closed_internet_task', False)
+    if not pol.startswith('open'):
+        if is_closed_task:
+            notes.append(f"closed-internet task: {pol!r} "
+                         f"(allowlist_size={entry.get('network_allowlist_size')})")
+        else:
+            flags.append(f"network_policy not open: {pol!r}")
 
     # 6. Verifier health
     is_cua = task_name in CUA_TASKS
@@ -213,7 +220,10 @@ def main():
     for tn in prefixes:
         m = get_json(f"{tn}/_manifest.json")
         if not m: continue
+        is_closed = bool(m.get('is_closed_internet_task', False))
         for tid, e in m['trials'].items():
+            e = dict(e)
+            e['_is_closed_internet_task'] = is_closed
             all_jobs.append((tn, tid, e))
 
     print(f"Auditing {len(all_jobs)} trials across {len(prefixes)} tasks...\n")
