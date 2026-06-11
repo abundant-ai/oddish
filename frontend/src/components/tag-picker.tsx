@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import useSWR from "swr";
 
 import {
@@ -41,6 +41,9 @@ export interface TagPickerProps {
   // Opt-in: offer "Create <query>" when the typed name matches no existing
   // tag. Only enable in assignment contexts, never in browse/filter ones.
   allowCreate?: boolean;
+  // Replaces the default outline button as the popover trigger (e.g. a
+  // compact icon button). Must accept a forwarded ref (PopoverTrigger asChild).
+  trigger?: ReactNode;
 }
 
 export function TagPicker({
@@ -49,6 +52,7 @@ export function TagPicker({
   placeholder = "Select tag…",
   multi = true,
   allowCreate = false,
+  trigger,
 }: TagPickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -102,9 +106,11 @@ export function TagPicker({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm">
-          {selected.size > 0 ? `Tags (${selected.size})` : placeholder}
-        </Button>
+        {trigger ?? (
+          <Button variant="outline" size="sm">
+            {selected.size > 0 ? `Tags (${selected.size})` : placeholder}
+          </Button>
+        )}
       </PopoverTrigger>
       <PopoverContent className="w-72 p-0">
         <Command>

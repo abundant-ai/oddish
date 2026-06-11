@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Tag } from "lucide-react";
 
 import { TagChip } from "@/components/tag-chip";
 import { TagPicker } from "@/components/tag-picker";
@@ -26,8 +26,6 @@ export function TagEditor({
   experimentMode,
   onMutate,
 }: TagEditorProps) {
-  const [pickerOpen, setPickerOpen] = useState(false);
-
   async function applyTag(tagId: string) {
     await fetch("/api/tags/assign", {
       method: "POST",
@@ -58,39 +56,39 @@ export function TagEditor({
   }
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap gap-1">
-        {initialTags.map((t) => (
-          <span key={t.tag_id} className="flex items-center gap-1">
-            <TagChip tag={t} />
-            <button
-              type="button"
-              className="text-xs text-muted-foreground hover:text-foreground"
-              onClick={() => removeTag(t.tag_id)}
-              aria-label={`Remove ${t.key}`}
-            >
-              ×
-            </button>
-          </span>
-        ))}
-      </div>
-      <div>
-        {pickerOpen ? (
-          <TagPicker
-            selectedTagIds={[]}
-            onChange={(picked) => {
-              if (picked[0]) applyTag(picked[0]);
-              setPickerOpen(false);
-            }}
-            multi={false}
-            allowCreate
-          />
-        ) : (
-          <Button variant="outline" size="sm" onClick={() => setPickerOpen(true)}>
-            + Tag
+    <div className="flex flex-wrap items-center gap-1">
+      {initialTags.map((t) => (
+        <span key={t.tag_id} className="flex items-center gap-1">
+          <TagChip tag={t} />
+          <button
+            type="button"
+            className="text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => removeTag(t.tag_id)}
+            aria-label={`Remove ${t.key}`}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      <TagPicker
+        selectedTagIds={[]}
+        onChange={(picked) => {
+          if (picked[0]) applyTag(picked[0]);
+        }}
+        multi={false}
+        allowCreate
+        trigger={
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-muted-foreground hover:text-foreground"
+            aria-label="Add tag"
+            title="Add tag"
+          >
+            <Tag className="h-3.5 w-3.5" />
           </Button>
-        )}
-      </div>
+        }
+      />
     </div>
   );
 }
