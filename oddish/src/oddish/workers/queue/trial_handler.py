@@ -963,9 +963,8 @@ async def run_trial_job(
     # dir for the S3-download case; a mounted or canonical local path
     # (temp_task_dir is None) must be copied first. Reusing temp_task_dir for
     # the copy root means _execute_trial's finally block cleans it up.
-    probe_extra_instructions = (prepared_trial.trial_harbor_config or {}).get(
-        "extra_instructions"
-    )
+    _probe_cfg = prepared_trial.trial_harbor_config or {}
+    probe_extra_instructions = _probe_cfg.get("extra_instructions")
     if probe_extra_instructions:
         if temp_task_dir is None:
             probe_copy_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
@@ -978,6 +977,8 @@ async def run_trial_job(
             task_id=prepared_trial.task_id,
             trial_id=trial_id,
             extra_instructions=probe_extra_instructions,
+            probe_scope=_probe_cfg.get("probe_scope"),
+            target_trial_id=_probe_cfg.get("probe_target_trial_id"),
         )
 
     # Ensure Harbor scratch directories exist before execution starts.

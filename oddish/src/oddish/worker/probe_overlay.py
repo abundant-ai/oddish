@@ -16,9 +16,11 @@ class _TrialLike(Protocol):
     harbor_config: dict[str, Any] | None
 
 
-# In-container path where prior real-attempt logs are staged (the task dir is
-# mounted at /app by Harbor). Caps keep an adversarial probe's context bounded
-# and avoid pulling huge artifact trees.
+# In-container path where prior real-attempt logs are staged. Harbor does not
+# mount the task dir; the agent image is built from ``environment/`` as the
+# Docker build context, so these land at /app only after the Dockerfile COPYs
+# them (see ``_inject_build_context_copies``). Caps keep an adversarial probe's
+# context bounded and avoid pulling huge artifact trees.
 RELATED_DIR_NAME = "related_trials"
 RELATED_CONTAINER_DIR = f"/app/{RELATED_DIR_NAME}"
 MAX_RELATED_TRIALS = 10
