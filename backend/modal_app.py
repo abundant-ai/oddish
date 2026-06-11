@@ -267,6 +267,7 @@ image = (
         "dashboard_attribution",
         "dashboard_owner_backfill",
         "endpoints",
+        "mcp_s3_app",
         "modal_app",
         "models",
         "observability",
