@@ -961,6 +961,7 @@ export function TaskDetailClient({
                 isOpen={true}
                 onClose={() => {}}
                 taskId={null}
+                probeTaskId={task.id}
                 filesUrl={`/api/tasks/${task.id}/files`}
                 apiBaseUrl="/api"
                 contentOnly={true}
