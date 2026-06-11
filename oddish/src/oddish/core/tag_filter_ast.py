@@ -71,44 +71,58 @@ async def resolve_names_to_ids(
     org_id: str | None,
     ast: TagFilterAST,
 ) -> tuple[ResolvedTagFilter, set[str]]:
-    """Look up ``normalized_key`` → ``id`` for every name in the AST.
+    """Resolve every filter token in the AST to a tag id.
 
-    Follows ``merged_into_id`` so aliases resolve to the survivor. Drops
-    DELETED tag rows. Returns (resolved, unknown_names).
+    A token is either a tag id (what the dashboard picker and saved
+    filters send) or a human name (CLI / API callers): ids match
+    ``tags.id`` exactly, names match ``normalized_key`` via the shared
+    normalizer. Follows ``merged_into_id`` so aliases resolve to the
+    survivor. Drops DELETED tag rows. Returns (resolved, unknown_tokens).
     """
-    wanted = set(ast.normalized_all) | set(ast.normalized_any) | set(ast.normalized_none)
-    if not wanted:
+    raw_tokens = {t for t in (*ast.all, *ast.any_, *ast.none) if t}
+    if not raw_tokens:
         return ResolvedTagFilter(all_ids=[], any_ids=[], none_ids=[]), set()
+    wanted_names = {n for n in (normalize_tag_key(t) for t in raw_tokens) if n}
 
     rows = (
         await session.execute(
             text(
                 """
-                SELECT t.normalized_key,
+                SELECT t.id,
+                       t.normalized_key,
                        COALESCE(t.merged_into_id, t.id) AS resolved_id
                 FROM tags t
                 WHERE t.deleted_at IS NULL
                   AND t.state <> 'DELETED'
                   AND COALESCE(t.org_id, '') = COALESCE(CAST(:org_id AS TEXT), '')
-                  AND t.normalized_key = ANY(:names)
+                  AND (t.id = ANY(:ids) OR t.normalized_key = ANY(:names))
                 """
             ),
-            {"org_id": org_id, "names": list(wanted)},
+            {
+                "org_id": org_id,
+                "ids": list(raw_tokens),
+                "names": list(wanted_names),
+            },
         )
     ).all()
-    name_to_id: dict[str, str] = {}
-    for normalized_key, resolved_id in rows:
-        name_to_id[str(normalized_key)] = str(resolved_id)
+    by_id: dict[str, str] = {}
+    by_name: dict[str, str] = {}
+    for tag_id, normalized_key, resolved_id in rows:
+        by_id[str(tag_id)] = str(resolved_id)
+        by_name[str(normalized_key)] = str(resolved_id)
 
-    def _convert(names: list[str]) -> list[str]:
-        return [name_to_id[n] for n in names if n in name_to_id]
+    def _lookup(token: str) -> str | None:
+        return by_id.get(token) or by_name.get(normalize_tag_key(token))
+
+    def _convert(tokens: list[str]) -> list[str]:
+        return [rid for t in tokens if t and (rid := _lookup(t)) is not None]
 
     resolved = ResolvedTagFilter(
-        all_ids=_convert(ast.normalized_all),
-        any_ids=_convert(ast.normalized_any),
-        none_ids=_convert(ast.normalized_none),
+        all_ids=_convert(ast.all),
+        any_ids=_convert(ast.any_),
+        none_ids=_convert(ast.none),
     )
-    unknown = wanted - set(name_to_id)
+    unknown = {t for t in raw_tokens if _lookup(t) is None}
     return resolved, unknown
 
 

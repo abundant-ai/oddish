@@ -13,11 +13,15 @@ def _run(coro):
 
 
 class _NameResolveSession:
+    """Fakes the tags lookup; rows are (id, normalized_key, resolved_id)."""
+
     def __init__(self, mapping):
+        # normalized_key -> tag id (resolved id == own id; no merges here)
         self.mapping = mapping
 
     async def execute(self, stmt, params=None):
-        wanted = (params or {}).get("names") or []
+        wanted_names = (params or {}).get("names") or []
+        wanted_ids = (params or {}).get("ids") or []
 
         class _R:
             def __init__(self_inner, rows):
@@ -27,7 +31,9 @@ class _NameResolveSession:
                 return self_inner.rows
 
         rows = [
-            (name, tag_id) for name, tag_id in self.mapping.items() if name in wanted
+            (tag_id, name, tag_id)
+            for name, tag_id in self.mapping.items()
+            if name in wanted_names or tag_id in wanted_ids
         ]
         return _R(rows)
 
@@ -83,6 +89,30 @@ def test_resolve_names_to_ids_returns_ids_and_unknown(monkeypatch):
     assert resolved.any_ids == ["tag-regression"]
     assert resolved.none_ids == []
     assert unknown == {"ghost"}
+
+
+def test_resolve_accepts_tag_ids_as_tokens():
+    """The dashboard picker and saved filters send tag IDS, not names —
+    the resolver must match ``tags.id`` exactly before falling back to
+    the normalized-name lookup.
+    """
+    from oddish.core.tag_filter_ast import (
+        TagFilterAST,
+        resolve_names_to_ids,
+    )
+
+    session = _NameResolveSession({"flaky": "tag-flaky", "wip": "tag-wip"})
+    resolved, unknown = _run(
+        resolve_names_to_ids(
+            session,
+            org_id="org-1",
+            # id token + name token mixed, like a saved filter edited by hand
+            ast=TagFilterAST(all=["tag-flaky"], none=["WIP"]),
+        )
+    )
+    assert resolved.all_ids == ["tag-flaky"]
+    assert resolved.none_ids == ["tag-wip"]
+    assert unknown == set()
 
 
 def test_apply_filter_returns_three_text_predicates():
