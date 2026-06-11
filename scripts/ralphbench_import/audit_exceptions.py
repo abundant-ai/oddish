@@ -61,7 +61,7 @@ def main():
         m = json.loads(dst.get_object(Bucket='ralphbench-logs',
             Key=f"{tname}/_manifest.json")['Body'].read())
         cd_ids = [tid for tid,e in m['trials'].items()
-                  if e.get('source_oddish_experiment_id') in ('cd4dd88f','cd8c33d8','6f068eca','0042aebf')]
+                  if e.get('source_oddish_experiment_id') in ('cd4dd88f','cd8c33d8','6f068eca','0042aebf','3942355b')]
         with ThreadPoolExecutor(max_workers=16) as pool:
             futs = {pool.submit(check, tname, tid): tid for tid in cd_ids}
             for fut in as_completed(futs):
