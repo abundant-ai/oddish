@@ -8,41 +8,25 @@ from oddish.worker.probe_overlay import (
 )
 
 
-def _render(has_related: bool, has_task_files: bool = False) -> str:
+def _render(has_related: bool) -> str:
     return render_probe_instruction(
         "FRAMING-TEXT",
         "DIRECTIVE-TEXT",
         "ORIGINAL-TEXT",
         related_dir="/app/related_trials",
         has_related=has_related,
-        has_task_files=has_task_files,
     )
 
 
 def test_render_includes_all_sections():
-    # Inline natural-flow layout: directive flows straight into the task spec
-    # (no "OPERATOR DIRECTIVE"/"ORIGINAL TASK" headers, framing intentionally
-    # unused) -- see render_probe_instruction.
     out = _render(has_related=True)
+    assert "FRAMING-TEXT" in out
+    assert "## OPERATOR DIRECTIVE" in out
     assert "DIRECTIVE-TEXT" in out
-    assert "THIS IS THE TASK:" in out
+    assert "## ORIGINAL TASK INSTRUCTION (context only)" in out
     assert "ORIGINAL-TEXT" in out
     assert "## RUNNING TESTS" in out
     assert "## RELATED TRIAL LOGS" in out
-
-
-def test_render_task_files_section_present_when_staged():
-    out = _render(has_related=True, has_task_files=True)
-    assert "## FULL TASK DEFINITION" in out
-    assert "task_files/" in out
-    # Frames the normal-run baseline so the agent grasps it has extra surface.
-    assert "Normally an agent only sees" in out
-
-
-def test_render_task_files_section_absent_by_default():
-    out = _render(has_related=True)
-    assert "FULL TASK DEFINITION" not in out
-    assert "task_files/" not in out
 
 
 def test_render_running_tests_is_fuzzy():
