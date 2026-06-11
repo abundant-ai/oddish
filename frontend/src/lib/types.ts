@@ -266,6 +266,8 @@ export interface TaskVersionSummary {
   cost_has_estimated: boolean;
   cost_has_native: boolean;
   last_run_at?: string | null;
+  // Direct VERSION-scope tags on this version.
+  user_tags?: UserTagRef[];
 }
 
 export interface TaskCostTotals {

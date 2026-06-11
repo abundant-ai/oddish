@@ -923,11 +923,23 @@ export function TaskDetailClient({
               <Loader2 className="h-3 w-3 animate-spin text-[color:var(--paper-ink-3)]" />
             ) : null}
           </div>
-          <VersionSwitcher
-            versions={versions}
-            selectedVersionId={selectedVersionId}
-            onSelect={handleSelectVersion}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <VersionSwitcher
+              versions={versions}
+              selectedVersionId={selectedVersionId}
+              onSelect={handleSelectVersion}
+            />
+            {selectedVersionId ? (
+              <TagEditor
+                key={selectedVersionId}
+                scope="VERSION"
+                targetId={selectedVersionId}
+                taskId={task.id}
+                initialTags={selectedVersion?.user_tags ?? []}
+                onMutate={() => mutate()}
+              />
+            ) : null}
+          </div>
         </div>
 
         <div className="space-y-3">

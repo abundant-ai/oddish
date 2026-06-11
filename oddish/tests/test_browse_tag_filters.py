@@ -157,6 +157,11 @@ def test_user_tag_ref_dto_and_task_browse_item_field():
     assert "user_tags" in TaskResponse.model_fields
     assert "user_tags" in TaskStatusResponse.model_fields
 
+    # The version switcher's VERSION-scope editor hydrates from these.
+    from oddish.schemas import TaskVersionSummary
+
+    assert "user_tags" in TaskVersionSummary.model_fields
+
 
 def test_build_task_status_response_populates_user_tags(monkeypatch):
     """Regression: adding ``user_tags`` to the DTO is meaningless if the

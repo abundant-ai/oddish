@@ -606,6 +606,9 @@ class TaskVersionSummary(BaseModel):
     cost_has_estimated: bool = False
     cost_has_native: bool = False
     last_run_at: datetime | None = None
+    # Direct VERSION-scope tags on this version (forward ref — UserTagRef is
+    # defined below in the tag section; model_rebuild() runs after it).
+    user_tags: list["UserTagRef"] = Field(default_factory=list)
 
 
 class TaskCostTotals(BaseModel):
@@ -781,6 +784,10 @@ class UserTagRef(BaseModel):
     visibility: str = "PRIVATE"
     current: bool = False
     older: bool = False
+
+
+# TaskVersionSummary forward-references UserTagRef (defined above only now).
+TaskVersionSummary.model_rebuild()
 
 
 class TaskResponse(BaseModel):

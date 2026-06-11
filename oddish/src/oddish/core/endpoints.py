@@ -35,7 +35,10 @@ from oddish.core.tag_filter_ast import (
     build_filter_predicates,
     resolve_names_to_ids,
 )
-from oddish.core.tags_projection import list_effective_user_tags_for_task_versions
+from oddish.core.tags_projection import (
+    list_direct_version_tags,
+    list_effective_user_tags_for_task_versions,
+)
 from oddish.core.trial_io import (
     read_trial_logs,
     read_trial_logs_structured,
@@ -1710,6 +1713,25 @@ async def get_task_detail_core(
         )
         for t in user_tags_by_task.get(task.id, [])
     ]
+
+    # Per-version direct tags, so the version switcher's tag editor shows
+    # the selected version's own chips (distinct from the task-level union).
+    version_tags = await list_direct_version_tags(
+        session, version_ids=[v.id for v in versions_sorted]
+    )
+    for summary in versions_sorted:
+        summary.user_tags = [
+            UserTagRef(
+                tag_id=t.tag_id,
+                key=t.key,
+                value=t.value,
+                color=t.color,
+                visibility=t.visibility,
+                current=t.current,
+                older=t.older,
+            )
+            for t in version_tags.get(summary.id, [])
+        ]
 
     return TaskDetailResponse(
         task=task_status,

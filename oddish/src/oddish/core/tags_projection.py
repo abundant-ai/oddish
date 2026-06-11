@@ -229,6 +229,54 @@ class UserTagView:
     older: bool
 
 
+async def list_direct_version_tags(
+    session,
+    *,
+    version_ids: list[str],
+) -> dict[str, list[UserTagView]]:
+    """Direct VERSION-scope tags per version id — the version's own chips,
+    as opposed to the task-level effective resolution. Merged tags follow
+    ``merged_into_id``; DELETED tags are dropped.
+    """
+    if not version_ids:
+        return {}
+    rows = (
+        await session.execute(
+            text(
+                """
+                SELECT ta.target_id AS version_id,
+                       t.id AS tag_id, t.key, t.value, t.color, t.visibility
+                FROM tag_assignments ta
+                JOIN tags t0 ON t0.id = ta.tag_id
+                JOIN tags t ON t.id = COALESCE(t0.merged_into_id, t0.id)
+                WHERE ta.scope = 'VERSION'
+                  AND ta.state = 'ACTIVE'
+                  AND ta.deleted_at IS NULL
+                  AND ta.target_id = ANY(:version_ids)
+                  AND t.deleted_at IS NULL
+                  AND t.state <> 'DELETED'
+                ORDER BY t.key
+                """
+            ),
+            {"version_ids": list(version_ids)},
+        )
+    ).all()
+    out: dict[str, list[UserTagView]] = {}
+    for version_id, tag_id, key, value, color, visibility in rows:
+        out.setdefault(str(version_id), []).append(
+            UserTagView(
+                tag_id=str(tag_id),
+                key=str(key),
+                value=value,
+                color=color,
+                visibility=str(visibility),
+                current=True,
+                older=False,
+            )
+        )
+    return out
+
+
 async def list_effective_user_tags_for_task_versions(
     session,
     *,
