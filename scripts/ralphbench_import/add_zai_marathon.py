@@ -33,11 +33,13 @@ EXPERIMENT_ID = 'e0ef4703'
 AGENT = 'glm-claude-code'
 VALID_EXC = {'AgentTimeoutError'}
 MAX_PER_CELL = 5
-# Re-enabled in this round per user: post-train-ifeval (Tinker audit done),
-# ruby-rust-port. nextjs-vite-rewrite remains skipped per the original
-# exclusion list — every candidate so far is NonZeroAgentExitCodeError so
-# it wouldn't meet the open-rule anyway.
-SKIP_TASKS = {'nextjs-vite-rewrite'}
+# Tasks explicitly excluded from the zai bucket by user instruction:
+#   - nextjs-vite-rewrite: original 3-way exclusion list; every glm-claude-code
+#     candidate in e0ef4703 has NonZeroAgentExitCodeError without a verifier
+#     pass, so it would not pass the open-rule anyway.
+#   - post-train-ifeval: removed from the bucket per later instruction.
+#   - kubernetes-rust-rewrite: removed from the bucket per later instruction.
+SKIP_TASKS = {'nextjs-vite-rewrite', 'post-train-ifeval', 'kubernetes-rust-rewrite'}
 
 sys.path.insert(0, os.path.dirname(__file__))
 from import_zai_marathon import (

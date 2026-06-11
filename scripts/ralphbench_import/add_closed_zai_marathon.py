@@ -39,8 +39,9 @@ DST_REGION = 'us-west-2'
 EXPERIMENT_ID = 'e0ef4703'
 AGENT = 'glm-claude-code'
 MAX_PER_CELL = 5
-CLOSED_TASKS = {'embedding-eval', 'kubernetes-rust-rewrite',
-                'parameter-golf', 'trimul-cuda', 'zstd-decoder'}
+# kubernetes-rust-rewrite removed per user instruction; was 5/5 closed-task
+# entries, now permanently excluded from this bucket.
+CLOSED_TASKS = {'embedding-eval', 'parameter-golf', 'trimul-cuda', 'zstd-decoder'}
 
 sys.path.insert(0, os.path.dirname(__file__))
 from import_zai_marathon import (
