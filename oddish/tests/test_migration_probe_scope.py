@@ -2,7 +2,9 @@ import pathlib
 
 
 def test_probe_scope_migration_exists_and_backfills():
-    versions = pathlib.Path("oddish/alembic/versions")
+    # Resolve relative to this test file so the test is CWD-independent
+    # (this repo runs pytest from oddish/, not the repo root).
+    versions = pathlib.Path(__file__).resolve().parent.parent / "alembic" / "versions"
     text = "\n".join(p.read_text() for p in versions.glob("*add_probe_scope*.py"))
     assert "add_column" in text and "probe_scope" in text
     assert "is_probe = true" in text  # backfill present
