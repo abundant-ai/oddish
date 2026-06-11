@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -229,6 +230,17 @@ class TaskSubmission(BaseModel):
         default=None,
         description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
     )
+    probe_scope: Literal["trial", "task"] | None = Field(
+        default=None,
+        description=(
+            "Probe scope. 'trial' stages a single target trial's logs; 'task' "
+            "exposes the whole experiment via the S3 MCP server. Null = non-probe."
+        ),
+    )
+    probe_target_trial_id: str | None = Field(
+        default=None,
+        description="Required when probe_scope=='trial': the trial id to probe.",
+    )
     link: str | None = Field(
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
@@ -318,6 +330,17 @@ class TaskSweepSubmission(BaseModel):
     ratio_verb: str | None = Field(
         default=None,
         description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
+    )
+    probe_scope: Literal["trial", "task"] | None = Field(
+        default=None,
+        description=(
+            "Probe scope. 'trial' stages a single target trial's logs; 'task' "
+            "exposes the whole experiment via the S3 MCP server. Null = non-probe."
+        ),
+    )
+    probe_target_trial_id: str | None = Field(
+        default=None,
+        description="Required when probe_scope=='trial': the trial id to probe.",
     )
 
     # Common fields
