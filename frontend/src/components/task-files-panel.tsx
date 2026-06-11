@@ -110,6 +110,12 @@ interface TaskFilesPanelProps {
    * Bump the value or pair with a counter to re-trigger navigation to the same path.
    */
   initialFilePath?: string | null;
+  /**
+   * Task id to source the PROBE entry from, for panes that drive file listing
+   * via `filesUrl` and pass `taskId={null}` (e.g. the side-by-side "Task
+   * definition" pane). Falls back to `taskId` when not set.
+   */
+  probeTaskId?: string | null;
 }
 
 function getNodeName(path: string): string {
@@ -273,11 +279,15 @@ export function TaskFilesPanel({
   contentOnly = false,
   filesUrl,
   initialFilePath,
+  probeTaskId,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
+  // The PROBE entry is keyed off the task even in filesUrl-driven panes (which
+  // pass taskId={null}); probeTaskId supplies the id there.
+  const effectiveProbeTaskId = taskId ?? probeTaskId ?? null;
   const probeKey =
-    taskId && showAnalysis !== false
-      ? `${baseUrl}/tasks/${taskId}/trials?probe=true`
+    effectiveProbeTaskId && showAnalysis !== false
+      ? `${baseUrl}/tasks/${effectiveProbeTaskId}/trials?probe=true`
       : null;
   const { data: probeTrials } = useSWR<ProbeTrial[]>(probeKey, fetcher, {
     // Poll while the newest probe is still running; stop once terminal.
@@ -1172,7 +1182,7 @@ export function TaskFilesPanel({
                 Files
               </div>
               {renderFileTree(fileTree)}
-              {showAnalysis !== false && !filesUrl && (
+              {showAnalysis !== false && effectiveProbeTaskId && (
                 <div className="border-border mt-2 border-t pt-2">
                   <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
                     Probe
@@ -1229,7 +1239,10 @@ export function TaskFilesPanel({
             )}
             <div ref={contentRef} className="bg-card flex-1 overflow-auto">
               {probeSelected && latestProbe ? (
-                <TaskProbeSummary trial={latestProbe} taskId={taskId ?? ""} />
+                <TaskProbeSummary
+                  trial={latestProbe}
+                  taskId={effectiveProbeTaskId ?? ""}
+                />
               ) : (
                 renderFileContent()
               )}
