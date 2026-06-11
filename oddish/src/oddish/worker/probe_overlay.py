@@ -34,6 +34,13 @@ MAX_BYTES_PER_FILE = 2 * 1024 * 1024  # 2 MiB
 HARBOR_DIR_NAME = "harbor_src"
 HARBOR_CONTAINER_DIR = f"/app/{HARBOR_DIR_NAME}"
 
+# Subdir of ``environment/`` into which the task's own files (tests/, solution/,
+# task.toml, the original instructions, ...) are staged for probes. Harbor only
+# surfaces ``environment/`` to the agent, so this is how the *full* task
+# definition reaches it -- far more than a normal run, which sees only the
+# runtime environment. Lands at ``<workdir>/task_files`` once uploaded.
+TASK_FILES_DIR_NAME = "task_files"
+
 
 # System framing prepended to instruction.md when a trial carries an operator
 # directive (extra_instructions). Reorients the agent so the operator's
@@ -108,6 +115,27 @@ def _related_logs_section(related_dir: str, has_related: bool) -> str:
     )
 
 
+def _task_files_section(has_task_files: bool) -> str:
+    """Tell the agent it has the whole task dir, and frame what's unusual.
+
+    The agent should understand the normal-run baseline (it would only see its
+    runtime working directory) so it grasps that being handed the verifier,
+    reference solution, and task config is extra surface specific to this probe.
+    """
+    if not has_task_files:
+        return ""
+    return (
+        "## FULL TASK DEFINITION (more than a normal run)\n\n"
+        "Normally an agent only sees the task's runtime environment -- the "
+        "working directory it starts in -- and nothing about how the task is "
+        "graded. For this probe you have ALSO been given the task's entire "
+        f"definition under `{TASK_FILES_DIR_NAME}/` in your working directory: "
+        "the test/verifier sources, any reference solution, the task config, and "
+        "the original instructions. A standard run would not expose these. Read "
+        "them freely to understand exactly how this task is built and scored."
+    )
+
+
 def render_probe_instruction(
     framing: str,
     directive: str,
@@ -115,6 +143,7 @@ def render_probe_instruction(
     *,
     related_dir: str,
     has_related: bool,
+    has_task_files: bool = False,
     time_budget_sec: float | None = None,
 ) -> str:
     """Render the full mutated ``instruction.md`` for a probe trial.
@@ -144,6 +173,11 @@ def render_probe_instruction(
         if time_budget_sec
         else ""
     )
+    task_files_block = (
+        f"\n\n---\n\n{_task_files_section(has_task_files)}"
+        if has_task_files
+        else ""
+    )
     return (
         f"{directive}\n\n"
         f"THIS IS THE TASK:\n\n"
@@ -153,6 +187,7 @@ def render_probe_instruction(
         f"{_RUNNING_TESTS_SECTION}\n\n"
         f"---\n\n"
         f"{_related_logs_section(related_dir, has_related)}"
+        f"{task_files_block}"
     )
 
 
