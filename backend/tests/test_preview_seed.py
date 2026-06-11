@@ -1,16 +1,15 @@
-"""Local unit test for the preview seed: building the full schema then
-seeding yields a consistent, deterministic, convergent preview DB.
+"""Local tests for the preview seed: a faithful prod subset, deterministic,
+idempotent, convergent, and safe around reviewer-created data.
 
 The schema is built with ``Base.metadata.create_all`` -- oddish and backend
 models register on the same ``DeclarativeBase`` -- rather than replaying the
-Alembic chain. The real pipeline only ever applies Alembic incrementally onto
-a branch whose schema Supabase already cloned, never from an empty database,
-so a from-scratch chain replay is not a supported path.
+Alembic chain (the real pipeline only ever applies Alembic incrementally onto
+a branch whose schema Supabase already cloned, never from an empty database).
+A second database on the same server stands in for production.
 
-Run against an empty Postgres by setting ``ODDISH_DATABASE_URL`` (the test
-builds the schema itself); it skips otherwise. The deploy-path gate is the
-real seed step in the prepare-preview-database job, which seeds the actual
-branch -- if the seed breaks against the real schema, that job fails."""
+Run by setting ``ODDISH_DATABASE_URL`` to an empty Postgres; skips otherwise.
+The deploy-path gate is the real seed step in the prepare-preview-database
+job, which samples actual prod and seeds the actual branch."""
 import os
 
 import pytest
@@ -22,15 +21,11 @@ import preview_seed
 from oddish.db.models import Base
 
 URL = os.environ.get("ODDISH_DATABASE_URL")
+SAMPLE_KEY = "77"
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.skipif(not URL, reason="ODDISH_DATABASE_URL not set"),
 ]
-
-
-@pytest.fixture(autouse=True)
-def _clerk_org(monkeypatch):
-    monkeypatch.setenv("ODDISH_PREVIEW_CLERK_ORG_ID", "org_seedtest")
 
 
 async def _count(engine, sql):
@@ -38,74 +33,332 @@ async def _count(engine, sql):
         return (await c.execute(text(sql))).scalar_one()
 
 
-async def test_seed_populates_and_is_idempotent_and_convergent():
-    engine = create_async_engine(URL)
+async def _reset_target(engine):
+    async with engine.begin() as conn:
+        await conn.execute(text("drop schema public cascade"))
+        await conn.execute(text("create schema public"))
+        await conn.run_sync(Base.metadata.create_all)
+
+
+def _src_url() -> str:
+    base, _, _db = URL.rpartition("/")
+    return f"{base}/seed_sample_src"
+
+
+async def _make_source_db():
+    admin = create_async_engine(URL, isolation_level="AUTOCOMMIT")
     try:
-        async with engine.begin() as conn:
-            await conn.execute(text("drop schema public cascade"))
-            await conn.execute(text("create schema public"))
-            await conn.run_sync(Base.metadata.create_all)
-
-        await preview_seed.seed(engine)
-        assert await _count(engine, "select count(*) from organizations where id like 'seed-%'") == 1
-        assert await _count(engine, "select count(*) from organizations where clerk_org_id = 'org_seedtest'") == 1
-        assert await _count(engine, "select count(*) from tasks where id='seed-task-a' and current_version_id='seed-task-a-v2'") == 1
-        assert await _count(engine, "select count(*) from task_experiments where task_id like 'seed-%' and deleted_at is not null") >= 1
-
-        tasks_before = await _count(engine, "select count(*) from tasks where id like 'seed-%'")
-        await preview_seed.seed(engine)  # idempotent
-        assert await _count(engine, "select count(*) from tasks where id like 'seed-%'") == tasks_before
-
-        orig = preview_seed._fixtures  # convergent
-        def _edited():
-            f = orig()
-            f["organizations"][0]["name"] = "Edited Org"
-            return f
-        preview_seed._fixtures = _edited  # type: ignore[assignment]
-        try:
-            await preview_seed.seed(engine)
-        finally:
-            preview_seed._fixtures = orig  # type: ignore[assignment]
-        async with engine.connect() as c:
-            name = (await c.execute(text("select name from organizations where id='seed-org'"))).scalar_one()
-        assert name == "Edited Org"
+        async with admin.connect() as c:
+            await c.execute(text("drop database if exists seed_sample_src with (force)"))
+            await c.execute(text("create database seed_sample_src"))
     finally:
-        await engine.dispose()
+        await admin.dispose()
+
+    src = create_async_engine(_src_url())
+    t = Base.metadata.tables
+    async with src.begin() as c:
+        await c.run_sync(Base.metadata.create_all)
+        await c.execute(t["organizations"].insert(), [
+            {"id": "org-a", "name": "Real A", "slug": "real-a",
+             "clerk_org_id": "org_real_a"},
+            {"id": "org-b", "name": "Real B", "slug": "real-b",
+             "clerk_org_id": "org_real_b"},
+        ])
+        await c.execute(t["users"].insert(), [
+            {"id": "u-a1", "org_id": "org-a", "email": "real-a1@corp.com",
+             "name": "Alice Real", "role": "owner", "github_username": "alice",
+             "clerk_user_id": "user_a1"},
+            {"id": "u-a2", "org_id": "org-a", "email": "real-a2@corp.com",
+             "name": "Anna Real", "role": "member", "github_username": None,
+             "clerk_user_id": "user_a2"},
+            {"id": "u-b1", "org_id": "org-b", "email": "real-b1@corp.com",
+             "name": "Bob Real", "role": "member", "github_username": None,
+             "clerk_user_id": "user_b1"},
+        ])
+        await c.execute(t["experiments"].insert(), [
+            {"id": "exp-a", "name": "Exp A", "org_id": "org-a",
+             "owner_user_id": "u-a1",
+             "is_public": True, "public_token": "tok-a", "deleted_at": None},
+            {"id": "exp-b", "name": "Exp B", "org_id": "org-b",
+             "owner_user_id": "u-b1",
+             "is_public": False, "public_token": None, "deleted_at": None},
+            {"id": "exp-mine", "name": "Mine Exp", "org_id": "org-a",
+             "owner_user_id": "u-a2",
+             "is_public": False, "public_token": None, "deleted_at": None},
+            {"id": "exp-del", "name": "Deleted", "org_id": "org-a",
+             "owner_user_id": "u-a1",
+             "is_public": False, "public_token": None,
+             "deleted_at": preview_seed.SEED_EPOCH},
+        ])
+        await c.execute(t["tasks"].insert(), [
+            {"id": "task-solo", "name": "solo-task", "org_id": "org-a",
+             "created_by_user_id": "u-a1", "user": "real-a1@corp.com",
+             "status": "COMPLETED", "task_path": "p/solo", "tags": {}},
+            {"id": "task-dup-a", "name": "dup-task", "org_id": "org-a",
+             "created_by_user_id": "u-a1", "user": "real-a1@corp.com",
+             "status": "COMPLETED", "task_path": "p/dup-a", "tags": {}},
+            {"id": "task-dup-b", "name": "dup-task", "org_id": "org-b",
+             "created_by_user_id": "u-b1", "user": "real-b1@corp.com",
+             "status": "FAILED", "task_path": "p/dup-b", "tags": {}},
+            {"id": "task-run", "name": "running-task", "org_id": "org-a",
+             "created_by_user_id": "u-a1", "user": "real-a1@corp.com",
+             "status": "RUNNING", "task_path": "p/run", "tags": {}},
+        ])
+        await c.execute(t["task_versions"].insert(), [
+            {"id": "ver-solo-1", "task_id": "task-solo", "version": 1,
+             "task_path": "p/solo"},
+            {"id": "ver-solo-2", "task_id": "task-solo", "version": 2,
+             "task_path": "p/solo"},
+            {"id": "ver-dup-a", "task_id": "task-dup-a", "version": 1,
+             "task_path": "p/dup-a"},
+            {"id": "ver-dup-b", "task_id": "task-dup-b", "version": 1,
+             "task_path": "p/dup-b"},
+        ])
+        await c.execute(
+            t["tasks"].update().where(t["tasks"].c.id == "task-solo")
+            .values(current_version_id="ver-solo-2")
+        )
+        await c.execute(t["task_experiments"].insert(), [
+            {"task_id": "task-solo", "experiment_id": "exp-a"},
+            {"task_id": "task-dup-a", "experiment_id": "exp-a"},
+            {"task_id": "task-dup-b", "experiment_id": "exp-b"},
+            {"task_id": "task-run", "experiment_id": "exp-a"},
+        ])
+        await c.execute(t["trials"].insert(), [
+            {"id": "tr-ok", "name": "tr-ok", "task_id": "task-solo",
+             "task_version_id": "ver-solo-2", "experiment_id": "exp-a",
+             "org_id": "org-a", "agent": "claude", "provider": "anthropic",
+             "queue_key": "q", "timeout_minutes": 30, "environment": "modal",
+             "harbor_config": {}, "status": "SUCCESS", "origin": "oddish",
+             "result": {"reward": 1}, "superseded_by_trial_id": None},
+            {"id": "tr-running", "name": "tr-running", "task_id": "task-solo",
+             "task_version_id": "ver-solo-2", "experiment_id": "exp-a",
+             "org_id": "org-a", "agent": "claude", "provider": "anthropic",
+             "queue_key": "q", "timeout_minutes": 30, "environment": "modal",
+             "harbor_config": {}, "status": "RUNNING", "origin": "oddish",
+             "result": None, "superseded_by_trial_id": None},
+            {"id": "tr-superseded", "name": "tr-superseded",
+             "task_id": "task-solo", "task_version_id": "ver-solo-2",
+             "experiment_id": "exp-a", "org_id": "org-a", "agent": "claude",
+             "provider": "anthropic", "queue_key": "q", "timeout_minutes": 30,
+             "environment": "modal", "harbor_config": {}, "status": "FAILED",
+             "origin": "oddish", "result": None,
+             "superseded_by_trial_id": "tr-running"},
+        ])
+        await c.execute(t["worker_jobs"].insert(), [
+            {"id": "wj-done", "kind": "TRIAL", "status": "SUCCESS",
+             "queue_key": "q", "subject_table": "trials",
+             "subject_id": "tr-ok", "org_id": "org-a", "parent_job_id": None},
+            {"id": "wj-live", "kind": "TRIAL", "status": "RUNNING",
+             "queue_key": "q", "subject_table": "trials",
+             "subject_id": "tr-ok", "org_id": "org-a", "parent_job_id": None},
+            {"id": "wj-child", "kind": "VERDICT", "status": "FAILED",
+             "queue_key": "q", "subject_table": "tasks",
+             "subject_id": "task-solo", "org_id": "org-a",
+             "parent_job_id": "wj-live"},
+        ])
+        await c.execute(t["skills"].insert(), [
+            {"id": "sk-a", "org_id": "org-a", "created_by_user_id": "u-a1",
+             "name": "skill-a", "description": "a"},
+        ])
+        await c.execute(t["skill_files"].insert(), [
+            {"id": "skf-a1", "skill_id": "sk-a", "relative_path": "SKILL.md",
+             "content": "# a"},
+        ])
+        await c.execute(t["documents"].insert(), [
+            {"id": "doc-1", "org_id": "org-a", "created_by_user_id": "u-a1",
+             "title": "Doc One", "source_type": "text"},
+        ])
+    return src
 
 
-async def test_seed_reclaims_clerk_org_id_from_a_preexisting_row():
-    """A reused or once---with-data branch may already hold a row with the
-    seeded clerk_org_id on a different id (e.g. cloned prod data). The seed
-    must free that UNIQUE(clerk_org_id) mapping rather than fail with a
-    duplicate-key error."""
+async def test_sample_is_deterministic_and_prod_faithful():
+    src = await _make_source_db()
+    try:
+        s1 = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        s2 = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        assert s1 == s2  # deterministic for a given key
+
+        rows = s1["rows"]
+        # identity rows are imported AS-IS: real clerk ids, names, emails
+        orgs = {o["id"]: o for o in rows["organizations"]}
+        assert orgs["org-a"]["clerk_org_id"] == "org_real_a"
+        users = {u["id"]: u for u in rows["users"]}
+        assert users["u-a1"]["email"] == "real-a1@corp.com"
+        assert users["u-a1"]["name"] == "Alice Real"
+        assert users["u-a1"]["clerk_user_id"] == "user_a1"
+        assert "u-a2" in users  # full membership of sampled orgs, not just authors
+
+        # experiments are untouched (incl. public sharing flags)
+        exps = {e["id"]: e for e in rows["experiments"]}
+        assert set(exps) == {"exp-a", "exp-b", "exp-mine"}  # deleted one excluded
+        assert exps["exp-a"]["is_public"] is True
+        assert exps["exp-a"]["public_token"] == "tok-a"
+        assert exps["exp-a"]["org_id"] == "org-a"  # no remap
+
+        # both same-named tasks survive (different orgs, like prod)
+        tasks = {t["id"]: t for t in rows["tasks"]}
+        assert {"task-dup-a", "task-dup-b"} <= set(tasks)
+        assert tasks["task-solo"]["user"] == "real-a1@corp.com"  # no scrubbing
+        # the only mutation: in-flight normalized so previews never run work
+        assert tasks["task-run"]["status"] == "FAILED"
+        trials = {t["id"]: t for t in rows["trials"]}
+        assert trials["tr-running"]["status"] == "FAILED"
+
+        # self-references deferred to the linkage pass
+        assert ("tasks", "task-solo", "current_version_id", "ver-solo-2") in s1["linkage"]
+        assert ("trials", "tr-superseded", "superseded_by_trial_id",
+                "tr-running") in s1["linkage"]
+
+        jobs = {j["id"]: j for j in rows["worker_jobs"]}
+        assert "wj-live" not in jobs  # only terminal jobs imported
+        assert jobs["wj-child"]["parent_job_id"] is None  # parent not sampled
+
+        assert [s["id"] for s in rows["skills"]] == ["sk-a"]
+        assert [f["id"] for f in rows["skill_files"]] == ["skf-a1"]
+        assert [d["id"] for d in rows["documents"]] == ["doc-1"]
+    finally:
+        await src.dispose()
+
+
+async def test_per_owner_anchor_guarantees_mine_view_data(monkeypatch):
+    """With the global anchors disabled, every distinct experiment owner is
+    still represented in the draw -- the guarantee behind the dashboard
+    "Mine" view showing data for every member in previews."""
+    src = await _make_source_db()
+    try:
+        monkeypatch.setattr(preview_seed, "SAMPLE_RECENT_EXPERIMENTS", 0)
+        monkeypatch.setattr(preview_seed, "SAMPLE_RANDOM_EXPERIMENTS", 0)
+        s = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        owners = {e["owner_user_id"] for e in s["rows"]["experiments"]}
+        assert owners == {"u-a1", "u-a2", "u-b1"}
+    finally:
+        await src.dispose()
+
+
+async def test_seed_loads_subset_reconciles_drift_and_keeps_reviewer_data():
+    src = await _make_source_db()
     engine = create_async_engine(URL)
     try:
-        async with engine.begin() as conn:
-            await conn.execute(text("drop schema public cascade"))
-            await conn.execute(text("create schema public"))
-            await conn.run_sync(Base.metadata.create_all)
-            await conn.execute(text(
-                "insert into organizations "
-                "(id, name, slug, clerk_org_id, plan, settings, is_active, "
-                "created_at, updated_at) values "
-                "('preexisting-org', 'Real Org', 'real-org', 'org_seedtest', "
-                "'free', '{}'::jsonb, true, "
-                "'2025-01-01T00:00:00+00', '2025-01-01T00:00:00+00')"
+        sampled = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        await _reset_target(engine)
+        await preview_seed.seed(engine, sampled=sampled)
+
+        # auth path: the real org row with its real clerk mapping is present
+        assert await _count(
+            engine,
+            "select count(*) from organizations"
+            " where id='org-a' and clerk_org_id='org_real_a'") == 1
+        # members are the real users
+        assert await _count(
+            engine,
+            "select count(*) from users where org_id='org-a'"
+            " and email like '%@corp.com'") == 2
+        # linkage applied; JSONB intact
+        assert await _count(
+            engine,
+            "select count(*) from tasks where id='task-solo'"
+            " and current_version_id='ver-solo-2'") == 1
+        assert await _count(
+            engine,
+            "select count(*) from trials where id='tr-superseded'"
+            " and superseded_by_trial_id='tr-running'") == 1
+        assert await _count(
+            engine,
+            "select count(*) from trials where id='tr-ok'"
+            " and (result->>'reward')::int = 1") == 1
+
+        # idempotent
+        before = await _count(engine, "select count(*) from tasks")
+        await preview_seed.seed(engine, sampled=sampled)
+        assert await _count(engine, "select count(*) from tasks") == before
+
+        # reviewer-created data (made in the preview by hand) must survive
+        async with engine.begin() as c:
+            await c.execute(text(
+                "insert into users (id, org_id, email, role, name, is_active,"
+                " created_at, updated_at) values ('jit-rev', 'org-a',"
+                " 'reviewer@corp.com', 'owner', 'Reviewer', true, now(), now())"
+            ))
+            await c.execute(text(
+                "insert into tasks (id, name, org_id, created_by_user_id,"
+                " \"user\", priority, status, task_path, tags, run_analysis,"
+                " run_probe, created_at, updated_at) values ('manual-1',"
+                " 'reviewer-made', 'org-a', 'jit-rev', 'reviewer@corp.com',"
+                " 'LOW', 'PENDING', 'p/manual', '{}'::jsonb, false, false,"
+                " now(), now())"
             ))
 
-        await preview_seed.seed(engine)
+        # prod drift: everything belonging to exp-b drops out of the draw
+        drifted = {
+            "rows": {
+                name: [r for r in rows if r.get("experiment_id") != "exp-b"
+                       and r.get("id") not in ("exp-b", "task-dup-b", "ver-dup-b")
+                       and r.get("task_id") != "task-dup-b"]
+                for name, rows in sampled["rows"].items()
+            },
+            "linkage": sampled["linkage"],
+        }
+        await preview_seed.seed(engine, sampled=drifted)
+        assert await _count(engine, "select count(*) from experiments where id='exp-b'") == 0
+        assert await _count(engine, "select count(*) from tasks where id='task-dup-b'") == 0
+        assert await _count(engine, "select count(*) from experiments where id='exp-a'") == 1
+        # reviewer data untouched by reconcile
+        assert await _count(engine, "select count(*) from tasks where id='manual-1'") == 1
+        assert await _count(engine, "select count(*) from users where id='jit-rev'") == 1
 
-        # the seeded org claimed the clerk_org_id ...
-        assert await _count(
-            engine,
-            "select count(*) from organizations where id='seed-org' "
-            "and clerk_org_id='org_seedtest'",
-        ) == 1
-        # ... and the pre-existing row was freed (mapping nulled, no duplicate)
-        assert await _count(
-            engine,
-            "select count(*) from organizations where id='preexisting-org' "
-            "and clerk_org_id is null",
-        ) == 1
+        # outage tolerance: sampled=None leaves everything alone
+        await preview_seed.seed(engine, sampled=None)
+        assert await _count(engine, "select count(*) from experiments where id='exp-a'") == 1
     finally:
         await engine.dispose()
+        await src.dispose()
+
+
+async def test_seed_cleans_legacy_fixtures_and_yields_to_jit_conflicts():
+    src = await _make_source_db()
+    engine = create_async_engine(URL)
+    try:
+        sampled = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        await _reset_target(engine)
+        # a reused branch may carry artifacts of earlier seed versions ...
+        async with engine.begin() as c:
+            await c.execute(text(
+                "insert into organizations (id, name, slug, plan, settings,"
+                " is_active, created_at, updated_at) values"
+                " ('seed-org', 'Preview Org', 'preview-org', 'free',"
+                " '{}'::jsonb, true, now(), now()),"
+                " ('org-a', 'Real A', 'real-a', 'free', '{}'::jsonb, true,"
+                " now(), now())"
+            ))
+            await c.execute(text(
+                "insert into users (id, org_id, email, role, name, is_active,"
+                " created_at, updated_at) values"
+                " ('seed-usr-owner', 'seed-org', 'owner@preview.local',"
+                "  'owner', 'Preview Owner', true, now(), now()),"
+                " ('anon-1', 'seed-org', 'user-x@preview.local', 'member',"
+                "  'Prod User x', true, now(), now()),"
+                # ... and a JIT-provisioned reviewer holding a real user's
+                # unique identity under a different primary key
+                " ('jit-1', 'org-a', 'real-a1@corp.com', 'owner', 'Reviewer',"
+                "  true, now(), now())"
+            ))
+
+        await preview_seed.seed(engine, sampled=sampled)
+
+        # legacy fixtures and anonymized users are gone
+        assert await _count(engine, "select count(*) from organizations where id='seed-org'") == 0
+        assert await _count(engine, "select count(*) from users where email like '%@preview.local'") == 0
+        # the conflicting import yielded: one row holds that email, the JIT one
+        assert await _count(
+            engine,
+            "select count(*) from users where email='real-a1@corp.com'") == 1
+        assert await _count(
+            engine,
+            "select count(*) from users where id='jit-1'") == 1
+        # the rest of the subset still loaded
+        assert await _count(engine, "select count(*) from experiments where id='exp-a'") == 1
+        assert await _count(engine, "select count(*) from users where id='u-a2'") == 1
+    finally:
+        await engine.dispose()
+        await src.dispose()
