@@ -48,9 +48,13 @@ SEED_EPOCH = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
 
 # Prod-sample sizing: a slice large enough to exercise features against
 # real data and cover every data-bearing table, never the whole dataset.
-SAMPLE_RECENT_EXPERIMENTS = 6
-SAMPLE_RANDOM_EXPERIMENTS = 6
-SAMPLE_EXTRA_TASKS = 10
+SAMPLE_RECENT_EXPERIMENTS = 8
+SAMPLE_RANDOM_EXPERIMENTS = 8
+# Per-user coverage: every distinct experiment owner contributes their K
+# most recent experiments, so per-user features (the dashboard "Mine"
+# filter) work in the preview for every member, exactly as in prod.
+SAMPLE_EXPERIMENTS_PER_OWNER = 3
+SAMPLE_EXTRA_TASKS = 20
 SAMPLE_TRIALS_PER_EXPERIMENT = 50
 SAMPLE_SKILLS = 10
 SAMPLE_DOCUMENTS = 10
@@ -128,6 +132,28 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
             key=sample_key,
             n=SAMPLE_RANDOM_EXPERIMENTS,
         )
+        # Per-owner anchor: each distinct owner's most recent experiments,
+        # so the dashboard "Mine" view has data for every member. Guarded:
+        # owner_user_id is a newer column and may be absent on older schemas.
+        try:
+            per_owner = await rows_of(
+                conn,
+                "SELECT * FROM ("
+                "  SELECT e.*, row_number() OVER ("
+                "    PARTITION BY e.owner_user_id"
+                "    ORDER BY e.last_activity_at DESC NULLS LAST,"
+                "             e.created_at DESC"
+                "  ) AS _rn FROM experiments e"
+                "  WHERE e.deleted_at IS NULL AND e.org_id IS NOT NULL"
+                "    AND e.owner_user_id IS NOT NULL"
+                ") s WHERE s._rn <= :k",
+                k=SAMPLE_EXPERIMENTS_PER_OWNER,
+            )
+            for e in per_owner:
+                e.pop("_rn", None)
+            exps += per_owner
+        except Exception as exc:  # noqa: BLE001 -- never sink the draw
+            _warn(f"per-owner experiment anchor skipped ({type(exc).__name__}: {exc})")
         exps = list({e["id"]: e for e in exps}.values())
         exp_ids = [e["id"] for e in exps]
         if not exp_ids:

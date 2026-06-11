@@ -77,10 +77,16 @@ async def _make_source_db():
         ])
         await c.execute(t["experiments"].insert(), [
             {"id": "exp-a", "name": "Exp A", "org_id": "org-a",
+             "owner_user_id": "u-a1",
              "is_public": True, "public_token": "tok-a", "deleted_at": None},
             {"id": "exp-b", "name": "Exp B", "org_id": "org-b",
+             "owner_user_id": "u-b1",
+             "is_public": False, "public_token": None, "deleted_at": None},
+            {"id": "exp-mine", "name": "Mine Exp", "org_id": "org-a",
+             "owner_user_id": "u-a2",
              "is_public": False, "public_token": None, "deleted_at": None},
             {"id": "exp-del", "name": "Deleted", "org_id": "org-a",
+             "owner_user_id": "u-a1",
              "is_public": False, "public_token": None,
              "deleted_at": preview_seed.SEED_EPOCH},
         ])
@@ -185,7 +191,7 @@ async def test_sample_is_deterministic_and_prod_faithful():
 
         # experiments are untouched (incl. public sharing flags)
         exps = {e["id"]: e for e in rows["experiments"]}
-        assert set(exps) == {"exp-a", "exp-b"}  # deleted one excluded
+        assert set(exps) == {"exp-a", "exp-b", "exp-mine"}  # deleted one excluded
         assert exps["exp-a"]["is_public"] is True
         assert exps["exp-a"]["public_token"] == "tok-a"
         assert exps["exp-a"]["org_id"] == "org-a"  # no remap
@@ -211,6 +217,21 @@ async def test_sample_is_deterministic_and_prod_faithful():
         assert [s["id"] for s in rows["skills"]] == ["sk-a"]
         assert [f["id"] for f in rows["skill_files"]] == ["skf-a1"]
         assert [d["id"] for d in rows["documents"]] == ["doc-1"]
+    finally:
+        await src.dispose()
+
+
+async def test_per_owner_anchor_guarantees_mine_view_data(monkeypatch):
+    """With the global anchors disabled, every distinct experiment owner is
+    still represented in the draw -- the guarantee behind the dashboard
+    "Mine" view showing data for every member in previews."""
+    src = await _make_source_db()
+    try:
+        monkeypatch.setattr(preview_seed, "SAMPLE_RECENT_EXPERIMENTS", 0)
+        monkeypatch.setattr(preview_seed, "SAMPLE_RANDOM_EXPERIMENTS", 0)
+        s = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        owners = {e["owner_user_id"] for e in s["rows"]["experiments"]}
+        assert owners == {"u-a1", "u-a2", "u-b1"}
     finally:
         await src.dispose()
 
