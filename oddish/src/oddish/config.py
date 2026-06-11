@@ -619,6 +619,15 @@ class Settings(BaseSettings):
     # experiments. PR-triggered runs derive owner/repo from task.tags.github_meta.
     sauron_s3_org: str = "oddish"
 
+    # Per-experiment S3 MCP server. The signing key authenticates URL-borne
+    # experiment scope (Harbor can't pass env to HTTP MCP servers).
+    mcp_s3_base_url: str = Field(
+        default="", description="Base URL of the deployed S3 MCP server"
+    )
+    mcp_s3_signing_key: str = Field(
+        default="", description="HMAC key for experiment-scope MCP URL tokens"
+    )
+
     # Task archive expansion (derived per-file layout for fast listings).
     # When enabled, uploading a new task version enqueues a
     # ``TASK_EXPAND`` worker job that writes the tarball's contents out
