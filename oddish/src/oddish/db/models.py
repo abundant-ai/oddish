@@ -559,6 +559,12 @@ class TrialModel(TimestampedMixin, Base):
         Boolean, nullable=False, server_default=text("false"), index=True
     )
 
+    # Probe scope: "trial" (stage one target trial) or "task" (experiment-wide
+    # via the S3 MCP server). Null for non-probes. Indexed for dashboard filters.
+    probe_scope: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, index=True
+    )
+
     # Status
     status: Mapped[TrialStatus] = mapped_column(
         SQLEnum(TrialStatus), default=TrialStatus.PENDING, nullable=False
