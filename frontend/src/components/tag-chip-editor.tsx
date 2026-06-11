@@ -33,6 +33,8 @@ interface TagChipEditorProps {
   // Fires with the server's final key/color (it may normalize the typed
   // name) so the parent can patch its optimistic chip list instantly.
   onEdited?: (patch: Pick<UserTagRef, "key" | "color">) => void;
+  // Unassigns the tag from the current target (not a vocabulary delete).
+  onRemove?: () => void;
 }
 
 /**
@@ -42,7 +44,12 @@ interface TagChipEditorProps {
  * — the backend enforces owner/admin/grant permissions and optimistic
  * concurrency (`expected_row_version`), and rejections surface inline.
  */
-export function TagChipEditor({ tag, onSaved, onEdited }: TagChipEditorProps) {
+export function TagChipEditor({
+  tag,
+  onSaved,
+  onEdited,
+  onRemove,
+}: TagChipEditorProps) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(tag.key);
   const [color, setColor] = useState<string | null>(null);
@@ -119,23 +126,40 @@ export function TagChipEditor({ tag, onSaved, onEdited }: TagChipEditorProps) {
         />
         <TagColorBar value={effectiveColor} onChange={setColor} />
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
-        <div className="flex justify-end gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 px-2 text-xs"
-            onClick={() => setOpen(false)}
-          >
-            Cancel
-          </Button>
-          <Button
-            size="sm"
-            className="h-6 px-2 text-xs"
-            disabled={saving || !listRow || name.trim().length === 0}
-            onClick={save}
-          >
-            {saving ? "Saving…" : "Save"}
-          </Button>
+        <div className="flex items-center justify-between gap-2">
+          {onRemove ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs text-destructive hover:bg-destructive/15 hover:text-destructive"
+              onClick={() => {
+                setOpen(false);
+                onRemove();
+              }}
+            >
+              Remove
+            </Button>
+          ) : (
+            <span />
+          )}
+          <div className="flex gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={() => setOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="h-6 px-2 text-xs"
+              disabled={saving || !listRow || name.trim().length === 0}
+              onClick={save}
+            >
+              {saving ? "Saving…" : "Save"}
+            </Button>
+          </div>
         </div>
       </PopoverContent>
     </Popover>

@@ -51,6 +51,10 @@ export interface TagPickerProps {
   // just created) — lets assignment callers update optimistically without
   // re-fetching the tag list.
   onSelectItem?: (item: TagPickerItem) => void;
+  // When provided, the Create row hands the typed key + chosen color to the
+  // caller and closes IMMEDIATELY instead of awaiting the create API call —
+  // the caller owns the optimistic chip and the create+assign chain.
+  onCreateRequest?: (key: string, color: string) => void;
 }
 
 export function TagPicker({
@@ -61,6 +65,7 @@ export function TagPicker({
   allowCreate = false,
   trigger,
   onSelectItem,
+  onCreateRequest,
 }: TagPickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -170,7 +175,19 @@ export function TagPicker({
                   </CommandItem>
                 ))}
               {showCreate ? (
-                <CommandItem value={query} onSelect={() => createTag(query)}>
+                <CommandItem
+                  value={query}
+                  onSelect={() => {
+                    if (onCreateRequest) {
+                      onCreateRequest(query, effectiveCreateColor);
+                      setQuery("");
+                      setCreateColor(null);
+                      setOpen(false);
+                      return;
+                    }
+                    void createTag(query);
+                  }}
+                >
                   <Tag
                     className="mr-1.5 h-3.5 w-3.5 shrink-0"
                     style={{ color: effectiveCreateColor }}
