@@ -211,6 +211,36 @@ async def _make_source_db():
              "origin": "oddish", "result": None,
              "superseded_by_trial_id": "tr-running"},
         ])
+        await c.execute(t["worker_jobs"].insert(), [
+            {"id": "wj-done", "kind": "TRIAL", "status": "SUCCESS",
+             "queue_key": "q", "subject_table": "trials",
+             "subject_id": "tr-ok", "org_id": "org-a",
+             "parent_job_id": None},
+            {"id": "wj-live", "kind": "TRIAL", "status": "RUNNING",
+             "queue_key": "q", "subject_table": "trials",
+             "subject_id": "tr-ok", "org_id": "org-a",
+             "parent_job_id": None},
+            {"id": "wj-child", "kind": "VERDICT", "status": "FAILED",
+             "queue_key": "q", "subject_table": "tasks",
+             "subject_id": "task-solo", "org_id": "org-a",
+             "parent_job_id": "wj-live"},
+        ])
+        await c.execute(t["skills"].insert(), [
+            {"id": "sk-a", "org_id": "org-a", "created_by_user_id": "u-a1",
+             "name": "dup-skill", "description": "a"},
+            {"id": "sk-b", "org_id": "org-b", "created_by_user_id": "u-b1",
+             "name": "dup-skill", "description": "b"},
+        ])
+        await c.execute(t["skill_files"].insert(), [
+            {"id": "skf-a1", "skill_id": "sk-a", "relative_path": "SKILL.md",
+             "content": "# a"},
+            {"id": "skf-b1", "skill_id": "sk-b", "relative_path": "SKILL.md",
+             "content": "# b"},
+        ])
+        await c.execute(t["documents"].insert(), [
+            {"id": "doc-1", "org_id": "org-a", "created_by_user_id": "u-a1",
+             "title": "Doc One", "source_type": "text"},
+        ])
     return src
 
 
@@ -229,22 +259,38 @@ async def test_sample_prod_subset_is_deterministic_remapped_and_scrubbed():
             assert e["is_public"] is False and e["public_token"] is None
 
         task_ids = {t["id"] for t in rows["tasks"]}
-        assert "task-run" not in task_ids  # terminal statuses only
+        run = next(t for t in rows["tasks"] if t["id"] == "task-run")
+        assert run["status"] == "FAILED"  # in-flight normalized on import
         dup = [t for t in rows["tasks"] if t["name"] == "dup-task"]
         assert len(dup) == 1  # name-deduped for the unique (org, name) index
         for t in rows["tasks"]:
             assert t["org_id"] == "seed-org"
             assert t["user"] == "owner@preview.local"
-            assert t["current_version_id"] is None  # patched via linkage map
-        assert s1["current_versions"]["task-solo"] == "ver-solo-2"
+            assert t["current_version_id"] is None  # deferred to linkage pass
+        assert ("tasks", "task-solo", "current_version_id", "ver-solo-2") in s1["linkage"]
 
         link_tasks = {l["task_id"] for l in rows["task_experiments"]}
         assert link_tasks <= task_ids  # links only for kept tasks
 
         trial_ids = {t["id"] for t in rows["trials"]}
-        assert "tr-running" not in trial_ids
+        running = next(t for t in rows["trials"] if t["id"] == "tr-running")
+        assert running["status"] == "FAILED"  # in-flight normalized
+        assert running["current_worker_id"] is None
         sup = next(t for t in rows["trials"] if t["id"] == "tr-superseded")
-        assert sup["superseded_by_trial_id"] is None  # target not sampled
+        assert sup["superseded_by_trial_id"] is None  # deferred to linkage pass
+        assert ("trials", "tr-superseded", "superseded_by_trial_id",
+                "tr-running") in s1["linkage"]
+
+        jobs = {j["id"]: j for j in rows["worker_jobs"]}
+        assert "wj-live" not in jobs  # only terminal jobs imported
+        assert jobs["wj-child"]["parent_job_id"] is None  # parent not sampled
+        assert all(j["org_id"] == "seed-org" for j in jobs.values())
+
+        skills = rows["skills"]
+        assert len(skills) == 1  # name-deduped like tasks
+        kept_skill = skills[0]["id"]
+        assert all(f["skill_id"] == kept_skill for f in rows["skill_files"])
+        assert rows["documents"][0]["org_id"] == "seed-org"
 
         for u in rows["users"]:
             assert u["org_id"] == "seed-org"
@@ -285,6 +331,10 @@ async def test_seed_with_sample_loads_links_and_reconciles_drift():
             engine,
             "select count(*) from trials where id='tr-ok'"
             " and (result->>'reward')::int = 1") == 1  # JSONB not double-encoded
+        assert await _count(
+            engine,
+            "select count(*) from trials where id='tr-superseded'"
+            " and superseded_by_trial_id='tr-running'") == 1  # linkage applied
 
         # prod drift: exp-b vanishes from the next draw -> its rows reconcile
         drifted = {
@@ -294,7 +344,7 @@ async def test_seed_with_sample_loads_links_and_reconciles_drift():
                        and r.get("task_id") != "task-dup-b"]
                 for name, rows in sampled["rows"].items()
             },
-            "current_versions": sampled["current_versions"],
+            "linkage": sampled["linkage"],
         }
         await preview_seed.seed(engine, sampled=drifted)
         assert await _count(
