@@ -1,16 +1,15 @@
-"""Local unit test for the preview seed: building the full schema then
-seeding yields a consistent, deterministic, convergent preview DB.
+"""Local tests for the preview seed: a faithful prod subset, deterministic,
+idempotent, convergent, and safe around reviewer-created data.
 
 The schema is built with ``Base.metadata.create_all`` -- oddish and backend
 models register on the same ``DeclarativeBase`` -- rather than replaying the
-Alembic chain. The real pipeline only ever applies Alembic incrementally onto
-a branch whose schema Supabase already cloned, never from an empty database,
-so a from-scratch chain replay is not a supported path.
+Alembic chain (the real pipeline only ever applies Alembic incrementally onto
+a branch whose schema Supabase already cloned, never from an empty database).
+A second database on the same server stands in for production.
 
-Run against an empty Postgres by setting ``ODDISH_DATABASE_URL`` (the test
-builds the schema itself); it skips otherwise. The deploy-path gate is the
-real seed step in the prepare-preview-database job, which seeds the actual
-branch -- if the seed breaks against the real schema, that job fails."""
+Run by setting ``ODDISH_DATABASE_URL`` to an empty Postgres; skips otherwise.
+The deploy-path gate is the real seed step in the prepare-preview-database
+job, which samples actual prod and seeds the actual branch."""
 import os
 
 import pytest
@@ -22,15 +21,11 @@ import preview_seed
 from oddish.db.models import Base
 
 URL = os.environ.get("ODDISH_DATABASE_URL")
+SAMPLE_KEY = "77"
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.skipif(not URL, reason="ODDISH_DATABASE_URL not set"),
 ]
-
-
-@pytest.fixture(autouse=True)
-def _clerk_org(monkeypatch):
-    monkeypatch.setenv("ODDISH_PREVIEW_CLERK_ORG_ID", "org_seedtest")
 
 
 async def _count(engine, sql):
@@ -38,83 +33,11 @@ async def _count(engine, sql):
         return (await c.execute(text(sql))).scalar_one()
 
 
-async def test_seed_populates_and_is_idempotent_and_convergent():
-    engine = create_async_engine(URL)
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("drop schema public cascade"))
-            await conn.execute(text("create schema public"))
-            await conn.run_sync(Base.metadata.create_all)
-
-        await preview_seed.seed(engine)
-        assert await _count(engine, "select count(*) from organizations where id like 'seed-%'") == 1
-        assert await _count(engine, "select count(*) from organizations where clerk_org_id = 'org_seedtest'") == 1
-        assert await _count(engine, "select count(*) from tasks where id='seed-task-a' and current_version_id='seed-task-a-v2'") == 1
-        assert await _count(engine, "select count(*) from task_experiments where task_id like 'seed-%' and deleted_at is not null") >= 1
-
-        tasks_before = await _count(engine, "select count(*) from tasks where id like 'seed-%'")
-        await preview_seed.seed(engine)  # idempotent
-        assert await _count(engine, "select count(*) from tasks where id like 'seed-%'") == tasks_before
-
-        orig = preview_seed._fixtures  # convergent
-        def _edited():
-            f = orig()
-            f["organizations"][0]["name"] = "Edited Org"
-            return f
-        preview_seed._fixtures = _edited  # type: ignore[assignment]
-        try:
-            await preview_seed.seed(engine)
-        finally:
-            preview_seed._fixtures = orig  # type: ignore[assignment]
-        async with engine.connect() as c:
-            name = (await c.execute(text("select name from organizations where id='seed-org'"))).scalar_one()
-        assert name == "Edited Org"
-    finally:
-        await engine.dispose()
-
-
-async def test_seed_reclaims_clerk_org_id_from_a_preexisting_row():
-    """A reused or once---with-data branch may already hold a row with the
-    seeded clerk_org_id on a different id (e.g. cloned prod data). The seed
-    must free that UNIQUE(clerk_org_id) mapping rather than fail with a
-    duplicate-key error."""
-    engine = create_async_engine(URL)
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("drop schema public cascade"))
-            await conn.execute(text("create schema public"))
-            await conn.run_sync(Base.metadata.create_all)
-            await conn.execute(text(
-                "insert into organizations "
-                "(id, name, slug, clerk_org_id, plan, settings, is_active, "
-                "created_at, updated_at) values "
-                "('preexisting-org', 'Real Org', 'real-org', 'org_seedtest', "
-                "'free', '{}'::jsonb, true, "
-                "'2025-01-01T00:00:00+00', '2025-01-01T00:00:00+00')"
-            ))
-
-        await preview_seed.seed(engine)
-
-        # the seeded org claimed the clerk_org_id ...
-        assert await _count(
-            engine,
-            "select count(*) from organizations where id='seed-org' "
-            "and clerk_org_id='org_seedtest'",
-        ) == 1
-        # ... and the pre-existing row was freed (mapping nulled, no duplicate)
-        assert await _count(
-            engine,
-            "select count(*) from organizations where id='preexisting-org' "
-            "and clerk_org_id is null",
-        ) == 1
-    finally:
-        await engine.dispose()
-
-
-# --- prod-sample tests -------------------------------------------------------
-# A second database on the same Postgres server stands in for production.
-
-SAMPLE_KEY = "77"
+async def _reset_target(engine):
+    async with engine.begin() as conn:
+        await conn.execute(text("drop schema public cascade"))
+        await conn.execute(text("create schema public"))
+        await conn.run_sync(Base.metadata.create_all)
 
 
 def _src_url() -> str:
@@ -143,9 +66,14 @@ async def _make_source_db():
         ])
         await c.execute(t["users"].insert(), [
             {"id": "u-a1", "org_id": "org-a", "email": "real-a1@corp.com",
-             "name": "Alice Real", "role": "owner", "github_username": "alice"},
+             "name": "Alice Real", "role": "owner", "github_username": "alice",
+             "clerk_user_id": "user_a1"},
+            {"id": "u-a2", "org_id": "org-a", "email": "real-a2@corp.com",
+             "name": "Anna Real", "role": "member", "github_username": None,
+             "clerk_user_id": "user_a2"},
             {"id": "u-b1", "org_id": "org-b", "email": "real-b1@corp.com",
-             "name": "Bob Real", "role": "member", "github_username": None},
+             "name": "Bob Real", "role": "member", "github_username": None,
+             "clerk_user_id": "user_b1"},
         ])
         await c.execute(t["experiments"].insert(), [
             {"id": "exp-a", "name": "Exp A", "org_id": "org-a",
@@ -214,12 +142,10 @@ async def _make_source_db():
         await c.execute(t["worker_jobs"].insert(), [
             {"id": "wj-done", "kind": "TRIAL", "status": "SUCCESS",
              "queue_key": "q", "subject_table": "trials",
-             "subject_id": "tr-ok", "org_id": "org-a",
-             "parent_job_id": None},
+             "subject_id": "tr-ok", "org_id": "org-a", "parent_job_id": None},
             {"id": "wj-live", "kind": "TRIAL", "status": "RUNNING",
              "queue_key": "q", "subject_table": "trials",
-             "subject_id": "tr-ok", "org_id": "org-a",
-             "parent_job_id": None},
+             "subject_id": "tr-ok", "org_id": "org-a", "parent_job_id": None},
             {"id": "wj-child", "kind": "VERDICT", "status": "FAILED",
              "queue_key": "q", "subject_table": "tasks",
              "subject_id": "task-solo", "org_id": "org-a",
@@ -227,15 +153,11 @@ async def _make_source_db():
         ])
         await c.execute(t["skills"].insert(), [
             {"id": "sk-a", "org_id": "org-a", "created_by_user_id": "u-a1",
-             "name": "dup-skill", "description": "a"},
-            {"id": "sk-b", "org_id": "org-b", "created_by_user_id": "u-b1",
-             "name": "dup-skill", "description": "b"},
+             "name": "skill-a", "description": "a"},
         ])
         await c.execute(t["skill_files"].insert(), [
             {"id": "skf-a1", "skill_id": "sk-a", "relative_path": "SKILL.md",
              "content": "# a"},
-            {"id": "skf-b1", "skill_id": "sk-b", "relative_path": "SKILL.md",
-             "content": "# b"},
         ])
         await c.execute(t["documents"].insert(), [
             {"id": "doc-1", "org_id": "org-a", "created_by_user_id": "u-a1",
@@ -244,7 +166,7 @@ async def _make_source_db():
     return src
 
 
-async def test_sample_prod_subset_is_deterministic_remapped_and_scrubbed():
+async def test_sample_is_deterministic_and_prod_faithful():
     src = await _make_source_db()
     try:
         s1 = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
@@ -252,91 +174,101 @@ async def test_sample_prod_subset_is_deterministic_remapped_and_scrubbed():
         assert s1 == s2  # deterministic for a given key
 
         rows = s1["rows"]
-        exp_ids = {e["id"] for e in rows["experiments"]}
-        assert exp_ids == {"exp-a", "exp-b"}  # deleted experiment excluded
-        for e in rows["experiments"]:
-            assert e["org_id"] == "seed-org"
-            assert e["is_public"] is False and e["public_token"] is None
+        # identity rows are imported AS-IS: real clerk ids, names, emails
+        orgs = {o["id"]: o for o in rows["organizations"]}
+        assert orgs["org-a"]["clerk_org_id"] == "org_real_a"
+        users = {u["id"]: u for u in rows["users"]}
+        assert users["u-a1"]["email"] == "real-a1@corp.com"
+        assert users["u-a1"]["name"] == "Alice Real"
+        assert users["u-a1"]["clerk_user_id"] == "user_a1"
+        assert "u-a2" in users  # full membership of sampled orgs, not just authors
 
-        task_ids = {t["id"] for t in rows["tasks"]}
-        run = next(t for t in rows["tasks"] if t["id"] == "task-run")
-        assert run["status"] == "FAILED"  # in-flight normalized on import
-        dup = [t for t in rows["tasks"] if t["name"] == "dup-task"]
-        assert len(dup) == 1  # name-deduped for the unique (org, name) index
-        for t in rows["tasks"]:
-            assert t["org_id"] == "seed-org"
-            assert t["user"] == "owner@preview.local"
-            assert t["current_version_id"] is None  # deferred to linkage pass
+        # experiments are untouched (incl. public sharing flags)
+        exps = {e["id"]: e for e in rows["experiments"]}
+        assert set(exps) == {"exp-a", "exp-b"}  # deleted one excluded
+        assert exps["exp-a"]["is_public"] is True
+        assert exps["exp-a"]["public_token"] == "tok-a"
+        assert exps["exp-a"]["org_id"] == "org-a"  # no remap
+
+        # both same-named tasks survive (different orgs, like prod)
+        tasks = {t["id"]: t for t in rows["tasks"]}
+        assert {"task-dup-a", "task-dup-b"} <= set(tasks)
+        assert tasks["task-solo"]["user"] == "real-a1@corp.com"  # no scrubbing
+        # the only mutation: in-flight normalized so previews never run work
+        assert tasks["task-run"]["status"] == "FAILED"
+        trials = {t["id"]: t for t in rows["trials"]}
+        assert trials["tr-running"]["status"] == "FAILED"
+
+        # self-references deferred to the linkage pass
         assert ("tasks", "task-solo", "current_version_id", "ver-solo-2") in s1["linkage"]
-
-        link_tasks = {l["task_id"] for l in rows["task_experiments"]}
-        assert link_tasks <= task_ids  # links only for kept tasks
-
-        trial_ids = {t["id"] for t in rows["trials"]}
-        running = next(t for t in rows["trials"] if t["id"] == "tr-running")
-        assert running["status"] == "FAILED"  # in-flight normalized
-        assert running["current_worker_id"] is None
-        sup = next(t for t in rows["trials"] if t["id"] == "tr-superseded")
-        assert sup["superseded_by_trial_id"] is None  # deferred to linkage pass
         assert ("trials", "tr-superseded", "superseded_by_trial_id",
                 "tr-running") in s1["linkage"]
 
         jobs = {j["id"]: j for j in rows["worker_jobs"]}
         assert "wj-live" not in jobs  # only terminal jobs imported
         assert jobs["wj-child"]["parent_job_id"] is None  # parent not sampled
-        assert all(j["org_id"] == "seed-org" for j in jobs.values())
 
-        skills = rows["skills"]
-        assert len(skills) == 1  # name-deduped like tasks
-        kept_skill = skills[0]["id"]
-        assert all(f["skill_id"] == kept_skill for f in rows["skill_files"])
-        assert rows["documents"][0]["org_id"] == "seed-org"
-
-        for u in rows["users"]:
-            assert u["org_id"] == "seed-org"
-            assert u["email"].endswith("@preview.local")
-            assert u["clerk_user_id"] is None and u["github_username"] is None
+        assert [s["id"] for s in rows["skills"]] == ["sk-a"]
+        assert [f["id"] for f in rows["skill_files"]] == ["skf-a1"]
+        assert [d["id"] for d in rows["documents"]] == ["doc-1"]
     finally:
         await src.dispose()
 
 
-async def test_seed_with_sample_loads_links_and_reconciles_drift():
+async def test_seed_loads_subset_reconciles_drift_and_keeps_reviewer_data():
     src = await _make_source_db()
     engine = create_async_engine(URL)
     try:
         sampled = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
-        async with engine.begin() as conn:
-            await conn.execute(text("drop schema public cascade"))
-            await conn.execute(text("create schema public"))
-            await conn.run_sync(Base.metadata.create_all)
+        await _reset_target(engine)
         await preview_seed.seed(engine, sampled=sampled)
 
-        # a JIT reviewer user created AFTER seeding must survive later runs
-        async with engine.begin() as c:
-            await c.execute(text(
-                "insert into users (id, org_id, email, role, name, is_active,"
-                " created_at, updated_at) values ('jit-rev', 'seed-org',"
-                " 'reviewer@corp.com', 'owner', 'Reviewer', true, now(), now())"
-            ))
-
+        # auth path: the real org row with its real clerk mapping is present
         assert await _count(
             engine,
-            "select count(*) from experiments where org_id='seed-org'"
-            " and id not like 'seed-%'") == 2
+            "select count(*) from organizations"
+            " where id='org-a' and clerk_org_id='org_real_a'") == 1
+        # members are the real users
+        assert await _count(
+            engine,
+            "select count(*) from users where org_id='org-a'"
+            " and email like '%@corp.com'") == 2
+        # linkage applied; JSONB intact
         assert await _count(
             engine,
             "select count(*) from tasks where id='task-solo'"
-            " and current_version_id='ver-solo-2'") == 1  # linkage applied
-        assert await _count(
-            engine,
-            "select count(*) from trials where id='tr-ok'"
-            " and (result->>'reward')::int = 1") == 1  # JSONB not double-encoded
+            " and current_version_id='ver-solo-2'") == 1
         assert await _count(
             engine,
             "select count(*) from trials where id='tr-superseded'"
-            " and superseded_by_trial_id='tr-running'") == 1  # linkage applied
+            " and superseded_by_trial_id='tr-running'") == 1
+        assert await _count(
+            engine,
+            "select count(*) from trials where id='tr-ok'"
+            " and (result->>'reward')::int = 1") == 1
 
-        # prod drift: exp-b vanishes from the next draw -> its rows reconcile
+        # idempotent
+        before = await _count(engine, "select count(*) from tasks")
+        await preview_seed.seed(engine, sampled=sampled)
+        assert await _count(engine, "select count(*) from tasks") == before
+
+        # reviewer-created data (made in the preview by hand) must survive
+        async with engine.begin() as c:
+            await c.execute(text(
+                "insert into users (id, org_id, email, role, name, is_active,"
+                " created_at, updated_at) values ('jit-rev', 'org-a',"
+                " 'reviewer@corp.com', 'owner', 'Reviewer', true, now(), now())"
+            ))
+            await c.execute(text(
+                "insert into tasks (id, name, org_id, created_by_user_id,"
+                " \"user\", priority, status, task_path, tags, run_analysis,"
+                " run_probe, created_at, updated_at) values ('manual-1',"
+                " 'reviewer-made', 'org-a', 'jit-rev', 'reviewer@corp.com',"
+                " 'LOW', 'PENDING', 'p/manual', '{}'::jsonb, false, false,"
+                " now(), now())"
+            ))
+
+        # prod drift: everything belonging to exp-b drops out of the draw
         drifted = {
             "rows": {
                 name: [r for r in rows if r.get("experiment_id") != "exp-b"
@@ -347,21 +279,65 @@ async def test_seed_with_sample_loads_links_and_reconciles_drift():
             "linkage": sampled["linkage"],
         }
         await preview_seed.seed(engine, sampled=drifted)
-        assert await _count(
-            engine, "select count(*) from experiments where id='exp-b'") == 0
-        assert await _count(
-            engine, "select count(*) from experiments where id='exp-a'") == 1
-        assert await _count(
-            engine, "select count(*) from users where id='jit-rev'") == 1
-        assert await _count(
-            engine, "select count(*) from tasks where id like 'seed-%'") == 2
+        assert await _count(engine, "select count(*) from experiments where id='exp-b'") == 0
+        assert await _count(engine, "select count(*) from tasks where id='task-dup-b'") == 0
+        assert await _count(engine, "select count(*) from experiments where id='exp-a'") == 1
+        # reviewer data untouched by reconcile
+        assert await _count(engine, "select count(*) from tasks where id='manual-1'") == 1
+        assert await _count(engine, "select count(*) from users where id='jit-rev'") == 1
 
-        # outage tolerance: sampled=None must leave prior samples untouched
+        # outage tolerance: sampled=None leaves everything alone
         await preview_seed.seed(engine, sampled=None)
+        assert await _count(engine, "select count(*) from experiments where id='exp-a'") == 1
+    finally:
+        await engine.dispose()
+        await src.dispose()
+
+
+async def test_seed_cleans_legacy_fixtures_and_yields_to_jit_conflicts():
+    src = await _make_source_db()
+    engine = create_async_engine(URL)
+    try:
+        sampled = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        await _reset_target(engine)
+        # a reused branch may carry artifacts of earlier seed versions ...
+        async with engine.begin() as c:
+            await c.execute(text(
+                "insert into organizations (id, name, slug, plan, settings,"
+                " is_active, created_at, updated_at) values"
+                " ('seed-org', 'Preview Org', 'preview-org', 'free',"
+                " '{}'::jsonb, true, now(), now()),"
+                " ('org-a', 'Real A', 'real-a', 'free', '{}'::jsonb, true,"
+                " now(), now())"
+            ))
+            await c.execute(text(
+                "insert into users (id, org_id, email, role, name, is_active,"
+                " created_at, updated_at) values"
+                " ('seed-usr-owner', 'seed-org', 'owner@preview.local',"
+                "  'owner', 'Preview Owner', true, now(), now()),"
+                " ('anon-1', 'seed-org', 'user-x@preview.local', 'member',"
+                "  'Prod User x', true, now(), now()),"
+                # ... and a JIT-provisioned reviewer holding a real user's
+                # unique identity under a different primary key
+                " ('jit-1', 'org-a', 'real-a1@corp.com', 'owner', 'Reviewer',"
+                "  true, now(), now())"
+            ))
+
+        await preview_seed.seed(engine, sampled=sampled)
+
+        # legacy fixtures and anonymized users are gone
+        assert await _count(engine, "select count(*) from organizations where id='seed-org'") == 0
+        assert await _count(engine, "select count(*) from users where email like '%@preview.local'") == 0
+        # the conflicting import yielded: one row holds that email, the JIT one
         assert await _count(
             engine,
-            "select count(*) from experiments where org_id='seed-org'"
-            " and id not like 'seed-%'") >= 1
+            "select count(*) from users where email='real-a1@corp.com'") == 1
+        assert await _count(
+            engine,
+            "select count(*) from users where id='jit-1'") == 1
+        # the rest of the subset still loaded
+        assert await _count(engine, "select count(*) from experiments where id='exp-a'") == 1
+        assert await _count(engine, "select count(*) from users where id='u-a2'") == 1
     finally:
         await engine.dispose()
         await src.dispose()
