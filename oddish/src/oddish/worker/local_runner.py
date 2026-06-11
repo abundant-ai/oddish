@@ -398,6 +398,8 @@ async def _run_harbor_trial(trial_id: str) -> None:
             task_id=task_db_id,
             trial_id=trial_id,
             extra_instructions=extra_instructions,
+            probe_scope=harbor_config.get("probe_scope"),
+            target_trial_id=harbor_config.get("probe_target_trial_id"),
             time_budget_sec=_PROBE_AGENT_TIMEOUT_SEC,
         )
         actual_task_path = work_task_dir

@@ -15,7 +15,7 @@ def _make_task(tmp: Path):
 def test_collect_excludes_environment_and_copies_rest(tmp_path):
     _make_task(tmp_path)
     n = collect_task_source(tmp_path)
-    dest = tmp_path / TASK_SOURCE_DIR_NAME
+    dest = tmp_path / "environment" / TASK_SOURCE_DIR_NAME
     assert (dest / "instruction.md").read_text() == "do the thing"
     assert (dest / "tests" / "test.sh").exists()
     assert (dest / "task.toml").exists()
@@ -28,4 +28,6 @@ def test_collect_skips_oversize_files(tmp_path):
     _make_task(tmp_path)
     (tmp_path / "big.bin").write_bytes(b"x" * (MAX_BYTES_PER_FILE + 1))
     collect_task_source(tmp_path)
-    assert not (tmp_path / TASK_SOURCE_DIR_NAME / "big.bin").exists()
+    assert not (
+        tmp_path / "environment" / TASK_SOURCE_DIR_NAME / "big.bin"
+    ).exists()

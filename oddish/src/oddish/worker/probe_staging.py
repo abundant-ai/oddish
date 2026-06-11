@@ -45,11 +45,13 @@ async def stage_related_trial_logs(
     *,
     target_trial_id: str | None = None,
 ) -> bool:
-    """Download prior real (non-probe) attempts' logs into the work dir.
+    """Download prior real (non-probe) attempts' logs into the build context.
 
-    Stages files into ``<work_task_dir>/related_trials/<trial_id>/`` (visible
-    at ``/app/related_trials`` once Harbor mounts the task). The runner pulls
-    the artifacts here, so no S3 credentials enter the agent's container.
+    Stages files into ``<work_task_dir>/environment/related_trials/<trial_id>/``.
+    Harbor builds the agent image from ``environment/`` as the Docker build
+    context, so these reach the agent at ``/app/related_trials`` only once the
+    Dockerfile COPYs them in (see ``_inject_build_context_copies``). The runner
+    pulls the artifacts here, so no S3 credentials enter the agent's container.
     Per-trial and per-file failures are logged and skipped; counts and sizes
     are capped. Returns True if anything was staged.
     """
@@ -66,7 +68,7 @@ async def stage_related_trial_logs(
         return False
 
     storage = get_storage_client()
-    dest_root = work_task_dir / RELATED_DIR_NAME
+    dest_root = work_task_dir / "environment" / RELATED_DIR_NAME
     staged_any = False
 
     for trial in related[:MAX_RELATED_TRIALS]:
@@ -128,12 +130,16 @@ _TASK_SOURCE_EXCLUDE = {
 
 def collect_task_source(work_task_dir: Path) -> int:
     """Copy the task dir (minus environment/ and staging subdirs) into
-    ``<work_task_dir>/task_source/``. Returns the number of files copied.
+    ``<work_task_dir>/environment/task_source/``. Returns the number of files
+    copied.
 
-    Oversize files are skipped (mirrors the related-logs caps). Best-effort:
-    per-file failures are logged and skipped.
+    The dest lives inside ``environment/`` (the Docker build context) so the
+    Dockerfile can COPY it to ``/app/task_source`` -- ``environment`` is in
+    ``_TASK_SOURCE_EXCLUDE``, so we never recurse into the build context we are
+    writing into. Oversize files are skipped (mirrors the related-logs caps).
+    Best-effort: per-file failures are logged and skipped.
     """
-    dest_root = work_task_dir / TASK_SOURCE_DIR_NAME
+    dest_root = work_task_dir / "environment" / TASK_SOURCE_DIR_NAME
     copied = 0
     for entry in sorted(work_task_dir.iterdir()):
         if entry.name in _TASK_SOURCE_EXCLUDE or entry.name.startswith("."):
@@ -155,15 +161,63 @@ def collect_task_source(work_task_dir: Path) -> int:
     return copied
 
 
+def _inject_build_context_copies(task_dir: Path) -> None:
+    """Make staged build-context dirs reach the agent at /app/<name>.
+
+    Harbor builds the agent image from ``task_dir/environment`` as the Docker
+    build context, so files only reach ``/app`` if the Dockerfile COPYs them.
+    We append idempotent COPY lines for each staged dir that exists. No-op when
+    there is no Dockerfile (e.g. prebuilt-image tasks): the files simply are not
+    delivered and the instruction's related-logs section degrades gracefully.
+    """
+    env_dir = task_dir / "environment"
+    dockerfile = env_dir / "Dockerfile"
+    if not dockerfile.exists():
+        return
+
+    # If a .dockerignore would exclude our dirs, the COPY fails the build.
+    # Defensively un-ignore them.
+    dockerignore = env_dir / ".dockerignore"
+    if dockerignore.exists():
+        di = dockerignore.read_text()
+        negations = [
+            f"!{name}"
+            for name in (TASK_SOURCE_DIR_NAME, RELATED_DIR_NAME)
+            if (env_dir / name).is_dir() and f"!{name}" not in di
+        ]
+        if negations:
+            dockerignore.write_text(di.rstrip() + "\n" + "\n".join(negations) + "\n")
+
+    existing = dockerfile.read_text()
+    copies = []
+    for name in (TASK_SOURCE_DIR_NAME, RELATED_DIR_NAME):
+        if not (env_dir / name).is_dir():
+            continue
+        line = f"COPY {name} /app/{name}"
+        if line not in existing:
+            copies.append(line)
+    if copies:
+        dockerfile.write_text(
+            existing.rstrip()
+            + "\n\n# probe overlay: expose staged dirs to the agent at /app\n"
+            + "\n".join(copies)
+            + "\n"
+        )
+
+
 def stage_harbor_source(work_task_dir: Path) -> bool:
     """Copy the *live* harbor package source into ``work_task_dir/harbor_src``.
 
     Resolves harbor from the running interpreter (``harbor.__file__``) so the
     staged source is byte-for-byte the code that actually builds the env and
     scores the trial -- otherwise a bug the agent "finds" in the source might
-    not exist in the live harness, making the exploit theater. Harbor mounts the
-    task dir at ``/app``, so this lands at :data:`HARBOR_CONTAINER_DIR`. Failures
-    are logged and skipped; they never block the probe. Returns True if staged.
+    not exist in the live harness, making the exploit theater. Failures are
+    logged and skipped; they never block the probe. Returns True if staged.
+
+    NOTE: this stages to the work-dir root, not ``environment/``, so it does
+    not currently reach the agent's ``/app`` (Harbor does not mount the task
+    dir -- it builds the image from ``environment/`` as the Docker build
+    context). Delivering harbor source is out of scope here.
     """
     try:
         import harbor
@@ -263,6 +317,13 @@ async def apply_probe_overlay(
         collect_task_source(task_dir)
     except Exception:
         logger.exception("probe: collecting task source failed")
+
+    # Wire the staged build-context dirs into the Dockerfile so they reach the
+    # agent at /app. Best-effort: a failure here must never block the probe.
+    try:
+        _inject_build_context_copies(task_dir)
+    except Exception:
+        logger.exception("probe: injecting build-context COPY lines failed")
 
     # Stage harbor's own source as a reward-hack surface (read-only, in-mount,
     # network-immune). Best-effort: never blocks the probe.
