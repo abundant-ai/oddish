@@ -26,3 +26,12 @@ def test_no_target_keeps_existing_sibling_behavior():
     trials = [_t("a-0"), _t("a-1", mode="probe")]
     out = select_related_trials(trials, current_trial_id="a-9")
     assert [t.id for t in out] == ["a-0"]
+
+
+def test_excludes_by_is_probe_flag_when_present():
+    trials = [
+        SimpleNamespace(id="a-0", harbor_config={}, is_probe=True),
+        SimpleNamespace(id="a-1", harbor_config={}, is_probe=False),
+    ]
+    out = select_related_trials(trials, current_trial_id="a-9")
+    assert [t.id for t in out] == ["a-1"]

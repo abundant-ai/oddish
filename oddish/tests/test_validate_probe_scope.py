@@ -34,8 +34,16 @@ def test_task_scope_forbids_target():
 
 def test_valid_trial_scope_passes():
     validate_sweep_submission(
-        _sweep(probe_scope="trial", probe_target_trial_id="abc-0")
+        _sweep(probe_scope="trial", probe_target_trial_id="abc-0",
+               extra_instructions="poke")
     )
+
+
+def test_probe_scope_requires_extra_instructions():
+    with pytest.raises(HTTPException):
+        validate_sweep_submission(
+            _sweep(probe_scope="trial", probe_target_trial_id="abc-0")
+        )
 
 
 def test_legacy_extra_instructions_defaults_to_task():

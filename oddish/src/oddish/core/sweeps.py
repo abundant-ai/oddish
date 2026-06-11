@@ -17,6 +17,12 @@ def validate_sweep_submission(submission: TaskSweepSubmission) -> None:
     if submission.probe_scope is None and submission.extra_instructions:
         submission.probe_scope = "task"
 
+    if submission.probe_scope and not submission.extra_instructions:
+        raise HTTPException(
+            status_code=400,
+            detail="probe_scope requires extra_instructions (a probe directive)",
+        )
+
     if submission.probe_scope == "trial":
         target = submission.probe_target_trial_id
         if not target:

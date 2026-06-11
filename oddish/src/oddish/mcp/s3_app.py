@@ -55,4 +55,5 @@ def create_app():
 async def _reject(send):
     await send({"type": "http.response.start", "status": 401,
                 "headers": [(b"content-type", b"text/plain")]})
-    await send({"type": "http.response.body", "body": b"invalid scope token"})
+    await send({"type": "http.response.body", "body": b"invalid scope token",
+                "more_body": False})
