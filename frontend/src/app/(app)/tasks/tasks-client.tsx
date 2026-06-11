@@ -17,8 +17,8 @@ import {
 } from "@/components/ui/tooltip";
 import { ImportDialog } from "@/components/import-dialog";
 import { TagChip } from "@/components/tag-chip";
-import { TagFilterPopover } from "@/components/tag-filter-popover";
 import { fetcher } from "@/lib/api";
+import { parseTaskSearch } from "@/lib/tag-query";
 import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
@@ -27,7 +27,7 @@ import {
   getRewardStyle,
   STATUS_CONFIG,
 } from "@/lib/status-config";
-import type { TagFilterAST, TaskBrowseItem, TaskBrowseResponse } from "@/lib/types";
+import type { TaskBrowseItem, TaskBrowseResponse } from "@/lib/types";
 import {
   cn,
   encodeExperimentRouteParam,
@@ -383,40 +383,32 @@ export function TasksPageClient({
 }) {
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [offset, setOffset] = useState(0);
-  const [tagFilter, setTagFilter] = useState<TagFilterAST>({
-    all: [],
-    any: [],
-    none: [],
-  });
   const debouncedQuery = useDebouncedValue(searchQuery.trim(), 300);
+  const parsed = useMemo(() => parseTaskSearch(debouncedQuery), [debouncedQuery]);
 
   useEffect(() => {
     setOffset(0);
   }, [debouncedQuery]);
-
-  useEffect(() => {
-    setOffset(0);
-  }, [tagFilter]);
 
   const swrKey = useMemo(() => {
     const params = new URLSearchParams({
       limit: String(PAGE_SIZE),
       offset: String(offset),
     });
-    if (debouncedQuery) {
-      params.set("query", debouncedQuery);
+    if (parsed.text) {
+      params.set("query", parsed.text);
     }
-    if (tagFilter.all.length) {
-      params.set("tags", tagFilter.all.join(","));
+    if (parsed.all.length) {
+      params.set("tags", parsed.all.join(","));
     }
-    if (tagFilter.any.length) {
-      params.set("tags_any", tagFilter.any.join(","));
+    if (parsed.any.length) {
+      params.set("tags_any", parsed.any.join(","));
     }
-    if (tagFilter.none.length) {
-      params.set("tags_none", tagFilter.none.join(","));
+    if (parsed.none.length) {
+      params.set("tags_none", parsed.none.join(","));
     }
     return `/api/tasks/browse?${params.toString()}`;
-  }, [debouncedQuery, offset, tagFilter]);
+  }, [offset, parsed]);
 
   const { data, error, isLoading, isValidating, mutate } =
     useSWR<TaskBrowseResponse>(swrKey, fetcher, {
@@ -424,11 +416,7 @@ export function TasksPageClient({
       revalidateOnFocus: false,
       keepPreviousData: true,
       fallbackData:
-        offset === 0 &&
-        debouncedQuery.length === 0 &&
-        tagFilter.all.length === 0 &&
-        tagFilter.any.length === 0 &&
-        tagFilter.none.length === 0
+        offset === 0 && debouncedQuery.length === 0
           ? (initialData ?? undefined)
           : undefined,
     });
@@ -462,10 +450,9 @@ export function TasksPageClient({
               <Input
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Search tasks"
+                placeholder="Search · tag:x OR tag:y NOT tag:z"
                 className="h-8 w-full border-[#6f88b4]/20 sm:w-[260px]"
               />
-              <TagFilterPopover value={tagFilter} onChange={setTagFilter} />
               <ImportDialog onImported={() => mutate()} />
             </div>
           </CardHeader>

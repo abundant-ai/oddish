@@ -14,7 +14,6 @@ from cloud_policy import (
     get_default_cloud_environment,
 )
 from oddish.core.endpoints import (
-    UnknownTagFilterError,
     browse_tasks_core,
     cancel_task_analysis_core,
     cancel_task_verdict_core,
@@ -527,20 +526,17 @@ async def browse_tasks(
             elapsed_ms(connect_started_at),
             "Browse DB connect",
         )
-        try:
-            return await browse_tasks_core(
-                session,
-                org_id=auth.org_id,
-                limit=limit,
-                offset=offset,
-                query=query,
-                tags_all=_split_tag_csv(tags),
-                tags_any=_split_tag_csv(tags_any),
-                tags_none=_split_tag_csv(tags_none),
-                record_timing=_make_timing_recorder(request),
-            )
-        except UnknownTagFilterError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return await browse_tasks_core(
+            session,
+            org_id=auth.org_id,
+            limit=limit,
+            offset=offset,
+            query=query,
+            tags_all=_split_tag_csv(tags),
+            tags_any=_split_tag_csv(tags_any),
+            tags_none=_split_tag_csv(tags_none),
+            record_timing=_make_timing_recorder(request),
+        )
 
 
 @router.post("/experiments/combine", response_model=ExperimentCombineResponse)

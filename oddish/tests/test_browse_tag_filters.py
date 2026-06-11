@@ -201,19 +201,19 @@ def test_browse_tasks_core_accepts_tag_filter_params(monkeypatch):
     assert "tags_none" in sig.parameters
 
 
-def test_browse_tasks_core_rejects_unknown_tag_name(monkeypatch):
-    """A filter for a tag that doesn't exist must surface a clear 400 —
-    silently returning unfiltered rows is the bug we're fixing.
+def test_browse_tasks_core_unknown_positive_tag_returns_empty_page():
+    """A positive (AND/OR) filter for a tag that doesn't exist can never
+    match any task, so browse short-circuits to an empty page — not a 400
+    (type-ahead in the dashboard search sends partial names) and not
+    silently-unfiltered rows.
     """
-    import pytest
-
     from oddish.core import endpoints
 
     class _Session:
         async def execute(self, stmt, params=None):
             class _R:
                 def all(self_inner):
-                    return []  # name resolver finds nothing
+                    return []  # resolver finds nothing
             return _R()
 
         async def connection(self):
@@ -222,17 +222,17 @@ def test_browse_tasks_core_rejects_unknown_tag_name(monkeypatch):
         async def scalar(self, stmt, params=None):
             return None
 
-    with pytest.raises(endpoints.UnknownTagFilterError) as exc_info:
-        _run(
-            endpoints.browse_tasks_core(
-                _Session(),
-                org_id="org-1",
-                limit=25,
-                offset=0,
-                tags_all=["ghost"],
-            )
+    resp = _run(
+        endpoints.browse_tasks_core(
+            _Session(),
+            org_id="org-1",
+            limit=25,
+            offset=0,
+            tags_all=["ghost"],
         )
-    assert "ghost" in str(exc_info.value)
+    )
+    assert resp.items == []
+    assert resp.has_more is False
 
 
 def test_browse_tasks_core_imports_user_tag_ref():

@@ -74,17 +74,6 @@ USER_CANCELLED_MESSAGE = "Cancelled by user"
 _ACTIVE_WORKER_JOB_STATUSES_SQL = "'QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED'"
 
 
-class UnknownTagFilterError(ValueError):
-    """Raised when the browse caller filters by a tag name that does not
-    resolve to a tag id (typo, deleted tag, wrong org). The router maps it
-    to HTTP 400 so the CLI/UI shows a clear error instead of silently
-    returning unfiltered rows."""
-
-    def __init__(self, unknown: set[str]):
-        self.unknown = set(unknown)
-        super().__init__("unknown tag: " + ", ".join(sorted(self.unknown)))
-
-
 async def _primary_experiment_for_task_model(
     task: TaskModel,
 ) -> ExperimentModel | None:
@@ -467,23 +456,28 @@ async def browse_tasks_core(
     if normalized_query:
         ranked_tasks = ranked_tasks.where(TaskModel.name.ilike(f"%{normalized_query}%"))
 
-    # Resolve tag-name filters → tag IDs and append AND/OR/NOT predicates over
-    # ``tasks.effective_tag_ids``. The predicates reference the ``tasks`` table
-    # literally, and ``ranked_tasks`` uses ``select_from(TaskModel)`` (i.e. the
-    # ``tasks`` table), so the text predicates are applied here -- before the
-    # subquery is materialised. Unknown names raise so the CLI/UI shows a
-    # clear error instead of silently returning unfiltered rows.
+    # Resolve tag filters (ids or names) → tag IDs and append AND/OR/NOT
+    # predicates over ``tasks.effective_tag_ids``. The predicates reference the
+    # ``tasks`` table literally, and ``ranked_tasks`` uses
+    # ``select_from(TaskModel)`` (i.e. the ``tasks`` table), so the text
+    # predicates are applied here -- before the subquery is materialised.
+    # An unknown POSITIVE token (AND/OR) can never match any task, so the
+    # result is an empty page rather than an error -- this keeps type-ahead
+    # tag filtering in the dashboard search graceful. Unknown tokens in the
+    # NOT set exclude nothing and are simply dropped by the resolver.
     if tags_all or tags_any or tags_none:
         ast = TagFilterAST(
             all=list(tags_all or []),
             any_=list(tags_any or []),
             none=list(tags_none or []),
         )
-        resolved_filter, unknown_names = await resolve_names_to_ids(
+        resolved_filter, unknown_tokens = await resolve_names_to_ids(
             session, org_id=org_id, ast=ast
         )
-        if unknown_names:
-            raise UnknownTagFilterError(unknown_names)
+        if unknown_tokens & ({*ast.all} | {*ast.any_}):
+            return TaskBrowseResponse(
+                items=[], limit=limit, offset=offset, has_more=False
+            )
         if not resolved_filter.is_empty():
             for predicate in build_filter_predicates(resolved_filter):
                 ranked_tasks = ranked_tasks.where(predicate)

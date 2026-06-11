@@ -15,7 +15,6 @@ import uvicorn
 from rich.console import Console
 
 from oddish.core.endpoints import (
-    UnknownTagFilterError,
     browse_tasks_core,
     cancel_task_analysis_core,
     cancel_task_verdict_core,
@@ -442,18 +441,15 @@ async def browse_tasks(
 ) -> TaskBrowseResponse:
     """Browse latest task versions with aggregated trial stats."""
     async with get_session() as session:
-        try:
-            return await browse_tasks_core(
-                session,
-                limit=limit,
-                offset=offset,
-                query=query,
-                tags_all=_split_tag_csv(tags),
-                tags_any=_split_tag_csv(tags_any),
-                tags_none=_split_tag_csv(tags_none),
-            )
-        except UnknownTagFilterError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return await browse_tasks_core(
+            session,
+            limit=limit,
+            offset=offset,
+            query=query,
+            tags_all=_split_tag_csv(tags),
+            tags_any=_split_tag_csv(tags_any),
+            tags_none=_split_tag_csv(tags_none),
+        )
 
 
 @api.get("/tasks/{task_id}", response_model=TaskStatusResponse)
