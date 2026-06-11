@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time as _time
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from oddish.db import (
 )
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
+from oddish.mcp.scope_token import sign_experiment_token
 from oddish.schemas import TaskSubmission, TrialSpec
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.workers.jobs.enqueue import EnqueueRequest, enqueue_worker_job
@@ -451,6 +453,27 @@ async def enqueue_task_expand_worker_job(
     )
 
 
+def _mcp_now() -> int:
+    return int(_time.time())
+
+
+def _attach_s3_mcp_server(base: dict[str, Any], experiment_id: str) -> None:
+    """Append the per-experiment S3 MCP server spec to a task-scope probe.
+
+    No-op when the MCP server isn't configured (e.g. local dev) so the probe
+    still runs without it.
+    """
+    if not (settings.mcp_s3_base_url and settings.mcp_s3_signing_key):
+        return
+    token = sign_experiment_token(
+        experiment_id, key=settings.mcp_s3_signing_key, now=_mcp_now()
+    )
+    url = f"{settings.mcp_s3_base_url.rstrip('/')}/mcp?token={token}"
+    base.setdefault("mcp_servers", []).append(
+        {"name": "oddish-s3", "transport": "streamable-http", "url": url}
+    )
+
+
 def _build_harbor_config_for_trial(
     submission: TaskSubmission,
     spec: TrialSpec,
@@ -479,8 +502,8 @@ def _build_harbor_config_for_trial(
             base["probe_scope"] = submission.probe_scope
             if submission.probe_scope == "trial" and submission.probe_target_trial_id:
                 base["probe_target_trial_id"] = submission.probe_target_trial_id
-        # NOTE: task-scope probes also get an mcp_servers entry — see Task 14
-        # (_attach_s3_mcp_server) which mutates `base` using experiment_id.
+        if submission.probe_scope == "task" and experiment_id:
+            _attach_s3_mcp_server(base, experiment_id)
 
     if submission.result_focus:
         base["result_focus"] = submission.result_focus
