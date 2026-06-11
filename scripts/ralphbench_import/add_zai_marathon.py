@@ -33,7 +33,11 @@ EXPERIMENT_ID = 'e0ef4703'
 AGENT = 'glm-claude-code'
 VALID_EXC = {'AgentTimeoutError'}
 MAX_PER_CELL = 5
-SKIP_TASKS = {'post-train-ifeval', 'ruby-rust-port', 'nextjs-vite-rewrite'}
+# Re-enabled in this round per user: post-train-ifeval (Tinker audit done),
+# ruby-rust-port. nextjs-vite-rewrite remains skipped per the original
+# exclusion list — every candidate so far is NonZeroAgentExitCodeError so
+# it wouldn't meet the open-rule anyway.
+SKIP_TASKS = {'nextjs-vite-rewrite'}
 
 sys.path.insert(0, os.path.dirname(__file__))
 from import_zai_marathon import (
