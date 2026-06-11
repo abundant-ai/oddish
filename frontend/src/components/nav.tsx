@@ -18,11 +18,10 @@ import {
   BookOpen,
   ChevronDown,
   FileText,
-  Files,
   LogOut,
+  SearchCheck,
   Shield,
   User,
-  Wrench,
 } from "lucide-react";
 
 export function Nav() {
@@ -73,33 +72,18 @@ export function Nav() {
               </Link>
             </Button>
             <Button
-              variant={pathname === "/skills" ? "secondary" : "ghost"}
+              variant={pathname.startsWith("/qa") ? "secondary" : "ghost"}
               size="sm"
               asChild
               className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
             >
               <Link
-                href="/skills"
+                href="/qa"
                 className="flex items-center gap-2"
-                data-active={pathname === "/skills"}
+                data-active={pathname.startsWith("/qa")}
               >
-                <Wrench className="h-4 w-4" />
-                <span>Skills</span>
-              </Link>
-            </Button>
-            <Button
-              variant={pathname === "/documents" ? "secondary" : "ghost"}
-              size="sm"
-              asChild
-              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
-            >
-              <Link
-                href="/documents"
-                className="flex items-center gap-2"
-                data-active={pathname === "/documents"}
-              >
-                <Files className="h-4 w-4" />
-                <span>Documents</span>
+                <SearchCheck className="h-4 w-4" />
+                <span>QA</span>
               </Link>
             </Button>
           </div>
