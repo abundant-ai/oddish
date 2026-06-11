@@ -8,6 +8,7 @@ import {
   ratioUnitVerb,
   tallyAttempts,
   pluralize,
+  type ProbeSummary,
 } from "@/lib/probe-summary";
 
 type AgentMessage = {
@@ -30,37 +31,6 @@ function kindLabel(m: AgentMessage): string {
   if (m.kind === "result") return "final result";
   return m.kind;
 }
-
-type Attempt = {
-  title?: string;
-  rationale?: string;
-  outcome?: string;
-  success?: boolean | null;
-  step_indices?: number[];
-};
-
-type ToolInsight = {
-  name?: string;
-  kind?: "skill" | "mcp";
-  note?: string;
-};
-
-type ProbeSummary = {
-  kind?: string;
-  headline?: string;
-  summary?: string;
-  key_actions?: string[];
-  cheating_attempted?: boolean | null;
-  cheating_succeeded?: boolean | null;
-  evidence?: string;
-  attempts?: Attempt[];
-  tool_insights?: ToolInsight[];
-  model?: string;
-  generated_at?: string;
-  result_focus_question?: string | null;
-  result_focus_findings?: string | null;
-};
-
 
 type Trial = {
   id: string;
