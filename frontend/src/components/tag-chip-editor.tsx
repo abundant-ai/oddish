@@ -11,10 +11,10 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { TagColorBar } from "@/components/tag-color-bar";
 import { fetcher } from "@/lib/api";
-import { TAG_COLOR_PALETTE, tagColor } from "@/lib/tag-colors";
+import { tagColor } from "@/lib/tag-colors";
 import type { UserTagRef } from "@/lib/types";
-import { cn } from "@/lib/utils";
 
 interface TagListItem {
   id: string;
@@ -30,6 +30,9 @@ interface TagListResponse {
 interface TagChipEditorProps {
   tag: UserTagRef;
   onSaved: () => void;
+  // Fires with the server's final key/color (it may normalize the typed
+  // name) so the parent can patch its optimistic chip list instantly.
+  onEdited?: (patch: Pick<UserTagRef, "key" | "color">) => void;
 }
 
 /**
@@ -39,7 +42,7 @@ interface TagChipEditorProps {
  * — the backend enforces owner/admin/grant permissions and optimistic
  * concurrency (`expected_row_version`), and rejections surface inline.
  */
-export function TagChipEditor({ tag, onSaved }: TagChipEditorProps) {
+export function TagChipEditor({ tag, onSaved, onEdited }: TagChipEditorProps) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(tag.key);
   const [color, setColor] = useState<string | null>(null);
@@ -77,9 +80,14 @@ export function TagChipEditor({ tag, onSaved }: TagChipEditorProps) {
       await mutateTags();
       return;
     }
-    await mutateTags();
-    onSaved();
+    const updated = (await res.json().catch(() => null)) as TagListItem | null;
+    onEdited?.({
+      key: updated?.key ?? name.trim(),
+      color: updated?.color ?? effectiveColor,
+    });
     setOpen(false);
+    onSaved();
+    void mutateTags();
   }
 
   return (
@@ -109,22 +117,7 @@ export function TagChipEditor({ tag, onSaved }: TagChipEditorProps) {
           className="h-7 text-xs"
           aria-label="Tag name"
         />
-        <div className="flex items-center gap-1.5">
-          {TAG_COLOR_PALETTE.map((swatch) => (
-            <button
-              key={swatch}
-              type="button"
-              aria-label={`Tag color ${swatch}`}
-              className={cn(
-                "h-4 w-4 rounded-full transition-transform hover:scale-110",
-                swatch === effectiveColor &&
-                  "ring-2 ring-ring ring-offset-1 ring-offset-popover",
-              )}
-              style={{ backgroundColor: swatch }}
-              onClick={() => setColor(swatch)}
-            />
-          ))}
-        </div>
+        <TagColorBar value={effectiveColor} onChange={setColor} />
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
         <div className="flex justify-end gap-2">
           <Button

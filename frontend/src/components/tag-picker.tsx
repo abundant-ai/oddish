@@ -18,11 +18,11 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { TagColorBar } from "@/components/tag-color-bar";
 import { fetcher } from "@/lib/api";
-import { TAG_COLOR_PALETTE, tagColor } from "@/lib/tag-colors";
-import { cn } from "@/lib/utils";
+import { tagColor } from "@/lib/tag-colors";
 
-interface BackendTagListItem {
+export interface TagPickerItem {
   id: string;
   key: string;
   value: string | null;
@@ -33,7 +33,7 @@ interface BackendTagListItem {
 }
 
 interface TagListResponse {
-  items: BackendTagListItem[];
+  items: TagPickerItem[];
 }
 
 export interface TagPickerProps {
@@ -47,6 +47,10 @@ export interface TagPickerProps {
   // Replaces the default outline button as the popover trigger (e.g. a
   // compact icon button). Must accept a forwarded ref (PopoverTrigger asChild).
   trigger?: ReactNode;
+  // Fires with the full item when one is activated (picked from the list or
+  // just created) — lets assignment callers update optimistically without
+  // re-fetching the tag list.
+  onSelectItem?: (item: TagPickerItem) => void;
 }
 
 export function TagPicker({
@@ -56,6 +60,7 @@ export function TagPicker({
   multi = true,
   allowCreate = false,
   trigger,
+  onSelectItem,
 }: TagPickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -112,8 +117,9 @@ export function TagPicker({
     // Selection (which triggers the caller's apply) goes FIRST so a quick
     // navigation can't orphan a created-but-never-applied tag; the list
     // refresh can lag behind harmlessly.
-    const created = body as BackendTagListItem;
+    const created = body as TagPickerItem;
     setCreateColor(null);
+    onSelectItem?.(created);
     toggle(created.id);
     await mutate();
   }
@@ -146,7 +152,10 @@ export function TagPicker({
                   <CommandItem
                     key={it.id}
                     value={it.key}
-                    onSelect={() => toggle(it.id)}
+                    onSelect={() => {
+                      onSelectItem?.(it);
+                      toggle(it.id);
+                    }}
                   >
                     <span className="mr-1 w-3 text-xs">
                       {selected.has(it.id) ? "✓" : ""}
@@ -174,21 +183,11 @@ export function TagPicker({
             </CommandGroup>
           </CommandList>
           {showCreate ? (
-            <div className="flex items-center gap-1.5 border-t px-3 py-2">
-              {TAG_COLOR_PALETTE.map((swatch) => (
-                <button
-                  key={swatch}
-                  type="button"
-                  aria-label={`Tag color ${swatch}`}
-                  className={cn(
-                    "h-4 w-4 rounded-full transition-transform hover:scale-110",
-                    swatch === effectiveCreateColor &&
-                      "ring-2 ring-ring ring-offset-1 ring-offset-popover",
-                  )}
-                  style={{ backgroundColor: swatch }}
-                  onClick={() => setCreateColor(swatch)}
-                />
-              ))}
+            <div className="border-t px-3 py-2">
+              <TagColorBar
+                value={effectiveCreateColor}
+                onChange={setCreateColor}
+              />
             </div>
           ) : null}
           {createError ? (

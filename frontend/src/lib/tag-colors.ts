@@ -25,3 +25,35 @@ export function tagColor(key: string, explicit?: string | null): string {
   }
   return TAG_COLOR_PALETTE[hash % TAG_COLOR_PALETTE.length];
 }
+
+// Custom colors picked via the color-input slot, newest first. They displace
+// the tail of the default palette in the swatch bar so the bar stays one row.
+const RECENT_CUSTOM_COLORS_KEY = "oddish:tag-custom-colors";
+const RECENT_CUSTOM_COLORS_MAX = 3;
+
+export function getRecentCustomColors(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(RECENT_CUSTOM_COLORS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((c): c is string => typeof c === "string")
+      .slice(0, RECENT_CUSTOM_COLORS_MAX);
+  } catch {
+    return [];
+  }
+}
+
+export function rememberCustomColor(color: string): void {
+  if (typeof window === "undefined") return;
+  const next = [
+    color,
+    ...getRecentCustomColors().filter((c) => c !== color),
+  ].slice(0, RECENT_CUSTOM_COLORS_MAX);
+  try {
+    window.localStorage.setItem(RECENT_CUSTOM_COLORS_KEY, JSON.stringify(next));
+  } catch {
+    // localStorage unavailable (private mode) — recents just don't persist.
+  }
+}
