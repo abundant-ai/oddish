@@ -4,7 +4,6 @@ import { useState } from "react";
 import useSWR, { mutate } from "swr";
 import {
   OrganizationProfile,
-  OrganizationSwitcher,
   UserProfile,
   useOrganization,
 } from "@clerk/nextjs";
@@ -135,38 +134,6 @@ const clerkEmbeddedAppearance = {
   },
 };
 
-/**
- * Clerk's `OrganizationSwitcher` trigger sits inline in our custom card;
- * we style it to look like one of our own list rows.
- */
-const clerkSwitcherAppearance = {
-  variables: {
-    colorBackground: "hsl(var(--card))",
-    colorText: "hsl(var(--foreground))",
-    colorTextSecondary: "hsl(var(--muted-foreground))",
-    colorPrimary: "hsl(var(--primary))",
-    colorInputBackground: "hsl(var(--background))",
-    colorInputText: "hsl(var(--foreground))",
-    colorNeutral: "hsl(var(--foreground))",
-    borderRadius: "0.5rem",
-    fontFamily: "var(--font-sans)",
-  },
-  elements: {
-    rootBox: "w-full",
-    organizationSwitcherTrigger:
-      "w-full justify-between rounded-md border border-border bg-background px-3 py-2 hover:bg-muted data-[state=open]:bg-muted",
-    organizationPreviewMainIdentifier: "text-sm font-medium text-foreground",
-    organizationPreviewSecondaryIdentifier:
-      "text-xs text-muted-foreground",
-    organizationSwitcherTriggerIcon: "text-muted-foreground",
-    organizationSwitcherPopoverCard:
-      "border border-border shadow-lg rounded-lg",
-    organizationSwitcherPopoverActionButton:
-      "text-foreground hover:bg-muted",
-    avatarBox: "rounded-md border border-border",
-  },
-};
-
 type SettingsSection = "profile" | "workspace" | "api-keys";
 
 const SECTIONS: {
@@ -184,7 +151,7 @@ const SECTIONS: {
   {
     id: "workspace",
     label: "Workspace",
-    description: "Switch organizations, invite teammates, and manage roles.",
+    description: "Invite teammates and manage roles for your workspace.",
     icon: Building2,
   },
   {
@@ -765,7 +732,7 @@ function WorkspaceSwitcherPanel() {
       <PanelHeader
         icon={Building2}
         title="Current workspace"
-        description="Switch workspaces or create a new one to isolate tasks, members, and API keys."
+        description="Workspaces isolate tasks, members, and API keys. Switch or create one from the workspace menu in the top navigation."
       />
       <div className="space-y-4 pt-4">
         <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -789,12 +756,6 @@ function WorkspaceSwitcherPanel() {
               </p>
             ) : null}
           </div>
-          <OrganizationSwitcher
-            hidePersonal
-            afterCreateOrganizationUrl="/settings?section=workspace"
-            afterSelectOrganizationUrl="/settings?section=workspace"
-            appearance={clerkSwitcherAppearance}
-          />
         </div>
       </div>
     </Panel>
@@ -816,8 +777,8 @@ function WorkspaceManagementPanel() {
               No workspace selected
             </p>
             <p className="max-w-sm text-xs text-muted-foreground">
-              Pick a workspace above — or create a new one — to manage members,
-              roles, and organization details.
+              Pick a workspace from the menu in the top navigation — or create
+              a new one — to manage members, roles, and organization details.
             </p>
           </div>
         </div>

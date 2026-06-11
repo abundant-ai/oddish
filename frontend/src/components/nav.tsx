@@ -1,9 +1,17 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { SignInButton, useClerk, useUser } from "@clerk/nextjs";
+import { useSWRConfig } from "swr";
+import {
+  OrganizationSwitcher,
+  SignInButton,
+  useClerk,
+  useOrganization,
+  useUser,
+} from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -24,10 +32,51 @@ import {
   User,
 } from "lucide-react";
 
+/**
+ * Clerk's `OrganizationSwitcher` trigger sits inline in the nav bar;
+ * we style it to match the surrounding nav controls.
+ */
+const navSwitcherAppearance = {
+  variables: {
+    colorBackground: "hsl(var(--card))",
+    colorText: "hsl(var(--foreground))",
+    colorTextSecondary: "hsl(var(--muted-foreground))",
+    colorPrimary: "hsl(var(--primary))",
+    colorInputBackground: "hsl(var(--background))",
+    colorInputText: "hsl(var(--foreground))",
+    colorNeutral: "hsl(var(--foreground))",
+    borderRadius: "0.5rem",
+    fontFamily: "var(--font-sans)",
+  },
+  elements: {
+    rootBox: "flex items-center",
+    organizationSwitcherTrigger:
+      "rounded-full border border-[#6f88b4]/20 bg-background/70 px-2.5 py-1.5 text-sm text-foreground hover:border-[#85b85c]/20 hover:bg-muted data-[state=open]:bg-muted",
+    organizationPreviewMainIdentifier: "text-sm font-medium text-foreground",
+    organizationSwitcherTriggerIcon: "text-muted-foreground",
+    organizationSwitcherPopoverCard:
+      "border border-border shadow-lg rounded-lg",
+    organizationSwitcherPopoverActionButton: "text-foreground hover:bg-muted",
+    avatarBox: "rounded-md border border-border",
+  },
+};
+
 export function Nav() {
   const pathname = usePathname();
   const { user, isLoaded, isSignedIn } = useUser();
   const { signOut } = useClerk();
+  const { organization } = useOrganization();
+  const { mutate } = useSWRConfig();
+
+  // All org-scoped SWR keys are plain URLs with no org id in them, so cached
+  // responses from the previous workspace would otherwise survive a switch.
+  const prevOrgId = useRef(organization?.id);
+  useEffect(() => {
+    if (prevOrgId.current !== undefined && organization?.id !== prevOrgId.current) {
+      mutate(() => true, undefined, { revalidate: true });
+    }
+    prevOrgId.current = organization?.id;
+  }, [organization?.id, mutate]);
 
   return (
     <nav className="sticky top-[var(--preview-banner-h,0px)] z-40 border-b border-[#6f88b4]/15 bg-card/80 backdrop-blur-xs">
@@ -108,6 +157,12 @@ export function Nav() {
                   <span className="hidden sm:inline">Docs</span>
                 </a>
               </Button>
+              <OrganizationSwitcher
+                hidePersonal
+                afterCreateOrganizationUrl="/dashboard"
+                afterSelectOrganizationUrl="/dashboard"
+                appearance={navSwitcherAppearance}
+              />
               <DropdownMenu modal={false}>
                 <DropdownMenuTrigger asChild>
                   <Button
