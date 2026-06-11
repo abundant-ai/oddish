@@ -8,7 +8,7 @@ export function Footer() {
         <span>
           by{" "}
           <a
-            href="https://abundantdata.com/"
+            href="https://www.abundant.ai/"
             target="_blank"
             rel="noopener noreferrer"
             className="transition-colors hover:text-foreground"

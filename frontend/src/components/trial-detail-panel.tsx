@@ -1059,13 +1059,15 @@ export function TrialDetailPanel({
                 </Card>
               )}
 
-              {/* Discreet reproduction command */}
-              <CodeBlock
-                code={buildOddishRunCommand(trial, task)}
-                language="bash"
-                maxHeight="none"
-                className="opacity-60 transition-opacity hover:opacity-100"
-              />
+              {/* Discreet reproduction command — hidden from public viewers */}
+              {showAnalysis && (
+                <CodeBlock
+                  code={buildOddishRunCommand(trial, task)}
+                  language="bash"
+                  maxHeight="none"
+                  className="opacity-60 transition-opacity hover:opacity-100"
+                />
+              )}
             </div>
           </TabsContent>
 
