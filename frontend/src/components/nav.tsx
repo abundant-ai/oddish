@@ -83,7 +83,7 @@ export function Nav() {
                 data-active={pathname.startsWith("/qa")}
               >
                 <SearchCheck className="h-4 w-4" />
-                <span>QA</span>
+                <span>Agents</span>
               </Link>
             </Button>
           </div>
