@@ -35,6 +35,9 @@ import {
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
 import type { Task, Trial } from "@/lib/types";
+import { TaskProbeSummary } from "@/components/task-probe-summary";
+import type { ProbeTrial } from "@/lib/probe-summary";
+import { isTerminalProbeStatus } from "@/lib/probe-summary";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
@@ -107,6 +110,12 @@ interface TaskFilesPanelProps {
    * Bump the value or pair with a counter to re-trigger navigation to the same path.
    */
   initialFilePath?: string | null;
+  /**
+   * Task id to source the PROBE entry from, for panes that drive file listing
+   * via `filesUrl` and pass `taskId={null}` (e.g. the side-by-side "Task
+   * definition" pane). Falls back to `taskId` when not set.
+   */
+  probeTaskId?: string | null;
 }
 
 function getNodeName(path: string): string {
@@ -270,8 +279,29 @@ export function TaskFilesPanel({
   contentOnly = false,
   filesUrl,
   initialFilePath,
+  probeTaskId,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
+  // The PROBE entry is keyed off the task even in filesUrl-driven panes (which
+  // pass taskId={null}); probeTaskId supplies the id there.
+  const effectiveProbeTaskId = taskId ?? probeTaskId ?? null;
+  const probeKey =
+    effectiveProbeTaskId && showAnalysis !== false
+      ? `${baseUrl}/tasks/${effectiveProbeTaskId}/trials?probe=true`
+      : null;
+  const { data: probeTrials } = useSWR<ProbeTrial[]>(probeKey, fetcher, {
+    // Poll while the newest probe is still running; stop once terminal.
+    refreshInterval: (data) => {
+      const latest = data && data.length > 0 ? data[data.length - 1] : null;
+      return latest && !isTerminalProbeStatus(latest.status) ? 5000 : 0;
+    },
+  });
+  // Backend returns probe trials ordered created_at ASC → last is the newest.
+  const latestProbe =
+    probeTrials && probeTrials.length > 0
+      ? probeTrials[probeTrials.length - 1]
+      : null;
+  const probeAvailable = showAnalysis !== false && latestProbe !== null;
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -290,6 +320,7 @@ export function TaskFilesPanel({
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [selectedFile, setSelectedFile] = useState<TreeNode | null>(null);
+  const [probeSelected, setProbeSelected] = useState(false);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
@@ -561,6 +592,7 @@ export function TaskFilesPanel({
       setError(null);
       setFileTree([]);
       setSelectedFile(null);
+      setProbeSelected(false);
       setFileContent(null);
       setExpandedDirs(new Set());
       setLoadingDirs(new Set());
@@ -864,6 +896,7 @@ export function TaskFilesPanel({
     }
 
     setSelectedFile(node);
+    setProbeSelected(false);
   }, [initialFilePath, fileTree, loadingDirs, loadDirectory]);
 
   useEffect(() => {
@@ -918,7 +951,7 @@ export function TaskFilesPanel({
   const renderFileTree = (nodes: TreeNode[], depth = 0) => {
     return nodes.map((node) => {
       const isExpanded = expandedDirs.has(node.path);
-      const isSelected = selectedFile?.path === node.path;
+      const isSelected = !probeSelected && selectedFile?.path === node.path;
       const isLoadingDir = loadingDirs.has(node.path);
       const Icon =
         node.type === "dir"
@@ -942,6 +975,7 @@ export function TaskFilesPanel({
                 }
               } else {
                 setSelectedFile(node);
+                setProbeSelected(false);
               }
             }}
             className={`h-auto w-full justify-start gap-1.5 rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
@@ -1148,10 +1182,35 @@ export function TaskFilesPanel({
                 Files
               </div>
               {renderFileTree(fileTree)}
+              {showAnalysis !== false && effectiveProbeTaskId && (
+                <div className="border-border mt-2 border-t pt-2">
+                  <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
+                    Probe
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!probeAvailable}
+                    onClick={() => probeAvailable && setProbeSelected(true)}
+                    className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
+                      probeSelected
+                        ? "bg-primary/20 text-primary"
+                        : probeAvailable
+                          ? "hover:bg-muted/50 cursor-pointer"
+                          : "text-muted-foreground cursor-not-allowed opacity-60"
+                    }`}
+                    title={probeAvailable ? "View latest probe run" : "No probe run yet"}
+                  >
+                    <Microscope className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span className="truncate">
+                      {probeAvailable ? "Latest probe run" : "No probe run yet"}
+                    </span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
           <div className="flex flex-1 flex-col overflow-hidden">
-            {selectedFile && (
+            {!probeSelected && selectedFile && (
               <div className="border-border bg-muted/30 flex items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
                 <div className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px] sm:text-xs">
                   {selectedFile.path}
@@ -1179,7 +1238,14 @@ export function TaskFilesPanel({
               </div>
             )}
             <div ref={contentRef} className="bg-card flex-1 overflow-auto">
-              {renderFileContent()}
+              {probeSelected && latestProbe ? (
+                <TaskProbeSummary
+                  trial={latestProbe}
+                  taskId={effectiveProbeTaskId ?? ""}
+                />
+              ) : (
+                renderFileContent()
+              )}
             </div>
           </div>
         </div>

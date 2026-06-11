@@ -260,6 +260,13 @@ def run(
             help="Run LLM analysis on each trial and compute task verdict",
         ),
     ] = False,
+    run_probe: Annotated[
+        bool,
+        typer.Option(
+            "--run-probe",
+            help="Auto-enqueue a probe trial for this task's version (off by default)",
+        ),
+    ] = False,
     disable_verification: Annotated[
         bool,
         typer.Option(
@@ -519,6 +526,9 @@ def run(
         # Config can enable analysis
         if "run_analysis" in sweep_config:
             run_analysis = sweep_config["run_analysis"]
+        # Config can enable auto-probe
+        if "run_probe" in sweep_config:
+            run_probe = sweep_config["run_probe"]
         # Config can set Harbor passthrough options
         if "disable_verification" in sweep_config:
             disable_verification = sweep_config["disable_verification"]
@@ -636,6 +646,7 @@ def run(
             experiment_id=experiment_id,
             max_trial_attempts=max_trial_attempts,
             run_analysis=run_analysis,
+            run_probe=run_probe,
             github_username=github_user,
             tags=tags or None,
             publish_experiment=publish,

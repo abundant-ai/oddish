@@ -2490,6 +2490,10 @@ async def create_task_sweep_core(
         # opt in without manual intervention.
         if submission.run_analysis and not task.run_analysis:
             task.run_analysis = True
+        # Same opt-in flip for auto-probe: a task first run without probes can
+        # later opt in on append. Off by default (probes are opt-in).
+        if submission.run_probe and not task.run_probe:
+            task.run_probe = True
         # Update the link whenever a new submission carries one (explicit
         # --link or derived from --github-meta above). A submission with no
         # link leaves the existing value untouched rather than clearing it.
@@ -2556,6 +2560,7 @@ async def create_task_sweep_core(
                 "experiment_id": new_experiment_id or fallback_experiment_id,
                 "tags": task.tags or {},
                 "run_analysis": task.run_analysis,
+                "run_probe": task.run_probe,
                 "user": task.user,
             }
         )
@@ -2578,9 +2583,10 @@ async def create_task_sweep_core(
             for trial in new_trials:
                 asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
 
-        await maybe_enqueue_auto_probe(
-            session, task=task, experiment=experiment, org_id=org_id
-        )
+        if task.run_probe:
+            await maybe_enqueue_auto_probe(
+                session, task=task, experiment=experiment, org_id=org_id
+            )
         return task, new_trials, True, experiment
 
     # Create mode
@@ -2629,7 +2635,8 @@ async def create_task_sweep_core(
         for trial in new_trials:
             asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
 
-    await maybe_enqueue_auto_probe(
-        session, task=task, experiment=experiment, org_id=org_id
-    )
+    if task.run_probe:
+        await maybe_enqueue_auto_probe(
+            session, task=task, experiment=experiment, org_id=org_id
+        )
     return task, new_trials, False, experiment

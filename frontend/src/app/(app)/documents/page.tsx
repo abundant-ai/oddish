@@ -1,5 +1,5 @@
-import { DocumentsClient } from "./documents-client";
+import { redirect } from "next/navigation";
 
-export default function DocumentsPage() {
-  return <DocumentsClient />;
+export default function DocumentsRedirect() {
+  redirect("/qa/documents");
 }

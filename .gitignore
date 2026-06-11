@@ -42,3 +42,6 @@ oddish-pulls/
 
 # Git worktrees (local isolation)
 .worktrees/
+
+# Brainstorming visual companion
+.superpowers/
