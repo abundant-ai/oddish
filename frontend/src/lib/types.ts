@@ -113,6 +113,7 @@ export interface Trial {
   cost_is_estimated?: boolean | null;
   has_trajectory?: boolean;
   is_probe?: boolean;
+  probe_scope?: "trial" | "task" | null;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
