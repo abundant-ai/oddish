@@ -377,7 +377,15 @@ function VersionSwitcher({
   );
 }
 
-function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
+function TrialChip({
+  trial,
+  taskId,
+  onClick,
+}: {
+  trial: Trial;
+  taskId: string;
+  onClick: () => void;
+}) {
   const status = getMatrixStatus(
     trial.status,
     trial.reward,
@@ -420,6 +428,14 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
               {formatCostUsd(trial.cost_usd)}
             </div>
           )}
+          {!trial.is_probe && (
+            <Link
+              href={`/tasks/${taskId}/probe?scope=trial&target_trial=${trial.id}`}
+              className="mt-1 block underline underline-offset-2"
+            >
+              Probe this trial →
+            </Link>
+          )}
         </div>
       </TooltipContent>
     </Tooltip>
@@ -431,12 +447,14 @@ function AgentCard({
   agent,
   model,
   trials,
+  taskId,
   onTrialSelect,
 }: {
   agentLabel: string;
   agent: string;
   model: string | null;
   trials: Trial[];
+  taskId: string;
   onTrialSelect: (trial: Trial, trials: Trial[]) => void;
 }) {
   const summary = useMemo(() => summarizeTrials(trials), [trials]);
@@ -543,6 +561,7 @@ function AgentCard({
             <TrialChip
               key={trial.id}
               trial={trial}
+              taskId={taskId}
               onClick={() => onTrialSelect(trial, sortedTrials)}
             />
           ))}
@@ -940,6 +959,7 @@ export function TaskDetailClient({
                   agent={summary.agent}
                   model={summary.model}
                   trials={trials}
+                  taskId={taskId}
                   onTrialSelect={handleSelectTrial}
                 />
               );
