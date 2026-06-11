@@ -2,7 +2,7 @@
 
 import { Tag } from "lucide-react";
 
-import { TagChip } from "@/components/tag-chip";
+import { TagChipEditor } from "@/components/tag-chip-editor";
 import { TagPicker } from "@/components/tag-picker";
 import { Button } from "@/components/ui/button";
 import type { UserTagRef } from "@/lib/types";
@@ -59,7 +59,7 @@ export function TagEditor({
     <div className="flex flex-wrap items-center gap-1">
       {initialTags.map((t) => (
         <span key={t.tag_id} className="flex items-center gap-1">
-          <TagChip tag={t} />
+          <TagChipEditor tag={t} onSaved={onMutate} />
           <button
             type="button"
             className="text-xs text-muted-foreground hover:text-foreground"
