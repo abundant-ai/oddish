@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
+import { Tag } from "lucide-react";
 import useSWR from "swr";
 
 import {
@@ -18,6 +19,8 @@ import {
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { fetcher } from "@/lib/api";
+import { TAG_COLOR_PALETTE, tagColor } from "@/lib/tag-colors";
+import { cn } from "@/lib/utils";
 
 interface BackendTagListItem {
   id: string;
@@ -57,6 +60,7 @@ export function TagPicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
+  const [createColor, setCreateColor] = useState<string | null>(null);
   const { data, mutate } = useSWR<TagListResponse>("/api/tags", fetcher, {
     revalidateOnFocus: false,
   });
@@ -68,6 +72,9 @@ export function TagPicker({
     allowCreate &&
     normalizedQuery.length > 0 &&
     !items.some((it) => it.key === normalizedQuery);
+  // Swatch selection wins; otherwise the name's deterministic palette color
+  // (the same hue the chip would fall back to) is preselected.
+  const effectiveCreateColor = createColor ?? tagColor(normalizedQuery);
 
   function toggle(tagId: string) {
     if (multi) {
@@ -85,7 +92,11 @@ export function TagPicker({
     const res = await fetch("/api/tags", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: rawKey, visibility: "PRIVATE" }),
+      body: JSON.stringify({
+        key: rawKey,
+        color: effectiveCreateColor,
+        visibility: "PRIVATE",
+      }),
     });
     const body = await res.json().catch(() => null);
     if (!res.ok) {
@@ -99,6 +110,7 @@ export function TagPicker({
     }
     // Backend may normalize the typed key — select by the returned id.
     const created = body as BackendTagListItem;
+    setCreateColor(null);
     await mutate();
     toggle(created.id);
   }
@@ -133,20 +145,49 @@ export function TagPicker({
                     value={it.key}
                     onSelect={() => toggle(it.id)}
                   >
-                    <span className="mr-2">
-                      {selected.has(it.id) ? "✓" : " "}
+                    <span className="mr-1 w-3 text-xs">
+                      {selected.has(it.id) ? "✓" : ""}
                     </span>
+                    <Tag
+                      className="mr-1.5 h-3.5 w-3.5 shrink-0"
+                      style={{ color: tagColor(it.key, it.color) }}
+                      fill={tagColor(it.key, it.color)}
+                      fillOpacity={0.25}
+                    />
                     <span>{it.key}</span>
                   </CommandItem>
                 ))}
               {showCreate ? (
                 <CommandItem value={query} onSelect={() => createTag(query)}>
-                  <span className="mr-2">+</span>
+                  <Tag
+                    className="mr-1.5 h-3.5 w-3.5 shrink-0"
+                    style={{ color: effectiveCreateColor }}
+                    fill={effectiveCreateColor}
+                    fillOpacity={0.25}
+                  />
                   <span>Create &quot;{query}&quot;</span>
                 </CommandItem>
               ) : null}
             </CommandGroup>
           </CommandList>
+          {showCreate ? (
+            <div className="flex items-center gap-1.5 border-t px-3 py-2">
+              {TAG_COLOR_PALETTE.map((swatch) => (
+                <button
+                  key={swatch}
+                  type="button"
+                  aria-label={`Tag color ${swatch}`}
+                  className={cn(
+                    "h-4 w-4 rounded-full transition-transform hover:scale-110",
+                    swatch === effectiveCreateColor &&
+                      "ring-2 ring-ring ring-offset-1 ring-offset-popover",
+                  )}
+                  style={{ backgroundColor: swatch }}
+                  onClick={() => setCreateColor(swatch)}
+                />
+              ))}
+            </div>
+          ) : null}
           {createError ? (
             <div className="border-t px-3 py-2 text-xs text-destructive">
               {createError}

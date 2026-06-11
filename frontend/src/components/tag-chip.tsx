@@ -1,8 +1,9 @@
 "use client";
 
-import { Eye, EyeOff } from "lucide-react";
+import { Tag } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { tagColor } from "@/lib/tag-colors";
 import type { UserTagRef } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -13,7 +14,7 @@ export interface TagChipProps {
 
 export function TagChip({ tag, className }: TagChipProps) {
   const dim = tag.older && !tag.current;
-  const color = tag.color || undefined;
+  const color = tagColor(tag.key, tag.color);
   return (
     <Badge
       variant="outline"
@@ -22,13 +23,14 @@ export function TagChip({ tag, className }: TagChipProps) {
         dim && "opacity-60",
         className,
       )}
-      style={color ? { borderColor: color, color } : undefined}
     >
-      {tag.visibility === "PUBLIC" ? (
-        <Eye className="h-3 w-3" aria-label="Public tag" />
-      ) : (
-        <EyeOff className="h-3 w-3" aria-label="Private tag" />
-      )}
+      <Tag
+        className="h-3 w-3 shrink-0"
+        style={{ color }}
+        fill={color}
+        fillOpacity={0.25}
+        aria-label={tag.visibility === "PUBLIC" ? "Public tag" : "Private tag"}
+      />
       <span>{tag.key}</span>
       {tag.value ? <span className="opacity-60">:{tag.value}</span> : null}
     </Badge>
