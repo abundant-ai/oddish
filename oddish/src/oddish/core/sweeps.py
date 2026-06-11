@@ -12,6 +12,33 @@ def validate_sweep_submission(submission: TaskSweepSubmission) -> None:
     if not submission.configs:
         raise HTTPException(status_code=400, detail="Must specify 'configs'")
 
+    # Default legacy probes (extra_instructions, no explicit scope) to task scope
+    # so downstream code only ever sees an explicit scope.
+    if submission.probe_scope is None and submission.extra_instructions:
+        submission.probe_scope = "task"
+
+    if submission.probe_scope == "trial":
+        target = submission.probe_target_trial_id
+        if not target:
+            raise HTTPException(
+                status_code=400,
+                detail="probe_scope='trial' requires probe_target_trial_id",
+            )
+        if not target.startswith(f"{submission.task_id}-"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"probe_target_trial_id {target!r} does not belong to task "
+                    f"{submission.task_id!r}"
+                ),
+            )
+    elif submission.probe_scope == "task":
+        if submission.probe_target_trial_id:
+            raise HTTPException(
+                status_code=400,
+                detail="probe_scope='task' must not set probe_target_trial_id",
+            )
+
 
 def _validate_allowed_environment(
     env: EnvironmentType,
