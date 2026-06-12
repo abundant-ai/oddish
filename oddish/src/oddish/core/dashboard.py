@@ -294,15 +294,14 @@ def _build_aggregates_for_experiment_ids(
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
     trial_agg = trial_agg_query.group_by(TrialModel.experiment_id).subquery()
 
-    # pass@1: per-task pass rate (reward == 1 over scored trials) averaged
-    # across tasks, so tasks with many trials don't dominate the experiment
-    # score. nop/oracle baseline trials are excluded.
+    # pass@1: per-task mean reward (over scored trials) averaged across
+    # tasks, so tasks with many trials don't dominate the experiment score
+    # and partial credit averages in as a proxy. nop/oracle baseline trials
+    # are excluded.
     per_task_pass_query = (
         select(
             TrialModel.experiment_id.label("experiment_id"),
-            func.avg(case((TrialModel.reward == 1, 1.0), else_=0.0)).label(
-                "task_pass_rate"
-            ),
+            func.avg(TrialModel.reward).label("task_pass_rate"),
         )
         .where(
             TrialModel.experiment_id.in_(experiment_ids),
