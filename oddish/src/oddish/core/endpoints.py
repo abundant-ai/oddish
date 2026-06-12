@@ -279,8 +279,14 @@ async def list_tasks_core(
 
         for task in tasks:
             if experiment_id:
+                # Probes have their own experiment tab (list_experiment_probes_core);
+                # keep them out of the main trial matrix so probe runs don't show up
+                # as if they were ordinary trials. Excluding them before resolving the
+                # effective version also stops a probe-only version from skewing it.
                 scoped_trials = [
-                    t for t in task.trials if t.experiment_id == experiment_id
+                    t
+                    for t in task.trials
+                    if t.experiment_id == experiment_id and not t.is_probe
                 ]
                 set_committed_value(task, "trials", scoped_trials)
                 effective = resolve_effective_version_id(
