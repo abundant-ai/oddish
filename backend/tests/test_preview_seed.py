@@ -221,6 +221,70 @@ async def test_sample_is_deterministic_and_prod_faithful():
         await src.dispose()
 
 
+async def test_bulk_batches_load_and_fallback_yields_single_rows():
+    """>_UPSERT_BATCH rows exercise the multi-row path end to end, and a
+    batch tripping a secondary unique falls back row-by-row so only the
+    colliding row yields to the pre-existing one."""
+    src = await _make_source_db()
+    # widen the source: 1,200 extra terminal trials on exp-a
+    t = Base.metadata.tables
+    async with src.begin() as c:
+        await c.execute(t["trials"].insert(), [
+            {"id": f"tr-bulk-{i:04d}", "name": f"tr-bulk-{i:04d}",
+             "task_id": "task-solo", "task_version_id": "ver-solo-2",
+             "experiment_id": "exp-a", "org_id": "org-a", "agent": "claude",
+             "provider": "anthropic", "queue_key": "q", "timeout_minutes": 30,
+             "environment": "modal", "harbor_config": {}, "status": "SUCCESS",
+             "origin": "oddish", "result": {"reward": 0},
+             "superseded_by_trial_id": None}
+            for i in range(1200)
+        ])
+    engine = create_async_engine(URL)
+    try:
+        import preview_seed as ps
+        orig_cap = ps.SAMPLE_TRIALS_PER_EXPERIMENT
+        ps.SAMPLE_TRIALS_PER_EXPERIMENT = 5000
+        try:
+            sampled = await ps.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        finally:
+            ps.SAMPLE_TRIALS_PER_EXPERIMENT = orig_cap
+        assert len(sampled["rows"]["trials"]) >= 1200
+
+        await _reset_target(engine)
+        # a reviewer-made task already holds a sampled CHILDLESS task's
+        # (org, name) -- colliding a task that has trials would correctly
+        # cascade-yield those trials too, which is not what we exercise here
+        async with engine.begin() as c:
+            await c.execute(text(
+                "insert into organizations (id, name, slug, plan, settings,"
+                " is_active, created_at, updated_at) values ('org-a', 'Real A',"
+                " 'real-a', 'free', '{}'::jsonb, true, now(), now())"
+            ))
+            await c.execute(text(
+                'insert into tasks (id, name, org_id, "user", priority,'
+                " status, task_path, tags, run_analysis, run_probe,"
+                " created_at, updated_at) values ('reviewer-made', 'dup-task',"
+                " 'org-a', 'r@corp.com', 'LOW', 'PENDING', 'p/m', '{}'::jsonb,"
+                " false, false, now(), now())"
+            ))
+        await ps.seed(engine, sampled=sampled)
+
+        # all bulk rows landed
+        assert await _count(
+            engine, "select count(*) from trials where id like 'tr-bulk-%'"
+        ) >= 1200
+        # only the colliding task yielded; its siblings landed
+        assert await _count(
+            engine, "select count(*) from tasks where id='task-dup-a'") == 0
+        assert await _count(
+            engine, "select count(*) from tasks where id='reviewer-made'") == 1
+        assert await _count(
+            engine, "select count(*) from tasks where id='task-solo'") == 1
+    finally:
+        await engine.dispose()
+        await src.dispose()
+
+
 async def test_per_owner_anchor_guarantees_mine_view_data(monkeypatch):
     """With the global anchors disabled, every distinct experiment owner is
     still represented in the draw -- the guarantee behind the dashboard
@@ -310,6 +374,42 @@ async def test_seed_loads_subset_reconciles_drift_and_keeps_reviewer_data():
         # outage tolerance: sampled=None leaves everything alone
         await preview_seed.seed(engine, sampled=None)
         assert await _count(engine, "select count(*) from experiments where id='exp-a'") == 1
+    finally:
+        await engine.dispose()
+        await src.dispose()
+
+
+async def test_reseed_skips_unchanged_rows_and_writes_deltas():
+    """Re-seeding an identical draw must not physically rewrite rows (ctid
+    stable -- no index churn / dead tuples on re-pushes), while a changed
+    row in the draw still lands."""
+    src = await _make_source_db()
+    engine = create_async_engine(URL)
+    try:
+        sampled = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        await _reset_target(engine)
+        await preview_seed.seed(engine, sampled=sampled)
+
+        async def ctid(task_id):
+            async with engine.connect() as c:
+                return (await c.execute(text(
+                    f"select ctid::text from tasks where id='{task_id}'"
+                ))).scalar_one()
+
+        before_solo, before_dup = await ctid("task-solo"), await ctid("task-dup-a")
+        await preview_seed.seed(engine, sampled=sampled)  # identical draw
+        assert await ctid("task-solo") == before_solo  # incl. linkage no-op
+        assert await ctid("task-dup-a") == before_dup
+
+        for t in sampled["rows"]["tasks"]:
+            if t["id"] == "task-dup-a":
+                t["task_path"] = "p/changed"
+        await preview_seed.seed(engine, sampled=sampled)
+        assert await _count(
+            engine,
+            "select count(*) from tasks where id='task-dup-a'"
+            " and task_path='p/changed'") == 1
+        assert await ctid("task-dup-a") != before_dup  # the delta was written
     finally:
         await engine.dispose()
         await src.dispose()

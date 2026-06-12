@@ -34,11 +34,12 @@ Invariants:
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import json
 import sys
 
-from sqlalchemy import JSON, MetaData, delete, text
+from sqlalchemy import JSON, MetaData, delete, text, tuple_
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -46,19 +47,29 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 SEED_EPOCH = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
 
-# Prod-sample sizing: a slice large enough to exercise features against
-# real data and cover every data-bearing table, never the whole dataset.
-SAMPLE_RECENT_EXPERIMENTS = 8
-SAMPLE_RANDOM_EXPERIMENTS = 8
+# Prod-sample sizing: a generous slice of prod -- branch compute (Micro,
+# 8 GB disk) dwarfs the app dataset, so the caps are sized for feature
+# realism, not capacity. Loading stays fast because rows upsert in
+# multi-row batches (see _UPSERT_BATCH), not row-by-row.
+SAMPLE_RECENT_EXPERIMENTS = 2000
+SAMPLE_RANDOM_EXPERIMENTS = 4000
 # Per-user coverage: every distinct experiment owner contributes their K
 # most recent experiments, so per-user features (the dashboard "Mine"
 # filter) work in the preview for every member, exactly as in prod.
-SAMPLE_EXPERIMENTS_PER_OWNER = 3
-SAMPLE_EXTRA_TASKS = 20
-SAMPLE_TRIALS_PER_EXPERIMENT = 50
-SAMPLE_SKILLS = 10
-SAMPLE_DOCUMENTS = 10
-SAMPLE_PROBE_PRESETS = 10
+SAMPLE_EXPERIMENTS_PER_OWNER = 5
+SAMPLE_EXTRA_TASKS = 3000
+SAMPLE_TRIALS_PER_EXPERIMENT = 100
+SAMPLE_SKILLS = 200
+SAMPLE_DOCUMENTS = 200
+SAMPLE_PROBE_PRESETS = 100
+
+# Multi-row upsert batching. Rows per statement are computed per table from
+# the column count against Postgres's 32767 bind-parameter limit (with
+# headroom), and batches are written over _LOAD_STREAMS concurrent
+# connections -- together cutting load time ~1000x versus row-by-row over
+# the pooler at six-figure row counts.
+_MAX_BIND_PARAMS = 28000
+_LOAD_STREAMS = 6
 
 _TERMINAL_TASK_STATUSES = ("COMPLETED", "FAILED")
 _TERMINAL_TRIAL_STATUSES = ("SUCCESS", "FAILED")
@@ -74,6 +85,15 @@ _RECONCILED_TABLES = (
 # FK edges to ignore when topologically sorting reflected tables; the
 # linkage pass patches these columns after both endpoints exist.
 _BACKEDGES = {("tasks", "current_version_id")}
+
+# Columns owned by the linkage pass (sampled rows carry NULL for them, the
+# real pointer is applied afterwards). They are inserted for NEW rows but
+# excluded from merge updates/comparison -- otherwise every re-push would
+# see NULL != linked-value, rewrite the row, and re-link it.
+_LINKAGE_COLUMNS = {
+    "tasks": {"current_version_id"},
+    "trials": {"superseded_by_trial_id"},
+}
 
 # Bookkeeping table recording the previous draw, so reconcile deletes only
 # rows THIS seed imported -- never reviewer-created data. Lives only on
@@ -379,6 +399,28 @@ def _row_key(table, row: dict) -> str:
     return ":".join(str(row[c.name]) for c in table.primary_key.columns)
 
 
+def _prepare_row(table, row: dict) -> dict:
+    """Filter a sampled row to the target table's columns and coerce JSON.
+
+    Prod may trail the branch schema (extra columns dropped with a warning),
+    and raw SELECTs return JSON/JSONB as strings, which a typed bind would
+    double-encode.
+    """
+    values = {}
+    for k, v in row.items():
+        col = table.columns.get(k)
+        if col is None:
+            _warn(f"dropped {table.name}.{k} (no such column on the target schema)")
+            continue
+        if isinstance(col.type, (JSONB, JSON)) and isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except ValueError:
+                pass
+        values[k] = v
+    return values
+
+
 async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
     """Load the sampled prod subset into the branch DB.
 
@@ -386,6 +428,12 @@ async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
     a PREVIOUS run that are absent from the current draw are deleted (prod
     drift), tracked via ``_preview_seed_state`` so reviewer-created data is
     never touched. ``sampled=None`` leaves existing data alone entirely.
+
+    Loading is phased rather than one transaction: cleanup + drift reconcile
+    first, then each table's batches written over ``_LOAD_STREAMS`` parallel
+    connections (tables stay in FK topological order; rows within a table
+    commit per batch), then linkage + the state-table record last -- so an
+    interrupted run never marks rows as drawn, and the next run converges.
     """
     sample_rows = (sampled or {}).get("rows", {})
     md = MetaData()
@@ -401,55 +449,24 @@ async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
         await _cleanup_legacy_fixture_rows(md, conn, ordered)
         if sampled is None:
             return
-
-        # Imported users carry real unique identities (clerk_user_id,
-        # (org_id, email)). A JIT-provisioned reviewer row on a reused
-        # branch may already hold one of them under a different primary
-        # key; per-row savepoints below let that single import yield to
-        # the existing row instead of failing the run.
         await _reconcile_previous_draw(md, conn, sample_rows)
 
-        for table in ordered:
-            rows = sample_rows.get(table.name, [])
-            if not rows:
-                continue
-            pk_cols = [c.name for c in table.primary_key.columns]
-            for row in rows:
-                values = {}
-                for k, v in row.items():
-                    col = table.columns.get(k)
-                    if col is None:
-                        _warn(
-                            f"dropped {table.name}.{k} (no such column on "
-                            f"the target schema)"
-                        )
-                        continue
-                    if isinstance(col.type, (JSONB, JSON)) and isinstance(v, str):
-                        try:
-                            v = json.loads(v)
-                        except ValueError:
-                            pass
-                    values[k] = v
-                stmt = pg_insert(table).values(**values)
-                set_ = {k: stmt.excluded[k] for k in values if k not in pk_cols}
-                try:
-                    async with conn.begin_nested():
-                        await conn.execute(
-                            stmt.on_conflict_do_update(
-                                index_elements=pk_cols, set_=set_
-                            )
-                        )
-                except (IntegrityError, DBAPIError) as exc:
-                    _warn(
-                        f"skipped {table.name} row {_row_key(table, row)} "
-                        f"({type(exc.orig or exc).__name__}); existing row wins"
-                    )
+    # Parents-first across tables; parallel batch streams within a table.
+    for table in ordered:
+        rows = sample_rows.get(table.name, [])
+        if not rows:
+            continue
+        await _load_table(engine, table, rows)
 
+    async with engine.begin() as conn:
         # Linkage pass: self/circular references deferred by the sampler.
+        # Conditional so an unchanged pointer doesn't rewrite the row on
+        # every re-push (which would defeat the delta merge above).
         for table_name, row_id, column, value in (sampled or {}).get("linkage", []):
             table = md.tables[table_name]
             await conn.execute(
                 table.update().where(table.c.id == row_id)
+                .where(table.c[column].is_distinct_from(value))
                 .values(**{column: value})
             )
 
@@ -459,15 +476,163 @@ async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
             table = md.tables.get(name)
             if table is None or not sample_rows.get(name):
                 continue
+            rids = [_row_key(table, row) for row in sample_rows[name]]
+            for start in range(0, len(rids), 10000):
+                await conn.execute(
+                    text(
+                        f"INSERT INTO {_STATE_TABLE} (table_name, row_id)"
+                        " SELECT :t, unnest(CAST(:rids AS text[]))"
+                        " ON CONFLICT DO NOTHING"
+                    ),
+                    {"t": name, "rids": rids[start:start + 10000]},
+                )
+
+
+async def _load_table(engine: AsyncEngine, table, rows: list[dict]) -> None:
+    """Upsert one table's rows, fast path first.
+
+    Fast path: binary COPY into a temp staging table, then one server-side
+    INSERT ... SELECT ... ON CONFLICT merge -- asyncpg encodes the stream in
+    C and Postgres does the merge, so Python never builds statements with
+    tens of thousands of bound parameters (which is CPU-bound and was the
+    actual bottleneck; parallel connections changed nothing).
+
+    Fallback: if the merge trips anything (typically a SECONDARY unique
+    such as an imported user colliding with a JIT-provisioned reviewer
+    row -- PK conflicts are absorbed by the upsert), the whole table falls
+    back to multi-row batches over parallel connections, where a tripping
+    batch degrades further to per-row savepoints so only the colliding row
+    yields to the existing one.
+    """
+    prepared = [_prepare_row(table, row) for row in rows]
+    try:
+        await _load_table_copy_merge(engine, table, prepared)
+        return
+    except Exception as exc:  # noqa: BLE001 -- any failure downgrades, never aborts
+        _warn(
+            f"copy fast-path failed for {table.name} "
+            f"({type(exc).__name__}: {exc}); falling back to batched upserts"
+        )
+    await _load_table_batches(engine, table, prepared)
+
+
+async def _load_table_copy_merge(
+    engine: AsyncEngine, table, prepared: list[dict]
+) -> None:
+    cols = [c.name for c in table.columns]
+    pk_cols = [c.name for c in table.primary_key.columns]
+    # The asyncpg json/jsonb codec SQLAlchemy registers expects values
+    # already serialized to str (the ORM execute path does that itself, but
+    # raw COPY bypasses it), so serialize dict/list values here.
+    json_cols = {
+        c.name for c in table.columns if isinstance(c.type, (JSONB, JSON))
+    }
+    def _rec_value(name: str, value):
+        if name in json_cols and isinstance(value, (dict, list)):
+            return json.dumps(value)
+        return value
+    records = [
+        tuple(_rec_value(c, r.get(c)) for c in cols) for r in prepared
+    ]
+    col_list = ", ".join(f'"{c}"' for c in cols)
+    pk_list = ", ".join(f'"{c}"' for c in pk_cols)
+    deferred = _LINKAGE_COLUMNS.get(table.name, set())
+    non_pk = [c for c in cols if c not in pk_cols and c not in deferred]
+    set_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in non_pk)
+    # Re-pushes mostly re-draw identical rows; IS DISTINCT FROM skips the
+    # rewrite (and its index churn / dead tuples) for unchanged rows, so the
+    # merge cost scales with the delta, not the draw.
+    tgt_tuple = ", ".join(f'"{table.name}"."{c}"' for c in non_pk)
+    exc_tuple = ", ".join(f'EXCLUDED."{c}"' for c in non_pk)
+    conflict = (
+        f"ON CONFLICT ({pk_list}) DO UPDATE SET {set_clause}"
+        f" WHERE ({tgt_tuple}) IS DISTINCT FROM ({exc_tuple})"
+        if set_clause
+        else f"ON CONFLICT ({pk_list}) DO NOTHING"
+    )
+    stage = f"_seed_stage_{table.name}"
+    async with engine.connect() as conn:
+        async with conn.begin():
+            await conn.execute(text(
+                f'CREATE TEMP TABLE "{stage}"'
+                f' (LIKE "{table.name}" INCLUDING DEFAULTS) ON COMMIT DROP'
+            ))
+            raw = (await conn.get_raw_connection()).driver_connection
+            await raw.copy_records_to_table(
+                stage, records=records, columns=cols
+            )
+            await conn.execute(text(
+                f'INSERT INTO "{table.name}" ({col_list})'
+                f' SELECT {col_list} FROM "{stage}" {conflict}'
+            ))
+
+
+async def _load_table_batches(
+    engine: AsyncEngine, table, prepared: list[dict]
+) -> None:
+    pk_cols = [c.name for c in table.primary_key.columns]
+    batch_size = max(1, _MAX_BIND_PARAMS // max(1, len(table.columns)))
+    batches = [
+        prepared[start:start + batch_size]
+        for start in range(0, len(prepared), batch_size)
+    ]
+    queue: asyncio.Queue = asyncio.Queue()
+    for batch in batches:
+        queue.put_nowait(batch)
+
+    async def worker() -> None:
+        async with engine.connect() as conn:
+            while True:
+                try:
+                    chunk = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                async with conn.begin():
+                    await _upsert_batch(conn, table, pk_cols, chunk)
+
+    workers = min(_LOAD_STREAMS, len(batches))
+    await asyncio.gather(*[worker() for _ in range(workers)])
+
+
+def _changed(table, stmt, keys: list[str]):
+    """DO UPDATE predicate: rewrite only rows that actually differ."""
+    return tuple_(*[table.c[k] for k in keys]).is_distinct_from(
+        tuple_(*[stmt.excluded[k] for k in keys])
+    )
+
+
+async def _upsert_batch(conn, table, pk_cols: list[str], chunk: list[dict]) -> None:
+    deferred = _LINKAGE_COLUMNS.get(table.name, set())
+    non_pk = [k for k in chunk[0] if k not in pk_cols and k not in deferred]
+    stmt = pg_insert(table).values(chunk)
+    set_ = {k: stmt.excluded[k] for k in non_pk}
+    try:
+        async with conn.begin_nested():
             await conn.execute(
-                text(
-                    f"INSERT INTO {_STATE_TABLE} (table_name, row_id)"
-                    " VALUES (:t, :r) ON CONFLICT DO NOTHING"
-                ),
-                [
-                    {"t": name, "r": _row_key(table, row)}
-                    for row in sample_rows[name]
-                ],
+                stmt.on_conflict_do_update(
+                    index_elements=pk_cols, set_=set_,
+                    where=_changed(table, stmt, non_pk),
+                )
+            )
+        return
+    except (IntegrityError, DBAPIError):
+        pass
+    for values in chunk:
+        non_pk = [k for k in values if k not in pk_cols and k not in deferred]
+        stmt = pg_insert(table).values(**values)
+        set_ = {k: stmt.excluded[k] for k in non_pk}
+        try:
+            async with conn.begin_nested():
+                await conn.execute(
+                    stmt.on_conflict_do_update(
+                        index_elements=pk_cols, set_=set_,
+                        where=_changed(table, stmt, non_pk),
+                    )
+                )
+        except (IntegrityError, DBAPIError) as exc:
+            _warn(
+                f"skipped {table.name} row {_row_key(table, values)} "
+                f"({type(exc.orig or exc).__name__}); existing row wins"
             )
 
 
@@ -496,13 +661,23 @@ async def _reconcile_previous_draw(md: MetaData, conn, sample_rows: dict) -> Non
             _row_key(table, row) for row in sample_rows.get(name, [])
         }
         pk_cols = list(table.primary_key.columns)
-        for stale_key in sorted(previous[name] - current):
-            parts = stale_key.split(":", len(pk_cols) - 1)
-            cond = [c == v for c, v in zip(pk_cols, parts)]
-            stmt = delete(table)
-            for c in cond:
-                stmt = stmt.where(c)
-            await conn.execute(stmt)
+        stale = sorted(previous[name] - current)
+        if not stale:
+            continue
+        if len(pk_cols) == 1:
+            for start in range(0, len(stale), 5000):
+                await conn.execute(
+                    delete(table).where(
+                        pk_cols[0].in_(stale[start:start + 5000])
+                    )
+                )
+        else:
+            for stale_key in stale:
+                parts = stale_key.split(":", len(pk_cols) - 1)
+                stmt = delete(table)
+                for c, v in zip(pk_cols, parts):
+                    stmt = stmt.where(c == v)
+                await conn.execute(stmt)
 
 
 async def _cleanup_legacy_fixture_rows(md: MetaData, conn, ordered) -> None:
