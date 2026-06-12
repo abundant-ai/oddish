@@ -18,6 +18,11 @@ from oddish.core.tag_filter_ast import (
     TagFilterAST,
     resolve_names_to_ids,
 )
+from oddish.core.tags_projection import (
+    UserTagView,
+    list_direct_tags_for_targets,
+    list_effective_user_tags_for_task_versions,
+)
 from oddish.config import normalize_model_id
 from oddish.db import (
     ExperimentModel,
@@ -577,6 +582,19 @@ def _experiment_tag_predicates(resolved: ResolvedTagFilter) -> list:
     return clauses
 
 
+def _user_tag_view_payload(view: UserTagView) -> dict[str, Any]:
+    """JSON shape the frontend's UserTagRef expects."""
+    return {
+        "tag_id": str(view.tag_id),
+        "key": view.key,
+        "value": view.value,
+        "color": view.color,
+        "visibility": view.visibility,
+        "current": bool(view.current),
+        "older": bool(view.older),
+    }
+
+
 def _has_unknown_positive_tokens(ast: TagFilterAST, unknown: set[str]) -> bool:
     """Unknown ``all``/``any`` tokens can never match — return an empty page
     (graceful type-ahead, mirrors /tasks browse). Unknown ``none`` tokens are
@@ -709,6 +727,14 @@ async def load_dashboard_experiments(
         return [], False
 
     experiment_ids = [str(row["experiment_id"]) for row in page_rows]
+
+    user_tags_by_experiment: dict[str, list[UserTagView]] = {}
+    try:
+        user_tags_by_experiment = await list_direct_tags_for_targets(
+            session, scope="EXPERIMENT", target_ids=experiment_ids
+        )
+    except Exception:  # pragma: no cover - degraded chips beat a dead dashboard
+        logger.exception("dashboard experiments user_tags hydration failed")
 
     # ------------------------------------------------------------------
     # Step 1.5: primary (oldest) and latest task author info for the page.
@@ -851,6 +877,10 @@ async def load_dashboard_experiments(
                 latest_task["task_github_meta"] if latest_task else None
             ),
             "last_link": latest_task["task_link"] if latest_task else None,
+            "user_tags": [
+                _user_tag_view_payload(v)
+                for v in user_tags_by_experiment.get(exp_id, [])
+            ],
         }
 
         # ``task_count`` mirrors the previous greatest(task, trial) shape
