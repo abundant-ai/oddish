@@ -170,10 +170,10 @@ def _baseline_agent_clause():
 def _build_aggregates_for_experiment_ids(
     experiment_ids: list[str], *, org_id: str | None
 ):
-    """Return (task_agg_subquery, trial_agg_subquery, pass_agg_subquery)
+    """Return (task_agg_subquery, trial_agg_subquery, score_agg_subquery)
     scoped to a page.
 
-    Both subqueries restrict their FROM-side to the given experiment ids
+    The subqueries restrict their FROM-side to the given experiment ids
     so the planner walks only ``len(experiment_ids)`` rows worth of
     tasks/trials instead of the org's full set. Org scoping is also
     applied for defense in depth -- ``last_activity_at`` is denormalized
@@ -294,14 +294,14 @@ def _build_aggregates_for_experiment_ids(
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
     trial_agg = trial_agg_query.group_by(TrialModel.experiment_id).subquery()
 
-    # pass@1: per-task mean reward (over scored trials) averaged across
+    # avg score: per-task mean reward (over scored trials) averaged across
     # tasks, so tasks with many trials don't dominate the experiment score
-    # and partial credit averages in as a proxy. nop/oracle baseline trials
-    # are excluded.
-    per_task_pass_query = (
+    # and partial credit averages in. nop/oracle baseline trials are
+    # excluded.
+    per_task_score_query = (
         select(
             TrialModel.experiment_id.label("experiment_id"),
-            func.avg(TrialModel.reward).label("task_pass_rate"),
+            func.avg(TrialModel.reward).label("task_avg_score"),
         )
         .where(
             TrialModel.experiment_id.in_(experiment_ids),
@@ -312,18 +312,18 @@ def _build_aggregates_for_experiment_ids(
         .group_by(TrialModel.experiment_id, TrialModel.task_id)
     )
     if org_id is not None:
-        per_task_pass_query = per_task_pass_query.where(TrialModel.org_id == org_id)
-    per_task_pass = per_task_pass_query.subquery()
-    pass_agg = (
+        per_task_score_query = per_task_score_query.where(TrialModel.org_id == org_id)
+    per_task_score = per_task_score_query.subquery()
+    score_agg = (
         select(
-            per_task_pass.c.experiment_id.label("experiment_id"),
-            func.avg(per_task_pass.c.task_pass_rate).label("pass_at_1"),
+            per_task_score.c.experiment_id.label("experiment_id"),
+            func.avg(per_task_score.c.task_avg_score).label("avg_score"),
         )
-        .group_by(per_task_pass.c.experiment_id)
+        .group_by(per_task_score.c.experiment_id)
         .subquery()
     )
 
-    return task_agg, trial_agg, pass_agg
+    return task_agg, trial_agg, score_agg
 
 
 def _first_live_task_id_for_experiment():
@@ -710,7 +710,7 @@ async def load_dashboard_experiments(
     # ------------------------------------------------------------------
     # Step 2: aggregate task / trial counts for just this page.
     # ------------------------------------------------------------------
-    task_agg, trial_agg, pass_agg = _build_aggregates_for_experiment_ids(
+    task_agg, trial_agg, score_agg = _build_aggregates_for_experiment_ids(
         experiment_ids, org_id=org_id
     )
 
@@ -739,14 +739,14 @@ async def load_dashboard_experiments(
             func.coalesce(trial_agg.c.reward_success, 0).label("reward_success"),
             func.coalesce(trial_agg.c.reward_sum, 0.0).label("reward_sum"),
             func.coalesce(trial_agg.c.reward_total, 0).label("reward_total"),
-            pass_agg.c.pass_at_1.label("pass_at_1"),
+            score_agg.c.avg_score.label("avg_score"),
             task_agg.c.last_task_created_at,
             trial_agg.c.last_trial_created_at,
         )
         .select_from(ExperimentModel)
         .outerjoin(task_agg, task_agg.c.experiment_id == ExperimentModel.id)
         .outerjoin(trial_agg, trial_agg.c.experiment_id == ExperimentModel.id)
-        .outerjoin(pass_agg, pass_agg.c.experiment_id == ExperimentModel.id)
+        .outerjoin(score_agg, score_agg.c.experiment_id == ExperimentModel.id)
         .where(ExperimentModel.id.in_(experiment_ids))
     )
 
@@ -798,9 +798,9 @@ async def load_dashboard_experiments(
             "reward_success": int(agg["reward_success"]) if agg else 0,
             "reward_sum": float(agg["reward_sum"] or 0.0) if agg else 0.0,
             "reward_total": int(agg["reward_total"]) if agg else 0,
-            "pass_at_1": (
-                float(agg["pass_at_1"])
-                if agg and agg["pass_at_1"] is not None
+            "avg_score": (
+                float(agg["avg_score"])
+                if agg and agg["avg_score"] is not None
                 else None
             ),
             "primary_user": primary_task["task_user"] if primary_task else None,
@@ -898,7 +898,7 @@ async def load_dashboard_experiments(
                 "reward_success": int(merged["reward_success"] or 0),
                 "reward_sum": float(merged["reward_sum"] or 0.0),
                 "reward_total": int(merged["reward_total"] or 0),
-                "pass_at_1": merged["pass_at_1"],
+                "avg_score": merged["avg_score"],
                 "analysis_tasks": int(merged["analysis_tasks"] or 0),
                 "verdict_good": int(merged["verdict_good"] or 0),
                 "verdict_needs_review": int(merged["verdict_needs_review"] or 0),
