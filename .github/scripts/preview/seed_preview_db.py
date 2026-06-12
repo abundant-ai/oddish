@@ -12,6 +12,7 @@ variable unset (local runs) the seed is a no-op beyond legacy cleanup.
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "backend"))
@@ -50,12 +51,17 @@ async def _main() -> None:
             )
         sample_key = os.environ.get("PR_NUMBER", "default")
         source = _engine(source_url, read_only=True)
+        t0 = time.monotonic()
         try:
             sampled = await sample_prod_subset(source, sample_key=sample_key)
         finally:
             await source.dispose()
         rows = sum(len(v) for v in sampled["rows"].values())
-        print(f"seed_preview_db: sampled {rows} prod rows", file=sys.stderr)
+        print(
+            f"seed_preview_db: sampled {rows} prod rows"
+            f" in {time.monotonic() - t0:.1f}s",
+            file=sys.stderr,
+        )
     else:
         print(
             "seed_preview_db: PREVIEW_SAMPLE_SOURCE_DB_URL not set; "
@@ -64,10 +70,15 @@ async def _main() -> None:
         )
 
     engine = _engine(branch_url)
+    t0 = time.monotonic()
     try:
         await seed(engine, sampled=sampled)
     finally:
         await engine.dispose()
+    print(
+        f"seed_preview_db: seeded branch in {time.monotonic() - t0:.1f}s",
+        file=sys.stderr,
+    )
 
 
 if __name__ == "__main__":
