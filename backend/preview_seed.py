@@ -478,16 +478,70 @@ async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
 
 
 async def _load_table(engine: AsyncEngine, table, rows: list[dict]) -> None:
-    """Upsert one table's rows: dynamic multi-row batches fanned out over
-    ``_LOAD_STREAMS`` connections.
+    """Upsert one table's rows, fast path first.
 
-    Imported users (and reviewer-created rows generally) carry unique
-    identities beyond the primary key; a batch tripping a SECONDARY unique
-    (PK conflicts are absorbed by the upsert) falls back to row-by-row
-    savepoints so only the colliding row yields to the existing one.
+    Fast path: binary COPY into a temp staging table, then one server-side
+    INSERT ... SELECT ... ON CONFLICT merge -- asyncpg encodes the stream in
+    C and Postgres does the merge, so Python never builds statements with
+    tens of thousands of bound parameters (which is CPU-bound and was the
+    actual bottleneck; parallel connections changed nothing).
+
+    Fallback: if the merge trips anything (typically a SECONDARY unique
+    such as an imported user colliding with a JIT-provisioned reviewer
+    row -- PK conflicts are absorbed by the upsert), the whole table falls
+    back to multi-row batches over parallel connections, where a tripping
+    batch degrades further to per-row savepoints so only the colliding row
+    yields to the existing one.
     """
-    pk_cols = [c.name for c in table.primary_key.columns]
     prepared = [_prepare_row(table, row) for row in rows]
+    try:
+        await _load_table_copy_merge(engine, table, prepared)
+        return
+    except Exception as exc:  # noqa: BLE001 -- any failure downgrades, never aborts
+        _warn(
+            f"copy fast-path failed for {table.name} "
+            f"({type(exc).__name__}); falling back to batched upserts"
+        )
+    await _load_table_batches(engine, table, prepared)
+
+
+async def _load_table_copy_merge(
+    engine: AsyncEngine, table, prepared: list[dict]
+) -> None:
+    cols = [c.name for c in table.columns]
+    pk_cols = [c.name for c in table.primary_key.columns]
+    records = [tuple(r.get(c) for c in cols) for r in prepared]
+    col_list = ", ".join(f'"{c}"' for c in cols)
+    pk_list = ", ".join(f'"{c}"' for c in pk_cols)
+    set_clause = ", ".join(
+        f'"{c}" = EXCLUDED."{c}"' for c in cols if c not in pk_cols
+    )
+    conflict = (
+        f"ON CONFLICT ({pk_list}) DO UPDATE SET {set_clause}"
+        if set_clause
+        else f"ON CONFLICT ({pk_list}) DO NOTHING"
+    )
+    stage = f"_seed_stage_{table.name}"
+    async with engine.connect() as conn:
+        async with conn.begin():
+            await conn.execute(text(
+                f'CREATE TEMP TABLE "{stage}"'
+                f' (LIKE "{table.name}" INCLUDING DEFAULTS) ON COMMIT DROP'
+            ))
+            raw = (await conn.get_raw_connection()).driver_connection
+            await raw.copy_records_to_table(
+                stage, records=records, columns=cols
+            )
+            await conn.execute(text(
+                f'INSERT INTO "{table.name}" ({col_list})'
+                f' SELECT {col_list} FROM "{stage}" {conflict}'
+            ))
+
+
+async def _load_table_batches(
+    engine: AsyncEngine, table, prepared: list[dict]
+) -> None:
+    pk_cols = [c.name for c in table.primary_key.columns]
     batch_size = max(1, _MAX_BIND_PARAMS // max(1, len(table.columns)))
     batches = [
         prepared[start:start + batch_size]
@@ -498,12 +552,12 @@ async def _load_table(engine: AsyncEngine, table, rows: list[dict]) -> None:
         queue.put_nowait(batch)
 
     async def worker() -> None:
-        while True:
-            try:
-                chunk = queue.get_nowait()
-            except asyncio.QueueEmpty:
-                return
-            async with engine.connect() as conn:
+        async with engine.connect() as conn:
+            while True:
+                try:
+                    chunk = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
                 async with conn.begin():
                     await _upsert_batch(conn, table, pk_cols, chunk)
 
