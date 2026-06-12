@@ -986,6 +986,7 @@ async def load_dashboard_experiments(
                 "author": author,
                 "last_runner": last_runner,
                 "last_author": last_runner,
+                "user_tags": merged.get("user_tags", []),
                 "last_pr_url": last_pr_url,
                 "last_pr_title": (
                     str(github_meta["pr_title"])
