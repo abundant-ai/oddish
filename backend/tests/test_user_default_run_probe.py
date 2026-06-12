@@ -40,6 +40,13 @@ def test_default_never_disables_explicit_true():
     assert sub.run_probe is True
 
 
+def test_default_on_keeps_explicit_true():
+    sub = _submission(run_probe=True)
+    user = SimpleNamespace(settings={"default_run_probe": True})
+    _apply_user_default_run_probe(sub, user)
+    assert sub.run_probe is True
+
+
 def test_none_user_is_noop():
     sub = _submission(run_probe=False)
     _apply_user_default_run_probe(sub, None)
