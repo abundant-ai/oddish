@@ -672,9 +672,37 @@ async def _handle_harbor_event(
     hook_event: TrialHookEvent,
     *,
     trial_id: str,
+    probe_task_dir: Path | None = None,
 ) -> None:
-    """Update database when Harbor trial lifecycle events occur."""
+    """Update database when Harbor trial lifecycle events occur.
+
+    For probe trials, ``probe_task_dir`` is the staged (overlay-applied) task
+    dir; on AGENT_START we upload it into the live container at /app so the
+    agent sees related_trials/, harbor_src/, and the task's own tests/solution
+    (the reward-hack surface). Harbor's image is built from environment/ only,
+    so without this the staged files never reach the agent. Non-probe trials
+    pass None and nothing is uploaded.
+    """
     event = hook_event.event
+
+    if (
+        event == TrialEvent.AGENT_START
+        and probe_task_dir is not None
+        and hook_event.environment is not None
+    ):
+        try:
+            await hook_event.environment.upload_dir(
+                source_dir=probe_task_dir, target_dir="/app"
+            )
+            console.print(
+                f"[dim]Trial {trial_id} probe task dir uploaded to /app[/dim]"
+            )
+        except Exception as exc:
+            console.print(
+                f"[yellow]Trial {trial_id} probe task-dir upload failed: "
+                f"{exc}[/yellow]"
+            )
+
     try:
         async with _trial_session(trial_id, allow_missing=True) as (_session, trial):
             if not trial:
@@ -853,13 +881,20 @@ async def _execute_trial(
                 f"{prepared_trial.trial_environment or settings.harbor_environment}"
             ) from exc
 
+        is_probe = bool(
+            (prepared_trial.trial_harbor_config or {}).get("extra_instructions")
+        )
         outcome = await run_harbor_trial_async(
             task_path=task_path_to_run,
             agent=prepared_trial.trial_agent,
             jobs_dir=Path(settings.harbor_jobs_dir),
             model=prepared_trial.trial_model,
             environment=env_type,
-            hook_callback=partial(_handle_harbor_event, trial_id=trial_id),
+            hook_callback=partial(
+                _handle_harbor_event,
+                trial_id=trial_id,
+                probe_task_dir=task_path_to_run if is_probe else None,
+            ),
             trial_id=trial_id,
             harbor_config=prepared_trial.trial_harbor_config,
             org_id=prepared_trial.org_id,
