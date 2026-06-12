@@ -25,6 +25,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.trial.trial import Trial
 
 from oddish.config import (
@@ -465,6 +466,42 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # exposes a matching ``create`` classmethod so the call shape stays
     # identical between the real Harbor Trial and the test double.
     harbor_trial = await Trial.create(cfg)
+
+    # Push the staged task dir into the agent's container. Harbor builds the
+    # image from ``environment/`` only and hands instruction.md to the agent as
+    # a string, so the related_trials/ + harbor_src/ that apply_probe_overlay
+    # stages into ``work_task_dir`` never reach the agent on their own. The
+    # fork now exposes ``event.environment`` on the hook, so we upload the whole
+    # staged dir to /app at AGENT_START -- after the container is up and right
+    # before the agent runs. /app is the agent WORKDIR, so the tree lands at
+    # the exact paths the probe instruction already references
+    # (RELATED_CONTAINER_DIR=/app/related_trials, HARBOR_CONTAINER_DIR=/app/harbor_src).
+    # Uploading the full dir deliberately exposes tests/ + solution/ as the
+    # reward-hack surface the probe is meant to probe. Best-effort: a failure
+    # here must never block the probe (mirrors apply_probe_overlay).
+    if work_root is not None:
+        probe_upload_src = actual_task_path  # the staged work_task_dir
+
+        async def _upload_task_dir(event: TrialHookEvent) -> None:
+            env = getattr(event, "environment", None)
+            if env is None:
+                logger.warning(
+                    "probe: hook fired without an environment handle; "
+                    "task dir not uploaded for trial %s",
+                    trial_id,
+                )
+                return
+            try:
+                await env.upload_dir(source_dir=probe_upload_src, target_dir="/app")
+                logger.info(
+                    "probe: uploaded task dir to /app for trial %s", trial_id
+                )
+            except Exception:
+                logger.exception(
+                    "probe: uploading task dir failed for trial %s", trial_id
+                )
+
+        harbor_trial.add_hook(TrialEvent.AGENT_START, _upload_task_dir)
 
     # Start the CPU watchdog in parallel -- it polls for the container by
     # name, then docker-execs a polling script inside that kills runaway
