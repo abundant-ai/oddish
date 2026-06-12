@@ -139,6 +139,53 @@ def to_zai_model_id(model: str | None) -> str | None:
     return f"{ZAI_PROVIDER}/{zai_bare_model_id(model)}"
 
 
+# Personal-subscription routing (Claude Code OAuth token / Codex ChatGPT
+# auth.json). Some operators authenticate the claude-code / codex agents with
+# their own Claude Pro/Max or ChatGPT plan instead of Bedrock / Azure / an API
+# key -- e.g. to reach models their plan exposes that the API tier does not. A
+# ``sub/<bare-id>`` model id opts a trial into that route: it is kept off the
+# Bedrock chokepoint, gets its own provider/queue bucket (so it never contends
+# for Bedrock/OpenAI slots and can be throttled independently), and
+# harbor_runner injects the subscription credentials while blanking the ambient
+# Bedrock/API creds the Modal image bakes in.
+SUBSCRIPTION_PROVIDER = "subscription"
+_SUBSCRIPTION_PREFIXES: tuple[str, ...] = ("sub/", "subscription/")
+
+
+def is_subscription_model(model: str | None) -> bool:
+    """Return True if *model* opts into the personal-subscription auth route."""
+    if not model:
+        return False
+    return model.strip().lower().startswith(_SUBSCRIPTION_PREFIXES)
+
+
+def subscription_bare_model_id(model: str) -> str:
+    """Strip the ``sub/``/``subscription/`` prefix, returning the bare model id.
+
+    ``sub/claude-opus-4-5`` -> ``claude-opus-4-5``. This is the id handed to the
+    agent CLI (``--model`` / ``ANTHROPIC_MODEL``). A bare id is returned as-is.
+    """
+    raw = model.strip()
+    low = raw.lower()
+    for prefix in _SUBSCRIPTION_PREFIXES:
+        if low.startswith(prefix):
+            return raw[len(prefix) :].strip()
+    return raw
+
+
+def to_subscription_model_id(model: str | None) -> str | None:
+    """Canonicalize a subscription reference to ``sub/<bare-id>``.
+
+    Non-subscription models are returned unchanged. The ``sub/`` prefix keeps the
+    trial off the Bedrock chokepoint and gives it a dedicated provider/queue
+    bucket (see ``get_provider_for_trial`` / ``normalize_queue_key``).
+    """
+    if not is_subscription_model(model):
+        return model
+    assert model is not None
+    return f"sub/{subscription_bare_model_id(model)}"
+
+
 def looks_like_bedrock_model_id(model: str | None) -> bool:
     """Return True if *model* is a Bedrock-style id that should route through AWS.
 
@@ -714,6 +761,11 @@ class Settings(BaseSettings):
     def get_provider_for_trial(self, agent: str, model: str | None) -> str:
         """Return provider for a trial using model first, agent fallback."""
         normalized_model = self.normalize_trial_model(agent, model)
+        # Subscription trials get a dedicated provider so they never fall through
+        # to the fixed agent provider (e.g. codex -> "openai"), which would drag
+        # them onto the Azure/OpenAI credential path.
+        if is_subscription_model(normalized_model):
+            return SUBSCRIPTION_PROVIDER
         if normalized_model:
             provider = _get_provider_from_model(normalized_model)
             if provider:
@@ -735,6 +787,12 @@ class Settings(BaseSettings):
         if normalized_agent in _NOP_ORACLE_AGENTS:
             return "default"
 
+        # Personal-subscription route (Claude Code OAuth / Codex auth.json):
+        # canonicalize to "sub/<id>" BEFORE the Bedrock chokepoint so the trial
+        # stays off Bedrock and gets its own provider/queue bucket.
+        if is_subscription_model(cleaned):
+            return to_subscription_model_id(cleaned)
+
         # GLM/z.ai models run on the claude-code harness but route to z.ai, not
         # Bedrock. Canonicalize to "zai/<id>" before the Bedrock chokepoint so
         # they get a z.ai provider/queue bucket instead of claude-code's fixed
@@ -754,6 +812,11 @@ class Settings(BaseSettings):
         normalized = model.strip().lower().replace(" ", "_")
         if not normalized or normalized in _MODEL_ABSENT_ALIASES:
             return "default"
+        # Subscription models keep their own ``sub/<id>`` bucket so their
+        # concurrency can be capped independently (e.g. serialize codex to dodge
+        # ChatGPT auth.json refresh-token invalidation across concurrent workers).
+        if normalized.startswith("sub/"):
+            return normalized
         if normalized in _PROVIDER_ONLY_QUEUE_ALIASES:
             return "default"
         normalized = _to_bedrock_model_id_if_known(normalized)

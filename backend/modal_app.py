@@ -106,6 +106,20 @@ if SAURON_AWS_SECRET_NAME:
         )
     )
 
+# Optional bring-your-own-credentials secret, layered alongside oddish-prod so
+# personal creds never go into the shared oddish-prod secret. Created from your
+# local Modal CLI (`modal secret create cs-creds CS_CLAUDE_CODE_OAUTH_TOKEN=...
+# CS_CODEX_AUTH_JSON_B64=...`) and consumed only by the subscription auth route
+# in harbor_runner. Set ODDISH_EXTRA_SECRET_NAME=cs-creds at deploy to enable;
+# unset = no-op, so this is inert for normal deploys.
+EXTRA_SECRET_NAME = os.environ.get("ODDISH_EXTRA_SECRET_NAME", "")
+if EXTRA_SECRET_NAME:
+    runtime_secrets.append(
+        modal.Secret.from_name(
+            EXTRA_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
+        )
+    )
+
 if LOCAL_DOTENV_VARS:
     runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 # Per-PR DB override created by the modal-preview workflow. Gating on
