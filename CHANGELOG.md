@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-12]
+
+### Added
+- QA tab consolidating probe runs, presets, skills, and documents under a new `/qa` route group; includes a Probe Runs list (one row per task with probe activity, ordered most-recent-first), a full Presets CRUD management page, and a new org-wide `GET /probes` backend endpoint; old `/skills` and `/documents` routes redirect transparently to their new `/qa/*` homes (#266)
+- Probe run summary accessible from the experiment task-file drawer sidebar: a "Latest probe run" entry below the file tree opens a compact card with status, agent/model, headline, metric chips, and cheating verdict; links to the full probe detail page; hidden on public share view; auto-polls while the probe is still running (#265)
+
+### Changed
+- Auto-probe is now opt-in and off by default; `maybe_enqueue_auto_probe` previously fired unconditionally on every sweep; now gated on a new `run_probe: bool` field on `TaskSubmission`, `TaskSweepSubmission`, and `TaskStatusResponse`, a `run_probe` DB column with migration `run_probe_001`, and a `--run-probe` CLI flag on `oddish run`; append-mode submissions flip the flag on first opt-in, mirroring the existing `run_analysis` pattern (#271)
+- Org switcher moved from Settings > Workspace into the top nav bar so the active workspace is always visible and switchable; settings page retains a read-only current-workspace card with updated copy; SWR cache is flushed on org change to prevent stale data from the previous workspace leaking through (#274)
+- Nav "QA" label renamed to "Agents" (route, active-state checks, and `QA Verdict`/`QA Review` strings elsewhere are unchanged) (#270)
+- Probe run detail page and experiment task-drawer probe card now share a single `ProbeRunSummary` component, bringing the drawer card to full parity with the detail page; the card previously omitted `key_actions` and `tool_insights` sections (#269)
+- Preview environments now seeded with a pseudo-random, deterministic subset of real production data (rows drawn by `md5(id || PR_NUMBER)`) instead of curated fixtures; reviewers authenticate with their real org credentials in preview; in-flight tasks/trials are normalized to `FAILED` on import to prevent the preview's safety nets from enqueuing real analysis/verdict jobs; convergence tracked via a private `_preview_seed_state` table; per-row savepoints prevent a single constraint collision from aborting the run (#264)
+
+### Fixed
+- Probe trials no longer appear in the experiment trial matrix; filtered server-side in the `experiment_id` branch of `list_tasks` before version resolution, preventing probe runs from cluttering the main task grid and preventing a probe-only version from skewing the effective version display; public `/public/tasks/{task_id}/trials` endpoint gains an optional `?probe=` filter param (`true`/`false`/omit) (#276)
+- `?task=` deep links on the experiment page now fall back to matching by task name when no exact task ID is found, fixing hand-written links such as `?task=ghsa-rpfr-x88x-xwcw` that previously opened nothing (#275)
+- Task version badges (`v{n}`) in the public experiment table are now hidden for unauthenticated viewers; `oddish run` reproduction command in the trial drawer hidden on public share pages; timing row in the trial drawer now shows the viewer's local timezone abbreviation (e.g. `PDT`) (#277)
+- GLM/z.ai provider icon corrected from the ChatGLM mammoth glyph to the ZAI "Z" logo (#277)
+- Footer "by Abundant AI" link updated from `abundantdata.com` to `abundant.ai` (#277)
+
+---
+
 ## [2026-06-11]
 
 ### Added
