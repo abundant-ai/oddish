@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -64,6 +64,97 @@ function extractSkillMdBody(content: string): string {
     }
   }
   return content;
+}
+
+/**
+ * Parse the leading YAML frontmatter of a SKILL.md into a flat key→value map.
+ * Skills written by `buildSkillMd` use simple `key: value` lines, so a
+ * line-based parse is sufficient (no YAML dep). Returns {} if no frontmatter.
+ */
+function parseFrontmatter(content: string): Record<string, string> {
+  const text = content.replace(/^\uFEFF/, "").trimStart();
+  if (!text.startsWith("---")) return {};
+  const end = text.indexOf("\n---", 3);
+  if (end === -1) return {};
+  const body = text.slice(3, end);
+  const out: Record<string, string> = {};
+  for (const line of body.split("\n")) {
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    const key = line.slice(0, idx).trim();
+    if (key) out[key] = line.slice(idx + 1).trim();
+  }
+  return out;
+}
+
+// ── Folder ingest ─────────────────────────────────────────────────────────
+
+/** A file read from a picked folder. `path` is the raw `webkitRelativePath`. */
+type RawFile = { path: string; content: string };
+
+/** Form state produced by ingesting a picked skill folder. */
+type IngestResult = {
+  name: string;
+  description: string;
+  skillMdBody: string;
+  extraFiles: SkillFile[];
+  skipped: string[];
+};
+
+/**
+ * Turn the files of a picked skill folder into form state.
+ *
+ * Each `RawFile.path` is a `webkitRelativePath` like
+ * `harbor-task-audit/references/review-checklist.md`. This helper must:
+ *   1. Strip the top-level folder segment so paths become relative to the
+ *      skill root (`references/review-checklist.md`, `SKILL.md`, ...).
+ *   2. Skip junk/binary: `.DS_Store`, any dotfile path segment, and anything
+ *      whose content isn't decodable text (a NUL byte "\u0000" is a good
+ *      binary signal). Collect skipped relative paths into `skipped`.
+ *   3. Locate the root `SKILL.md`. If missing, throw an Error.
+ *   4. Read name/description from its frontmatter (use `parseFrontmatter`);
+ *      take the body via `extractSkillMdBody`. Everything else (text, non-junk)
+ *      becomes `extraFiles` as { relative_path, content }.
+ *
+ * Throw an Error with a user-facing message on any unrecoverable problem
+ * (no SKILL.md, or frontmatter missing name/description).
+ */
+function ingestSkillFolder(files: RawFile[]): IngestResult {
+  const skipped: string[] = [];
+  const kept: SkillFile[] = [];
+
+  for (const file of files) {
+    // webkitRelativePath always prefixes the picked folder name; store paths
+    // relative to the skill root.
+    const relPath = file.path.split("/").slice(1).join("/");
+    if (!relPath) continue;
+
+    const isJunk = relPath.split("/").some((seg) => seg.startsWith("."));
+    const isBinary = file.content.includes("\u0000");
+    if (isJunk || isBinary) {
+      skipped.push(relPath);
+      continue;
+    }
+    kept.push({ relative_path: relPath, content: file.content });
+  }
+
+  const skillMd = kept.find((f) => f.relative_path === "SKILL.md");
+  if (!skillMd) {
+    throw new Error("Folder has no root SKILL.md");
+  }
+
+  const meta = parseFrontmatter(skillMd.content);
+  if (!meta.name || !meta.description) {
+    throw new Error("SKILL.md frontmatter is missing name or description");
+  }
+
+  return {
+    name: meta.name,
+    description: meta.description,
+    skillMdBody: extractSkillMdBody(skillMd.content),
+    extraFiles: kept.filter((f) => f.relative_path !== "SKILL.md"),
+    skipped,
+  };
 }
 
 // ── Sub-component: extra-file row ─────────────────────────────────────────
@@ -137,8 +228,37 @@ function SkillForm({ editingSkill, onSaved, onCancel }: SkillFormProps) {
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [skipped, setSkipped] = useState<string[]>([]);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   const isEdit = editingSkill !== null;
+
+  async function handleFolderSelected(
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    setError(null);
+    setSkipped([]);
+    try {
+      const raw: RawFile[] = await Promise.all(
+        Array.from(fileList).map(async (f) => ({
+          path: f.webkitRelativePath || f.name,
+          content: await f.text(),
+        })),
+      );
+      const result = ingestSkillFolder(raw);
+      setName(result.name);
+      setDescription(result.description);
+      setSkillMdBody(result.skillMdBody);
+      setExtraFiles(result.extraFiles);
+      setSkipped(result.skipped);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      e.target.value = ""; // allow re-picking the same folder
+    }
+  }
 
   function handleExtraFileChange(index: number, updated: SkillFile) {
     setExtraFiles((prev) => prev.map((f, i) => (i === index ? updated : f)));
@@ -210,6 +330,38 @@ function SkillForm({ editingSkill, onSaved, onCancel }: SkillFormProps) {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs border-[#6f88b4]/20"
+            onClick={() => folderInputRef.current?.click()}
+          >
+            Upload folder
+          </Button>
+          <span className="text-[11px] text-muted-foreground">
+            Pick a skill directory to auto-fill from its SKILL.md and files.
+          </span>
+          <input
+            ref={folderInputRef}
+            type="file"
+            // webkitdirectory is non-standard; React's types don't include it.
+            {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+            multiple
+            hidden
+            onChange={(e) => void handleFolderSelected(e)}
+          />
+        </div>
+        {skipped.length > 0 && (
+          <Alert>
+            <AlertTitle>Skipped {skipped.length} file(s)</AlertTitle>
+            <AlertDescription className="font-mono text-[11px]">
+              {skipped.join(", ")}
+            </AlertDescription>
+          </Alert>
+        )}
+
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="skill-name" className="text-xs font-medium">
