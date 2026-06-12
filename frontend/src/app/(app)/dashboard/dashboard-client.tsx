@@ -1434,7 +1434,7 @@ function RecentTasksCard({
                       <TableHead>Trials</TableHead>
                       <TableHead
                         className="cursor-help"
-                        title="Average of per-task average scores: each task's scored trials are averaged (partial credit included), then those task averages are averaged so every task counts equally. nop/oracle baseline trials are excluded."
+                        title="Average of per-task average reward, nop/oracle excluded"
                       >
                         Avg score
                       </TableHead>
