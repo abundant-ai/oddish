@@ -5,6 +5,9 @@ type DashboardRequestParams = {
   experiments_offset?: number;
   experiments_query?: string;
   experiments_status?: string;
+  experiments_tags?: string;
+  experiments_tags_any?: string;
+  experiments_tags_none?: string;
   experiments_author?: string;
   usage_minutes?: number | null;
   include_tasks?: boolean;
@@ -69,6 +72,17 @@ function buildDashboardSearchParams(
   const trimmedQuery = input.experiments_query?.trim();
   if (trimmedQuery) {
     params.set("experiments_query", trimmedQuery);
+  }
+
+  for (const name of [
+    "experiments_tags",
+    "experiments_tags_any",
+    "experiments_tags_none",
+  ] as const) {
+    const value = input[name]?.trim();
+    if (value) {
+      params.set(name, value);
+    }
   }
 
   if (input.usage_minutes !== undefined && input.usage_minutes !== null) {
