@@ -80,9 +80,50 @@ from oddish.schemas import (
     TagSetVisibilityRequest,
     TagUnassignRequest,
     TagUpdateRequest,
+    UserTagRef,
 )
+from oddish.core.tags_projection import list_direct_target_tags
 
 router = APIRouter(tags=["Tags"])
+
+
+_TARGET_ORG_QUERIES = {
+    "TASK": """
+        SELECT 1 FROM tasks
+        WHERE id = :target_id
+          AND COALESCE(org_id, '') = COALESCE(CAST(:org_id AS TEXT), '')
+    """,
+    "VERSION": """
+        SELECT 1 FROM task_versions tv
+        JOIN tasks t ON t.id = tv.task_id
+        WHERE tv.id = :target_id
+          AND COALESCE(t.org_id, '') = COALESCE(CAST(:org_id AS TEXT), '')
+    """,
+    "EXPERIMENT": """
+        SELECT 1 FROM experiments
+        WHERE id = :target_id
+          AND COALESCE(org_id, '') = COALESCE(CAST(:org_id AS TEXT), '')
+    """,
+}
+
+
+async def _assert_target_in_org(
+    session, *, scope: str, target_id: str, org_id: str | None
+) -> None:
+    """404 unless the assignment target belongs to the caller's org.
+
+    The tag itself is org-scoped via ``_load_tag``, but without this check a
+    caller could attach their own tag to ANOTHER org's task/version/experiment
+    id, polluting that org's effective-tag projection.
+    """
+    query = _TARGET_ORG_QUERIES.get(scope)
+    if query is None:
+        raise HTTPException(status_code=400, detail=f"invalid scope: {scope}")
+    row = await session.scalar(
+        text(query), {"target_id": target_id, "org_id": org_id}
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="target not found")
 
 
 async def _load_tag(session, tag_id: str, org_id: str | None) -> dict:
@@ -211,6 +252,39 @@ async def create_tag(
         row_version=1,
         owner_user_id=auth.user_id,
     )
+
+
+@router.get("/tags/for-target", response_model=list[UserTagRef])
+async def list_tags_for_target(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    scope: str,
+    target_id: str,
+) -> list[UserTagRef]:
+    """Direct tags on one target — hydrates the experiment header editor.
+
+    Registered BEFORE ``GET /tags/{tag_id}`` so the literal path isn't
+    swallowed by the parameterized route.
+    """
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        await _assert_target_in_org(
+            session, scope=scope, target_id=target_id, org_id=auth.org_id
+        )
+        views = await list_direct_target_tags(
+            session, scope=scope, target_id=target_id
+        )
+    return [
+        UserTagRef(
+            tag_id=v.tag_id,
+            key=v.key,
+            value=v.value,
+            color=v.color,
+            visibility=v.visibility,
+            current=v.current,
+            older=v.older,
+        )
+        for v in views
+    ]
 
 
 @router.get("/tags/{tag_id}", response_model=TagListItem)
@@ -407,6 +481,12 @@ async def assign_tag(
     auth.require_scope(APIKeyScope.TASKS)
     async with get_session() as session:
         tag = await _load_tag(session, payload.tag_id, auth.org_id)
+        await _assert_target_in_org(
+            session,
+            scope=payload.scope,
+            target_id=payload.target_id,
+            org_id=auth.org_id,
+        )
         policy = await get_or_create_tag_policy(session, org_id=auth.org_id or "")
         reserved = is_reserved_prefix(
             tag.get("normalized_key", ""),
@@ -462,6 +542,12 @@ async def unassign_tag(
 ) -> dict:
     auth.require_scope(APIKeyScope.TASKS)
     async with get_session() as session:
+        await _assert_target_in_org(
+            session,
+            scope=payload.scope,
+            target_id=payload.target_id,
+            org_id=auth.org_id,
+        )
         if payload.scope == "EXPERIMENT":
             await remove_experiment_tag_core(
                 session,
@@ -491,6 +577,12 @@ async def exclude_tag(
 ) -> dict:
     auth.require_scope(APIKeyScope.TASKS)
     async with get_session() as session:
+        await _assert_target_in_org(
+            session,
+            scope=payload.scope,
+            target_id=payload.target_id,
+            org_id=auth.org_id,
+        )
         await exclude_tag_core(
             session,
             tag_id=payload.tag_id,
@@ -512,6 +604,12 @@ async def unexclude_tag(
 ) -> dict:
     auth.require_scope(APIKeyScope.TASKS)
     async with get_session() as session:
+        await _assert_target_in_org(
+            session,
+            scope=payload.scope,
+            target_id=payload.target_id,
+            org_id=auth.org_id,
+        )
         await unexclude_tag_core(
             session,
             tag_id=payload.tag_id,

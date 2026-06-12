@@ -229,6 +229,50 @@ class UserTagView:
     older: bool
 
 
+async def list_direct_target_tags(
+    session,
+    *,
+    scope: str,
+    target_id: str,
+) -> list[UserTagView]:
+    """Direct tags assigned at exactly (scope, target_id) — e.g. an
+    experiment's own tags for its header editor. Merged tags follow
+    ``merged_into_id``; DELETED tags are dropped.
+    """
+    rows = (
+        await session.execute(
+            text(
+                """
+                SELECT t.id AS tag_id, t.key, t.value, t.color, t.visibility
+                FROM tag_assignments ta
+                JOIN tags t0 ON t0.id = ta.tag_id
+                JOIN tags t ON t.id = COALESCE(t0.merged_into_id, t0.id)
+                WHERE ta.scope = CAST(:scope AS tag_assignment_scope)
+                  AND ta.state = 'ACTIVE'
+                  AND ta.deleted_at IS NULL
+                  AND ta.target_id = :target_id
+                  AND t.deleted_at IS NULL
+                  AND t.state <> 'DELETED'
+                ORDER BY t.key
+                """
+            ),
+            {"scope": scope, "target_id": target_id},
+        )
+    ).all()
+    return [
+        UserTagView(
+            tag_id=str(tag_id),
+            key=str(key),
+            value=value,
+            color=color,
+            visibility=str(visibility),
+            current=True,
+            older=False,
+        )
+        for tag_id, key, value, color, visibility in rows
+    ]
+
+
 async def list_direct_version_tags(
     session,
     *,
