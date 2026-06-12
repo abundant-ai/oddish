@@ -210,6 +210,18 @@ def _parse_agent_messages(agent_log_path: Path) -> list[dict]:
                                 "text": str(c.get("content", ""))[:2000],
                             }
                         )
+                    elif c.get("type") == "text":
+                        # claude-code injects skill bodies (and other context) as
+                        # a user-turn text block, NOT a tool_result -- a Skill
+                        # call's tool_result is just "Launching skill: <slug>".
+                        # Capture it so the summarizer sees the skill actually
+                        # delivered its instructions instead of reporting "no
+                        # output".
+                        txt = str(c.get("text", "")).strip()
+                        if txt:
+                            agent_messages.append(
+                                {"kind": "injected_context", "text": txt[:2000]}
+                            )
             elif event.get("type") == "result":
                 agent_messages.append(
                     {
