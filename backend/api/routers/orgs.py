@@ -11,7 +11,9 @@ from api.schemas import (
     InviteUserRequest,
     InviteUserResponse,
     OrganizationResponse,
+    UpdateUserSettingsRequest,
     UserResponse,
+    UserSettingsResponse,
 )
 from auth import AuthContext, require_admin, require_auth
 from models import UserModel, UserRole
@@ -43,6 +45,59 @@ async def get_organization(
         plan=auth.org.plan,
         created_at=auth.org.created_at.isoformat(),
     )
+
+
+def _merge_user_settings(
+    existing: dict | None, *, default_run_probe: bool | None
+) -> dict:
+    """Return a NEW settings dict with the supplied fields applied.
+
+    A fresh dict (not in-place mutation) is required so SQLAlchemy flags the
+    JSONB column as dirty on assignment.
+    """
+    merged = dict(existing or {})
+    if default_run_probe is not None:
+        merged["default_run_probe"] = default_run_probe
+    return merged
+
+
+@router.get("/me/settings", response_model=UserSettingsResponse)
+async def get_my_settings(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> UserSettingsResponse:
+    """Get the current user's preferences."""
+    if not auth.user_id:
+        raise HTTPException(status_code=404, detail="No user in this context")
+    async with get_session() as session:
+        user = await session.get(UserModel, auth.user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        settings = user.settings or {}
+        return UserSettingsResponse(
+            default_run_probe=bool(settings.get("default_run_probe", False))
+        )
+
+
+@router.patch("/me/settings", response_model=UserSettingsResponse)
+async def update_my_settings(
+    request: UpdateUserSettingsRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> UserSettingsResponse:
+    """Update the current user's preferences (self-serve)."""
+    if not auth.user_id:
+        raise HTTPException(status_code=404, detail="No user in this context")
+    async with get_session() as session:
+        user = await session.get(UserModel, auth.user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        user.settings = _merge_user_settings(
+            user.settings, default_run_probe=request.default_run_probe
+        )
+        await session.commit()
+        settings = user.settings or {}
+        return UserSettingsResponse(
+            default_run_probe=bool(settings.get("default_run_probe", False))
+        )
 
 
 # =============================================================================

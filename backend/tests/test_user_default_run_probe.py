@@ -58,3 +58,31 @@ def test_missing_settings_is_noop():
     user = SimpleNamespace(settings=None)
     _apply_user_default_run_probe(sub, user)
     assert sub.run_probe is False
+
+
+from api.routers.orgs import _merge_user_settings
+
+
+def test_merge_sets_flag_on_empty():
+    assert _merge_user_settings(None, default_run_probe=True) == {
+        "default_run_probe": True
+    }
+
+
+def test_merge_preserves_other_keys():
+    merged = _merge_user_settings(
+        {"other": 1, "default_run_probe": False}, default_run_probe=True
+    )
+    assert merged == {"other": 1, "default_run_probe": True}
+
+
+def test_merge_returns_new_dict():
+    original = {"default_run_probe": False}
+    merged = _merge_user_settings(original, default_run_probe=True)
+    assert merged is not original  # fresh dict so SQLAlchemy detects the JSONB change
+
+
+def test_merge_none_value_is_noop():
+    assert _merge_user_settings({"default_run_probe": True}, default_run_probe=None) == {
+        "default_run_probe": True
+    }
