@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from oddish.worker.probe_analysis import run_probe_analyzer
+from oddish.worker.probe_analysis import _normalize_probe_summary, run_probe_analyzer
 
 
 def _fake_client() -> MagicMock:
@@ -96,3 +96,88 @@ async def test_probe_analyzer_routes_bedrock_model_through_direct_api():
     # the actual API call and for the model recorded on the summary.
     assert result["model"] == "claude-haiku-4-5"
     assert fake_client.messages.create.await_args.kwargs["model"] == "claude-haiku-4-5"
+
+
+# ---------------------------------------------------------------------------
+# _normalize_probe_summary — recommendations field
+# ---------------------------------------------------------------------------
+
+
+def _normalize(parsed: dict) -> dict:
+    return _normalize_probe_summary(parsed, result_focus="", model="m")
+
+
+def test_normalize_recommendations_passthrough():
+    out = _normalize(
+        {
+            "recommendations": [
+                {
+                    "priority": "must_fix",
+                    "action": "Compute results from source",
+                    "rationale": "A pre-written results.json passes outright",
+                },
+                {"priority": "optional", "action": "Remove /opt/reference"},
+            ]
+        }
+    )
+    assert out["recommendations"] == [
+        {
+            "priority": "must_fix",
+            "action": "Compute results from source",
+            "rationale": "A pre-written results.json passes outright",
+        },
+        {
+            "priority": "optional",
+            "action": "Remove /opt/reference",
+            "rationale": "",
+        },
+    ]
+
+
+def test_normalize_recommendations_bad_priority_coerced():
+    out = _normalize(
+        {"recommendations": [{"priority": "nope", "action": "do thing"}]}
+    )
+    assert out["recommendations"][0]["priority"] == "should_fix"
+
+
+def test_normalize_recommendations_drops_entries_without_action():
+    out = _normalize(
+        {
+            "recommendations": [
+                {"priority": "must_fix", "action": "   "},
+                {"priority": "must_fix"},
+                {"priority": "should_fix", "action": "keep me"},
+            ]
+        }
+    )
+    assert out["recommendations"] == [
+        {"priority": "should_fix", "action": "keep me", "rationale": ""}
+    ]
+
+
+def test_normalize_recommendations_missing_field_defaults_empty():
+    out = _normalize({"headline": "hi"})
+    assert out["recommendations"] == []
+
+
+@pytest.mark.asyncio
+async def test_probe_analyzer_prompt_requests_recommendations():
+    """The analyzer prompt must instruct the model to emit `recommendations`."""
+    fake_client = _fake_client()
+
+    with patch("anthropic.AsyncAnthropic", return_value=fake_client):
+        await run_probe_analyzer(
+            extra_instructions="find cheats",
+            agent_messages=[{"kind": "assistant_text", "text": "..."}],
+            verifier_stdout="",
+            reward=0.0,
+            result_focus="",
+            evaluation_metric="none",
+        )
+
+    sent = fake_client.messages.create.await_args.kwargs["messages"][0]["content"]
+    assert "recommendations" in sent
+    assert "must_fix" in sent
+    assert "should_fix" in sent
+    assert "optional" in sent
