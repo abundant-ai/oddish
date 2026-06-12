@@ -34,6 +34,7 @@ Invariants:
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import json
 import sys
@@ -50,23 +51,25 @@ SEED_EPOCH = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
 # 8 GB disk) dwarfs the app dataset, so the caps are sized for feature
 # realism, not capacity. Loading stays fast because rows upsert in
 # multi-row batches (see _UPSERT_BATCH), not row-by-row.
-SAMPLE_RECENT_EXPERIMENTS = 1000
-SAMPLE_RANDOM_EXPERIMENTS = 2000
+SAMPLE_RECENT_EXPERIMENTS = 2000
+SAMPLE_RANDOM_EXPERIMENTS = 4000
 # Per-user coverage: every distinct experiment owner contributes their K
 # most recent experiments, so per-user features (the dashboard "Mine"
 # filter) work in the preview for every member, exactly as in prod.
 SAMPLE_EXPERIMENTS_PER_OWNER = 5
 SAMPLE_EXTRA_TASKS = 3000
-SAMPLE_TRIALS_PER_EXPERIMENT = 50
+SAMPLE_TRIALS_PER_EXPERIMENT = 100
 SAMPLE_SKILLS = 200
 SAMPLE_DOCUMENTS = 200
 SAMPLE_PROBE_PRESETS = 100
 
-# Multi-row upsert batch size. ~55 columns x 400 rows stays well under
-# Postgres's 32767 bind-parameter limit while cutting network round trips
-# ~400x versus row-by-row -- the difference between seconds and tens of
-# minutes at six-figure row counts over the pooler.
-_UPSERT_BATCH = 400
+# Multi-row upsert batching. Rows per statement are computed per table from
+# the column count against Postgres's 32767 bind-parameter limit (with
+# headroom), and batches are written over _LOAD_STREAMS concurrent
+# connections -- together cutting load time ~1000x versus row-by-row over
+# the pooler at six-figure row counts.
+_MAX_BIND_PARAMS = 28000
+_LOAD_STREAMS = 6
 
 _TERMINAL_TASK_STATUSES = ("COMPLETED", "FAILED")
 _TERMINAL_TRIAL_STATUSES = ("SUCCESS", "FAILED")
@@ -416,6 +419,12 @@ async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
     a PREVIOUS run that are absent from the current draw are deleted (prod
     drift), tracked via ``_preview_seed_state`` so reviewer-created data is
     never touched. ``sampled=None`` leaves existing data alone entirely.
+
+    Loading is phased rather than one transaction: cleanup + drift reconcile
+    first, then each table's batches written over ``_LOAD_STREAMS`` parallel
+    connections (tables stay in FK topological order; rows within a table
+    commit per batch), then linkage + the state-table record last -- so an
+    interrupted run never marks rows as drawn, and the next run converges.
     """
     sample_rows = (sampled or {}).get("rows", {})
     md = MetaData()
@@ -431,54 +440,16 @@ async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
         await _cleanup_legacy_fixture_rows(md, conn, ordered)
         if sampled is None:
             return
-
-        # Imported users carry real unique identities (clerk_user_id,
-        # (org_id, email)). A JIT-provisioned reviewer row on a reused
-        # branch may already hold one of them under a different primary
-        # key; per-row savepoints below let that single import yield to
-        # the existing row instead of failing the run.
         await _reconcile_previous_draw(md, conn, sample_rows)
 
-        for table in ordered:
-            rows = sample_rows.get(table.name, [])
-            if not rows:
-                continue
-            pk_cols = [c.name for c in table.primary_key.columns]
-            prepared = [_prepare_row(table, row) for row in rows]
-            # Multi-row batches: one INSERT ... ON CONFLICT per _UPSERT_BATCH
-            # rows. A batch that trips a SECONDARY unique (PK conflicts are
-            # absorbed by the upsert) falls back to row-by-row savepoints so
-            # only the colliding row yields to the existing one.
-            for start in range(0, len(prepared), _UPSERT_BATCH):
-                chunk = prepared[start:start + _UPSERT_BATCH]
-                stmt = pg_insert(table).values(chunk)
-                set_ = {k: stmt.excluded[k] for k in chunk[0] if k not in pk_cols}
-                try:
-                    async with conn.begin_nested():
-                        await conn.execute(
-                            stmt.on_conflict_do_update(
-                                index_elements=pk_cols, set_=set_
-                            )
-                        )
-                    continue
-                except (IntegrityError, DBAPIError):
-                    pass
-                for values in chunk:
-                    stmt = pg_insert(table).values(**values)
-                    set_ = {k: stmt.excluded[k] for k in values if k not in pk_cols}
-                    try:
-                        async with conn.begin_nested():
-                            await conn.execute(
-                                stmt.on_conflict_do_update(
-                                    index_elements=pk_cols, set_=set_
-                                )
-                            )
-                    except (IntegrityError, DBAPIError) as exc:
-                        _warn(
-                            f"skipped {table.name} row {_row_key(table, values)} "
-                            f"({type(exc.orig or exc).__name__}); existing row wins"
-                        )
+    # Parents-first across tables; parallel batch streams within a table.
+    for table in ordered:
+        rows = sample_rows.get(table.name, [])
+        if not rows:
+            continue
+        await _load_table(engine, table, rows)
 
+    async with engine.begin() as conn:
         # Linkage pass: self/circular references deferred by the sampler.
         for table_name, row_id, column, value in (sampled or {}).get("linkage", []):
             table = md.tables[table_name]
@@ -503,6 +474,66 @@ async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
                     "t": name,
                     "rids": [_row_key(table, row) for row in sample_rows[name]],
                 },
+            )
+
+
+async def _load_table(engine: AsyncEngine, table, rows: list[dict]) -> None:
+    """Upsert one table's rows: dynamic multi-row batches fanned out over
+    ``_LOAD_STREAMS`` connections.
+
+    Imported users (and reviewer-created rows generally) carry unique
+    identities beyond the primary key; a batch tripping a SECONDARY unique
+    (PK conflicts are absorbed by the upsert) falls back to row-by-row
+    savepoints so only the colliding row yields to the existing one.
+    """
+    pk_cols = [c.name for c in table.primary_key.columns]
+    prepared = [_prepare_row(table, row) for row in rows]
+    batch_size = max(1, _MAX_BIND_PARAMS // max(1, len(table.columns)))
+    batches = [
+        prepared[start:start + batch_size]
+        for start in range(0, len(prepared), batch_size)
+    ]
+    queue: asyncio.Queue = asyncio.Queue()
+    for batch in batches:
+        queue.put_nowait(batch)
+
+    async def worker() -> None:
+        while True:
+            try:
+                chunk = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            async with engine.connect() as conn:
+                async with conn.begin():
+                    await _upsert_batch(conn, table, pk_cols, chunk)
+
+    workers = min(_LOAD_STREAMS, len(batches))
+    await asyncio.gather(*[worker() for _ in range(workers)])
+
+
+async def _upsert_batch(conn, table, pk_cols: list[str], chunk: list[dict]) -> None:
+    stmt = pg_insert(table).values(chunk)
+    set_ = {k: stmt.excluded[k] for k in chunk[0] if k not in pk_cols}
+    try:
+        async with conn.begin_nested():
+            await conn.execute(
+                stmt.on_conflict_do_update(index_elements=pk_cols, set_=set_)
+            )
+        return
+    except (IntegrityError, DBAPIError):
+        pass
+    for values in chunk:
+        stmt = pg_insert(table).values(**values)
+        set_ = {k: stmt.excluded[k] for k in values if k not in pk_cols}
+        try:
+            async with conn.begin_nested():
+                await conn.execute(
+                    stmt.on_conflict_do_update(index_elements=pk_cols, set_=set_)
+                )
+        except (IntegrityError, DBAPIError) as exc:
+            _warn(
+                f"skipped {table.name} row {_row_key(table, values)} "
+                f"({type(exc.orig or exc).__name__}); existing row wins"
             )
 
 
