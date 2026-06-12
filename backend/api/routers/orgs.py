@@ -15,6 +15,7 @@ from api.schemas import (
 )
 from auth import AuthContext, require_admin, require_auth
 from models import UserModel, UserRole
+from oddish.core.tag_ownership_transfer import transfer_tag_ownership_to_admin
 from oddish.db import get_session, utcnow
 
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
@@ -195,6 +196,9 @@ async def remove_user(
 
         user.is_active = False
         user.deleted_at = utcnow()
+        await transfer_tag_ownership_to_admin(
+            session, org_id=auth.org_id, deactivated_user_id=user_id
+        )
         await session.commit()
 
         return {"status": "removed", "user_id": user_id}

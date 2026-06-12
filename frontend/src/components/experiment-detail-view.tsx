@@ -21,6 +21,7 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
+import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
 import { prBadge, prNumberFromUrl, taskPrUrl, encodeExperimentRouteParam } from "@/lib/utils";
@@ -29,7 +30,12 @@ import {
   EMPTY_TRIAL_AGGREGATE,
   accumulateTrial,
 } from "@/lib/trial-aggregation";
-import type { Task, Trial, ExperimentProbeRow } from "@/lib/types";
+import type {
+  Task,
+  Trial,
+  ExperimentProbeRow,
+  UserTagRef,
+} from "@/lib/types";
 import { ExternalLink, GitPullRequest, Loader2 } from "lucide-react";
 import {
   buildExperimentAgentSummaries,
@@ -725,6 +731,17 @@ export function ExperimentDetailView({
   onRerun,
 }: ExperimentDetailViewProps) {
   const searchParams = useSearchParams();
+  // The experiment's own direct tags (the header editor chips); fetched
+  // separately because no experiment payload carries them.
+  const { data: experimentTags, mutate: mutateExperimentTags } = useSWR<
+    UserTagRef[]
+  >(
+    experimentId
+      ? `/api/tags/for-target?scope=EXPERIMENT&target_id=${encodeURIComponent(experimentId)}`
+      : null,
+    fetcher,
+    { revalidateOnFocus: false },
+  );
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
   const [showPassAtK, setShowPassAtK] = useState(readOnly);
   const [showTask, setShowTask] = useState<boolean>(() => {
@@ -1046,7 +1063,18 @@ export function ExperimentDetailView({
            */}
           <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
             <div className="flex min-w-0 flex-1 flex-col gap-1">
-              <div className="min-w-0">{headerLeft}</div>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                {headerLeft}
+                {experimentId && (
+                  <TagEditor
+                    scope="EXPERIMENT"
+                    targetId={experimentId}
+                    initialTags={experimentTags ?? []}
+                    experimentMode="living"
+                    onMutate={() => void mutateExperimentTags()}
+                  />
+                )}
+              </div>
               <ExperimentMetaStrip
                 tasks={tasksForExperiment}
                 isInitialLoading={isInitialLoading}

@@ -8,13 +8,14 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from oddish.core.tags_core import assign_tag_core
 from oddish.core.zip_imports import (
     import_zip,
     inspect_zip,
     summarize_response,
 )
 from auth import APIKeyScope, AuthContext, require_auth
-from oddish.db import Priority
+from oddish.db import Priority, get_session
 
 router = APIRouter(tags=["Imports"])
 
@@ -58,6 +59,7 @@ async def import_zip_endpoint(
     message: Annotated[str | None, Form()] = None,
     skip_artifacts: Annotated[bool, Form()] = False,
     priority: Annotated[str | None, Form()] = None,
+    tags: Annotated[str | None, Form()] = None,
 ) -> dict:
     """Import a Harbor task and/or run zip in one shot.
 
@@ -118,6 +120,22 @@ async def import_zip_endpoint(
             user_name=None,
             priority=priority_enum,
         )
+
+        tag_ids = [t.strip() for t in (tags or "").split(",") if t.strip()]
+        if tag_ids and result.task is not None:
+            new_task_id = result.task.task_id
+            async with get_session() as session:
+                for tag_id in tag_ids:
+                    await assign_tag_core(
+                        session,
+                        tag_id=tag_id,
+                        scope="TASK",
+                        target_id=new_task_id,
+                        task_id=new_task_id,
+                        org_id=auth.org_id,
+                        actor_user_id=auth.user_id,
+                    )
+                await session.commit()
 
         return summarize_response(result)
     finally:

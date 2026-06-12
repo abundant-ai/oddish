@@ -372,3 +372,28 @@ def test_all_three_handlers_register_against_builtin_registry():
     assert WorkerJobKind.TRIAL in HANDLERS
     assert WorkerJobKind.ANALYSIS in HANDLERS
     assert WorkerJobKind.VERDICT in HANDLERS
+
+
+def test_tag_project_handler_is_registered(monkeypatch):
+    from oddish.workers.jobs import (
+        ensure_builtin_handlers_registered,
+        get_handler,
+    )
+    from oddish.db import WorkerJobKind
+
+    ensure_builtin_handlers_registered()
+    handler = get_handler(WorkerJobKind.TAG_PROJECT)
+    assert handler.kind == WorkerJobKind.TAG_PROJECT
+
+
+def test_tag_project_handler_validate_payload_requires_scope_and_target():
+    from oddish.workers.jobs.handlers import TagProjectJobHandler
+
+    h = TagProjectJobHandler()
+    h.validate_payload({"scope": "TASK", "target_id": "t-1", "mode": "direct"})
+    import pytest
+
+    with pytest.raises(ValueError):
+        h.validate_payload({"mode": "direct"})
+    with pytest.raises(ValueError):
+        h.validate_payload({"scope": "TASK", "target_id": ""})

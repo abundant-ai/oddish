@@ -236,8 +236,38 @@ class TaskExpandJobHandler:
         return JobOutcome.ok(summary if isinstance(summary, dict) else None)
 
 
+class TagProjectJobHandler:
+    """Adapter for the ``TAG_PROJECT`` kind.
+
+    Recompute-from-truth: the handler returns SUCCESS as long as the
+    underlying ``run_tag_project_job`` call completes; any raised
+    exception becomes a retryable failure (the operation is idempotent).
+    """
+
+    kind = WorkerJobKind.TAG_PROJECT
+
+    def default_queue_key(self, job: WorkerJobLike) -> str:
+        return job.queue_key or "tag-project"
+
+    def validate_payload(self, payload: dict) -> dict:
+        payload = dict(payload or {})
+        if not payload.get("scope"):
+            raise ValueError("TAG_PROJECT payload missing scope")
+        if not payload.get("target_id"):
+            raise ValueError("TAG_PROJECT payload missing target_id")
+        payload.setdefault("mode", "direct")
+        return payload
+
+    async def run(self, job: WorkerJobLike) -> JobOutcome:
+        from oddish.workers.queue.tag_project_handler import run_tag_project_job
+
+        summary = await run_tag_project_job(payload=job.payload or {})
+        return JobOutcome.ok(summary if isinstance(summary, dict) else None)
+
+
 __all__ = [
     "AnalysisJobHandler",
+    "TagProjectJobHandler",
     "TaskExpandJobHandler",
     "TrialJobHandler",
     "VerdictJobHandler",
