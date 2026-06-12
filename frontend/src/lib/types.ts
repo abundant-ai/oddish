@@ -184,6 +184,7 @@ export interface Task {
   experiment_name: string;
   experiment_is_public: boolean;
   experiment_created_at?: string | null;
+  experiments?: { id: string; name: string }[];
   total: number;
   completed: number;
   failed: number;

@@ -135,6 +135,10 @@ async def get_task_status_counts(
             ExperimentModel.id == task_experiments.c.experiment_id,
         )
         query = query.where(task_experiments.c.deleted_at.is_(None))
+        # A task can belong to several matching experiments; without
+        # DISTINCT the join yields one row per membership and
+        # scalar_one_or_none() raises MultipleResultsFound.
+        query = query.distinct()
     for clause in filters:
         query = query.where(clause)
 
