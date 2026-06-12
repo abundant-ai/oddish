@@ -141,7 +141,7 @@ class UserModel(TimestampedMixin, Base):
     # Per-user preferences blob (e.g. {"default_run_probe": true}). Mirrors
     # OrganizationModel.settings. Reassign a new dict on write so SQLAlchemy
     # detects the JSONB mutation.
-    settings: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
+    settings: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}", nullable=False)
 
     # Status
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
