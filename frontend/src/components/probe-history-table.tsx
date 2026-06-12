@@ -39,7 +39,10 @@ type Trial = {
 function pluralize(noun: string): string {
   const n = noun.trim();
   if (!n) return "";
-  if (/[sxz]$|[cs]h$/.test(n)) return n + "es";
+  // Operator-supplied units are often already plural ("issues", "results").
+  // Treat a trailing "s" as already plural so we don't produce "issueses".
+  if (/s$/.test(n)) return n;
+  if (/[xz]$|[cs]h$/.test(n)) return n + "es";
   if (/[^aeiou]y$/.test(n)) return n.slice(0, -1) + "ies";
   return n + "s";
 }
