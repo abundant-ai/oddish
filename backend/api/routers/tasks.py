@@ -139,6 +139,12 @@ def _apply_user_default_run_probe(
 
     Enables run_probe but never disables a per-submission True — mirrors the
     flip-only semantics in create_task_sweep_core.
+
+    Scope: the preference is per-user. It applies to dashboard (Clerk) users and
+    personal API keys (resolved to their creator via _resolve_actor_user), but
+    NOT to service/org-shared API keys with no created_by_user_id — those resolve
+    to None and silently keep the per-submission value. The toggle is set
+    dashboard-only (PATCH /me/settings is Clerk-gated).
     """
     if user is None:
         return
