@@ -42,6 +42,8 @@ import type {
   QueueStats,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
+import { parseTaskSearch } from "@/lib/tag-query";
+import { TagChip } from "@/components/tag-chip";
 import {
   cn,
   encodeExperimentRouteParam,
@@ -160,10 +162,16 @@ function useDashboardExperiments(
   experimentsAuthor: string,
   fallbackData?: DashboardResponse | null,
 ) {
+  // tag:/-tag:/OR/NOT tokens filter server-side; remaining text keeps the
+  // name/id/author search semantics (same grammar as the /tasks page).
+  const parsedQuery = parseTaskSearch(experimentsQuery);
   const swrKey = buildDashboardApiPath({
     experiments_limit: experimentsLimit,
     experiments_offset: experimentsOffset,
-    experiments_query: experimentsQuery,
+    experiments_query: parsedQuery.text,
+    experiments_tags: parsedQuery.all.join(","),
+    experiments_tags_any: parsedQuery.any.join(","),
+    experiments_tags_none: parsedQuery.none.join(","),
     experiments_status: experimentsStatus,
     experiments_author: experimentsAuthor,
     include_tasks: false,
@@ -1348,7 +1356,7 @@ function RecentTasksCard({
           <Input
             value={searchQuery}
             onChange={(event) => onSearchQueryChange(event.target.value)}
-            placeholder="Search"
+            placeholder="Search · tag:x OR tag:y NOT tag:z"
             className="h-8 w-full border-[#6f88b4]/20 sm:w-[220px]"
           />
           <DropdownMenu modal={false}>
@@ -1462,6 +1470,13 @@ function RecentTasksCard({
                                 />
                               )}
                             </div>
+                            {(experiment.user_tags?.length ?? 0) > 0 && (
+                              <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                                {experiment.user_tags!.map((t) => (
+                                  <TagChip key={t.tag_id} tag={t} />
+                                ))}
+                              </div>
+                            )}
                           </TableCell>
                           <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                             <span className="text-foreground/80">

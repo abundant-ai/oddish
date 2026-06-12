@@ -16,6 +16,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ImportDialog } from "@/components/import-dialog";
+import { SavedFiltersMenu } from "@/components/saved-filters-menu";
 import { TagChip } from "@/components/tag-chip";
 import { fetcher } from "@/lib/api";
 import { parseTaskSearch } from "@/lib/tag-query";
@@ -452,6 +453,10 @@ export function TasksPageClient({
                 onChange={(event) => setSearchQuery(event.target.value)}
                 placeholder="Search · tag:x OR tag:y NOT tag:z"
                 className="h-8 w-full border-[#6f88b4]/20 sm:w-[260px]"
+              />
+              <SavedFiltersMenu
+                query={searchQuery}
+                onApply={(text) => setSearchQuery(text)}
               />
               <ImportDialog onImported={() => mutate()} />
             </div>

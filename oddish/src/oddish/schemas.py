@@ -905,6 +905,13 @@ class TaskStatusResponse(BaseModel):
     experiment_name: str
     experiment_is_public: bool = False
     experiment_created_at: datetime | None = None
+    experiments: list[TaskBrowseExperiment] = Field(
+        default_factory=list,
+        description=(
+            "All live experiments this task belongs to. The singular "
+            "experiment_* fields keep the primary one for compatibility."
+        ),
+    )
     current_version: int | None = None
     current_version_id: str | None = None
     total: int

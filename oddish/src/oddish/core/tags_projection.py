@@ -273,6 +273,55 @@ async def list_direct_target_tags(
     ]
 
 
+async def list_direct_tags_for_targets(
+    session,
+    *,
+    scope: str,
+    target_ids: list[str],
+) -> dict[str, list[UserTagView]]:
+    """Batch variant of ``list_direct_target_tags`` for list surfaces (e.g.
+    dashboard experiment rows). Returns target_id -> views; targets with no
+    tags are absent. Merged tags follow ``merged_into_id``; DELETED dropped.
+    """
+    if not target_ids:
+        return {}
+    rows = (
+        await session.execute(
+            text(
+                """
+                SELECT DISTINCT ta.target_id,
+                       t.id AS tag_id, t.key, t.value, t.color, t.visibility
+                FROM tag_assignments ta
+                JOIN tags t0 ON t0.id = ta.tag_id
+                JOIN tags t ON t.id = COALESCE(t0.merged_into_id, t0.id)
+                WHERE ta.scope = CAST(:scope AS tag_assignment_scope)
+                  AND ta.state = 'ACTIVE'
+                  AND ta.deleted_at IS NULL
+                  AND ta.target_id = ANY(:target_ids)
+                  AND t.deleted_at IS NULL
+                  AND t.state <> 'DELETED'
+                ORDER BY ta.target_id, t.key
+                """
+            ),
+            {"scope": scope, "target_ids": list(target_ids)},
+        )
+    ).all()
+    out: dict[str, list[UserTagView]] = {}
+    for target_id, tag_id, key, value, color, visibility in rows:
+        out.setdefault(str(target_id), []).append(
+            UserTagView(
+                tag_id=str(tag_id),
+                key=str(key),
+                value=value,
+                color=color,
+                visibility=str(visibility),
+                current=True,
+                older=False,
+            )
+        )
+    return out
+
+
 async def list_direct_version_tags(
     session,
     *,

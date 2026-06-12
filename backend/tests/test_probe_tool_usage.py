@@ -100,6 +100,70 @@ def test_parse_tags_skill_and_mcp_and_builtin(tmp_path):
     assert "mcp_server" not in tool_uses[2]
 
 
+def test_parse_captures_skill_body_injected_as_user_text(tmp_path):
+    # claude-code delivers a skill's body as a user-turn *text* block; the
+    # Skill call's tool_result is just "Launching skill: <slug>". The parser
+    # must surface that text (as ``injected_context``) so the summarizer sees
+    # the skill actually delivered instructions, not "received no output".
+    log = _write_log(
+        tmp_path,
+        [
+            _assistant_tool_use("Skill", {"skill": "harbor-task-audit"}),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "content": "Launching skill: harbor-task-audit",
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Base directory for this skill: /x\n# Harbor Task Audit",
+                            }
+                        ]
+                    },
+                }
+            ),
+        ],
+    )
+    messages = _parse_agent_messages(log)
+
+    injected = [m for m in messages if m["kind"] == "injected_context"]
+    assert len(injected) == 1
+    assert "Harbor Task Audit" in injected[0]["text"]
+    # The launcher stub is still kept as a tool_result.
+    assert any(
+        m["kind"] == "tool_result" and "Launching skill" in m["text"]
+        for m in messages
+    )
+
+
+def test_parse_skips_empty_user_text_blocks(tmp_path):
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"content": [{"type": "text", "text": "   "}]},
+                }
+            ),
+        ],
+    )
+    assert _parse_agent_messages(log) == []
+
+
 # --------------------------------------------------------------------------
 # _summarize_tool_usage aggregation
 # --------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.digest import generate_digest
 from oddish.core.extraction import extract_text
+from oddish.core.helpers import escape_like
 from oddish.db import DocumentModel, get_storage_client, utcnow
 from oddish.schemas import DocumentCreate, DocumentUpdate
 
@@ -118,9 +119,9 @@ async def search_documents_core(
     stmt = select(DocumentModel).where(DocumentModel.org_id == org_id)
     q = (query or "").strip()
     if q:
-        like = f"%{q}%"
-        title_hit = DocumentModel.title.ilike(like)
-        stmt = stmt.where(or_(title_hit, DocumentModel.digest_text.ilike(like)))
+        like = f"%{escape_like(q)}%"
+        title_hit = DocumentModel.title.ilike(like, escape="\\")
+        stmt = stmt.where(or_(title_hit, DocumentModel.digest_text.ilike(like, escape="\\")))
         rank = case((title_hit, 0), else_=1)
         stmt = stmt.order_by(rank, DocumentModel.updated_at.desc())
     else:

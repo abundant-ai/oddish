@@ -13,6 +13,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from oddish.core.tag_permissions import (
@@ -21,6 +22,7 @@ from oddish.core.tag_permissions import (
     can_use_apply,
     is_org_admin,
 )
+from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.tag_policies_core import (
     TagCapExceededError,
     assert_under_tag_cap,
@@ -345,6 +347,9 @@ async def update_tag(
             _handle_known_errors(exc)
             raise
         await session.commit()
+        # Dashboard payloads now carry tag chips/filters; bust the slice cache
+        # like trials/tasks mutations do.
+        invalidate_dashboard_cache(org_id=auth.org_id)
         tag = await _load_tag(session, tag_id, auth.org_id)
     return TagListItem(
         id=tag["id"],
@@ -384,6 +389,7 @@ async def delete_tag(
             _handle_known_errors(exc)
             raise
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
     return {"deleted": True}
 
 
@@ -412,6 +418,7 @@ async def archive_tag(
             _handle_known_errors(exc)
             raise
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
     return {"archived": True}
 
 
@@ -445,6 +452,7 @@ async def merge_tag(
             _handle_known_errors(exc)
             raise
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
     return {"merged_into": payload.target_tag_id}
 
 
@@ -474,6 +482,7 @@ async def set_visibility(
             _handle_known_errors(exc)
             raise
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
     return {"visibility": payload.visibility}
 
 
@@ -521,6 +530,7 @@ async def assign_tag(
                 actor_user_id=auth.user_id,
             )
             await session.commit()
+            invalidate_dashboard_cache(org_id=auth.org_id)
             return TagAssignResponse(
                 tag_id=payload.tag_id,
                 mode=result.get("mode"),
@@ -536,6 +546,7 @@ async def assign_tag(
             actor_user_id=auth.user_id,
         )
         await session.commit()
+        invalidate_dashboard_cache(org_id=auth.org_id)
         return TagAssignResponse(tag_id=payload.tag_id, assignment_id=assignment_id)
 
 
@@ -571,6 +582,7 @@ async def unassign_tag(
                 actor_user_id=auth.user_id,
             )
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
     return {"unassigned": True}
 
 
@@ -605,6 +617,7 @@ async def exclude_tag(
             actor_user_id=auth.user_id,
         )
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
     return {"excluded": True}
 
 
@@ -639,6 +652,7 @@ async def unexclude_tag(
             actor_user_id=auth.user_id,
         )
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
     return {"unexcluded": True}
 
 
@@ -867,16 +881,28 @@ async def create_filter(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> SavedTagFilterItem:
     auth.require_scope(APIKeyScope.TASKS)
-    async with get_session() as session:
-        new_id = await create_saved_tag_filter_core(
-            session,
-            org_id=auth.org_id or "",
-            owner_user_id=auth.user_id or "",
-            name=payload.name,
-            filter_ast=payload.filter_ast,
-            visibility=payload.visibility,
+    if payload.visibility not in ("PRIVATE", "ORG"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid visibility: {payload.visibility!r}",
         )
-        await session.commit()
+    async with get_session() as session:
+        try:
+            new_id = await create_saved_tag_filter_core(
+                session,
+                org_id=auth.org_id or "",
+                owner_user_id=auth.user_id or "",
+                name=payload.name,
+                filter_ast=payload.filter_ast,
+                visibility=payload.visibility,
+            )
+            await session.commit()
+        except IntegrityError as exc:
+            # uq_saved_tag_filters_owner_name: one name per owner.
+            raise HTTPException(
+                status_code=409,
+                detail=f"a saved filter named {payload.name!r} already exists",
+            ) from exc
     return SavedTagFilterItem(
         id=new_id,
         name=payload.name,
@@ -886,23 +912,49 @@ async def create_filter(
     )
 
 
+async def _update_filter(
+    filter_id: str,
+    payload: SavedTagFilterUpdateRequest,
+    auth: AuthContext,
+) -> dict:
+    auth.require_scope(APIKeyScope.TASKS)
+    if payload.visibility is not None and payload.visibility not in (
+        "PRIVATE",
+        "ORG",
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid visibility: {payload.visibility!r}",
+        )
+    async with get_session() as session:
+        try:
+            await update_saved_tag_filter_core(
+                session,
+                filter_id=filter_id,
+                actor_user_id=auth.user_id or "",
+                org_id=auth.org_id,
+                updates={
+                    k: v
+                    for k, v in payload.model_dump(exclude_none=True).items()
+                },
+            )
+            await session.commit()
+        except IntegrityError as exc:
+            # uq_saved_tag_filters_owner_name: one name per owner.
+            raise HTTPException(
+                status_code=409,
+                detail=f"a saved filter named {payload.name!r} already exists",
+            ) from exc
+    return {"updated": True}
+
+
 @router.put("/tag-filters/{filter_id}")
 async def put_filter(
     filter_id: Annotated[str, Path(...)],
     payload: SavedTagFilterUpdateRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    auth.require_scope(APIKeyScope.TASKS)
-    async with get_session() as session:
-        await update_saved_tag_filter_core(
-            session,
-            filter_id=filter_id,
-            actor_user_id=auth.user_id or "",
-            org_id=auth.org_id,
-            updates={k: v for k, v in payload.model_dump(exclude_none=True).items()},
-        )
-        await session.commit()
-    return {"updated": True}
+    return await _update_filter(filter_id, payload, auth)
 
 
 @router.patch("/tag-filters/{filter_id}")
@@ -911,17 +963,7 @@ async def patch_filter(
     payload: SavedTagFilterUpdateRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    auth.require_scope(APIKeyScope.TASKS)
-    async with get_session() as session:
-        await update_saved_tag_filter_core(
-            session,
-            filter_id=filter_id,
-            actor_user_id=auth.user_id or "",
-            org_id=auth.org_id,
-            updates={k: v for k, v in payload.model_dump(exclude_none=True).items()},
-        )
-        await session.commit()
-    return {"updated": True}
+    return await _update_filter(filter_id, payload, auth)
 
 
 @router.delete("/tag-filters/{filter_id}")
