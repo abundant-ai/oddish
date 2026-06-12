@@ -72,6 +72,28 @@ async def _emit_tag_event(
     )
 
 
+async def _resolve_projection_task_id(
+    session, *, scope: str, target_id: str, task_id: str | None
+) -> str | None:
+    """Derive the owning task id when the caller omitted it.
+
+    Projection invalidation (sync browse recompute + TAG_PROJECT enqueue) is
+    keyed on ``task_id``; the API allows omitting it, and without this
+    derivation a VERSION/TASK write would leave ``tasks.effective_tag_ids``
+    stale until the hourly reconciler.
+    """
+    if task_id:
+        return task_id
+    if scope == "TASK":
+        return target_id
+    if scope == "VERSION":
+        return await session.scalar(
+            text("SELECT task_id FROM task_versions WHERE id = :version_id"),
+            {"version_id": target_id},
+        )
+    return None
+
+
 async def assign_tag_core(
     session,
     *,
@@ -89,6 +111,9 @@ async def assign_tag_core(
 
     Returns the assignment id (existing if already present, else new).
     """
+    task_id = await _resolve_projection_task_id(
+        session, scope=scope, target_id=target_id, task_id=task_id
+    )
     new_id = str(uuid.uuid4())[:16]
     rows = (
         await session.execute(
@@ -202,6 +227,9 @@ async def unassign_tag_core(
     materialized child via ``source_experiment_id`` when the experiment
     tag is later unassigned).
     """
+    task_id = await _resolve_projection_task_id(
+        session, scope=scope, target_id=target_id, task_id=task_id
+    )
     result = await session.execute(
         text(
             """

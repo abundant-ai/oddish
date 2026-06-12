@@ -424,6 +424,10 @@ async def merge_tag(
     auth.require_scope(APIKeyScope.TASKS)
     async with get_session() as session:
         tag = await _load_tag(session, tag_id, auth.org_id)
+        # The merge TARGET must be org-scoped too — merge_tag_core selects by
+        # id only, and reads follow merged_into_id without an org predicate,
+        # so a foreign target would leak another org's tag into this one.
+        await _load_tag(session, payload.target_tag_id, auth.org_id)
         if not await can_definition_capability(
             session, auth, tag=tag, capability="MERGE"
         ):
@@ -1005,53 +1009,3 @@ async def list_experiment_tags(
     )
 
 
-@router.post("/experiments/{experiment_id}/tags", response_model=TagAssignResponse)
-async def add_experiment_tag(
-    experiment_id: Annotated[str, Path(...)],
-    payload: TagAssignRequest,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> TagAssignResponse:
-    auth.require_scope(APIKeyScope.TASKS)
-    async with get_session() as session:
-        tag = await _load_tag(session, payload.tag_id, auth.org_id)
-        policy = await get_or_create_tag_policy(session, org_id=auth.org_id or "")
-        reserved = is_reserved_prefix(
-            tag.get("normalized_key", ""),
-            reserved_prefixes=list(policy.get("reserved_prefixes", []) or []),
-        )
-        if not can_use_apply(auth, target_org_id=auth.org_id, reserved=reserved):
-            raise HTTPException(status_code=403, detail="not allowed to apply tags")
-        mode = payload.mode or "MATERIALIZED"
-        result = await apply_experiment_tag_core(
-            session,
-            tag_id=payload.tag_id,
-            experiment_id=experiment_id,
-            mode=mode,
-            org_id=auth.org_id,
-            actor_user_id=auth.user_id,
-        )
-        await session.commit()
-    return TagAssignResponse(
-        tag_id=payload.tag_id,
-        mode=result.get("mode"),
-        materialized=result.get("materialized"),
-    )
-
-
-@router.delete("/experiments/{experiment_id}/tags")
-async def remove_experiment_tag(
-    experiment_id: Annotated[str, Path(...)],
-    payload: TagUnassignRequest,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> dict:
-    auth.require_scope(APIKeyScope.TASKS)
-    async with get_session() as session:
-        await remove_experiment_tag_core(
-            session,
-            tag_id=payload.tag_id,
-            experiment_id=experiment_id,
-            org_id=auth.org_id,
-            actor_user_id=auth.user_id,
-        )
-        await session.commit()
-    return {"removed": True}
