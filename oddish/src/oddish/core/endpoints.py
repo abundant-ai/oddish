@@ -181,6 +181,12 @@ async def list_tasks_core(
                 # async greenlet and fails with MissingGreenlet (same
                 # reason ``origin`` / ``superseded_by_trial_id`` are here).
                 TrialModel.harbor_config,
+                # Read both by the compact builder (``build_compact_trial_response``)
+                # and the experiment-scoped trial filter below. Must be loaded
+                # eagerly; otherwise accessing it triggers a lazy-load on this
+                # column outside the async greenlet and fails with MissingGreenlet
+                # (same reason ``origin`` / ``harbor_config`` are here).
+                TrialModel.is_probe,
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
