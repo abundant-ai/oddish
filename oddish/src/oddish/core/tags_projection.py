@@ -289,7 +289,7 @@ async def list_direct_tags_for_targets(
         await session.execute(
             text(
                 """
-                SELECT ta.target_id,
+                SELECT DISTINCT ta.target_id,
                        t.id AS tag_id, t.key, t.value, t.color, t.visibility
                 FROM tag_assignments ta
                 JOIN tags t0 ON t0.id = ta.tag_id

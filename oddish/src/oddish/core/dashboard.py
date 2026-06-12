@@ -703,9 +703,9 @@ async def load_dashboard_experiments(
     if author_filter is not None:
         page_query = page_query.where(author_filter)
     tag_ast = TagFilterAST(
-        all=[t for t in (experiments_tags or "").split(",") if t.strip()],
-        any_=[t for t in (experiments_tags_any or "").split(",") if t.strip()],
-        none=[t for t in (experiments_tags_none or "").split(",") if t.strip()],
+        all=[t.strip() for t in (experiments_tags or "").split(",") if t.strip()],
+        any_=[t.strip() for t in (experiments_tags_any or "").split(",") if t.strip()],
+        none=[t.strip() for t in (experiments_tags_none or "").split(",") if t.strip()],
     )
     if not tag_ast.is_empty():
         resolved, unknown = await resolve_names_to_ids(

@@ -66,6 +66,10 @@ export function TagAdminPolicyForm() {
   };
 
   async function save() {
+    if (value.max_tags_per_entity < 1 || value.name_max_len < 1) {
+      setError("Limits must be at least 1.");
+      return;
+    }
     setSaving(true);
     setError(null);
     const res = await fetch("/api/tag-policy", {
