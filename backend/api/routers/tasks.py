@@ -132,6 +132,21 @@ def _apply_github_attribution(submission: TaskSweepSubmission) -> None:
         submission.tags.setdefault("github_username", submission.github_username)
 
 
+def _apply_user_default_run_probe(
+    submission: TaskSweepSubmission, user: UserModel | None
+) -> None:
+    """OR-in run_probe when the submitting user opted into default probes.
+
+    Enables run_probe but never disables a per-submission True — mirrors the
+    flip-only semantics in create_task_sweep_core.
+    """
+    if user is None:
+        return
+    settings = getattr(user, "settings", None) or {}
+    if settings.get("default_run_probe") and not submission.run_probe:
+        submission.run_probe = True
+
+
 async def _resolve_actor_user(
     session: AsyncSession,
     auth: AuthContext,
@@ -399,6 +414,9 @@ async def create_task_sweep(
     async with get_session() as session:
         await _resolve_submission_identity(session, submission, auth)
         _apply_github_attribution(submission)
+
+        actor = await _resolve_actor_user(session, auth)
+        _apply_user_default_run_probe(submission, actor)
 
         task, new_trials, is_append, experiment = await create_task_sweep_core(
             session,
