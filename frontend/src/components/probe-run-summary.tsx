@@ -9,6 +9,18 @@ import {
   pluralize,
 } from "@/lib/probe-summary";
 
+const PRIORITY_ORDER: Record<string, number> = {
+  must_fix: 0,
+  should_fix: 1,
+  optional: 2,
+};
+
+const PRIORITY_META: Record<string, { label: string; cls: string }> = {
+  must_fix: { label: "Must fix", cls: "bg-red-500/15 text-red-600" },
+  should_fix: { label: "Should fix", cls: "bg-amber-500/15 text-amber-700" },
+  optional: { label: "Optional", cls: "bg-slate-500/15 text-slate-600" },
+};
+
 // The single probe-summary rendering, shared by the probe-run detail page and
 // the task-drawer probe card so both show exactly the same summary. `action`
 // renders on the right of the header (e.g. the drawer's "View full probe run"
@@ -57,6 +69,14 @@ export function ProbeRunSummary({
   const { succeeded, blocked, investigation, cheatTotal } = tallyAttempts(
     summary.attempts,
   );
+  const hasRecsField = Array.isArray(summary.recommendations);
+  const recs = hasRecsField
+    ? [...(summary.recommendations ?? [])].sort(
+        (a, b) =>
+          (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9),
+      )
+    : [];
+  const mustFixCount = recs.filter((r) => r.priority === "must_fix").length;
   const metricLabel =
     metric === "ratio"
       ? "ratio metric"
@@ -119,6 +139,50 @@ export function ProbeRunSummary({
       ) : null}
       {summary.summary ? (
         <p className="text-sm leading-relaxed">{summary.summary}</p>
+      ) : null}
+
+      {hasRecsField ? (
+        <div className="rounded border bg-muted/20 p-3">
+          <div className="mb-2 flex items-center gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-foreground">
+              Action items
+            </p>
+            {mustFixCount > 0 ? (
+              <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-red-600">
+                {mustFixCount} must-fix
+              </span>
+            ) : null}
+          </div>
+          {recs.length > 0 ? (
+            <ul className="space-y-2">
+              {recs.map((r, i) => {
+                const meta = PRIORITY_META[r.priority] ?? PRIORITY_META.should_fix;
+                return (
+                  <li key={i} className="flex items-start gap-2 text-sm">
+                    <span
+                      className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${meta.cls}`}
+                    >
+                      {meta.label}
+                    </span>
+                    <span className="leading-snug">
+                      <span className="font-medium">{r.action}</span>
+                      {r.rationale ? (
+                        <span className="text-muted-foreground">
+                          {" "}
+                          — {r.rationale}
+                        </span>
+                      ) : null}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="text-sm text-emerald-700">
+              No fixes needed — task held up to probing.
+            </p>
+          )}
+        </div>
       ) : null}
 
       {summary.key_actions && summary.key_actions.length > 0 ? (
