@@ -44,14 +44,18 @@ interface PassAtKGraphProps {
 type TooltipValue = number | string | ReadonlyArray<number | string>;
 type TooltipName = number | string;
 
+// Cap the pass@k curve so the x-axis stays readable even when an agent has
+// many attempts per task.
+const PASS_AT_K_CAP = 10;
+
 function buildAgentStats(
   tasks: Task[],
-  agentSummaries: AgentSummary[]
+  agentSummaries: AgentSummary[],
 ): { agentStats: Record<string, AgentPassAtKStats>; maxN: number } {
   const modelScopedAgents = new Set(
     agentSummaries
       .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent)
+      .map((summary) => summary.agent),
   );
 
   let maxN = 1;
@@ -101,7 +105,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   const [chartSize, setChartSize] = useState({ width: 0, height: 0 });
   const visibleAgentSummaries = useMemo(
     () => agentSummaries.filter((summary) => !hiddenAgents.has(summary.key)),
-    [agentSummaries, hiddenAgents]
+    [agentSummaries, hiddenAgents],
   );
 
   useEffect(() => {
@@ -125,7 +129,9 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   const { data, maxK, hasMultipleAttempts, agentColorByKey, agentLabelByKey } =
     useMemo(() => {
       const { agentStats, maxN } = buildAgentStats(tasks, agentSummaries);
-      const curveData = maxN > 1 ? calculatePassAtKCurve(agentStats, maxN) : [];
+      const curveMaxK = Math.min(maxN, PASS_AT_K_CAP);
+      const curveData =
+        maxN > 1 ? calculatePassAtKCurve(agentStats, curveMaxK) : [];
 
       const colorMap: Record<string, string> = {};
       const labelMap: Record<string, string> = {};
@@ -223,7 +229,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
         </div>
       );
     },
-    [agentColorByKey, agentLabelByKey, hoverAgent]
+    [agentColorByKey, agentLabelByKey, hoverAgent],
   );
 
   if (!hasMultipleAttempts) {
