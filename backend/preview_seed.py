@@ -39,7 +39,7 @@ import datetime as _dt
 import json
 import sys
 
-from sqlalchemy import JSON, MetaData, delete, text
+from sqlalchemy import JSON, MetaData, delete, text, tuple_
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -85,6 +85,15 @@ _RECONCILED_TABLES = (
 # FK edges to ignore when topologically sorting reflected tables; the
 # linkage pass patches these columns after both endpoints exist.
 _BACKEDGES = {("tasks", "current_version_id")}
+
+# Columns owned by the linkage pass (sampled rows carry NULL for them, the
+# real pointer is applied afterwards). They are inserted for NEW rows but
+# excluded from merge updates/comparison -- otherwise every re-push would
+# see NULL != linked-value, rewrite the row, and re-link it.
+_LINKAGE_COLUMNS = {
+    "tasks": {"current_version_id"},
+    "trials": {"superseded_by_trial_id"},
+}
 
 # Bookkeeping table recording the previous draw, so reconcile deletes only
 # rows THIS seed imported -- never reviewer-created data. Lives only on
@@ -451,10 +460,13 @@ async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
 
     async with engine.begin() as conn:
         # Linkage pass: self/circular references deferred by the sampler.
+        # Conditional so an unchanged pointer doesn't rewrite the row on
+        # every re-push (which would defeat the delta merge above).
         for table_name, row_id, column, value in (sampled or {}).get("linkage", []):
             table = md.tables[table_name]
             await conn.execute(
                 table.update().where(table.c.id == row_id)
+                .where(table.c[column].is_distinct_from(value))
                 .values(**{column: value})
             )
 
@@ -524,11 +536,17 @@ async def _load_table_copy_merge(
     ]
     col_list = ", ".join(f'"{c}"' for c in cols)
     pk_list = ", ".join(f'"{c}"' for c in pk_cols)
-    set_clause = ", ".join(
-        f'"{c}" = EXCLUDED."{c}"' for c in cols if c not in pk_cols
-    )
+    deferred = _LINKAGE_COLUMNS.get(table.name, set())
+    non_pk = [c for c in cols if c not in pk_cols and c not in deferred]
+    set_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in non_pk)
+    # Re-pushes mostly re-draw identical rows; IS DISTINCT FROM skips the
+    # rewrite (and its index churn / dead tuples) for unchanged rows, so the
+    # merge cost scales with the delta, not the draw.
+    tgt_tuple = ", ".join(f'"{table.name}"."{c}"' for c in non_pk)
+    exc_tuple = ", ".join(f'EXCLUDED."{c}"' for c in non_pk)
     conflict = (
         f"ON CONFLICT ({pk_list}) DO UPDATE SET {set_clause}"
+        f" WHERE ({tgt_tuple}) IS DISTINCT FROM ({exc_tuple})"
         if set_clause
         else f"ON CONFLICT ({pk_list}) DO NOTHING"
     )
@@ -576,24 +594,40 @@ async def _load_table_batches(
     await asyncio.gather(*[worker() for _ in range(workers)])
 
 
+def _changed(table, stmt, keys: list[str]):
+    """DO UPDATE predicate: rewrite only rows that actually differ."""
+    return tuple_(*[table.c[k] for k in keys]).is_distinct_from(
+        tuple_(*[stmt.excluded[k] for k in keys])
+    )
+
+
 async def _upsert_batch(conn, table, pk_cols: list[str], chunk: list[dict]) -> None:
+    deferred = _LINKAGE_COLUMNS.get(table.name, set())
+    non_pk = [k for k in chunk[0] if k not in pk_cols and k not in deferred]
     stmt = pg_insert(table).values(chunk)
-    set_ = {k: stmt.excluded[k] for k in chunk[0] if k not in pk_cols}
+    set_ = {k: stmt.excluded[k] for k in non_pk}
     try:
         async with conn.begin_nested():
             await conn.execute(
-                stmt.on_conflict_do_update(index_elements=pk_cols, set_=set_)
+                stmt.on_conflict_do_update(
+                    index_elements=pk_cols, set_=set_,
+                    where=_changed(table, stmt, non_pk),
+                )
             )
         return
     except (IntegrityError, DBAPIError):
         pass
     for values in chunk:
+        non_pk = [k for k in values if k not in pk_cols and k not in deferred]
         stmt = pg_insert(table).values(**values)
-        set_ = {k: stmt.excluded[k] for k in values if k not in pk_cols}
+        set_ = {k: stmt.excluded[k] for k in non_pk}
         try:
             async with conn.begin_nested():
                 await conn.execute(
-                    stmt.on_conflict_do_update(index_elements=pk_cols, set_=set_)
+                    stmt.on_conflict_do_update(
+                        index_elements=pk_cols, set_=set_,
+                        where=_changed(table, stmt, non_pk),
+                    )
                 )
         except (IntegrityError, DBAPIError) as exc:
             _warn(

@@ -379,6 +379,42 @@ async def test_seed_loads_subset_reconciles_drift_and_keeps_reviewer_data():
         await src.dispose()
 
 
+async def test_reseed_skips_unchanged_rows_and_writes_deltas():
+    """Re-seeding an identical draw must not physically rewrite rows (ctid
+    stable -- no index churn / dead tuples on re-pushes), while a changed
+    row in the draw still lands."""
+    src = await _make_source_db()
+    engine = create_async_engine(URL)
+    try:
+        sampled = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        await _reset_target(engine)
+        await preview_seed.seed(engine, sampled=sampled)
+
+        async def ctid(task_id):
+            async with engine.connect() as c:
+                return (await c.execute(text(
+                    f"select ctid::text from tasks where id='{task_id}'"
+                ))).scalar_one()
+
+        before_solo, before_dup = await ctid("task-solo"), await ctid("task-dup-a")
+        await preview_seed.seed(engine, sampled=sampled)  # identical draw
+        assert await ctid("task-solo") == before_solo  # incl. linkage no-op
+        assert await ctid("task-dup-a") == before_dup
+
+        for t in sampled["rows"]["tasks"]:
+            if t["id"] == "task-dup-a":
+                t["task_path"] = "p/changed"
+        await preview_seed.seed(engine, sampled=sampled)
+        assert await _count(
+            engine,
+            "select count(*) from tasks where id='task-dup-a'"
+            " and task_path='p/changed'") == 1
+        assert await ctid("task-dup-a") != before_dup  # the delta was written
+    finally:
+        await engine.dispose()
+        await src.dispose()
+
+
 async def test_seed_cleans_legacy_fixtures_and_yields_to_jit_conflicts():
     src = await _make_source_db()
     engine = create_async_engine(URL)
