@@ -60,6 +60,14 @@ export async function GET(request: NextRequest) {
     if (experimentsLimit) params.experiments_limit = experimentsLimit;
     if (experimentsOffset) params.experiments_offset = experimentsOffset;
     if (experimentsQuery) params.experiments_query = experimentsQuery;
+    for (const name of [
+      "experiments_tags",
+      "experiments_tags_any",
+      "experiments_tags_none",
+    ]) {
+      const value = searchParams.get(name);
+      if (value) params[name] = value;
+    }
     if (experimentsStatus) params.experiments_status = experimentsStatus;
     if (experimentsAuthor) params.experiments_author = experimentsAuthor;
     if (usageMinutes) params.usage_minutes = usageMinutes;

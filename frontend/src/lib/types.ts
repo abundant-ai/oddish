@@ -184,6 +184,7 @@ export interface Task {
   experiment_name: string;
   experiment_is_public: boolean;
   experiment_created_at?: string | null;
+  experiments?: { id: string; name: string }[];
   total: number;
   completed: number;
   failed: number;
@@ -355,6 +356,7 @@ export interface DashboardExperiment {
   id: string;
   name: string;
   is_public: boolean;
+  user_tags?: UserTagRef[];
   task_count: number;
   total_trials: number;
   completed_trials: number;
