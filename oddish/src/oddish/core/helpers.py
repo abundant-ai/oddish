@@ -779,9 +779,13 @@ def _build_task_status_response(
         experiment_name=experiment_name,
         experiment_is_public=experiment_is_public,
         experiment_created_at=experiment_created_at,
+        # Sorted (name, id) to match the browse chips and because the ORM
+        # relationship has no order_by -- DB return order is not stable.
         experiments=[
             TaskBrowseExperiment(id=exp.id, name=exp.name)
-            for exp in (task.experiments or [])
+            for exp in sorted(
+                task.experiments or [], key=lambda exp: (exp.name, exp.id)
+            )
         ],
         current_version=current_version,
         current_version_id=current_version_id,

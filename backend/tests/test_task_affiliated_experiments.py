@@ -40,8 +40,8 @@ async def test_task_status_lists_all_live_experiments():
                 insert into tasks (id,name,org_id,"user",priority,status,task_path,tags,run_analysis,run_probe,created_at,updated_at)
                 values ('t1','task','org1','u','LOW','COMPLETED','p','{}'::jsonb,false,false,now(),now());
                 insert into task_experiments (task_id,experiment_id,created_at,deleted_at)
-                values ('t1','exp-a',now() - interval '2 hour',null),
-                       ('t1','exp-b',now() - interval '1 hour',null),
+                values ('t1','exp-b',now() - interval '2 hour',null),
+                       ('t1','exp-a',now() - interval '1 hour',null),
                        ('t1','exp-gone',now(),now());
             """
             for stmt in stmts.split(";"):
@@ -54,12 +54,56 @@ async def test_task_status_lists_all_live_experiments():
             )
 
         listed = [(e.id, e.name) for e in resp.experiments]
-        assert ("exp-a", "Alpha") in listed
-        assert ("exp-b", "Beta") in listed
+        # deterministic name order regardless of link insertion order
+        assert listed == [("exp-a", "Alpha"), ("exp-b", "Beta")]
         assert all(e.id != "exp-gone" for e in resp.experiments)  # soft-deleted link
-        assert len(listed) == 2
         # singular primary fields stay populated for compatibility
         assert resp.experiment_id in {"exp-a", "exp-b"}
         assert resp.experiment_name in {"Alpha", "Beta"}
+    finally:
+        await engine.dispose()
+
+
+async def test_public_task_payload_lists_only_public_experiments():
+    """Anonymous /public payloads must not leak private experiment names."""
+    import oddish.db.connection as conn_mod
+    from oddish.core.public import get_public_task_status
+
+    engine = create_async_engine(URL)
+    try:
+        async with engine.begin() as c:
+            await c.execute(text("drop schema public cascade"))
+            await c.execute(text("create schema public"))
+            await c.run_sync(Base.metadata.create_all)
+            stmts = """
+                insert into organizations (id,name,slug,plan,settings,is_active,created_at,updated_at)
+                values ('org1','O','o','free','{}'::jsonb,true,now(),now());
+                insert into experiments (id,name,org_id,is_public,public_token,created_at,updated_at)
+                values ('exp-pub','Public Exp','org1',true,'tok-pub',now(),now()),
+                       ('exp-priv','Secret Initiative','org1',false,null,now(),now());
+                insert into tasks (id,name,org_id,"user",priority,status,task_path,tags,run_analysis,run_probe,created_at,updated_at)
+                values ('t1','task','org1','u','LOW','COMPLETED','p','{}'::jsonb,false,false,now(),now());
+                insert into task_experiments (task_id,experiment_id,created_at)
+                values ('t1','exp-pub',now()),
+                       ('t1','exp-priv',now());
+            """
+            for stmt in stmts.split(";"):
+                if stmt.strip():
+                    await c.execute(text(stmt))
+
+        # public endpoints open their own session via oddish.db.connection;
+        # point the module-level engine at this test database.
+        old_engine, old_maker = conn_mod.engine, conn_mod.async_session_maker
+        conn_mod.engine = engine
+        conn_mod.async_session_maker = conn_mod._create_session_maker(engine)
+        try:
+            for include_trials in (True, False):
+                resp = await get_public_task_status(
+                    "t1", include_trials=include_trials
+                )
+                names = [(e.id, e.name) for e in resp.experiments]
+                assert names == [("exp-pub", "Public Exp")], names
+        finally:
+            conn_mod.engine, conn_mod.async_session_maker = old_engine, old_maker
     finally:
         await engine.dispose()

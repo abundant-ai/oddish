@@ -36,6 +36,7 @@ from oddish.db import (
 from oddish.schemas import (
     PublicExperimentListItem,
     PublicExperimentResponse,
+    TaskBrowseExperiment,
     TaskStatusResponse,
     TrialResponse,
     UserTagRef,
@@ -160,6 +161,44 @@ async def get_public_experiment_info(public_token: str) -> PublicExperimentRespo
         )
 
 
+async def _public_experiment_refs(
+    session, task_ids: list[str]
+) -> dict[str, list[TaskBrowseExperiment]]:
+    """Affiliated-experiment refs restricted to PUBLIC experiments.
+
+    ``TaskStatusResponse.experiments`` is built from every live membership,
+    which is correct for org-authenticated callers but would leak private
+    experiment names/ids on the anonymous public endpoints -- those
+    responses get their list replaced with this projection.
+    """
+    if not task_ids:
+        return {}
+    rows = await session.execute(
+        select(
+            task_experiments.c.task_id,
+            ExperimentModel.id,
+            ExperimentModel.name,
+        )
+        .select_from(task_experiments)
+        .join(
+            ExperimentModel,
+            ExperimentModel.id == task_experiments.c.experiment_id,
+        )
+        .where(
+            task_experiments.c.task_id.in_(task_ids),
+            task_experiments.c.deleted_at.is_(None),
+            ExperimentModel.is_public == True,  # noqa: E712
+        )
+        .order_by(ExperimentModel.name.asc(), ExperimentModel.id.asc())
+    )
+    refs: dict[str, list[TaskBrowseExperiment]] = {}
+    for task_id, experiment_id, experiment_name in rows.all():
+        refs.setdefault(str(task_id), []).append(
+            TaskBrowseExperiment(id=str(experiment_id), name=str(experiment_name))
+        )
+    return refs
+
+
 @router.get(
     "/public/experiments/{public_token}/tasks", response_model=list[TaskStatusResponse]
 )
@@ -225,8 +264,12 @@ async def list_public_experiment_tasks(
             )
             for task in tasks
         ]
+        public_exps = await _public_experiment_refs(
+            session, [task.id for task in tasks]
+        )
         for resp, task in zip(responses, tasks):
             resp.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
+            resp.experiments = public_exps.get(task.id, [])
         return responses
 
 
@@ -253,6 +296,8 @@ async def get_public_task_status(
                 session, task_ids=[task.id]
             )
             response.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
+            public_exps = await _public_experiment_refs(session, [task.id])
+            response.experiments = public_exps.get(task.id, [])
             return response
 
         response = await get_task_status_counts(
@@ -265,6 +310,8 @@ async def get_public_task_status(
             session, task_ids=[task_id]
         )
         response.user_tags = _user_tag_refs(user_tags_by_task.get(task_id, []))
+        public_exps = await _public_experiment_refs(session, [task_id])
+        response.experiments = public_exps.get(task_id, [])
         return response
 
 
