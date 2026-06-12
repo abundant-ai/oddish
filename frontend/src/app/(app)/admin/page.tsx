@@ -30,6 +30,7 @@ import type {
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
+import { TagAdminPolicyForm } from "@/components/tag-admin-policy-form";
 import { WorkerJobsCard } from "@/components/worker-jobs-card";
 import { RefreshCw, Server, Clock, AlertCircle } from "lucide-react";
 
@@ -653,6 +654,7 @@ export default function AdminPage() {
         <TabsList>
           <TabsTrigger value="worker-jobs">Worker Jobs</TabsTrigger>
           <TabsTrigger value="concurrency">Concurrency</TabsTrigger>
+          <TabsTrigger value="tags">Tag Policy</TabsTrigger>
         </TabsList>
 
         <TabsContent value="worker-jobs" className="space-y-4">
@@ -663,6 +665,17 @@ export default function AdminPage() {
         <TabsContent value="concurrency" className="space-y-4">
           <QueueHealthCard />
           <QueueSlotsCard />
+        </TabsContent>
+
+        <TabsContent value="tags" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Tag policy</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <TagAdminPolicyForm />
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>
