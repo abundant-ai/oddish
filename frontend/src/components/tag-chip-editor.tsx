@@ -35,6 +35,9 @@ interface TagChipEditorProps {
   onEdited?: (patch: Pick<UserTagRef, "key" | "color">) => void;
   // Unassigns the tag from the current target (not a vocabulary delete).
   onRemove?: () => void;
+  // Fires after the tag DEFINITION is deleted org-wide, so the parent can
+  // drop the chip locally without issuing a redundant unassign call.
+  onDeleted?: () => void;
 }
 
 /**
@@ -49,11 +52,14 @@ export function TagChipEditor({
   onSaved,
   onEdited,
   onRemove,
+  onDeleted,
 }: TagChipEditorProps) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(tag.key);
   const [color, setColor] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { data, mutate: mutateTags } = useSWR<TagListResponse>(
     open ? "/api/tags" : null,
@@ -97,6 +103,35 @@ export function TagChipEditor({
     void mutateTags();
   }
 
+  async function deleteTag() {
+    if (!listRow) return;
+    setDeleting(true);
+    setError(null);
+    // Soft delete of the vocabulary row: reads everywhere drop the tag via
+    // state filtering, assignments become tombstones. row_version guards
+    // against deleting over someone's concurrent rename.
+    const res = await fetch(`/api/tags/${encodeURIComponent(tag.tag_id)}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expected_row_version: listRow.row_version }),
+    });
+    setDeleting(false);
+    if (!res.ok) {
+      const body = (await res.json().catch(() => null)) as {
+        detail?: string;
+        error?: string;
+      } | null;
+      setError(body?.detail ?? body?.error ?? "Could not delete tag.");
+      setConfirmingDelete(false);
+      await mutateTags();
+      return;
+    }
+    setOpen(false);
+    onDeleted?.();
+    onSaved();
+    void mutateTags();
+  }
+
   return (
     <Popover
       open={open}
@@ -106,6 +141,7 @@ export function TagChipEditor({
           setName(tag.key);
           setColor(null);
           setError(null);
+          setConfirmingDelete(false);
         }
       }}
     >
@@ -115,52 +151,93 @@ export function TagChipEditor({
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-60 space-y-2 p-3">
-        <Input
-          value={name}
-          onChange={(event) => {
-            setName(event.target.value);
-            setError(null);
-          }}
-          className="h-7 text-xs"
-          aria-label="Tag name"
-        />
-        <TagColorBar value={effectiveColor} onChange={setColor} />
-        {error ? <p className="text-xs text-destructive">{error}</p> : null}
-        <div className="flex items-center justify-between gap-2">
-          {onRemove ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 px-2 text-xs text-destructive hover:bg-destructive/15 hover:text-destructive"
+        {confirmingDelete ? (
+          <div className="space-y-2 rounded-md border border-destructive/30 bg-destructive/10 p-2">
+            <p className="text-xs">
+              Delete <span className="font-medium">{tag.key}</span> for the
+              entire org? Every item carrying this tag loses it.
+            </p>
+            {error ? <p className="text-xs text-destructive">{error}</p> : null}
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => setConfirmingDelete(false)}
+              >
+                Keep
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                disabled={deleting || !listRow}
+                onClick={deleteTag}
+              >
+                {deleting ? "Deleting…" : "Delete tag"}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <Input
+              value={name}
+              onChange={(event) => {
+                setName(event.target.value);
+                setError(null);
+              }}
+              className="h-7 text-xs"
+              aria-label="Tag name"
+            />
+            <TagColorBar value={effectiveColor} onChange={setColor} />
+            {error ? <p className="text-xs text-destructive">{error}</p> : null}
+            <div className="flex items-center justify-between gap-2">
+              {onRemove ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs text-destructive hover:bg-destructive/15 hover:text-destructive"
+                  onClick={() => {
+                    setOpen(false);
+                    onRemove();
+                  }}
+                >
+                  Remove
+                </Button>
+              ) : (
+                <span />
+              )}
+              <div className="flex gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs"
+                  onClick={() => setOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-6 px-2 text-xs"
+                  disabled={saving || !listRow || name.trim().length === 0}
+                  onClick={save}
+                >
+                  {saving ? "Saving…" : "Save"}
+                </Button>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="w-full border-t pt-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:text-destructive"
               onClick={() => {
-                setOpen(false);
-                onRemove();
+                setError(null);
+                setConfirmingDelete(true);
               }}
             >
-              Remove
-            </Button>
-          ) : (
-            <span />
-          )}
-          <div className="flex gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 px-2 text-xs"
-              onClick={() => setOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              className="h-6 px-2 text-xs"
-              disabled={saving || !listRow || name.trim().length === 0}
-              onClick={save}
-            >
-              {saving ? "Saving…" : "Save"}
-            </Button>
-          </div>
-        </div>
+              Delete tag for everyone…
+            </button>
+          </>
+        )}
       </PopoverContent>
     </Popover>
   );
