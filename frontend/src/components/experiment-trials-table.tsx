@@ -56,6 +56,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
 import {
   getExperimentAgentKey,
+  isBaselineAgentName,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import {
@@ -93,7 +94,7 @@ const PassAtKGraph = dynamic(
   () => import("./pass-at-k-graph").then((mod) => mod.PassAtKGraph),
   {
     ssr: false,
-  }
+  },
 );
 
 const PassAtOneLeaderboard = dynamic(
@@ -101,7 +102,7 @@ const PassAtOneLeaderboard = dynamic(
     import("./pass-at-one-leaderboard").then((mod) => mod.PassAtOneLeaderboard),
   {
     ssr: false,
-  }
+  },
 );
 
 export type AgentSummary = ExperimentAgentSummary;
@@ -129,11 +130,11 @@ type ExperimentTrialsTableProps = {
         model: string | null;
         trials: Trial[];
       }>;
-    }
+    },
   ) => void;
   onTaskSelect?: (
     task: Task,
-    context: { orderedTasks: Task[]; taskIndex: number }
+    context: { orderedTasks: Task[]; taskIndex: number },
   ) => void;
 };
 
@@ -158,7 +159,7 @@ const LOADING_AGENT_COLUMNS: AgentSummary[] = Array.from(
     model: null,
     queueKey: null,
     isModelScoped: false,
-  })
+  }),
 );
 const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "queued",
@@ -206,20 +207,6 @@ const ROW_FILTER_VALUES = new Set<RowFilterMode>([
   "allFail",
   "anyFail",
 ]);
-
-// Baseline agents (nop / oracle) are excluded from row-filter evaluation so
-// their deterministic behaviour doesn't influence real-agent analyses.
-function isBaselineAgentName(name: string): boolean {
-  const lower = name.toLowerCase();
-  return (
-    lower === "nop" ||
-    lower === "oracle" ||
-    lower.startsWith("nop-") ||
-    lower.startsWith("oracle-") ||
-    lower.startsWith("agent-nop") ||
-    lower.startsWith("agent-oracle")
-  );
-}
 
 /**
  * Row-filter evaluation for a single (task, agent) cell.
@@ -411,7 +398,7 @@ function getAnalysisIndicator(trial: Trial): {
 
 function groupTrialsByAgent(
   trials: Trial[] | null | undefined,
-  modelScopedAgents: ReadonlySet<string>
+  modelScopedAgents: ReadonlySet<string>,
 ) {
   const grouped = new Map<string, Trial[]>();
   if (!trials) return grouped;
@@ -479,7 +466,7 @@ export function ExperimentTrialsTable({
   const [hiddenAgents, setHiddenAgents] = useState<Set<string>>(new Set());
   const [hoverAgent, setHoverAgent] = useState<string | null>(null);
   const [dimmedStatuses, setDimmedStatuses] = useState<Set<MatrixStatus>>(
-    new Set()
+    new Set(),
   );
   const [dimmedAnalysisKeys, setDimmedAnalysisKeys] = useState<
     Set<AnalysisLegendKey>
@@ -488,10 +475,10 @@ export function ExperimentTrialsTable({
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
   const [copiedTaskNameId, setCopiedTaskNameId] = useState<string | null>(null);
   const [copiedAgentNameKey, setCopiedAgentNameKey] = useState<string | null>(
-    null
+    null,
   );
   const [copiedAgentModelKey, setCopiedAgentModelKey] = useState<string | null>(
-    null
+    null,
   );
   const [copiedTable, setCopiedTable] = useState(false);
   const [deleteTargets, setDeleteTargets] = useState<Task[]>([]);
@@ -509,7 +496,7 @@ export function ExperimentTrialsTable({
   const [verdictError, setVerdictError] = useState<string | null>(null);
   const [tagBulkOpen, setTagBulkOpen] = useState(false);
   const [tagBulkMode, setTagBulkMode] = useState<"snapshot" | "living">(
-    "snapshot"
+    "snapshot",
   );
   const [tagBulkError, setTagBulkError] = useState<string | null>(null);
   const [isApplyingBulkTag, setIsApplyingBulkTag] = useState(false);
@@ -561,8 +548,8 @@ export function ExperimentTrialsTable({
               value === "fail" ||
               value === "harness-error" ||
               value === "queued" ||
-              value === "running"
-          )
+              value === "running",
+          ),
       );
       setDimmedStatuses(next);
       prevUrlRef.current.dim = urlDim;
@@ -578,8 +565,8 @@ export function ExperimentTrialsTable({
               value === "analyzing" ||
               value === "good" ||
               value === "bad" ||
-              value === "analysis-failed"
-          )
+              value === "analysis-failed",
+          ),
       );
       setDimmedAnalysisKeys(next);
       prevUrlRef.current.analysis = urlAnalysis;
@@ -698,7 +685,7 @@ export function ExperimentTrialsTable({
 
   const visibleAgents = useMemo(
     () => sortedAgentSummaries.filter((agent) => !hiddenAgents.has(agent.key)),
-    [sortedAgentSummaries, hiddenAgents]
+    [sortedAgentSummaries, hiddenAgents],
   );
   const showLoadingMatrixColumns =
     isLoadingTrials && visibleAgents.length === 0;
@@ -708,14 +695,14 @@ export function ExperimentTrialsTable({
 
   const columnOrder = useMemo(
     () => ["task", ...renderedAgents.map((agent) => agent.key)],
-    [renderedAgents]
+    [renderedAgents],
   );
 
   const baseTableWidth = useMemo(() => {
     const agentTotal = renderedAgents.reduce(
       (sum, agent) =>
         sum + (agentColumnWidths[agent.key] ?? DEFAULT_AGENT_WIDTH),
-      0
+      0,
     );
     return taskColumnWidth + agentTotal;
   }, [renderedAgents, agentColumnWidths, taskColumnWidth, DEFAULT_AGENT_WIDTH]);
@@ -727,7 +714,7 @@ export function ExperimentTrialsTable({
   const tableMinWidth = Math.max(
     960,
     baseTableWidth,
-    columnOrder.length * AGENT_COLUMN_MIN
+    columnOrder.length * AGENT_COLUMN_MIN,
   );
 
   useEffect(() => {
@@ -778,13 +765,13 @@ export function ExperimentTrialsTable({
         : searchFiltered.filter((task) => {
             const trialsByAgent = groupTrialsByAgent(
               task.trials,
-              modelScopedAgents
+              modelScopedAgents,
             );
             // Derive per-agent error/failure state; skip agents that have no
             // terminal trials yet so running tasks aren't hidden early.
             // Partial credit (0 < reward < 1) counts as "scored".
             const perAgent = rowFilterAgentKeys.map((key) =>
-              summarizeAgentRowFilterState(trialsByAgent.get(key))
+              summarizeAgentRowFilterState(trialsByAgent.get(key)),
             );
             if (rowFilterMode === "anyError") {
               return perAgent.some((result) => result.hasError);
@@ -794,7 +781,7 @@ export function ExperimentTrialsTable({
               .filter((r): r is "failed" | "scored" => r !== null);
             if (terminalAgents.length === 0) return true;
             const failCount = terminalAgents.filter(
-              (r) => r === "failed"
+              (r) => r === "failed",
             ).length;
             if (rowFilterMode === "allFail") {
               return failCount === terminalAgents.length;
@@ -811,7 +798,7 @@ export function ExperimentTrialsTable({
       nameOf(a).localeCompare(nameOf(b), undefined, {
         numeric: true,
         sensitivity: "base",
-      })
+      }),
     );
     return taskSort === "name-desc" ? sorted.reverse() : sorted;
   }, [
@@ -844,7 +831,7 @@ export function ExperimentTrialsTable({
 
       const groupedTrialsByAgent = groupTrialsByAgent(
         task.trials,
-        modelScopedAgents
+        modelScopedAgents,
       );
       const orderedTrials: Trial[] = [];
       const trialIndexById = new Map<string, number>();
@@ -882,7 +869,7 @@ export function ExperimentTrialsTable({
 
   const selectedTaskList = useMemo(
     () => tasks.filter((task) => selectedTasks.has(task.id)),
-    [tasks, selectedTasks]
+    [tasks, selectedTasks],
   );
 
   const selectedRetryableTrials = useMemo(() => {
@@ -904,17 +891,17 @@ export function ExperimentTrialsTable({
 
   const selectedCancellableTasks = useMemo(
     () => selectedTaskList.filter((task) => taskHasCancellableWork(task)),
-    [selectedTaskList]
+    [selectedTaskList],
   );
 
   const selectedAnalysisCancellableTasks = useMemo(
     () => selectedTaskList.filter((task) => taskHasActiveAnalysis(task)),
-    [selectedTaskList]
+    [selectedTaskList],
   );
 
   const selectedVerdictCancellableTasks = useMemo(
     () => selectedTaskList.filter((task) => taskHasActiveVerdict(task)),
-    [selectedTaskList]
+    [selectedTaskList],
   );
 
   const selectedAnalysisRunnableTasks = useMemo(
@@ -923,15 +910,15 @@ export function ExperimentTrialsTable({
         const trials = task.trials ?? [];
         if (trials.length === 0) return false;
         const allTrialsTerminal = trials.every(
-          (trial) => trial.status === "failed" || trial.status === "success"
+          (trial) => trial.status === "failed" || trial.status === "success",
         );
         const hasAnalysisInFlight = trials.some((trial) =>
-          isActivePipelineStatus(trial.analysis_status)
+          isActivePipelineStatus(trial.analysis_status),
         );
         const verdictInFlight = isActivePipelineStatus(task.verdict_status);
         return allTrialsTerminal && !hasAnalysisInFlight && !verdictInFlight;
       }),
-    [selectedTaskList]
+    [selectedTaskList],
   );
 
   const selectedVerdictRunnableTasks = useMemo(
@@ -940,17 +927,17 @@ export function ExperimentTrialsTable({
         const trials = task.trials ?? [];
         if (trials.length === 0) return false;
         const allTrialsTerminal = trials.every(
-          (trial) => trial.status === "failed" || trial.status === "success"
+          (trial) => trial.status === "failed" || trial.status === "success",
         );
         const allAnalysesComplete = trials.every(
           (trial) =>
             trial.analysis_status === "success" ||
-            trial.analysis_status === "failed"
+            trial.analysis_status === "failed",
         );
         const verdictInFlight = isActivePipelineStatus(task.verdict_status);
         return allTrialsTerminal && allAnalysesComplete && !verdictInFlight;
       }),
-    [selectedTaskList]
+    [selectedTaskList],
   );
 
   const rowVirtualizer = useVirtualizer({
@@ -1017,7 +1004,7 @@ export function ExperimentTrialsTable({
 
   const handleCopyTaskName = async (
     event: ReactMouseEvent<HTMLButtonElement>,
-    task: Task
+    task: Task,
   ) => {
     event.stopPropagation();
     await navigator.clipboard.writeText(task.name);
@@ -1064,7 +1051,7 @@ export function ExperimentTrialsTable({
             const status = getMatrixStatus(
               trial.status,
               trial.reward,
-              trial.error_message
+              trial.error_message,
             );
             return STATUS_CONFIG[status].shortLabel;
           });
@@ -1096,7 +1083,7 @@ export function ExperimentTrialsTable({
     }
     const trialCount = deleteTargets.reduce(
       (sum, task) => sum + (task.total ?? 0),
-      0
+      0,
     );
     return {
       label: `${deleteTargets.length} tasks`,
@@ -1135,7 +1122,7 @@ export function ExperimentTrialsTable({
       }
     } catch (error) {
       setDeleteError(
-        error instanceof Error ? error.message : "Failed to delete task"
+        error instanceof Error ? error.message : "Failed to delete task",
       );
     } finally {
       setIsDeleting(false);
@@ -1161,10 +1148,10 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to retry trial"
+              data.detail || data.error || "Failed to retry trial",
             );
           }
-        })
+        }),
       );
 
       const failures = results.filter((result) => result.status === "rejected");
@@ -1201,7 +1188,7 @@ export function ExperimentTrialsTable({
       onRerun?.(selectedCancellableTasks.map((task) => task.id));
     } catch (error) {
       setCancelError(
-        error instanceof Error ? error.message : "Failed to cancel tasks"
+        error instanceof Error ? error.message : "Failed to cancel tasks",
       );
     } finally {
       setIsCancellingSelected(false);
@@ -1225,16 +1212,16 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to cancel task analysis"
+              data.detail || data.error || "Failed to cancel task analysis",
             );
           }
-        })
+        }),
       );
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
         setAnalysisError(
-          `Failed to cancel analysis for ${failures.length} task(s).`
+          `Failed to cancel analysis for ${failures.length} task(s).`,
         );
       } else {
         setAnalysisError(null);
@@ -1264,16 +1251,16 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task analysis"
+              data.detail || data.error || "Failed to queue task analysis",
             );
           }
-        })
+        }),
       );
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
         setAnalysisError(
-          `Failed to queue analysis for ${failures.length} task(s).`
+          `Failed to queue analysis for ${failures.length} task(s).`,
         );
       } else {
         setAnalysisError(null);
@@ -1301,16 +1288,16 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to cancel task verdict"
+              data.detail || data.error || "Failed to cancel task verdict",
             );
           }
-        })
+        }),
       );
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
         setVerdictError(
-          `Failed to cancel verdict for ${failures.length} task(s).`
+          `Failed to cancel verdict for ${failures.length} task(s).`,
         );
       } else {
         setVerdictError(null);
@@ -1340,16 +1327,16 @@ export function ExperimentTrialsTable({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task verdict"
+              data.detail || data.error || "Failed to queue task verdict",
             );
           }
-        })
+        }),
       );
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
         setVerdictError(
-          `Failed to queue verdict for ${failures.length} task(s).`
+          `Failed to queue verdict for ${failures.length} task(s).`,
         );
       } else {
         setVerdictError(null);
@@ -1382,13 +1369,13 @@ export function ExperimentTrialsTable({
             if (!res.ok) {
               const data = await res.json().catch(() => ({}));
               throw new Error(
-                data.detail || data.error || "Failed to apply tag"
+                data.detail || data.error || "Failed to apply tag",
               );
             }
-          })
+          }),
         );
         const failures = results.filter(
-          (result) => result.status === "rejected"
+          (result) => result.status === "rejected",
         );
         if (failures.length > 0) {
           setTagBulkError(`Failed to tag ${failures.length} task(s).`);
@@ -1396,7 +1383,9 @@ export function ExperimentTrialsTable({
       } else {
         const experimentId = selectedTaskList[0]?.experiment_id;
         if (!experimentId) {
-          setTagBulkError("No experiment id available for living-mode tagging.");
+          setTagBulkError(
+            "No experiment id available for living-mode tagging.",
+          );
           return;
         }
         const res = await fetch(`/api/tags/assign`, {
@@ -1413,7 +1402,7 @@ export function ExperimentTrialsTable({
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(
-            data.detail || data.error || "Failed to apply living tag"
+            data.detail || data.error || "Failed to apply living tag",
           );
         }
       }
@@ -1421,7 +1410,7 @@ export function ExperimentTrialsTable({
       setTagBulkOpen(false);
     } catch (error) {
       setTagBulkError(
-        error instanceof Error ? error.message : "Failed to apply tag"
+        error instanceof Error ? error.message : "Failed to apply tag",
       );
     } finally {
       setIsApplyingBulkTag(false);
@@ -1431,7 +1420,7 @@ export function ExperimentTrialsTable({
   const startResize = (
     event: ReactMouseEvent,
     columnKey: "task" | string,
-    startWidth: number
+    startWidth: number,
   ) => {
     event.preventDefault();
     const currentIndex = columnOrder.indexOf(columnKey);
@@ -1593,7 +1582,7 @@ export function ExperimentTrialsTable({
                 {Array.from({ length: INITIAL_LOADING_COLUMN_COUNT }).map(
                   (_, index) => (
                     <Skeleton key={index} className="h-5 w-full" />
-                  )
+                  ),
                 )}
               </div>
 
@@ -1619,10 +1608,10 @@ export function ExperimentTrialsTable({
                           <Skeleton className="h-5 w-5 rounded-sm" />
                           <Skeleton className="h-5 w-5 rounded-sm" />
                         </div>
-                      )
+                      ),
                     )}
                   </div>
-                )
+                ),
               )}
             </div>
           </div>
@@ -1634,7 +1623,7 @@ export function ExperimentTrialsTable({
   // Partial outcomes are rendered as numeric colored tiles (not a single color
   // chip), so we don't expose them in the trial-outcome legend filter.
   const LEGEND_STATUS_ORDER = STATUS_FILTER_ORDER.filter(
-    (s) => s !== "partial"
+    (s) => s !== "partial",
   );
 
   const renderStatusChip = (status: MatrixStatus) => {
@@ -2186,7 +2175,7 @@ export function ExperimentTrialsTable({
                               ? "name-asc"
                               : prev === "name-asc"
                                 ? "name-desc"
-                                : "default"
+                                : "default",
                           )
                         }
                         title={
@@ -2272,7 +2261,7 @@ export function ExperimentTrialsTable({
                                   onClick={() =>
                                     handleCopyAgentModel(
                                       agent.key,
-                                      agent.model!
+                                      agent.model!,
                                     )
                                   }
                                   className="text-muted-foreground hover:bg-background/70 hover:text-foreground h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal transition sm:text-[10px]"
@@ -2316,7 +2305,7 @@ export function ExperimentTrialsTable({
                                 event,
                                 agent.key,
                                 agentColumnWidths[agent.key] ??
-                                  DEFAULT_AGENT_WIDTH
+                                  DEFAULT_AGENT_WIDTH,
                               )
                             }
                           />
@@ -2481,7 +2470,7 @@ export function ExperimentTrialsTable({
                                   const status = getMatrixStatus(
                                     trial.status,
                                     trial.reward,
-                                    trial.error_message
+                                    trial.error_message,
                                   );
                                   const config = STATUS_CONFIG[status];
                                   const isDimmed = dimmedStatuses.has(status);
@@ -2502,12 +2491,12 @@ export function ExperimentTrialsTable({
                                       : "";
                                   const baseTitle = getTrialTitle(
                                     trial,
-                                    status
+                                    status,
                                   );
                                   const isPartial = status === "partial";
                                   const partialLabel = isPartial
                                     ? formatPartialRewardBadgeValue(
-                                        trial.reward
+                                        trial.reward,
                                       )
                                     : null;
                                   const analysisTitle = analysisIndicator
