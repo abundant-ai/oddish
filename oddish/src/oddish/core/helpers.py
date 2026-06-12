@@ -29,6 +29,7 @@ from oddish.core.tags_projection import (
 )
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import (
+    TaskBrowseExperiment,
     TaskStatusResponse,
     TrialQueueInfo,
     TrialResponse,
@@ -778,6 +779,10 @@ def _build_task_status_response(
         experiment_name=experiment_name,
         experiment_is_public=experiment_is_public,
         experiment_created_at=experiment_created_at,
+        experiments=[
+            TaskBrowseExperiment(id=exp.id, name=exp.name)
+            for exp in (task.experiments or [])
+        ],
         current_version=current_version,
         current_version_id=current_version_id,
         total=total,
