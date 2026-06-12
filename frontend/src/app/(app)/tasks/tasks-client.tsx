@@ -16,7 +16,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ImportDialog } from "@/components/import-dialog";
+import { TagChip } from "@/components/tag-chip";
 import { fetcher } from "@/lib/api";
+import { parseTaskSearch } from "@/lib/tag-query";
 import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
@@ -336,6 +338,13 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
         </div>
       </CardHeader>
       <CardContent className="space-y-3 px-5 pb-5">
+        {(task.user_tags ?? []).length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {(task.user_tags ?? []).map((t) => (
+              <TagChip key={t.tag_id} tag={t} />
+            ))}
+          </div>
+        ) : null}
         <div className="space-y-1.5">
           <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
             Latest trials
@@ -375,6 +384,7 @@ export function TasksPageClient({
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [offset, setOffset] = useState(0);
   const debouncedQuery = useDebouncedValue(searchQuery.trim(), 300);
+  const parsed = useMemo(() => parseTaskSearch(debouncedQuery), [debouncedQuery]);
 
   useEffect(() => {
     setOffset(0);
@@ -385,11 +395,20 @@ export function TasksPageClient({
       limit: String(PAGE_SIZE),
       offset: String(offset),
     });
-    if (debouncedQuery) {
-      params.set("query", debouncedQuery);
+    if (parsed.text) {
+      params.set("query", parsed.text);
+    }
+    if (parsed.all.length) {
+      params.set("tags", parsed.all.join(","));
+    }
+    if (parsed.any.length) {
+      params.set("tags_any", parsed.any.join(","));
+    }
+    if (parsed.none.length) {
+      params.set("tags_none", parsed.none.join(","));
     }
     return `/api/tasks/browse?${params.toString()}`;
-  }, [debouncedQuery, offset]);
+  }, [offset, parsed]);
 
   const { data, error, isLoading, isValidating, mutate } =
     useSWR<TaskBrowseResponse>(swrKey, fetcher, {
@@ -431,7 +450,7 @@ export function TasksPageClient({
               <Input
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Search tasks"
+                placeholder="Search · tag:x OR tag:y NOT tag:z"
                 className="h-8 w-full border-[#6f88b4]/20 sm:w-[260px]"
               />
               <ImportDialog onImported={() => mutate()} />

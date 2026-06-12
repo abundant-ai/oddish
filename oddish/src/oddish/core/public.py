@@ -7,6 +7,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.orm import selectinload
 
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
+from oddish.core.tags_projection import list_effective_user_tags_for_task_versions
 from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
@@ -37,9 +38,38 @@ from oddish.schemas import (
     PublicExperimentResponse,
     TaskStatusResponse,
     TrialResponse,
+    UserTagRef,
 )
 
 router = APIRouter(tags=["Public"])
+
+
+async def _hydrate_public_user_tags(session, *, task_ids: list[str]) -> dict:
+    """Return the same UserTagView shape as the authenticated path but
+    filtered to ``tags.visibility = 'PUBLIC'``.
+
+    Public endpoints (``/share/*``, ``/datasets/*``) call this when
+    serializing a task DTO. PRIVATE tags simply don't appear.
+    """
+    return await list_effective_user_tags_for_task_versions(
+        session, task_ids=list(task_ids), public_only=True
+    )
+
+
+def _user_tag_refs(views) -> list[UserTagRef]:
+    """Map ``UserTagView`` rows from the resolver to ``UserTagRef`` DTOs."""
+    return [
+        UserTagRef(
+            tag_id=t.tag_id,
+            key=t.key,
+            value=t.value,
+            color=t.color,
+            visibility=t.visibility,
+            current=t.current,
+            older=t.older,
+        )
+        for t in views
+    ]
 
 
 async def _get_detached_public_trial(trial_id: str) -> TrialModel:
@@ -184,7 +214,10 @@ async def list_public_experiment_tasks(
             session,
             trials=[trial for task in tasks for trial in task.trials],
         )
-        return [
+        user_tags_by_task = await _hydrate_public_user_tags(
+            session, task_ids=[task.id for task in tasks]
+        )
+        responses = [
             build_task_status_response(
                 task,
                 queue_info_by_trial_id=queue_info_by_trial_id,
@@ -192,6 +225,9 @@ async def list_public_experiment_tasks(
             )
             for task in tasks
         ]
+        for resp, task in zip(responses, tasks):
+            resp.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
+        return responses
 
 
 @router.get("/public/tasks/{task_id}", response_model=TaskStatusResponse)
@@ -209,17 +245,27 @@ async def get_public_task_status(
                 session,
                 trials=task.trials,
             )
-            return build_task_status_response(
+            response = build_task_status_response(
                 task,
                 queue_info_by_trial_id=queue_info_by_trial_id,
             )
+            user_tags_by_task = await _hydrate_public_user_tags(
+                session, task_ids=[task.id]
+            )
+            response.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
+            return response
 
-        return await get_task_status_counts(
+        response = await get_task_status_counts(
             session,
             task_id,
             filters=[ExperimentModel.is_public == True],  # noqa: E712
             join_experiment=True,
         )
+        user_tags_by_task = await _hydrate_public_user_tags(
+            session, task_ids=[task_id]
+        )
+        response.user_tags = _user_tag_refs(user_tags_by_task.get(task_id, []))
+        return response
 
 
 @router.get("/public/tasks/{task_id}/trials", response_model=list[TrialResponse])

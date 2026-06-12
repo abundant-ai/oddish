@@ -30,6 +30,15 @@ from oddish.core.helpers import (
 )
 from collections.abc import Collection
 from harbor.models.environment_type import EnvironmentType
+from oddish.core.tag_filter_ast import (
+    TagFilterAST,
+    build_filter_predicates,
+    resolve_names_to_ids,
+)
+from oddish.core.tags_projection import (
+    list_direct_version_tags,
+    list_effective_user_tags_for_task_versions,
+)
 from oddish.core.trial_io import (
     read_trial_logs,
     read_trial_logs_structured,
@@ -60,6 +69,7 @@ from oddish.schemas import (
     TaskVersionResponse,
     TaskVersionSummary,
     TrialResponse,
+    UserTagRef,
 )
 from oddish.timing import TimingRecorder, elapsed_ms, now
 
@@ -171,7 +181,6 @@ async def list_tasks_core(
                 # async greenlet and fails with MissingGreenlet (same
                 # reason ``origin`` / ``superseded_by_trial_id`` are here).
                 TrialModel.harbor_config,
-                TrialModel.is_probe,
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
@@ -424,6 +433,9 @@ async def browse_tasks_core(
     limit: int = 25,
     offset: int = 0,
     query: str | None = None,
+    tags_all: list[str] | None = None,
+    tags_any: list[str] | None = None,
+    tags_none: list[str] | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
     """List latest-version task summaries for the task browser."""
@@ -458,6 +470,33 @@ async def browse_tasks_core(
         ranked_tasks = ranked_tasks.where(TaskModel.org_id == org_id)
     if normalized_query:
         ranked_tasks = ranked_tasks.where(TaskModel.name.ilike(f"%{normalized_query}%"))
+
+    # Resolve tag filters (ids or names) → tag IDs and append AND/OR/NOT
+    # predicates over ``tasks.effective_tag_ids``. The predicates reference the
+    # ``tasks`` table literally, and ``ranked_tasks`` uses
+    # ``select_from(TaskModel)`` (i.e. the ``tasks`` table), so the text
+    # predicates are applied here -- before the subquery is materialised.
+    # An unknown POSITIVE token (AND/OR) can never match any task, so the
+    # result is an empty page rather than an error -- this keeps type-ahead
+    # tag filtering in the dashboard search graceful. Unknown tokens in the
+    # NOT set exclude nothing and are simply dropped by the resolver.
+    if tags_all or tags_any or tags_none:
+        ast = TagFilterAST(
+            all=list(tags_all or []),
+            any_=list(tags_any or []),
+            none=list(tags_none or []),
+        )
+        resolved_filter, unknown_tokens = await resolve_names_to_ids(
+            session, org_id=org_id, ast=ast
+        )
+        if unknown_tokens & ({*ast.all} | {*ast.any_}):
+            return TaskBrowseResponse(
+                items=[], limit=limit, offset=offset, has_more=False
+            )
+        if not resolved_filter.is_empty():
+            for predicate in build_filter_predicates(resolved_filter):
+                ranked_tasks = ranked_tasks.where(predicate)
+
     ranked_tasks_subquery = ranked_tasks.subquery()
 
     version_counts = (
@@ -649,6 +688,18 @@ async def browse_tasks_core(
                 )
             )
 
+    # Hydrate effective user tags for each visible task, batched in a
+    # single round trip. Used to populate ``TaskBrowseItem.user_tags`` so
+    # the browser can render the tag chips alongside the row.
+    visible_task_ids = [str(row["task_id"]) for row in visible_rows]
+    user_tags_by_task = (
+        await list_effective_user_tags_for_task_versions(
+            session, task_ids=visible_task_ids, public_only=False
+        )
+        if visible_task_ids
+        else {}
+    )
+
     build_started_at = now()
     response = TaskBrowseResponse(
         items=[
@@ -677,6 +728,18 @@ async def browse_tasks_core(
                 github_meta=_parse_github_meta(row["tags"]),
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),
+                user_tags=[
+                    UserTagRef(
+                        tag_id=t.tag_id,
+                        key=t.key,
+                        value=t.value,
+                        color=t.color,
+                        visibility=t.visibility,
+                        current=t.current,
+                        older=t.older,
+                    )
+                    for t in user_tags_by_task.get(str(row["task_id"]), [])
+                ],
             )
             for row in visible_rows
         ],
@@ -1638,6 +1701,43 @@ async def get_task_detail_core(
         version_rows=version_rows,
         current_version_id=task_status.current_version_id,
     )
+
+    # Hydrate effective user tags so the detail page renders the same
+    # chips the browse list does.
+    user_tags_by_task = await list_effective_user_tags_for_task_versions(
+        session, task_ids=[task.id], public_only=False
+    )
+    task_status.user_tags = [
+        UserTagRef(
+            tag_id=t.tag_id,
+            key=t.key,
+            value=t.value,
+            color=t.color,
+            visibility=t.visibility,
+            current=t.current,
+            older=t.older,
+        )
+        for t in user_tags_by_task.get(task.id, [])
+    ]
+
+    # Per-version direct tags, so the version switcher's tag editor shows
+    # the selected version's own chips (distinct from the task-level union).
+    version_tags = await list_direct_version_tags(
+        session, version_ids=[v.id for v in versions_sorted]
+    )
+    for summary in versions_sorted:
+        summary.user_tags = [
+            UserTagRef(
+                tag_id=t.tag_id,
+                key=t.key,
+                value=t.value,
+                color=t.color,
+                visibility=t.visibility,
+                current=t.current,
+                older=t.older,
+            )
+            for t in version_tags.get(summary.id, [])
+        ]
 
     return TaskDetailResponse(
         task=task_status,

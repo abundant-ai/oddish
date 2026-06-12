@@ -53,6 +53,9 @@ class _RecordingSession:
             return _Result(rowcount=1)
         return _Result()
 
+    async def scalar(self, *args, **kwargs):
+        return None
+
     async def get(self, model, object_id):  # noqa: ANN001
         return None
 

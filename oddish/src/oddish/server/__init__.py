@@ -33,6 +33,10 @@ from oddish.core.endpoints import (
     rerun_trial_analysis_core,
     retry_trial_core,
 )
+
+
+def _split_tag_csv(csv: str | None) -> list[str]:
+    return [s.strip() for s in (csv or "").split(",") if s.strip()]
 from oddish.core.public_helpers import (
     get_task_file_content_s3,
     get_trial_file_content_s3,
@@ -431,10 +435,21 @@ async def browse_tasks(
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
     query: str | None = None,
+    tags: str | None = Query(None),
+    tags_any: str | None = Query(None),
+    tags_none: str | None = Query(None),
 ) -> TaskBrowseResponse:
     """Browse latest task versions with aggregated trial stats."""
     async with get_session() as session:
-        return await browse_tasks_core(session, limit=limit, offset=offset, query=query)
+        return await browse_tasks_core(
+            session,
+            limit=limit,
+            offset=offset,
+            query=query,
+            tags_all=_split_tag_csv(tags),
+            tags_any=_split_tag_csv(tags_any),
+            tags_none=_split_tag_csv(tags_none),
+        )
 
 
 @api.get("/tasks/{task_id}", response_model=TaskStatusResponse)

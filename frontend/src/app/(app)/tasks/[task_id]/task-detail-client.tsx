@@ -20,6 +20,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { TagEditor } from "@/components/tag-editor";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
@@ -201,9 +202,11 @@ function KpiTile({
 function TaskDetailHeader({
   task,
   onOpenTaskFiles,
+  tagEditor,
 }: {
   task: Task;
   onOpenTaskFiles: () => void;
+  tagEditor?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
@@ -216,6 +219,7 @@ function TaskDetailHeader({
             <Badge variant="outline" className="font-mono text-[11px]">
               v{task.current_version ?? "—"}
             </Badge>
+            {tagEditor}
           </div>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
@@ -803,7 +807,19 @@ export function TaskDetailClient({
   return (
     <TooltipProvider>
       <div className="space-y-4">
-        <TaskDetailHeader task={task} onOpenTaskFiles={handleOpenTaskFiles} />
+        <TaskDetailHeader
+          task={task}
+          onOpenTaskFiles={handleOpenTaskFiles}
+          tagEditor={
+            <TagEditor
+              scope="TASK"
+              targetId={task.id}
+              taskId={task.id}
+              initialTags={task.user_tags ?? []}
+              onMutate={() => mutate()}
+            />
+          }
+        />
 
         <TaskVerdictBadge
           task={task}
@@ -907,11 +923,23 @@ export function TaskDetailClient({
               <Loader2 className="h-3 w-3 animate-spin text-[color:var(--paper-ink-3)]" />
             ) : null}
           </div>
-          <VersionSwitcher
-            versions={versions}
-            selectedVersionId={selectedVersionId}
-            onSelect={handleSelectVersion}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <VersionSwitcher
+              versions={versions}
+              selectedVersionId={selectedVersionId}
+              onSelect={handleSelectVersion}
+            />
+            {selectedVersionId ? (
+              <TagEditor
+                key={selectedVersionId}
+                scope="VERSION"
+                targetId={selectedVersionId}
+                taskId={task.id}
+                initialTags={selectedVersion?.user_tags ?? []}
+                onMutate={() => mutate()}
+              />
+            ) : null}
+          </div>
         </div>
 
         <div className="space-y-3">

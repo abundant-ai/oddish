@@ -606,6 +606,9 @@ class TaskVersionSummary(BaseModel):
     cost_has_estimated: bool = False
     cost_has_native: bool = False
     last_run_at: datetime | None = None
+    # Direct VERSION-scope tags on this version (forward ref — UserTagRef is
+    # defined below in the tag section; model_rebuild() runs after it).
+    user_tags: list["UserTagRef"] = Field(default_factory=list)
 
 
 class TaskCostTotals(BaseModel):
@@ -767,6 +770,26 @@ class TrialResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class UserTagRef(BaseModel):
+    """Effective tag on a task, surfaced to API/CLI/frontend.
+
+    ``current=True`` -> tag is on the latest task version (primary chip).
+    ``older=True``   -> tag exists only on older versions (de-emphasized).
+    """
+
+    tag_id: str
+    key: str
+    value: str | None = None
+    color: str | None = None
+    visibility: str = "PRIVATE"
+    current: bool = False
+    older: bool = False
+
+
+# TaskVersionSummary forward-references UserTagRef (defined above only now).
+TaskVersionSummary.model_rebuild()
+
+
 class TaskResponse(BaseModel):
     id: str
     name: str
@@ -787,6 +810,7 @@ class TaskResponse(BaseModel):
             "submitted."
         ),
     )
+    user_tags: list[UserTagRef] = Field(default_factory=list)
 
 
 class TaskBatchCancelRequest(BaseModel):
@@ -857,6 +881,7 @@ class TaskBrowseItem(BaseModel):
     github_meta: dict[str, str] | None = None
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+    user_tags: list[UserTagRef] = Field(default_factory=list)
 
 
 class TaskBrowseResponse(BaseModel):
@@ -902,6 +927,7 @@ class TaskStatusResponse(BaseModel):
         description="Active/recent worker_jobs rows for this task and its trials",
     )
     trials: list[TrialResponse] | None = None
+    user_tags: list[UserTagRef] = Field(default_factory=list)
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
@@ -1127,6 +1153,178 @@ class ProbePresetResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class TagCreateRequest(BaseModel):
+    key: str
+    value: str | None = None
+    color: str | None = None
+    description: str | None = None
+    visibility: str = "PRIVATE"
+
+
+class TagUpdateRequest(BaseModel):
+    key: str | None = None
+    color: str | None = None
+    description: str | None = None
+    expected_row_version: int
+
+
+class TagSetVisibilityRequest(BaseModel):
+    visibility: str
+    expected_row_version: int
+
+
+class TagArchiveRequest(BaseModel):
+    expected_row_version: int
+
+
+class TagMergeRequest(BaseModel):
+    target_tag_id: str
+    expected_row_version: int | None = None
+
+
+class TagListItem(BaseModel):
+    id: str
+    key: str
+    value: str | None = None
+    color: str | None = None
+    visibility: str
+    state: str
+    usage_count: int = 0
+    row_version: int = 1
+    owner_user_id: str | None = None
+
+
+class TagListResponse(BaseModel):
+    items: list[TagListItem]
+
+
+class TagAssignRequest(BaseModel):
+    tag_id: str
+    scope: str
+    target_id: str
+    mode: str | None = None  # 'snapshot' | 'living' for EXPERIMENT
+    task_id: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_scope(self):
+        if self.scope not in {"VERSION", "TASK", "EXPERIMENT"}:
+            raise ValueError(f"scope must be VERSION/TASK/EXPERIMENT (got {self.scope})")
+        if self.scope == "EXPERIMENT" and self.mode not in {"snapshot", "living"}:
+            raise ValueError("EXPERIMENT-scope apply requires mode='snapshot'|'living'")
+        return self
+
+
+class TagUnassignRequest(BaseModel):
+    tag_id: str
+    scope: str
+    target_id: str
+    task_id: str | None = None
+
+
+class TagAssignResponse(BaseModel):
+    tag_id: str
+    assignment_id: str | None = None
+    mode: str | None = None
+    materialized: int | None = None
+
+
+class TagExcludeRequest(BaseModel):
+    tag_id: str
+    experiment_id: str
+    scope: str
+    target_id: str
+    task_id: str | None = None
+
+
+class TagGrantCreateRequest(BaseModel):
+    principal_type: str
+    principal_user_id: str | None = None
+    capability: str
+
+
+class TagGrantListItem(BaseModel):
+    id: str
+    principal_type: str
+    principal_user_id: str | None = None
+    capability: str
+
+
+class TagGrantListResponse(BaseModel):
+    items: list[TagGrantListItem]
+
+
+class TagPolicyResponse(BaseModel):
+    org_id: str
+    max_tags_per_entity: int
+    name_max_len: int
+    name_charset: str
+    reserved_prefixes: list[str]
+    who_can_create: str
+    profanity_mode: str
+    profanity_allowlist: list[str]
+    profanity_denylist: list[str]
+
+
+class TagPolicyUpdateRequest(BaseModel):
+    max_tags_per_entity: int | None = None
+    name_max_len: int | None = None
+    name_charset: str | None = None
+    reserved_prefixes: list[str] | None = None
+    who_can_create: str | None = None
+    profanity_mode: str | None = None
+    profanity_allowlist: list[str] | None = None
+    profanity_denylist: list[str] | None = None
+
+
+class TagFilterASTDTO(BaseModel):
+    all: list[str] = Field(default_factory=list)
+    any_: list[str] = Field(default_factory=list)
+    none: list[str] = Field(default_factory=list)
+
+
+class SavedTagFilterCreateRequest(BaseModel):
+    name: str
+    filter_ast: dict
+    visibility: str = "PRIVATE"
+
+
+class SavedTagFilterUpdateRequest(BaseModel):
+    name: str | None = None
+    filter_ast: dict | None = None
+    visibility: str | None = None
+
+
+class SavedTagFilterItem(BaseModel):
+    id: str
+    name: str
+    filter_ast: dict
+    visibility: str
+    owner_user_id: str
+
+
+class SavedTagFilterListResponse(BaseModel):
+    items: list[SavedTagFilterItem]
+
+
+class ProfanityReportItem(BaseModel):
+    event_id: int
+    tag_id: str | None
+    org_id: str | None
+    actor_user_id: str | None
+    reason: str | None
+    payload: dict
+    occurred_at: datetime
+
+
+class ProfanityReportListResponse(BaseModel):
+    items: list[ProfanityReportItem]
+
+
+class ProfanityReportCreateRequest(BaseModel):
+    tag_id: str
+    reason: str | None = None
 
 
 # ---------------------------------------------------------------------------

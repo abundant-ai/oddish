@@ -91,6 +91,10 @@ def _make_timing_recorder(request: Request) -> TimingRecorder:
     return _record
 
 
+def _split_tag_csv(csv: str | None) -> list[str]:
+    return [s.strip() for s in (csv or "").split(",") if s.strip()]
+
+
 MODAL_CANCEL_BATCH_SIZE = 32
 
 
@@ -510,6 +514,9 @@ async def browse_tasks(
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
     query: str | None = None,
+    tags: str | None = Query(None),
+    tags_any: str | None = Query(None),
+    tags_none: str | None = Query(None),
 ) -> TaskBrowseResponse:
     """Browse latest task versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
@@ -529,6 +536,9 @@ async def browse_tasks(
             limit=limit,
             offset=offset,
             query=query,
+            tags_all=_split_tag_csv(tags),
+            tags_any=_split_tag_csv(tags_any),
+            tags_none=_split_tag_csv(tags_none),
             record_timing=_make_timing_recorder(request),
         )
 

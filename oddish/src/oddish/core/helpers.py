@@ -23,16 +23,41 @@ from oddish.db import (
     WorkerJobModel,
     WorkerJobStatus,
 )
+from oddish.core.tags_projection import (
+    UserTagView as _UserTagView,
+    list_effective_user_tags_for_task_versions,
+)
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import (
     TaskStatusResponse,
     TrialQueueInfo,
     TrialResponse,
+    UserTagRef,
     VisibleWorkerJob,
 )
 
 
 logger = logging.getLogger(__name__)
+
+
+async def _hydrate_user_tags_for_task(
+    session, *, task_id: str, public_only: bool = False
+) -> list[UserTagRef]:
+    by_task = await list_effective_user_tags_for_task_versions(
+        session, task_ids=[task_id], public_only=public_only
+    )
+    return [
+        UserTagRef(
+            tag_id=t.tag_id,
+            key=t.key,
+            value=t.value,
+            color=t.color,
+            visibility=t.visibility,
+            current=t.current,
+            older=t.older,
+        )
+        for t in by_task.get(task_id, [])
+    ]
 
 
 def _resolve_trial_cost(
@@ -1021,10 +1046,30 @@ async def build_task_status_responses_from_counts(
     stats_result = await session.execute(stats_query)
     stats_map = {row.task_id: row for row in stats_result.all()}
 
+    # Hydrate effective user tags for every task in a single round-trip so
+    # batched list views surface tag chips without per-task fan-out.
+    user_tags_by_task = await list_effective_user_tags_for_task_versions(
+        session, task_ids=task_ids
+    )
+
     def _effective(task: TaskModel) -> str | None | object:
         return effective_map.get(task.id, _VERSION_ID_UNSET)
 
-    return [
+    def _user_tags(task_id: str) -> list[UserTagRef]:
+        return [
+            UserTagRef(
+                tag_id=t.tag_id,
+                key=t.key,
+                value=t.value,
+                color=t.color,
+                visibility=t.visibility,
+                current=t.current,
+                older=t.older,
+            )
+            for t in user_tags_by_task.get(task_id, [])
+        ]
+
+    responses = [
         _build_task_status_response(
             task,
             total=int(stats_map[task.id].total) if task.id in stats_map else 0,
@@ -1053,6 +1098,9 @@ async def build_task_status_responses_from_counts(
         )
         for task in tasks
     ]
+    for resp, task in zip(responses, tasks):
+        resp.user_tags = _user_tags(task.id)
+    return responses
 
 
 async def cancel_job_by_worker(
