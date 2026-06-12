@@ -100,3 +100,21 @@ export function parseTaskSearch(raw: string): ParsedTaskSearch {
 
   return { text: textParts.join(" "), all, any, none };
 }
+
+/**
+ * Inverse of `parseTaskSearch`: renders a parsed filter back into search-bar
+ * text. Round-trips through the parser: ALL terms emit as bare `tag:` tokens,
+ * ANY terms as an OR chain (the parser re-homes the chain head), NONE terms
+ * as `NOT tag:` tokens. A single-element ANY parses back into ALL, which is
+ * semantically identical for filtering.
+ */
+export function serializeTaskSearch(parsed: ParsedTaskSearch): string {
+  const parts: string[] = [];
+  if (parsed.text) parts.push(parsed.text);
+  for (const name of parsed.all) parts.push(`tag:${name}`);
+  if (parsed.any.length > 0) {
+    parts.push(parsed.any.map((name) => `tag:${name}`).join(" OR "));
+  }
+  for (const name of parsed.none) parts.push(`NOT tag:${name}`);
+  return parts.join(" ");
+}
