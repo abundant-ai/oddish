@@ -31,7 +31,13 @@ import {
   accumulateTrial,
 } from "@/lib/trial-aggregation";
 import type { Task, Trial, ExperimentProbeRow, UserTagRef } from "@/lib/types";
-import { ExternalLink, GitPullRequest, Loader2 } from "lucide-react";
+import { ExternalLink, GitPullRequest, Info, Loader2 } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   buildExperimentAgentSummaries,
   getExperimentAgentKey,
@@ -128,7 +134,7 @@ type ExperimentSummary = {
    * nop/oracle baselines excluded). Null until at least one task has a
    * scored trial.
    */
-  passAt1: number | null;
+  avgScore: number | null;
   totalTrials: number;
   completedTrials: number;
   failedTrials: number;
@@ -153,9 +159,9 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
   let failedFallback = 0;
   let rewardSumFallback = 0;
   let rewardTotalFallback = 0;
-  // Per-task mean reward over scored trials (baselines excluded); pass@1
-  // is the mean of these so every task carries equal weight regardless of
-  // how many trials it ran.
+  // Per-task mean reward over scored trials (baselines excluded); the avg
+  // score is the mean of these so every task carries equal weight
+  // regardless of how many trials it ran.
   let taskScoreSum = 0;
   let taskScoreCount = 0;
 
@@ -190,7 +196,7 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     rewardSuccess: rewardSuccess + acc.passCount,
     rewardSum: acc.rewardSum + rewardSumFallback,
     rewardTotal: acc.rewardTotal + rewardTotalFallback,
-    passAt1: taskScoreCount > 0 ? taskScoreSum / taskScoreCount : null,
+    avgScore: taskScoreCount > 0 ? taskScoreSum / taskScoreCount : null,
     totalTrials: acc.trialCount + totalTrialsFallback,
     completedTrials: acc.completed + completedFallback,
     failedTrials: acc.failed + failedFallback,
@@ -439,10 +445,12 @@ function ExperimentMetaStrip({
 
 function KpiTile({
   label,
+  labelInfo,
   children,
   className = "",
 }: {
   label: string;
+  labelInfo?: string;
   children: React.ReactNode;
   className?: string;
 }) {
@@ -450,8 +458,23 @@ function KpiTile({
     <div
       className={`flex flex-col gap-1.5 border-r border-[color:var(--paper-line-2)] px-4 py-3 last:border-r-0 ${className}`}
     >
-      <span className="font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+      <span className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
         {label}
+        {labelInfo && (
+          <TooltipProvider delayDuration={150}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Info
+                  className="h-3 w-3 cursor-help text-[color:var(--paper-ink-3)]"
+                  aria-label={`How ${label} is calculated`}
+                />
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs normal-case">
+                {labelInfo}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
       </span>
       {children}
     </div>
@@ -478,7 +501,7 @@ function ExperimentSummaryBar({
     );
   }
 
-  const scorePct = summary.passAt1 != null ? summary.passAt1 * 100 : null;
+  const scorePct = summary.avgScore != null ? summary.avgScore * 100 : null;
   const completionPct =
     summary.totalTrials > 0
       ? (summary.completedTrials / summary.totalTrials) * 100
@@ -499,7 +522,10 @@ function ExperimentSummaryBar({
 
   return (
     <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]">
-      <KpiTile label="Pass@1">
+      <KpiTile
+        label="Avg score"
+        labelInfo="Average of per-task average scores: each task's scored trials are averaged (partial credit included), then those task averages are averaged so every task counts equally regardless of trial count. nop/oracle baseline trials are excluded."
+      >
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {isLoadingTrials ? (
             // The score is computed from streamed trial pages; rendering an

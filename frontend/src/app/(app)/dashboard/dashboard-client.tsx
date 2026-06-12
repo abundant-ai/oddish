@@ -1424,16 +1424,21 @@ function RecentTasksCard({
                       <TableHead>PR</TableHead>
                       <TableHead>Tasks</TableHead>
                       <TableHead>Trials</TableHead>
-                      <TableHead>Pass@1</TableHead>
+                      <TableHead
+                        className="cursor-help"
+                        title="Average of per-task average scores: each task's scored trials are averaged (partial credit included), then those task averages are averaged so every task counts equally. nop/oracle baseline trials are excluded."
+                      >
+                        Avg score
+                      </TableHead>
                       <TableHead className="text-right">Last task</TableHead>
                       <TableHead className="text-right">Delete</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody className="[&_td]:text-xs">
                     {experiments.map((experiment) => {
-                      const passRate =
-                        experiment.pass_at_1 != null
-                          ? Math.round(experiment.pass_at_1 * 100)
+                      const avgScorePct =
+                        experiment.avg_score != null
+                          ? Math.round(experiment.avg_score * 100)
                           : null;
                       const retryingTrials =
                         Number(experiment.retrying_trials) || 0;
@@ -1537,19 +1542,19 @@ function RecentTasksCard({
                             )}
                           </TableCell>
                           <TableCell className="font-mono text-xs">
-                            {passRate === null ? (
+                            {avgScorePct === null ? (
                               <span className="text-muted-foreground">—</span>
                             ) : (
                               <span
                                 className={
-                                  passRate >= 80
+                                  avgScorePct >= 80
                                     ? "text-[#5c8e43] dark:text-[#85b85c]"
-                                    : passRate >= 35
+                                    : avgScorePct >= 35
                                       ? "text-yellow-400"
                                       : "text-rose-400"
                                 }
                               >
-                                {passRate}%
+                                {avgScorePct}%
                               </span>
                             )}
                           </TableCell>
