@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import selectinload
@@ -163,13 +165,14 @@ async def get_public_experiment_info(public_token: str) -> PublicExperimentRespo
 
 async def _public_experiment_refs(
     session, task_ids: list[str]
-) -> dict[str, list[TaskBrowseExperiment]]:
-    """Affiliated-experiment refs restricted to PUBLIC experiments.
+) -> dict[str, list[tuple[str, str, datetime | None]]]:
+    """(id, name, created_at) of PUBLIC experiments per task.
 
-    ``TaskStatusResponse.experiments`` is built from every live membership,
-    which is correct for org-authenticated callers but would leak private
-    experiment names/ids on the anonymous public endpoints -- those
-    responses get their list replaced with this projection.
+    The shared response builder fills ``experiments`` and the singular
+    ``experiment_*`` fields from every live membership, which is correct
+    for org-authenticated callers but would leak private experiment
+    names/ids on the anonymous public endpoints -- public responses get
+    both replaced via :func:`_apply_public_experiments`.
     """
     if not task_ids:
         return {}
@@ -178,6 +181,7 @@ async def _public_experiment_refs(
             task_experiments.c.task_id,
             ExperimentModel.id,
             ExperimentModel.name,
+            ExperimentModel.created_at,
         )
         .select_from(task_experiments)
         .join(
@@ -191,12 +195,36 @@ async def _public_experiment_refs(
         )
         .order_by(ExperimentModel.name.asc(), ExperimentModel.id.asc())
     )
-    refs: dict[str, list[TaskBrowseExperiment]] = {}
-    for task_id, experiment_id, experiment_name in rows.all():
+    refs: dict[str, list[tuple[str, str, datetime | None]]] = {}
+    for task_id, experiment_id, experiment_name, experiment_created_at in rows.all():
         refs.setdefault(str(task_id), []).append(
-            TaskBrowseExperiment(id=str(experiment_id), name=str(experiment_name))
+            (str(experiment_id), str(experiment_name), experiment_created_at)
         )
     return refs
+
+
+def _apply_public_experiments(
+    response: TaskStatusResponse,
+    refs: list[tuple[str, str, datetime | None]],
+    *,
+    preferred_id: str | None = None,
+) -> None:
+    """Replace BOTH the experiments list and the singular experiment_*
+    fields with the public-only projection (the builder derives them from
+    all memberships, including private ones)."""
+    response.experiments = [
+        TaskBrowseExperiment(id=ref_id, name=ref_name)
+        for ref_id, ref_name, _ in refs
+    ]
+    primary = None
+    if preferred_id is not None:
+        primary = next((r for r in refs if r[0] == preferred_id), None)
+    if primary is None:
+        primary = refs[0] if refs else None
+    response.experiment_id = primary[0] if primary else ""
+    response.experiment_name = primary[1] if primary else ""
+    response.experiment_is_public = primary is not None
+    response.experiment_created_at = primary[2] if primary else None
 
 
 @router.get(
@@ -269,7 +297,9 @@ async def list_public_experiment_tasks(
         )
         for resp, task in zip(responses, tasks):
             resp.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
-            resp.experiments = public_exps.get(task.id, [])
+            _apply_public_experiments(
+                resp, public_exps.get(task.id, []), preferred_id=exp_id
+            )
         return responses
 
 
@@ -297,7 +327,7 @@ async def get_public_task_status(
             )
             response.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
             public_exps = await _public_experiment_refs(session, [task.id])
-            response.experiments = public_exps.get(task.id, [])
+            _apply_public_experiments(response, public_exps.get(task.id, []))
             return response
 
         response = await get_task_status_counts(
@@ -311,7 +341,7 @@ async def get_public_task_status(
         )
         response.user_tags = _user_tag_refs(user_tags_by_task.get(task_id, []))
         public_exps = await _public_experiment_refs(session, [task_id])
-        response.experiments = public_exps.get(task_id, [])
+        _apply_public_experiments(response, public_exps.get(task_id, []))
         return response
 
 

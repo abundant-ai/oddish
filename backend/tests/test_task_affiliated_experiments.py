@@ -80,11 +80,13 @@ async def test_public_task_payload_lists_only_public_experiments():
                 values ('org1','O','o','free','{}'::jsonb,true,now(),now());
                 insert into experiments (id,name,org_id,is_public,public_token,created_at,updated_at)
                 values ('exp-pub','Public Exp','org1',true,'tok-pub',now(),now()),
-                       ('exp-priv','Secret Initiative','org1',false,null,now(),now());
+                       ('exp-pub2','Second Public','org1',true,'tok-pub2',now(),now()),
+                       ('exp-priv','Aardvark Secret','org1',false,null,now(),now());
                 insert into tasks (id,name,org_id,"user",priority,status,task_path,tags,run_analysis,run_probe,created_at,updated_at)
                 values ('t1','task','org1','u','LOW','COMPLETED','p','{}'::jsonb,false,false,now(),now());
                 insert into task_experiments (task_id,experiment_id,created_at)
                 values ('t1','exp-pub',now()),
+                       ('t1','exp-pub2',now()),
                        ('t1','exp-priv',now());
             """
             for stmt in stmts.split(";"):
@@ -98,11 +100,22 @@ async def test_public_task_payload_lists_only_public_experiments():
         conn_mod.async_session_maker = conn_mod._create_session_maker(engine)
         try:
             for include_trials in (True, False):
+                # include_trials=False previously 500'd (MultipleResultsFound)
+                # for a task in two public experiments.
                 resp = await get_public_task_status(
                     "t1", include_trials=include_trials
                 )
                 names = [(e.id, e.name) for e in resp.experiments]
-                assert names == [("exp-pub", "Public Exp")], names
+                assert names == [
+                    ("exp-pub", "Public Exp"),
+                    ("exp-pub2", "Second Public"),
+                ], names
+                # the SINGULAR fields must not pick the private experiment
+                # either ("Aardvark Secret" sorts first, so the org-side
+                # primary pick would choose it).
+                assert resp.experiment_id == "exp-pub"
+                assert resp.experiment_name == "Public Exp"
+                assert resp.experiment_is_public is True
         finally:
             conn_mod.engine, conn_mod.async_session_maker = old_engine, old_maker
     finally:
