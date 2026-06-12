@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import heapq
 import json
 import logging
@@ -1168,3 +1170,8 @@ async def cancel_job_by_worker(
 
     logger.info("cancel_job_by_worker: terminated %s sandbox %s", provider, external_id)
     return True
+
+def escape_like(needle: str) -> str:
+    """Escape LIKE/ILIKE pattern metacharacters so user input matches
+    literally. Pair with ``.ilike(f"%{escape_like(q)}%", escape="\\")``."""
+    return re.sub(r"([\\%_])", r"\\\1", needle)
