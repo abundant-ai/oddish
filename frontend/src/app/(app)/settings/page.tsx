@@ -731,17 +731,26 @@ function PreferencesPanel() {
     fetcher,
   );
   const [savingProbe, setSavingProbe] = useState(false);
+  const [probeError, setProbeError] = useState<string | null>(null);
 
   const toggleDefaultProbe = async (checked: boolean) => {
     setSavingProbe(true);
+    setProbeError(null);
     try {
-      await fetch(`/api/settings/probe`, {
+      const res = await fetch(`/api/settings/probe`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ default_run_probe: checked }),
       });
-      await mutate(`/api/settings/probe`);
+      if (!res.ok) {
+        throw new Error("Failed to update probe preference");
+      }
+    } catch {
+      setProbeError("Failed to update probe preference. Please try again.");
     } finally {
+      // Always resync the checkbox to the server's true value, whether the
+      // PATCH succeeded or failed.
+      await mutate(`/api/settings/probe`);
       setSavingProbe(false);
     }
   };
@@ -767,6 +776,11 @@ function PreferencesPanel() {
           onCheckedChange={(v) => toggleDefaultProbe(v === true)}
         />
       </div>
+      {probeError && (
+        <Alert variant="destructive" className="mt-4">
+          <AlertDescription>{probeError}</AlertDescription>
+        </Alert>
+      )}
     </Panel>
   );
 }
