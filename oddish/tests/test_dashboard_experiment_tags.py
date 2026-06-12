@@ -90,6 +90,27 @@ def test_user_tag_view_payload_shape():
     }
 
 
+def test_attach_user_tags_to_task_payloads():
+    from oddish.core.dashboard import _attach_user_tags_to_task_payloads
+    from oddish.core.tags_projection import UserTagView
+
+    payloads = [{"id": "t1", "user_tags": []}, {"id": "t2", "user_tags": []}]
+    by_task = {
+        "t1": [
+            UserTagView(
+                tag_id="tg9", key="urgent", value=None, color="blue",
+                visibility="PUBLIC", current=False, older=True,
+            )
+        ]
+    }
+    _attach_user_tags_to_task_payloads(payloads, by_task)
+    assert payloads[0]["user_tags"] == [{
+        "tag_id": "tg9", "key": "urgent", "value": None, "color": "blue",
+        "visibility": "PUBLIC", "current": False, "older": True,
+    }]
+    assert payloads[1]["user_tags"] == []
+
+
 def test_unknown_positive_token_returns_empty_page():
     from oddish.core.dashboard import _has_unknown_positive_tokens
     from oddish.core.tag_filter_ast import TagFilterAST

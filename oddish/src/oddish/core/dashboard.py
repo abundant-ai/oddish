@@ -582,6 +582,16 @@ def _experiment_tag_predicates(resolved: ResolvedTagFilter) -> list:
     return clauses
 
 
+def _attach_user_tags_to_task_payloads(
+    payloads: list[dict], by_task: dict[str, list[UserTagView]]
+) -> None:
+    """Fill the (already-present, defaulted-empty) ``user_tags`` field on
+    dashboard task payloads from effective-tag projection views."""
+    for payload in payloads:
+        views = by_task.get(str(payload.get("id")), [])
+        payload["user_tags"] = [_user_tag_view_payload(v) for v in views]
+
+
 def _user_tag_view_payload(view: UserTagView) -> dict[str, Any]:
     """JSON shape the frontend's UserTagRef expects."""
     return {
@@ -1345,6 +1355,13 @@ async def get_dashboard_core(
                         elapsed_ms(build_started_at),
                         "Dashboard tasks response build",
                     )
+                try:
+                    by_task = await list_effective_user_tags_for_task_versions(
+                        session, task_ids=[t.id for t in fetched_tasks]
+                    )
+                    _attach_user_tags_to_task_payloads(tr, by_task)
+                except Exception:  # pragma: no cover - chips degrade, dash survives
+                    logger.exception("dashboard tasks user_tags hydration failed")
 
         return {
             "queues": qs,
