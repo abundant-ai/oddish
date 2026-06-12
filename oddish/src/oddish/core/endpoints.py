@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 from fastapi import HTTPException
 from sqlalchemy import (
     and_,
@@ -19,6 +17,7 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.orm import load_only, selectinload
 
 from oddish.core.helpers import (
+    escape_like,
     _parse_github_meta,
     build_task_status_response_compact,
     build_task_status_response,
@@ -479,7 +478,7 @@ async def browse_tasks_core(
     if normalized_query:
         # User input is a literal needle, not a LIKE pattern: escape %, _
         # and backslash so e.g. searching "_" doesn't match every task.
-        escaped_query = re.sub(r"([\\%_])", r"\\\1", normalized_query)
+        escaped_query = escape_like(normalized_query)
         ranked_tasks = ranked_tasks.where(
             TaskModel.name.ilike(f"%{escaped_query}%", escape="\\")
         )
