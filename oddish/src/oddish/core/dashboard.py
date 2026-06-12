@@ -8,7 +8,17 @@ from datetime import datetime, timedelta, timezone
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import and_, case, false, func, nulls_last, or_, select, text
+from sqlalchemy import (
+    and_,
+    case,
+    false,
+    func,
+    not_,
+    nulls_last,
+    or_,
+    select,
+    text,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -166,12 +176,27 @@ _STATUS_FILTER_OVERFETCH_MULTIPLIER = 4
 _STATUS_FILTER_OVERFETCH_CEILING = 200
 
 
+def _baseline_agent_clause():
+    """Match nop/oracle baseline agents, mirroring the frontend's
+    ``isBaselineAgentName`` so pass@1 excludes deterministic baselines."""
+    agent_lower = func.lower(func.coalesce(TrialModel.agent, ""))
+    return or_(
+        agent_lower == "nop",
+        agent_lower == "oracle",
+        agent_lower.like("nop-%"),
+        agent_lower.like("oracle-%"),
+        agent_lower.like("agent-nop%"),
+        agent_lower.like("agent-oracle%"),
+    )
+
+
 def _build_aggregates_for_experiment_ids(
     experiment_ids: list[str], *, org_id: str | None
 ):
-    """Return (task_agg_subquery, trial_agg_subquery) scoped to a page.
+    """Return (task_agg_subquery, trial_agg_subquery, score_agg_subquery)
+    scoped to a page.
 
-    Both subqueries restrict their FROM-side to the given experiment ids
+    The subqueries restrict their FROM-side to the given experiment ids
     so the planner walks only ``len(experiment_ids)`` rows worth of
     tasks/trials instead of the org's full set. Org scoping is also
     applied for defense in depth -- ``last_activity_at`` is denormalized
@@ -292,7 +317,36 @@ def _build_aggregates_for_experiment_ids(
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
     trial_agg = trial_agg_query.group_by(TrialModel.experiment_id).subquery()
 
-    return task_agg, trial_agg
+    # avg score: per-task mean reward (over scored trials) averaged across
+    # tasks, so tasks with many trials don't dominate the experiment score
+    # and partial credit averages in. nop/oracle baseline trials are
+    # excluded.
+    per_task_score_query = (
+        select(
+            TrialModel.experiment_id.label("experiment_id"),
+            func.avg(TrialModel.reward).label("task_avg_score"),
+        )
+        .where(
+            TrialModel.experiment_id.in_(experiment_ids),
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.reward.isnot(None),
+            not_(_baseline_agent_clause()),
+        )
+        .group_by(TrialModel.experiment_id, TrialModel.task_id)
+    )
+    if org_id is not None:
+        per_task_score_query = per_task_score_query.where(TrialModel.org_id == org_id)
+    per_task_score = per_task_score_query.subquery()
+    score_agg = (
+        select(
+            per_task_score.c.experiment_id.label("experiment_id"),
+            func.avg(per_task_score.c.task_avg_score).label("avg_score"),
+        )
+        .group_by(per_task_score.c.experiment_id)
+        .subquery()
+    )
+
+    return task_agg, trial_agg, score_agg
 
 
 def _first_live_task_id_for_experiment():
@@ -414,9 +468,7 @@ def _build_primary_task_author_match(
     elif len(lowered_handles) > 1:
         legacy_user_matches.append(lowered_user.in_(lowered_handles))
     if legacy_user_matches:
-        tiers.append(
-            and_(_empty_github_tag_clause(), or_(*legacy_user_matches))
-        )
+        tiers.append(and_(_empty_github_tag_clause(), or_(*legacy_user_matches)))
 
     tiers.append(
         and_(
@@ -789,7 +841,7 @@ async def load_dashboard_experiments(
     # ------------------------------------------------------------------
     # Step 2: aggregate task / trial counts for just this page.
     # ------------------------------------------------------------------
-    task_agg, trial_agg = _build_aggregates_for_experiment_ids(
+    task_agg, trial_agg, score_agg = _build_aggregates_for_experiment_ids(
         experiment_ids, org_id=org_id
     )
 
@@ -818,12 +870,14 @@ async def load_dashboard_experiments(
             func.coalesce(trial_agg.c.reward_success, 0).label("reward_success"),
             func.coalesce(trial_agg.c.reward_sum, 0.0).label("reward_sum"),
             func.coalesce(trial_agg.c.reward_total, 0).label("reward_total"),
+            score_agg.c.avg_score.label("avg_score"),
             task_agg.c.last_task_created_at,
             trial_agg.c.last_trial_created_at,
         )
         .select_from(ExperimentModel)
         .outerjoin(task_agg, task_agg.c.experiment_id == ExperimentModel.id)
         .outerjoin(trial_agg, trial_agg.c.experiment_id == ExperimentModel.id)
+        .outerjoin(score_agg, score_agg.c.experiment_id == ExperimentModel.id)
         .where(ExperimentModel.id.in_(experiment_ids))
     )
 
@@ -875,6 +929,11 @@ async def load_dashboard_experiments(
             "reward_success": int(agg["reward_success"]) if agg else 0,
             "reward_sum": float(agg["reward_sum"] or 0.0) if agg else 0.0,
             "reward_total": int(agg["reward_total"]) if agg else 0,
+            "avg_score": (
+                float(agg["avg_score"])
+                if agg and agg["avg_score"] is not None
+                else None
+            ),
             "primary_user": primary_task["task_user"] if primary_task else None,
             "primary_github_username": (
                 primary_task["task_github_username"] if primary_task else None
@@ -907,8 +966,7 @@ async def load_dashboard_experiments(
             normalized_query in str(merged["experiment_name"] or "").lower()
             or normalized_query in exp_id.lower()
             or normalized_query in str(merged["primary_user"] or "").lower()
-            or normalized_query
-            in str(merged["primary_github_username"] or "").lower()
+            or normalized_query in str(merged["primary_github_username"] or "").lower()
             or normalized_query in str(merged["last_user"] or "").lower()
             or normalized_query in str(merged["last_github_username"] or "").lower()
         ):
@@ -975,6 +1033,7 @@ async def load_dashboard_experiments(
                 "reward_success": int(merged["reward_success"] or 0),
                 "reward_sum": float(merged["reward_sum"] or 0.0),
                 "reward_total": int(merged["reward_total"] or 0),
+                "avg_score": merged["avg_score"],
                 "analysis_tasks": int(merged["analysis_tasks"] or 0),
                 "verdict_good": int(merged["verdict_good"] or 0),
                 "verdict_needs_review": int(merged["verdict_needs_review"] or 0),
