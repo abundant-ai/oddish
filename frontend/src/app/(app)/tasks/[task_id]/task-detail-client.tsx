@@ -223,17 +223,30 @@ function TaskDetailHeader({
           </div>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
-          {task.experiment_name ? (
-            <>
-              <span>experiment</span>
-              <Link
-                href={`/experiments/${encodeURIComponent(encodeURIComponent(task.experiment_id))}`}
-                className="text-[color:var(--paper-ink-2)] underline-offset-2 hover:underline"
-              >
-                {task.experiment_name}
-              </Link>
-            </>
-          ) : null}
+          {(() => {
+            const affiliated = task.experiments?.length
+              ? task.experiments
+              : task.experiment_name
+                ? [{ id: task.experiment_id, name: task.experiment_name }]
+                : [];
+            if (affiliated.length === 0) return null;
+            return (
+              <>
+                <span>{affiliated.length > 1 ? "experiments" : "experiment"}</span>
+                {affiliated.map((exp, i) => (
+                  <span key={exp.id} className="inline-flex items-center gap-x-2">
+                    {i > 0 ? <span aria-hidden>·</span> : null}
+                    <Link
+                      href={`/experiments/${encodeURIComponent(encodeURIComponent(exp.id))}`}
+                      className="text-[color:var(--paper-ink-2)] underline-offset-2 hover:underline"
+                    >
+                      {exp.name}
+                    </Link>
+                  </span>
+                ))}
+              </>
+            );
+          })()}
           {task.github_username || task.user ? (
             <>
               <span aria-hidden>·</span>
