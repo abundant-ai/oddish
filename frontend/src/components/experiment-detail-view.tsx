@@ -14,28 +14,23 @@ import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
-import { prBadge, prNumberFromUrl, taskPrUrl, encodeExperimentRouteParam } from "@/lib/utils";
+import {
+  prBadge,
+  prNumberFromUrl,
+  taskPrUrl,
+  encodeExperimentRouteParam,
+} from "@/lib/utils";
 import { formatCostUsd } from "@/lib/format";
 import {
   EMPTY_TRIAL_AGGREGATE,
   accumulateTrial,
 } from "@/lib/trial-aggregation";
-import type {
-  Task,
-  Trial,
-  ExperimentProbeRow,
-  UserTagRef,
-} from "@/lib/types";
+import type { Task, Trial, ExperimentProbeRow, UserTagRef } from "@/lib/types";
 import { ExternalLink, GitPullRequest, Loader2 } from "lucide-react";
 import {
   buildExperimentAgentSummaries,
@@ -48,12 +43,12 @@ type DrawerMode = "task" | "trial";
 const TrialDetailPanel = dynamic(
   () =>
     import("@/components/trial-detail-panel").then(
-      (mod) => mod.TrialDetailPanel
+      (mod) => mod.TrialDetailPanel,
     ),
   {
     ssr: false,
     loading: () => <DrawerContentLoading label="Loading trial details..." />,
-  }
+  },
 );
 
 const TaskFilesPanel = dynamic(
@@ -62,7 +57,7 @@ const TaskFilesPanel = dynamic(
   {
     ssr: false,
     loading: () => <DrawerContentLoading label="Loading task files..." />,
-  }
+  },
 );
 
 function DrawerContentLoading({ label }: { label: string }) {
@@ -114,12 +109,12 @@ interface ExperimentDetailViewProps {
 const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
 
 function getModelScopedAgentsFromSummaries(
-  summaries: ExperimentAgentSummary[]
+  summaries: ExperimentAgentSummary[],
 ): Set<string> {
   return new Set(
     summaries
       .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent)
+      .map((summary) => summary.agent),
   );
 }
 
@@ -343,7 +338,9 @@ function ExperimentPrLink({
       href={prUrl}
       target="_blank"
       rel="noreferrer"
-      title={prTitle ? `${prTitle} — view on GitHub` : "View pull request on GitHub"}
+      title={
+        prTitle ? `${prTitle} — view on GitHub` : "View pull request on GitHub"
+      }
       className="inline-flex h-8 max-w-[200px] select-none items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
     >
       <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
@@ -602,17 +599,11 @@ function statusLabel(status: string): string {
   return status;
 }
 
-function ExperimentProbeTab({
-  experimentId,
-}: {
-  experimentId?: string;
-}) {
+function ExperimentProbeTab({ experimentId }: { experimentId?: string }) {
   const encodedId = experimentId
     ? encodeExperimentRouteParam(experimentId)
     : null;
-  const url = encodedId
-    ? `/api/experiments/${encodedId}/probes`
-    : null;
+  const url = encodedId ? `/api/experiments/${encodedId}/probes` : null;
 
   const { data, error, isLoading } = useSWR<ExperimentProbeRow[]>(
     url,
@@ -748,7 +739,7 @@ export function ExperimentDetailView({
     if (typeof window === "undefined") return true;
     try {
       const stored = window.localStorage.getItem(
-        "oddish:trial-drawer-show-task"
+        "oddish:trial-drawer-show-task",
       );
       // Default ON: only explicit "0" disables it.
       return stored !== "0";
@@ -760,7 +751,7 @@ export function ExperimentDetailView({
     if (typeof window === "undefined") return true;
     try {
       const stored = window.localStorage.getItem(
-        "oddish:trial-drawer-show-trial"
+        "oddish:trial-drawer-show-trial",
       );
       return stored !== "0";
     } catch {
@@ -774,7 +765,7 @@ export function ExperimentDetailView({
     try {
       window.localStorage.setItem(
         "oddish:trial-drawer-show-task",
-        next ? "1" : "0"
+        next ? "1" : "0",
       );
     } catch {
       // ignore
@@ -787,7 +778,7 @@ export function ExperimentDetailView({
     try {
       window.localStorage.setItem(
         "oddish:trial-drawer-show-trial",
-        next ? "1" : "0"
+        next ? "1" : "0",
       );
     } catch {
       // ignore
@@ -805,7 +796,7 @@ export function ExperimentDetailView({
     : null;
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(deferredTasksForDerivedData),
-    [deferredTasksForDerivedData]
+    [deferredTasksForDerivedData],
   );
   const displayAgentSummaries =
     agentSummaries.length > 0 ? agentSummaries : cachedAgentSummaries;
@@ -814,7 +805,7 @@ export function ExperimentDetailView({
       agentSummaries.length > 0
         ? modelScopedAgents
         : getModelScopedAgentsFromSummaries(cachedAgentSummaries),
-    [agentSummaries, modelScopedAgents, cachedAgentSummaries]
+    [agentSummaries, modelScopedAgents, cachedAgentSummaries],
   );
 
   useEffect(() => {
@@ -844,7 +835,7 @@ export function ExperimentDetailView({
     try {
       window.sessionStorage.setItem(
         agentSummaryStorageKey,
-        JSON.stringify(agentSummaries)
+        JSON.stringify(agentSummaries),
       );
     } catch {
       // Ignore storage failures; the live data still drives the table.
@@ -879,7 +870,7 @@ export function ExperimentDetailView({
       }
       return { trialGroups, orderedTrials };
     },
-    [displayModelScopedAgents]
+    [displayModelScopedAgents],
   );
 
   useEffect(() => {
@@ -968,7 +959,7 @@ export function ExperimentDetailView({
   useEffect(() => {
     if (!drawerState) return;
     const liveTask = tasksForExperiment.find(
-      (t) => t.id === drawerState.task.id
+      (t) => t.id === drawerState.task.id,
     );
     if (!liveTask) return;
     const liveTrialCount = liveTask.trials?.length ?? 0;
@@ -1004,7 +995,7 @@ export function ExperimentDetailView({
 
   const summary = useMemo(
     () => buildExperimentSummary(deferredTasksForDerivedData),
-    [deferredTasksForDerivedData]
+    [deferredTasksForDerivedData],
   );
 
   const closeDrawer = () => {
@@ -1139,7 +1130,7 @@ export function ExperimentDetailView({
                   showAnalysis={showAnalysis}
                   onTrialSelect={(trial, task, context) => {
                     const taskIndex = tasksForExperiment.findIndex(
-                      (t) => t.id === task.id
+                      (t) => t.id === task.id,
                     );
                     setDrawerState({
                       isOpen: true,
@@ -1200,6 +1191,7 @@ export function ExperimentDetailView({
               probeTaskId={drawerState.task.id}
               filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
               apiBaseUrl={apiBaseUrl}
+              showAnalysis={showAnalysis}
               contentOnly={true}
             />
           }
