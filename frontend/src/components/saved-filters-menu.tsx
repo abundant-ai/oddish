@@ -52,11 +52,14 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const { data: filters, mutate } = useSWR<SavedFilterListResponse>(
-    open ? "/api/tag-filters" : null,
-    fetcher,
-    { revalidateOnFocus: false },
-  );
+  const {
+    data: filters,
+    mutate,
+    isLoading,
+    error: loadError,
+  } = useSWR<SavedFilterListResponse>(open ? "/api/tag-filters" : null, fetcher, {
+    revalidateOnFocus: false,
+  });
   const { data: tags } = useSWR<TagListResponse>(
     open ? "/api/tags" : null,
     fetcher,
@@ -137,14 +140,39 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
   const myFilters = items.filter((f) => f.visibility === "PRIVATE");
 
   async function deleteFilter(filterId: string) {
-    const res = await fetch(`/api/tag-filters/${encodeURIComponent(filterId)}`, {
-      method: "DELETE",
+    setError(null);
+    const withoutFilter = (current?: SavedFilterListResponse) => ({
+      items: (current?.items ?? []).filter((f) => f.id !== filterId),
     });
-    if (!res.ok) {
+    try {
+      // Drop the row at click time instead of after the DELETE + refetch
+      // round-trips (~2s warm, 5s+ behind Modal cold starts); SWR restores
+      // the previous list if the request fails. populateCache recomputes
+      // from the latest cache so rapid deletes compose, and skipping
+      // revalidation avoids a second round-trip — reopening the popover
+      // refetches regardless.
+      await mutate(
+        async () => {
+          const res = await fetch(
+            `/api/tag-filters/${encodeURIComponent(filterId)}`,
+            { method: "DELETE" },
+          );
+          // 404 means it was already deleted elsewhere; keep it removed.
+          if (!res.ok && res.status !== 404) {
+            throw new Error(`Delete failed: ${res.status}`);
+          }
+          return undefined;
+        },
+        {
+          optimisticData: withoutFilter,
+          populateCache: (_res, current) => withoutFilter(current),
+          rollbackOnError: true,
+          revalidate: false,
+        },
+      );
+    } catch {
       setError("Could not delete filter.");
-      return;
     }
-    await mutate();
   }
 
   function renderSection(
@@ -204,7 +232,15 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72 p-0">
-        {items.length === 0 ? (
+        {isLoading ? (
+          <p className="px-3 py-2 text-xs text-muted-foreground">
+            Loading filters…
+          </p>
+        ) : loadError && !filters ? (
+          <p className="px-3 py-2 text-xs text-destructive">
+            Could not load filters.
+          </p>
+        ) : items.length === 0 ? (
           <p className="px-3 py-2 text-xs text-muted-foreground">
             No saved filters yet.
           </p>
