@@ -35,6 +35,14 @@ class UserResponse(BaseModel):
     created_at: str
 
 
+class UserSettingsResponse(BaseModel):
+    default_run_probe: bool
+
+
+class UpdateUserSettingsRequest(BaseModel):
+    default_run_probe: bool | None = None
+
+
 class InviteUserRequest(BaseModel):
     """Request to invite a user to the organization."""
 
