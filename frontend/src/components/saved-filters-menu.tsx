@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Bookmark, Tag } from "lucide-react";
+import { Bookmark, Tag, X } from "lucide-react";
 import useSWR from "swr";
 
 import { Button } from "@/components/ui/button";
@@ -63,9 +63,19 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
     { revalidateOnFocus: false },
   );
 
-  const idToKey = new Map((tags?.items ?? []).map((t) => [t.id, t.key]));
+  // Search tokens are whitespace-free, so match keys through the same
+  // client-side normalization the pending-chip preview uses (spaces →
+  // hyphens, lowercase) — display keys may carry spaces/casing.
+  const normalizeKey = (key: string) =>
+    key.trim().replace(/\s+/g, "-").toLowerCase();
+  // idToKey emits the NORMALIZED form: serialized tokens must be
+  // whitespace-free to survive the parser's tokenizer, and the backend
+  // resolver re-normalizes name tokens (NFKC/casefold) on lookup anyway.
+  const idToKey = new Map(
+    (tags?.items ?? []).map((t) => [t.id, normalizeKey(t.key)]),
+  );
   const keyToId = new Map(
-    (tags?.items ?? []).map((t) => [t.key.toLowerCase(), t.id]),
+    (tags?.items ?? []).map((t) => [normalizeKey(t.key), t.id]),
   );
 
   const parsed = parseTaskSearch(query);
@@ -95,7 +105,7 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
     // Persist ids where the name resolves; unknown tokens stay as names
     // (the browse resolver accepts both).
     const toIds = (tokens: string[]) =>
-      tokens.map((t) => keyToId.get(t.toLowerCase()) ?? t);
+      tokens.map((t) => keyToId.get(normalizeKey(t)) ?? t);
     const res = await fetch("/api/tag-filters", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -126,7 +136,22 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
   const orgFilters = items.filter((f) => f.visibility === "ORG");
   const myFilters = items.filter((f) => f.visibility === "PRIVATE");
 
-  function renderSection(label: string, section: SavedFilterItem[]) {
+  async function deleteFilter(filterId: string) {
+    const res = await fetch(`/api/tag-filters/${encodeURIComponent(filterId)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      setError("Could not delete filter.");
+      return;
+    }
+    await mutate();
+  }
+
+  function renderSection(
+    label: string,
+    section: SavedFilterItem[],
+    deletable: boolean,
+  ) {
     if (section.length === 0) return null;
     return (
       <div>
@@ -134,20 +159,32 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
           {label}
         </p>
         {section.map((f) => (
-          <button
-            key={f.id}
-            type="button"
-            className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-sm hover:bg-accent"
-            onClick={() => applyFilter(f)}
-          >
-            <Tag
-              className="h-3.5 w-3.5 shrink-0"
-              style={{ color: tagColor(f.name) }}
-              fill={tagColor(f.name)}
-              fillOpacity={0.25}
-            />
-            <span className="truncate">{f.name}</span>
-          </button>
+          <div key={f.id} className="flex items-center hover:bg-accent">
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-center gap-1.5 px-3 py-1.5 text-left text-sm"
+              onClick={() => applyFilter(f)}
+            >
+              <Tag
+                className="h-3.5 w-3.5 shrink-0"
+                style={{ color: tagColor(f.name) }}
+                fill={tagColor(f.name)}
+                fillOpacity={0.25}
+              />
+              <span className="truncate">{f.name}</span>
+            </button>
+            {deletable ? (
+              <button
+                type="button"
+                className="mr-2 rounded-full p-0.5 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+                aria-label={`Delete filter ${f.name}`}
+                title={`Delete ${f.name}`}
+                onClick={() => deleteFilter(f.id)}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            ) : null}
+          </div>
         ))}
       </div>
     );
@@ -173,8 +210,8 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
           </p>
         ) : (
           <div className="max-h-64 overflow-y-auto pb-1">
-            {renderSection("Org filters", orgFilters)}
-            {renderSection("My filters", myFilters)}
+            {renderSection("Org filters", orgFilters, false)}
+            {renderSection("My filters", myFilters, true)}
           </div>
         )}
         <div className="space-y-2 border-t p-3">
