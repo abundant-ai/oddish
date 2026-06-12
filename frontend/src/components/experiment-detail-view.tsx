@@ -524,7 +524,7 @@ function ExperimentSummaryBar({
     <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]">
       <KpiTile
         label="Avg score"
-        labelInfo="Average of per-task average scores: each task's scored trials are averaged (partial credit included), then those task averages are averaged so every task counts equally regardless of trial count. nop/oracle baseline trials are excluded."
+        labelInfo="Average of per-task average reward, nop/oracle excluded"
       >
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
           {isLoadingTrials ? (
