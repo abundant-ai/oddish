@@ -355,6 +355,7 @@ export interface DashboardExperiment {
   id: string;
   name: string;
   is_public: boolean;
+  user_tags?: UserTagRef[];
   task_count: number;
   total_trials: number;
   completed_trials: number;

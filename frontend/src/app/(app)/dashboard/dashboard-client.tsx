@@ -43,6 +43,7 @@ import type {
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { parseTaskSearch } from "@/lib/tag-query";
+import { TagChip } from "@/components/tag-chip";
 import {
   cn,
   encodeExperimentRouteParam,
@@ -1468,6 +1469,13 @@ function RecentTasksCard({
                                 />
                               )}
                             </div>
+                            {(experiment.user_tags?.length ?? 0) > 0 && (
+                              <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                                {experiment.user_tags!.map((t) => (
+                                  <TagChip key={t.tag_id} tag={t} />
+                                ))}
+                              </div>
+                            )}
                           </TableCell>
                           <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                             <span className="text-foreground/80">
