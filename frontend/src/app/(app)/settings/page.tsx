@@ -19,6 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -53,6 +54,7 @@ import {
   Building2,
   Check,
   Copy,
+  FlaskConical,
   Key,
   Plus,
   Trash2,
@@ -720,6 +722,56 @@ function ProfilePanel() {
 }
 
 // =============================================================================
+// Preferences
+// =============================================================================
+
+function PreferencesPanel() {
+  const { data: probeSettings } = useSWR<{ default_run_probe: boolean }>(
+    `/api/settings/probe`,
+    fetcher,
+  );
+  const [savingProbe, setSavingProbe] = useState(false);
+
+  const toggleDefaultProbe = async (checked: boolean) => {
+    setSavingProbe(true);
+    try {
+      await fetch(`/api/settings/probe`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ default_run_probe: checked }),
+      });
+      await mutate(`/api/settings/probe`);
+    } finally {
+      setSavingProbe(false);
+    }
+  };
+
+  return (
+    <Panel>
+      <PanelHeader
+        icon={FlaskConical}
+        title="Preferences"
+        description="Defaults applied to task sweeps you submit."
+      />
+      <div className="flex items-center justify-between gap-4 pt-4">
+        <div className="space-y-1">
+          <Label htmlFor="default-probe">Run probes by default</Label>
+          <p className="text-sm text-muted-foreground">
+            Automatically enqueue a probe trial for every task sweep you submit.
+          </p>
+        </div>
+        <Checkbox
+          id="default-probe"
+          checked={probeSettings?.default_run_probe ?? false}
+          disabled={savingProbe}
+          onCheckedChange={(v) => toggleDefaultProbe(v === true)}
+        />
+      </div>
+    </Panel>
+  );
+}
+
+// =============================================================================
 // Workspace
 // =============================================================================
 
@@ -928,7 +980,10 @@ export default function SettingsPage() {
           */}
           <div className="relative min-h-[640px]">
             <SectionContainer active={section === "profile"}>
-              <ProfilePanel />
+              <div className="space-y-6">
+                <ProfilePanel />
+                <PreferencesPanel />
+              </div>
             </SectionContainer>
             <SectionContainer active={section === "workspace"}>
               <WorkspaceSection />
