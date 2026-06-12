@@ -525,19 +525,14 @@ async def browse_tasks_core(
         func.coalesce(TrialModel.started_at, TrialModel.created_at),
         TrialModel.created_at,
     )
+    # The page ORDERING needs only max(activity) per (task, version); the
+    # heavy per-task counters are fetched afterwards for just the visible
+    # page. Folding them into this org-wide aggregate made every browse page
+    # compute eight aggregates over every trial in the org (~65% of page
+    # latency at prod volume) to display 25 rows.
     trial_agg_query = select(
         TrialModel.task_id.label("task_id"),
         TrialModel.task_version_id.label("task_version_id"),
-        func.count(TrialModel.id).label("total_trials"),
-        func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
-            "completed_trials"
-        ),
-        func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
-            "failed_trials"
-        ),
-        func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
-        func.sum(TrialModel.reward).label("reward_sum"),
-        func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
         func.max(trial_activity_at).label("last_run_at"),
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
@@ -560,14 +555,6 @@ async def browse_tasks_core(
             ranked_tasks_subquery.c.link,
             ranked_tasks_subquery.c.tags,
             func.coalesce(version_counts.c.version_count, 0).label("version_count"),
-            func.coalesce(trial_aggregates.c.total_trials, 0).label("total_trials"),
-            func.coalesce(trial_aggregates.c.completed_trials, 0).label(
-                "completed_trials"
-            ),
-            func.coalesce(trial_aggregates.c.failed_trials, 0).label("failed_trials"),
-            func.coalesce(trial_aggregates.c.reward_success, 0).label("reward_success"),
-            func.coalesce(trial_aggregates.c.reward_sum, 0.0).label("reward_sum"),
-            func.coalesce(trial_aggregates.c.reward_total, 0).label("reward_total"),
             trial_aggregates.c.last_run_at.label("last_run_at"),
         )
         .select_from(ranked_tasks_subquery)
@@ -613,6 +600,7 @@ async def browse_tasks_core(
 
     experiments_by_task: dict[str, list[TaskBrowseExperiment]] = {}
     latest_trials_by_task: dict[str, list[TaskBrowseTrial]] = {}
+    counters_by_task: dict[str, dict] = {}
     task_version_pairs = [
         (str(row["task_id"]), str(row["current_version_id"]))
         for row in visible_rows
@@ -620,6 +608,46 @@ async def browse_tasks_core(
     ]
 
     if task_version_pairs:
+        counters_query = (
+            select(
+                TrialModel.task_id.label("task_id"),
+                func.count(TrialModel.id).label("total_trials"),
+                func.count(
+                    case((TrialModel.status == TrialStatus.SUCCESS, 1))
+                ).label("completed_trials"),
+                func.count(
+                    case((TrialModel.status == TrialStatus.FAILED, 1))
+                ).label("failed_trials"),
+                func.count(case((TrialModel.reward == 1, 1))).label(
+                    "reward_success"
+                ),
+                func.sum(TrialModel.reward).label("reward_sum"),
+                func.count(case((TrialModel.reward.isnot(None), 1))).label(
+                    "reward_total"
+                ),
+            )
+            .where(
+                TrialModel.superseded_by_trial_id.is_(None),
+                TrialModel.is_probe.isnot(True),
+                tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
+                    task_version_pairs
+                ),
+            )
+            .group_by(TrialModel.task_id)
+        )
+        if org_id is not None:
+            counters_query = counters_query.where(TrialModel.org_id == org_id)
+        counters_started_at = now()
+        counter_rows = await session.execute(counters_query)
+        if record_timing is not None:
+            record_timing(
+                "browse_counters",
+                elapsed_ms(counters_started_at),
+                "Browse page trial counters",
+            )
+        counters_by_task = {
+            str(row["task_id"]): dict(row) for row in counter_rows.mappings()
+        }
         exp_join_condition = [ExperimentModel.id == TrialModel.experiment_id]
         if org_id is not None:
             exp_join_condition.append(ExperimentModel.org_id == org_id)
@@ -736,12 +764,24 @@ async def browse_tasks_core(
                     else None
                 ),
                 version_count=int(row["version_count"] or 0),
-                total_trials=int(row["total_trials"] or 0),
-                completed_trials=int(row["completed_trials"] or 0),
-                failed_trials=int(row["failed_trials"] or 0),
-                reward_success=int(row["reward_success"] or 0),
-                reward_sum=float(row["reward_sum"] or 0.0),
-                reward_total=int(row["reward_total"] or 0),
+                total_trials=int(
+                    counters_by_task.get(str(row["task_id"]), {}).get("total_trials") or 0
+                ),
+                completed_trials=int(
+                    counters_by_task.get(str(row["task_id"]), {}).get("completed_trials") or 0
+                ),
+                failed_trials=int(
+                    counters_by_task.get(str(row["task_id"]), {}).get("failed_trials") or 0
+                ),
+                reward_success=int(
+                    counters_by_task.get(str(row["task_id"]), {}).get("reward_success") or 0
+                ),
+                reward_sum=float(
+                    counters_by_task.get(str(row["task_id"]), {}).get("reward_sum") or 0.0
+                ),
+                reward_total=int(
+                    counters_by_task.get(str(row["task_id"]), {}).get("reward_total") or 0
+                ),
                 last_run_at=row["last_run_at"],
                 link=row["link"],
                 github_meta=_parse_github_meta(row["tags"]),
