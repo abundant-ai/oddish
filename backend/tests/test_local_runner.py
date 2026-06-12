@@ -209,10 +209,16 @@ async def test_probe_overlay_prepends_extra_instructions_to_instruction_md(
             self.result = MagicMock()
             self.result.verifier_result = MagicMock(rewards={"reward": 0.0})
             self.result.model_dump = lambda mode=None: {}
+            captured["hooks"] = []
 
         @classmethod
         async def create(cls, cfg):
             return cls(cfg)
+
+        def add_hook(self, event, hook):
+            # Real ``Trial.add_hook``; the runner registers the probe task-dir
+            # upload hook here. Record it so the test can assert it was wired.
+            captured["hooks"].append((event, hook))
 
         async def run(self):
             return self.result
