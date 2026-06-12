@@ -22,6 +22,7 @@ from oddish.core.tag_permissions import (
     can_use_apply,
     is_org_admin,
 )
+from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.tag_policies_core import (
     TagCapExceededError,
     assert_under_tag_cap,
@@ -346,6 +347,9 @@ async def update_tag(
             _handle_known_errors(exc)
             raise
         await session.commit()
+        # Dashboard payloads now carry tag chips/filters; bust the slice cache
+        # like trials/tasks mutations do.
+        invalidate_dashboard_cache(org_id=auth.org_id)
         tag = await _load_tag(session, tag_id, auth.org_id)
     return TagListItem(
         id=tag["id"],
@@ -385,6 +389,7 @@ async def delete_tag(
             _handle_known_errors(exc)
             raise
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
     return {"deleted": True}
 
 
@@ -413,6 +418,7 @@ async def archive_tag(
             _handle_known_errors(exc)
             raise
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
     return {"archived": True}
 
 
@@ -446,6 +452,7 @@ async def merge_tag(
             _handle_known_errors(exc)
             raise
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
     return {"merged_into": payload.target_tag_id}
 
 
@@ -475,6 +482,7 @@ async def set_visibility(
             _handle_known_errors(exc)
             raise
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
     return {"visibility": payload.visibility}
 
 
@@ -522,6 +530,7 @@ async def assign_tag(
                 actor_user_id=auth.user_id,
             )
             await session.commit()
+            invalidate_dashboard_cache(org_id=auth.org_id)
             return TagAssignResponse(
                 tag_id=payload.tag_id,
                 mode=result.get("mode"),
@@ -537,6 +546,7 @@ async def assign_tag(
             actor_user_id=auth.user_id,
         )
         await session.commit()
+        invalidate_dashboard_cache(org_id=auth.org_id)
         return TagAssignResponse(tag_id=payload.tag_id, assignment_id=assignment_id)
 
 
@@ -572,6 +582,7 @@ async def unassign_tag(
                 actor_user_id=auth.user_id,
             )
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
     return {"unassigned": True}
 
 
@@ -606,6 +617,7 @@ async def exclude_tag(
             actor_user_id=auth.user_id,
         )
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
     return {"excluded": True}
 
 
@@ -640,6 +652,7 @@ async def unexclude_tag(
             actor_user_id=auth.user_id,
         )
         await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
     return {"unexcluded": True}
 
 
