@@ -50,6 +50,7 @@ def ensure_builtin_handlers_registered() -> None:
         WorkerJobKind.ANALYSIS,
         WorkerJobKind.VERDICT,
         WorkerJobKind.TASK_EXPAND,
+        WorkerJobKind.TAG_PROJECT,
     }
     if _BUILTINS_REGISTERED and required_kinds.issubset(HANDLERS):
         return
@@ -58,6 +59,7 @@ def ensure_builtin_handlers_registered() -> None:
     # import path for code that only needs ``enqueue_worker_job``.
     from oddish.workers.jobs.handlers import (
         AnalysisJobHandler,
+        TagProjectJobHandler,
         TaskExpandJobHandler,
         TrialJobHandler,
         VerdictJobHandler,
@@ -68,6 +70,7 @@ def ensure_builtin_handlers_registered() -> None:
         AnalysisJobHandler(),
         VerdictJobHandler(),
         TaskExpandJobHandler(),
+        TagProjectJobHandler(),
     ):
         try:
             register(handler)

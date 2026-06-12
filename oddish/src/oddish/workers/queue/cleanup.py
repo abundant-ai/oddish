@@ -28,6 +28,7 @@ from sqlalchemy.engine import CursorResult
 
 from oddish.config import settings
 from oddish.core.helpers import cancel_job_by_worker
+from oddish.core.tag_ownership_transfer import sweep_orphaned_tag_owners
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -699,6 +700,9 @@ async def cleanup_orphaned_queue_state(
             or 0
         )
 
+        tag_projections_reconciled = await _maybe_reconcile_tag_projections(session)
+        tag_owners_reassigned = await sweep_orphaned_tag_owners(session)
+
     return {
         "worker_jobs_retried": worker_jobs_retried,
         "worker_jobs_failed": worker_jobs_failed,
@@ -713,4 +717,89 @@ async def cleanup_orphaned_queue_state(
         "orphaned_active_slots_cleared": orphaned_active_slots_cleared,
         "zombie_txn_reaped": zombie_txn_reaped,
         "experiments_last_activity_reconciled": experiments_last_activity_reconciled,
+        "tag_projections_reconciled": tag_projections_reconciled,
+        "tag_owners_reassigned": tag_owners_reassigned,
     }
+
+
+# Advisory-lock key so only one container reconciles tag projections per
+# sweep. 0x7400 ~ "t" "\0" — arbitrary stable constant.
+_TAG_PROJECTION_LOCK_KEY = 0x7400
+# Tag-projection reconciliation must NOT run on every poll-tick (~180s).
+_TAG_PROJECTION_RUN_EVERY_MINUTES = 60
+
+
+async def _recompute_drifted_task_projections(session) -> int:
+    """Recompute the projection for any task whose membership row was
+    touched in the last hour but whose ``effective_tag_ids`` array is
+    empty despite the experiment carrying a living tag. Bounded so we
+    never scan the whole table."""
+    from oddish.core.tags_projection import recompute_task_browse_projection
+
+    rows = (
+        await session.execute(
+            text(
+                """
+                SELECT DISTINCT te.task_id
+                FROM task_experiments te
+                JOIN tag_assignments a
+                  ON a.scope = 'EXPERIMENT'
+                 AND a.source = 'EXPERIMENT_LIVING'
+                 AND a.target_id = te.experiment_id
+                 AND a.deleted_at IS NULL
+                 AND a.state = 'ACTIVE'
+                JOIN tasks t ON t.id = te.task_id
+                WHERE te.deleted_at IS NULL
+                  AND t.deleted_at IS NULL
+                  AND t.updated_at > NOW() - INTERVAL '1 hour'
+                  AND COALESCE(array_length(t.effective_tag_ids, 1), 0) = 0
+                LIMIT 500
+                """
+            )
+        )
+    ).all()
+    count = 0
+    for (task_id,) in rows:
+        await recompute_task_browse_projection(session, task_id=str(task_id))
+        count += 1
+    return count
+
+
+async def _maybe_reconcile_tag_projections(session) -> int:
+    """Hourly, cadence-gated, advisory-lock-guarded reconciliation.
+
+    1. Try a transaction-scoped advisory lock (cheap; one container wins).
+    2. Read ``last_full_sweep_at`` from the ``tag_projection_sweep_state``
+       singleton; if it ran in the last hour, skip.
+    3. Recompute drifted projections; bump the timestamp (upsert).
+    """
+    locked = await session.scalar(
+        text("SELECT pg_try_advisory_xact_lock(:k)"),
+        {"k": _TAG_PROJECTION_LOCK_KEY},
+    )
+    if not locked:
+        return 0
+
+    age_minutes = await session.scalar(
+        text(
+            """
+            SELECT EXTRACT(EPOCH FROM (NOW() - last_full_sweep_at)) / 60
+            FROM tag_projection_sweep_state
+            WHERE id = TRUE
+            """
+        )
+    )
+    if age_minutes is not None and age_minutes < _TAG_PROJECTION_RUN_EVERY_MINUTES:
+        return 0
+
+    recomputed = await _recompute_drifted_task_projections(session)
+    await session.execute(
+        text(
+            """
+            INSERT INTO tag_projection_sweep_state (id, last_full_sweep_at)
+            VALUES (TRUE, NOW())
+            ON CONFLICT (id) DO UPDATE SET last_full_sweep_at = NOW()
+            """
+        )
+    )
+    return recomputed

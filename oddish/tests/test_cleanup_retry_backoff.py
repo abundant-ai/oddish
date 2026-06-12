@@ -65,6 +65,9 @@ class _FakeSession:
             return _FakeResult(rowcount=1)
         return _FakeResult()
 
+    async def scalar(self, *args, **kwargs):
+        return None
+
     async def get(self, model, object_id: str):
         if model is TrialModel and object_id == self.trial.id:
             return self.trial

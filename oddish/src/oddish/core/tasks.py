@@ -8,6 +8,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.tags_enqueue import enqueue_tag_project_worker_job
 from oddish.db import Priority, TaskModel, TaskVersionModel, get_session
 from oddish.db.storage import StorageClient, get_storage_client
 from oddish.schemas import TaskUploadInitResponse, UploadResponse
@@ -54,6 +55,22 @@ def _normalize_task_name(name: str) -> str:
     if stem.endswith(".tar"):
         stem = Path(stem).stem
     return stem or normalized
+
+
+async def _enqueue_tag_project_for_new_version(
+    session, *, task_id: str, version_id: str, org_id: str | None
+) -> None:
+    """Hook called from ``complete_task_upload`` whenever a new
+    ``task_versions`` row is inserted so the new version inherits living
+    EXPERIMENT and TASK tags into its ``effective_tag_ids`` array."""
+    await enqueue_tag_project_worker_job(
+        session,
+        scope="VERSION",
+        target_id=version_id,
+        task_id=task_id,
+        org_id=org_id,
+        mode="direct",
+    )
 
 
 def _task_s3_prefix_for_version(task_id: str, version: int) -> str:
@@ -241,6 +258,13 @@ async def complete_task_upload(
                     org_id=new_task.org_id,
                 )
 
+            await _enqueue_tag_project_for_new_version(
+                session,
+                task_id=task_id,
+                version_id=version_id,
+                org_id=new_task.org_id,
+            )
+
             await session.commit()
 
             return UploadResponse(
@@ -257,6 +281,7 @@ async def complete_task_upload(
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
         version_row = await session.get(TaskVersionModel, version_id)
+        new_version_created = False
         if version_row is None:
             version_row = TaskVersionModel(
                 id=version_id,
@@ -269,6 +294,7 @@ async def complete_task_upload(
                 created_by_user_id=created_by_user_id,
             )
             session.add(version_row)
+            new_version_created = True
             # Force the INSERT to land before we point ``tasks.current_version_id``
             # at it. The unit of work otherwise emits the ``tasks`` UPDATE
             # ahead of the ``task_versions`` INSERT during the next implicit
@@ -291,6 +317,14 @@ async def complete_task_upload(
                 session,
                 task_id=task_id,
                 version=version,
+                org_id=existing_task.org_id,
+            )
+
+        if new_version_created:
+            await _enqueue_tag_project_for_new_version(
+                session,
+                task_id=task_id,
+                version_id=version_id,
                 org_id=existing_task.org_id,
             )
 
