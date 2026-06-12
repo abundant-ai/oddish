@@ -464,17 +464,16 @@ async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
             table = md.tables.get(name)
             if table is None or not sample_rows.get(name):
                 continue
-            await conn.execute(
-                text(
-                    f"INSERT INTO {_STATE_TABLE} (table_name, row_id)"
-                    " SELECT :t, unnest(CAST(:rids AS text[]))"
-                    " ON CONFLICT DO NOTHING"
-                ),
-                {
-                    "t": name,
-                    "rids": [_row_key(table, row) for row in sample_rows[name]],
-                },
-            )
+            rids = [_row_key(table, row) for row in sample_rows[name]]
+            for start in range(0, len(rids), 10000):
+                await conn.execute(
+                    text(
+                        f"INSERT INTO {_STATE_TABLE} (table_name, row_id)"
+                        " SELECT :t, unnest(CAST(:rids AS text[]))"
+                        " ON CONFLICT DO NOTHING"
+                    ),
+                    {"t": name, "rids": rids[start:start + 10000]},
+                )
 
 
 async def _load_table(engine: AsyncEngine, table, rows: list[dict]) -> None:
@@ -500,7 +499,7 @@ async def _load_table(engine: AsyncEngine, table, rows: list[dict]) -> None:
     except Exception as exc:  # noqa: BLE001 -- any failure downgrades, never aborts
         _warn(
             f"copy fast-path failed for {table.name} "
-            f"({type(exc).__name__}); falling back to batched upserts"
+            f"({type(exc).__name__}: {exc}); falling back to batched upserts"
         )
     await _load_table_batches(engine, table, prepared)
 
@@ -510,7 +509,19 @@ async def _load_table_copy_merge(
 ) -> None:
     cols = [c.name for c in table.columns]
     pk_cols = [c.name for c in table.primary_key.columns]
-    records = [tuple(r.get(c) for c in cols) for r in prepared]
+    # The asyncpg json/jsonb codec SQLAlchemy registers expects values
+    # already serialized to str (the ORM execute path does that itself, but
+    # raw COPY bypasses it), so serialize dict/list values here.
+    json_cols = {
+        c.name for c in table.columns if isinstance(c.type, (JSONB, JSON))
+    }
+    def _rec_value(name: str, value):
+        if name in json_cols and isinstance(value, (dict, list)):
+            return json.dumps(value)
+        return value
+    records = [
+        tuple(_rec_value(c, r.get(c)) for c in cols) for r in prepared
+    ]
     col_list = ", ".join(f'"{c}"' for c in cols)
     pk_list = ", ".join(f'"{c}"' for c in pk_cols)
     set_clause = ", ".join(
