@@ -364,6 +364,8 @@ export interface DashboardExperiment {
   reward_success: number;
   reward_sum: number;
   reward_total: number;
+  /** Mean over tasks of per-task pass rate (reward == 1), excluding nop/oracle. */
+  pass_at_1: number | null;
   analysis_tasks: number;
   verdict_good: number;
   verdict_needs_review: number;
