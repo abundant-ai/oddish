@@ -26,9 +26,11 @@ const WHO_CAN_CREATE = [
 ] as const;
 // Backed by tag_profanity.py: OFF skips checks, ENFORCE blocks the write,
 // any other value records a report without blocking.
+// Values are the TagPolicyProfanityMode DB enum members — anything else is
+// rejected by the column type.
 const PROFANITY_MODES = [
   { value: "ENFORCE", label: "Block" },
-  { value: "REPORT_ONLY", label: "Report only" },
+  { value: "REPORT", label: "Report only" },
   { value: "OFF", label: "Off" },
 ] as const;
 
