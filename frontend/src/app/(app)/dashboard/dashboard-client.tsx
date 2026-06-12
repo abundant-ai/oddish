@@ -1235,9 +1235,7 @@ function RecentTasksCard({
   const [isDeleting, setIsDeleting] = useState(false);
   const isMemberSelected = authorFilter !== "all" && authorFilter !== "me";
   const hasFilters =
-    searchQuery.trim().length > 0 ||
-    statusFilter !== "all" ||
-    isMemberSelected;
+    searchQuery.trim().length > 0 || statusFilter !== "all" || isMemberSelected;
   const statusFilterLabel =
     STATUS_FILTER_OPTIONS.find((option) => option.value === statusFilter)
       ?.label ?? "Filter status";
@@ -1434,21 +1432,24 @@ function RecentTasksCard({
                       <TableHead>PR</TableHead>
                       <TableHead>Tasks</TableHead>
                       <TableHead>Trials</TableHead>
-                      <TableHead>Avg score</TableHead>
+                      <TableHead
+                        className="cursor-help"
+                        title="Average of per-task average reward, nop/oracle excluded"
+                      >
+                        Avg score
+                      </TableHead>
                       <TableHead className="text-right">Last task</TableHead>
                       <TableHead className="text-right">Delete</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody className="[&_td]:text-xs">
                     {experiments.map((experiment) => {
-                      const passRate =
-                        experiment.reward_total > 0
-                          ? Math.round(
-                              (experiment.reward_sum / experiment.reward_total) *
-                                100,
-                            )
+                      const avgScorePct =
+                        experiment.avg_score != null
+                          ? Math.round(experiment.avg_score * 100)
                           : null;
-                      const retryingTrials = Number(experiment.retrying_trials) || 0;
+                      const retryingTrials =
+                        Number(experiment.retrying_trials) || 0;
 
                       return (
                         <TableRow key={experiment.id}>
@@ -1487,7 +1488,8 @@ function RecentTasksCard({
                           <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                             <span className="text-foreground/80">
                               {formatTaskAuthor(
-                                experiment.last_runner ?? experiment.last_author,
+                                experiment.last_runner ??
+                                  experiment.last_author,
                               )}
                             </span>
                           </TableCell>
@@ -1507,7 +1509,10 @@ function RecentTasksCard({
                                   "max-w-[200px] gap-1.5 font-mono text-[11px] transition-colors hover:bg-accent",
                                 )}
                               >
-                                <GitPullRequest className="h-3 w-3 shrink-0" aria-hidden />
+                                <GitPullRequest
+                                  className="h-3 w-3 shrink-0"
+                                  aria-hidden
+                                />
                                 {(() => {
                                   const { label, number } = prBadge(
                                     experiment.last_pr_url,
@@ -1525,7 +1530,10 @@ function RecentTasksCard({
                                     </span>
                                   );
                                 })()}
-                                <ExternalLink className="h-3 w-3 shrink-0 opacity-50" aria-hidden />
+                                <ExternalLink
+                                  className="h-3 w-3 shrink-0 opacity-50"
+                                  aria-hidden
+                                />
                               </Link>
                             ) : (
                               <span className="text-muted-foreground">—</span>
@@ -1533,7 +1541,8 @@ function RecentTasksCard({
                           </TableCell>
                           <TableCell>{experiment.task_count}</TableCell>
                           <TableCell className="whitespace-nowrap font-mono text-xs">
-                            {experiment.completed_trials}/{experiment.total_trials}
+                            {experiment.completed_trials}/
+                            {experiment.total_trials}
                             {retryingTrials > 0 && (
                               <span className="text-amber-500 dark:text-amber-300">
                                 {" "}
@@ -1548,19 +1557,19 @@ function RecentTasksCard({
                             )}
                           </TableCell>
                           <TableCell className="font-mono text-xs">
-                            {passRate === null ? (
+                            {avgScorePct === null ? (
                               <span className="text-muted-foreground">—</span>
                             ) : (
                               <span
                                 className={
-                                  passRate >= 80
+                                  avgScorePct >= 80
                                     ? "text-[#5c8e43] dark:text-[#85b85c]"
-                                    : passRate >= 35
+                                    : avgScorePct >= 35
                                       ? "text-yellow-400"
                                       : "text-rose-400"
                                 }
                               >
-                                {passRate}%
+                                {avgScorePct}%
                               </span>
                             )}
                           </TableCell>
@@ -1603,7 +1612,9 @@ function RecentTasksCard({
                     size="sm"
                     className="h-8 px-3 text-[11px]"
                     onClick={onPreviousExperimentsPage}
-                    disabled={currentExperimentsPage <= 1 || isPageTransitioning}
+                    disabled={
+                      currentExperimentsPage <= 1 || isPageTransitioning
+                    }
                   >
                     <ChevronLeft className="mr-1 h-3.5 w-3.5" />
                     Previous page
