@@ -21,6 +21,7 @@ interface TagListItem {
   key: string;
   color: string | null;
   row_version: number;
+  usage_count: number;
 }
 
 interface TagListResponse {
@@ -156,6 +157,12 @@ export function TagChipEditor({
             <p className="text-xs">
               Delete <span className="font-medium">{tag.key}</span> for the
               entire org? Every item carrying this tag loses it.
+            </p>
+            {/* Usage shown before the destructive click — the Linear
+                pattern: give the number that should inform the decision. */}
+            <p className="text-[11px] text-muted-foreground">
+              Currently on {listRow?.usage_count ?? 0}{" "}
+              {(listRow?.usage_count ?? 0) === 1 ? "item" : "items"}.
             </p>
             {error ? <p className="text-xs text-destructive">{error}</p> : null}
             <div className="flex justify-end gap-2">
