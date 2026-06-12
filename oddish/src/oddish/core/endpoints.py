@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from fastapi import HTTPException
 from sqlalchemy import (
     and_,
@@ -475,7 +477,12 @@ async def browse_tasks_core(
     if org_id is not None:
         ranked_tasks = ranked_tasks.where(TaskModel.org_id == org_id)
     if normalized_query:
-        ranked_tasks = ranked_tasks.where(TaskModel.name.ilike(f"%{normalized_query}%"))
+        # User input is a literal needle, not a LIKE pattern: escape %, _
+        # and backslash so e.g. searching "_" doesn't match every task.
+        escaped_query = re.sub(r"([\\%_])", r"\\\1", normalized_query)
+        ranked_tasks = ranked_tasks.where(
+            TaskModel.name.ilike(f"%{escaped_query}%", escape="\\")
+        )
 
     # Resolve tag filters (ids or names) → tag IDs and append AND/OR/NOT
     # predicates over ``tasks.effective_tag_ids``. The predicates reference the
@@ -533,7 +540,12 @@ async def browse_tasks_core(
         func.sum(TrialModel.reward).label("reward_sum"),
         func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
         func.max(trial_activity_at).label("last_run_at"),
-    ).where(TrialModel.superseded_by_trial_id.is_(None))
+    ).where(
+        TrialModel.superseded_by_trial_id.is_(None),
+        # Probes have their own tab; keep them out of the browser's counts
+        # and out of last_run_at, which drives the page ordering.
+        TrialModel.is_probe.isnot(True),
+    )
     if org_id is not None:
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
     trial_aggregates = trial_agg_query.group_by(
@@ -623,6 +635,7 @@ async def browse_tasks_core(
             .where(
                 TrialModel.experiment_id.isnot(None),
                 TrialModel.superseded_by_trial_id.is_(None),
+                TrialModel.is_probe.isnot(True),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
@@ -663,6 +676,7 @@ async def browse_tasks_core(
             )
             .where(
                 TrialModel.superseded_by_trial_id.is_(None),
+                TrialModel.is_probe.isnot(True),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
