@@ -49,7 +49,11 @@ export function TagEditor({
   const initialKey = useMemo(
     () =>
       initialTags
-        .map((t) => `${t.tag_id}:${t.key}:${t.color ?? ""}`)
+        .map(
+          (t) =>
+            `${t.tag_id}:${t.key}:${t.value ?? ""}:${t.color ?? ""}:` +
+            `${t.visibility}:${t.current}:${t.older}`,
+        )
         .sort()
         .join("|"),
     [initialTags],

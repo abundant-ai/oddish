@@ -581,6 +581,13 @@ async def exclude_tag(
 ) -> dict:
     auth.require_scope(APIKeyScope.TASKS)
     async with get_session() as session:
+        await _load_tag(session, payload.tag_id, auth.org_id)
+        await _assert_target_in_org(
+            session,
+            scope="EXPERIMENT",
+            target_id=payload.experiment_id,
+            org_id=auth.org_id,
+        )
         await _assert_target_in_org(
             session,
             scope=payload.scope,
@@ -608,6 +615,13 @@ async def unexclude_tag(
 ) -> dict:
     auth.require_scope(APIKeyScope.TASKS)
     async with get_session() as session:
+        await _load_tag(session, payload.tag_id, auth.org_id)
+        await _assert_target_in_org(
+            session,
+            scope="EXPERIMENT",
+            target_id=payload.experiment_id,
+            org_id=auth.org_id,
+        )
         await _assert_target_in_org(
             session,
             scope=payload.scope,
@@ -805,6 +819,7 @@ async def report_tag_profanity(
     """
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
+        await _load_tag(session, payload.tag_id, auth.org_id)
         await session.execute(
             text(
                 """
@@ -883,6 +898,7 @@ async def put_filter(
             session,
             filter_id=filter_id,
             actor_user_id=auth.user_id or "",
+            org_id=auth.org_id,
             updates={k: v for k, v in payload.model_dump(exclude_none=True).items()},
         )
         await session.commit()
@@ -901,6 +917,7 @@ async def patch_filter(
             session,
             filter_id=filter_id,
             actor_user_id=auth.user_id or "",
+            org_id=auth.org_id,
             updates={k: v for k, v in payload.model_dump(exclude_none=True).items()},
         )
         await session.commit()
@@ -915,7 +932,10 @@ async def remove_filter(
     auth.require_scope(APIKeyScope.TASKS)
     async with get_session() as session:
         await delete_saved_tag_filter_core(
-            session, filter_id=filter_id, actor_user_id=auth.user_id or ""
+            session,
+            filter_id=filter_id,
+            actor_user_id=auth.user_id or "",
+            org_id=auth.org_id,
         )
         await session.commit()
     return {"deleted": True}
@@ -928,6 +948,9 @@ async def list_task_tags(
 ) -> TagListResponse:
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
+        await _assert_target_in_org(
+            session, scope="TASK", target_id=task_id, org_id=auth.org_id
+        )
         rows = (
             await session.execute(
                 text(
@@ -976,6 +999,12 @@ async def list_experiment_tags(
 ) -> TagListResponse:
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
+        await _assert_target_in_org(
+            session,
+            scope="EXPERIMENT",
+            target_id=experiment_id,
+            org_id=auth.org_id,
+        )
         rows = (
             await session.execute(
                 text(

@@ -88,11 +88,13 @@ async def update_saved_tag_filter_core(
     *,
     filter_id: str,
     actor_user_id: str,
+    org_id: str | None = None,
     updates: dict,
 ) -> None:
     columns = {"name", "filter_ast", "visibility"}
     set_pairs: list[str] = []
     params: dict[str, object] = {
+        "org_id": org_id,
         "filter_id": filter_id,
         "actor_user_id": actor_user_id,
     }
@@ -115,6 +117,7 @@ async def update_saved_tag_filter_core(
             SET {", ".join(set_pairs)}
             WHERE id = :filter_id
               AND owner_user_id = :actor_user_id
+              AND COALESCE(org_id, '') = COALESCE(CAST(:org_id AS TEXT), '')
               AND deleted_at IS NULL
             """
         ),
@@ -123,7 +126,7 @@ async def update_saved_tag_filter_core(
 
 
 async def delete_saved_tag_filter_core(
-    session, *, filter_id: str, actor_user_id: str
+    session, *, filter_id: str, actor_user_id: str, org_id: str | None = None
 ) -> None:
     await session.execute(
         text(
@@ -133,8 +136,9 @@ async def delete_saved_tag_filter_core(
                 updated_at = NOW()
             WHERE id = :filter_id
               AND owner_user_id = :actor_user_id
+              AND COALESCE(org_id, '') = COALESCE(CAST(:org_id AS TEXT), '')
               AND deleted_at IS NULL
             """
         ),
-        {"filter_id": filter_id, "actor_user_id": actor_user_id},
+        {"filter_id": filter_id, "actor_user_id": actor_user_id, "org_id": org_id},
     )

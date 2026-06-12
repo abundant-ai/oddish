@@ -1099,7 +1099,9 @@ async def set_tag_visibility_core(
     expected_row_version: int,
 ) -> None:
     if new_visibility not in {"PRIVATE", "PUBLIC"}:
-        raise ValueError(f"bad visibility: {new_visibility!r}")
+        # TagNameError maps to HTTP 400 in the router (plain ValueError
+        # would surface as a 500).
+        raise TagNameError(f"bad visibility: {new_visibility!r}")
     result = await session.execute(
         text(
             """
@@ -1205,10 +1207,12 @@ async def revoke_tag_capability_core(
             SET deleted_at = NOW(),
                 updated_at = NOW()
             WHERE id = :grant_id
+              AND tag_id = :tag_id
+              AND COALESCE(org_id, '') = COALESCE(CAST(:org_id AS TEXT), '')
               AND deleted_at IS NULL
             """
         ),
-        {"grant_id": grant_id},
+        {"grant_id": grant_id, "tag_id": tag_id, "org_id": org_id},
     )
     await _emit_tag_event(
         session,
