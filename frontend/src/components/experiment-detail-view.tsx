@@ -901,7 +901,11 @@ export function ExperimentDetailView({
     const urlTrialId = searchParams.get("trial");
     if (!urlTaskId) return;
 
-    const task = tasksForExperiment.find((t) => t.id === urlTaskId);
+    // Fall back to task name so hand-written links like ?task=<name> work;
+    // the URL-sync effect rewrites the param to the canonical id on open.
+    const task =
+      tasksForExperiment.find((t) => t.id === urlTaskId) ??
+      tasksForExperiment.find((t) => t.name === urlTaskId);
     if (!task) return;
 
     const taskIndex = tasksForExperiment.indexOf(task);

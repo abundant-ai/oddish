@@ -2446,7 +2446,7 @@ export function ExperimentTrialsTable({
                                 </TooltipContent>
                               </Tooltip>
                             </div>
-                            {task.current_version != null && (
+                            {showAnalysis && task.current_version != null && (
                               <span className="inline-flex shrink-0 items-center rounded-[3px] bg-[color:var(--paper-bg-2)] px-1 py-px font-mono text-[9.5px] leading-none font-medium text-[color:var(--paper-ink-3)]">
                                 v{task.current_version}
                               </span>

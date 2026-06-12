@@ -269,14 +269,20 @@ async def get_public_task_status(
 
 
 @router.get("/public/tasks/{task_id}/trials", response_model=list[TrialResponse])
-async def list_public_task_trials(task_id: str) -> list[TrialResponse]:
+async def list_public_task_trials(
+    task_id: str,
+    probe: bool | None = Query(
+        None,
+        description="Filter by trial kind: true -> only probes, false -> only real attempts, omit -> all.",
+    ),
+) -> list[TrialResponse]:
     """List all trials for a public task."""
     async with get_session() as session:
         task = await get_public_task(session, task_id)
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        return await list_task_trials_for_task(session, task_id)
+        return await list_task_trials_for_task(session, task_id, probe=probe)
 
 
 @router.get("/public/trials/{trial_id}/logs")
