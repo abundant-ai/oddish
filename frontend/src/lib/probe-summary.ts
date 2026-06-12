@@ -17,11 +17,18 @@ export type ToolInsight = {
   note?: string;
 };
 
+export type Recommendation = {
+  priority: "must_fix" | "should_fix" | "optional";
+  action: string;
+  rationale?: string;
+};
+
 export type ProbeSummary = {
   kind?: string;
   headline?: string;
   summary?: string;
   key_actions?: string[];
+  recommendations?: Recommendation[];
   cheating_attempted?: boolean | null;
   cheating_succeeded?: boolean | null;
   evidence?: string;
