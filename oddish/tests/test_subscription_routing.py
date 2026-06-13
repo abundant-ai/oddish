@@ -2,9 +2,15 @@
 auth.json), used to run trials on a Claude Pro/Max or ChatGPT plan instead of
 Bedrock / Azure / an API key.
 
-A ``sub/<bare-id>`` model id opts a trial into the route: it must stay off the
-Bedrock chokepoint, get a dedicated ``subscription`` provider and ``sub/<id>``
-queue bucket, and have the right credentials injected into the agent env.
+There are two ways to opt a trial into the route:
+
+- a ``sub/<bare-id>`` model id (per-trial, model-keyed), or
+- listing the agent in ``ODDISH_SUBSCRIPTION_AGENTS`` (deployment flag), which
+  keeps the STANDARD model id (e.g. ``claude-opus-4-8``) for storage/display.
+
+Either way the trial must stay off the Bedrock chokepoint, get a dedicated
+``subscription`` provider and ``sub/<id>`` queue bucket, and have the right
+credentials injected into the agent env.
 """
 
 from __future__ import annotations
@@ -119,3 +125,83 @@ def test_materialize_codex_auth_json_no_secret(monkeypatch) -> None:
     monkeypatch.delenv("CS_CODEX_AUTH_JSON_B64", raising=False)
     ac = AgentConfig(name="codex", model_name="gpt-5-codex")
     assert hr._materialize_codex_auth_json(ac) is None
+
+
+# --- Agent-flag route (ODDISH_SUBSCRIPTION_AGENTS) ---------------------------
+#
+# Instead of tagging each model "sub/<id>", an operator can list the agents
+# whose trials use the subscription route. The trial then keeps its STANDARD
+# model id (e.g. "claude-opus-4-8") for storage/display while still getting the
+# dedicated provider, the "sub/<id>" queue bucket, and the subscription creds.
+
+
+def test_is_subscription_agent(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "subscription_agents", "claude-code, Codex")
+    assert settings._is_subscription_agent("claude-code")
+    assert settings._is_subscription_agent("CODEX")
+    assert not settings._is_subscription_agent("terminus")
+    assert not settings._is_subscription_agent(None)
+    # Empty config -> nothing routed by agent.
+    monkeypatch.setattr(settings, "subscription_agents", "")
+    assert not settings._is_subscription_agent("claude-code")
+
+
+def test_agent_flag_keeps_standard_model_off_bedrock(monkeypatch) -> None:
+    # A "claude" id would normally hit the Bedrock chokepoint; the agent flag
+    # must bypass it and keep the STANDARD id (no Bedrock map, no "sub/").
+    monkeypatch.setattr(settings, "subscription_agents", "claude-code,codex")
+    assert (
+        settings.normalize_trial_model("claude-code", "claude-opus-4-8")
+        == "claude-opus-4-8"
+    )
+    assert settings.normalize_trial_model("codex", "gpt-5.5") == "gpt-5.5"
+
+
+def test_agent_flag_provider_and_queue_bucket(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "subscription_agents", "claude-code,codex")
+    assert (
+        settings.get_provider_for_trial("codex", "gpt-5.5") == "subscription"
+    )
+    assert (
+        settings.get_provider_for_trial("claude-code", "claude-opus-4-8")
+        == "subscription"
+    )
+    # Internal queue bucket carries the "sub/" prefix (so codex can be
+    # serialized) even though the stored model id stays standard.
+    assert settings.get_queue_key_for_trial("codex", "gpt-5.5") == "sub/gpt-5.5"
+    assert (
+        settings.get_queue_key_for_trial("claude-code", "claude-opus-4-8")
+        == "sub/claude-opus-4-8"
+    )
+    # A flagged agent routes ALL its models to the subscription provider,
+    # regardless of the specific model id.
+    assert settings.get_provider_for_trial("codex", "gpt-5.2") == "subscription"
+
+
+def test_agent_flag_off_is_inert(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "subscription_agents", "")
+    # Codex falls back to its fixed "openai" provider when not flagged.
+    assert settings.get_provider_for_trial("codex", "gpt-5.2") == "openai"
+
+
+def test_claude_code_agent_flag_config(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "subscription_agents", "claude-code,codex")
+    ac = hr._build_agent_config(
+        agent="claude-code", model="claude-opus-4-8", raw_harbor_config={}
+    )
+    # STANDARD id reaches the agent (no "sub/"); the Bedrock chokepoint never ran.
+    assert ac.model_name == "claude-opus-4-8"
+    assert ac.env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${CS_CLAUDE_CODE_OAUTH_TOKEN}"
+    assert ac.env.get("ANTHROPIC_API_KEY") == ""
+    assert ac.env.get("CLAUDE_CODE_USE_BEDROCK") == ""
+    assert ac.env.get("AWS_BEARER_TOKEN_BEDROCK") == ""
+
+
+def test_codex_agent_flag_config_skips_azure(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "subscription_agents", "claude-code,codex")
+    ac = hr._build_agent_config(
+        agent="codex", model="gpt-5.5", raw_harbor_config={}
+    )
+    assert ac.model_name == "gpt-5.5"
+    # Routed through the plain Oddish wrapper, NOT the Azure-compat one.
+    assert (ac.import_path or "").endswith("OddishCodex")

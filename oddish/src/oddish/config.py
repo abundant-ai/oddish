@@ -758,13 +758,29 @@ class Settings(BaseSettings):
                 return provider
         return "default"
 
+    # Agents that authenticate with the operator's personal subscription
+    # (Claude Pro/Max OAuth token / ChatGPT auth.json) instead of Bedrock/Azure.
+    # Comma-separated agent names, e.g. "claude-code,codex". When an agent is
+    # listed, its trials keep their STANDARD model id (no Bedrock/Azure mapping,
+    # no "sub/" prefix), get a dedicated subscription provider + queue bucket,
+    # and harbor_runner injects the subscription credentials at runtime.
+    subscription_agents: str = ""
+
+    def _is_subscription_agent(self, agent: str | None) -> bool:
+        names = {
+            a.strip().lower()
+            for a in (self.subscription_agents or "").split(",")
+            if a.strip()
+        }
+        return (agent or "").strip().lower() in names
+
     def get_provider_for_trial(self, agent: str, model: str | None) -> str:
         """Return provider for a trial using model first, agent fallback."""
         normalized_model = self.normalize_trial_model(agent, model)
         # Subscription trials get a dedicated provider so they never fall through
         # to the fixed agent provider (e.g. codex -> "openai"), which would drag
         # them onto the Azure/OpenAI credential path.
-        if is_subscription_model(normalized_model):
+        if is_subscription_model(normalized_model) or self._is_subscription_agent(agent):
             return SUBSCRIPTION_PROVIDER
         if normalized_model:
             provider = _get_provider_from_model(normalized_model)
@@ -787,9 +803,16 @@ class Settings(BaseSettings):
         if normalized_agent in _NOP_ORACLE_AGENTS:
             return "default"
 
-        # Personal-subscription route (Claude Code OAuth / Codex auth.json):
-        # canonicalize to "sub/<id>" BEFORE the Bedrock chokepoint so the trial
-        # stays off Bedrock and gets its own provider/queue bucket.
+        # Personal-subscription agents keep their STANDARD model id (no Bedrock
+        # mapping, no prefix) -- the route is selected by agent, not model name.
+        # The dedicated provider/queue bucket comes from get_provider_for_trial /
+        # get_queue_key_for_trial, which also key off the agent.
+        if self._is_subscription_agent(normalized_agent):
+            return cleaned
+
+        # Explicit per-trial "sub/<id>" opt-in (alternative to the agent flag):
+        # canonicalize BEFORE the Bedrock chokepoint so the trial stays off
+        # Bedrock and gets its own provider/queue bucket.
         if is_subscription_model(cleaned):
             return to_subscription_model_id(cleaned)
 
@@ -842,6 +865,12 @@ class Settings(BaseSettings):
         if normalized_agent in _NOP_ORACLE_AGENTS:
             return NOP_ORACLE_QUEUE_KEY
         normalized_model = self.normalize_trial_model(agent, model)
+        # Subscription agents get a dedicated internal "sub/<id>" queue bucket so
+        # their concurrency can be capped independently (e.g. serialize codex).
+        # Only this queue key carries the prefix; the trial's stored MODEL stays
+        # the standard id.
+        if self._is_subscription_agent(agent):
+            return f"sub/{normalized_model or 'default'}"
         if normalized_model:
             return self.normalize_queue_key(normalized_model)
         return "default"
