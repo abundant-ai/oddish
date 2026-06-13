@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-13]
+
+### Added
+- Task page now lists all affiliated experiments as linked chips (dot-separated) instead of just the primary one; public share view only exposes public experiment names to prevent private experiment name leakage, and `GET /public/tasks/{id}?include_trials=false` no longer 500s for tasks in multiple public experiments (#288)
+- Tag chips on dashboard experiment rows and `tag:` / `-tag:` / `OR` / `NOT` filter syntax in the experiments search box, matching the existing `/tasks` grammar; tag chips hydrated in a single batch query per page with graceful degradation on failure (#291)
+- Admin "Tag Policy" tab now fully functional: numeric limits, who-can-create and profanity-mode toggles, comma-list editors for reserved prefixes and allow/deny lists, and a 403 → "Admins only" error state (#291)
+- Probe summary now includes a prioritized "Action items" block with `must_fix` / `should_fix` / `optional` recommendations, color-coded and sorted by severity; an empty probe returns a "No fixes needed — task held up to probing" confirmation; legacy probe rows without the field render nothing (#284)
+- Probe trials now upload the staged task directory (including `related_trials/`, `harbor_src/`, `tests/`, `solution/`) into the agent container at start time via a Harbor `AGENT_START` hook, so the agent can actually access the reward-hack surface the probe instruction references (#282)
+- Skill create/edit form gains an "Upload folder" button that reads a `SKILL.md` plus supporting files and auto-fills the form; strips dotfiles and binary files; shows a "skipped N files" notice for anything dropped (#281)
+- Saved-filter bookmark menu beside the tasks search bar: lists org-shared and private saved filters, applies one as `tag:` search text, and saves the current query under a name with Private/Org visibility; filters persist stable tag IDs so they survive renames and merges; deletes are optimistic with SWR rollback on failure (#280)
+
+### Changed
+- Dashboard "Avg score" column and experiment page KPI tile now use a task-weighted average (mean over tasks of per-task mean reward) with nop/oracle baselines excluded everywhere; backend computes and returns this as a new `avg_score` field; a loading spinner is shown on the KPI tile while trial pages are still streaming in; both surfaces explain the calculation on hover (#292)
+- Tag mutations (assign, unassign, delete, archive, merge, set-visibility) now invalidate the dashboard cache, so tag chip and filter changes appear immediately without waiting for the 30-second TTL (#291)
+
+### Fixed
+- Probe runs no longer pollute the task browser: trial counts, reward stats, experiment chips, and `last_run_at` (which drives page ordering) now all exclude `is_probe` trials, consistent with probes having their own tab (#285)
+- LIKE wildcards in task browser and document search are now escaped as literals: searching `_` no longer matches every task, and `%` and `\` behave as plain characters (#285)
+- Browse page query performance improved: the org-wide trial aggregate now computes only the `max(activity)` needed for ordering; per-task counters are fetched as a separate targeted query over the visible page only, reducing latency ~40% at prod volume (#285)
+- `GET /tasks` no longer intermittently 500s with `MissingGreenlet`; `TrialModel.is_probe` added to the compact-trials `load_only` allowlist so it is loaded eagerly on the async path (#283)
+- Probe summarizer no longer reports "received no output" for skills: user-turn text blocks (the mechanism claude-code uses to deliver skill bodies) are now captured as `injected_context` so the summarizer sees the full skill content (#289)
+
+---
+
 ## [2026-06-12]
 
 ### Added
