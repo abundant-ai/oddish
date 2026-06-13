@@ -583,6 +583,17 @@ class Settings(BaseSettings):
     # values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
     default_model_concurrency: int = 8
     nop_oracle_concurrency: int = 32
+    # Subscription agents whose shared credential is refresh-sensitive and so
+    # must NOT be used by concurrent trials: Codex's ChatGPT auth.json rotates
+    # its refresh token, so two concurrent Codex trials can invalidate each
+    # other's token. These agents get a serialized ``sub-solo/<id>`` queue
+    # bucket capped at ``subscription_queue_concurrency``. (Claude Code's OAuth
+    # token is a static bearer token, safe to use concurrently, so claude-code
+    # is deliberately NOT listed here.)
+    subscription_serialized_agents: str = "codex"
+    # Concurrency cap for the serialized ``sub-solo/<id>`` buckets above. An
+    # explicit per-key entry in ODDISH_MODEL_CONCURRENCY_OVERRIDES still wins.
+    subscription_queue_concurrency: int = 1
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
     verdict_model: str = VERDICT_MODEL
@@ -774,6 +785,14 @@ class Settings(BaseSettings):
         }
         return (agent or "").strip().lower() in names
 
+    def _is_serialized_subscription_agent(self, agent: str | None) -> bool:
+        names = {
+            a.strip().lower()
+            for a in (self.subscription_serialized_agents or "").split(",")
+            if a.strip()
+        }
+        return (agent or "").strip().lower() in names
+
     def get_provider_for_trial(self, agent: str, model: str | None) -> str:
         """Return provider for a trial using model first, agent fallback."""
         normalized_model = self.normalize_trial_model(agent, model)
@@ -835,10 +854,11 @@ class Settings(BaseSettings):
         normalized = model.strip().lower().replace(" ", "_")
         if not normalized or normalized in _MODEL_ABSENT_ALIASES:
             return "default"
-        # Subscription models keep their own ``sub/<id>`` bucket so their
-        # concurrency can be capped independently (e.g. serialize codex to dodge
-        # ChatGPT auth.json refresh-token invalidation across concurrent workers).
-        if normalized.startswith("sub/"):
+        # Subscription models keep their own ``sub/<id>`` bucket; serialized
+        # subscription agents (e.g. codex) use ``sub-solo/<id>`` to dodge ChatGPT
+        # auth.json refresh-token invalidation across concurrent workers. Both
+        # are already canonical queue keys, so pass them through untouched.
+        if normalized.startswith("sub/") or normalized.startswith("sub-solo/"):
             return normalized
         if normalized in _PROVIDER_ONLY_QUEUE_ALIASES:
             return "default"
@@ -865,12 +885,16 @@ class Settings(BaseSettings):
         if normalized_agent in _NOP_ORACLE_AGENTS:
             return NOP_ORACLE_QUEUE_KEY
         normalized_model = self.normalize_trial_model(agent, model)
-        # Subscription agents get a dedicated internal "sub/<id>" queue bucket so
-        # their concurrency can be capped independently (e.g. serialize codex).
-        # Only this queue key carries the prefix; the trial's stored MODEL stays
-        # the standard id.
+        # Subscription agents get a dedicated internal queue bucket so their
+        # concurrency can be capped independently of the standard model id they
+        # still store. Agents whose shared credential is refresh-sensitive
+        # (codex auth.json) get a serialized ``sub-solo/<id>`` bucket; the rest
+        # (claude-code OAuth, safe concurrent) get a plain ``sub/<id>`` bucket.
         if self._is_subscription_agent(agent):
-            return f"sub/{normalized_model or 'default'}"
+            bare = subscription_bare_model_id(normalized_model or "default") or "default"
+            if self._is_serialized_subscription_agent(agent):
+                return f"sub-solo/{bare}"
+            return f"sub/{bare}"
         if normalized_model:
             return self.normalize_queue_key(normalized_model)
         return "default"
@@ -897,6 +921,13 @@ class Settings(BaseSettings):
             return max(int(override), 0)
         if normalized == NOP_ORACLE_QUEUE_KEY:
             return max(int(self.nop_oracle_concurrency), 0)
+        # Serialized subscription buckets (shared refresh-sensitive credential,
+        # e.g. codex auth.json) default to a low cap so concurrent trials can't
+        # race on the shared token, without relying on a per-key override. An
+        # explicit override above still wins. Plain ``sub/<id>`` subscription
+        # buckets (e.g. claude-code OAuth) are safe concurrent and NOT capped.
+        if normalized.startswith("sub-solo/"):
+            return max(int(self.subscription_queue_concurrency), 0)
         return max(int(self.default_model_concurrency), 0)
 
     def get_known_queue_keys(self) -> set[str]:

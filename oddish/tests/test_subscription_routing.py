@@ -166,9 +166,10 @@ def test_agent_flag_provider_and_queue_bucket(monkeypatch) -> None:
         settings.get_provider_for_trial("claude-code", "claude-opus-4-8")
         == "subscription"
     )
-    # Internal queue bucket carries the "sub/" prefix (so codex can be
-    # serialized) even though the stored model id stays standard.
-    assert settings.get_queue_key_for_trial("codex", "gpt-5.5") == "sub/gpt-5.5"
+    # Internal queue bucket: codex (refresh-sensitive auth.json) gets the
+    # serialized "sub-solo/" bucket; claude-code (OAuth, safe concurrent) gets
+    # the plain "sub/" bucket. The stored model id stays standard either way.
+    assert settings.get_queue_key_for_trial("codex", "gpt-5.5") == "sub-solo/gpt-5.5"
     assert (
         settings.get_queue_key_for_trial("claude-code", "claude-opus-4-8")
         == "sub/claude-opus-4-8"
@@ -182,6 +183,56 @@ def test_agent_flag_off_is_inert(monkeypatch) -> None:
     monkeypatch.setattr(settings, "subscription_agents", "")
     # Codex falls back to its fixed "openai" provider when not flagged.
     assert settings.get_provider_for_trial("codex", "gpt-5.2") == "openai"
+
+
+# --- Serialized subscription queue concurrency -------------------------------
+#
+# Only agents with a refresh-sensitive shared credential need serializing:
+# Codex's ChatGPT auth.json rotates its refresh token, so concurrent Codex
+# trials can invalidate it -> codex gets a "sub-solo/" bucket capped low.
+# Claude Code's OAuth token is a static bearer token (safe concurrent), so its
+# "sub/" bucket keeps the global default. The cap lives in get_model_concurrency,
+# the single chokepoint both the dispatcher and the queue-lock path call.
+
+
+def test_serialized_subscription_agent_set(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "subscription_serialized_agents", "codex")
+    assert settings._is_serialized_subscription_agent("codex")
+    assert settings._is_serialized_subscription_agent("CODEX")
+    assert not settings._is_serialized_subscription_agent("claude-code")
+    assert not settings._is_serialized_subscription_agent(None)
+
+
+def test_serialized_subscription_bucket_low_concurrency(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "model_concurrency_overrides", {})
+    monkeypatch.setattr(settings, "subscription_queue_concurrency", 1)
+    monkeypatch.setattr(settings, "default_model_concurrency", 48)
+    # The serialized "sub-solo/" bucket (codex) resolves to the low cap.
+    assert settings.get_model_concurrency("sub-solo/gpt-5.5") == 1
+    # A plain "sub/" bucket (claude-code OAuth) is NOT capped -- safe concurrent.
+    assert settings.get_model_concurrency("sub/claude-opus-4-8") == 48
+
+
+def test_serialized_subscription_explicit_override_wins(monkeypatch) -> None:
+    # An explicit per-key entry in ODDISH_MODEL_CONCURRENCY_OVERRIDES outranks
+    # the serialized-subscription default.
+    monkeypatch.setattr(
+        settings, "model_concurrency_overrides", {"sub-solo/gpt-5.5": 4}
+    )
+    monkeypatch.setattr(settings, "subscription_queue_concurrency", 1)
+    monkeypatch.setattr(settings, "default_model_concurrency", 48)
+    assert settings.get_model_concurrency("sub-solo/gpt-5.5") == 4
+    # A different serialized bucket with no override still gets the low cap.
+    assert settings.get_model_concurrency("sub-solo/gpt-5-codex") == 1
+
+
+def test_non_subscription_queue_uses_global_default(monkeypatch) -> None:
+    # Non-subscription keys are unaffected by the serialized cap.
+    monkeypatch.setattr(settings, "model_concurrency_overrides", {})
+    monkeypatch.setattr(settings, "subscription_queue_concurrency", 1)
+    monkeypatch.setattr(settings, "default_model_concurrency", 48)
+    assert settings.get_model_concurrency("openai/gpt-5.5") == 48
+    assert settings.get_model_concurrency("global.anthropic.claude-opus-4-8") == 48
 
 
 def test_claude_code_agent_flag_config(monkeypatch) -> None:
