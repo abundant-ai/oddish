@@ -134,7 +134,7 @@ function formatFileSize(bytes: number): string {
 
 function buildNodesFromListing(
   files: TaskFile[] = [],
-  dirs: TaskDirectory[] = []
+  dirs: TaskDirectory[] = [],
 ): TreeNode[] {
   const dirNodes = dirs.map((dir) => ({
     name: getNodeName(dir.path),
@@ -159,7 +159,7 @@ function buildNodesFromListing(
 function updateTree(
   nodes: TreeNode[],
   targetPath: string,
-  updater: (node: TreeNode) => TreeNode
+  updater: (node: TreeNode) => TreeNode,
 ): TreeNode[] {
   return nodes.map((node) => {
     if (node.path === targetPath) {
@@ -311,11 +311,11 @@ export function TaskFilesPanel({
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
   const [analysisActionError, setAnalysisActionError] = useState<string | null>(
-    null
+    null,
   );
   const [isRunningVerdict, setIsRunningVerdict] = useState(false);
   const [verdictActionError, setVerdictActionError] = useState<string | null>(
-    null
+    null,
   );
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
@@ -367,7 +367,7 @@ export function TaskFilesPanel({
       }
       return `${resolvedFilesUrl}?${params.toString()}`;
     },
-    [resolvedFilesUrl, filesUrl, currentVersion]
+    [resolvedFilesUrl, filesUrl, currentVersion],
   );
 
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
@@ -383,7 +383,7 @@ export function TaskFilesPanel({
   const retryableTrials = useMemo(() => {
     if (!task?.trials) return [];
     return task.trials.filter(
-      (trial) => trial.status === "failed" || trial.status === "success"
+      (trial) => trial.status === "failed" || trial.status === "success",
     );
   }, [task]);
 
@@ -393,17 +393,17 @@ export function TaskFilesPanel({
   const allTrialsTerminal =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(
-      (trial) => trial.status === "failed" || trial.status === "success"
+      (trial) => trial.status === "failed" || trial.status === "success",
     );
   const hasAnalysisInFlight = (task?.trials ?? []).some((trial) =>
-    isActivePipelineStatus(trial.analysis_status)
+    isActivePipelineStatus(trial.analysis_status),
   );
   const allAnalysesComplete =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(
       (trial) =>
         trial.analysis_status === "success" ||
-        trial.analysis_status === "failed"
+        trial.analysis_status === "failed",
     );
   const verdictInFlight = isActivePipelineStatus(verdictSource?.verdict_status);
   const canRunTaskAnalysis =
@@ -419,7 +419,7 @@ export function TaskFilesPanel({
     allAnalysesComplete &&
     !verdictInFlight;
   const analysisActionLabel = (task?.trials ?? []).some(
-    (trial) => trial.analysis_status || trial.analysis
+    (trial) => trial.analysis_status || trial.analysis,
   )
     ? "Rerun analyses"
     : "Run analyses";
@@ -435,7 +435,7 @@ export function TaskFilesPanel({
       if (!nextTask) return;
       onNavigate(nextTask, nextIndex);
     },
-    [onNavigate, orderedList]
+    [onNavigate, orderedList],
   );
 
   const handleRetryTask = async () => {
@@ -452,10 +452,10 @@ export function TaskFilesPanel({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to retry trial"
+              data.detail || data.error || "Failed to retry trial",
             );
           }
-        })
+        }),
       );
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
@@ -504,7 +504,7 @@ export function TaskFilesPanel({
       onRetryComplete?.(id ? [id] : undefined);
     } catch (err) {
       setCancelError(
-        err instanceof Error ? err.message : "Failed to cancel task"
+        err instanceof Error ? err.message : "Failed to cancel task",
       );
     } finally {
       setIsCancelling(false);
@@ -523,13 +523,13 @@ export function TaskFilesPanel({
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue task analysis"
+          data.detail || data.error || "Failed to queue task analysis",
         );
       }
       onRetryComplete?.([task.id]);
     } catch (err) {
       setAnalysisActionError(
-        err instanceof Error ? err.message : "Failed to queue task analysis"
+        err instanceof Error ? err.message : "Failed to queue task analysis",
       );
     } finally {
       setIsRunningAnalysis(false);
@@ -552,7 +552,7 @@ export function TaskFilesPanel({
       onRetryComplete?.([task.id]);
     } catch (err) {
       setVerdictActionError(
-        err instanceof Error ? err.message : "Failed to queue verdict"
+        err instanceof Error ? err.message : "Failed to queue verdict",
       );
     } finally {
       setIsRunningVerdict(false);
@@ -602,7 +602,7 @@ export function TaskFilesPanel({
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(
-            data.detail || `Failed to fetch files: ${res.statusText}`
+            data.detail || `Failed to fetch files: ${res.statusText}`,
           );
         }
         const data: FilesListingResponse = await res.json();
@@ -620,7 +620,7 @@ export function TaskFilesPanel({
       } catch (err) {
         if (!cancelled) {
           setError(
-            err instanceof Error ? err.message : "Failed to fetch files"
+            err instanceof Error ? err.message : "Failed to fetch files",
           );
         }
       } finally {
@@ -655,11 +655,11 @@ export function TaskFilesPanel({
             ...node,
             children,
             isLoaded: true,
-          }))
+          })),
         );
       } catch (err) {
         setError(
-          err instanceof Error ? err.message : "Failed to fetch directory"
+          err instanceof Error ? err.message : "Failed to fetch directory",
         );
       } finally {
         setLoadingDirs((prev) => {
@@ -669,7 +669,7 @@ export function TaskFilesPanel({
         });
       }
     },
-    [taskId, filesUrl, buildListingUrl]
+    [taskId, filesUrl, buildListingUrl],
   );
 
   // Fetch file content when a file is selected
@@ -752,7 +752,7 @@ export function TaskFilesPanel({
             params.set("version", String(currentVersion));
           }
           const res = await fetch(
-            `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`
+            `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`,
           );
           if (!res.ok) {
             throw new Error("Failed to fetch file content");
@@ -815,7 +815,7 @@ export function TaskFilesPanel({
         params.set("version", String(currentVersion));
       }
       const res = await fetch(
-        `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`
+        `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`,
       );
       if (!res.ok) {
         return;
@@ -1114,7 +1114,7 @@ export function TaskFilesPanel({
         : trials;
     const rewardSum = versionTrials.reduce(
       (sum, trial) => sum + (trial.reward ?? 0),
-      0
+      0,
     );
     const total = versionTrials.filter((t) => t.reward != null).length;
     return {
@@ -1198,9 +1198,16 @@ export function TaskFilesPanel({
                           ? "hover:bg-muted/50 cursor-pointer"
                           : "text-muted-foreground cursor-not-allowed opacity-60"
                     }`}
-                    title={probeAvailable ? "View latest probe run" : "No probe run yet"}
+                    title={
+                      probeAvailable
+                        ? "View latest probe run"
+                        : "No probe run yet"
+                    }
                   >
-                    <Microscope className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <Microscope
+                      className="h-3.5 w-3.5 shrink-0"
+                      aria-hidden="true"
+                    />
                     <span className="truncate">
                       {probeAvailable ? "Latest probe run" : "No probe run yet"}
                     </span>
@@ -1269,7 +1276,7 @@ export function TaskFilesPanel({
               >
                 {taskName}
               </Button>
-              {currentVersion != null && (
+              {showAnalysis !== false && currentVersion != null && (
                 <span className="border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-medium">
                   v{currentVersion}
                 </span>

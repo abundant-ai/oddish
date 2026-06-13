@@ -30,6 +30,9 @@ async def get_dashboard(
     experiments_offset: int = Query(0, ge=0),
     experiments_query: str | None = Query(None),
     experiments_status: str = Query("all"),
+    experiments_tags: str | None = Query(None, description="CSV tag tokens, AND"),
+    experiments_tags_any: str | None = Query(None, description="CSV tag tokens, OR"),
+    experiments_tags_none: str | None = Query(None, description="CSV tag tokens, NOT"),
     experiments_author: str | None = Query(
         None,
         description=(
@@ -76,6 +79,9 @@ async def get_dashboard(
             experiments_offset=experiments_offset,
             experiments_query=experiments_query,
             experiments_status=experiments_status,
+            experiments_tags=experiments_tags,
+            experiments_tags_any=experiments_tags_any,
+            experiments_tags_none=experiments_tags_none,
             experiments_author_user_id=author_user_id,
             experiments_author_github_usernames=author_github_usernames,
             experiments_author_emails=author_emails,

@@ -4,6 +4,7 @@ Schema is built with ``Base.metadata.create_all`` on an empty Postgres
 (``ODDISH_DATABASE_URL``); skips when unset. Covers:
 - probe runs must not pollute browse aggregates, ordering, or chips
 - user-typed LIKE wildcards (%, _, \\) are literals, not patterns
+- the free-text grammar: terms AND in any order, "quoted phrase", -exclusion
 """
 import os
 
@@ -104,5 +105,45 @@ async def test_search_wildcards_are_literals():
         # "100%" must match the literal percent name only.
         assert [i.name for i in percent.items] == ["match 100% done"]
         assert {i.name for i in plain.items} == {"older-task", "newer-task"}
+    finally:
+        await engine.dispose()
+
+
+async def test_search_grammar_and_or_exclude():
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        async with maker() as session:
+            multi = await browse_tasks_core(
+                session, org_id=ORG, limit=10, offset=0, query="task newer"
+            )
+            phrase = await browse_tasks_core(
+                session, org_id=ORG, limit=10, offset=0, query='"100% done"'
+            )
+            phrase_wrong_order = await browse_tasks_core(
+                session, org_id=ORG, limit=10, offset=0, query='"done 100%"'
+            )
+            excluded = await browse_tasks_core(
+                session, org_id=ORG, limit=10, offset=0, query="task -older"
+            )
+            either = await browse_tasks_core(
+                session, org_id=ORG, limit=10, offset=0, query="older OR newer"
+            )
+            not_kw = await browse_tasks_core(
+                session, org_id=ORG, limit=10, offset=0, query="task NOT older"
+            )
+        # unquoted words AND together in any order ("newer-task" has both)
+        assert [i.name for i in multi.items] == ["newer-task"]
+        # a quoted phrase matches contiguously ...
+        assert [i.name for i in phrase.items] == ["match 100% done"]
+        # ... so the same words out of order match nothing
+        assert phrase_wrong_order.items == []
+        # -term excludes
+        assert [i.name for i in excluded.items] == ["newer-task"]
+        # uppercase OR matches either side
+        assert {i.name for i in either.items} == {"older-task", "newer-task"}
+        # uppercase NOT excludes the next term
+        assert [i.name for i in not_kw.items] == ["newer-task"]
     finally:
         await engine.dispose()
