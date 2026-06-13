@@ -18,7 +18,10 @@
  * The free text is forwarded verbatim to the backend, which parses the
  * include/exclude/phrase grammar (see `parse_search_query` in
  * `oddish/core/helpers.py`): terms are AND'd, `"quoted text"` matches
- * contiguously, a leading `-` excludes.
+ * contiguously, a leading `-` excludes, and uppercase OR/AND/NOT between
+ * plain text terms act as boolean operators (lowercase and quoted forms stay
+ * literal). Operators this parser leaves in the text (because no tag token
+ * follows) therefore still get their boolean meaning server-side.
  *
  * Examples:
  *  - `parseTaskSearch("flaky tag:smoke-test")`

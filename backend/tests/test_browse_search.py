@@ -127,6 +127,12 @@ async def test_search_grammar_and_or_exclude():
             excluded = await browse_tasks_core(
                 session, org_id=ORG, limit=10, offset=0, query="task -older"
             )
+            either = await browse_tasks_core(
+                session, org_id=ORG, limit=10, offset=0, query="older OR newer"
+            )
+            not_kw = await browse_tasks_core(
+                session, org_id=ORG, limit=10, offset=0, query="task NOT older"
+            )
         # unquoted words AND together in any order ("newer-task" has both)
         assert [i.name for i in multi.items] == ["newer-task"]
         # a quoted phrase matches contiguously ...
@@ -135,5 +141,9 @@ async def test_search_grammar_and_or_exclude():
         assert phrase_wrong_order.items == []
         # -term excludes
         assert [i.name for i in excluded.items] == ["newer-task"]
+        # uppercase OR matches either side
+        assert {i.name for i in either.items} == {"older-task", "newer-task"}
+        # uppercase NOT excludes the next term
+        assert [i.name for i in not_kw.items] == ["newer-task"]
     finally:
         await engine.dispose()
