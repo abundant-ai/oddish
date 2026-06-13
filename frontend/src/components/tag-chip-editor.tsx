@@ -109,13 +109,18 @@ export function TagChipEditor({
     setDeleting(true);
     setError(null);
     // Soft delete of the vocabulary row: reads everywhere drop the tag via
-    // state filtering, assignments become tombstones. row_version guards
-    // against deleting over someone's concurrent rename.
-    const res = await fetch(`/api/tags/${encodeURIComponent(tag.tag_id)}`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ expected_row_version: listRow.row_version }),
-    });
+    // state filtering. cascade=true carries the confirm panel's consent to
+    // flip the ACTIVE assignments too (the backend rejects assigned-tag
+    // deletion without it). row_version guards against deleting over
+    // someone's concurrent rename.
+    const res = await fetch(
+      `/api/tags/${encodeURIComponent(tag.tag_id)}?cascade=true`,
+      {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expected_row_version: listRow.row_version }),
+      },
+    );
     setDeleting(false);
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as {
@@ -155,14 +160,19 @@ export function TagChipEditor({
         {confirmingDelete ? (
           <div className="space-y-2 rounded-md border border-destructive/30 bg-destructive/10 p-2">
             <p className="text-xs">
-              Delete <span className="font-medium">{tag.key}</span> for the
-              entire org? Every item carrying this tag loses it.
+              {/* listRow first: after a 409 the list refetches, so a rename
+                  that raced us shows its CURRENT name before the retry. */}
+              Delete{" "}
+              <span className="font-medium">{listRow?.key ?? tag.key}</span>{" "}
+              for the entire org? Every item carrying this tag loses it.
             </p>
             {/* Usage shown before the destructive click — the Linear
-                pattern: give the number that should inform the decision. */}
+                pattern: give the number that should inform the decision.
+                usage_count = direct ACTIVE assignments (living-experiment
+                fanout can touch more items than this). */}
             <p className="text-[11px] text-muted-foreground">
-              Currently on {listRow?.usage_count ?? 0}{" "}
-              {(listRow?.usage_count ?? 0) === 1 ? "item" : "items"}.
+              Used by {listRow?.usage_count ?? 0} direct{" "}
+              {(listRow?.usage_count ?? 0) === 1 ? "assignment" : "assignments"}.
             </p>
             {error ? <p className="text-xs text-destructive">{error}</p> : null}
             <div className="flex justify-end gap-2">

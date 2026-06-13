@@ -18,9 +18,15 @@ export async function DELETE(
     }
 
     const { tag_id } = await params;
-    // Backend delete requires expected_row_version for optimistic concurrency.
+    // Backend delete requires expected_row_version for optimistic concurrency;
+    // cascade=true is the UI consent to also remove ACTIVE assignments.
     const body = await request.json();
-    const url = getBackendUrl("tags", `/${encodeURIComponent(tag_id)}`);
+    const cascade = request.nextUrl.searchParams.get("cascade");
+    const url = getBackendUrl(
+      "tags",
+      `/${encodeURIComponent(tag_id)}`,
+      cascade ? { cascade } : undefined,
+    );
     const res = await fetch(url, {
       method: "DELETE",
       cache: "no-store",
