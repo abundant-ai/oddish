@@ -823,10 +823,13 @@ def _build_agent_config(
     # everything else flows through the Bedrock chokepoint as before. Keeping
     # the "zai/" prefix on model_name lets Harbor's per-agent network allowlist
     # resolve the z.ai endpoint for closed-internet tasks.
-    sub_route = is_subscription_model(agent_config.model_name)
+    sub_route = is_subscription_model(agent_config.model_name) or (
+        settings._is_subscription_agent(agent)
+    )
     if sub_route:
-        # Personal-subscription route: strip the ``sub/`` prefix to the bare id
-        # the agent CLI expects, and keep it off the Bedrock chokepoint.
+        # Personal-subscription route: use the standard/bare id the agent CLI
+        # expects (strips a "sub/" prefix if present; a standard id passes
+        # through unchanged), and keep it off the Bedrock chokepoint.
         agent_config.model_name = subscription_bare_model_id(
             agent_config.model_name or ""
         )
@@ -1033,8 +1036,10 @@ async def run_harbor_trial_async(
         )
 
         # Personal-subscription auth route (Claude Code OAuth / Codex auth.json).
-        sub_route = is_subscription_model(model) or is_subscription_model(
-            openai_model
+        sub_route = (
+            is_subscription_model(model)
+            or is_subscription_model(openai_model)
+            or settings._is_subscription_agent(agent)
         )
         if sub_route and (agent or "").strip().lower() == "codex":
             codex_auth_tmpdir = _materialize_codex_auth_json(agent_config)

@@ -158,6 +158,16 @@ ENV_VARS = {
     # deploy host did (the per-PR secret gate above depends on it).
     "MODAL_APP_NAME": MODAL_APP_NAME,
     "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
+    # Baked so the optional bring-your-own-creds secret gate (runtime_secrets)
+    # evaluates identically in the container as on the deploy host. Without
+    # this the function's declared deps mismatch the container's object ids and
+    # every container crashes on boot ("N dependencies but container got N+1").
+    "ODDISH_EXTRA_SECRET_NAME": EXTRA_SECRET_NAME,
+    # Comma-separated agents whose trials use the personal-subscription auth
+    # route (Claude Code OAuth / Codex auth.json) instead of Bedrock/Azure.
+    # Lets the stored model id stay standard (e.g. claude-opus-4-8) while the
+    # agent still authenticates via the bring-your-own-creds secret above.
+    "ODDISH_SUBSCRIPTION_AGENTS": os.environ.get("ODDISH_SUBSCRIPTION_AGENTS", ""),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
