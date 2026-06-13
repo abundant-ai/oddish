@@ -491,6 +491,10 @@ export function TasksPageClient({
                       example={'"x86-32 conformance"'}
                       hint="exact phrase"
                     />
+                    <SearchSyntaxRow
+                      example="murmur OR polygon"
+                      hint="either word"
+                    />
                     <SearchSyntaxRow example="-no-skill" hint="exclude" />
                     <SearchSyntaxRow
                       example="tag:a OR tag:b -tag:c"

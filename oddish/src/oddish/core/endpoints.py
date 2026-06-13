@@ -478,13 +478,19 @@ async def browse_tasks_core(
         ranked_tasks = ranked_tasks.where(TaskModel.org_id == org_id)
     if normalized_query:
         # Free-text grammar (parse_search_query): terms AND'd in any order,
-        # "quoted text" matches contiguously, a leading - excludes. Each
-        # needle is literal, not a LIKE pattern: escape %, _ and backslash so
-        # e.g. searching "_" doesn't match every task.
+        # "quoted text" matches contiguously, OR makes either side of a group
+        # match, a leading - (or NOT) excludes. Each needle is literal, not a
+        # LIKE pattern: escape %, _ and backslash so e.g. searching "_"
+        # doesn't match every task.
         terms = parse_search_query(normalized_query)
-        for needle in terms.include:
+        for group in terms.include:
             ranked_tasks = ranked_tasks.where(
-                TaskModel.name.ilike(f"%{escape_like(needle)}%", escape="\\")
+                or_(
+                    *(
+                        TaskModel.name.ilike(f"%{escape_like(needle)}%", escape="\\")
+                        for needle in group
+                    )
+                )
             )
         for needle in terms.exclude:
             ranked_tasks = ranked_tasks.where(
