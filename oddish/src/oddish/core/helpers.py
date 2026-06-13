@@ -1184,3 +1184,61 @@ def escape_like(needle: str) -> str:
     """Escape LIKE/ILIKE pattern metacharacters so user input matches
     literally. Pair with ``.ilike(f"%{escape_like(q)}%", escape="\\")``."""
     return re.sub(r"([\\%_])", r"\\\1", needle)
+
+
+@dataclass(frozen=True)
+class SearchTerms:
+    """A parsed free-text search: every ``include`` needle must appear in the
+    target, no ``exclude`` needle may. Needles are literal text — callers
+    apply their own matching (e.g. ILIKE for case-insensitivity) and must
+    still :func:`escape_like` each needle."""
+
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.include or self.exclude)
+
+
+# AND-ing dozens of ILIKEs is pointless and lets a pathological query inflate
+# the statement; terms beyond the cap are dropped.
+_MAX_SEARCH_TERMS = 16
+
+
+def parse_search_query(raw: str) -> SearchTerms:
+    """Parse a free-text search string into include/exclude needles.
+
+    Grammar: whitespace-separated terms are AND'd (each must match,
+    order-independent); ``"quoted text"`` keeps its spaces and matches as one
+    contiguous phrase; a leading ``-`` on a term or phrase excludes it. An
+    unterminated quote treats the rest of the string as the phrase so results
+    stay sensible while a phrase is being typed. To search a literal leading
+    ``-``, quote it: ``"-no-skill"``.
+    """
+    include: list[str] = []
+    exclude: list[str] = []
+    i, n = 0, len(raw)
+    while i < n and len(include) + len(exclude) < _MAX_SEARCH_TERMS:
+        if raw[i].isspace():
+            i += 1
+            continue
+        negated = False
+        if raw[i] == "-" and i + 1 < n and not raw[i + 1].isspace():
+            negated = True
+            i += 1
+        if raw[i] == '"':
+            end = raw.find('"', i + 1)
+            if end == -1:
+                term, i = raw[i + 1 :], n
+            else:
+                term, i = raw[i + 1 : end], end + 1
+        else:
+            end = i
+            while end < n and not raw[end].isspace():
+                end += 1
+            term, i = raw[i:end], end
+        term = term.strip()
+        if not term:
+            continue
+        (exclude if negated else include).append(term)
+    return SearchTerms(include=tuple(include), exclude=tuple(exclude))

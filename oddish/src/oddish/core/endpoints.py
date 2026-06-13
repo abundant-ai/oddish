@@ -18,6 +18,7 @@ from sqlalchemy.orm import load_only, selectinload
 
 from oddish.core.helpers import (
     escape_like,
+    parse_search_query,
     _parse_github_meta,
     build_task_status_response_compact,
     build_task_status_response,
@@ -476,12 +477,19 @@ async def browse_tasks_core(
     if org_id is not None:
         ranked_tasks = ranked_tasks.where(TaskModel.org_id == org_id)
     if normalized_query:
-        # User input is a literal needle, not a LIKE pattern: escape %, _
-        # and backslash so e.g. searching "_" doesn't match every task.
-        escaped_query = escape_like(normalized_query)
-        ranked_tasks = ranked_tasks.where(
-            TaskModel.name.ilike(f"%{escaped_query}%", escape="\\")
-        )
+        # Free-text grammar (parse_search_query): terms AND'd in any order,
+        # "quoted text" matches contiguously, a leading - excludes. Each
+        # needle is literal, not a LIKE pattern: escape %, _ and backslash so
+        # e.g. searching "_" doesn't match every task.
+        terms = parse_search_query(normalized_query)
+        for needle in terms.include:
+            ranked_tasks = ranked_tasks.where(
+                TaskModel.name.ilike(f"%{escape_like(needle)}%", escape="\\")
+            )
+        for needle in terms.exclude:
+            ranked_tasks = ranked_tasks.where(
+                ~TaskModel.name.ilike(f"%{escape_like(needle)}%", escape="\\")
+            )
 
     # Resolve tag filters (ids or names) → tag IDs and append AND/OR/NOT
     # predicates over ``tasks.effective_tag_ids``. The predicates reference the
