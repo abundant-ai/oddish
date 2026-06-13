@@ -11,7 +11,7 @@ import json
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
@@ -369,6 +369,13 @@ async def delete_tag(
     tag_id: Annotated[str, Path(...)],
     payload: TagArchiveRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    cascade: bool = Query(
+        False,
+        description=(
+            "Also flip the tag's ACTIVE assignments to REMOVED. Without it, "
+            "deleting a tag that is still assigned anywhere is rejected."
+        ),
+    ),
 ) -> dict:
     auth.require_scope(APIKeyScope.TASKS)
     async with get_session() as session:
@@ -384,6 +391,7 @@ async def delete_tag(
                 org_id=auth.org_id,
                 actor_user_id=auth.user_id,
                 expected_row_version=payload.expected_row_version,
+                cascade_remove_assignments=cascade,
             )
         except Exception as exc:
             _handle_known_errors(exc)

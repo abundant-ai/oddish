@@ -190,6 +190,11 @@ export function TagEditor({
                 onSaved={onMutate}
                 onEdited={(patch) => handleEdited(t.tag_id, patch)}
                 onRemove={() => removeTag(t.tag_id)}
+                onDeleted={() =>
+                  // Vocabulary delete: drop the chip locally; no unassign
+                  // call — resolution already excludes DELETED tags.
+                  setTags((prev) => prev.filter((x) => x.tag_id !== t.tag_id))
+                }
               />
             )}
             <button

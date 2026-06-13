@@ -697,11 +697,15 @@ async def _optimistic_state_update(
     allowed_from: list[str],
     expected_row_version: int,
 ) -> None:
+    # The CAST is load-bearing: asyncpg deduces ONE type per parameter, and
+    # :new_state appears both as the state assignment (enum tag_state) and in
+    # the CASE comparison below (text) — without the explicit cast the
+    # prepare fails with AmbiguousParameterError.
     result = await session.execute(
         text(
             """
             UPDATE tags
-            SET state = :new_state,
+            SET state = CAST(:new_state AS tag_state),
                 row_version = row_version + 1,
                 updated_at = NOW(),
                 deleted_at = CASE
