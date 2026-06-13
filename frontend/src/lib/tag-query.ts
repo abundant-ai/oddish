@@ -9,8 +9,19 @@
  *    negates the following tag token (→ `none`). `OR` between two tag tokens
  *    puts both operands into `any`, re-homing the left operand out of `all` if
  *    it was just placed there. A negated tag never participates in OR re-homing.
+ *  - `"quoted text"` (optionally `-` prefixed) is kept together as a single
+ *    token, quotes included, so phrases survive into the free text. A quoted
+ *    token is never a tag token or an operator.
  *  - Any other token is ordinary search text (joined with single spaces) and
  *    resets the pending operator state.
+ *
+ * The free text is forwarded verbatim to the backend, which parses the
+ * include/exclude/phrase grammar (see `parse_search_query` in
+ * `oddish/core/helpers.py`): terms are AND'd, `"quoted text"` matches
+ * contiguously, a leading `-` excludes, and uppercase OR/AND/NOT between
+ * plain text terms act as boolean operators (lowercase and quoted forms stay
+ * literal). Operators this parser leaves in the text (because no tag token
+ * follows) therefore still get their boolean meaning server-side.
  *
  * Examples:
  *  - `parseTaskSearch("flaky tag:smoke-test")`
@@ -19,6 +30,8 @@
  *      → { text: "foo", all: [], any: ["a", "b"], none: ["c"] }
  *  - `parseTaskSearch("not really tag related")`
  *      → { text: "not really tag related", all: [], any: [], none: [] }
+ *  - `parseTaskSearch('"exact phrase" -noisy tag:smoke')`
+ *      → { text: '"exact phrase" -noisy', all: ["smoke"], any: [], none: [] }
  */
 
 export interface ParsedTaskSearch {
@@ -49,8 +62,18 @@ function asOperator(token: string): "AND" | "OR" | "NOT" | null {
   return null;
 }
 
+/**
+ * Whitespace tokenizer that keeps `"quoted text"` (with an optional leading
+ * `-`) together as one token, quotes included. An unterminated quote runs to
+ * the end of the string, mirroring the backend scanner. Quotes inside a bare
+ * word (`foo"bar`) stay part of that word.
+ */
+function tokenize(raw: string): string[] {
+  return raw.match(/-?"[^"]*("|$)[^\s]*|\S+/g) ?? [];
+}
+
 export function parseTaskSearch(raw: string): ParsedTaskSearch {
-  const tokens = raw.trim().split(/\s+/).filter(Boolean);
+  const tokens = tokenize(raw);
   const textParts: string[] = [];
   const all: string[] = [];
   const any: string[] = [];

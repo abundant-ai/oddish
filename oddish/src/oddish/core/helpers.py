@@ -1184,3 +1184,93 @@ def escape_like(needle: str) -> str:
     """Escape LIKE/ILIKE pattern metacharacters so user input matches
     literally. Pair with ``.ilike(f"%{escape_like(q)}%", escape="\\")``."""
     return re.sub(r"([\\%_])", r"\\\1", needle)
+
+
+@dataclass(frozen=True)
+class SearchTerms:
+    """A parsed free-text search. ``include`` is an AND of OR-groups: every
+    group must match, a group matches when any of its needles does. No
+    ``exclude`` needle may match. Needles are literal text — callers apply
+    their own matching (e.g. ILIKE for case-insensitivity) and must still
+    :func:`escape_like` each needle."""
+
+    include: tuple[tuple[str, ...], ...] = ()
+    exclude: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.include or self.exclude)
+
+
+# AND-ing dozens of ILIKEs is pointless and lets a pathological query inflate
+# the statement; needles beyond the cap are dropped.
+_MAX_SEARCH_TERMS = 16
+
+
+def parse_search_query(raw: str) -> SearchTerms:
+    """Parse a free-text search string into include groups and excludes.
+
+    Grammar: whitespace-separated terms are AND'd (each must match,
+    order-independent); ``"quoted text"`` keeps its spaces and matches as one
+    contiguous phrase; a leading ``-`` on a term or phrase excludes it.
+    Uppercase ``OR`` between two terms makes either match (AND binds tighter:
+    ``a OR b c`` means ``(a OR b) AND c``), uppercase ``NOT`` excludes the
+    next term, and uppercase ``AND`` is a no-op — lowercase and quoted forms
+    are ordinary literals, so ``"OR"`` searches for the text. Dangling
+    operators (leading/trailing, or OR next to an exclusion) are dropped. An
+    unterminated quote treats the rest of the string as the phrase so results
+    stay sensible while a phrase is being typed. To search a literal leading
+    ``-``, quote it: ``"-no-skill"``.
+    """
+    include: list[tuple[str, ...]] = []
+    exclude: list[str] = []
+    pending_or = False
+    negate_next = False
+    # OR only joins ADJACENT plain terms; an exclusion in between makes it
+    # dangling (`a -b OR c` is a AND c AND NOT b, not (a OR c) AND NOT b).
+    last_was_include = False
+    i, n = 0, len(raw)
+    while i < n and sum(map(len, include)) + len(exclude) < _MAX_SEARCH_TERMS:
+        if raw[i].isspace():
+            i += 1
+            continue
+        negated = False
+        if raw[i] == "-" and i + 1 < n and not raw[i + 1].isspace():
+            negated = True
+            i += 1
+        quoted = raw[i] == '"'
+        if quoted:
+            end = raw.find('"', i + 1)
+            if end == -1:
+                term, i = raw[i + 1 :], n
+            else:
+                term, i = raw[i + 1 : end], end + 1
+        else:
+            end = i
+            while end < n and not raw[end].isspace():
+                end += 1
+            term, i = raw[i:end], end
+        term = term.strip()
+        if not term:
+            continue
+        if not quoted and not negated:
+            if term == "AND":
+                continue
+            if term == "OR":
+                pending_or = last_was_include
+                continue
+            if term == "NOT":
+                negate_next = True
+                continue
+        if negated or negate_next:
+            exclude.append(term)
+            negate_next = False
+            pending_or = False
+            last_was_include = False
+        elif pending_or:
+            include[-1] = (*include[-1], term)
+            pending_or = False
+            last_was_include = True
+        else:
+            include.append((term,))
+            last_was_include = True
+    return SearchTerms(include=tuple(include), exclude=tuple(exclude))

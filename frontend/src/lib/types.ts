@@ -356,6 +356,7 @@ export interface DashboardExperiment {
   id: string;
   name: string;
   is_public: boolean;
+  user_tags?: UserTagRef[];
   task_count: number;
   total_trials: number;
   completed_trials: number;
@@ -365,6 +366,11 @@ export interface DashboardExperiment {
   reward_success: number;
   reward_sum: number;
   reward_total: number;
+  /**
+   * Mean over tasks of the per-task mean reward across scored trials
+   * (partial credit included), excluding nop/oracle baselines.
+   */
+  avg_score: number | null;
   analysis_tasks: number;
   verdict_good: number;
   verdict_needs_review: number;
