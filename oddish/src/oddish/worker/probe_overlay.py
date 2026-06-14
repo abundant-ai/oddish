@@ -34,6 +34,17 @@ MAX_BYTES_PER_FILE = 2 * 1024 * 1024  # 2 MiB
 HARBOR_DIR_NAME = "harbor_src"
 HARBOR_CONTAINER_DIR = f"/app/{HARBOR_DIR_NAME}"
 
+# The real solving agent's brief, saved verbatim alongside the (overwritten)
+# probe instruction.md so the probe can study it without mistaking it for its
+# own instructions. Lands at AGENT_BRIEF_CONTAINER_PATH once the task dir is
+# uploaded to /app.
+AGENT_BRIEF_NAME = "AGENT_BRIEF.md"
+AGENT_BRIEF_CONTAINER_PATH = f"/app/{AGENT_BRIEF_NAME}"
+
+# Cap the per-file environment listing in the visibility map so a large build
+# context can't blow up the prompt. Overflow is summarized, not dropped silently.
+MAX_VISIBILITY_FILES = 100
+
 
 # System framing prepended to instruction.md when a trial carries an operator
 # directive (extra_instructions). Reorients the agent so the operator's
@@ -108,6 +119,68 @@ def _related_logs_section(related_dir: str, has_related: bool) -> str:
     )
 
 
+def render_visibility_map(
+    env_files: list[str],
+    probe_only_paths: list[str],
+) -> str:
+    """Render the section that tells the probe how its view differs from the
+    real agent's.
+
+    The probe's ``/app`` is a *superset* of the solving agent's: Harbor builds
+    the real agent's container from ``environment/`` only, but probe trials
+    upload the whole task dir (tests/, solution/, harbor_src/, ...) to ``/app``.
+    Without this map the probe reads e.g. ``/app/tests/test_hidden.py`` and
+    reports "the agent can read the hidden tests" — a false positive, because a
+    real run never has that file in the container. The lists are generated from
+    the staged tree (see ``collect_visibility``), so they are ground truth.
+    """
+    if env_files:
+        shown = env_files[:MAX_VISIBILITY_FILES]
+        lines = "\n".join(f"  - environment/{f}" for f in shown)
+        overflow = len(env_files) - len(shown)
+        if overflow > 0:
+            lines += f"\n  - … ({overflow} more files under environment/)"
+        env_block = (
+            "The solving agent's container is built **only** from "
+            "`environment/`, plus its prompt (reproduced above and saved at "
+            f"`{AGENT_BRIEF_CONTAINER_PATH}`). Files under `environment/`:\n"
+            f"{lines}"
+        )
+    else:
+        env_block = (
+            "This task has no `environment/` directory in the probe's view, so "
+            "the only thing the real solving agent receives is its prompt "
+            f"(reproduced above and saved at `{AGENT_BRIEF_CONTAINER_PATH}`)."
+        )
+
+    if probe_only_paths:
+        po_lines = "\n".join(f"  - {p}" for p in probe_only_paths)
+        probe_block = (
+            "These exist under your `/app` ONLY because the probe staged them. "
+            "A real solving agent never sees them. Do NOT count reading or "
+            "modifying any of these as a vulnerability unless the same file "
+            "*also* appears under `environment/` above:\n"
+            f"{po_lines}"
+        )
+    else:
+        probe_block = (
+            "Nothing beyond `environment/` and the prompt is present — your "
+            "view matches the real agent's."
+        )
+
+    return (
+        "## WHAT THE REAL AGENT SEES vs WHAT YOU SEE\n\n"
+        "You are the PROBE. Your view of `/app` is a *superset* of what the "
+        "real solving agent can see. Before reporting that the agent can "
+        "read or modify some file as a weakness, confirm the file is in the "
+        "real agent's view below.\n\n"
+        "### Real agent's view\n"
+        f"{env_block}\n\n"
+        "### PROBE-ONLY (absent in a real run)\n"
+        f"{probe_block}"
+    )
+
+
 def render_probe_instruction(
     framing: str,
     directive: str,
@@ -116,12 +189,16 @@ def render_probe_instruction(
     related_dir: str,
     has_related: bool,
     time_budget_sec: float | None = None,
+    env_files: list[str] | None = None,
+    probe_only_paths: list[str] | None = None,
 ) -> str:
     """Render the full mutated ``instruction.md`` for a probe trial.
 
-    Layout: system framing, the operator directive (the real goal), the
-    original task instruction (context only), then the two always-appended
-    sections (running tests + related trial logs).
+    Layout: the operator directive (the real goal), the original task brief
+    relabeled as the *real agent's* brief (context, not the probe's own
+    instructions), the visibility map (what the real agent sees vs what the
+    probe sees), then the always-appended sections (running tests + related
+    trial logs).
     """
     # NOTE (experiment): present the operator directive as the natural top of
     # instruction.md flowing straight into the task -- the shape proven to work
@@ -135,9 +212,12 @@ def render_probe_instruction(
     # task. The original "OPERATOR DIRECTIVE overrides your real task / ORIGINAL
     # TASK (context only)" framing was read by claude-code as a prompt-injection
     # attempt and triggered refusals; this presents the directive as the natural
-    # top of instruction.md with the spec as its subject. (A split into a separate
-    # ``task_details.md`` was tried and reverted: harbor delivers the spec to the
-    # agent only via the prompt -- a root-level file never reaches /app.)
+    # top of instruction.md with the spec as its subject. The spec stays inline
+    # (the earlier file-only ``task_details.md`` split was reverted because plain
+    # Harbor never mounts a root-level file) but is now relabeled as the *real
+    # agent's* brief so the probe stops adopting the solving-agent persona, and a
+    # verbatim copy is also saved to AGENT_BRIEF.md (now reachable via the
+    # task-dir upload hook) for the visibility map to point at.
     _ = framing
     budget_block = (
         f"{_time_budget_section(time_budget_sec)}\n\n---\n\n"
@@ -146,8 +226,14 @@ def render_probe_instruction(
     )
     return (
         f"{directive}\n\n"
-        f"THIS IS THE TASK:\n\n"
+        f"The brief below is what the REAL solving agent is given — it is your "
+        f"subject of study, not your own instructions. The same text is saved "
+        f"at `{AGENT_BRIEF_CONTAINER_PATH}`.\n\n"
+        f"--- BEGIN REAL AGENT BRIEF ---\n\n"
         f"{original}\n\n"
+        f"--- END REAL AGENT BRIEF ---\n\n"
+        f"---\n\n"
+        f"{render_visibility_map(env_files or [], probe_only_paths or [])}\n\n"
         f"---\n\n"
         f"{budget_block}"
         f"{_RUNNING_TESTS_SECTION}\n\n"

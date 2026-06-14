@@ -22,6 +22,7 @@ from sqlalchemy import select
 from oddish.core.skills import list_skills_core
 from oddish.db import TrialModel, get_session, get_storage_client
 from oddish.worker.probe_overlay import (
+    AGENT_BRIEF_NAME,
     HARBOR_DIR_NAME,
     MAX_BYTES_PER_FILE,
     MAX_FILES_PER_TRIAL,
@@ -180,6 +181,37 @@ async def stage_org_skills(skills_root: Path, *, org_id: str | None) -> int:
     return staged
 
 
+def collect_visibility(task_dir: Path) -> tuple[list[str], list[str]]:
+    """Split the staged task dir into what the real agent sees vs probe-only.
+
+    The real agent's container is built from ``environment/`` only, so its view
+    is the files under ``environment/`` plus its prompt. Everything else at the
+    task root (``tests/``, ``solution/``, ``task.toml``, the staged
+    ``related_trials/`` + ``harbor_src/``, ...) reaches ``/app`` only because the
+    probe uploads the whole task dir — i.e. probe-only. Hidden entries and the
+    instruction/brief files are excluded. Call this AFTER staging so the staged
+    dirs show up in the probe-only list. Returns ``(env_files, probe_only)``,
+    both as sorted relative path strings (probe-only dirs keep a trailing ``/``).
+    """
+    env_root = task_dir / "environment"
+    env_files: list[str] = []
+    if env_root.is_dir():
+        env_files = sorted(
+            str(p.relative_to(env_root))
+            for p in env_root.rglob("*")
+            if p.is_file()
+        )
+
+    reserved = {"environment", "instruction.md", AGENT_BRIEF_NAME}
+    probe_only: list[str] = []
+    for child in sorted(task_dir.iterdir(), key=lambda p: p.name):
+        if child.name in reserved or child.name.startswith("."):
+            continue
+        probe_only.append(f"{child.name}/" if child.is_dir() else child.name)
+
+    return env_files, probe_only
+
+
 async def apply_probe_overlay(
     task_dir: Path,
     *,
@@ -217,6 +249,12 @@ async def apply_probe_overlay(
     instr_path = task_dir / "instruction.md"
     original = instr_path.read_text() if instr_path.exists() else ""
 
+    # Save the real agent's brief verbatim so the probe can study it as the
+    # *other* agent's instructions, and compute the visibility split now that
+    # everything (related_trials/, harbor_src/) is staged.
+    (task_dir / AGENT_BRIEF_NAME).write_text(original)
+    env_files, probe_only = collect_visibility(task_dir)
+
     instr_path.write_text(
         render_probe_instruction(
             PROBE_SYSTEM_FRAMING,
@@ -225,5 +263,7 @@ async def apply_probe_overlay(
             related_dir=RELATED_CONTAINER_DIR,
             has_related=has_related,
             time_budget_sec=time_budget_sec,
+            env_files=env_files,
+            probe_only_paths=probe_only,
         )
     )
