@@ -168,6 +168,12 @@ ENV_VARS = {
     # Lets the stored model id stay standard (e.g. claude-opus-4-8) while the
     # agent still authenticates via the bring-your-own-creds secret above.
     "ODDISH_SUBSCRIPTION_AGENTS": os.environ.get("ODDISH_SUBSCRIPTION_AGENTS", ""),
+    # Concurrency cap for serialized subscription buckets (codex sub-solo/...).
+    # Defaults to 1 (serialized) to protect a shared refresh-sensitive credential;
+    # raise it for a run that finishes inside the token-validity window.
+    "ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY": os.environ.get(
+        "ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY", "1"
+    ),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
