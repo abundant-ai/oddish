@@ -44,8 +44,9 @@ async def stage_related_trial_logs(
     """Download prior real (non-probe) attempts' logs into the work dir.
 
     Stages files into ``<work_task_dir>/related_trials/<trial_id>/`` (visible
-    at ``/app/related_trials`` once Harbor mounts the task). The runner pulls
-    the artifacts here, so no S3 credentials enter the agent's container.
+    at :data:`RELATED_CONTAINER_DIR` once the runner uploads the work dir to the
+    probe-harness root). The runner pulls the artifacts here, so no S3
+    credentials enter the agent's container.
     Per-trial and per-file failures are logged and skipped; counts and sizes
     are capped. Returns True if anything was staged.
     """
@@ -116,9 +117,10 @@ def stage_harbor_source(work_task_dir: Path) -> bool:
     Resolves harbor from the running interpreter (``harbor.__file__``) so the
     staged source is byte-for-byte the code that actually builds the env and
     scores the trial -- otherwise a bug the agent "finds" in the source might
-    not exist in the live harness, making the exploit theater. Harbor mounts the
-    task dir at ``/app``, so this lands at :data:`HARBOR_CONTAINER_DIR`. Failures
-    are logged and skipped; they never block the probe. Returns True if staged.
+    not exist in the live harness, making the exploit theater. The runner
+    uploads the work dir to the probe-harness root, so this lands at
+    :data:`HARBOR_CONTAINER_DIR`. Failures are logged and skipped; they never
+    block the probe. Returns True if staged.
     """
     try:
         import harbor
@@ -181,35 +183,26 @@ async def stage_org_skills(skills_root: Path, *, org_id: str | None) -> int:
     return staged
 
 
-def collect_visibility(task_dir: Path) -> tuple[list[str], list[str]]:
-    """Split the staged task dir into what the real agent sees vs probe-only.
+def collect_visibility(task_dir: Path) -> list[str]:
+    """List the top-level entries staged under the probe-harness root.
 
-    The real agent's container is built from ``environment/`` only, so its view
-    is the files under ``environment/`` plus its prompt. Everything else at the
-    task root (``tests/``, ``solution/``, ``task.toml``, the staged
-    ``related_trials/`` + ``harbor_src/``, ...) reaches ``/app`` only because the
-    probe uploads the whole task dir — i.e. probe-only. Hidden entries and the
-    instruction/brief files are excluded. Call this AFTER staging so the staged
-    dirs show up in the probe-only list. Returns ``(env_files, probe_only)``,
-    both as sorted relative path strings (probe-only dirs keep a trailing ``/``).
+    Everything staged for the probe (``tests/``, ``solution/``, ``environment/``,
+    the staged ``related_trials/`` + ``harbor_src/``, ``task.toml``, ...) is
+    uploaded under :data:`PROBE_HARNESS_DIR` — none of it reaches the real
+    agent's ``/app``. This returns those top-level entries (sorted, dirs keep a
+    trailing ``/``) so the visibility map can enumerate the harness contents.
+    ``instruction.md`` is excluded (it is the probe's own prompt, delivered as a
+    string); hidden entries are skipped. Call this AFTER staging so the staged
+    dirs are included.
     """
-    env_root = task_dir / "environment"
-    env_files: list[str] = []
-    if env_root.is_dir():
-        env_files = sorted(
-            str(p.relative_to(env_root))
-            for p in env_root.rglob("*")
-            if p.is_file()
-        )
-
-    reserved = {"environment", "instruction.md", AGENT_BRIEF_NAME}
+    reserved = {"instruction.md"}
     probe_only: list[str] = []
     for child in sorted(task_dir.iterdir(), key=lambda p: p.name):
         if child.name in reserved or child.name.startswith("."):
             continue
         probe_only.append(f"{child.name}/" if child.is_dir() else child.name)
 
-    return env_files, probe_only
+    return probe_only
 
 
 async def apply_probe_overlay(
@@ -250,10 +243,10 @@ async def apply_probe_overlay(
     original = instr_path.read_text() if instr_path.exists() else ""
 
     # Save the real agent's brief verbatim so the probe can study it as the
-    # *other* agent's instructions, and compute the visibility split now that
+    # *other* agent's instructions, and enumerate the harness contents now that
     # everything (related_trials/, harbor_src/) is staged.
     (task_dir / AGENT_BRIEF_NAME).write_text(original)
-    env_files, probe_only = collect_visibility(task_dir)
+    probe_only = collect_visibility(task_dir)
 
     instr_path.write_text(
         render_probe_instruction(
@@ -263,7 +256,6 @@ async def apply_probe_overlay(
             related_dir=RELATED_CONTAINER_DIR,
             has_related=has_related,
             time_budget_sec=time_budget_sec,
-            env_files=env_files,
             probe_only_paths=probe_only,
         )
     )
