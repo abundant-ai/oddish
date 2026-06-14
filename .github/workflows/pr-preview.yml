@@ -233,12 +233,21 @@ jobs:
       MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
       MODAL_SECRET_ENVIRONMENT: main
       UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
-      ODDISH_MODAL_API_MIN_CONTAINERS: "0"
+      # --- PR #294 ONLY: personal-subscription eval run (this branch never merges to main).
+      # Mounts the bring-your-own-creds secret and turns on the subscription route so
+      # claude-code/codex execute on the operator's OAuth token / ChatGPT auth.json.
+      # Inert anywhere the cs-creds secret doesn't exist. Per-agent concurrency is capped
+      # for the run (codex sub-solo bucket + claude default), worker pool sized for 206 tasks.
+      ODDISH_EXTRA_SECRET_NAME: cs-creds
+      ODDISH_SUBSCRIPTION_AGENTS: claude-code,codex
+      ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY: "8"
+      ODDISH_DEFAULT_MODEL_CONCURRENCY: "8"
+      ODDISH_MODAL_API_MIN_CONTAINERS: "1"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
-      ODDISH_MODAL_API_MAX_CONTAINERS: "2"
-      ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_API_MAX_CONTAINERS: "3"
+      ODDISH_MODAL_WORKER_MIN_CONTAINERS: "1"
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
-      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
+      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "44"
     defaults:
       run:
         working-directory: backend
