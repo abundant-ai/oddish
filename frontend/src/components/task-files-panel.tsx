@@ -27,6 +27,8 @@ import {
   OctagonX,
   Eye,
   Code,
+  Copy,
+  Check,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { fetcher } from "@/lib/api";
@@ -134,7 +136,7 @@ function formatFileSize(bytes: number): string {
 
 function buildNodesFromListing(
   files: TaskFile[] = [],
-  dirs: TaskDirectory[] = [],
+  dirs: TaskDirectory[] = []
 ): TreeNode[] {
   const dirNodes = dirs.map((dir) => ({
     name: getNodeName(dir.path),
@@ -159,7 +161,7 @@ function buildNodesFromListing(
 function updateTree(
   nodes: TreeNode[],
   targetPath: string,
-  updater: (node: TreeNode) => TreeNode,
+  updater: (node: TreeNode) => TreeNode
 ): TreeNode[] {
   return nodes.map((node) => {
     if (node.path === targetPath) {
@@ -311,11 +313,11 @@ export function TaskFilesPanel({
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
   const [analysisActionError, setAnalysisActionError] = useState<string | null>(
-    null,
+    null
   );
   const [isRunningVerdict, setIsRunningVerdict] = useState(false);
   const [verdictActionError, setVerdictActionError] = useState<string | null>(
-    null,
+    null
   );
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
@@ -329,8 +331,10 @@ export function TaskFilesPanel({
   const [loadingFullFile, setLoadingFullFile] = useState(false);
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
   const [copiedTaskName, setCopiedTaskName] = useState(false);
+  const [copiedFileContent, setCopiedFileContent] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const copiedTaskNameTimeoutRef = useRef<number | null>(null);
+  const copiedFileContentTimeoutRef = useRef<number | null>(null);
   const verdictTaskKey =
     isOpen && taskId ? `${baseUrl}/tasks/${taskId}?include_trials=false` : null;
   const { data: verdictTask } = useSWR<Task>(verdictTaskKey, fetcher, {
@@ -367,7 +371,7 @@ export function TaskFilesPanel({
       }
       return `${resolvedFilesUrl}?${params.toString()}`;
     },
-    [resolvedFilesUrl, filesUrl, currentVersion],
+    [resolvedFilesUrl, filesUrl, currentVersion]
   );
 
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
@@ -383,7 +387,7 @@ export function TaskFilesPanel({
   const retryableTrials = useMemo(() => {
     if (!task?.trials) return [];
     return task.trials.filter(
-      (trial) => trial.status === "failed" || trial.status === "success",
+      (trial) => trial.status === "failed" || trial.status === "success"
     );
   }, [task]);
 
@@ -393,17 +397,17 @@ export function TaskFilesPanel({
   const allTrialsTerminal =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(
-      (trial) => trial.status === "failed" || trial.status === "success",
+      (trial) => trial.status === "failed" || trial.status === "success"
     );
   const hasAnalysisInFlight = (task?.trials ?? []).some((trial) =>
-    isActivePipelineStatus(trial.analysis_status),
+    isActivePipelineStatus(trial.analysis_status)
   );
   const allAnalysesComplete =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(
       (trial) =>
         trial.analysis_status === "success" ||
-        trial.analysis_status === "failed",
+        trial.analysis_status === "failed"
     );
   const verdictInFlight = isActivePipelineStatus(verdictSource?.verdict_status);
   const canRunTaskAnalysis =
@@ -419,7 +423,7 @@ export function TaskFilesPanel({
     allAnalysesComplete &&
     !verdictInFlight;
   const analysisActionLabel = (task?.trials ?? []).some(
-    (trial) => trial.analysis_status || trial.analysis,
+    (trial) => trial.analysis_status || trial.analysis
   )
     ? "Rerun analyses"
     : "Run analyses";
@@ -435,7 +439,7 @@ export function TaskFilesPanel({
       if (!nextTask) return;
       onNavigate(nextTask, nextIndex);
     },
-    [onNavigate, orderedList],
+    [onNavigate, orderedList]
   );
 
   const handleRetryTask = async () => {
@@ -452,10 +456,10 @@ export function TaskFilesPanel({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to retry trial",
+              data.detail || data.error || "Failed to retry trial"
             );
           }
-        }),
+        })
       );
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
@@ -504,7 +508,7 @@ export function TaskFilesPanel({
       onRetryComplete?.(id ? [id] : undefined);
     } catch (err) {
       setCancelError(
-        err instanceof Error ? err.message : "Failed to cancel task",
+        err instanceof Error ? err.message : "Failed to cancel task"
       );
     } finally {
       setIsCancelling(false);
@@ -523,13 +527,13 @@ export function TaskFilesPanel({
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue task analysis",
+          data.detail || data.error || "Failed to queue task analysis"
         );
       }
       onRetryComplete?.([task.id]);
     } catch (err) {
       setAnalysisActionError(
-        err instanceof Error ? err.message : "Failed to queue task analysis",
+        err instanceof Error ? err.message : "Failed to queue task analysis"
       );
     } finally {
       setIsRunningAnalysis(false);
@@ -552,7 +556,7 @@ export function TaskFilesPanel({
       onRetryComplete?.([task.id]);
     } catch (err) {
       setVerdictActionError(
-        err instanceof Error ? err.message : "Failed to queue verdict",
+        err instanceof Error ? err.message : "Failed to queue verdict"
       );
     } finally {
       setIsRunningVerdict(false);
@@ -602,7 +606,7 @@ export function TaskFilesPanel({
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(
-            data.detail || `Failed to fetch files: ${res.statusText}`,
+            data.detail || `Failed to fetch files: ${res.statusText}`
           );
         }
         const data: FilesListingResponse = await res.json();
@@ -620,7 +624,7 @@ export function TaskFilesPanel({
       } catch (err) {
         if (!cancelled) {
           setError(
-            err instanceof Error ? err.message : "Failed to fetch files",
+            err instanceof Error ? err.message : "Failed to fetch files"
           );
         }
       } finally {
@@ -655,11 +659,11 @@ export function TaskFilesPanel({
             ...node,
             children,
             isLoaded: true,
-          })),
+          }))
         );
       } catch (err) {
         setError(
-          err instanceof Error ? err.message : "Failed to fetch directory",
+          err instanceof Error ? err.message : "Failed to fetch directory"
         );
       } finally {
         setLoadingDirs((prev) => {
@@ -669,7 +673,7 @@ export function TaskFilesPanel({
         });
       }
     },
-    [taskId, filesUrl, buildListingUrl],
+    [taskId, filesUrl, buildListingUrl]
   );
 
   // Fetch file content when a file is selected
@@ -752,7 +756,7 @@ export function TaskFilesPanel({
             params.set("version", String(currentVersion));
           }
           const res = await fetch(
-            `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`,
+            `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`
           );
           if (!res.ok) {
             throw new Error("Failed to fetch file content");
@@ -815,7 +819,7 @@ export function TaskFilesPanel({
         params.set("version", String(currentVersion));
       }
       const res = await fetch(
-        `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`,
+        `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`
       );
       if (!res.ok) {
         return;
@@ -1099,9 +1103,20 @@ export function TaskFilesPanel({
   }, [taskName]);
 
   useEffect(() => {
+    setCopiedFileContent(false);
+    if (copiedFileContentTimeoutRef.current !== null) {
+      window.clearTimeout(copiedFileContentTimeoutRef.current);
+      copiedFileContentTimeoutRef.current = null;
+    }
+  }, [selectedFile?.path]);
+
+  useEffect(() => {
     return () => {
       if (copiedTaskNameTimeoutRef.current !== null) {
         window.clearTimeout(copiedTaskNameTimeoutRef.current);
+      }
+      if (copiedFileContentTimeoutRef.current !== null) {
+        window.clearTimeout(copiedFileContentTimeoutRef.current);
       }
     };
   }, []);
@@ -1114,7 +1129,7 @@ export function TaskFilesPanel({
         : trials;
     const rewardSum = versionTrials.reduce(
       (sum, trial) => sum + (trial.reward ?? 0),
-      0,
+      0
     );
     const total = versionTrials.filter((t) => t.reward != null).length;
     return {
@@ -1138,6 +1153,19 @@ export function TaskFilesPanel({
     copiedTaskNameTimeoutRef.current = window.setTimeout(() => {
       setCopiedTaskName(false);
       copiedTaskNameTimeoutRef.current = null;
+    }, 2000);
+  };
+
+  const handleCopyFileContent = async () => {
+    if (fileContent === null) return;
+    await navigator.clipboard.writeText(fileContent);
+    setCopiedFileContent(true);
+    if (copiedFileContentTimeoutRef.current !== null) {
+      window.clearTimeout(copiedFileContentTimeoutRef.current);
+    }
+    copiedFileContentTimeoutRef.current = window.setTimeout(() => {
+      setCopiedFileContent(false);
+      copiedFileContentTimeoutRef.current = null;
     }, 2000);
   };
 
@@ -1223,24 +1251,46 @@ export function TaskFilesPanel({
                   {selectedFile.path}
                 </div>
                 {!isBinaryRendererFile(selectedFile.name) && (
-                  <Tabs
-                    value={viewMode}
-                    onValueChange={(v) => setViewMode(v as "rendered" | "raw")}
-                  >
-                    <TabsList className="h-7">
-                      <TabsTrigger
-                        value="rendered"
-                        className="h-6 px-2 text-[10px]"
-                      >
-                        <Eye className="mr-1 h-3 w-3" />
-                        Rendered
-                      </TabsTrigger>
-                      <TabsTrigger value="raw" className="h-6 px-2 text-[10px]">
-                        <Code className="mr-1 h-3 w-3" />
-                        Raw
-                      </TabsTrigger>
-                    </TabsList>
-                  </Tabs>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Tabs
+                      value={viewMode}
+                      onValueChange={(v) =>
+                        setViewMode(v as "rendered" | "raw")
+                      }
+                    >
+                      <TabsList className="h-7">
+                        <TabsTrigger
+                          value="rendered"
+                          className="h-6 px-2 text-[10px]"
+                        >
+                          <Eye className="mr-1 h-3 w-3" />
+                          Rendered
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="raw"
+                          className="h-6 px-2 text-[10px]"
+                        >
+                          <Code className="mr-1 h-3 w-3" />
+                          Raw
+                        </TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleCopyFileContent}
+                      disabled={fileContent === null}
+                      className="h-auto w-7 self-stretch p-0"
+                      title="Copy raw content"
+                      aria-label="Copy raw content"
+                    >
+                      {copiedFileContent ? (
+                        <Check className="h-3 w-3" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                    </Button>
+                  </div>
                 )}
               </div>
             )}
