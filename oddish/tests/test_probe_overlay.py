@@ -3,7 +3,10 @@
 from types import SimpleNamespace
 
 from oddish.worker.probe_overlay import (
+    AGENT_BRIEF_CONTAINER_PATH,
+    MAX_VISIBILITY_FILES,
     render_probe_instruction,
+    render_visibility_map,
     select_related_trials,
 )
 
@@ -15,18 +18,52 @@ def _render(has_related: bool) -> str:
         "ORIGINAL-TEXT",
         related_dir="/app/related_trials",
         has_related=has_related,
+        env_files=["src/app.py"],
+        probe_only_paths=["tests/", "solution/"],
     )
 
 
 def test_render_includes_all_sections():
     out = _render(has_related=True)
-    assert "FRAMING-TEXT" in out
-    assert "## OPERATOR DIRECTIVE" in out
     assert "DIRECTIVE-TEXT" in out
-    assert "## ORIGINAL TASK INSTRUCTION (context only)" in out
+    # The original spec is relabeled as the real agent's brief, not the probe's.
+    assert "REAL AGENT BRIEF" in out
     assert "ORIGINAL-TEXT" in out
+    assert "## WHAT THE REAL AGENT SEES vs WHAT YOU SEE" in out
     assert "## RUNNING TESTS" in out
     assert "## RELATED TRIAL LOGS" in out
+
+
+def test_render_does_not_label_spec_as_probes_own_task():
+    # Regression: the old "THIS IS THE TASK:" framing made the probe adopt the
+    # solving-agent persona and flag its own staged files as vulnerabilities.
+    out = _render(has_related=True)
+    assert "THIS IS THE TASK" not in out
+    assert AGENT_BRIEF_CONTAINER_PATH in out
+
+
+def test_visibility_map_lists_env_and_probe_only():
+    out = render_visibility_map(
+        env_files=["src/app.py", "Dockerfile"],
+        probe_only_paths=["tests/", "solution/", "harbor_src/"],
+    )
+    assert "environment/src/app.py" in out
+    assert "environment/Dockerfile" in out
+    for p in ("tests/", "solution/", "harbor_src/"):
+        assert p in out
+    # The guardrail clause that prevents the false-positive finding.
+    assert "unless the same file" in out
+
+
+def test_visibility_map_truncates_long_env_listing():
+    files = [f"f{i}.py" for i in range(MAX_VISIBILITY_FILES + 25)]
+    out = render_visibility_map(env_files=files, probe_only_paths=[])
+    assert "25 more files under environment/" in out
+
+
+def test_visibility_map_handles_no_environment():
+    out = render_visibility_map(env_files=[], probe_only_paths=["tests/"])
+    assert "no `environment/` directory" in out
 
 
 def test_render_running_tests_is_fuzzy():
