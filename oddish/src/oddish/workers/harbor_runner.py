@@ -27,12 +27,21 @@ from harbor.trial.hooks import TrialHookEvent
 from harbor.models.job.result import JobResult
 
 from oddish.config import (
+    MINIMAX_DEFAULT_BASE_URL,
+    MOONSHOT_DEFAULT_BASE_URL,
     OPENAI_PROVIDER_AZURE,
     OPENAI_PROVIDER_OPENAI,
     ZAI_DEFAULT_BASE_URL,
+    is_minimax_model,
+    is_moonshot_model,
     is_zai_model,
+    minimax_api_model_id,
+    minimax_bare_model_id,
+    moonshot_bare_model_id,
     settings,
     to_bedrock_model_id,
+    to_minimax_model_id,
+    to_moonshot_model_id,
     to_zai_model_id,
     zai_bare_model_id,
 )
@@ -49,9 +58,7 @@ _MIN_REQUIRED_FREE_GB = 5.0
 _MIN_REQUIRED_FREE_INODES = 1024
 _ODDISH_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:OddishCodex"
 _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:AzureCompatibleCodex"
-_ODDISH_CLAUDE_CODE_IMPORT_PATH = (
-    "oddish.workers.claude_code_agent:OddishClaudeCode"
-)
+_ODDISH_CLAUDE_CODE_IMPORT_PATH = "oddish.workers.claude_code_agent:OddishClaudeCode"
 
 
 class _TeeTextIO:
@@ -632,6 +639,113 @@ def _apply_claude_code_zai_env(agent_config: AgentConfig) -> None:
     agent_config.kwargs = kwargs
 
 
+# MiniMax's recommended long-context / streaming env for M-series models under
+# Claude Code. CLAUDE_CODE_AUTO_COMPACT_WINDOW matches MiniMax-M3's 512K window.
+_MINIMAX_RECOMMENDED_ENV: dict[str, str] = {
+    "API_TIMEOUT_MS": "3000000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "512000",
+}
+
+# Moonshot's recommended env for Kimi K2.7 Code under Claude Code.
+# CLAUDE_CODE_AUTO_COMPACT_WINDOW matches K2.7's 256K window;
+# CLAUDE_CODE_MAX_OUTPUT_TOKENS is K2.7's max output. K2.7 locks
+# temperature/top_p server-side and thinking is always on, so no sampling or
+# thinking kwargs are set.
+_MOONSHOT_RECOMMENDED_ENV: dict[str, str] = {
+    "ENABLE_TOOL_SEARCH": "false",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "262144",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32768",
+}
+
+
+def _apply_claude_code_minimax_env(agent_config: AgentConfig) -> None:
+    """Apply the env Claude Code needs to talk to MiniMax's direct endpoint.
+
+    Mirrors ``_apply_claude_code_zai_env``: point Claude Code at MiniMax's
+    Anthropic-compatible base URL, authenticate with ``${MINIMAX_API_KEY}``,
+    blank the ambient Bedrock/Anthropic credentials so the MiniMax route wins,
+    and pin the model (re-cased to MiniMax's published id) plus every size alias.
+    MiniMax M3 enables extended thinking by default, so no thinking/effort kwargs
+    are set.
+    """
+    agent_name = (agent_config.name or "").strip().lower()
+    if "claude-code" not in agent_name:
+        return
+    if not is_minimax_model(agent_config.model_name):
+        return
+
+    bare_model = minimax_api_model_id(
+        minimax_bare_model_id(agent_config.model_name or "")
+    )
+    env = dict(agent_config.env or {})
+    env.setdefault(
+        "ANTHROPIC_BASE_URL",
+        os.environ.get("MINIMAX_BASE_URL") or MINIMAX_DEFAULT_BASE_URL,
+    )
+    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${MINIMAX_API_KEY}")
+
+    if bare_model:
+        env["ANTHROPIC_MODEL"] = bare_model
+        for alias in (
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ):
+            env.setdefault(alias, bare_model)
+
+    for key, value in _MINIMAX_RECOMMENDED_ENV.items():
+        env.setdefault(key, value)
+
+    env["ANTHROPIC_API_KEY"] = ""
+    env["CLAUDE_CODE_USE_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    agent_config.env = env
+
+
+def _apply_claude_code_moonshot_env(agent_config: AgentConfig) -> None:
+    """Apply the env Claude Code needs to talk to Moonshot's Kimi endpoint.
+
+    Mirrors ``_apply_claude_code_zai_env``: point Claude Code at Moonshot's
+    Anthropic-compatible base URL, authenticate with ``${MOONSHOT_API_KEY}``,
+    blank the ambient Bedrock/Anthropic credentials so the Moonshot route wins,
+    and pin the model plus every size alias to the bare Kimi id. K2.7 locks
+    sampling params and thinking is always on, so no kwargs are set.
+    """
+    agent_name = (agent_config.name or "").strip().lower()
+    if "claude-code" not in agent_name:
+        return
+    if not is_moonshot_model(agent_config.model_name):
+        return
+
+    bare_model = moonshot_bare_model_id(agent_config.model_name or "")
+    env = dict(agent_config.env or {})
+    env.setdefault(
+        "ANTHROPIC_BASE_URL",
+        os.environ.get("MOONSHOT_BASE_URL") or MOONSHOT_DEFAULT_BASE_URL,
+    )
+    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${MOONSHOT_API_KEY}")
+
+    if bare_model:
+        env["ANTHROPIC_MODEL"] = bare_model
+        for alias in (
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ):
+            env.setdefault(alias, bare_model)
+
+    for key, value in _MOONSHOT_RECOMMENDED_ENV.items():
+        env.setdefault(key, value)
+
+    env["ANTHROPIC_API_KEY"] = ""
+    env["CLAUDE_CODE_USE_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    agent_config.env = env
+
+
 def _apply_codex_azure_compat(agent_config: AgentConfig) -> None:
     """Route Azure Codex trials through Oddish's transport-compatible wrapper."""
     if agent_config.import_path is not None:
@@ -658,9 +772,7 @@ def _apply_codex_oddish_wrapper(agent_config: AgentConfig) -> None:
     agent_config.import_path = _ODDISH_CODEX_IMPORT_PATH
 
 
-def _apply_claude_code_probe_harbor(
-    agent_config: AgentConfig, is_probe: bool
-) -> None:
+def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -> None:
     """Install the harbor package in the sandbox for probe claude-code trials."""
     if not is_probe or agent_config.import_path is not None:
         return
@@ -735,16 +847,23 @@ def _build_agent_config(
     # defensive guard for legacy rows or rich AgentConfig payloads. Explicit
     # "openrouter/..." ids pass through here and the claude-code agent routes
     # them through OpenRouter instead of the container's default transport.
-    # GLM/z.ai models canonicalize to "zai/<id>" (kept off the Bedrock route);
-    # everything else flows through the Bedrock chokepoint as before. Keeping
-    # the "zai/" prefix on model_name lets Harbor's per-agent network allowlist
-    # resolve the z.ai endpoint for closed-internet tasks.
+    # GLM/z.ai, MiniMax, and Moonshot/Kimi models canonicalize to
+    # "<provider>/<id>" (kept off the Bedrock route); everything else flows
+    # through the Bedrock chokepoint as before. Keeping the provider prefix on
+    # model_name lets Harbor's per-agent network allowlist resolve the direct
+    # endpoint for closed-internet tasks.
     if is_zai_model(agent_config.model_name):
         agent_config.model_name = to_zai_model_id(agent_config.model_name)
+    elif is_minimax_model(agent_config.model_name):
+        agent_config.model_name = to_minimax_model_id(agent_config.model_name)
+    elif is_moonshot_model(agent_config.model_name):
+        agent_config.model_name = to_moonshot_model_id(agent_config.model_name)
     else:
         agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
     _apply_claude_code_openrouter_env(agent_config)
     _apply_claude_code_zai_env(agent_config)
+    _apply_claude_code_minimax_env(agent_config)
+    _apply_claude_code_moonshot_env(agent_config)
 
     if _agent_uses_openai_provider(agent_config):
         if settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
