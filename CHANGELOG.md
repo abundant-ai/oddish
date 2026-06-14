@@ -8,8 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2026-06-14]
 
+### Added
+- Advanced free-text grammar for the task browser search box: space-separated terms AND together in any order, `"quoted text"` matches as a contiguous phrase, a leading `-` (or uppercase `NOT`) excludes a term, and uppercase `OR` makes either side of a group match; a `?` icon inside the input opens a syntax cheatsheet tooltip; `parse_search_query` lives in `oddish/core/helpers.py` so the dashboard, standalone server, and cloud API all share one grammar; LIKE metacharacters remain escaped as literals (preserving #285 semantics); needles capped at 16 (#295)
+- "Delete tag for everyone…" action in the tag chip editor: an inline confirm panel shows the tag's current name (refreshed after 409 races) and its direct-assignment count before the destructive click; sends `cascade=true` to flip ACTIVE assignments; `onDeleted` drops the chip locally without a redundant unassign call; `DELETE` passthrough added to the `/api/tags/[tag_id]` Next.js proxy route (#293)
+
 ### Changed
-- Bake per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` defaults into the Modal deploy that raise the `global.anthropic.claude-haiku-4-5-20251001-v1:0` and `openai/gpt-5.4-mini` queue-key concurrency leases to 128 (up from the 48 default); the haiku key is also the analysis-model queue key, so trajectory analysis gets more headroom. Operators can still override the whole JSON via the env var / `oddish-prod` secret (#297)
+- Bake per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` defaults into the Modal deploy that raise the `global.anthropic.claude-haiku-4-5-20251001-v1:0` (also the analysis-model queue key) and `openai/gpt-5.4-mini` queue-key concurrency leases to 128 (up from the 48 default); trajectory analysis gets more headroom; operators can still override the whole JSON via the env var / `oddish-prod` secret (#297)
+
+### Fixed
+- `DELETE /tags/{id}` backend route now accepts a `?cascade=` query parameter so callers can consent to flipping ACTIVE assignments to REMOVED; previously the flag was unreachable from HTTP and tag deletion always failed for any still-assigned tag (#293)
 
 ---
 
