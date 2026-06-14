@@ -340,6 +340,18 @@ AWS_BEARER_TOKEN_BEDROCK=...
 ZAI_API_KEY=...
 # ZAI_BASE_URL=https://api.z.ai/api/anthropic
 
+# MiniMax — auth token for MiniMax M-series models on the claude-code harness
+# (model ids like `minimax/MiniMax-M3`). Referenced as ${MINIMAX_API_KEY}.
+# Optionally override the endpoint via MINIMAX_BASE_URL.
+MINIMAX_API_KEY=...
+# MINIMAX_BASE_URL=https://api.minimax.io/anthropic
+
+# Moonshot — auth token for Kimi K2.7 Code on the claude-code harness
+# (model ids like `moonshot/kimi-k2.7-code`). Referenced as ${MOONSHOT_API_KEY}.
+# Optionally override the endpoint via MOONSHOT_BASE_URL.
+MOONSHOT_API_KEY=...
+# MOONSHOT_BASE_URL=https://api.moonshot.ai/anthropic
+
 # Optional sandbox credentials
 DAYTONA_API_KEY=...
 MODAL_TOKEN_ID=...
@@ -429,6 +441,69 @@ this with a dedicated z.ai route:
 Run GLM on a task: `oddish run -p <task> --agent claude-code --model
 zai/glm-x-preview[1m]` (bare `glm-x-preview[1m]` works too and is canonicalized
 to `zai/...`).
+
+### MiniMax / Moonshot (Kimi) routing (Claude Code harness, direct APIs)
+
+MiniMax and Moonshot both expose **Anthropic-compatible `/messages` endpoints**,
+so MiniMax M-series and Kimi K2.7 Code run on the `claude-code` harness against
+their official direct APIs — the same pattern as GLM/z.ai, and the reason these
+are preferred over the OpenRouter route (one stable endpoint per provider,
+trivially allowlisted on closed-internet tasks; no OpenRouter provider-routing
+variance). oddish gives each its own provider/queue bucket so they never contend
+with Bedrock for concurrency slots:
+
+- **Canonical id.** `oddish.config.normalize_trial_model` canonicalizes any
+  MiniMax reference to `minimax/<id>` (via `to_minimax_model_id`) and any
+  Moonshot/Kimi reference to `moonshot/<id>` (via `to_moonshot_model_id`).
+  - MiniMax inputs: an explicit `minimax/` prefix or a bare `minimax...` id
+    (e.g. `MiniMax-M3`). Model ids are lowercased for storage/queueing
+    (`minimax/minimax-m3`); the exact published casing (`MiniMax-M3`) is
+    restored only when the id is handed to Claude Code (`minimax_api_model_id`).
+  - Moonshot inputs: an explicit `moonshot/`/`moonshotai/`/`kimi/` prefix or a
+    truly bare `kimi-...` id (e.g. `kimi-k2.7-code`). **A foreign provider
+    prefix such as `openrouter/moonshotai/kimi-...` is intentionally *not*
+    matched**, so the OpenRouter route keeps its own provider/queue bucket and
+    both columns can run concurrently.
+  - `minimax`/`moonshot` resolve to their own `provider` and `queue_key`
+    (`moonshot` is a litellm provider id; `minimax` is an oddish alias). The
+    provider prefix is kept on the id handed to Harbor so its per-agent network
+    allowlist resolves the direct endpoint for closed-internet tasks.
+- **Env injection.** For a `claude-code` agent on a MiniMax/Moonshot model,
+  `harbor_runner._apply_claude_code_minimax_env` /
+  `_apply_claude_code_moonshot_env` mirror the z.ai path: they set
+  `ANTHROPIC_BASE_URL` (defaults `https://api.minimax.io/anthropic` /
+  `https://api.moonshot.ai/anthropic`, overridable via `MINIMAX_BASE_URL` /
+  `MOONSHOT_BASE_URL`), `ANTHROPIC_AUTH_TOKEN=${MINIMAX_API_KEY}` /
+  `${MOONSHOT_API_KEY}` (resolved by Harbor's Modal env at exec time), pin
+  `ANTHROPIC_MODEL` and all size aliases to the bare model id, apply each
+  provider's recommended long-context env (MiniMax:
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW=512000` for M3's 512K window,
+  `API_TIMEOUT_MS`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`; Moonshot:
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW=262144` for K2.7's 256K window,
+  `ENABLE_TOOL_SEARCH=false`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS=32768`), and blank
+  the ambient `ANTHROPIC_API_KEY` / `CLAUDE_CODE_USE_BEDROCK` /
+  `AWS_BEARER_TOKEN_BEDROCK` so the direct route wins. **No thinking/effort
+  kwargs are set** — MiniMax M3 has thinking on by default and K2.7 locks
+  temperature/top_p server-side with thinking always on.
+- **Secret.** Provide `MINIMAX_API_KEY` / `MOONSHOT_API_KEY` in the runtime
+  Modal secret (or the worker environment). They are referenced as
+  `${MINIMAX_API_KEY}` / `${MOONSHOT_API_KEY}` and never persisted to the trial
+  row.
+- **Network allowlist.** The Harbor fork's per-agent allowlist maps the
+  `minimax` and `moonshot`/`moonshotai`/`kimi` model prefixes (and the
+  dedicated `minimax-claude-code` / `kimi-claude-code` agent names) to
+  `api.minimax.io` / `api.moonshot.ai`, so closed-internet tasks reach the
+  direct endpoints without further changes.
+
+Dedicated Harbor agents `minimax-claude-code` and `kimi-claude-code` (subclasses
+of `claude-code`, with closed-internet `*-api-key-no-search` variants) also
+exist for direct `harbor run` usage; the oddish production path uses the stock
+`claude-code` agent plus the env injection above.
+
+Run MiniMax / Kimi on a task: `oddish run -p <task> --agent claude-code --model
+minimax/MiniMax-M3` and `oddish run -p <task> --agent claude-code --model
+moonshot/kimi-k2.7-code` (bare `MiniMax-M3` / `kimi-k2.7-code` work too and are
+canonicalized).
 
 Storage defaults:
 

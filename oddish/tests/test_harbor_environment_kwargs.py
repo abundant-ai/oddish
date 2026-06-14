@@ -290,6 +290,81 @@ def test_claude_code_bare_glm_model_is_canonicalized_to_zai(monkeypatch) -> None
     assert agent_config.env["ANTHROPIC_MODEL"] == "glm-x-preview[1m]"
 
 
+def test_claude_code_minimax_agent_config_sets_minimax_skin_env(monkeypatch) -> None:
+    monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+
+    # Trials store the canonical (lowercased) id; _build_agent_config receives
+    # that, not the raw mixed-case input.
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="minimax/minimax-m3",
+        raw_harbor_config={},
+    )
+
+    # The provider prefix stays so Harbor's allowlist resolves api.minimax.io
+    # for closed-internet tasks.
+    assert agent_config.model_name == "minimax/minimax-m3"
+    assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://api.minimax.io/anthropic"
+    assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${MINIMAX_API_KEY}"
+    # The endpoint expects the exact mixed-case id, mirrored across aliases.
+    assert agent_config.env["ANTHROPIC_MODEL"] == "MiniMax-M3"
+    assert agent_config.env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "MiniMax-M3"
+    assert agent_config.env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "MiniMax-M3"
+    assert agent_config.env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "MiniMax-M3"
+    assert agent_config.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "512000"
+    # Ambient Bedrock/Anthropic creds blanked so the MiniMax route wins.
+    assert agent_config.env["ANTHROPIC_API_KEY"] == ""
+    assert agent_config.env["CLAUDE_CODE_USE_BEDROCK"] == ""
+    assert agent_config.env["AWS_BEARER_TOKEN_BEDROCK"] == ""
+    # No thinking/effort kwargs (MiniMax M3 has thinking on by default).
+    assert "thinking" not in agent_config.kwargs
+    assert "reasoning_effort" not in agent_config.kwargs
+
+
+def test_claude_code_moonshot_agent_config_sets_moonshot_skin_env(monkeypatch) -> None:
+    monkeypatch.delenv("MOONSHOT_BASE_URL", raising=False)
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="kimi-k2.7-code",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "moonshot/kimi-k2.7-code"
+    assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://api.moonshot.ai/anthropic"
+    assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${MOONSHOT_API_KEY}"
+    assert agent_config.env["ANTHROPIC_MODEL"] == "kimi-k2.7-code"
+    assert agent_config.env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "kimi-k2.7-code"
+    assert agent_config.env["CLAUDE_CODE_SUBAGENT_MODEL"] == "kimi-k2.7-code"
+    assert agent_config.env["ENABLE_TOOL_SEARCH"] == "false"
+    assert agent_config.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "262144"
+    assert agent_config.env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "32768"
+    assert agent_config.env["ANTHROPIC_API_KEY"] == ""
+    assert agent_config.env["CLAUDE_CODE_USE_BEDROCK"] == ""
+    assert agent_config.env["AWS_BEARER_TOKEN_BEDROCK"] == ""
+    # K2.7 locks sampling params / thinking is always on -- no kwargs set.
+    assert "thinking" not in agent_config.kwargs
+    assert "reasoning_effort" not in agent_config.kwargs
+
+
+def test_claude_code_openrouter_kimi_is_not_routed_to_moonshot(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="openrouter/moonshotai/kimi-k2.7-code",
+        raw_harbor_config={},
+    )
+
+    # The OpenRouter route must win: model id unchanged, OpenRouter base URL /
+    # token, not the Moonshot-direct endpoint or its recommended env.
+    assert agent_config.model_name == "openrouter/moonshotai/kimi-k2.7-code"
+    assert "openrouter" in agent_config.env["ANTHROPIC_BASE_URL"]
+    assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${OPENROUTER_API_KEY}"
+    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in agent_config.env
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in agent_config.env
+
+
 def test_claude_code_glm_agent_config_preserves_explicit_env(monkeypatch) -> None:
     monkeypatch.delenv("ZAI_BASE_URL", raising=False)
 
@@ -336,7 +411,9 @@ def test_harbor_runner_passes_environment_kwargs_to_job_config(
             (self.job_dir / "result.json").write_text("{}\n", encoding="utf-8")
             return object()
 
-    monkeypatch.setattr(harbor_runner, "validate_task_timeout_config", lambda path: None)
+    monkeypatch.setattr(
+        harbor_runner, "validate_task_timeout_config", lambda path: None
+    )
     monkeypatch.setattr(harbor_runner, "_build_agent_config", lambda **kwargs: object())
     monkeypatch.setattr(harbor_runner, "TaskConfig", lambda path: path)
     monkeypatch.setattr(harbor_runner, "JobConfig", lambda **kwargs: kwargs)
