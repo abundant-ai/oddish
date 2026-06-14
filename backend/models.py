@@ -144,6 +144,13 @@ class UserModel(TimestampedMixin, Base):
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # When true, tasks this user creates default to run_probe=True (auto-probe
+    # on submit) without the caller passing --run-probe. Only ever turns the
+    # flag ON; an explicit run_probe=True on the submission still wins. Set per
+    # user by an operator; there is no UI yet.
+    run_probe_default: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
 
     # Relationships
     organization: Mapped["OrganizationModel"] = relationship(  # type: ignore[assignment]
