@@ -329,7 +329,10 @@ def archive_task_dir(task_path: Path) -> Path:
     with tarfile.open(tarball_path, "w:gz", compresslevel=1) as tar:
         # Add contents of task_path to the tarball
         for item in task_path.iterdir():
-            tar.add(item, arcname=item.name)
+            # Experiments link tasks into one task_path via relative symlinks
+            # (see PR #412); resolve() makes the CLI package the real target
+            # dir so the uploaded tarball isn't a broken symlink.
+            tar.add(item.resolve(), arcname=item.name)
 
     return tarball_path
 
