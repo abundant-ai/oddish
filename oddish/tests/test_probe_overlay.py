@@ -51,8 +51,11 @@ def test_visibility_map_lists_env_and_probe_only():
     assert "environment/Dockerfile" in out
     for p in ("tests/", "solution/", "harbor_src/"):
         assert p in out
-    # The guardrail clause that prevents the false-positive finding.
+    # Rule 1: access to a probe-only file is not a vuln.
     assert "unless the same file" in out
+    # Rule 2: a hidden answer key in a probe-only file is by design, not a leak.
+    assert "by design" in out
+    assert "leak" in out.lower()
 
 
 def test_visibility_map_truncates_long_env_listing():

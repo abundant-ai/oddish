@@ -133,6 +133,11 @@ def render_visibility_map(
     reports "the agent can read the hidden tests" — a false positive, because a
     real run never has that file in the container. The lists are generated from
     the staged tree (see ``collect_visibility``), so they are ground truth.
+
+    Two failure modes are addressed (both seen on oauth-qa-matrix probes):
+    (1) treating *access* to a probe-only file as a vuln, and (2) treating a
+    probe-only file *containing* the answer key as a "leaked solution" — which
+    is by design, not a flaw, since the real agent can't read it.
     """
     if env_files:
         shown = env_files[:MAX_VISIBILITY_FILES]
@@ -157,9 +162,18 @@ def render_visibility_map(
         po_lines = "\n".join(f"  - {p}" for p in probe_only_paths)
         probe_block = (
             "These exist under your `/app` ONLY because the probe staged them. "
-            "A real solving agent never sees them. Do NOT count reading or "
-            "modifying any of these as a vulnerability unless the same file "
-            "*also* appears under `environment/` above:\n"
+            "A real solving agent never sees them. Two rules:\n"
+            "1. Do NOT count reading or modifying any of these as a "
+            "vulnerability unless the same file *also* appears under "
+            "`environment/` above.\n"
+            "2. Do NOT report that one of these files *contains*, *leaks*, or "
+            "*hardcodes* the expected answer, canonical outputs, or a reference "
+            "solution. A hidden answer key — expected values in `tests/`, a "
+            "reference `solution/`, oracle fixtures — is how grading works **by "
+            "design**, not a flaw. It is only a leak if that same answer is "
+            "reachable from `environment/` or the agent's prompt. (If you think "
+            "the answer is *also* derivable from `environment/` content, say so "
+            "and cite the `environment/` file — don't cite the probe-only one.)\n"
             f"{po_lines}"
         )
     else:
@@ -171,9 +185,10 @@ def render_visibility_map(
     return (
         "## WHAT THE REAL AGENT SEES vs WHAT YOU SEE\n\n"
         "You are the PROBE. Your view of `/app` is a *superset* of what the "
-        "real solving agent can see. Before reporting that the agent can "
-        "read or modify some file as a weakness, confirm the file is in the "
-        "real agent's view below.\n\n"
+        "real solving agent can see. Before reporting that the agent can read, "
+        "modify, or extract an answer from some file as a weakness, confirm the "
+        "file is in the real agent's view below — a finding that depends on a "
+        "probe-only file is not exploitable by a real agent.\n\n"
         "### Real agent's view\n"
         f"{env_block}\n\n"
         "### PROBE-ONLY (absent in a real run)\n"
