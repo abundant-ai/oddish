@@ -1280,7 +1280,7 @@ export function TaskFilesPanel({
                       variant="outline"
                       onClick={handleCopyFileContent}
                       disabled={fileContent === null}
-                      className="h-7 w-7 p-0"
+                      className="w-7 self-stretch p-0"
                       title="Copy raw content"
                       aria-label="Copy raw content"
                     >
