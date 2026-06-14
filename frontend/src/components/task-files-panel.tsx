@@ -1280,7 +1280,7 @@ export function TaskFilesPanel({
                       variant="outline"
                       onClick={handleCopyFileContent}
                       disabled={fileContent === null}
-                      className="h-7 gap-1 px-2 text-[10px]"
+                      className="h-7 w-7 p-0"
                       title="Copy raw content"
                       aria-label="Copy raw content"
                     >
@@ -1289,7 +1289,6 @@ export function TaskFilesPanel({
                       ) : (
                         <Copy className="h-3 w-3" />
                       )}
-                      {copiedFileContent ? "Copied" : "Copy"}
                     </Button>
                   </div>
                 )}
