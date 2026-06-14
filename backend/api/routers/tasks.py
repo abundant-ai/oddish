@@ -384,6 +384,26 @@ async def finalize_task_upload(
     )
 
 
+async def _apply_user_run_probe_default(
+    session: AsyncSession,
+    submission: TaskSweepSubmission,
+    auth: AuthContext,
+) -> None:
+    """Opt the creating user's NEW tasks into auto-probe per their default.
+
+    Only turns ``run_probe`` ON (an explicit ``run_probe=True`` already wins, so
+    we skip the lookup then) and only matters for task creation — append mode in
+    ``create_task_sweep_core`` preserves the existing task's flag, so a flipped
+    submission flag is a no-op there. Resolved in the backend because the
+    ``users`` table is a backend concept the oddish core must not import.
+    """
+    if submission.run_probe:
+        return
+    actor = await _resolve_actor_user(session, auth)
+    if actor is not None and actor.run_probe_default:
+        submission.run_probe = True
+
+
 @router.post("/tasks/sweep", response_model=TaskResponse)
 async def create_task_sweep(
     submission: TaskSweepSubmission,
@@ -399,6 +419,7 @@ async def create_task_sweep(
     async with get_session() as session:
         await _resolve_submission_identity(session, submission, auth)
         _apply_github_attribution(submission)
+        await _apply_user_run_probe_default(session, submission, auth)
 
         task, new_trials, is_append, experiment = await create_task_sweep_core(
             session,
