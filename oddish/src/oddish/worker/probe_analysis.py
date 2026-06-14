@@ -421,6 +421,28 @@ async def run_probe_analyzer(
         "for minor hardening / defense-in-depth. Return an empty list `[]` when the "
         "task held up and there is nothing to fix — do NOT invent fixes.\n"
     )
+    prompt += (
+        "\n## SCOPE — the real agent's view vs probe-only material\n"
+        "The solving agent's container is `/app`; it sees ONLY `/app` plus its "
+        "prompt. ALL probe-only material — the verifier and its hidden tests, the "
+        "reference solution, oracle fixtures, the raw build context, prior trial "
+        "logs, and harbor's own source — is staged separately under "
+        "`/probe-harness/` (older runs surfaced it at `/app/tests` or "
+        "`/app/solution`). A real run NEVER ships any of it. When forming "
+        "`recommendations` and answering `result_focus_findings`:\n"
+        "- Do NOT emit a fix premised on the agent reading, modifying, or "
+        "extracting an answer from probe-only material. The real agent cannot "
+        "reach it, so it is not an exploitable hole. A hidden answer key in the "
+        "verifier or a reference solution is BY DESIGN, not a leak.\n"
+        "- Count a leak / gameability as real ONLY if it is reachable from the "
+        "agent's own `/app` workspace or its prompt.\n"
+        "- RESPECT the agent's own caveats. If the agent hedged a finding (e.g. "
+        "'not visible to the real agent', 'by design', 'only if an agent could "
+        "read tests/'), do NOT strip the hedge or upgrade it to `must_fix`: carry "
+        "the caveat into the rationale, downgrade the priority, or drop the "
+        "recommendation. Never present a hedged or probe-only observation as a "
+        "confident, exploitable fix.\n"
+    )
 
     if evaluation_metric == "ratio":
         unit = (ratio_unit or "attempt").strip()
