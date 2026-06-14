@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [2026-06-14]
 
 ### Changed
-- Bake a per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` default into the Modal deploy that raises the `global.anthropic.claude-haiku-4-5-20251001-v1:0` queue-key concurrency lease to 128 (up from the 48 default); this is also the analysis-model queue key, so trajectory analysis gets more headroom. Operators can still override the whole JSON via the env var / `oddish-prod` secret (#297)
+- Bake per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` defaults into the Modal deploy that raise the `global.anthropic.claude-haiku-4-5-20251001-v1:0` and `openai/gpt-5.4-mini` queue-key concurrency leases to 128 (up from the 48 default); the haiku key is also the analysis-model queue key, so trajectory analysis gets more headroom. Operators can still override the whole JSON via the env var / `oddish-prod` secret (#297)
 
 ---
 

@@ -130,7 +130,8 @@ NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 48)
 MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
     "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
     '{"google/gemini-3.5-flash": 128, '
-    '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 128}',
+    '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, '
+    '"openai/gpt-5.4-mini": 128}',
 )
 
 ENV_VARS = {
