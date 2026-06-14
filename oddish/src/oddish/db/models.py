@@ -882,6 +882,17 @@ class TrialModel(TimestampedMixin, Base):
             "status",
             postgresql_where=text("deleted_at IS NULL"),
         ),
+        # Probe-runs listing (``list_org_probes_core``): seek by org, then
+        # walk per-task newest-first for the window aggregation without a
+        # separate sort. Partial on ``is_probe`` since probe trials are a
+        # small slice of the table.
+        Index(
+            "idx_trials_probe_org_task_created",
+            "org_id",
+            "task_id",
+            text("created_at DESC"),
+            postgresql_where=text("is_probe"),
+        ),
     )
 
 
