@@ -34,6 +34,7 @@ from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
 )
+from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from oddish.worker.probe_staging import apply_probe_overlay
 from oddish.workers.harbor_runner import HarborOutcome, run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
@@ -677,11 +678,13 @@ async def _handle_harbor_event(
     """Update database when Harbor trial lifecycle events occur.
 
     For probe trials, ``probe_task_dir`` is the staged (overlay-applied) task
-    dir; on AGENT_START we upload it into the live container at /app so the
-    agent sees related_trials/, harbor_src/, and the task's own tests/solution
-    (the reward-hack surface). Harbor's image is built from environment/ only,
-    so without this the staged files never reach the agent. Non-probe trials
-    pass None and nothing is uploaded.
+    dir; on AGENT_START we upload it into the live container under the
+    probe-harness root (``PROBE_HARNESS_DIR``, NOT /app) so the agent sees
+    related_trials/, harbor_src/, and the task's own tests/solution (the
+    reward-hack surface) cleanly separated from its own /app workspace. Harbor's
+    image is built from environment/ only, so without this the staged files
+    never reach the agent; keeping them off /app leaves it pixel-identical to a
+    real run. Non-probe trials pass None and nothing is uploaded.
     """
     event = hook_event.event
 
@@ -692,10 +695,11 @@ async def _handle_harbor_event(
     ):
         try:
             await hook_event.environment.upload_dir(
-                source_dir=probe_task_dir, target_dir="/app"
+                source_dir=probe_task_dir, target_dir=PROBE_HARNESS_DIR
             )
             console.print(
-                f"[dim]Trial {trial_id} probe task dir uploaded to /app[/dim]"
+                f"[dim]Trial {trial_id} probe task dir uploaded to "
+                f"{PROBE_HARNESS_DIR}[/dim]"
             )
         except Exception as exc:
             console.print(

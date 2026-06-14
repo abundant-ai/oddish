@@ -137,16 +137,16 @@ async def test_apply_probe_overlay_does_not_stage_skills(org_id, tmp_path):
 @pytest.mark.asyncio
 async def test_apply_probe_overlay_writes_brief_and_visibility_map(tmp_path):
     """The original spec is saved to AGENT_BRIEF.md and the rewritten
-    instruction.md carries a visibility map that splits environment/ (real
-    agent's view) from probe-only paths (tests/, solution/, ...)."""
+    instruction.md carries a visibility map that enumerates the probe-only
+    material under the /probe-harness root (tests/, solution/, ...), leaving
+    /app as the real agent's pristine workspace."""
+    from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
     from oddish.worker.probe_staging import apply_probe_overlay
 
     (tmp_path / "instruction.md").write_text("the real agent's brief")
     env = tmp_path / "environment"
     env.mkdir()
     (env / "Dockerfile").write_text("FROM python")
-    (env / "src").mkdir()
-    (env / "src" / "app.py").write_text("print('hi')")
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_hidden.py").write_text("assert True")
     (tmp_path / "solution").mkdir()
@@ -163,11 +163,7 @@ async def test_apply_probe_overlay_writes_brief_and_visibility_map(tmp_path):
 
     instr = (tmp_path / "instruction.md").read_text()
     assert "WHAT THE REAL AGENT SEES" in instr
-    # environment/ files are the real agent's view ...
-    assert "environment/Dockerfile" in instr
-    assert "environment/src/app.py" in instr
-    # ... while tests/ + solution/ are flagged probe-only.
-    assert "tests/" in instr
-    assert "solution/" in instr
-    # The brief itself and instruction.md are never listed as probe-only.
-    assert "AGENT_BRIEF.md" not in instr.split("PROBE-ONLY", 1)[1]
+    # Probe-only material is enumerated under the harness root, not /app.
+    assert f"{PROBE_HARNESS_DIR}/tests/" in instr
+    assert f"{PROBE_HARNESS_DIR}/solution/" in instr
+    assert f"{PROBE_HARNESS_DIR}/environment/" in instr

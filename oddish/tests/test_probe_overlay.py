@@ -4,7 +4,8 @@ from types import SimpleNamespace
 
 from oddish.worker.probe_overlay import (
     AGENT_BRIEF_CONTAINER_PATH,
-    MAX_VISIBILITY_FILES,
+    PROBE_HARNESS_DIR,
+    RELATED_CONTAINER_DIR,
     render_probe_instruction,
     render_visibility_map,
     select_related_trials,
@@ -16,9 +17,8 @@ def _render(has_related: bool) -> str:
         "FRAMING-TEXT",
         "DIRECTIVE-TEXT",
         "ORIGINAL-TEXT",
-        related_dir="/app/related_trials",
+        related_dir=RELATED_CONTAINER_DIR,
         has_related=has_related,
-        env_files=["src/app.py"],
         probe_only_paths=["tests/", "solution/"],
     )
 
@@ -42,40 +42,40 @@ def test_render_does_not_label_spec_as_probes_own_task():
     assert AGENT_BRIEF_CONTAINER_PATH in out
 
 
-def test_visibility_map_lists_env_and_probe_only():
-    out = render_visibility_map(
-        env_files=["src/app.py", "Dockerfile"],
-        probe_only_paths=["tests/", "solution/", "harbor_src/"],
-    )
-    assert "environment/src/app.py" in out
-    assert "environment/Dockerfile" in out
+def test_visibility_map_separates_app_from_harness():
+    out = render_visibility_map(["tests/", "solution/", "harbor_src/"])
+    # /app is framed as the real agent's pristine workspace.
+    assert "/app" in out
+    # Probe-only material is enumerated under the harness root, not /app.
     for p in ("tests/", "solution/", "harbor_src/"):
-        assert p in out
-    # The guardrail clause that prevents the false-positive finding.
-    assert "unless the same file" in out
+        assert f"{PROBE_HARNESS_DIR}/{p}" in out
+    # Rule 1: access to a harness file is not an agent-reachable vuln.
+    assert "does not exist in a real run" in out
+    # Rule 2: a hidden answer key under the harness root is by design, not a leak.
+    assert "by design" in out
+    assert "leak" in out.lower()
 
 
-def test_visibility_map_truncates_long_env_listing():
-    files = [f"f{i}.py" for i in range(MAX_VISIBILITY_FILES + 25)]
-    out = render_visibility_map(env_files=files, probe_only_paths=[])
-    assert "25 more files under environment/" in out
+def test_visibility_map_handles_empty_harness():
+    out = render_visibility_map([])
+    assert PROBE_HARNESS_DIR in out
+    # Still states the two rules even with nothing enumerated.
+    assert "by design" in out
 
 
-def test_visibility_map_handles_no_environment():
-    out = render_visibility_map(env_files=[], probe_only_paths=["tests/"])
-    assert "no `environment/` directory" in out
-
-
-def test_render_running_tests_is_fuzzy():
+def test_running_tests_points_at_harness_not_app():
     out = _render(has_related=True)
-    # Mentions multiple possible verifier names rather than one hard path.
+    assert f"{PROBE_HARNESS_DIR}/tests/" in out
+    # Still names multiple possible verifier scripts rather than one hard path.
     assert "run_tests.sh" in out
-    assert "tests/test.sh" in out
+    assert "test.sh" in out
+    # Explicitly redirects stale "/app/tests" directive references.
+    assert "stale" in out
 
 
 def test_render_related_section_present_when_staged():
     out = _render(has_related=True)
-    assert "/app/related_trials" in out
+    assert RELATED_CONTAINER_DIR in out
     assert "read-only" in out
 
 
@@ -83,7 +83,7 @@ def test_render_related_section_softened_when_none():
     out = _render(has_related=False)
     assert "No prior non-probe attempts were available" in out
     # Should not claim a staged directory exists.
-    assert "/app/related_trials" not in out
+    assert RELATED_CONTAINER_DIR not in out
 
 
 def test_select_excludes_current_and_probes():
