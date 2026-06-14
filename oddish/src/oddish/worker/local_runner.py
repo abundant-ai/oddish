@@ -45,6 +45,7 @@ from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
 )
+from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from oddish.worker.probe_staging import apply_probe_overlay, stage_org_skills
 from oddish.worker.local_offline_policy import enable_local_internet, task_is_offline
 from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
@@ -467,17 +468,18 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # identical between the real Harbor Trial and the test double.
     harbor_trial = await Trial.create(cfg)
 
-    # Push the staged task dir into the agent's container. Harbor builds the
-    # image from ``environment/`` only and hands instruction.md to the agent as
-    # a string, so the related_trials/ + harbor_src/ that apply_probe_overlay
-    # stages into ``work_task_dir`` never reach the agent on their own. The
-    # fork now exposes ``event.environment`` on the hook, so we upload the whole
-    # staged dir to /app at AGENT_START -- after the container is up and right
-    # before the agent runs. /app is the agent WORKDIR, so the tree lands at
-    # the exact paths the probe instruction already references
-    # (RELATED_CONTAINER_DIR=/app/related_trials, HARBOR_CONTAINER_DIR=/app/harbor_src).
-    # Uploading the full dir deliberately exposes tests/ + solution/ as the
-    # reward-hack surface the probe is meant to probe. Best-effort: a failure
+    # Push the staged task dir into the agent's container under the probe-harness
+    # root -- NOT /app. Harbor builds the image from ``environment/`` only and
+    # hands instruction.md to the agent as a string, so the related_trials/ +
+    # harbor_src/ + tests/ + solution/ that apply_probe_overlay stages into
+    # ``work_task_dir`` never reach the agent on their own. The fork exposes
+    # ``event.environment`` on the hook, so we upload the whole staged dir at
+    # AGENT_START -- after the container is up and right before the agent runs.
+    # We target ``PROBE_HARNESS_DIR`` (e.g. /probe-harness) so /app stays
+    # pixel-identical to a real run: the probe-only verifier + reference solution
+    # land at the exact paths the probe instruction references
+    # (RELATED_CONTAINER_DIR, HARBOR_CONTAINER_DIR, AGENT_BRIEF_CONTAINER_PATH),
+    # plainly separated from the agent's own workspace. Best-effort: a failure
     # here must never block the probe (mirrors apply_probe_overlay).
     if work_root is not None:
         probe_upload_src = actual_task_path  # the staged work_task_dir
@@ -492,9 +494,13 @@ async def _run_harbor_trial(trial_id: str) -> None:
                 )
                 return
             try:
-                await env.upload_dir(source_dir=probe_upload_src, target_dir="/app")
+                await env.upload_dir(
+                    source_dir=probe_upload_src, target_dir=PROBE_HARNESS_DIR
+                )
                 logger.info(
-                    "probe: uploaded task dir to /app for trial %s", trial_id
+                    "probe: uploaded task dir to %s for trial %s",
+                    PROBE_HARNESS_DIR,
+                    trial_id,
                 )
             except Exception:
                 logger.exception(
