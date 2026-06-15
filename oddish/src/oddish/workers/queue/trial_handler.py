@@ -632,18 +632,18 @@ async def _store_trial_results(
         if trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED):
             # Check if all trials done → transition task status. Trajectory
             # analysis is now task-scoped: once every trial is terminal,
-            # ``maybe_start_analysis_stage`` enqueues a single task-level QA
-            # job that classifies all trials and synthesizes the verdict, so
-            # there is no per-trial ANALYSIS enqueue here anymore. (Probe
-            # trials are still analyzed inline, above.)
+            # ``maybe_start_qa_stage`` enqueues a single task-level QA job
+            # that classifies all trials and synthesizes the verdict, so
+            # there is no per-trial classification enqueue here anymore.
+            # (Probe trials are still analyzed inline, above.)
             #
             # Imported lazily to avoid a circular import with
             # ``oddish.queue`` (which imports the worker_jobs enqueue
             # helpers, which in turn import this module via the handler
             # auto-registration).
-            from oddish.queue import maybe_start_analysis_stage
+            from oddish.queue import maybe_start_qa_stage
 
-            started = await maybe_start_analysis_stage(session, trial_id)
+            started = await maybe_start_qa_stage(session, trial_id)
             if started:
                 console.print(
                     f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"

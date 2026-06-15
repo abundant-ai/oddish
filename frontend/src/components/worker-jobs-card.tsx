@@ -48,6 +48,7 @@ import {
 
 const KIND_ORDER: WorkerJobKind[] = [
   "TRIAL",
+  "QA",
   "VERDICT",
   "ANALYSIS",
   "QA_REVIEW",
@@ -68,17 +69,23 @@ const KIND_DISPLAY: Record<
     Icon: Beaker,
     accent: "text-blue-400",
   },
-  VERDICT: {
+  QA: {
     label: "Task QA",
     description:
       "One job per task: classifies every trial, then synthesizes the verdict",
     Icon: Gavel,
     accent: "text-amber-400",
   },
+  VERDICT: {
+    label: "Task Verdict (legacy)",
+    description: "Folded into Task QA — no longer enqueued",
+    Icon: Gavel,
+    accent: "text-amber-400/70",
+  },
   ANALYSIS: {
     label: "Trial Analysis (legacy)",
     description:
-      "Per-trial classification jobs — no longer enqueued; drains in-flight rows",
+      "Folded into Task QA — no longer enqueued; drains in-flight rows",
     Icon: Microscope,
     accent: "text-purple-400",
   },

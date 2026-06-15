@@ -5,12 +5,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.endpoints import (
-    cancel_trial_analysis_core,
     delete_trial_core,
     get_trial_by_index_core,
     get_task_for_org_core,
     get_trial_for_org_core,
-    rerun_trial_analysis_core,
     retry_trial_core,
 )
 from oddish.core.trial_io import (
@@ -173,34 +171,6 @@ async def delete_trial(
         "s3_prefixes": s3_prefixes,
         "s3_keys_deleted": s3_keys_deleted,
     }
-
-
-@router.post("/trials/{trial_id}/analysis/retry")
-async def retry_trial_analysis(
-    trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> dict:
-    """Queue analysis for a completed trial and invalidate its task verdict."""
-    auth.require_scope(APIKeyScope.TASKS)
-
-    async with get_session() as session:
-        return await rerun_trial_analysis_core(
-            session, trial_id=trial_id, org_id=auth.org_id
-        )
-
-
-@router.post("/trials/{trial_id}/analysis/cancel")
-async def cancel_trial_analysis(
-    trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> dict:
-    """Cancel active analysis for one trial."""
-    auth.require_scope(APIKeyScope.TASKS)
-
-    async with get_session() as session:
-        return await cancel_trial_analysis_core(
-            session, trial_id=trial_id, org_id=auth.org_id
-        )
 
 
 @router.get("/trials/{trial_id}/logs")

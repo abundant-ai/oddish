@@ -155,8 +155,18 @@ class WorkerJobKind(str, Enum):
     """
 
     TRIAL = "TRIAL"
-    ANALYSIS = "ANALYSIS"
+    # The single task-level trajectory-analysis (QA) job: it classifies every
+    # trial's trajectory and then synthesizes the task verdict in one job.
+    QA = "QA"
+    # Legacy kinds. Trajectory analysis used to be a per-trial ``ANALYSIS`` job
+    # plus a separate per-task ``VERDICT`` job; both collapsed into ``QA``.
+    # Nothing enqueues these anymore. They are kept as enum members so the
+    # native ``worker_job_kind`` Postgres type (created from this enum) still
+    # carries the values that historical migrations / rows reference, and so
+    # any row in flight across the deploy can drain. ``qa02`` repoints existing
+    # ``VERDICT`` rows to ``QA``.
     VERDICT = "VERDICT"
+    ANALYSIS = "ANALYSIS"
     QA_REVIEW = "QA_REVIEW"
     # Expand a task tarball into a per-file S3 tree at
     # ``tasks/{task_id}/v{N}-files/``. Derived cache only; the archive

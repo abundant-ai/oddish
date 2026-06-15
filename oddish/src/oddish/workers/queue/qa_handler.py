@@ -18,15 +18,15 @@ from oddish.workers.queue.analysis_handler import classify_trial_and_store
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
-VERDICT_HEARTBEAT_INTERVAL_SECONDS = 30
+QA_HEARTBEAT_INTERVAL_SECONDS = 30
 
 
-async def _heartbeat_verdict_worker_job(
+async def _heartbeat_qa_worker_job(
     *,
     worker_job_id: str,
     stop_event: asyncio.Event,
 ) -> None:
-    """Keep ``worker_jobs.heartbeat_at`` fresh during verdict synthesis."""
+    """Keep ``worker_jobs.heartbeat_at`` fresh during the QA job."""
     consecutive_failures = 0
     pending_failure_count = 0
     pending_last_error: str | None = None
@@ -34,7 +34,7 @@ async def _heartbeat_verdict_worker_job(
     while True:
         try:
             await asyncio.wait_for(
-                stop_event.wait(), timeout=VERDICT_HEARTBEAT_INTERVAL_SECONDS
+                stop_event.wait(), timeout=QA_HEARTBEAT_INTERVAL_SECONDS
             )
         except TimeoutError:
             pass
@@ -50,7 +50,7 @@ async def _heartbeat_verdict_worker_job(
             )
             if consecutive_failures > 0:
                 console.print(
-                    f"[green]Verdict worker_job {worker_job_id} heartbeat "
+                    f"[green]QA worker_job {worker_job_id} heartbeat "
                     f"recovered after {consecutive_failures} failure(s)[/green]"
                 )
             consecutive_failures = 0
@@ -130,7 +130,7 @@ async def _load_live_trials_for_classification(
     return [(str(trial_id), analysis_status) for trial_id, analysis_status in rows]
 
 
-async def run_verdict_job(
+async def run_task_qa_job(
     task_id: str,
     queue_key: str,
     modal_function_call_id: str | None = None,
@@ -138,9 +138,7 @@ async def run_verdict_job(
 ) -> None:
     """Run task-level trajectory analysis (QA) for a claimed task.
 
-    This is the single, task-scoped QA job that replaced the old
-    per-trial ``ANALYSIS`` jobs plus the separate per-task ``VERDICT``
-    job. One worker job per task now:
+    This is the single, task-scoped QA job. One worker job per task:
 
     1. Classifies every live (non-superseded) trial's trajectory with the
        Claude Code classifier -- same taxonomy, evidence, and reasoning as
@@ -185,7 +183,7 @@ async def run_verdict_job(
     heartbeat_task: asyncio.Task | None = None
     if worker_job_id:
         heartbeat_task = asyncio.create_task(
-            _heartbeat_verdict_worker_job(
+            _heartbeat_qa_worker_job(
                 worker_job_id=worker_job_id,
                 stop_event=heartbeat_stop,
             )

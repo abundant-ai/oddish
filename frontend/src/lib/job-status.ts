@@ -36,7 +36,7 @@ function isActiveVisibleJob(job: VisibleWorkerJob): boolean {
 
 function isActiveVisibleJobKind(
   job: VisibleWorkerJob,
-  kind: "trial" | "analysis" | "verdict",
+  kind: "trial" | "qa" | "analysis",
 ): boolean {
   return job.kind === kind && isActiveVisibleJob(job);
 }
@@ -74,7 +74,7 @@ export function taskHasActiveVerdict(task: Task | null | undefined): boolean {
   return (
     task.status === "verdict_pending" ||
     isActivePipelineStatus(task.verdict_status) ||
-    task.jobs?.some((job) => isActiveVisibleJobKind(job, "verdict")) === true
+    task.jobs?.some((job) => isActiveVisibleJobKind(job, "qa")) === true
   );
 }
 
