@@ -201,8 +201,8 @@ Behavior:
 | `worker_job_dispatcher.py` | `discover_active_worker_job_queue_keys`, `get_worker_job_org_queue_counts`, `build_spawn_plan` (org-first fair-share, with within-org round-robin across queue_keys) |
 | `worker_job_single_job.py` | `_CLAIM_WORKER_JOB_SQL`, `run_single_worker_job`, `heartbeat_worker_job` |
 | `trial_handler.py` / `analysis_handler.py` / `verdict_handler.py` | Per-kind execution bodies |
-| `cleanup.py` | Zombie reaper, stale-heartbeat sweep, stage safety nets, orphaned-slot release |
-| `slots.py` | `queue_slots` lease acquire/release |
+| `cleanup.py` | Zombie reaper, stale-heartbeat sweep, stage safety nets, **per-slot** orphaned-slot release (see invariants below) |
+| `slots.py` | `queue_slots` lease acquire/release (`locked_by` / `locked_until` / `locked_at`) |
 | `queue_manager.py` | Per-queue-key concurrency bookkeeping |
 | `worker.py` | Standalone poll loop (`python -m oddish.workers.queue.worker`) |
 
@@ -573,7 +573,8 @@ deadlocked the next sweep):
    SIGKILLed mid-transaction. It runs (each phase wrapped best-effort so one
    failure doesn't abort the rest): stale `queue_slots` lease cleanup,
    `cleanup_orphaned_queue_state` (zombie-txn reap + stale-heartbeat sweep +
-   stage safety nets + orphaned slot release), and the experiments owner
+   stage safety nets + **per-slot** orphaned slot release — see "Worker runtime
+   invariants" below), and the experiments owner
    backfill (`dashboard_owner_backfill` — converges `owner_user_id` so the
    dashboard Mine filter stays on its indexed fast path). The display-hygiene
    clear of terminal-trial claim metadata
@@ -581,17 +582,71 @@ deadlocked the next sweep):
    transaction commits, in batched `FOR UPDATE SKIP LOCKED` transactions, so it
    can neither deadlock against live workers nor roll back the sweep.
 3. `process_single_job(queue_key)` acquires a `queue_slots` lease for the
-   queue key and calls `run_single_worker_job`, which atomically claims one
-   row from `worker_jobs`, dispatches to the registered handler
-   (`TRIAL` / `ANALYSIS` / `VERDICT`), writes heartbeats on both
-   `worker_jobs.heartbeat_at` and the mirrored domain column, records the
-   outcome (`SUCCESS` / `RETRYING` / `FAILED` / `CANCELLED`), runs the
-   post-success hook (GitHub notification) when applicable, and exits.
+   queue key (stamping `locked_by = <worker_id>`, `locked_at = NOW()`,
+   `locked_until = NOW() + WORKER_TIMEOUT + 30s`) and calls
+   `run_single_worker_job` → `drain_worker_jobs`, which atomically claims one or
+   more rows from `worker_jobs` (stamping `current_worker_id = <worker_id>`),
+   dispatches to the registered handler (`TRIAL` / `ANALYSIS` / `VERDICT`),
+   writes heartbeats on both `worker_jobs.heartbeat_at` and the mirrored domain
+   column, records the outcome (`SUCCESS` / `RETRYING` / `FAILED` /
+   `CANCELLED`), runs the post-success hook (GitHub notification) when
+   applicable, releases the slot in its `finally`, and exits.
 
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. Post-success hooks
 (`notify_github_trial`, `notify_github_analysis`, `notify_github_verdict`)
 are wired through `_POST_SUCCESS_HOOKS` in `worker/functions.py`.
+
+### Worker Runtime Invariants & Pitfalls
+
+Load-bearing properties, several learned from incidents. Changing them naively
+silently breaks throughput or correctness — read before touching
+`worker/functions.py`, `slots.py`, `cleanup.py`, or the dispatcher.
+
+1. **Workers hold NO DB connection during the Harbor run.** A trial runs for
+   minutes to ~12h but only touches the DB for a few ms (claim, 30s heartbeats,
+   outcome), so workers use `NullPool` (`Settings.db_use_null_pool`) + per-op
+   `asyncpg` connections. ⚠️ Never introduce a pooled/long-lived connection or
+   open session spanning the run: it pins one idle connection per running trial
+   and exhausts the Supavisor/PgBouncer cap. (The API keeps a warm `QueuePool`
+   only because it's short-lived — that reasoning doesn't transfer to workers.)
+
+2. **`queue_slots` is the real concurrency gate.** Per-queue-key concurrency is
+   enforced by leasing a `queue_slots` row (`acquire_queue_slot`, `FOR UPDATE
+   SKIP LOCKED`), not by spawn count. The dispatcher budgets on `worker_jobs`
+   RUNNING (`limit - running`) while the worker gates on a free slot — if those
+   counters drift, the dispatcher over-spawns workers that exit immediately
+   (watch for `metric=queue_lock_contention` floods).
+
+3. **Slot leases can outlive their worker — reclaim per-slot.** The lease
+   (`locked_until`) is `WORKER_TIMEOUT_SECONDS + 30` (~12h); a SIGKILLed /
+   preempted worker never runs its `finally` release. `cleanup_orphaned_queue_state`
+   frees a slot whenever its `locked_by` has no `RUNNING` `worker_jobs` row on
+   `current_worker_id` (with a `locked_at` grace, `ORPHANED_SLOT_GRACE_MINUTES`,
+   for the acquire→claim gap). ⚠️ Never gate this per-queue_key (e.g. "release
+   only if zero jobs RUNNING on the key") — that was the original bug: one live
+   job pinned every leaked lease for ~12h and starved the queue. The link is
+   always `queue_slots.locked_by == worker_jobs.current_worker_id`.
+
+4. **One model ⇒ one queue_key.** Limits key off the full `queue_key`; the same
+   model under two keys gets the *sum* of both buckets against one provider quota
+   (→ 429s, split dashboards, starvation). Canonicalize at enqueue in
+   `oddish.config` (`normalize_trial_model` / `get_queue_key_for_trial` /
+   `normalize_queue_key`): nop/oracle + variants collapse to the single
+   `nop_oracle` id (`is_nop_oracle_agent`); z.ai / MiniMax / Moonshot map to
+   `<provider>/<id>`. ⚠️ Known gap: Gemini isn't canonicalized — a bare
+   `gemini-…` becomes `google/…` while `gemini/…` stays `gemini/…`, splitting one
+   model across two buckets.
+
+5. **No provider-level concurrency cap.** Each Bedrock/Gemini model id is its own
+   bucket, but they share one AWS/Google account quota — the sum of per-model
+   limits can exceed account RPM/TPM with no global throttle (a source of 429s).
+
+6. **Stale-heartbeat reap can double-run a trial.** If heartbeats stall for
+   `STALE_HEARTBEAT_MINUTES` (15, e.g. a pooler blip), the reaper flips the live
+   trial to `RETRYING` and another worker may run it concurrently — no fencing
+   token. The window is a deliberate trade-off (raised from 10 after an incident);
+   shrink with care.
 
 ### Local Development
 
