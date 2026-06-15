@@ -36,7 +36,7 @@ interface TagListResponse {
   items: TagPickerItem[];
 }
 
-export interface TagPickerProps {
+interface TagPickerProps {
   selectedTagIds: string[];
   onChange: (next: string[]) => void;
   placeholder?: string;

@@ -1,9 +1,9 @@
 // Shared types + pure helpers for rendering probe runs. Used by the probe
 // detail page and the task-drawer PROBE summary so both stay consistent.
 
-export type ProbeMetric = "ratio" | "result_focus" | "none";
+type ProbeMetric = "ratio" | "result_focus" | "none";
 
-export type Attempt = {
+type Attempt = {
   title?: string;
   rationale?: string;
   outcome?: string;
@@ -11,19 +11,19 @@ export type Attempt = {
   step_indices?: number[];
 };
 
-export type ToolInsight = {
+type ToolInsight = {
   name?: string;
   kind?: "skill" | "mcp";
   note?: string;
 };
 
-export type Recommendation = {
+type Recommendation = {
   priority: "must_fix" | "should_fix" | "optional";
   action: string;
   rationale?: string;
 };
 
-export const PRIORITY_ORDER: Record<string, number> = {
+const PRIORITY_ORDER: Record<string, number> = {
   must_fix: 0,
   should_fix: 1,
   optional: 2,
@@ -62,7 +62,7 @@ export type ProbeSummary = {
   result_focus_findings?: string | null;
 };
 
-export type ProbeHarborConfig = {
+type ProbeHarborConfig = {
   mode?: string;
   extra_instructions?: string;
   // Operator-selected preset name; absent on older / preset-less runs.
@@ -102,7 +102,9 @@ export function normalizeMetric(raw: string | null | undefined): ProbeMetric {
   const m = raw ?? "none";
   const mapped = m === "cheat_ratio" ? "ratio" : m;
   const known: ProbeMetric[] = ["ratio", "result_focus", "none"];
-  return known.includes(mapped as ProbeMetric) ? (mapped as ProbeMetric) : "none";
+  return known.includes(mapped as ProbeMetric)
+    ? (mapped as ProbeMetric)
+    : "none";
 }
 
 export function ratioUnitVerb(cfg: ProbeHarborConfig): {
@@ -115,7 +117,7 @@ export function ratioUnitVerb(cfg: ProbeHarborConfig): {
   return { unit, verb };
 }
 
-export type AttemptTally = {
+type AttemptTally = {
   succeeded: number;
   blocked: number;
   investigation: number;

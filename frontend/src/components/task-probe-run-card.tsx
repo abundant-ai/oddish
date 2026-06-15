@@ -126,7 +126,7 @@ export function TaskProbeRunCard({
         const latest = pickLatest(rows ?? [], versionId);
         return latest && !isTerminalProbeStatus(latest.status) ? 5000 : 0;
       },
-    }
+    },
   );
 
   const latest = pickLatest(data, versionId);
@@ -249,7 +249,7 @@ function ProbeRow({ taskId, trial }: { taskId: string; trial: ProbeTrial }) {
 // task_version_id matches the selected version tab.
 function pickLatest(
   rows: ProbeTrial[] | undefined,
-  versionId: string | null
+  versionId: string | null,
 ): ProbeTrial | null {
   if (!rows || rows.length === 0) return null;
   const scoped = versionId

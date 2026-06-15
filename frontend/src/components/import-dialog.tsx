@@ -13,11 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
-} from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2, Upload } from "lucide-react";
 import { TagPicker } from "@/components/tag-picker";
 
@@ -249,8 +245,8 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
         <DialogHeader>
           <DialogTitle>Import from .zip</DialogTitle>
           <DialogDescription>
-            Drop a Harbor run zip; the target task is inferred from the
-            job-dir name. Same outcome as{" "}
+            Drop a Harbor run zip; the target task is inferred from the job-dir
+            name. Same outcome as{" "}
             <code className="font-mono">oddish upload</code>.
           </DialogDescription>
         </DialogHeader>
@@ -311,8 +307,7 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
 
             <div className="space-y-1.5">
               <Label className="text-xs">
-                Tags{" "}
-                <span className="text-muted-foreground">(optional)</span>
+                Tags <span className="text-muted-foreground">(optional)</span>
               </Label>
               <TagPicker
                 selectedTagIds={selectedTagIds}

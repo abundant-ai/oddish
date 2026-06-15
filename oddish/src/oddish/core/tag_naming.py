@@ -1,4 +1,5 @@
 """Tag key normalization, validation, and reserved-namespace checks."""
+
 from __future__ import annotations
 
 import re
@@ -31,9 +32,7 @@ def normalize_tag_value(raw: str | None) -> str | None:
     return s.casefold() or None
 
 
-def validate_tag_key(
-    normalized: str, *, name_max_len: int, charset_re: str
-) -> None:
+def validate_tag_key(normalized: str, *, name_max_len: int, charset_re: str) -> None:
     if not normalized:
         raise TagNameError("tag key must be non-empty")
     if len(normalized) > name_max_len:

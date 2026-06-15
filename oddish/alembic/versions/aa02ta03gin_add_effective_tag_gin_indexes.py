@@ -10,6 +10,7 @@ Revision ID: aa02ta03gin
 Revises: aa01ta02proj
 Create Date: 2026-06-06 12:10:00.000000
 """
+
 from typing import Sequence, Union
 
 from alembic import op
@@ -46,6 +47,4 @@ def downgrade() -> None:
         op.execute(
             "DROP INDEX CONCURRENTLY IF EXISTS idx_task_versions_effective_tag_ids_gin"
         )
-        op.execute(
-            "DROP INDEX CONCURRENTLY IF EXISTS idx_tasks_effective_tag_ids_gin"
-        )
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_tasks_effective_tag_ids_gin")

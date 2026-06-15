@@ -1,4 +1,5 @@
 """Tests for tag ownership auto-transfer on user deactivation."""
+
 from __future__ import annotations
 
 import asyncio

@@ -208,7 +208,15 @@ def test_cancel_analysis_dispatches_task_endpoint(monkeypatch) -> None:
 
     result = runner.invoke(
         app,
-        ["cancel", "tsk", "--analysis", "--force", "--api", "http://api.test", "--json"],
+        [
+            "cancel",
+            "tsk",
+            "--analysis",
+            "--force",
+            "--api",
+            "http://api.test",
+            "--json",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -245,7 +253,15 @@ def test_cancel_analysis_dispatches_trial_endpoint(monkeypatch) -> None:
 
     result = runner.invoke(
         app,
-        ["cancel", "tsk-0", "--analysis", "--force", "--api", "http://api.test", "--json"],
+        [
+            "cancel",
+            "tsk-0",
+            "--analysis",
+            "--force",
+            "--api",
+            "http://api.test",
+            "--json",
+        ],
     )
 
     assert result.exit_code == 0, result.output

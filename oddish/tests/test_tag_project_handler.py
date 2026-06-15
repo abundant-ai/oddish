@@ -1,4 +1,5 @@
 """Tests for ``oddish.workers.queue.tag_project_handler.run_tag_project_job``."""
+
 from __future__ import annotations
 
 import asyncio
@@ -79,7 +80,12 @@ def test_run_tag_project_job_direct_task_calls_recompute(monkeypatch):
 
     summary = _run(
         tag_project_handler.run_tag_project_job(
-            payload={"scope": "TASK", "target_id": "t-1", "task_id": "t-1", "mode": "direct"}
+            payload={
+                "scope": "TASK",
+                "target_id": "t-1",
+                "task_id": "t-1",
+                "mode": "direct",
+            }
         )
     )
     assert ("task", "t-1") in calls
@@ -131,9 +137,7 @@ def test_run_tag_project_job_experiment_fanout_chunks_members(monkeypatch):
     async def _fake_heartbeat(session, *, target_id, batch_size, progress):
         return None
 
-    monkeypatch.setattr(
-        tag_project_handler, "_heartbeat_progress", _fake_heartbeat
-    )
+    monkeypatch.setattr(tag_project_handler, "_heartbeat_progress", _fake_heartbeat)
 
     session = _FakeSession()
 
@@ -209,9 +213,7 @@ def test_run_tag_project_job_experiment_fanout_enqueues_continuation(monkeypatch
     async def _fake_heartbeat(session, *, target_id, batch_size, progress):
         heartbeats.append({"target_id": target_id, "progress": progress})
 
-    monkeypatch.setattr(
-        tag_project_handler, "_heartbeat_progress", _fake_heartbeat
-    )
+    monkeypatch.setattr(tag_project_handler, "_heartbeat_progress", _fake_heartbeat)
 
     session = _FakeSession()
 

@@ -39,7 +39,9 @@ async def _mk(session, org_id, *, title, digest, tags=None):
 @pytest.mark.asyncio
 async def test_title_matches_rank_before_content_matches(org_id):
     async with get_session() as session:
-        await _mk(session, org_id, title="unrelated", digest="contains kubernetes notes")
+        await _mk(
+            session, org_id, title="unrelated", digest="contains kubernetes notes"
+        )
         await _mk(session, org_id, title="kubernetes guide", digest="nothing here")
         await session.flush()
         rows = await docs.search_documents_core(

@@ -22,6 +22,7 @@ during a recompute still gets its own follow-up).
 Continuation jobs from the chunked fan-out handler carry an
 ``after_task_id`` cursor in the payload.
 """
+
 from __future__ import annotations
 
 import json
