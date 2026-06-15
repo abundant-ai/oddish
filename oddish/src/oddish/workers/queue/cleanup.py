@@ -59,6 +59,13 @@ STALE_HEARTBEAT_MINUTES = 15
 # ignored (older Supavisor, etc).
 ZOMBIE_IDLE_MINUTES = 10
 
+# Grace before a leased queue slot is reclaimed as orphaned. A worker takes its
+# slot lease just before claiming a job, so for a brief window the slot is held
+# with no RUNNING worker_jobs row pointing back at it. The reconciler runs every
+# few minutes, so 2 minutes comfortably clears that acquire->claim gap without
+# meaningfully delaying reclamation of genuinely leaked leases.
+ORPHANED_SLOT_GRACE_MINUTES = 2
+
 # Backstop for tasks wedged in ANALYZING because a live trial never produced an
 # analysis verdict. The stage-advance passes treat a live trial whose
 # ``analysis_status`` is NULL as "analysis still pending", so a task with a
@@ -669,8 +676,23 @@ async def cleanup_orphaned_queue_state(
         # -----------------------------------------------------------------
 
         # -----------------------------------------------------------------
-        # 7. Release queue slot leases whose worker_jobs row is no
-        #    longer RUNNING on that key.
+        # 7. Release queue slot leases whose owning worker is dead.
+        #    A slot is reclaimable when no RUNNING worker_jobs row is
+        #    still owned by the worker that holds the lease
+        #    (``queue_slots.locked_by`` == ``worker_jobs.current_worker_id``).
+        #
+        #    This must be per-SLOT, not per-queue_key: the previous
+        #    version only released slots when *zero* jobs were RUNNING on
+        #    the whole queue_key, so on a busy key a single live job kept
+        #    every leaked lease (from a SIGKILLed/preempted worker) pinned
+        #    for the full ~12h lease. The slot pool then saturated while
+        #    only a handful of jobs actually ran, and the dispatcher --
+        #    which budgets on the (low) RUNNING count -- kept spawning
+        #    workers that all failed to acquire a slot.
+        #
+        #    ``locked_at`` grace avoids racing the brief acquire->claim
+        #    window: a freshly-acquired slot hasn't had its owning job
+        #    flip to RUNNING yet, so we leave very recent leases alone.
         # -----------------------------------------------------------------
         orphaned_slot_cleanup_result = cast(
             CursorResult,
@@ -679,18 +701,24 @@ async def cleanup_orphaned_queue_state(
                     """
                     UPDATE queue_slots qs
                     SET    locked_by = NULL,
-                           locked_until = NULL
+                           locked_until = NULL,
+                           locked_at = NULL
                     WHERE  qs.locked_by IS NOT NULL
-                      AND  qs.locked_until IS NOT NULL
-                      AND  qs.locked_until > NOW()
+                      AND  (
+                          qs.locked_at IS NULL
+                          OR qs.locked_at < NOW() - make_interval(
+                              mins => :slot_grace_minutes
+                          )
+                      )
                       AND  NOT EXISTS (
                           SELECT 1
                           FROM   worker_jobs wj
                           WHERE  wj.status::text = 'RUNNING'
-                            AND  wj.queue_key = qs.queue_key
+                            AND  wj.current_worker_id = qs.locked_by
                       )
                     """
-                )
+                ),
+                {"slot_grace_minutes": ORPHANED_SLOT_GRACE_MINUTES},
             ),
         )
         orphaned_active_slots_cleared = int(orphaned_slot_cleanup_result.rowcount or 0)
