@@ -4,6 +4,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import os
 import shutil
 import tarfile
 import tempfile
@@ -328,11 +329,17 @@ def archive_task_dir(task_path: Path) -> Path:
     # Favor fast uploads in CI/cloud flows over maximum compression.
     with tarfile.open(tarball_path, "w:gz", compresslevel=1) as tar:
         # Add contents of task_path to the tarball
+        deref_symlinks = os.environ.get(
+            "ODDISH_ARCHIVE_DEREF_SYMLINKS", ""
+        ).strip().lower() in ("1", "true", "yes")
         for item in task_path.iterdir():
-            # Experiments may link tasks into one task_path via relative
-            # symlinks; resolve() makes the CLI package the real target dir so
-            # the uploaded tarball isn't a broken symlink.
-            tar.add(item.resolve(), arcname=item.name)
+            # Symlink dereference is opt-in (ODDISH_ARCHIVE_DEREF_SYMLINKS=1) so
+            # default uploads preserve symlink semantics and stay byte-identical
+            # to the pre-feature behavior. Enable it for symlinked task layouts
+            # (e.g. experiment task dirs linked into one task_path) so the
+            # tarball packages the real target dir instead of a broken symlink.
+            target = item.resolve() if deref_symlinks else item
+            tar.add(target, arcname=item.name)
 
     return tarball_path
 
