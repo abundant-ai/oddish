@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import enum
 import hashlib
 import os
 import secrets
@@ -12,9 +13,11 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB
@@ -22,7 +25,7 @@ from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column as mapped_column  # type: ignore[attr-defined]
 
 # Import shared base from OSS oddish
-from oddish.db.models import Base, TimestampedMixin
+from oddish.db.models import Base, TimestampedMixin, utcnow
 
 
 def generate_id() -> str:
@@ -233,6 +236,91 @@ class APIKeyModel(TimestampedMixin, Base):
         Index("idx_api_keys_org_id", "org_id"),
         Index("idx_api_keys_key_hash", "key_hash"),
     )
+
+
+# =============================================================================
+# Chat models
+# =============================================================================
+
+
+class ChatScopeKind(str, enum.Enum):
+    experiment = "experiment"
+    task_probes = "task_probes"
+
+
+class ChatStatus(str, enum.Enum):
+    provisioning = "provisioning"
+    active = "active"
+    closed = "closed"
+    broken = "broken"
+
+
+class ChatTurnStatus(str, enum.Enum):
+    running = "running"
+    done = "done"
+    failed = "failed"
+    canceled = "canceled"
+
+
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+    __table_args__ = (
+        Index("ix_chat_sessions_status_last_activity", "status", "last_activity"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scope_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    sandbox_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    daytona_session_id: Mapped[str] = mapped_column(String(64), nullable=False, default="cc")
+    claude_session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_activity: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ChatSessionEvent(Base):
+    __tablename__ = "chat_session_events"
+    __table_args__ = (
+        UniqueConstraint("session_id", "seq", name="uq_chat_session_events_session_seq"),
+        Index("ix_chat_session_events_session_seq", "session_id", "seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    event: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatTurn(Base):
+    __tablename__ = "chat_turns"
+    __table_args__ = (
+        Index(
+            "uq_chat_turns_one_running", "session_id",
+            unique=True, postgresql_where=text("status = 'running'"),
+        ),
+        Index("ix_chat_turns_session_seq", "session_id", "seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_message: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # ---------------------------------------------------------------------------
