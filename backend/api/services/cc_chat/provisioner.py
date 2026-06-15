@@ -18,10 +18,15 @@ class Provisioner:
         *,
         env_vars: dict[str, str],
         auto_stop_minutes: int,
+        auto_delete_minutes: int,
+        labels: dict[str, str],
         daytona_session_id: str,
     ) -> CreatedSandbox:
         sbx = await self.client.create_sandbox(
-            env_vars=env_vars, auto_stop_minutes=auto_stop_minutes
+            env_vars=env_vars,
+            auto_stop_minutes=auto_stop_minutes,
+            auto_delete_minutes=auto_delete_minutes,
+            labels=labels,
         )
         await self.client.create_session(sbx, session_id=daytona_session_id)
         return sbx
