@@ -9,7 +9,7 @@ import { backendErrorPayload, readBackendJson } from "@/lib/backend-response";
 
 export async function POST(
   _request: Request,
-  { params }: { params: Promise<{ task_id: string }> }
+  { params }: { params: Promise<{ task_id: string }> },
 ) {
   try {
     const { getToken } = await auth();
@@ -38,7 +38,7 @@ export async function POST(
         backendErrorPayload(parsed.data, "Failed to cancel task analysis"),
         {
           status: res.status,
-        }
+        },
       );
     }
 
@@ -46,7 +46,7 @@ export async function POST(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }

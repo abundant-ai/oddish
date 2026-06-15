@@ -424,41 +424,6 @@ class TrialClassifier:
             self.classify_trial(trial_dir, task_dir, trial_agent=trial_agent)
         )
 
-    async def classify_trials(
-        self,
-        trial_dirs: list[Path],
-        task_dir: Path,
-        console: "Console | None" = None,
-    ) -> list[TrialClassification]:
-        """Classify multiple trials sequentially."""
-        if console:
-            console.print(
-                f"  Classifying {len(trial_dirs)} trial(s) with Claude Code..."
-            )
-
-        classifications = []
-        for i, trial_dir in enumerate(trial_dirs):
-            if console:
-                console.print(f"    [{i + 1}/{len(trial_dirs)}] {trial_dir.name}...")
-
-            try:
-                classification = await self.classify_trial(trial_dir, task_dir)
-                classifications.append(classification)
-            except Exception as e:
-                classifications.append(
-                    TrialClassification(
-                        trial_name=trial_dir.name,
-                        classification=Classification.HARNESS_ERROR,
-                        subtype="Classification Error",
-                        evidence=str(e),
-                        root_cause="Exception during classification",
-                        recommendation="Review trial manually",
-                        reward=None,
-                    )
-                )
-
-        return classifications
-
 
 def _compute_task_verdict_openai(
     classifications: list[TrialClassification],

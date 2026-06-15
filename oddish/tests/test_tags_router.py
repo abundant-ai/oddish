@@ -1,4 +1,5 @@
 """Tests for the /tags router DTOs."""
+
 from __future__ import annotations
 
 import sys
@@ -36,13 +37,9 @@ def test_tag_assign_request_validates_scope():
     from oddish.schemas import TagAssignRequest
     import pytest
 
-    TagAssignRequest(
-        tag_id="t-1", scope="TASK", target_id="task-1"
-    )
+    TagAssignRequest(tag_id="t-1", scope="TASK", target_id="task-1")
     with pytest.raises(ValueError):
-        TagAssignRequest(
-            tag_id="t-1", scope="BOGUS", target_id="task-1"
-        )
+        TagAssignRequest(tag_id="t-1", scope="BOGUS", target_id="task-1")
 
 
 def test_tag_filter_ast_dto_round_trip():

@@ -141,9 +141,7 @@ def render_visibility_map(probe_only_paths: list[str]) -> str:
     the harness root (ground truth from ``collect_visibility``).
     """
     if probe_only_paths:
-        po_lines = "\n".join(
-            f"  - {PROBE_HARNESS_DIR}/{p}" for p in probe_only_paths
-        )
+        po_lines = "\n".join(f"  - {PROBE_HARNESS_DIR}/{p}" for p in probe_only_paths)
         harness_listing = (
             f"Everything you need to probe is staged under `{PROBE_HARNESS_DIR}/` "
             "(NOT present in a real run):\n"
@@ -218,9 +216,7 @@ def render_probe_instruction(
     # task-dir upload hook) for the visibility map to point at.
     _ = framing
     budget_block = (
-        f"{_time_budget_section(time_budget_sec)}\n\n---\n\n"
-        if time_budget_sec
-        else ""
+        f"{_time_budget_section(time_budget_sec)}\n\n---\n\n" if time_budget_sec else ""
     )
     return (
         f"{directive}\n\n"

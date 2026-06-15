@@ -41,10 +41,11 @@ const splitList = (raw: string) =>
     .filter(Boolean);
 
 export function TagAdminPolicyForm() {
-  const { data, mutate, error: loadError } = useSWR<TagPolicy>(
-    "/api/tag-policy",
-    fetcher,
-  );
+  const {
+    data,
+    mutate,
+    error: loadError,
+  } = useSWR<TagPolicy>("/api/tag-policy", fetcher);
   const [draft, setDraft] = useState<Partial<TagPolicy> | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -142,11 +143,17 @@ export function TagAdminPolicyForm() {
           />
         </div>
       </div>
-      {toggleRow("Who can create tags", WHO_CAN_CREATE, value.who_can_create, (v) =>
-        set("who_can_create", v),
+      {toggleRow(
+        "Who can create tags",
+        WHO_CAN_CREATE,
+        value.who_can_create,
+        (v) => set("who_can_create", v),
       )}
-      {toggleRow("Profanity handling", PROFANITY_MODES, value.profanity_mode, (v) =>
-        set("profanity_mode", v),
+      {toggleRow(
+        "Profanity handling",
+        PROFANITY_MODES,
+        value.profanity_mode,
+        (v) => set("profanity_mode", v),
       )}
       <div className="space-y-1">
         <Label>Reserved prefixes (comma-separated)</Label>
@@ -159,7 +166,9 @@ export function TagAdminPolicyForm() {
         <Label>Profanity allowlist (comma-separated)</Label>
         <Input
           value={value.profanity_allowlist.join(", ")}
-          onChange={(e) => set("profanity_allowlist", splitList(e.target.value))}
+          onChange={(e) =>
+            set("profanity_allowlist", splitList(e.target.value))
+          }
         />
       </div>
       <div className="space-y-1">

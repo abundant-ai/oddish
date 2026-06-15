@@ -9,6 +9,7 @@ Called from two sites so a deactivation never strands a tag:
 The new owner is the org's oldest ACTIVE OWNER user; if none exists the
 tag's owner becomes NULL (org-owned, admin-managed).
 """
+
 from __future__ import annotations
 
 from sqlalchemy import text

@@ -1,4 +1,5 @@
 """Tests for the new tag flags on ``oddish ls``."""
+
 from __future__ import annotations
 
 import sys
@@ -56,10 +57,14 @@ def test_ls_passes_tag_params_as_csv():
                     result = runner.invoke(
                         app,
                         [
-                            "--tag", "flaky",
-                            "--tag", "swe-bench",
-                            "--tag-any", "regression",
-                            "--not-tag", "wip",
+                            "--tag",
+                            "flaky",
+                            "--tag",
+                            "swe-bench",
+                            "--tag-any",
+                            "regression",
+                            "--not-tag",
+                            "wip",
                             "--json",
                         ],
                     )

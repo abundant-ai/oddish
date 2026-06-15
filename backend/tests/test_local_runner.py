@@ -242,9 +242,7 @@ async def test_probe_overlay_prepends_extra_instructions_to_instruction_md(
     assert op_idx < task_idx
 
     # Original task dir on disk is untouched.
-    assert (
-        original_task_dir / "instruction.md"
-    ).read_text() == "solve the task"
+    assert (original_task_dir / "instruction.md").read_text() == "solve the task"
 
     # Temp work dir is cleaned up after Harbor exits.
     assert not Path(captured["task_path"]).exists()

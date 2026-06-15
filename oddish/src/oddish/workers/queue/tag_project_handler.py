@@ -14,6 +14,7 @@ experiment can't starve other work. The handler heartbeats per batch via
 ``_heartbeat_progress`` so the dispatcher knows the worker is alive even
 when iterating thousands of members.
 """
+
 from __future__ import annotations
 
 import json
@@ -147,9 +148,7 @@ async def run_tag_project_job(*, payload: dict[str, Any]) -> dict[str, Any]:
             await recompute_version_effective_tags(
                 session, task_id=str(task_id), version_id=target_id
             )
-            await recompute_task_browse_projection(
-                session, task_id=str(task_id)
-            )
+            await recompute_task_browse_projection(session, task_id=str(task_id))
             summary["task_id"] = str(task_id)
             summary["tasks_recomputed"] = 1
             summary["versions_recomputed"] = 1
@@ -176,9 +175,7 @@ async def run_tag_project_job(*, payload: dict[str, Any]) -> dict[str, Any]:
             last_processed: str | None = None
             for tid in batch:
                 await recompute_task_browse_projection(session, task_id=tid)
-                versions = await recompute_all_versions_for_task(
-                    session, task_id=tid
-                )
+                versions = await recompute_all_versions_for_task(session, task_id=tid)
                 summary["tasks_recomputed"] += 1
                 summary["versions_recomputed"] += versions
                 last_processed = tid
