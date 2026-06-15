@@ -20,7 +20,9 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.add_column(
         "trials",
-        sa.Column("experiment_id", sa.String(64), nullable=True), if_not_exists=True)
+        sa.Column("experiment_id", sa.String(64), nullable=True),
+        if_not_exists=True,
+    )
     op.execute(
         """
         DO $$
@@ -39,7 +41,9 @@ def upgrade() -> None:
         $$;
         """
     )
-    op.create_index("idx_trials_experiment_id", "trials", ["experiment_id"], if_not_exists=True)
+    op.create_index(
+        "idx_trials_experiment_id", "trials", ["experiment_id"], if_not_exists=True
+    )
 
     # Backfill: copy experiment_id from task -> trial for all existing trials.
     op.execute(

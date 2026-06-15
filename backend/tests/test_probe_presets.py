@@ -33,9 +33,7 @@ async def org_id():
     yield oid
     async with get_session() as session:
         await session.execute(
-            ProbePresetModel.__table__.delete().where(
-                ProbePresetModel.org_id == oid
-            )
+            ProbePresetModel.__table__.delete().where(ProbePresetModel.org_id == oid)
         )
 
 
@@ -146,9 +144,7 @@ async def test_delete_soft_removes_from_list(org_id):
         created_id = created.id
 
     async with get_session() as session:
-        await delete_probe_preset_core(
-            session, preset_id=created_id, org_id=org_id
-        )
+        await delete_probe_preset_core(session, preset_id=created_id, org_id=org_id)
         await session.commit()
 
     async with get_session() as session:

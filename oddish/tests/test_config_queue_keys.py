@@ -24,13 +24,43 @@ def _settings(monkeypatch, *, clear_openai_env: bool = True, **kwargs) -> Settin
     return Settings(_env_file=None, **kwargs)
 
 
-def test_nop_and_oracle_use_dedicated_queue_key(monkeypatch):
+def test_nop_and_oracle_use_single_id_for_model_and_queue(monkeypatch):
     settings = _settings(monkeypatch)
 
-    assert settings.normalize_trial_model("nop", None) == "default"
-    assert settings.normalize_trial_model("oracle", None) == "default"
+    # The model id and queue key must be the SAME single string so the stored
+    # model, the queue key, and the concurrency bucket never drift apart.
+    assert settings.normalize_trial_model("nop", None) == NOP_ORACLE_QUEUE_KEY
+    assert settings.normalize_trial_model("oracle", None) == NOP_ORACLE_QUEUE_KEY
     assert settings.get_queue_key_for_trial("nop", None) == NOP_ORACLE_QUEUE_KEY
     assert settings.get_queue_key_for_trial("oracle", None) == NOP_ORACLE_QUEUE_KEY
+
+
+def test_nop_oracle_variants_force_single_id(monkeypatch):
+    settings = _settings(monkeypatch)
+
+    # Suffixed / prefixed baseline variants must be treated like plain
+    # nop/oracle: model and queue collapse to the one nop_oracle id, regardless
+    # of whatever (often arbitrary) model string was passed.
+    for agent in ("oracle-v2", "nop-baseline", "agent-nop", "agent-oracle-2"):
+        for model in (None, "default", "nop_oracle", "some-random-thing"):
+            assert (
+                settings.normalize_trial_model(agent, model) == NOP_ORACLE_QUEUE_KEY
+            ), (agent, model)
+            assert (
+                settings.get_queue_key_for_trial(agent, model) == NOP_ORACLE_QUEUE_KEY
+            ), (agent, model)
+
+
+def test_non_baseline_agents_are_not_treated_as_nop_oracle(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # Substring matches that are not baseline variants must keep normal routing.
+    assert settings.get_queue_key_for_trial("codex", "openai/gpt-5.2") == (
+        "openai/gpt-5.2"
+    )
+    assert settings.normalize_trial_model("codex", "openai/gpt-5.2") == (
+        "openai/gpt-5.2"
+    )
 
 
 def test_nop_oracle_queue_has_separate_default_concurrency(monkeypatch):

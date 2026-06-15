@@ -47,8 +47,12 @@ async def org_id():
 @pytest.mark.asyncio
 async def test_stages_skills_into_root_per_skill_dirs(org_id, tmp_path):
     async with get_session() as session:
-        await create_skill_core(session, data=_payload("alpha"), org_id=org_id, user_id="u")
-        await create_skill_core(session, data=_payload("beta"), org_id=org_id, user_id="u")
+        await create_skill_core(
+            session, data=_payload("alpha"), org_id=org_id, user_id="u"
+        )
+        await create_skill_core(
+            session, data=_payload("beta"), org_id=org_id, user_id="u"
+        )
         await session.commit()
 
     skills_root = tmp_path / "agent_skills"
@@ -68,8 +72,12 @@ async def test_staged_root_is_harbor_resolvable(org_id, tmp_path):
     from harbor.skills import resolve_skills
 
     async with get_session() as session:
-        await create_skill_core(session, data=_payload("alpha"), org_id=org_id, user_id="u")
-        await create_skill_core(session, data=_payload("beta"), org_id=org_id, user_id="u")
+        await create_skill_core(
+            session, data=_payload("alpha"), org_id=org_id, user_id="u"
+        )
+        await create_skill_core(
+            session, data=_payload("beta"), org_id=org_id, user_id="u"
+        )
         await session.commit()
 
     skills_root = tmp_path / "agent_skills"
@@ -91,7 +99,9 @@ async def test_no_skills_stages_nothing(org_id, tmp_path):
 @pytest.mark.asyncio
 async def test_one_bad_skill_does_not_block_others(org_id, tmp_path, monkeypatch):
     async with get_session() as session:
-        await create_skill_core(session, data=_payload("good"), org_id=org_id, user_id="u")
+        await create_skill_core(
+            session, data=_payload("good"), org_id=org_id, user_id="u"
+        )
         await session.commit()
 
     # Force materialize_skills to raise for one specific bundle name, proving
@@ -118,7 +128,9 @@ async def test_apply_probe_overlay_does_not_stage_skills(org_id, tmp_path):
     from oddish.worker.probe_staging import apply_probe_overlay
 
     async with get_session() as session:
-        await create_skill_core(session, data=_payload("gamma"), org_id=org_id, user_id="u")
+        await create_skill_core(
+            session, data=_payload("gamma"), org_id=org_id, user_id="u"
+        )
         await session.commit()
 
     (tmp_path / "instruction.md").write_text("original task spec")

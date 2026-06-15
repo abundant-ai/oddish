@@ -15,7 +15,8 @@ from sqlalchemy.dialects import postgresql
 def _compile(stmt) -> str:
     return str(
         stmt.compile(
-            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+            dialect=postgresql.dialect(),  # type: ignore[misc]
+            compile_kwargs={"literal_binds": True},
         )
     )
 
@@ -91,9 +92,7 @@ def test_claim_candidates_can_exclude_sentinel() -> None:
 
 
 def test_claim_update_recheck_guard_and_stamp() -> None:
-    stmt = _claim_update_statement(
-        experiment_ids=["exp_1", "exp_2"], user_id="user_1"
-    )
+    stmt = _claim_update_statement(experiment_ids=["exp_1", "exp_2"], user_id="user_1")
     sql = _compile(stmt)
     assert "UPDATE experiments" in sql
     assert "owner_user_id IS NULL" in sql
@@ -141,7 +140,9 @@ def test_reclaim_filters_profile_against_other_members(monkeypatch) -> None:
 
     captured: dict = {}
 
-    async def _fake_claim(session, *, org_id, user_id, profile, include_sentinel, batch):
+    async def _fake_claim(
+        session, *, org_id, user_id, profile, include_sentinel, batch
+    ):
         captured["profile"] = profile
         captured["include_sentinel"] = include_sentinel
         return 0
@@ -166,7 +167,9 @@ def test_reclaim_filters_profile_against_other_members(monkeypatch) -> None:
 
     asyncio.run(
         backfill.reclaim_experiments_for_user(
-            _FakeSession([other]), user=me, profile=my_profile
+            _FakeSession([other]),  # type: ignore[arg-type]
+            user=me,
+            profile=my_profile,
         )
     )
 

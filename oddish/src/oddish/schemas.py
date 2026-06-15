@@ -4,7 +4,6 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator
 
-from harbor.models.agent.name import AgentName
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig as HarborRetryConfig
 from harbor.models.task.config import MCPServerConfig as MCPServerSpec
@@ -15,7 +14,7 @@ from harbor.models.trial.config import (
     VerifierConfig as HarborVerifierConfig,
 )
 
-from oddish.config import normalize_model_id
+from oddish.config import is_nop_oracle_agent, normalize_model_id
 from oddish.db import (
     AnalysisStatus,
     Priority,
@@ -240,9 +239,8 @@ class TaskSubmission(BaseModel):
 
     @model_validator(mode="after")
     def require_models(self):
-        allowed_missing = {AgentName.NOP.value, AgentName.ORACLE.value}
         for trial in self.trials:
-            if trial.agent not in allowed_missing and not trial.model:
+            if not is_nop_oracle_agent(trial.agent) and not trial.model:
                 raise ValueError("Model is required for all agents except nop/oracle")
         return self
 
@@ -378,9 +376,8 @@ class TaskSweepSubmission(BaseModel):
 
     @model_validator(mode="after")
     def require_models(self):
-        allowed_missing = {AgentName.NOP.value, AgentName.ORACLE.value}
         for config in self.configs:
-            if config.agent not in allowed_missing and not config.model:
+            if not is_nop_oracle_agent(config.agent) and not config.model:
                 raise ValueError("Model is required for all agents except nop/oracle")
         return self
 
@@ -1217,7 +1214,9 @@ class TagAssignRequest(BaseModel):
     @model_validator(mode="after")
     def _validate_scope(self):
         if self.scope not in {"VERSION", "TASK", "EXPERIMENT"}:
-            raise ValueError(f"scope must be VERSION/TASK/EXPERIMENT (got {self.scope})")
+            raise ValueError(
+                f"scope must be VERSION/TASK/EXPERIMENT (got {self.scope})"
+            )
         if self.scope == "EXPERIMENT" and self.mode not in {"snapshot", "living"}:
             raise ValueError("EXPERIMENT-scope apply requires mode='snapshot'|'living'")
         return self

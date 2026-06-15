@@ -153,8 +153,7 @@ function DocumentIngestForm({ onSaved, onCancel }: IngestFormProps) {
 
         <div className="space-y-1.5">
           <Label htmlFor="doc-title" className="text-xs font-medium">
-            Title{" "}
-            <span className="text-muted-foreground">(optional)</span>
+            Title <span className="text-muted-foreground">(optional)</span>
           </Label>
           <Input
             id="doc-title"
@@ -184,7 +183,10 @@ function DocumentIngestForm({ onSaved, onCancel }: IngestFormProps) {
         {sourceType === "upload" ? (
           <div className="space-y-1.5">
             <Label htmlFor="doc-file" className="text-xs font-medium">
-              File <span className="text-muted-foreground">(PDF, text, markdown, CSV)</span>
+              File{" "}
+              <span className="text-muted-foreground">
+                (PDF, text, markdown, CSV)
+              </span>
             </Label>
             <input
               id="doc-file"
@@ -330,7 +332,8 @@ function DocumentEditForm({ doc, onSaved, onCancel }: EditFormProps) {
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="edit-tags" className="text-xs font-medium">
-            Tags <span className="text-muted-foreground">(comma-separated)</span>
+            Tags{" "}
+            <span className="text-muted-foreground">(comma-separated)</span>
           </Label>
           <Input
             id="edit-tags"
@@ -492,7 +495,9 @@ export function DocumentsClient() {
                   <TableHead>Summary</TableHead>
                   <TableHead className="w-[160px]">Tags</TableHead>
                   <TableHead className="w-[80px]">Source</TableHead>
-                  <TableHead className="w-[120px] text-right">Actions</TableHead>
+                  <TableHead className="w-[120px] text-right">
+                    Actions
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -513,7 +518,9 @@ export function DocumentsClient() {
                       )}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      {doc.summary || <span className="italic">No summary</span>}
+                      {doc.summary || (
+                        <span className="italic">No summary</span>
+                      )}
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
