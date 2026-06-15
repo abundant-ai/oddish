@@ -53,3 +53,35 @@ async def test_send_persists_events_and_tracks_turn(db):
 
     async with db() as s:
         assert await turns_mod.running_turn(s, session_id="cs_1") is None
+
+
+async def test_send_disconnect_closes_turn_as_canceled(db):
+    await seed_session(db, status="active")
+
+    def factory():
+        from contextlib import asynccontextmanager
+        @asynccontextmanager
+        async def _cm():
+            async with db() as s:
+                yield s
+        return _cm()
+
+    orch = ChatOrchestrator(
+        daytona=object(),
+        runtime=_FakeRuntime(),
+        transcript_buffer=SessionTranscriptBuffer(),
+        anthropic_api_key="test",
+    )
+    orch._sandboxes["cs_1"] = _FakeSandbox()
+
+    agen = orch.send(session_id="cs_1", content="hi", db_session_factory=factory)
+    await agen.__anext__()      # consume first event; generator suspended at yield
+    await agen.aclose()         # simulate client disconnect (throws GeneratorExit)
+
+    from api.services.cc_chat import turns as turns_mod
+    from models import ChatTurn
+    from sqlalchemy import select
+    async with db() as s:
+        assert await turns_mod.running_turn(s, session_id="cs_1") is None
+        t = (await s.execute(select(ChatTurn).where(ChatTurn.session_id == "cs_1"))).scalar_one()
+        assert t.status == "canceled"

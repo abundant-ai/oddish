@@ -33,4 +33,4 @@ async def delete_sandbox_quietly(
     try:
         await client.delete_sandbox(sandbox)
     except Exception:
-        log.exception("delete_sandbox raised", sandbox_id=sandbox.id)
+        log.exception("delete_sandbox raised sandbox_id=%s", sandbox.id)

@@ -151,6 +151,8 @@ class ChatOrchestrator:
             await db.commit()
             turn_id = turn.id
 
+        turn_status = "done"
+        turn_error: str | None = None
         try:
             async for event in self._runtime.stream_chat(
                 self._daytona,
@@ -178,14 +180,18 @@ class ChatOrchestrator:
                     await db.commit()
                 yield event
         except Exception as exc:
-            async with self._db(db_session_factory) as db:
-                await close_turn(db, turn_id=turn_id, status="failed", error=str(exc))
-                await db.commit()
+            turn_status, turn_error = "failed", str(exc)
             raise
+        except BaseException:
+            # client disconnect / cancellation — close the turn so it does not
+            # leak as 'running' and wedge the one-running-turn invariant.
+            turn_status, turn_error = "canceled", "client disconnected"
+            raise
+        finally:
+            async with self._db(db_session_factory) as db:
+                await close_turn(db, turn_id=turn_id, status=turn_status, error=turn_error)
+                await db.commit()
 
-        async with self._db(db_session_factory) as db:
-            await close_turn(db, turn_id=turn_id, status="done")
-            await db.commit()
         async with self._db(db_session_factory) as db:
             r = await db.get(ChatSession, session_id)
             if r is not None:

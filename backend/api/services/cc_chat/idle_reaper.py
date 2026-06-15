@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Callable, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
 
 from models import ChatSession, ChatStatus
+from oddish.db.models import utcnow
 
 log = logging.getLogger("oddish.cc_chat.idle_reaper")
 
@@ -23,7 +24,7 @@ async def reap_idle_sessions(
     idle_threshold_minutes: int,
     db_session_factory: Callable[[], object],
 ) -> int:
-    threshold = datetime.utcnow() - timedelta(minutes=idle_threshold_minutes)
+    threshold = utcnow() - timedelta(minutes=idle_threshold_minutes)
     sess = db_session_factory()
     try:
         if isinstance(sess, _AsyncSession):
@@ -45,7 +46,7 @@ async def reap_idle_sessions(
     return len(ids)
 
 
-async def _query_ids(session, threshold: datetime) -> list[str]:
+async def _query_ids(session, threshold) -> list[str]:
     stmt = select(ChatSession.id).where(
         ChatSession.status == ChatStatus.active.value,
         ChatSession.last_activity < threshold,
