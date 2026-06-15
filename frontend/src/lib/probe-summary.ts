@@ -43,6 +43,8 @@ export type ProbeSummary = {
 export type ProbeHarborConfig = {
   mode?: string;
   extra_instructions?: string;
+  // Operator-selected preset name; absent on older / preset-less runs.
+  probe_name?: string | null;
   // "cheat_ratio" kept as a legacy alias — normalizeMetric folds it to "ratio".
   evaluation_metric?: "ratio" | "result_focus" | "none" | "cheat_ratio";
   ratio_unit?: string | null;
@@ -57,6 +59,7 @@ export type ProbeTrial = {
   status: string;
   reward: number | null;
   created_at?: string;
+  task_version_id?: string | null;
   harbor_config: ProbeHarborConfig;
   result: { _artifacts?: unknown } | null;
   analysis: ProbeSummary | null;
