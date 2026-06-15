@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import enum
 import hashlib
 import os
 import secrets
@@ -243,25 +242,29 @@ class APIKeyModel(TimestampedMixin, Base):
 # =============================================================================
 
 
-class ChatScopeKind(str, enum.Enum):
+# Member names are intentionally lowercase: they mirror the stored string
+# values and are referenced as e.g. ChatStatus.active by the ported chat code.
+class ChatScopeKind(str, Enum):
     experiment = "experiment"
     task_probes = "task_probes"
 
 
-class ChatStatus(str, enum.Enum):
+class ChatStatus(str, Enum):
     provisioning = "provisioning"
     active = "active"
     closed = "closed"
     broken = "broken"
 
 
-class ChatTurnStatus(str, enum.Enum):
+class ChatTurnStatus(str, Enum):
     running = "running"
     done = "done"
     failed = "failed"
     canceled = "canceled"
 
 
+# These chat tables deliberately do not use TimestampedMixin: they need no
+# updated_at/deleted_at, and their columns must mirror the raw-SQL migration exactly.
 class ChatSession(Base):
     __tablename__ = "chat_sessions"
     __table_args__ = (
@@ -276,7 +279,7 @@ class ChatSession(Base):
     scope_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     scope_id: Mapped[str] = mapped_column(String(128), nullable=False)
     sandbox_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    daytona_session_id: Mapped[str] = mapped_column(String(64), nullable=False, default="cc")
+    daytona_session_id: Mapped[str] = mapped_column(String(64), nullable=False, default="cc")  # "cc" is the default Daytona session id used by the chat orchestrator
     claude_session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -317,7 +320,7 @@ class ChatTurn(Base):
     )
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     user_message: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
