@@ -23,6 +23,28 @@ export type Recommendation = {
   rationale?: string;
 };
 
+export const PRIORITY_ORDER: Record<string, number> = {
+  must_fix: 0,
+  should_fix: 1,
+  optional: 2,
+};
+
+export const PRIORITY_META: Record<string, { label: string; cls: string }> = {
+  must_fix: { label: "Must fix", cls: "bg-red-500/15 text-red-600" },
+  should_fix: { label: "Should fix", cls: "bg-amber-500/15 text-amber-700" },
+  optional: { label: "Optional", cls: "bg-slate-500/15 text-slate-600" },
+};
+
+// Recommendations sorted highest-priority first; unknown priorities sink last.
+export function sortRecommendations(
+  recs: Recommendation[] | undefined,
+): Recommendation[] {
+  return [...(recs ?? [])].sort(
+    (a, b) =>
+      (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9),
+  );
+}
+
 export type ProbeSummary = {
   kind?: string;
   headline?: string;
