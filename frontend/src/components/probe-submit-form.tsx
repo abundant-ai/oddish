@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -9,6 +10,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const AGENTS = [
   { value: "claude-code", label: "claude-code" },
@@ -283,48 +292,48 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
   return (
     <form onSubmit={onSubmit} className="space-y-4">
       <div className="flex flex-wrap items-end gap-2">
-        <label className="flex-1 min-w-[200px]">
+        <label className="min-w-[200px] flex-1">
           <span className="text-sm font-medium">Your probe agents</span>
-          <select
-            value={selectedPresetId}
-            onChange={(e) => loadPreset(e.target.value)}
-            className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+          <Select
+            value={selectedPresetId || undefined}
+            onValueChange={loadPreset}
           >
-            <option value="">
-              {presetsLoaded ? "— Select a probe agent —" : "Loading presets…"}
-            </option>
-            {presets.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-                {p.is_seed ? " (built-in)" : ""}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger className="mt-1 w-full">
+              <SelectValue
+                placeholder={
+                  presetsLoaded
+                    ? "— Select a probe agent —"
+                    : "Loading presets…"
+                }
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {presets.map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.name}
+                  {p.is_seed ? " (built-in)" : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </label>
-        <button
-          type="button"
-          onClick={openCreateModal}
-          className="rounded border bg-muted/40 px-3 py-1.5 text-sm hover:bg-muted"
-        >
+        <Button type="button" variant="outline" onClick={openCreateModal}>
           + Create your own probe agent
-        </button>
+        </Button>
         {selectedPreset ? (
-          <button
-            type="button"
-            onClick={openEditModal}
-            className="rounded border px-3 py-1.5 text-sm hover:bg-muted"
-          >
+          <Button type="button" variant="outline" onClick={openEditModal}>
             Edit
-          </button>
+          </Button>
         ) : null}
         {selectedPreset && !selectedPreset.is_seed ? (
-          <button
+          <Button
             type="button"
+            variant="outline"
             onClick={() => void deleteSelectedPreset()}
-            className="rounded border border-red-500/50 px-3 py-1.5 text-sm text-red-600 hover:bg-red-500/10"
+            className="border-red-500/50 text-red-600 hover:bg-red-500/10 hover:text-red-600"
           >
             Delete
-          </button>
+          </Button>
         ) : null}
       </div>
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
@@ -338,7 +347,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
                   : "Edit probe agent"}
             </DialogTitle>
             {selectedPreset?.is_seed && editingPresetId !== null ? (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-muted-foreground text-xs">
                 Built-in presets can&apos;t be modified directly. Saving will
                 create a personal copy you can edit and delete freely.
               </p>
@@ -347,47 +356,51 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
           <div className="space-y-4">
             <label className="block">
               <span className="text-sm font-medium">Name</span>
-              <input
+              <Input
                 type="text"
                 value={modalName}
                 onChange={(e) => setModalName(e.target.value)}
                 maxLength={80}
-                className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+                className="mt-1"
                 placeholder="My adversarial probe"
               />
             </label>
             <div className="flex gap-3">
               <label className="flex-1">
                 <span className="text-sm font-medium">Agent</span>
-                <select
+                <Select
                   value={modalAgent}
-                  onChange={(e) => {
-                    const a = e.target.value;
+                  onValueChange={(a) => {
                     setModalAgent(a);
                     setModalModel(MODELS_BY_AGENT[a]?.[0]?.value ?? "");
                   }}
-                  className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
                 >
-                  {AGENTS.map((a) => (
-                    <option key={a.value} value={a.value}>
-                      {a.label}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger className="mt-1 w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {AGENTS.map((a) => (
+                      <SelectItem key={a.value} value={a.value}>
+                        {a.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </label>
               <label className="flex-1">
                 <span className="text-sm font-medium">Model</span>
-                <select
-                  value={modalModel}
-                  onChange={(e) => setModalModel(e.target.value)}
-                  className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
-                >
-                  {(MODELS_BY_AGENT[modalAgent] ?? []).map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
+                <Select value={modalModel} onValueChange={setModalModel}>
+                  <SelectTrigger className="mt-1 w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(MODELS_BY_AGENT[modalAgent] ?? []).map((m) => (
+                      <SelectItem key={m.value} value={m.value}>
+                        {m.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </label>
             </div>
             <label className="block">
@@ -396,7 +409,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
                 value={modalOperatorPrompt}
                 onChange={(e) => setModalOperatorPrompt(e.target.value)}
                 rows={10}
-                className="mt-1 w-full rounded border bg-background px-2 py-1.5 font-mono text-sm"
+                className="bg-background mt-1 w-full rounded border px-2 py-1.5 font-mono text-sm"
                 placeholder="What should the probe agent do?"
               />
             </label>
@@ -409,31 +422,36 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
                 value={modalResultFocus}
                 onChange={(e) => setModalResultFocus(e.target.value)}
                 rows={2}
-                className="mt-1 w-full rounded border bg-background px-2 py-1.5 font-mono text-sm"
+                className="bg-background mt-1 w-full rounded border px-2 py-1.5 font-mono text-sm"
                 placeholder="A specific question for the analyzer to answer"
               />
             </label>
             <label className="block">
               <span className="text-sm font-medium">Evaluation metric</span>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-muted-foreground text-xs">
                 How should this probe&apos;s results be summarized in the
                 history table?
               </p>
-              <select
+              <Select
                 value={modalEvaluationMetric}
-                onChange={(e) =>
-                  setModalEvaluationMetric(e.target.value as EvaluationMetric)
+                onValueChange={(v) =>
+                  setModalEvaluationMetric(v as EvaluationMetric)
                 }
-                className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
               >
-                <option value="none">None — show raw reward</option>
-                <option value="ratio">
-                  Ratio — count attempts the agent identified (X/Y units verb)
-                </option>
-                <option value="result_focus">
-                  Result focus — show the analyzer&apos;s answer to my question
-                </option>
-              </select>
+                <SelectTrigger className="mt-1 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None — show raw reward</SelectItem>
+                  <SelectItem value="ratio">
+                    Ratio — count attempts the agent identified (X/Y units verb)
+                  </SelectItem>
+                  <SelectItem value="result_focus">
+                    Result focus — show the analyzer&apos;s answer to my
+                    question
+                  </SelectItem>
+                </SelectContent>
+              </Select>
             </label>
             {modalEvaluationMetric === "ratio" ? (
               <div className="grid grid-cols-2 gap-3">
@@ -441,13 +459,13 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
                   <span className="text-sm font-medium">
                     Unit (singular noun)
                   </span>
-                  <input
+                  <Input
                     type="text"
                     value={modalRatioUnit}
                     onChange={(e) => setModalRatioUnit(e.target.value)}
                     maxLength={30}
                     placeholder="cheat, bug, exploit, ambiguity..."
-                    className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+                    className="mt-1"
                   />
                 </label>
                 <label className="block">
@@ -455,27 +473,27 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
                     Success verb{" "}
                     <span className="text-muted-foreground">(optional)</span>
                   </span>
-                  <input
+                  <Input
                     type="text"
                     value={modalRatioVerb}
                     onChange={(e) => setModalRatioVerb(e.target.value)}
                     maxLength={30}
                     placeholder="succeeded, exploitable, confirmed..."
-                    className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+                    className="mt-1"
                   />
                 </label>
               </div>
             ) : null}
           </div>
           <DialogFooter>
-            <button
+            <Button
               type="button"
+              variant="outline"
               onClick={() => setModalOpen(false)}
-              className="rounded border px-3 py-1.5 text-sm"
             >
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               onClick={() => void savePresetFromModal()}
               disabled={
@@ -483,10 +501,9 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
                 !modalOperatorPrompt.trim() ||
                 (modalEvaluationMetric === "ratio" && !modalRatioUnit.trim())
               }
-              className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
             >
               Save
-            </button>
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -508,27 +525,28 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
                 ? `e.g. "2/5 ${plural} ${verb}"`
                 : `e.g. "2/5 ${plural}"`;
               return (
-                <div className="rounded border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                  <span className="font-medium text-foreground">
+                <div className="bg-muted/30 text-muted-foreground rounded border px-3 py-2 text-xs">
+                  <span className="text-foreground font-medium">
                     Result column will show:
                   </span>{" "}
                   ratio of {plural}
                   {verb ? ` ${verb}` : ""} ({example}).{" "}
-                  <button
+                  <Button
                     type="button"
+                    variant="link"
                     onClick={openEditModal}
-                    className="underline hover:text-foreground"
+                    className="hover:text-foreground h-auto p-0 text-xs underline"
                   >
                     Edit
-                  </button>{" "}
+                  </Button>{" "}
                   to change.
                 </div>
               );
             }
             if (metric === "result_focus") {
               return (
-                <div className="rounded border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                  <span className="font-medium text-foreground">
+                <div className="bg-muted/30 text-muted-foreground rounded border px-3 py-2 text-xs">
+                  <span className="text-foreground font-medium">
                     Result column will show:
                   </span>{" "}
                   the analyzer's answer to your focus question.
@@ -536,8 +554,8 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
               );
             }
             return (
-              <div className="rounded border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">
+              <div className="bg-muted/30 text-muted-foreground rounded border px-3 py-2 text-xs">
+                <span className="text-foreground font-medium">
                   Result column will show:
                 </span>{" "}
                 raw verifier reward (no specific evaluation metric).
@@ -547,35 +565,39 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
           <div className="flex gap-4">
             <label className="flex-1">
               <span className="text-sm font-medium">Agent</span>
-              <select
+              <Select
                 value={agent}
-                onChange={(e) => {
-                  const a = e.target.value;
+                onValueChange={(a) => {
                   setAgent(a);
                   setModel(MODELS_BY_AGENT[a][0].value);
                 }}
-                className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
               >
-                {AGENTS.map((a) => (
-                  <option key={a.value} value={a.value}>
-                    {a.label}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="mt-1 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {AGENTS.map((a) => (
+                    <SelectItem key={a.value} value={a.value}>
+                      {a.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </label>
             <label className="flex-1">
               <span className="text-sm font-medium">Model</span>
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
-              >
-                {(MODELS_BY_AGENT[agent] ?? []).map((m) => (
-                  <option key={m.value} value={m.value}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
+              <Select value={model} onValueChange={setModel}>
+                <SelectTrigger className="mt-1 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(MODELS_BY_AGENT[agent] ?? []).map((m) => (
+                    <SelectItem key={m.value} value={m.value}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </label>
           </div>
           <label className="block">
@@ -586,7 +608,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
               placeholder="You are a security researcher. Find any way to make the verifier pass without solving the task..."
               rows={10}
               required
-              className="mt-1 w-full rounded border bg-background px-2 py-1.5 font-mono text-sm"
+              className="bg-background mt-1 w-full rounded border px-2 py-1.5 font-mono text-sm"
             />
           </label>
           <label className="block">
@@ -594,7 +616,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
               Result focus{" "}
               <span className="text-muted-foreground">(optional)</span>
             </span>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-muted-foreground text-xs">
               A specific question you want the analyzer to answer about this
               trial. Shows as a callout on the result page.
             </p>
@@ -603,24 +625,23 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
               onChange={(e) => setResultFocus(e.target.value)}
               placeholder="e.g. Did the agent find any ambiguities in the spec? Or: Which anti-cheat layer was most effective?"
               rows={3}
-              className="mt-1 w-full rounded border bg-background px-2 py-1.5 font-mono text-sm"
+              className="bg-background mt-1 w-full rounded border px-2 py-1.5 font-mono text-sm"
             />
           </label>
           {error && (
-            <p className="text-sm text-red-500 break-words whitespace-pre-wrap">
+            <p className="text-sm break-words whitespace-pre-wrap text-red-500">
               {error}
             </p>
           )}
-          <button
+          <Button
             type="submit"
             disabled={submitting || !extraInstructions.trim()}
-            className="rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {submitting ? "Submitting..." : "Submit"}
-          </button>
+          </Button>
         </>
       ) : (
-        <p className="text-sm text-muted-foreground">
+        <p className="text-muted-foreground text-sm">
           Select a probe agent above or create your own to get started.
         </p>
       )}
