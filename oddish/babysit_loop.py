@@ -180,8 +180,10 @@ async def one_round():
                 cands.append((valid[key], pending[key], task, eff))
         if not cands:
             continue
-        # neediest first: fewest valid, then fewest pending
-        cands.sort(key=lambda c: (c[0], c[1]))
+        # 1) cells at 0 valid first (guarantee coverage), then
+        # 2) greedy completion: deepen highest-valid cells first so v2->v3
+        #    cells finish and exit the pool instead of uniform breadth.
+        cands.sort(key=lambda c: (0 if c[0] == 0 else 1, -c[0], c[1]))
         # round-robin one trial per cell until budget exhausted
         idx = 0
         local_pending = dict()
