@@ -75,6 +75,8 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
   const [extraInstructions, setExtraInstructions] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Collapsed by default: a prominent CTA reveals the agent picker + form.
+  const [formOpen, setFormOpen] = useState(false);
 
   const [presets, setPresets] = useState<Preset[]>([]);
   const [presetsLoaded, setPresetsLoaded] = useState(false);
@@ -279,6 +281,18 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (!formOpen) {
+    return (
+      <button
+        type="button"
+        onClick={() => setFormOpen(true)}
+        className="w-full rounded-lg bg-blue-600 px-4 py-3 text-base font-semibold text-white shadow-sm hover:bg-blue-700"
+      >
+        Submit a probe run
+      </button>
+    );
   }
 
   return (
@@ -618,7 +632,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
       <button
         type="submit"
         disabled={submitting || !extraInstructions.trim()}
-        className="w-full rounded-lg bg-primary px-4 py-3 text-base font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-50"
+        className="w-full rounded-lg bg-blue-600 px-4 py-3 text-base font-semibold text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
       >
         {submitting ? "Submitting probe run…" : "Submit probe run"}
       </button>

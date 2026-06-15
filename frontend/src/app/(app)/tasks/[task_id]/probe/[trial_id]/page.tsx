@@ -159,13 +159,18 @@ export default function ProbeResultPage({
         <p className="mt-2 text-xs uppercase tracking-wide text-muted-foreground">
           Probe run
         </p>
-        <Link
-          href={`/tasks/${task_id}`}
-          className="font-mono text-2xl font-semibold underline-offset-4 hover:underline"
-          title="View experiment"
-        >
+        <p className="text-lg">
+          Task:{" "}
+          <Link
+            href={`/tasks/${task_id}`}
+            className="font-mono font-semibold text-blue-600 underline-offset-4 hover:text-blue-700 hover:underline"
+          >
+            {task_id}
+          </Link>
+        </p>
+        <p className="mt-1 font-mono text-xs text-muted-foreground">
           {trial.id}
-        </Link>
+        </p>
       </div>
 
       {/* Status header */}
