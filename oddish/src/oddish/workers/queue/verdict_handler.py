@@ -62,10 +62,54 @@ async def _heartbeat_verdict_worker_job(
             pending_last_error = f"{type(exc).__name__}: {exc}"
 
 
+def _trial_needs_classification(analysis_status: AnalysisStatus | None) -> bool:
+    """Whether the task QA job should (re)classify this live trial.
+
+    Trials whose analysis is already terminal (SUCCESS / FAILED) keep
+    their stored result; everything else (NULL / PENDING / QUEUED /
+    RUNNING) gets (re)classified. Probe trials are normally already
+    SUCCESS (analyzed inline by the trial job) so they are reused here;
+    if a probe trial still needs analysis, ``classify_trial_and_store``
+    routes it through the probe analyzer.
+    """
+    return analysis_status not in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
+
+
+def _classifications_from_trials(trials) -> list:
+    """Reconstruct ``TrialClassification`` objects from stored analyses.
+
+    Only successfully-classified trials contribute, and probe summaries
+    (which store no ``classification`` key) are skipped defensively so a
+    task mixing probe and classified trials can't crash verdict synthesis.
+    """
+    from oddish.analyze import Classification, TrialClassification
+
+    classifications: list = []
+    for trial in trials:
+        analysis = trial.analysis
+        if (
+            trial.analysis_status == AnalysisStatus.SUCCESS
+            and isinstance(analysis, dict)
+            and "classification" in analysis
+        ):
+            classifications.append(
+                TrialClassification(
+                    trial_name=analysis.get("trial_name", trial.id),
+                    classification=Classification(analysis["classification"]),
+                    subtype=analysis.get("subtype", "Unknown"),
+                    evidence=analysis.get("evidence", ""),
+                    root_cause=analysis.get("root_cause", ""),
+                    recommendation=analysis.get("recommendation", ""),
+                    reward=analysis.get("reward"),
+                )
+            )
+    return classifications
+
+
 async def _load_live_trials_for_classification(
     task_id: str,
-) -> list[tuple[str, bool, AnalysisStatus | None]]:
-    """Return ``(trial_id, is_probe, analysis_status)`` for live trials.
+) -> list[tuple[str, AnalysisStatus | None]]:
+    """Return ``(trial_id, analysis_status)`` for live trials.
 
     "Live" means not superseded by a retry. Used to decide which trials
     the task-level QA job still needs to classify.
@@ -75,7 +119,6 @@ async def _load_live_trials_for_classification(
             await session.execute(
                 select(
                     TrialModel.id,
-                    TrialModel.harbor_config,
                     TrialModel.analysis_status,
                 ).where(
                     TrialModel.task_id == task_id,
@@ -84,11 +127,7 @@ async def _load_live_trials_for_classification(
             )
         ).all()
 
-    out: list[tuple[str, bool, AnalysisStatus | None]] = []
-    for trial_id, harbor_config, analysis_status in rows:
-        is_probe = bool((harbor_config or {}).get("extra_instructions"))
-        out.append((str(trial_id), is_probe, analysis_status))
-    return out
+    return [(str(trial_id), analysis_status) for trial_id, analysis_status in rows]
 
 
 async def run_verdict_job(
@@ -116,11 +155,7 @@ async def run_verdict_job(
     ``T`` tasks x ``N`` trials enqueues ``T`` QA jobs instead of
     ``T * (N + 1)``.
     """
-    from oddish.analyze import (
-        Classification,
-        TrialClassification,
-        compute_task_verdict,
-    )
+    from oddish.analyze import TrialClassification, compute_task_verdict
 
     console.print(
         f"[cyan]Processing task QA[/cyan] {task_id} (queue_key={queue_key})"
@@ -160,19 +195,18 @@ async def run_verdict_job(
     try:
         # -----------------------------------------------------------------
         # 1. Classification phase: classify every live trial that still
-        #    needs it. Probe trials are analyzed inline by the trial job,
-        #    so they are skipped here; trials already SUCCESS/FAILED keep
-        #    their stored result. Each classification is best-effort --
-        #    one failed trial must not abort the whole task QA -- and
-        #    ``classify_trial_and_store`` records FAILED on error itself.
+        #    needs it. Trials already SUCCESS/FAILED keep their stored
+        #    result (probe trials, analyzed inline by the trial job, are
+        #    normally already SUCCESS and thus reused). Each classification
+        #    is best-effort -- one failed trial must not abort the whole
+        #    task QA -- and ``classify_trial_and_store`` records FAILED on
+        #    error itself.
         # -----------------------------------------------------------------
         live_trials = await _load_live_trials_for_classification(task_id)
         to_classify = [
             trial_id
-            for trial_id, is_probe, analysis_status in live_trials
-            if not is_probe
-            and analysis_status
-            not in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
+            for trial_id, analysis_status in live_trials
+            if _trial_needs_classification(analysis_status)
         ]
         if to_classify:
             console.print(
@@ -201,27 +235,7 @@ async def run_verdict_job(
                 )
             )
             trials = trials_result.scalars().all()
-
-            for trial in trials:
-                analysis = trial.analysis
-                if (
-                    trial.analysis_status == AnalysisStatus.SUCCESS
-                    and isinstance(analysis, dict)
-                    # Probe trials store a probe_summary (no "classification"),
-                    # which is not a verdict input; skip them defensively.
-                    and "classification" in analysis
-                ):
-                    classifications.append(
-                        TrialClassification(
-                            trial_name=analysis.get("trial_name", trial.id),
-                            classification=Classification(analysis["classification"]),
-                            subtype=analysis.get("subtype", "Unknown"),
-                            evidence=analysis.get("evidence", ""),
-                            root_cause=analysis.get("root_cause", ""),
-                            recommendation=analysis.get("recommendation", ""),
-                            reward=analysis.get("reward"),
-                        )
-                    )
+            classifications = _classifications_from_trials(trials)
 
         console.print(
             f"[cyan]Computing verdict from {len(classifications)} "
