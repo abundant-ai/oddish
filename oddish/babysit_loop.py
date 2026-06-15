@@ -38,6 +38,7 @@ AGENT_NAMES = [a for a, _ in AGENTS]
 
 TARGET = 3
 CAP_INFLIGHT = 12          # max queued+running per agent
+PENDING_CAP = 2            # max simultaneous in-flight attempts per cell
 MAX_TOTAL_PER_CELL = 8     # safety: stop retrying a cell after this many trials
 # Stricter per-cell caps for known-unreliable tasks (per handoff notes).
 CELL_CAP_OVERRIDE = {
@@ -173,7 +174,8 @@ async def one_round():
             key = (task, agent)
             need = TARGET - valid[key] - pending[key]
             room = cell_cap(task) - total[key]
-            eff = max(0, min(need, room))
+            inflight_room = PENDING_CAP - pending[key]
+            eff = max(0, min(need, room, inflight_room))
             if eff > 0:
                 cands.append((valid[key], pending[key], task, eff))
         if not cands:
