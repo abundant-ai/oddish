@@ -66,7 +66,8 @@ async def acquire_queue_slot(
                 )
                 UPDATE queue_slots
                 SET locked_by = $3,
-                    locked_until = NOW() + make_interval(secs => $4)
+                    locked_until = NOW() + make_interval(secs => $4),
+                    locked_at = NOW()
                 FROM candidate
                 WHERE queue_slots.queue_key = candidate.queue_key
                   AND queue_slots.slot = candidate.slot
@@ -93,7 +94,8 @@ async def release_queue_slot(
             """
             UPDATE queue_slots
             SET locked_by = NULL,
-                locked_until = NULL
+                locked_until = NULL,
+                locked_at = NULL
             WHERE queue_key = $1
               AND slot = $2
               AND locked_by = $3
@@ -111,7 +113,8 @@ async def cleanup_stale_queue_slots() -> int:
             """
             UPDATE queue_slots
             SET locked_by = NULL,
-                locked_until = NULL
+                locked_until = NULL,
+                locked_at = NULL
             WHERE locked_by IS NOT NULL
               AND locked_until IS NOT NULL
               AND locked_until <= NOW()

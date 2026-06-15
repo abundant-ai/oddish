@@ -907,6 +907,12 @@ class QueueSlotModel(Base):
     locked_until: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # When the current lease was taken. Lets the reconciler reclaim a leaked
+    # lease per-slot (keyed on the owning worker's liveness) while still
+    # honoring a short grace window for the brief acquire->claim gap.
+    locked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         Index(
