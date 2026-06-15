@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Callable, Literal
 
+from daytona import DaytonaNotFoundError
 from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
 
 from models import ChatSession, ChatStatus, generate_id
@@ -183,6 +184,17 @@ class ChatOrchestrator:
                     await append_event(db, session_id=session_id, event=event)
                     await db.commit()
                 yield event
+        except DaytonaNotFoundError:
+            turn_status, turn_error = "failed", "sandbox no longer exists"
+            self._sandboxes.pop(session_id, None)
+            async with self._db(db_session_factory) as db:
+                row = await db.get(ChatSession, session_id)
+                if row is not None:
+                    row.status = ChatStatus.broken.value
+                    row.error = turn_error
+                    row.closed_at = _now()
+                    await db.commit()
+            return
         except Exception as exc:
             turn_status, turn_error = "failed", str(exc)
             raise
