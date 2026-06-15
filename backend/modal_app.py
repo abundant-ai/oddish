@@ -107,11 +107,11 @@ if SAURON_AWS_SECRET_NAME:
     )
 
 # Optional bring-your-own-credentials secret, layered alongside oddish-prod so
-# personal creds never go into the shared oddish-prod secret. Created from your
-# local Modal CLI (`modal secret create cs-creds CS_CLAUDE_CODE_OAUTH_TOKEN=...
-# CS_CODEX_AUTH_JSON_B64=...`) and consumed only by the subscription auth route
-# in harbor_runner. Set ODDISH_EXTRA_SECRET_NAME=cs-creds at deploy to enable;
-# unset = no-op, so this is inert for normal deploys.
+# personal creds never go into the shared oddish-prod secret. Holds the
+# subscription tokens (CS_CLAUDE_CODE_OAUTH_TOKEN / CS_CODEX_AUTH_JSON_B64) and
+# is consumed only by the subscription auth route in harbor_runner. Set
+# ODDISH_EXTRA_SECRET_NAME (e.g. cs-creds) at deploy to enable; unset = no-op,
+# so this is inert for normal deploys.
 EXTRA_SECRET_NAME = os.environ.get("ODDISH_EXTRA_SECRET_NAME", "")
 if EXTRA_SECRET_NAME:
     runtime_secrets.append(
@@ -158,10 +158,8 @@ ENV_VARS = {
     # deploy host did (the per-PR secret gate above depends on it).
     "MODAL_APP_NAME": MODAL_APP_NAME,
     "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
-    # Baked so the optional bring-your-own-creds secret gate (runtime_secrets)
-    # evaluates identically in the container as on the deploy host. Without
-    # this the function's declared deps mismatch the container's object ids and
-    # every container crashes on boot ("N dependencies but container got N+1").
+    # Baked so the bring-your-own-creds secret gate (runtime_secrets) evaluates
+    # identically in the container and on the deploy host.
     "ODDISH_EXTRA_SECRET_NAME": EXTRA_SECRET_NAME,
     # Comma-separated agents whose trials use the personal-subscription auth
     # route (Claude Code OAuth / Codex auth.json) instead of Bedrock/Azure.

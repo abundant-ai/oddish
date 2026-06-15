@@ -140,12 +140,11 @@ def to_zai_model_id(model: str | None) -> str | None:
 
 
 # Personal-subscription routing (Claude Code OAuth token / Codex ChatGPT
-# auth.json). Some operators authenticate the claude-code / codex agents with
-# their own Claude Pro/Max or ChatGPT plan instead of Bedrock / Azure / an API
-# key -- e.g. to reach models their plan exposes that the API tier does not. A
+# auth.json). Lets the claude-code / codex agents authenticate with a Claude
+# Pro/Max or ChatGPT plan instead of Bedrock / Azure / an API key. A
 # ``sub/<bare-id>`` model id opts a trial into that route: it is kept off the
-# Bedrock chokepoint, gets its own provider/queue bucket (so it never contends
-# for Bedrock/OpenAI slots and can be throttled independently), and
+# Bedrock chokepoint and gets its own provider/queue bucket (so it never
+# contends for Bedrock/OpenAI slots and can be throttled independently), and
 # harbor_runner injects the subscription credentials while blanking the ambient
 # Bedrock/API creds the Modal image bakes in.
 SUBSCRIPTION_PROVIDER = "subscription"

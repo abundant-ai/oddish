@@ -12,8 +12,7 @@ from oddish.cli.api import archive_task_dir
 
 def test_archive_task_dir_dereferences_symlinked_task(tmp_path: Path) -> None:
     """A task_path containing a relative symlink to a real task dir should
-    package the real files, not a broken symlink (abundant-ai/experiments
-    PR #412 pattern)."""
+    package the real files, not a broken symlink."""
     # Real task dir living outside the task_path.
     real_task = tmp_path / "real" / "my-task"
     real_task.mkdir(parents=True)
