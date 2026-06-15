@@ -21,6 +21,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { TagEditor } from "@/components/tag-editor";
+import { TaskProbeRunCard } from "@/components/task-probe-run-card";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
@@ -971,6 +972,8 @@ export function TaskDetailClient({
             ) : null}
           </div>
         </div>
+
+        <TaskProbeRunCard taskId={task.id} versionId={selectedVersionId} />
 
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">
