@@ -4,6 +4,7 @@ Backed by ``better-profanity`` in production. Tests monkey-patch
 ``_build_filter`` to inject a deterministic fake so they don't need the
 real wordlist.
 """
+
 from __future__ import annotations
 
 import re

@@ -98,12 +98,8 @@ def downgrade() -> None:
         op.execute(
             "DROP INDEX CONCURRENTLY IF EXISTS idx_tasks_org_lower_github_tag_live"
         )
-        op.execute(
-            "DROP INDEX CONCURRENTLY IF EXISTS idx_tasks_org_lower_user_live"
-        )
-        op.execute(
-            "DROP INDEX CONCURRENTLY IF EXISTS idx_tasks_org_created_by_live"
-        )
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_tasks_org_lower_user_live")
+        op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_tasks_org_created_by_live")
         op.execute(
             "DROP INDEX CONCURRENTLY IF EXISTS idx_experiments_org_owner_activity_live"
         )

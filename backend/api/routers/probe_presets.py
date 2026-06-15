@@ -47,9 +47,7 @@ async def create_probe_preset(
     """Create a custom preset for the authenticated org."""
     auth.require_scope(APIKeyScope.TASKS)
     async with get_session() as session:
-        preset = await create_probe_preset_core(
-            session, data=data, org_id=auth.org_id
-        )
+        preset = await create_probe_preset_core(session, data=data, org_id=auth.org_id)
         await session.commit()
         return ProbePresetResponse.model_validate(preset)
 
@@ -78,8 +76,6 @@ async def delete_probe_preset(
     """Soft-delete a custom preset owned by the authenticated org (seeds 403)."""
     auth.require_scope(APIKeyScope.TASKS)
     async with get_session() as session:
-        await delete_probe_preset_core(
-            session, preset_id=preset_id, org_id=auth.org_id
-        )
+        await delete_probe_preset_core(session, preset_id=preset_id, org_id=auth.org_id)
         await session.commit()
         return {"ok": True}

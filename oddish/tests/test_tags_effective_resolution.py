@@ -7,13 +7,13 @@ canned rows, and assert the projection helpers compose the right ID set.
 The async helpers accept a ``session`` parameter that exposes only
 ``execute`` and ``flush``; tests use a minimal fake.
 """
+
 from __future__ import annotations
 
 import asyncio
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -58,9 +58,7 @@ def test_resolve_effective_tag_ids_for_version_union_minus_exclusions(monkeypatc
         _fake_version,
     )
     result = _run(
-        tags_projection._query_effective_tag_ids_for_version(
-            session, "t-1", "t-1-v1"
-        )
+        tags_projection._query_effective_tag_ids_for_version(session, "t-1", "t-1-v1")
     )
     assert result == {"version", "task"}
 
@@ -118,4 +116,12 @@ def test_user_tag_view_dataclass_has_expected_fields():
     from oddish.core.tags_projection import UserTagView
 
     fields = {f for f in UserTagView.__dataclass_fields__}
-    assert {"tag_id", "key", "value", "color", "visibility", "current", "older"} <= fields
+    assert {
+        "tag_id",
+        "key",
+        "value",
+        "color",
+        "visibility",
+        "current",
+        "older",
+    } <= fields

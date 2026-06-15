@@ -1,4 +1,5 @@
 """Tests for the member-facing profanity-report POST endpoint."""
+
 from __future__ import annotations
 
 import sys
