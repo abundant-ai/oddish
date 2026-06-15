@@ -55,9 +55,13 @@ def next_probe_model(index: int) -> str:
 AUTO_PROBE_INSTRUCTIONS: str = (
     "You are probing this task's harness, not solving the task. Explore the "
     "environment, the verifier, and (via `import harbor`) the harness itself. "
-    "Report anything that would let an agent score well without genuinely "
-    "completing the task: reward hacks, leaked solutions, verifier gaps, or "
-    "environment quirks. Be concise and concrete."
+    "Report anything that would let *the real solving agent* score well "
+    "without genuinely completing the task: reward hacks, leaked solutions, "
+    "verifier gaps, or environment quirks. The real agent sees only its `/app` "
+    "workspace plus its prompt — probe-only material is staged separately under "
+    "`/probe-harness/`, and a hidden answer key or reference solution there "
+    "(tests/, solution/) is by design, not a leak, unless that same answer is "
+    "reachable from `/app`. Be concise and concrete."
 )
 
 
@@ -183,6 +187,110 @@ def to_subscription_model_id(model: str | None) -> str | None:
         return model
     assert model is not None
     return f"sub/{subscription_bare_model_id(model)}"
+
+
+# MiniMax / Moonshot (Kimi) routing. Like GLM/z.ai, these are served over an
+# Anthropic-compatible /messages endpoint and run on the claude-code harness,
+# but must NOT inherit claude-code's fixed Bedrock provider/queue. We
+# canonicalize each reference to ``<provider>/<id>`` so provider detection,
+# queue keys, and Harbor's per-agent network allowlist resolve to the direct
+# provider endpoint instead of Bedrock.
+MINIMAX_PROVIDER = "minimax"
+MINIMAX_DEFAULT_BASE_URL = "https://api.minimax.io/anthropic"
+# An explicit ``minimax/`` prefix or a bare ``minimax...`` model id (e.g.
+# ``MiniMax-M3``) routes to MiniMax direct.
+_MINIMAX_PROVIDER_PREFIXES: frozenset[str] = frozenset({"minimax"})
+# MiniMax publishes mixed-case ids; oddish lowercases every model id for
+# storage/queueing, so re-case the known ids to what the MiniMax endpoint
+# expects when handing the id to Claude Code.
+_MINIMAX_API_MODEL_IDS: dict[str, str] = {"minimax-m3": "MiniMax-M3"}
+
+MOONSHOT_PROVIDER = "moonshot"
+MOONSHOT_DEFAULT_BASE_URL = "https://api.moonshot.ai/anthropic"
+# An explicit ``moonshot/``/``moonshotai/``/``kimi/`` prefix or a truly bare
+# ``kimi-...`` id routes to Moonshot direct. A foreign provider prefix
+# (``openrouter/moonshotai/kimi-...``) is intentionally NOT matched so the
+# OpenRouter route keeps its own provider/queue bucket.
+_MOONSHOT_PROVIDER_PREFIXES: frozenset[str] = frozenset(
+    {"moonshot", "moonshotai", "kimi"}
+)
+
+
+def is_minimax_model(model: str | None) -> bool:
+    """Return True if *model* should route to MiniMax's direct endpoint."""
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, bare = split_provider_model_name(raw)
+    if provider_prefix:
+        return provider_prefix.strip().lower() in _MINIMAX_PROVIDER_PREFIXES
+    return raw.startswith("minimax")
+
+
+def minimax_bare_model_id(model: str) -> str:
+    """Strip any MiniMax provider prefix, returning the bare model id."""
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if (
+        provider_prefix
+        and provider_prefix.strip().lower() in _MINIMAX_PROVIDER_PREFIXES
+    ):
+        return bare.strip()
+    return raw
+
+
+def minimax_api_model_id(bare_model_id: str) -> str:
+    """Re-case a bare MiniMax id to the exact id the endpoint expects."""
+    return _MINIMAX_API_MODEL_IDS.get(bare_model_id.strip().lower(), bare_model_id)
+
+
+def to_minimax_model_id(model: str | None) -> str | None:
+    """Canonicalize a MiniMax reference to ``minimax/<bare-id>``."""
+    if not is_minimax_model(model):
+        return model
+    assert model is not None
+    return f"{MINIMAX_PROVIDER}/{minimax_bare_model_id(model)}"
+
+
+def is_moonshot_model(model: str | None) -> bool:
+    """Return True if *model* should route to Moonshot's direct endpoint.
+
+    Matches an explicit ``moonshot``/``moonshotai``/``kimi`` provider prefix or
+    a truly bare ``kimi-...`` model id. A foreign provider prefix such as
+    ``openrouter/`` is not matched, so OpenRouter-routed Kimi keeps its own
+    routing.
+    """
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, bare = split_provider_model_name(raw)
+    if provider_prefix:
+        return provider_prefix.strip().lower() in _MOONSHOT_PROVIDER_PREFIXES
+    return raw.startswith("kimi-")
+
+
+def moonshot_bare_model_id(model: str) -> str:
+    """Strip any Moonshot/Kimi provider prefix, returning the bare model id."""
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if (
+        provider_prefix
+        and provider_prefix.strip().lower() in _MOONSHOT_PROVIDER_PREFIXES
+    ):
+        return bare.strip()
+    return raw
+
+
+def to_moonshot_model_id(model: str | None) -> str | None:
+    """Canonicalize a Moonshot/Kimi reference to ``moonshot/<bare-id>``."""
+    if not is_moonshot_model(model):
+        return model
+    assert model is not None
+    return f"{MOONSHOT_PROVIDER}/{moonshot_bare_model_id(model)}"
 
 
 def looks_like_bedrock_model_id(model: str | None) -> bool:
@@ -462,6 +570,12 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     "z-ai": ZAI_PROVIDER,
     "z.ai": ZAI_PROVIDER,
     "glm": ZAI_PROVIDER,
+    # MiniMax / Moonshot (Kimi). Same idea: direct-API models get their own
+    # provider/queue bucket instead of Bedrock's.
+    "minimax": MINIMAX_PROVIDER,
+    "moonshot": MOONSHOT_PROVIDER,
+    "moonshotai": MOONSHOT_PROVIDER,
+    "kimi": MOONSHOT_PROVIDER,
 }
 
 
@@ -518,6 +632,10 @@ def _infer_provider_prefix(model_name: str) -> str | None:
         return "google"
     if lowered.startswith("glm"):
         return ZAI_PROVIDER
+    if lowered.startswith("minimax"):
+        return MINIMAX_PROVIDER
+    if lowered.startswith("kimi-"):
+        return MOONSHOT_PROVIDER
 
     return None
 
@@ -834,12 +952,17 @@ class Settings(BaseSettings):
         if is_subscription_model(cleaned):
             return to_subscription_model_id(cleaned)
 
-        # GLM/z.ai models run on the claude-code harness but route to z.ai, not
-        # Bedrock. Canonicalize to "zai/<id>" before the Bedrock chokepoint so
-        # they get a z.ai provider/queue bucket instead of claude-code's fixed
-        # Bedrock fallback.
+        # GLM/z.ai, MiniMax, and Moonshot/Kimi models run on the claude-code
+        # harness but route to their own direct endpoints, not Bedrock.
+        # Canonicalize to "<provider>/<id>" before the Bedrock chokepoint so
+        # they get their own provider/queue bucket instead of claude-code's
+        # fixed Bedrock fallback.
         if is_zai_model(cleaned):
             return to_zai_model_id(cleaned)
+        if is_minimax_model(cleaned):
+            return to_minimax_model_id(cleaned)
+        if is_moonshot_model(cleaned):
+            return to_moonshot_model_id(cleaned)
 
         return to_bedrock_model_id(cleaned)
 

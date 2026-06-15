@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-15]
+
+### Added
+- Copy button in the task file viewer header copies the raw file content to clipboard with a 2-second check-icon confirmation; resets on file switch and cleans up its timeout on unmount (#299)
+- Per-user `run_probe_default` column on the `users` table: when set, new task submissions for that user automatically get `run_probe=true` without `--run-probe`; explicit `run_probe=true` still wins and append mode is unaffected; configured per-user via SQL with no UI yet (#302)
+
+### Changed
+- Probe agent container now receives the full staged task directory via a Harbor `AGENT_START` hook, with all probe-only material (`tests/`, `solution/`, `harbor_src/`, `related_trials/`, `AGENT_BRIEF.md`) staged under `/probe-harness/` instead of `/app`, keeping the real agent's workspace pristine; probe instruction reframes the task spec as a "REAL AGENT BRIEF" with an auto-generated visibility map, eliminating false-positive vulnerability reports for files the real agent cannot access (#300, #301)
+- Probe analyzer prompt gains a SCOPE section instructing it not to emit recommendations premised on probe-only paths (under `/probe-harness/`) being agent-reachable, and to preserve the probe agent's own hedges rather than upgrading them to `must_fix` (#301)
+- Harbor bumped to `07a576944` picking up MiniMax M3 and Kimi K2.7 long-run hardening: streaming/timeout env vars (`API_TIMEOUT_MS=3.6M`, idle stream timeout, eager flush, max output tokens), Claude Code pinned to `2.1.167` (fixes MiniMax exit-137 mid-stream stalls), and plan-mode tools (`EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion`) disabled for Kimi variants (fixes K2.7 plan-mode no-op bail) (#303)
+- QA Probe Runs listing (`/qa/runs`) now aggregates in SQL using window functions — one row per task — rather than fetching all probe trial rows and folding them in Python; backed by a new partial index on `(org_id, task_id, created_at DESC) WHERE is_probe`, making load time scale with tasks-per-org rather than total probe trial count (#286)
+
+---
+
+## [2026-06-14]
+
+### Added
+- Advanced free-text grammar for the task browser search box: space-separated terms AND together in any order, `"quoted text"` matches as a contiguous phrase, a leading `-` (or uppercase `NOT`) excludes a term, and uppercase `OR` makes either side of a group match; a `?` icon inside the input opens a syntax cheatsheet tooltip; `parse_search_query` lives in `oddish/core/helpers.py` so the dashboard, standalone server, and cloud API all share one grammar; LIKE metacharacters remain escaped as literals (preserving #285 semantics); needles capped at 16 (#295)
+- "Delete tag for everyone…" action in the tag chip editor: an inline confirm panel shows the tag's current name (refreshed after 409 races) and its direct-assignment count before the destructive click; sends `cascade=true` to flip ACTIVE assignments; `onDeleted` drops the chip locally without a redundant unassign call; `DELETE` passthrough added to the `/api/tags/[tag_id]` Next.js proxy route (#293)
+
+### Changed
+- Bake per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` defaults into the Modal deploy that raise the `global.anthropic.claude-haiku-4-5-20251001-v1:0` (also the analysis-model queue key) and `openai/gpt-5.4-mini` queue-key concurrency leases to 128 (up from the 48 default); trajectory analysis gets more headroom; operators can still override the whole JSON via the env var / `oddish-prod` secret (#297)
+
+### Fixed
+- `DELETE /tags/{id}` backend route now accepts a `?cascade=` query parameter so callers can consent to flipping ACTIVE assignments to REMOVED; previously the flag was unreachable from HTTP and tag deletion always failed for any still-assigned tag (#293)
+
+---
+
 ## [2026-06-13]
 
 ### Added

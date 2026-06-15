@@ -132,3 +132,38 @@ async def test_apply_probe_overlay_does_not_stage_skills(org_id, tmp_path):
     # No skills written into the task dir, but the directive still applied.
     assert not (tmp_path / ".claude").exists()
     assert "follow the operator directive" in (tmp_path / "instruction.md").read_text()
+
+
+@pytest.mark.asyncio
+async def test_apply_probe_overlay_writes_brief_and_visibility_map(tmp_path):
+    """The original spec is saved to AGENT_BRIEF.md and the rewritten
+    instruction.md carries a visibility map that enumerates the probe-only
+    material under the /probe-harness root (tests/, solution/, ...), leaving
+    /app as the real agent's pristine workspace."""
+    from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
+    from oddish.worker.probe_staging import apply_probe_overlay
+
+    (tmp_path / "instruction.md").write_text("the real agent's brief")
+    env = tmp_path / "environment"
+    env.mkdir()
+    (env / "Dockerfile").write_text("FROM python")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_hidden.py").write_text("assert True")
+    (tmp_path / "solution").mkdir()
+
+    await apply_probe_overlay(
+        tmp_path,
+        task_id="no-such-task",
+        trial_id="no-such-trial",
+        extra_instructions="be adversarial",
+    )
+
+    # The agent's brief is preserved verbatim as a standalone reference file.
+    assert (tmp_path / "AGENT_BRIEF.md").read_text() == "the real agent's brief"
+
+    instr = (tmp_path / "instruction.md").read_text()
+    assert "WHAT THE REAL AGENT SEES" in instr
+    # Probe-only material is enumerated under the harness root, not /app.
+    assert f"{PROBE_HARNESS_DIR}/tests/" in instr
+    assert f"{PROBE_HARNESS_DIR}/solution/" in instr
+    assert f"{PROBE_HARNESS_DIR}/environment/" in instr

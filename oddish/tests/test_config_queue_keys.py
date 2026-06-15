@@ -158,6 +158,64 @@ def test_glm_model_routes_to_zai_not_bedrock(monkeypatch):
         ), raw
 
 
+def test_minimax_model_routes_to_minimax_not_bedrock(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # MiniMax runs on the claude-code harness but must get its own provider /
+    # queue bucket (the canonical id is lowercased for storage/queueing).
+    for raw in ("MiniMax-M3", "minimax/MiniMax-M3", "minimax-m3"):
+        assert (
+            settings.normalize_trial_model("claude-code", raw) == "minimax/minimax-m3"
+        ), raw
+        assert settings.get_provider_for_trial("claude-code", raw) == "minimax", raw
+        assert (
+            settings.get_queue_key_for_trial("claude-code", raw) == "minimax/minimax-m3"
+        ), raw
+
+
+def test_moonshot_model_routes_to_moonshot_not_bedrock(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    for raw in (
+        "kimi-k2.7-code",
+        "moonshot/kimi-k2.7-code",
+        "kimi/kimi-k2.7-code",
+        "moonshotai/kimi-k2.7-code",
+    ):
+        assert (
+            settings.normalize_trial_model("claude-code", raw)
+            == "moonshot/kimi-k2.7-code"
+        ), raw
+        assert settings.get_provider_for_trial("claude-code", raw) == "moonshot", raw
+        assert (
+            settings.get_queue_key_for_trial("claude-code", raw)
+            == "moonshot/kimi-k2.7-code"
+        ), raw
+
+
+def test_openrouter_kimi_model_is_not_hijacked_to_moonshot(monkeypatch):
+    settings = _settings(monkeypatch)
+
+    # An explicit openrouter/ prefix keeps OpenRouter routing -- the direct
+    # Moonshot path must not steal it (both columns run concurrently).
+    model = "openrouter/moonshotai/kimi-k2.7-code"
+
+    assert settings.normalize_trial_model("claude-code", model) == model
+    assert settings.get_provider_for_trial("claude-code", model) == "openrouter"
+    assert settings.get_queue_key_for_trial("claude-code", model) == model
+
+
+def test_minimax_moonshot_queue_keys_have_independent_concurrency(monkeypatch):
+    monkeypatch.setenv(
+        "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
+        '{"minimax/minimax-m3": 4, "moonshot/kimi-k2.7-code": 6}',
+    )
+    settings = Settings(_env_file=None)
+
+    assert settings.get_model_concurrency("minimax/minimax-m3") == 4
+    assert settings.get_model_concurrency("moonshot/kimi-k2.7-code") == 6
+
+
 def test_glm_queue_key_has_independent_concurrency(monkeypatch):
     monkeypatch.setenv(
         "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
