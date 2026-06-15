@@ -8,6 +8,7 @@ from typing import Callable, Literal
 from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
 
 from models import ChatSession, ChatStatus, generate_id
+from oddish.db.models import utcnow as _utcnow
 from api.services.cc_chat.claude_md import (
     render_experiment_claude_md,
     render_task_probes_claude_md,
@@ -25,7 +26,8 @@ DAYTONA_SESSION_ID = "cc"
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    # tz-aware, matching the DateTime(timezone=True) columns and the rest of the repo
+    return _utcnow()
 
 
 class SessionNotFound(Exception):
