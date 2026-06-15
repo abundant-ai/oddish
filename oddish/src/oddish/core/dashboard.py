@@ -117,9 +117,18 @@ def _normalize_dashboard_model(model: str | None, provider: str | None) -> str:
 _CACHE_MAX_SIZE = 100
 _EXPERIMENTS_CACHE_TTL_SECONDS = 30
 _PRIMARY_CACHE_TTL_SECONDS = 60
+# Queue + pipeline stats are a full aggregate over the entire ``trials`` table
+# (a parallel seq scan of the whole heap). They depend only on ``org_id`` --
+# not on task pagination, usage window, or the include_* flags that key the
+# primary slice -- so bundling them into the primary cache made that expensive
+# scan re-run on every pagination / usage-window variation. Caching them in
+# their own org-keyed slice means the trials scan runs at most once per org per
+# TTL no matter how the rest of the dashboard request varies.
+_QUEUE_PIPELINE_CACHE_TTL_SECONDS = 30
 
 _dashboard_experiments_cache: dict[str, tuple[Any, float]] = {}
 _dashboard_primary_cache: dict[str, tuple[Any, float]] = {}
+_dashboard_queue_pipeline_cache: dict[str, tuple[Any, float]] = {}
 
 
 def _slice_get_cached(
@@ -149,13 +158,19 @@ def invalidate_dashboard_cache(*, org_id: str | None = None) -> None:
     if org_id is None:
         _dashboard_primary_cache.clear()
         _dashboard_experiments_cache.clear()
+        _dashboard_queue_pipeline_cache.clear()
         return
 
     prefixes = (
         f"dashboard.primary:{org_id}:",
         f"dashboard.experiments:{org_id}:",
+        f"dashboard.queue_pipeline:{org_id}:",
     )
-    for bucket in (_dashboard_primary_cache, _dashboard_experiments_cache):
+    for bucket in (
+        _dashboard_primary_cache,
+        _dashboard_experiments_cache,
+        _dashboard_queue_pipeline_cache,
+    ):
         for key in list(bucket):
             if key.startswith(prefixes):
                 del bucket[key]
@@ -1348,16 +1363,31 @@ async def get_dashboard_core(
                 "verdicts": {},
             }
         else:
-            queue_started_at = now()
-            qs, ps = await get_queue_and_pipeline_stats_with_concurrency(
-                session, org_id
+            # Queue/pipeline stats scan the whole trials table; cache them
+            # separately keyed by org_id so the scan doesn't re-run on every
+            # task-pagination / usage-window variation of the primary slice.
+            queue_cache_key = f"dashboard.queue_pipeline:{org_id}:"
+            cached_qp = _slice_get_cached(
+                _dashboard_queue_pipeline_cache,
+                queue_cache_key,
+                _QUEUE_PIPELINE_CACHE_TTL_SECONDS,
             )
-            if record_timing is not None:
-                record_timing(
-                    "dashboard_queue_pipeline",
-                    elapsed_ms(queue_started_at),
-                    "Queue and pipeline stats",
+            if cached_qp is not None:
+                qs, ps = cached_qp
+            else:
+                queue_started_at = now()
+                qs, ps = await get_queue_and_pipeline_stats_with_concurrency(
+                    session, org_id
                 )
+                _slice_set_cached(
+                    _dashboard_queue_pipeline_cache, queue_cache_key, (qs, ps)
+                )
+                if record_timing is not None:
+                    record_timing(
+                        "dashboard_queue_pipeline",
+                        elapsed_ms(queue_started_at),
+                        "Queue and pipeline stats",
+                    )
 
         mu: list[dict[str, Any]] = []
         ju: list[dict[str, Any]] = []
