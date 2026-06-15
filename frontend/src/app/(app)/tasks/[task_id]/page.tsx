@@ -31,7 +31,10 @@ async function getInitialTaskDetail(
 
     return (await response.json()) as TaskDetailResponse;
   } catch (error) {
-    console.error("[tasks/[task_id]/page] Initial task detail fetch failed", error);
+    console.error(
+      "[tasks/[task_id]/page] Initial task detail fetch failed",
+      error,
+    );
     return null;
   }
 }

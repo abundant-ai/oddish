@@ -213,8 +213,7 @@ def _apply_public_experiments(
     fields with the public-only projection (the builder derives them from
     all memberships, including private ones)."""
     response.experiments = [
-        TaskBrowseExperiment(id=ref_id, name=ref_name)
-        for ref_id, ref_name, _ in refs
+        TaskBrowseExperiment(id=ref_id, name=ref_name) for ref_id, ref_name, _ in refs
     ]
     primary = None
     if preferred_id is not None:
@@ -336,9 +335,7 @@ async def get_public_task_status(
             filters=[ExperimentModel.is_public == True],  # noqa: E712
             join_experiment=True,
         )
-        user_tags_by_task = await _hydrate_public_user_tags(
-            session, task_ids=[task_id]
-        )
+        user_tags_by_task = await _hydrate_public_user_tags(session, task_ids=[task_id])
         response.user_tags = _user_tag_refs(user_tags_by_task.get(task_id, []))
         public_exps = await _public_experiment_refs(session, [task_id])
         _apply_public_experiments(response, public_exps.get(task_id, []))

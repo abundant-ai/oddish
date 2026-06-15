@@ -11,6 +11,7 @@ Revision ID: aa00ta01core
 Revises: aa03ta04kind
 Create Date: 2026-06-06 12:00:00.000000
 """
+
 from typing import Sequence, Union
 
 from alembic import op
@@ -350,9 +351,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS uq_worker_jobs_tag_project_active")
-    op.execute(
-        "DROP INDEX IF EXISTS idx_tag_assignments_tag_org_created_target"
-    )
+    op.execute("DROP INDEX IF EXISTS idx_tag_assignments_tag_org_created_target")
     for table in (
         "saved_tag_filters",
         "tag_policies",

@@ -25,9 +25,7 @@ def _toml_quote(value: str) -> str:
 class OddishCodex(Codex):
     """Oddish's Codex wrapper for compatibility with current Codex CLI output."""
 
-    def _ensure_codex_config_override(
-        self, command: str, key: str, value: str
-    ) -> str:
+    def _ensure_codex_config_override(self, command: str, key: str, value: str) -> str:
         if "codex exec " not in command or f" -c {key}=" in command:
             return command
         return command.replace(
@@ -152,7 +150,7 @@ class AzureCompatibleCodex(OddishCodex):
         return f"cat >>\"$CODEX_HOME/config.toml\" <<'ODDISH_AZURE_CODEX_TOML'\n{payload}ODDISH_AZURE_CODEX_TOML\n"
 
     def _maybe_append_provider_config(self, command: str) -> str:
-        if 'CODEX_HOME/config.toml' not in command:
+        if "CODEX_HOME/config.toml" not in command:
             return command
         provider_config = self._azure_provider_config_command()
         if not provider_config or _AZURE_CODEX_PROVIDER in command:
@@ -169,7 +167,9 @@ class AzureCompatibleCodex(OddishCodex):
     ):
         command = self._maybe_append_provider_config(command)
         if "codex exec " in command and "--enable unified_exec " in command:
-            command = command.replace("--enable unified_exec ", "--disable unified_exec ")
+            command = command.replace(
+                "--enable unified_exec ", "--disable unified_exec "
+            )
         command = self._ensure_codex_config_override(
             command, "model_provider", _AZURE_CODEX_PROVIDER
         )

@@ -37,7 +37,7 @@ function attachTraceparent(response: NextResponse): NextResponse {
   const existing = response.headers.get("Server-Timing");
   response.headers.set(
     "Server-Timing",
-    existing ? `${existing}, ${entry}` : entry
+    existing ? `${existing}, ${entry}` : entry,
   );
   return response;
 }

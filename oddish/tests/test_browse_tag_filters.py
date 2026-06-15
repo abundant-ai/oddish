@@ -1,4 +1,5 @@
 """Tests for the browse-filter AST and name resolution."""
+
 from __future__ import annotations
 
 import asyncio
@@ -66,7 +67,9 @@ def test_tag_filter_ast_uses_shared_normalizer_for_whitespace():
 
     f = TagFilterAST(all=["  Flaky Trial  "], any_=["SWE Bench v2.0"])
     assert f.normalized_all == [normalize_tag_key("  Flaky Trial  ")] == ["flaky-trial"]
-    assert f.normalized_any == [normalize_tag_key("SWE Bench v2.0")] == ["swe-bench-v2.0"]
+    assert (
+        f.normalized_any == [normalize_tag_key("SWE Bench v2.0")] == ["swe-bench-v2.0"]
+    )
 
 
 def test_resolve_names_to_ids_returns_ids_and_unknown(monkeypatch):
@@ -121,9 +124,7 @@ def test_apply_filter_returns_three_text_predicates():
         build_filter_predicates,
     )
 
-    res = ResolvedTagFilter(
-        all_ids=["a", "b"], any_ids=["c", "d"], none_ids=["e"]
-    )
+    res = ResolvedTagFilter(all_ids=["a", "b"], any_ids=["c", "d"], none_ids=["e"])
     predicates = build_filter_predicates(res)
     sql_strs = [str(p) for p in predicates]
     # AND => @>
@@ -146,11 +147,21 @@ def test_apply_filter_returns_empty_predicates_for_empty_filter():
 
 
 def test_user_tag_ref_dto_and_task_browse_item_field():
-    from oddish.schemas import UserTagRef, TaskBrowseItem, TaskResponse, TaskStatusResponse
+    from oddish.schemas import (
+        UserTagRef,
+        TaskBrowseItem,
+        TaskResponse,
+        TaskStatusResponse,
+    )
 
     ref = UserTagRef(
-        tag_id="t1", key="flaky", value=None, color=None,
-        visibility="PRIVATE", current=True, older=False,
+        tag_id="t1",
+        key="flaky",
+        value=None,
+        color=None,
+        visibility="PRIVATE",
+        current=True,
+        older=False,
     )
     assert ref.tag_id == "t1"
     assert "user_tags" in TaskBrowseItem.model_fields
@@ -173,9 +184,14 @@ def test_build_task_status_response_populates_user_tags(monkeypatch):
     async def _fake_list(session, *, task_ids, public_only=False):
         return {
             tid: [
-                helpers._UserTagView(  # type: ignore[attr-defined]
-                    tag_id="t-1", key="flaky", value=None, color=None,
-                    visibility="PRIVATE", current=True, older=False,
+                UserTagRef(
+                    tag_id="t-1",
+                    key="flaky",
+                    value=None,
+                    color=None,
+                    visibility="PRIVATE",
+                    current=True,
+                    older=False,
                 )
             ]
             for tid in task_ids
@@ -219,6 +235,7 @@ def test_browse_tasks_core_unknown_positive_tag_returns_empty_page():
             class _R:
                 def all(self_inner):
                     return []  # resolver finds nothing
+
             return _R()
 
         async def connection(self):

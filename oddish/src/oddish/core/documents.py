@@ -13,6 +13,7 @@ import base64
 from fastapi import HTTPException
 from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from oddish.core.digest import generate_digest
 from oddish.core.extraction import extract_text
@@ -121,8 +122,10 @@ async def search_documents_core(
     if q:
         like = f"%{escape_like(q)}%"
         title_hit = DocumentModel.title.ilike(like, escape="\\")
-        stmt = stmt.where(or_(title_hit, DocumentModel.digest_text.ilike(like, escape="\\")))
-        rank = case((title_hit, 0), else_=1)
+        stmt = stmt.where(
+            or_(title_hit, DocumentModel.digest_text.ilike(like, escape="\\"))
+        )
+        rank: ColumnElement = case((title_hit, 0), else_=1)
         stmt = stmt.order_by(rank, DocumentModel.updated_at.desc())
     else:
         stmt = stmt.order_by(DocumentModel.updated_at.desc())
