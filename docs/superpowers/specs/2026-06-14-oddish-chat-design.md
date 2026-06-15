@@ -1,113 +1,126 @@
 # Oddish Chat — Recovery Substrate + Global & Task Scopes
 
-**Status:** Approved design (2026-06-14, rev 2)
-**Branch (oddish):** `chat/experiment-trial-chat`
-**Primary implementation repo:** `agent-sandbox-service` (chat domain). Oddish is the thin client (entry points + cutover).
+**Status:** Approved design (2026-06-14, rev 3)
+**Branch:** `chat/experiment-trial-chat`
+**Implementation repo:** `oddish` only (`backend/api/services/cc_chat/`). No separate service.
 
-> **Rev 2 supersedes rev 1.** Rev 1 proposed an in-process Anthropic SDK tool-use loop inside oddish. That was wrong: the chat engine already exists as **Claude Code running in Daytona sandboxes**, orchestrated by `agent-sandbox-service` (`services/agent_runtimes/claude_code.py` runs `claude --print --output-format=stream-json --resume <id>`). This rev builds on that.
+> **Revision history.**
+> - **Rev 1 (wrong):** in-process Anthropic SDK tool-use loop inside oddish.
+> - **Rev 2 (wrong home):** build on `agent-sandbox-service` (Claude-Code-in-Daytona) with oddish as a thin proxy client.
+> - **Rev 3 (this):** Claude-Code-in-Daytona, but the **entire chat domain lives inside oddish's backend**. We are *un-doing* the earlier extraction (oddish commit `2ed6cda`, "replaced by agent-sandbox-service proxy"): the orchestrator comes home to `backend/api/services/cc_chat/`. The most mature implementation to port from is `agent-sandbox-service/src/agent_sandbox/services/chat/`.
+
+## Engine (now in oddish)
+
+Claude Code running in a per-session **Daytona** sandbox, orchestrated directly by oddish's backend:
+- `claude` installed once at session start; `claude --print --output-format=stream-json --resume <claude_session_id>` per message; scoped `CLAUDE.md` dropped into the sandbox.
+- **No new top-level deps:** `oddish/pyproject.toml` already pins `daytona>=0.165.0` and `anthropic==0.76.0`.
+- Backend deployment target is **Modal** (ephemeral containers) — see Concurrency below; this is why the recovery substrate is load-bearing, not optional.
 
 ## What we're taking from atelier
 
-**Not** its engine (Codex-in-Firecracker). We already have the equivalent (Claude-Code-in-Daytona). We're taking atelier's **state management + chat recovery**: an append-only event log persisted *per chunk* to Postgres, durable in-flight turn tracking with a one-running-turn invariant, and replay-then-resume on reconnect. This is the backbone; the two chat scopes are built on top of it.
+**Not** its engine (Codex-in-Firecracker) — we have the Claude-Code-in-Daytona equivalent. We're taking atelier's **state management + chat recovery**: an append-only event log persisted *per event* to Postgres, durable in-flight turn tracking with a one-running-turn invariant, and replay-then-resume on reconnect. This is the backbone; the two chat scopes sit on top.
 
-## Current state (agent-sandbox-service)
+## Starting point to port
 
-- `ChatSession` (Postgres, `models.py:92`): durable **metadata** only — `id, org_id, user_id, scope_kind, scope_id, sandbox_id, daytona_session_id, claude_session_id, status, error`. `scope_kind`/`scope_id` are already generic.
-- Engine: long-lived Daytona sandbox per session; `claude` installed once; `claude --resume <claude_session_id>` per message; scoped `CLAUDE.md` (`render_experiment_claude_md`, `render_task_probes_claude_md`).
-- Routes: `POST /chat-sessions`, `GET /chat-sessions/{id}`, `POST /chat-sessions/{id}/messages` (SSE), `DELETE /chat-sessions/{id}`, skills export.
-- **Transcript: `SessionTranscriptBuffer` — in-memory dict, flushed to MinIO once at close, "Lost on service crash by design."** No event-log table, no per-turn record, no replay endpoint.
+The chat domain already exists, most-evolved, in `agent-sandbox-service/src/agent_sandbox/services/chat/` (orchestrator start/send/close, `sessions.py`, `claude_md.py` scopes, idle reaper, restart sweep) + `routers/chat.py` + `ChatSession` model. Port these into oddish `backend/api/services/cc_chat/`, then add the recovery substrate + scopes below. The current `SessionTranscriptBuffer` there is **in-memory, flushed to object storage once at close, "lost on service crash by design"** — that is exactly what the substrate replaces.
 
 ## The gap (vs. atelier)
 
-| Concern | atelier | agent-sandbox-service today |
+| Concern | atelier | ported chat domain as-is |
 |---|---|---|
-| Transcript durability | per-chunk append to Postgres `sandbox_events` | in-memory, flush-at-close only |
+| Transcript durability | per-event append to Postgres `sandbox_events` | in-memory, flush-at-close only |
 | In-flight turn tracking | `agent_turns` + one-running-turn unique index | none |
 | Mid-turn refresh | replay log + tail live stream | nothing to replay from |
-| Service crash mid-session | transcript intact in DB | transcript lost; session marked `broken` |
+| Container/crash mid-session | transcript intact in DB | transcript lost |
 
-The cold archive (MinIO flush at close) stays. We add the **hot path** (durable per-event log) that makes recovery actually work.
+The cold archive (S3 flush at close) stays. We add the **hot path** (durable per-event log) that makes recovery work — and on Modal's ephemeral containers, in-memory buffering can't be the source of truth at all.
 
 ---
 
-## Backbone: recovery substrate
+## Backbone: recovery substrate (oddish backend)
+
+All tables in oddish's **cloud Alembic chain** (`backend/alembic/versions/`), alongside the ported `chat_sessions`.
 
 ### 1. Durable append-only event log
-New table **`chat_session_events`**: `id`, `session_id` (FK → `chat_sessions`), `seq` (monotonic per session), `event` (jsonb — one stream-json event verbatim), `created_at`. Unique `(session_id, seq)`; index `(session_id, seq asc)`.
-
-- `SessionTranscriptBuffer.append(...)` is replaced/backed by a write to this table **as each event is emitted** during `send_message`'s stream, before it is yielded to the client. The transcript becomes an ordered replay of this log (atelier's model).
-- The in-memory buffer may remain as a write-through cache, but it is no longer the source of truth.
-- MinIO flush at close still happens (cold archive), now sourced from the log.
+**`chat_session_events`**: `id`, `session_id` (FK → `chat_sessions`), `seq` (monotonic per session), `event` (jsonb — one stream-json event verbatim), `created_at`. Unique `(session_id, seq)`; index `(session_id, seq asc)`.
+- During the `messages` SSE stream, each event is **written here before being yielded** to the client. The transcript becomes an ordered replay of this log.
+- The in-memory buffer may stay as a write-through cache but is no longer the source of truth.
 
 ### 2. Durable turn record
-New table **`chat_turns`**: `id`, `session_id` (FK), `seq` (turn ordinal), `user_message` (text), `status` (`running|done|failed|canceled`), `started_at`, `ended_at`, `error`. **Partial unique index** `WHERE status='running'` on `session_id` → at most one running turn per session (atelier's `agent_turns` concurrency guard). A turn row is opened when a user message starts streaming and closed (`done`/`failed`) when the stream ends.
-
-On service restart, `restart_sweep` marks any `running` turn `failed` (its sandbox stream is gone) but **keeps the event log** — so the transcript is intact and the session can accept a new message.
+**`chat_turns`**: `id`, `session_id` (FK), `seq` (turn ordinal), `user_message`, `status` (`running|done|failed|canceled`), `started_at`, `ended_at`, `error`. **Partial unique index** `WHERE status='running'` on `session_id` → at most one running turn per session. Opened when a user message starts streaming, closed when the stream ends.
+- Restart/eviction sweep marks any `running` turn `failed` (its sandbox stream is gone) but **keeps the event log**, so the transcript stays intact and the session can accept a new message.
 
 ### 3. Replay + resume on reconnect
-New route **`GET /chat-sessions/{id}/events?since=<seq>`** → returns events with `seq > since` (full transcript when `since` omitted). Client flow:
-1. On load, `GET /chat-sessions/{id}` (metadata + whether a turn is `running`) and `GET …/events` to rebuild the transcript.
-2. If a turn is `running`, re-attach to the live `messages` SSE stream (or a dedicated tail) and continue from the last `seq` seen.
-3. `claude --resume <claude_session_id>` already preserves *Claude's* context; the event log preserves *UI/transcript* continuity — the half currently lost.
+**`GET /chat-sessions/{id}/events?since=<seq>`** → events with `seq > since` (full transcript when omitted). Client flow:
+1. On load: `GET /chat-sessions/{id}` (metadata + is a turn `running`?) and `GET …/events` to rebuild the transcript.
+2. If a turn is `running`, re-attach to the `messages` SSE stream and continue from the last `seq` seen.
+3. `claude --resume <claude_session_id>` preserves *Claude's* context; the event log preserves *UI/transcript* continuity.
+
+### Retention
+After a successful close-time S3 flush, **prune the session's `chat_session_events` rows** (and closed `chat_turns`). The Postgres log holds only *active + recently-closed* sessions; S3 is the durable long-term archive. PG = ephemeral hot working set, S3 = cold storage — so the table never grows unbounded despite per-event writes.
 
 ---
 
 ## Scope 1: Global cross-task query chat (net new)
 
-A `scope_kind = "global"` session (scope_id = org). Entry point: the oddish **tasks page**. Purpose: "find tasks with xyz characteristics" across all tasks/experiments/trials.
+`scope_kind = "global"` (scope_id = org). Entry point: oddish **tasks page**. Purpose: "find tasks with xyz characteristics" across all tasks/experiments/trials.
+- **Priming:** new `render_global_claude_md(org_id)`.
+- **Querying:** Claude Code in the sandbox calls a **new oddish endpoint `POST /tasks/query`** via an injected in-sandbox CLI/tool (atelier's credentialed-CLI pattern), wrapping existing `oddish.core` browse/aggregate logic — structured filters (status, agent, model, reward range, tags, experiment, dates) + trial-outcome aggregations. Org-scoping enforced server-side via `require_auth`.
+- Semantic search over task *bundle content* is a fast-follow (keyword-grep vs. embeddings — separate decision).
 
-- **Priming:** new `render_global_claude_md(org_id)` describing how to query and the available query tool.
-- **Querying:** Claude Code in the sandbox calls a **new oddish query endpoint** (e.g. `POST /tasks/query`) via an injected CLI/tool in the sandbox (atelier's "credentialed CLI in the sandbox" pattern), wrapping existing `oddish.core` browse/aggregate logic. Supports structured filters (status, agent, model, reward range, tags, experiment, dates) and trial-outcome aggregations. Auth/org-scoping enforced server-side in oddish.
-- Semantic search over task *bundle content* is a fast-follow (separate decision: keyword-grep vs. embeddings).
+## Scope 2: Task-level trial-log chat, version-aware (extends ported task scope)
 
-## Scope 2: Task-level trial-log chat, version-aware (extends existing)
-
-A `scope_kind = "task"` session (scope_id = task_id). Entry point: the oddish **task detail page**. Purpose: chat with the trial logs for this task.
-
-- **Version defaulting:** primes with the task's **`current_version`** trials by default; the `CLAUDE.md` + an injected tool let the user pull in **past version runs** on request (`list_task_versions`, `list_trials(task_id, version)`). This is the new "default latest, see past versions" behavior on top of the existing task-probes scope.
-- **Logs:** reuses the existing `OddishClient.list_experiment_trial_files` / trial-file fetch path so Claude Code reads structured trial logs/trajectory from S3 in-sandbox.
-- The existing `experiment`-scoped chat remains; `task` scope is the version-aware addition the user asked for.
+`scope_kind = "task"` (scope_id = task_id). Entry point: oddish **task detail page**. Purpose: chat with this task's trial logs.
+- **Version defaulting:** primes with the task's **`current_version`** trials by default; `CLAUDE.md` + an injected tool let the user pull in **past version runs** on request (`list_task_versions`, `list_trials(task_id, version)`). This is the "default latest, see past versions" behavior.
+- **Logs:** reuse the ported trial-file fetch path so Claude Code reads structured trial logs/trajectory from S3 in-sandbox.
+- **Reconcile with ported `task-probes` scope:** decide during implementation whether `task` replaces or coexists with the existing probe-scoped chat. The existing `experiment` scope is retained.
 
 ---
 
-## Oddish cutover (entry points)
+## Entry points (oddish frontend → oddish backend)
 
-Oddish becomes a thin client of agent-sandbox-service's chat API (Plan 3 direction).
-- **Frontend:** a shared `chat-panel.tsx` (SSE reader + replay-on-mount using the events endpoint). Mounted at two entry points — tasks page (`scope=global`) and task detail page (`scope=task`, `scope_id=task_id`).
-- **Proxy routes:** `frontend/src/app/api/chat/...` → agent-sandbox-service, auth header injected (existing proxy pattern).
-- **New oddish backend endpoint:** `POST /tasks/query` for the global scope's query tool (wraps `oddish.core` browse/aggregate; org-scoped via existing `require_auth`).
+- Shared `frontend/src/components/chat/chat-panel.tsx`: SSE reader + replay-on-mount via the events endpoint.
+- Two mounts: tasks page (`scope=global`) and task detail page (`scope=task`, `scope_id=task_id`).
+- `frontend/src/app/api/chat/...` proxy routes → **oddish's own backend** chat router (auth header injection via existing pattern). No external service.
 
-## Data model summary (new, in agent-sandbox-service Alembic)
-- `chat_session_events` (durable transcript log)
-- `chat_turns` (durable turn record, one-running-turn partial-unique index)
-- `chat_sessions`: add `global` and `task` to the `scope_kind` set (generic column, no schema change beyond allowed values).
+## Files
+
+**Backend** (`backend/`):
+- `api/services/cc_chat/orchestrator.py`, `sessions.py`, `claude_md.py`, `claude_code_runtime.py`, `daytona_client.py` — ported from agent-sandbox-service, plus event-log/turn persistence.
+- `api/services/cc_chat/events.py` — append/replay over `chat_session_events`.
+- `api/routers/chat.py` — start / get / messages (SSE) / events replay / close, registered in `backend/api/app.py`.
+- `backend/models.py` + `backend/alembic/versions/*` — `chat_sessions`, `chat_session_events`, `chat_turns`.
+- `api/routers/tasks.py` — add `POST /tasks/query` (global scope tool).
+
+**Frontend:** `components/chat/chat-panel.tsx`, two entry-point mounts, `app/api/chat/*` proxy routes.
 
 ## Streaming protocol
-SSE stream-json events (existing). Each event is **persisted to `chat_session_events` before being yielded**. Heartbeat to hold the connection. Replay via `GET …/events?since=<seq>`; resume by tailing from the last seen `seq`.
+SSE stream-json events; each event **persisted to `chat_session_events` before being yielded**. Heartbeat to hold the connection. Replay via `GET …/events?since=<seq>`; resume by tailing from the last seen `seq`.
 
 ## Error handling
-- Service crash mid-turn → `restart_sweep` marks the `running` turn `failed`, event log preserved, session reusable.
+- Container crash / eviction mid-turn → sweep marks the `running` turn `failed`, event log preserved, session reusable.
 - Sandbox/stream error → emit an error event (also persisted), close the turn `failed`.
-- Query tool failure (global scope) → structured error back to Claude Code in-sandbox, not a 500.
+- Global query tool failure → structured error back to Claude Code in-sandbox, not a 500.
 - Org-scoping enforced in every oddish endpoint the sandbox calls.
 
 ## Testing
-agent-sandbox-service (`tests/services/chat/`, `tests/routers/test_chat.py`):
-- Event log: per-event persistence ordering; replay `since=<seq>` correctness.
-- Turn record: one-running-turn invariant; restart sweep marks running→failed and preserves log.
+`backend/tests/cc_chat/`:
+- Event log: per-event persistence ordering; replay `since=<seq>`; prune-after-flush.
+- Turn record: one-running-turn invariant; sweep marks running→failed and preserves log.
 - Reconnect: rebuild transcript from log + resume a live turn.
-- `render_global_claude_md` / `render task version-aware` prompt builders.
-- Global query tool dispatch (mock oddish query endpoint): filters, aggregation, org-scoping, error mapping.
+- Prompt builders: `render_global_claude_md`, task version-aware rendering.
+- Global query tool dispatch (mock `oddish.core`): filters, aggregation, org-scoping, error mapping.
+- `POST /tasks/query` route unit tests.
 
-oddish: `POST /tasks/query` unit tests (filters/aggregation/org-scoping); proxy-route smoke. (No frontend test suite in oddish.)
+(Frontend has no test suite wired up.)
 
 ## Phasing
-1. **Backbone** — `chat_session_events`, `chat_turns`, per-event persistence, replay endpoint, restart sweep. (Hardens existing scopes immediately.)
-2. **Scope 2 (task, version-aware)** + oddish task-detail entry point.
-3. **Scope 1 (global)** — `render_global_claude_md`, oddish `POST /tasks/query` + sandbox query tool, tasks-page entry point.
+1. **Port + backbone** — bring `cc_chat` home from agent-sandbox-service; add `chat_session_events`, `chat_turns`, per-event persistence, replay endpoint, sweep, prune-after-flush. Hardens existing scopes immediately.
+2. **Scope 2 (task, version-aware)** + task-detail entry point.
+3. **Scope 1 (global)** — `render_global_claude_md`, `POST /tasks/query` + in-sandbox query tool, tasks-page entry point.
 4. **Fast-follow:** semantic task-content search for global scope.
 
-## Open risks
-- agent-sandbox-service replica count: if >1, durable turn ownership may need a lease (atelier's `compute_leases`) so reconnect routes to the worker holding the sandbox. Single-replica → not needed yet; flagged.
-- Per-event DB writes add write load; batch within a turn if it shows up in practice (log is still per-event-ordered).
-- `claude --resume` session continuity vs. our turn log must stay consistent if a turn fails mid-stream (resume from last completed turn).
+## Open risks / concurrency
+- **Modal container lifecycle:** long-lived SSE streams + Daytona sandbox ownership on ephemeral Modal containers need care. The DB-backed substrate is what makes reconnect work across containers (any container replays from PG). But a *live* turn's SSE is served by one container holding the sandbox connection — if that container is evicted mid-turn, the turn is marked `failed` and the user re-sends (or we resume via `claude --resume` from the last completed turn). Whether to add atelier-style **sandbox ownership/lease + request routing** (so a reconnect re-attaches to a still-live turn on another container) is the main open question; defer until single-container behavior is proven.
+- Per-event DB writes: small and prunable (see Retention); batch within a turn only if measured load warrants — log stays per-event-ordered either way.
+- `task` vs. `task-probes` scope reconciliation (above).
