@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Callable
 
 from sqlalchemy import select, update
@@ -9,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
 
 from api.services.cc_chat.daytona_client import CreatedSandbox, DaytonaClient
 from models import ChatSession, ChatStatus, ChatTurn
+from oddish.db.models import utcnow
 
 log = logging.getLogger("oddish.cc_chat.restart_sweep")
 
@@ -34,7 +34,7 @@ async def _do_sweep(daytona: DaytonaClient, session) -> int:
         ChatSession.status.in_([ChatStatus.active.value, ChatStatus.provisioning.value])
     )
     rows = (await session.execute(stmt)).scalars().all()
-    now = datetime.utcnow()
+    now = utcnow()
     for row in rows:
         row.status = ChatStatus.broken.value
         row.error = "service restart"

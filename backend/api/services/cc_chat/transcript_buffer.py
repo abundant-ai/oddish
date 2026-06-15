@@ -24,11 +24,7 @@ class SessionTranscriptBuffer:
         events.append(event)
         # Heartbeat at every 1k events so unbounded growth is observable.
         if len(events) % self._size_log_threshold == 0:
-            log.info(
-                "transcript_buffer.size_milestone",
-                session_id=session_id,
-                count=len(events),
-            )
+            log.info("transcript_buffer.size_milestone session_id=%s count=%d", session_id, len(events))
 
     def events(self, session_id: str) -> list[dict[str, Any]]:
         return list(self._events.get(session_id, []))
