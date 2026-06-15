@@ -1187,9 +1187,9 @@ export function ExperimentTrialsTable({
     try {
       const results = await Promise.allSettled(
         selectedQACancellableTasks.map(async (task) => {
-          // The QA job is the task-level VERDICT worker job; cancelling it
-          // stops both in-flight classification and verdict synthesis.
-          const res = await fetch(`/api/tasks/${task.id}/verdict/cancel`, {
+          // One task-level QA job; cancelling it stops both in-flight
+          // classification and verdict synthesis.
+          const res = await fetch(`/api/tasks/${task.id}/qa/cancel`, {
             method: "POST",
           });
           if (!res.ok) {
@@ -1226,9 +1226,9 @@ export function ExperimentTrialsTable({
     try {
       const results = await Promise.allSettled(
         selectedQARunnableTasks.map(async (task) => {
-          // analysis/retry runs the whole task QA job: it (re)classifies every
-          // trial and then synthesizes the task verdict.
-          const res = await fetch(`/api/tasks/${task.id}/analysis/retry`, {
+          // One task-level QA job: (re)classify every trial, then synthesize
+          // the task verdict.
+          const res = await fetch(`/api/tasks/${task.id}/qa/retry`, {
             method: "POST",
           });
           if (!res.ok) {

@@ -80,7 +80,7 @@ from oddish.workers.queue.worker_job_single_job import (
     drain_worker_jobs,
 )
 
-from .github import notify_github_analysis, notify_github_trial, notify_github_verdict
+from .github import notify_github_analysis, notify_github_qa, notify_github_trial
 from .runtime import configure_storage_paths, console
 
 # Register TRIAL / ANALYSIS / VERDICT handlers against the unified
@@ -90,15 +90,16 @@ from .runtime import configure_storage_paths, console
 ensure_builtin_handlers_registered()
 
 
-# Post-success hooks: fired after the worker_jobs row is in SUCCESS
-# state. Mirrors the ``on_trial_complete`` / ``on_analysis_complete`` /
-# ``on_verdict_complete`` hooks the legacy dispatcher passed through
-# ``run_single_job``. Hook exceptions are swallowed by the runner so a
-# GitHub API hiccup never corrupts scheduling state.
+# Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
+# The QA hook refreshes the whole PR comment (per-trial classifications +
+# task verdict) in one update. ``ANALYSIS`` is transitional -- it only fires
+# for legacy per-trial rows draining across a deploy. Hook exceptions are
+# swallowed by the runner so a GitHub API hiccup never corrupts scheduling
+# state.
 _POST_SUCCESS_HOOKS: PostSuccessHooks = {
     WorkerJobKind.TRIAL: notify_github_trial,
+    WorkerJobKind.QA: notify_github_qa,
     WorkerJobKind.ANALYSIS: notify_github_analysis,
-    WorkerJobKind.VERDICT: notify_github_verdict,
 }
 
 

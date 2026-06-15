@@ -19,17 +19,17 @@ The import flow mirrors the task upload pattern:
      the trial's S3 prefix, deletes the staging archive, and returns
      the extraction count.
    - Rolls the parent task's status forward via
-     ``maybe_start_analysis_stage`` so heterogeneous experiments (some
+     ``maybe_start_qa_stage`` so heterogeneous experiments (some
      live, some imported) transition cleanly when the last pending
      trial settles.
 
 Imports intentionally skip the ``worker_jobs`` queue for trial
 execution: imported rows land already-terminal, so the dispatcher /
 cleanup loop has nothing to do for them. When the target task has
-``run_analysis`` enabled, ``initialize_trial_import`` does enqueue a
-per-trial analysis ``worker_job`` (mirroring the live trial handler)
-so the analysis / verdict pipeline rolls forward over a mix of live
-and imported rows.
+``run_analysis`` enabled, the imported rows simply join the task-level
+QA job (one job classifies every live trial, imported or not) once the
+last pending trial settles -- rolling the pipeline forward over a mix
+of live and imported rows.
 """
 
 from __future__ import annotations
@@ -316,19 +316,19 @@ async def initialize_trial_import(
         await session.flush()
 
         # Trajectory analysis is task-scoped: once every trial is
-        # terminal, ``maybe_start_analysis_stage`` enqueues a single
-        # task-level QA job that classifies all trials (imported rows
-        # included) and synthesizes the verdict. Imported trials no longer
-        # get a per-trial ANALYSIS enqueue.
+        # terminal, ``maybe_start_qa_stage`` enqueues a single task-level
+        # QA job that classifies all trials (imported rows included) and
+        # synthesizes the verdict. Imported trials no longer get a
+        # per-trial classification enqueue.
         #
         # Run the stage-transition here so tasks whose only trials are
         # imported (and especially the ``--skip-artifacts`` path, where
         # ``complete`` is never called) still transition forward.
-        # ``maybe_start_analysis_stage`` is idempotent -- calling it again
-        # in ``complete_trial_import`` is a no-op.
-        from oddish.queue import maybe_start_analysis_stage
+        # ``maybe_start_qa_stage`` is idempotent -- calling it again in
+        # ``complete_trial_import`` is a no-op.
+        from oddish.queue import maybe_start_qa_stage
 
-        await maybe_start_analysis_stage(session, trial_id)
+        await maybe_start_qa_stage(session, trial_id)
 
         await session.commit()
 
@@ -406,10 +406,10 @@ async def complete_trial_import(
 
     # After the artifacts are in place, nudge the task status forward
     # the same way the live trial handler does when a trial finishes.
-    from oddish.queue import maybe_start_analysis_stage
+    from oddish.queue import maybe_start_qa_stage
 
     async with get_session() as session:
-        await maybe_start_analysis_stage(session, trial_id)
+        await maybe_start_qa_stage(session, trial_id)
         await session.commit()
 
         trial_again = await session.get(TrialModel, trial_id)

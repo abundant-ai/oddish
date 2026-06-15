@@ -463,15 +463,13 @@ export function TaskFilesPanel({
       let body: string | undefined = JSON.stringify({
         task_ids: id ? [id] : [],
       });
-      if (id && !taskHasActiveTrials(task) && taskHasActiveVerdict(task)) {
-        path = `${baseUrl}/tasks/${id}/verdict/cancel`;
-        body = undefined;
-      } else if (
+      // No active trials but QA in flight -> cancel just the task QA job.
+      if (
         id &&
         !taskHasActiveTrials(task) &&
-        taskHasActiveAnalysis(task)
+        (taskHasActiveVerdict(task) || taskHasActiveAnalysis(task))
       ) {
-        path = `${baseUrl}/tasks/${id}/analysis/cancel`;
+        path = `${baseUrl}/tasks/${id}/qa/cancel`;
         body = undefined;
       }
       const res = await fetch(path, {
@@ -500,9 +498,9 @@ export function TaskFilesPanel({
     setQAActionError(null);
 
     try {
-      // analysis/retry runs the full task QA job: (re)classify every trial
-      // and then synthesize the task verdict.
-      const res = await fetch(`${baseUrl}/tasks/${task.id}/analysis/retry`, {
+      // One task-level QA job: (re)classify every trial and then synthesize
+      // the task verdict.
+      const res = await fetch(`${baseUrl}/tasks/${task.id}/qa/retry`, {
         method: "POST",
       });
       if (!res.ok) {
