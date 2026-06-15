@@ -81,11 +81,11 @@ async def classify_trial_and_store(trial_id: str) -> AnalysisStatus | None:
 
     It is shared by two callers:
 
-    * the task-level QA job (``run_verdict_job``), which classifies every
+    * the task-level QA job (``run_task_qa_job``), which classifies every
       live trial in a single worker job before synthesizing the verdict,
       and manages one heartbeat loop spanning the whole task; and
-    * the legacy per-trial ``run_analysis_job`` wrapper, which adds a
-      heartbeat loop and the verdict stage transition around this call so
+    * the transitional per-trial ``run_analysis_job`` wrapper, which adds a
+      heartbeat loop and the legacy stage transition around this call so
       in-flight ANALYSIS worker_jobs keep working through a deploy.
 
     Returns the resulting ``AnalysisStatus`` (SUCCESS / FAILED), or
@@ -286,17 +286,17 @@ async def run_analysis_job(
 ) -> None:
     """Execute analysis for a single claimed trial (legacy per-trial path).
 
-    Task-level QA (``run_verdict_job``) now classifies every trial in a
+    Task-level QA (``run_task_qa_job``) now classifies every trial in a
     single worker job, so the unified pipeline no longer enqueues
     per-trial ANALYSIS jobs. This handler body is retained so any ANALYSIS
     worker_jobs already in flight across a deploy still run to completion;
     it wraps :func:`classify_trial_and_store` with a heartbeat loop and the
-    verdict stage transition.
+    legacy stage transition.
 
     1. Download task and trial from S3
     2. Run classification with Claude Code
     3. Store classification in trial.analysis
-    4. Check if all analyses done -> start verdict stage
+    4. Advance the (legacy ANALYZING) task toward its QA job
     """
     console.print(
         f"[cyan]Processing analysis[/cyan] {trial_id} (queue_key={queue_key})"
@@ -322,10 +322,10 @@ async def run_analysis_job(
 
     async def _advance_stage() -> None:
         from oddish.db import get_session
-        from oddish.queue import maybe_start_verdict_stage
+        from oddish.queue import maybe_advance_legacy_analyzing_task
 
         async with get_session() as session:
-            started = await maybe_start_verdict_stage(session, trial_id)
+            started = await maybe_advance_legacy_analyzing_task(session, trial_id)
             if started:
                 console.print(
                     f"[blue]Task transitioned to VERDICT_PENDING after "

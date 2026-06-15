@@ -12,7 +12,11 @@ async def notify_github_trial(trial_id: str) -> None:
 
 
 async def notify_github_analysis(trial_id: str) -> None:
-    """Notify GitHub of analysis completion."""
+    """Notify GitHub of legacy per-trial analysis completion.
+
+    Transitional: only fires for in-flight ANALYSIS rows draining across a
+    deploy. The unified QA job uses :func:`notify_github_qa`.
+    """
     try:
         from oddish.integrations.github import notify_analysis_update
 
@@ -21,11 +25,15 @@ async def notify_github_analysis(trial_id: str) -> None:
         console.print(f"[yellow]GitHub notification failed (analysis): {e}[/yellow]")
 
 
-async def notify_github_verdict(task_id: str) -> None:
-    """Notify GitHub of verdict completion."""
-    try:
-        from oddish.integrations.github import notify_verdict_update
+async def notify_github_qa(task_id: str) -> None:
+    """Notify GitHub when a task's QA job completes.
 
-        await notify_verdict_update(task_id)
+    Refreshes the whole PR comment in one update (every trial's
+    classification plus the task verdict).
+    """
+    try:
+        from oddish.integrations.github import notify_qa_update
+
+        await notify_qa_update(task_id)
     except Exception as e:
-        console.print(f"[yellow]GitHub notification failed (verdict): {e}[/yellow]")
+        console.print(f"[yellow]GitHub notification failed (qa): {e}[/yellow]")

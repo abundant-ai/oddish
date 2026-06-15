@@ -21,13 +21,13 @@ export async function POST(
 
     const { task_id } = await params;
 
-    const url = getBackendUrl("tasks", `/${task_id}/analysis/cancel`);
+    const url = getBackendUrl("tasks", `/${task_id}/qa/retry`);
     const res = await fetch(url, {
       method: "POST",
       headers: getAuthHeaders(token),
     });
 
-    const parsed = await readBackendJson(res, "Failed to cancel task analysis");
+    const parsed = await readBackendJson(res, "Failed to queue task QA");
 
     if (parsed.parseError) {
       return NextResponse.json(parsed.parseError, { status: parsed.status });
@@ -35,7 +35,7 @@ export async function POST(
 
     if (!res.ok) {
       return NextResponse.json(
-        backendErrorPayload(parsed.data, "Failed to cancel task analysis"),
+        backendErrorPayload(parsed.data, "Failed to queue task QA"),
         {
           status: res.status,
         },

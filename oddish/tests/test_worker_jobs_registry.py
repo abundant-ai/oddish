@@ -109,7 +109,7 @@ def test_get_handler_returns_registered_instance():
 
 def test_get_handler_raises_when_unregistered():
     with pytest.raises(NoHandlerRegisteredError):
-        get_handler(WorkerJobKind.VERDICT)
+        get_handler(WorkerJobKind.QA)
 
 
 def test_register_is_idempotent_for_same_object():

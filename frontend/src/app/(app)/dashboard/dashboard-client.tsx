@@ -482,16 +482,23 @@ const PIPELINE_KIND_DISPLAY: Record<
     accentText: "text-blue-500 dark:text-blue-300",
     accentBorder: "border-blue-500/30",
   },
-  VERDICT: {
+  QA: {
     label: "Task QA",
     description: "Classify trials + synthesize verdict",
     Icon: Gavel,
     accentText: "text-amber-500 dark:text-amber-300",
     accentBorder: "border-amber-500/30",
   },
+  VERDICT: {
+    label: "Task Verdict (legacy)",
+    description: "Folded into Task QA",
+    Icon: Gavel,
+    accentText: "text-amber-500/70 dark:text-amber-300/70",
+    accentBorder: "border-amber-500/30",
+  },
   ANALYSIS: {
     label: "Trial Analysis (legacy)",
-    description: "Per-trial classification (no longer enqueued)",
+    description: "Folded into Task QA",
     Icon: Microscope,
     accentText: "text-purple-500 dark:text-purple-300",
     accentBorder: "border-purple-500/30",

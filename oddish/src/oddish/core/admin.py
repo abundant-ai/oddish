@@ -247,12 +247,14 @@ async def get_queue_status_core(session: AsyncSession) -> QueueStatusResponse:
         queues.append(entry)
         if kind == "TRIAL":
             trial_queues.append(entry)
-        elif kind == "ANALYSIS":
-            analysis_queued += queued
-            analysis_running += running
-        elif kind == "VERDICT":
+        elif kind == "QA":
+            # The single task-level QA job (classification + verdict).
             verdict_queued += queued
             verdict_running += running
+        elif kind == "ANALYSIS":
+            # Legacy per-trial classification rows, drained across a deploy.
+            analysis_queued += queued
+            analysis_running += running
         # Unknown kinds (e.g. future QA_REVIEW) silently ignored by
         # this endpoint; the ``WorkerJobsCard`` admin panel surfaces
         # them in the kind-agnostic matrix instead.
