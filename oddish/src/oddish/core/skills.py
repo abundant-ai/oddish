@@ -25,7 +25,9 @@ def parse_skill(files: list[SkillFile]) -> tuple[str, str]:
     """
     skill_md = next((f for f in files if f.relative_path == "SKILL.md"), None)
     if skill_md is None:
-        raise HTTPException(status_code=422, detail="Skill must contain a root SKILL.md")
+        raise HTTPException(
+            status_code=422, detail="Skill must contain a root SKILL.md"
+        )
 
     text = skill_md.content.lstrip()
     if not text.startswith(_FRONTMATTER_DELIM):
@@ -40,14 +42,20 @@ def parse_skill(files: list[SkillFile]) -> tuple[str, str]:
     try:
         meta = yaml.safe_load(parts[1]) or {}
     except yaml.YAMLError:
-        raise HTTPException(status_code=422, detail="SKILL.md frontmatter is not valid YAML")
+        raise HTTPException(
+            status_code=422, detail="SKILL.md frontmatter is not valid YAML"
+        )
     if not isinstance(meta, dict):
-        raise HTTPException(status_code=422, detail="SKILL.md frontmatter must be a mapping")
+        raise HTTPException(
+            status_code=422, detail="SKILL.md frontmatter must be a mapping"
+        )
 
     name = meta.get("name")
     description = meta.get("description")
     if not name or not isinstance(name, str):
-        raise HTTPException(status_code=422, detail="SKILL.md frontmatter missing 'name'")
+        raise HTTPException(
+            status_code=422, detail="SKILL.md frontmatter missing 'name'"
+        )
     if not description or not isinstance(description, str):
         raise HTTPException(
             status_code=422, detail="SKILL.md frontmatter missing 'description'"
@@ -77,9 +85,7 @@ async def get_skill_core(
     org_id: str | None = None,
 ) -> SkillModel:
     """Fetch one skill visible to ``org_id`` (its own or a global seed)."""
-    result = await session.execute(
-        select(SkillModel).where(SkillModel.id == skill_id)
-    )
+    result = await session.execute(select(SkillModel).where(SkillModel.id == skill_id))
     skill = result.scalar_one_or_none()
     if skill is None or (skill.org_id is not None and skill.org_id != org_id):
         raise HTTPException(status_code=404, detail=f"Skill {skill_id} not found")
@@ -118,9 +124,7 @@ async def _get_owned_skill(
     org_id: str | None,
 ) -> SkillModel:
     """Fetch + authorize a skill for mutation. 403 for seeds, 404 otherwise."""
-    result = await session.execute(
-        select(SkillModel).where(SkillModel.id == skill_id)
-    )
+    result = await session.execute(select(SkillModel).where(SkillModel.id == skill_id))
     skill = result.scalar_one_or_none()
     if skill is None:
         raise HTTPException(status_code=404, detail=f"Skill {skill_id} not found")

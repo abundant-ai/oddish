@@ -4,6 +4,7 @@ We rely on the open-source ``better-profanity`` package. To avoid a hard
 dependency in the test sandbox we stub the import in tests; production
 adds ``better-profanity`` to backend deps.
 """
+
 from __future__ import annotations
 
 import sys

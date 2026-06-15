@@ -44,7 +44,7 @@ export function ResizableDrawer({
       }
       onWidthChange?.(next);
     },
-    [controlledWidth, onWidthChange]
+    [controlledWidth, onWidthChange],
   );
   const [isResizing, setIsResizing] = React.useState(false);
   const drawerRef = React.useRef<HTMLDivElement>(null);
@@ -62,7 +62,7 @@ export function ResizableDrawer({
         const deltaX = startX - moveEvent.clientX;
         const newWidth = Math.min(
           maxWidth,
-          Math.max(minWidth, startWidth + deltaX)
+          Math.max(minWidth, startWidth + deltaX),
         );
         setWidth(newWidth);
       };
@@ -76,7 +76,7 @@ export function ResizableDrawer({
       document.addEventListener("mousemove", handleMouseMove);
       document.addEventListener("mouseup", handleMouseUp);
     },
-    [width, minWidth, maxWidth, setWidth]
+    [width, minWidth, maxWidth, setWidth],
   );
 
   // Handle escape key to close
@@ -110,7 +110,7 @@ export function ResizableDrawer({
           "animate-in slide-in-from-right duration-300",
           isResizing && "select-none",
           "rounded-tl-lg border-t",
-          className
+          className,
         )}
         style={{
           width: `${width}px`,

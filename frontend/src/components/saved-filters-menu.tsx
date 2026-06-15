@@ -57,9 +57,13 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
     mutate,
     isLoading,
     error: loadError,
-  } = useSWR<SavedFilterListResponse>(open ? "/api/tag-filters" : null, fetcher, {
-    revalidateOnFocus: false,
-  });
+  } = useSWR<SavedFilterListResponse>(
+    open ? "/api/tag-filters" : null,
+    fetcher,
+    {
+      revalidateOnFocus: false,
+    },
+  );
   const { data: tags } = useSWR<TagListResponse>(
     open ? "/api/tags" : null,
     fetcher,

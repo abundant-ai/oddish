@@ -6,6 +6,7 @@ Every state-changing helper:
   * enqueues a sibling ``worker_jobs(kind=TAG_PROJECT)`` row so the
     projection arrays stay consistent.
 """
+
 from __future__ import annotations
 
 import json
@@ -852,8 +853,12 @@ async def delete_tag_core(
             sc = str(ascope) if ascope is not None else None
             if sc == "EXPERIMENT" and atarget:
                 await enqueue_tag_project_worker_job(
-                    session, scope="EXPERIMENT", target_id=str(atarget),
-                    task_id=None, org_id=org_id, mode="experiment_living_fanout",
+                    session,
+                    scope="EXPERIMENT",
+                    target_id=str(atarget),
+                    task_id=None,
+                    org_id=org_id,
+                    mode="experiment_living_fanout",
                 )
             else:
                 resolved_task = atask_id or (atarget if sc == "TASK" else None)
@@ -1005,17 +1010,27 @@ async def merge_tag_core(
             if tgt and str(tgt) not in seen_experiments:
                 seen_experiments.add(str(tgt))
                 await enqueue_tag_project_worker_job(
-                    session, scope="EXPERIMENT", target_id=str(tgt),
-                    task_id=None, org_id=org_id, mode="experiment_living_fanout",
+                    session,
+                    scope="EXPERIMENT",
+                    target_id=str(tgt),
+                    task_id=None,
+                    org_id=org_id,
+                    mode="experiment_living_fanout",
                 )
         else:
             resolved_task = tsk or (tgt if sc == "TASK" else None)
             if resolved_task and str(resolved_task) not in seen_tasks:
                 seen_tasks.add(str(resolved_task))
-                await recompute_task_browse_projection(session, task_id=str(resolved_task))
+                await recompute_task_browse_projection(
+                    session, task_id=str(resolved_task)
+                )
                 await enqueue_tag_project_worker_job(
-                    session, scope="TASK", target_id=str(resolved_task),
-                    task_id=str(resolved_task), org_id=org_id, mode="task_all_versions",
+                    session,
+                    scope="TASK",
+                    target_id=str(resolved_task),
+                    task_id=str(resolved_task),
+                    org_id=org_id,
+                    mode="task_all_versions",
                 )
 
 
@@ -1050,7 +1065,9 @@ async def edit_tag_core(
                 if (
                     is_reserved_prefix(
                         normalized,
-                        reserved_prefixes=list(policy.get("reserved_prefixes", []) or []),
+                        reserved_prefixes=list(
+                            policy.get("reserved_prefixes", []) or []
+                        ),
                     )
                     and not is_admin
                 ):
@@ -1124,7 +1141,9 @@ async def set_tag_visibility_core(
         },
     )
     if (getattr(result, "rowcount", 0) or 0) == 0:
-        raise TagConcurrencyError(f"tag {tag_id} row_version mismatch on SET_VISIBILITY")
+        raise TagConcurrencyError(
+            f"tag {tag_id} row_version mismatch on SET_VISIBILITY"
+        )
     await _emit_tag_event(
         session,
         action="SET_VISIBILITY",

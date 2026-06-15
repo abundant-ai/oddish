@@ -4,6 +4,7 @@ Saved filters persist stable tag IDs (so renames don't break them).
 ``merged_into_id`` is followed at read so a merged source tag resolves to
 the survivor.
 """
+
 from __future__ import annotations
 
 import json
@@ -41,7 +42,9 @@ async def list_saved_tag_filters_core(
                 "id": str(id_),
                 "name": str(name),
                 "filter_ast": (
-                    ast_raw if isinstance(ast_raw, dict) else json.loads(ast_raw or "{}")
+                    ast_raw
+                    if isinstance(ast_raw, dict)
+                    else json.loads(ast_raw or "{}")
                 ),
                 "visibility": str(visibility),
                 "owner_user_id": str(owner),
