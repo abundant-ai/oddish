@@ -624,7 +624,7 @@ export interface WorkerJobsResponse {
 // Queue health overview
 // ---------------------------------------------------------------------------
 
-export interface QueueThroughputStat {
+interface QueueThroughputStat {
   kind: WorkerJobKind;
   started_5m: number;
   started_15m: number;
