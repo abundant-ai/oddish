@@ -618,15 +618,17 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
       <button
         type="submit"
         disabled={submitting || !extraInstructions.trim()}
-        className="rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+        className="w-full rounded-lg bg-primary px-4 py-3 text-base font-semibold text-primary-foreground shadow-sm hover:bg-primary/90 disabled:opacity-50"
       >
-        {submitting ? "Submitting..." : "Submit"}
+        {submitting ? "Submitting probe run…" : "Submit probe run"}
       </button>
         </>
       ) : (
-        <p className="text-sm text-muted-foreground">
-          Select a probe agent above or create your own to get started.
-        </p>
+        <div className="rounded-lg border border-dashed bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
+          Select a probe agent above (or create your own) to configure and{" "}
+          <span className="font-medium text-foreground">submit a probe run</span>{" "}
+          on this page.
+        </div>
       )}
     </form>
   );

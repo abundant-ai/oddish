@@ -156,10 +156,16 @@ export default function ProbeResultPage({
         >
           ← Back to workbench
         </Link>
-        <h1 className="mt-2 text-2xl font-semibold">Probe run</h1>
-        <p className="mt-1 font-mono text-xs text-muted-foreground">
-          {trial.id}
+        <p className="mt-2 text-xs uppercase tracking-wide text-muted-foreground">
+          Probe run
         </p>
+        <Link
+          href={`/tasks/${task_id}`}
+          className="font-mono text-2xl font-semibold underline-offset-4 hover:underline"
+          title="View experiment"
+        >
+          {trial.id}
+        </Link>
       </div>
 
       {/* Status header */}
