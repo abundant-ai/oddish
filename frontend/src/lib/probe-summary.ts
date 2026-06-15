@@ -23,7 +23,7 @@ type Recommendation = {
   rationale?: string;
 };
 
-export const PRIORITY_ORDER: Record<string, number> = {
+const PRIORITY_ORDER: Record<string, number> = {
   must_fix: 0,
   should_fix: 1,
   optional: 2,
