@@ -30,9 +30,7 @@ async def test_find_trial_container_matches_suffix():
         )
         mock_exec.return_value = proc
 
-        result = await _find_trial_container(
-            "rust-c-compiler__abc", timeout=1.0
-        )
+        result = await _find_trial_container("rust-c-compiler__abc", timeout=1.0)
 
     assert result == "rust-c-compiler__abc-main-1"
 
@@ -47,9 +45,7 @@ async def test_find_trial_container_returns_none_on_timeout():
         proc.communicate = AsyncMock(return_value=(b"odd-pg\n", b""))
         mock_exec.return_value = proc
 
-        result = await _find_trial_container(
-            "nonexistent-trial", timeout=0.5
-        )
+        result = await _find_trial_container("nonexistent-trial", timeout=0.5)
 
     assert result is None
 

@@ -13,8 +13,8 @@ export default async function ProbePage({
       <div>
         <h1 className="text-2xl font-semibold">Probe run</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Submit a custom prompt prepended to this task&apos;s instruction.
-          The agent runs in local Docker via Harbor.
+          Submit a custom prompt prepended to this task&apos;s instruction. The
+          agent runs in local Docker via Harbor.
         </p>
         <p className="mt-1 text-sm">
           Task:{" "}

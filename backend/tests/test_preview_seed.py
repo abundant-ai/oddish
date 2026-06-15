@@ -10,6 +10,7 @@ A second database on the same server stands in for production.
 Run by setting ``ODDISH_DATABASE_URL`` to an empty Postgres; skips otherwise.
 The deploy-path gate is the real seed step in the prepare-preview-database
 job, which samples actual prod and seeds the actual branch."""
+
 import os
 
 import pytest
@@ -49,7 +50,9 @@ async def _make_source_db():
     admin = create_async_engine(URL, isolation_level="AUTOCOMMIT")
     try:
         async with admin.connect() as c:
-            await c.execute(text("drop database if exists seed_sample_src with (force)"))
+            await c.execute(
+                text("drop database if exists seed_sample_src with (force)")
+            )
             await c.execute(text("create database seed_sample_src"))
     finally:
         await admin.dispose()
@@ -58,117 +61,314 @@ async def _make_source_db():
     t = Base.metadata.tables
     async with src.begin() as c:
         await c.run_sync(Base.metadata.create_all)
-        await c.execute(t["organizations"].insert(), [
-            {"id": "org-a", "name": "Real A", "slug": "real-a",
-             "clerk_org_id": "org_real_a"},
-            {"id": "org-b", "name": "Real B", "slug": "real-b",
-             "clerk_org_id": "org_real_b"},
-        ])
-        await c.execute(t["users"].insert(), [
-            {"id": "u-a1", "org_id": "org-a", "email": "real-a1@corp.com",
-             "name": "Alice Real", "role": "owner", "github_username": "alice",
-             "clerk_user_id": "user_a1"},
-            {"id": "u-a2", "org_id": "org-a", "email": "real-a2@corp.com",
-             "name": "Anna Real", "role": "member", "github_username": None,
-             "clerk_user_id": "user_a2"},
-            {"id": "u-b1", "org_id": "org-b", "email": "real-b1@corp.com",
-             "name": "Bob Real", "role": "member", "github_username": None,
-             "clerk_user_id": "user_b1"},
-        ])
-        await c.execute(t["experiments"].insert(), [
-            {"id": "exp-a", "name": "Exp A", "org_id": "org-a",
-             "owner_user_id": "u-a1",
-             "is_public": True, "public_token": "tok-a", "deleted_at": None},
-            {"id": "exp-b", "name": "Exp B", "org_id": "org-b",
-             "owner_user_id": "u-b1",
-             "is_public": False, "public_token": None, "deleted_at": None},
-            {"id": "exp-mine", "name": "Mine Exp", "org_id": "org-a",
-             "owner_user_id": "u-a2",
-             "is_public": False, "public_token": None, "deleted_at": None},
-            {"id": "exp-del", "name": "Deleted", "org_id": "org-a",
-             "owner_user_id": "u-a1",
-             "is_public": False, "public_token": None,
-             "deleted_at": preview_seed.SEED_EPOCH},
-        ])
-        await c.execute(t["tasks"].insert(), [
-            {"id": "task-solo", "name": "solo-task", "org_id": "org-a",
-             "created_by_user_id": "u-a1", "user": "real-a1@corp.com",
-             "status": "COMPLETED", "task_path": "p/solo", "tags": {}},
-            {"id": "task-dup-a", "name": "dup-task", "org_id": "org-a",
-             "created_by_user_id": "u-a1", "user": "real-a1@corp.com",
-             "status": "COMPLETED", "task_path": "p/dup-a", "tags": {}},
-            {"id": "task-dup-b", "name": "dup-task", "org_id": "org-b",
-             "created_by_user_id": "u-b1", "user": "real-b1@corp.com",
-             "status": "FAILED", "task_path": "p/dup-b", "tags": {}},
-            {"id": "task-run", "name": "running-task", "org_id": "org-a",
-             "created_by_user_id": "u-a1", "user": "real-a1@corp.com",
-             "status": "RUNNING", "task_path": "p/run", "tags": {}},
-        ])
-        await c.execute(t["task_versions"].insert(), [
-            {"id": "ver-solo-1", "task_id": "task-solo", "version": 1,
-             "task_path": "p/solo"},
-            {"id": "ver-solo-2", "task_id": "task-solo", "version": 2,
-             "task_path": "p/solo"},
-            {"id": "ver-dup-a", "task_id": "task-dup-a", "version": 1,
-             "task_path": "p/dup-a"},
-            {"id": "ver-dup-b", "task_id": "task-dup-b", "version": 1,
-             "task_path": "p/dup-b"},
-        ])
         await c.execute(
-            t["tasks"].update().where(t["tasks"].c.id == "task-solo")
+            t["organizations"].insert(),
+            [
+                {
+                    "id": "org-a",
+                    "name": "Real A",
+                    "slug": "real-a",
+                    "clerk_org_id": "org_real_a",
+                },
+                {
+                    "id": "org-b",
+                    "name": "Real B",
+                    "slug": "real-b",
+                    "clerk_org_id": "org_real_b",
+                },
+            ],
+        )
+        await c.execute(
+            t["users"].insert(),
+            [
+                {
+                    "id": "u-a1",
+                    "org_id": "org-a",
+                    "email": "real-a1@corp.com",
+                    "name": "Alice Real",
+                    "role": "owner",
+                    "github_username": "alice",
+                    "clerk_user_id": "user_a1",
+                },
+                {
+                    "id": "u-a2",
+                    "org_id": "org-a",
+                    "email": "real-a2@corp.com",
+                    "name": "Anna Real",
+                    "role": "member",
+                    "github_username": None,
+                    "clerk_user_id": "user_a2",
+                },
+                {
+                    "id": "u-b1",
+                    "org_id": "org-b",
+                    "email": "real-b1@corp.com",
+                    "name": "Bob Real",
+                    "role": "member",
+                    "github_username": None,
+                    "clerk_user_id": "user_b1",
+                },
+            ],
+        )
+        await c.execute(
+            t["experiments"].insert(),
+            [
+                {
+                    "id": "exp-a",
+                    "name": "Exp A",
+                    "org_id": "org-a",
+                    "owner_user_id": "u-a1",
+                    "is_public": True,
+                    "public_token": "tok-a",
+                    "deleted_at": None,
+                },
+                {
+                    "id": "exp-b",
+                    "name": "Exp B",
+                    "org_id": "org-b",
+                    "owner_user_id": "u-b1",
+                    "is_public": False,
+                    "public_token": None,
+                    "deleted_at": None,
+                },
+                {
+                    "id": "exp-mine",
+                    "name": "Mine Exp",
+                    "org_id": "org-a",
+                    "owner_user_id": "u-a2",
+                    "is_public": False,
+                    "public_token": None,
+                    "deleted_at": None,
+                },
+                {
+                    "id": "exp-del",
+                    "name": "Deleted",
+                    "org_id": "org-a",
+                    "owner_user_id": "u-a1",
+                    "is_public": False,
+                    "public_token": None,
+                    "deleted_at": preview_seed.SEED_EPOCH,
+                },
+            ],
+        )
+        await c.execute(
+            t["tasks"].insert(),
+            [
+                {
+                    "id": "task-solo",
+                    "name": "solo-task",
+                    "org_id": "org-a",
+                    "created_by_user_id": "u-a1",
+                    "user": "real-a1@corp.com",
+                    "status": "COMPLETED",
+                    "task_path": "p/solo",
+                    "tags": {},
+                },
+                {
+                    "id": "task-dup-a",
+                    "name": "dup-task",
+                    "org_id": "org-a",
+                    "created_by_user_id": "u-a1",
+                    "user": "real-a1@corp.com",
+                    "status": "COMPLETED",
+                    "task_path": "p/dup-a",
+                    "tags": {},
+                },
+                {
+                    "id": "task-dup-b",
+                    "name": "dup-task",
+                    "org_id": "org-b",
+                    "created_by_user_id": "u-b1",
+                    "user": "real-b1@corp.com",
+                    "status": "FAILED",
+                    "task_path": "p/dup-b",
+                    "tags": {},
+                },
+                {
+                    "id": "task-run",
+                    "name": "running-task",
+                    "org_id": "org-a",
+                    "created_by_user_id": "u-a1",
+                    "user": "real-a1@corp.com",
+                    "status": "RUNNING",
+                    "task_path": "p/run",
+                    "tags": {},
+                },
+            ],
+        )
+        await c.execute(
+            t["task_versions"].insert(),
+            [
+                {
+                    "id": "ver-solo-1",
+                    "task_id": "task-solo",
+                    "version": 1,
+                    "task_path": "p/solo",
+                },
+                {
+                    "id": "ver-solo-2",
+                    "task_id": "task-solo",
+                    "version": 2,
+                    "task_path": "p/solo",
+                },
+                {
+                    "id": "ver-dup-a",
+                    "task_id": "task-dup-a",
+                    "version": 1,
+                    "task_path": "p/dup-a",
+                },
+                {
+                    "id": "ver-dup-b",
+                    "task_id": "task-dup-b",
+                    "version": 1,
+                    "task_path": "p/dup-b",
+                },
+            ],
+        )
+        await c.execute(
+            t["tasks"]
+            .update()
+            .where(t["tasks"].c.id == "task-solo")
             .values(current_version_id="ver-solo-2")
         )
-        await c.execute(t["task_experiments"].insert(), [
-            {"task_id": "task-solo", "experiment_id": "exp-a"},
-            {"task_id": "task-dup-a", "experiment_id": "exp-a"},
-            {"task_id": "task-dup-b", "experiment_id": "exp-b"},
-            {"task_id": "task-run", "experiment_id": "exp-a"},
-        ])
-        await c.execute(t["trials"].insert(), [
-            {"id": "tr-ok", "name": "tr-ok", "task_id": "task-solo",
-             "task_version_id": "ver-solo-2", "experiment_id": "exp-a",
-             "org_id": "org-a", "agent": "claude", "provider": "anthropic",
-             "queue_key": "q", "timeout_minutes": 30, "environment": "modal",
-             "harbor_config": {}, "status": "SUCCESS", "origin": "oddish",
-             "result": {"reward": 1}, "superseded_by_trial_id": None},
-            {"id": "tr-running", "name": "tr-running", "task_id": "task-solo",
-             "task_version_id": "ver-solo-2", "experiment_id": "exp-a",
-             "org_id": "org-a", "agent": "claude", "provider": "anthropic",
-             "queue_key": "q", "timeout_minutes": 30, "environment": "modal",
-             "harbor_config": {}, "status": "RUNNING", "origin": "oddish",
-             "result": None, "superseded_by_trial_id": None},
-            {"id": "tr-superseded", "name": "tr-superseded",
-             "task_id": "task-solo", "task_version_id": "ver-solo-2",
-             "experiment_id": "exp-a", "org_id": "org-a", "agent": "claude",
-             "provider": "anthropic", "queue_key": "q", "timeout_minutes": 30,
-             "environment": "modal", "harbor_config": {}, "status": "FAILED",
-             "origin": "oddish", "result": None,
-             "superseded_by_trial_id": "tr-running"},
-        ])
-        await c.execute(t["worker_jobs"].insert(), [
-            {"id": "wj-done", "kind": "TRIAL", "status": "SUCCESS",
-             "queue_key": "q", "subject_table": "trials",
-             "subject_id": "tr-ok", "org_id": "org-a", "parent_job_id": None},
-            {"id": "wj-live", "kind": "TRIAL", "status": "RUNNING",
-             "queue_key": "q", "subject_table": "trials",
-             "subject_id": "tr-ok", "org_id": "org-a", "parent_job_id": None},
-            {"id": "wj-child", "kind": "VERDICT", "status": "FAILED",
-             "queue_key": "q", "subject_table": "tasks",
-             "subject_id": "task-solo", "org_id": "org-a",
-             "parent_job_id": "wj-live"},
-        ])
-        await c.execute(t["skills"].insert(), [
-            {"id": "sk-a", "org_id": "org-a", "created_by_user_id": "u-a1",
-             "name": "skill-a", "description": "a"},
-        ])
-        await c.execute(t["skill_files"].insert(), [
-            {"id": "skf-a1", "skill_id": "sk-a", "relative_path": "SKILL.md",
-             "content": "# a"},
-        ])
-        await c.execute(t["documents"].insert(), [
-            {"id": "doc-1", "org_id": "org-a", "created_by_user_id": "u-a1",
-             "title": "Doc One", "source_type": "text"},
-        ])
+        await c.execute(
+            t["task_experiments"].insert(),
+            [
+                {"task_id": "task-solo", "experiment_id": "exp-a"},
+                {"task_id": "task-dup-a", "experiment_id": "exp-a"},
+                {"task_id": "task-dup-b", "experiment_id": "exp-b"},
+                {"task_id": "task-run", "experiment_id": "exp-a"},
+            ],
+        )
+        await c.execute(
+            t["trials"].insert(),
+            [
+                {
+                    "id": "tr-ok",
+                    "name": "tr-ok",
+                    "task_id": "task-solo",
+                    "task_version_id": "ver-solo-2",
+                    "experiment_id": "exp-a",
+                    "org_id": "org-a",
+                    "agent": "claude",
+                    "provider": "anthropic",
+                    "queue_key": "q",
+                    "timeout_minutes": 30,
+                    "environment": "modal",
+                    "harbor_config": {},
+                    "status": "SUCCESS",
+                    "origin": "oddish",
+                    "result": {"reward": 1},
+                    "superseded_by_trial_id": None,
+                },
+                {
+                    "id": "tr-running",
+                    "name": "tr-running",
+                    "task_id": "task-solo",
+                    "task_version_id": "ver-solo-2",
+                    "experiment_id": "exp-a",
+                    "org_id": "org-a",
+                    "agent": "claude",
+                    "provider": "anthropic",
+                    "queue_key": "q",
+                    "timeout_minutes": 30,
+                    "environment": "modal",
+                    "harbor_config": {},
+                    "status": "RUNNING",
+                    "origin": "oddish",
+                    "result": None,
+                    "superseded_by_trial_id": None,
+                },
+                {
+                    "id": "tr-superseded",
+                    "name": "tr-superseded",
+                    "task_id": "task-solo",
+                    "task_version_id": "ver-solo-2",
+                    "experiment_id": "exp-a",
+                    "org_id": "org-a",
+                    "agent": "claude",
+                    "provider": "anthropic",
+                    "queue_key": "q",
+                    "timeout_minutes": 30,
+                    "environment": "modal",
+                    "harbor_config": {},
+                    "status": "FAILED",
+                    "origin": "oddish",
+                    "result": None,
+                    "superseded_by_trial_id": "tr-running",
+                },
+            ],
+        )
+        await c.execute(
+            t["worker_jobs"].insert(),
+            [
+                {
+                    "id": "wj-done",
+                    "kind": "TRIAL",
+                    "status": "SUCCESS",
+                    "queue_key": "q",
+                    "subject_table": "trials",
+                    "subject_id": "tr-ok",
+                    "org_id": "org-a",
+                    "parent_job_id": None,
+                },
+                {
+                    "id": "wj-live",
+                    "kind": "TRIAL",
+                    "status": "RUNNING",
+                    "queue_key": "q",
+                    "subject_table": "trials",
+                    "subject_id": "tr-ok",
+                    "org_id": "org-a",
+                    "parent_job_id": None,
+                },
+                {
+                    "id": "wj-child",
+                    "kind": "VERDICT",
+                    "status": "FAILED",
+                    "queue_key": "q",
+                    "subject_table": "tasks",
+                    "subject_id": "task-solo",
+                    "org_id": "org-a",
+                    "parent_job_id": "wj-live",
+                },
+            ],
+        )
+        await c.execute(
+            t["skills"].insert(),
+            [
+                {
+                    "id": "sk-a",
+                    "org_id": "org-a",
+                    "created_by_user_id": "u-a1",
+                    "name": "skill-a",
+                    "description": "a",
+                },
+            ],
+        )
+        await c.execute(
+            t["skill_files"].insert(),
+            [
+                {
+                    "id": "skf-a1",
+                    "skill_id": "sk-a",
+                    "relative_path": "SKILL.md",
+                    "content": "# a",
+                },
+            ],
+        )
+        await c.execute(
+            t["documents"].insert(),
+            [
+                {
+                    "id": "doc-1",
+                    "org_id": "org-a",
+                    "created_by_user_id": "u-a1",
+                    "title": "Doc One",
+                    "source_type": "text",
+                },
+            ],
+        )
     return src
 
 
@@ -206,9 +406,15 @@ async def test_sample_is_deterministic_and_prod_faithful():
         assert trials["tr-running"]["status"] == "FAILED"
 
         # self-references deferred to the linkage pass
-        assert ("tasks", "task-solo", "current_version_id", "ver-solo-2") in s1["linkage"]
-        assert ("trials", "tr-superseded", "superseded_by_trial_id",
-                "tr-running") in s1["linkage"]
+        assert ("tasks", "task-solo", "current_version_id", "ver-solo-2") in s1[
+            "linkage"
+        ]
+        assert (
+            "trials",
+            "tr-superseded",
+            "superseded_by_trial_id",
+            "tr-running",
+        ) in s1["linkage"]
 
         jobs = {j["id"]: j for j in rows["worker_jobs"]}
         assert "wj-live" not in jobs  # only terminal jobs imported
@@ -229,19 +435,34 @@ async def test_bulk_batches_load_and_fallback_yields_single_rows():
     # widen the source: 1,200 extra terminal trials on exp-a
     t = Base.metadata.tables
     async with src.begin() as c:
-        await c.execute(t["trials"].insert(), [
-            {"id": f"tr-bulk-{i:04d}", "name": f"tr-bulk-{i:04d}",
-             "task_id": "task-solo", "task_version_id": "ver-solo-2",
-             "experiment_id": "exp-a", "org_id": "org-a", "agent": "claude",
-             "provider": "anthropic", "queue_key": "q", "timeout_minutes": 30,
-             "environment": "modal", "harbor_config": {}, "status": "SUCCESS",
-             "origin": "oddish", "result": {"reward": 0},
-             "superseded_by_trial_id": None}
-            for i in range(1200)
-        ])
+        await c.execute(
+            t["trials"].insert(),
+            [
+                {
+                    "id": f"tr-bulk-{i:04d}",
+                    "name": f"tr-bulk-{i:04d}",
+                    "task_id": "task-solo",
+                    "task_version_id": "ver-solo-2",
+                    "experiment_id": "exp-a",
+                    "org_id": "org-a",
+                    "agent": "claude",
+                    "provider": "anthropic",
+                    "queue_key": "q",
+                    "timeout_minutes": 30,
+                    "environment": "modal",
+                    "harbor_config": {},
+                    "status": "SUCCESS",
+                    "origin": "oddish",
+                    "result": {"reward": 0},
+                    "superseded_by_trial_id": None,
+                }
+                for i in range(1200)
+            ],
+        )
     engine = create_async_engine(URL)
     try:
         import preview_seed as ps
+
         orig_cap = ps.SAMPLE_TRIALS_PER_EXPERIMENT
         ps.SAMPLE_TRIALS_PER_EXPERIMENT = 5000
         try:
@@ -255,31 +476,43 @@ async def test_bulk_batches_load_and_fallback_yields_single_rows():
         # (org, name) -- colliding a task that has trials would correctly
         # cascade-yield those trials too, which is not what we exercise here
         async with engine.begin() as c:
-            await c.execute(text(
-                "insert into organizations (id, name, slug, plan, settings,"
-                " is_active, created_at, updated_at) values ('org-a', 'Real A',"
-                " 'real-a', 'free', '{}'::jsonb, true, now(), now())"
-            ))
-            await c.execute(text(
-                'insert into tasks (id, name, org_id, "user", priority,'
-                " status, task_path, tags, run_analysis, run_probe,"
-                " created_at, updated_at) values ('reviewer-made', 'dup-task',"
-                " 'org-a', 'r@corp.com', 'LOW', 'PENDING', 'p/m', '{}'::jsonb,"
-                " false, false, now(), now())"
-            ))
+            await c.execute(
+                text(
+                    "insert into organizations (id, name, slug, plan, settings,"
+                    " is_active, created_at, updated_at) values ('org-a', 'Real A',"
+                    " 'real-a', 'free', '{}'::jsonb, true, now(), now())"
+                )
+            )
+            await c.execute(
+                text(
+                    'insert into tasks (id, name, org_id, "user", priority,'
+                    " status, task_path, tags, run_analysis, run_probe,"
+                    " created_at, updated_at) values ('reviewer-made', 'dup-task',"
+                    " 'org-a', 'r@corp.com', 'LOW', 'PENDING', 'p/m', '{}'::jsonb,"
+                    " false, false, now(), now())"
+                )
+            )
         await ps.seed(engine, sampled=sampled)
 
         # all bulk rows landed
-        assert await _count(
-            engine, "select count(*) from trials where id like 'tr-bulk-%'"
-        ) >= 1200
+        assert (
+            await _count(
+                engine, "select count(*) from trials where id like 'tr-bulk-%'"
+            )
+            >= 1200
+        )
         # only the colliding task yielded; its siblings landed
-        assert await _count(
-            engine, "select count(*) from tasks where id='task-dup-a'") == 0
-        assert await _count(
-            engine, "select count(*) from tasks where id='reviewer-made'") == 1
-        assert await _count(
-            engine, "select count(*) from tasks where id='task-solo'") == 1
+        assert (
+            await _count(engine, "select count(*) from tasks where id='task-dup-a'")
+            == 0
+        )
+        assert (
+            await _count(engine, "select count(*) from tasks where id='reviewer-made'")
+            == 1
+        )
+        assert (
+            await _count(engine, "select count(*) from tasks where id='task-solo'") == 1
+        )
     finally:
         await engine.dispose()
         await src.dispose()
@@ -309,28 +542,48 @@ async def test_seed_loads_subset_reconciles_drift_and_keeps_reviewer_data():
         await preview_seed.seed(engine, sampled=sampled)
 
         # auth path: the real org row with its real clerk mapping is present
-        assert await _count(
-            engine,
-            "select count(*) from organizations"
-            " where id='org-a' and clerk_org_id='org_real_a'") == 1
+        assert (
+            await _count(
+                engine,
+                "select count(*) from organizations"
+                " where id='org-a' and clerk_org_id='org_real_a'",
+            )
+            == 1
+        )
         # members are the real users
-        assert await _count(
-            engine,
-            "select count(*) from users where org_id='org-a'"
-            " and email like '%@corp.com'") == 2
+        assert (
+            await _count(
+                engine,
+                "select count(*) from users where org_id='org-a'"
+                " and email like '%@corp.com'",
+            )
+            == 2
+        )
         # linkage applied; JSONB intact
-        assert await _count(
-            engine,
-            "select count(*) from tasks where id='task-solo'"
-            " and current_version_id='ver-solo-2'") == 1
-        assert await _count(
-            engine,
-            "select count(*) from trials where id='tr-superseded'"
-            " and superseded_by_trial_id='tr-running'") == 1
-        assert await _count(
-            engine,
-            "select count(*) from trials where id='tr-ok'"
-            " and (result->>'reward')::int = 1") == 1
+        assert (
+            await _count(
+                engine,
+                "select count(*) from tasks where id='task-solo'"
+                " and current_version_id='ver-solo-2'",
+            )
+            == 1
+        )
+        assert (
+            await _count(
+                engine,
+                "select count(*) from trials where id='tr-superseded'"
+                " and superseded_by_trial_id='tr-running'",
+            )
+            == 1
+        )
+        assert (
+            await _count(
+                engine,
+                "select count(*) from trials where id='tr-ok'"
+                " and (result->>'reward')::int = 1",
+            )
+            == 1
+        )
 
         # idempotent
         before = await _count(engine, "select count(*) from tasks")
@@ -339,41 +592,65 @@ async def test_seed_loads_subset_reconciles_drift_and_keeps_reviewer_data():
 
         # reviewer-created data (made in the preview by hand) must survive
         async with engine.begin() as c:
-            await c.execute(text(
-                "insert into users (id, org_id, email, role, name, is_active,"
-                " created_at, updated_at) values ('jit-rev', 'org-a',"
-                " 'reviewer@corp.com', 'owner', 'Reviewer', true, now(), now())"
-            ))
-            await c.execute(text(
-                "insert into tasks (id, name, org_id, created_by_user_id,"
-                " \"user\", priority, status, task_path, tags, run_analysis,"
-                " run_probe, created_at, updated_at) values ('manual-1',"
-                " 'reviewer-made', 'org-a', 'jit-rev', 'reviewer@corp.com',"
-                " 'LOW', 'PENDING', 'p/manual', '{}'::jsonb, false, false,"
-                " now(), now())"
-            ))
+            await c.execute(
+                text(
+                    "insert into users (id, org_id, email, role, name, is_active,"
+                    " created_at, updated_at) values ('jit-rev', 'org-a',"
+                    " 'reviewer@corp.com', 'owner', 'Reviewer', true, now(), now())"
+                )
+            )
+            await c.execute(
+                text(
+                    "insert into tasks (id, name, org_id, created_by_user_id,"
+                    ' "user", priority, status, task_path, tags, run_analysis,'
+                    " run_probe, created_at, updated_at) values ('manual-1',"
+                    " 'reviewer-made', 'org-a', 'jit-rev', 'reviewer@corp.com',"
+                    " 'LOW', 'PENDING', 'p/manual', '{}'::jsonb, false, false,"
+                    " now(), now())"
+                )
+            )
 
         # prod drift: everything belonging to exp-b drops out of the draw
         drifted = {
             "rows": {
-                name: [r for r in rows if r.get("experiment_id") != "exp-b"
-                       and r.get("id") not in ("exp-b", "task-dup-b", "ver-dup-b")
-                       and r.get("task_id") != "task-dup-b"]
+                name: [
+                    r
+                    for r in rows
+                    if r.get("experiment_id") != "exp-b"
+                    and r.get("id") not in ("exp-b", "task-dup-b", "ver-dup-b")
+                    and r.get("task_id") != "task-dup-b"
+                ]
                 for name, rows in sampled["rows"].items()
             },
             "linkage": sampled["linkage"],
         }
         await preview_seed.seed(engine, sampled=drifted)
-        assert await _count(engine, "select count(*) from experiments where id='exp-b'") == 0
-        assert await _count(engine, "select count(*) from tasks where id='task-dup-b'") == 0
-        assert await _count(engine, "select count(*) from experiments where id='exp-a'") == 1
+        assert (
+            await _count(engine, "select count(*) from experiments where id='exp-b'")
+            == 0
+        )
+        assert (
+            await _count(engine, "select count(*) from tasks where id='task-dup-b'")
+            == 0
+        )
+        assert (
+            await _count(engine, "select count(*) from experiments where id='exp-a'")
+            == 1
+        )
         # reviewer data untouched by reconcile
-        assert await _count(engine, "select count(*) from tasks where id='manual-1'") == 1
-        assert await _count(engine, "select count(*) from users where id='jit-rev'") == 1
+        assert (
+            await _count(engine, "select count(*) from tasks where id='manual-1'") == 1
+        )
+        assert (
+            await _count(engine, "select count(*) from users where id='jit-rev'") == 1
+        )
 
         # outage tolerance: sampled=None leaves everything alone
         await preview_seed.seed(engine, sampled=None)
-        assert await _count(engine, "select count(*) from experiments where id='exp-a'") == 1
+        assert (
+            await _count(engine, "select count(*) from experiments where id='exp-a'")
+            == 1
+        )
     finally:
         await engine.dispose()
         await src.dispose()
@@ -392,9 +669,11 @@ async def test_reseed_skips_unchanged_rows_and_writes_deltas():
 
         async def ctid(task_id):
             async with engine.connect() as c:
-                return (await c.execute(text(
-                    f"select ctid::text from tasks where id='{task_id}'"
-                ))).scalar_one()
+                return (
+                    await c.execute(
+                        text(f"select ctid::text from tasks where id='{task_id}'")
+                    )
+                ).scalar_one()
 
         before_solo, before_dup = await ctid("task-solo"), await ctid("task-dup-a")
         await preview_seed.seed(engine, sampled=sampled)  # identical draw
@@ -405,10 +684,14 @@ async def test_reseed_skips_unchanged_rows_and_writes_deltas():
             if t["id"] == "task-dup-a":
                 t["task_path"] = "p/changed"
         await preview_seed.seed(engine, sampled=sampled)
-        assert await _count(
-            engine,
-            "select count(*) from tasks where id='task-dup-a'"
-            " and task_path='p/changed'") == 1
+        assert (
+            await _count(
+                engine,
+                "select count(*) from tasks where id='task-dup-a'"
+                " and task_path='p/changed'",
+            )
+            == 1
+        )
         assert await ctid("task-dup-a") != before_dup  # the delta was written
     finally:
         await engine.dispose()
@@ -423,41 +706,59 @@ async def test_seed_cleans_legacy_fixtures_and_yields_to_jit_conflicts():
         await _reset_target(engine)
         # a reused branch may carry artifacts of earlier seed versions ...
         async with engine.begin() as c:
-            await c.execute(text(
-                "insert into organizations (id, name, slug, plan, settings,"
-                " is_active, created_at, updated_at) values"
-                " ('seed-org', 'Preview Org', 'preview-org', 'free',"
-                " '{}'::jsonb, true, now(), now()),"
-                " ('org-a', 'Real A', 'real-a', 'free', '{}'::jsonb, true,"
-                " now(), now())"
-            ))
-            await c.execute(text(
-                "insert into users (id, org_id, email, role, name, is_active,"
-                " created_at, updated_at) values"
-                " ('seed-usr-owner', 'seed-org', 'owner@preview.local',"
-                "  'owner', 'Preview Owner', true, now(), now()),"
-                " ('anon-1', 'seed-org', 'user-x@preview.local', 'member',"
-                "  'Prod User x', true, now(), now()),"
-                # ... and a JIT-provisioned reviewer holding a real user's
-                # unique identity under a different primary key
-                " ('jit-1', 'org-a', 'real-a1@corp.com', 'owner', 'Reviewer',"
-                "  true, now(), now())"
-            ))
+            await c.execute(
+                text(
+                    "insert into organizations (id, name, slug, plan, settings,"
+                    " is_active, created_at, updated_at) values"
+                    " ('seed-org', 'Preview Org', 'preview-org', 'free',"
+                    " '{}'::jsonb, true, now(), now()),"
+                    " ('org-a', 'Real A', 'real-a', 'free', '{}'::jsonb, true,"
+                    " now(), now())"
+                )
+            )
+            await c.execute(
+                text(
+                    "insert into users (id, org_id, email, role, name, is_active,"
+                    " created_at, updated_at) values"
+                    " ('seed-usr-owner', 'seed-org', 'owner@preview.local',"
+                    "  'owner', 'Preview Owner', true, now(), now()),"
+                    " ('anon-1', 'seed-org', 'user-x@preview.local', 'member',"
+                    "  'Prod User x', true, now(), now()),"
+                    # ... and a JIT-provisioned reviewer holding a real user's
+                    # unique identity under a different primary key
+                    " ('jit-1', 'org-a', 'real-a1@corp.com', 'owner', 'Reviewer',"
+                    "  true, now(), now())"
+                )
+            )
 
         await preview_seed.seed(engine, sampled=sampled)
 
         # legacy fixtures and anonymized users are gone
-        assert await _count(engine, "select count(*) from organizations where id='seed-org'") == 0
-        assert await _count(engine, "select count(*) from users where email like '%@preview.local'") == 0
+        assert (
+            await _count(
+                engine, "select count(*) from organizations where id='seed-org'"
+            )
+            == 0
+        )
+        assert (
+            await _count(
+                engine, "select count(*) from users where email like '%@preview.local'"
+            )
+            == 0
+        )
         # the conflicting import yielded: one row holds that email, the JIT one
-        assert await _count(
-            engine,
-            "select count(*) from users where email='real-a1@corp.com'") == 1
-        assert await _count(
-            engine,
-            "select count(*) from users where id='jit-1'") == 1
+        assert (
+            await _count(
+                engine, "select count(*) from users where email='real-a1@corp.com'"
+            )
+            == 1
+        )
+        assert await _count(engine, "select count(*) from users where id='jit-1'") == 1
         # the rest of the subset still loaded
-        assert await _count(engine, "select count(*) from experiments where id='exp-a'") == 1
+        assert (
+            await _count(engine, "select count(*) from experiments where id='exp-a'")
+            == 1
+        )
         assert await _count(engine, "select count(*) from users where id='u-a2'") == 1
     finally:
         await engine.dispose()

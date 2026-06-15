@@ -26,7 +26,7 @@ type VerdictPresentation = {
 
 function presentVerdict(
   task: Task,
-  iconSizeClass: string
+  iconSizeClass: string,
 ): VerdictPresentation {
   const status = task.verdict_status;
   const verdict = task.verdict ?? null;
@@ -43,7 +43,7 @@ function presentVerdict(
     isGood == null &&
     (task.status === "analyzing" ||
       (task.trials ?? []).some((t) =>
-        isActivePipelineStatus(t.analysis_status)
+        isActivePipelineStatus(t.analysis_status),
       ));
   const pending = verdictPending || analysesInFlight;
 

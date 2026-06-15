@@ -32,6 +32,7 @@ Invariants:
   inserts span both Alembic stacks in FK topological order without
   importing any ORM models, and new tables join the draw automatically.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -78,8 +79,16 @@ _TERMINAL_JOB_STATUSES = ("SUCCESS", "FAILED", "CANCELLED")
 # Insert order is derived from reflection (topological); reconcile order is
 # this list reversed-children-first by construction.
 _RECONCILED_TABLES = (
-    "experiments", "tasks", "task_versions", "task_experiments", "trials",
-    "worker_jobs", "skills", "skill_files", "documents", "probe_presets",
+    "experiments",
+    "tasks",
+    "task_versions",
+    "task_experiments",
+    "trials",
+    "worker_jobs",
+    "skills",
+    "skill_files",
+    "documents",
+    "probe_presets",
 )
 
 # FK edges to ignore when topologically sorting reflected tables; the
@@ -122,6 +131,7 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
     Returns ``{"rows": {table: [row, ...]}, "linkage": [(table, id, column,
     value), ...]}`` for :func:`seed`.
     """
+
     async def rows_of(conn, sql: str, **params) -> list[dict]:
         res = await conn.execute(text(sql), params)
         return [dict(r._mapping) for r in res.fetchall()]
@@ -186,11 +196,15 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
             ids=exp_ids,
         )
         task_ids = sorted({l["task_id"] for l in links})
-        tasks = await rows_of(
-            conn,
-            "SELECT * FROM tasks WHERE id = ANY(:ids) AND deleted_at IS NULL",
-            ids=task_ids,
-        ) if task_ids else []
+        tasks = (
+            await rows_of(
+                conn,
+                "SELECT * FROM tasks WHERE id = ANY(:ids) AND deleted_at IS NULL",
+                ids=task_ids,
+            )
+            if task_ids
+            else []
+        )
         # Extra random tasks beyond the anchored experiments widen the task
         # distribution (tasks outside any sampled experiment).
         tasks += await rows_of(
@@ -206,27 +220,35 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
         kept_task_ids = [t["id"] for t in tasks]
         links = [l for l in links if l["task_id"] in set(kept_task_ids)]
 
-        versions = await rows_of(
-            conn,
-            "SELECT * FROM task_versions WHERE task_id = ANY(:ids)",
-            ids=kept_task_ids,
-        ) if kept_task_ids else []
+        versions = (
+            await rows_of(
+                conn,
+                "SELECT * FROM task_versions WHERE task_id = ANY(:ids)",
+                ids=kept_task_ids,
+            )
+            if kept_task_ids
+            else []
+        )
 
-        trials = await rows_of(
-            conn,
-            "SELECT * FROM ("
-            "  SELECT t.*, row_number() OVER ("
-            "    PARTITION BY t.experiment_id ORDER BY md5(t.id || :key)"
-            "  ) AS _rn FROM trials t"
-            "  WHERE t.experiment_id = ANY(:exp_ids)"
-            "    AND t.task_id = ANY(:task_ids)"
-            "    AND t.deleted_at IS NULL"
-            ") s WHERE s._rn <= :cap",
-            key=sample_key,
-            exp_ids=exp_ids,
-            task_ids=kept_task_ids,
-            cap=SAMPLE_TRIALS_PER_EXPERIMENT,
-        ) if kept_task_ids else []
+        trials = (
+            await rows_of(
+                conn,
+                "SELECT * FROM ("
+                "  SELECT t.*, row_number() OVER ("
+                "    PARTITION BY t.experiment_id ORDER BY md5(t.id || :key)"
+                "  ) AS _rn FROM trials t"
+                "  WHERE t.experiment_id = ANY(:exp_ids)"
+                "    AND t.task_id = ANY(:task_ids)"
+                "    AND t.deleted_at IS NULL"
+                ") s WHERE s._rn <= :cap",
+                key=sample_key,
+                exp_ids=exp_ids,
+                task_ids=kept_task_ids,
+                cap=SAMPLE_TRIALS_PER_EXPERIMENT,
+            )
+            if kept_task_ids
+            else []
+        )
         for t in trials:
             t.pop("_rn", None)
 
@@ -255,7 +277,8 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
             "skills",
             "SELECT * FROM skills WHERE deleted_at IS NULL"
             " ORDER BY md5(id || :key) LIMIT :n",
-            key=sample_key, n=SAMPLE_SKILLS,
+            key=sample_key,
+            n=SAMPLE_SKILLS,
         )
         if rows.get("skills"):
             await section(
@@ -267,47 +290,59 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
             "documents",
             "SELECT * FROM documents WHERE deleted_at IS NULL"
             " ORDER BY md5(id || :key) LIMIT :n",
-            key=sample_key, n=SAMPLE_DOCUMENTS,
+            key=sample_key,
+            n=SAMPLE_DOCUMENTS,
         )
         await section(
             "probe_presets",
             "SELECT * FROM probe_presets"
             " WHERE deleted_at IS NULL AND org_id IS NOT NULL"
             " ORDER BY md5(id || :key) LIMIT :n",
-            key=sample_key, n=SAMPLE_PROBE_PRESETS,
+            key=sample_key,
+            n=SAMPLE_PROBE_PRESETS,
         )
         for name, err in failures.items():
             _warn(f"sample section {name!r} skipped ({err})")
 
         # --- identity: import the sampled orgs IN FULL (org row + every
         # member), as-is, so auth and the members list match prod exactly.
-        org_ids = sorted({
-            row["org_id"]
-            for table_rows in ([exps, tasks, trials], rows.values())
-            for group in table_rows
-            for row in (group if isinstance(group, list) else [group])
-            if isinstance(row, dict) and row.get("org_id")
-        })
-        orgs = await rows_of(
-            conn,
-            "SELECT * FROM organizations WHERE id = ANY(:ids)",
-            ids=org_ids,
-        ) if org_ids else []
-        users = await rows_of(
-            conn,
-            "SELECT * FROM users WHERE org_id = ANY(:ids)",
-            ids=org_ids,
-        ) if org_ids else []
+        org_ids = sorted(
+            {
+                row["org_id"]
+                for group in [exps, tasks, trials, *rows.values()]
+                for row in group
+                if row.get("org_id")
+            }
+        )
+        orgs = (
+            await rows_of(
+                conn,
+                "SELECT * FROM organizations WHERE id = ANY(:ids)",
+                ids=org_ids,
+            )
+            if org_ids
+            else []
+        )
+        users = (
+            await rows_of(
+                conn,
+                "SELECT * FROM users WHERE org_id = ANY(:ids)",
+                ids=org_ids,
+            )
+            if org_ids
+            else []
+        )
         # Plus any referenced author who sits outside the sampled orgs.
         known_users = {u["id"] for u in users}
-        extra_user_ids = sorted({
-            v
-            for group in ([exps, tasks, versions, trials], rows.values())
-            for table_rows in group
-            for row in (table_rows if isinstance(table_rows, list) else [table_rows])
-            for k, v in (row.items() if isinstance(row, dict) else [])
-            if k.endswith("_user_id") and v and v not in known_users
-        })
+        extra_user_ids = sorted(
+            {
+                v
+                for group in [exps, tasks, versions, trials, *rows.values()]
+                for row in group
+                for k, v in row.items()
+                if k.endswith("_user_id") and v and v not in known_users
+            }
+        )
         if extra_user_ids:
             users += await rows_of(
                 conn,
@@ -336,8 +371,12 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
             t["current_queue_slot"] = None
         if t.get("superseded_by_trial_id") in trial_ids:
             linkage.append(
-                ("trials", t["id"], "superseded_by_trial_id",
-                 t["superseded_by_trial_id"])
+                (
+                    "trials",
+                    t["id"],
+                    "superseded_by_trial_id",
+                    t["superseded_by_trial_id"],
+                )
             )
         t["superseded_by_trial_id"] = None
     job_ids = {j["id"] for j in rows.get("worker_jobs", [])}
@@ -347,15 +386,17 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
         if j.get("parent_job_id") not in job_ids:
             j["parent_job_id"] = None
 
-    rows.update({
-        "organizations": orgs,
-        "users": users,
-        "experiments": exps,
-        "tasks": tasks,
-        "task_versions": versions,
-        "task_experiments": links,
-        "trials": trials,
-    })
+    rows.update(
+        {
+            "organizations": orgs,
+            "users": users,
+            "experiments": exps,
+            "tasks": tasks,
+            "task_versions": versions,
+            "task_experiments": links,
+            "trials": trials,
+        }
+    )
     return {"rows": rows, "linkage": linkage}
 
 
@@ -441,11 +482,13 @@ async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
         await conn.run_sync(md.reflect)
         ordered = _topo_order(md)
 
-        await conn.execute(text(
-            f"CREATE TABLE IF NOT EXISTS {_STATE_TABLE}"
-            " (table_name text NOT NULL, row_id text NOT NULL,"
-            "  PRIMARY KEY (table_name, row_id))"
-        ))
+        await conn.execute(
+            text(
+                f"CREATE TABLE IF NOT EXISTS {_STATE_TABLE}"
+                " (table_name text NOT NULL, row_id text NOT NULL,"
+                "  PRIMARY KEY (table_name, row_id))"
+            )
+        )
         await _cleanup_legacy_fixture_rows(md, conn, ordered)
         if sampled is None:
             return
@@ -465,7 +508,8 @@ async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
         for table_name, row_id, column, value in (sampled or {}).get("linkage", []):
             table = md.tables[table_name]
             await conn.execute(
-                table.update().where(table.c.id == row_id)
+                table.update()
+                .where(table.c.id == row_id)
                 .where(table.c[column].is_distinct_from(value))
                 .values(**{column: value})
             )
@@ -484,7 +528,7 @@ async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
                         " SELECT :t, unnest(CAST(:rids AS text[]))"
                         " ON CONFLICT DO NOTHING"
                     ),
-                    {"t": name, "rids": rids[start:start + 10000]},
+                    {"t": name, "rids": rids[start : start + 10000]},
                 )
 
 
@@ -524,16 +568,14 @@ async def _load_table_copy_merge(
     # The asyncpg json/jsonb codec SQLAlchemy registers expects values
     # already serialized to str (the ORM execute path does that itself, but
     # raw COPY bypasses it), so serialize dict/list values here.
-    json_cols = {
-        c.name for c in table.columns if isinstance(c.type, (JSONB, JSON))
-    }
+    json_cols = {c.name for c in table.columns if isinstance(c.type, (JSONB, JSON))}
+
     def _rec_value(name: str, value):
         if name in json_cols and isinstance(value, (dict, list)):
             return json.dumps(value)
         return value
-    records = [
-        tuple(_rec_value(c, r.get(c)) for c in cols) for r in prepared
-    ]
+
+    records = [tuple(_rec_value(c, r.get(c)) for c in cols) for r in prepared]
     col_list = ", ".join(f'"{c}"' for c in cols)
     pk_list = ", ".join(f'"{c}"' for c in pk_cols)
     deferred = _LINKAGE_COLUMNS.get(table.name, set())
@@ -553,27 +595,27 @@ async def _load_table_copy_merge(
     stage = f"_seed_stage_{table.name}"
     async with engine.connect() as conn:
         async with conn.begin():
-            await conn.execute(text(
-                f'CREATE TEMP TABLE "{stage}"'
-                f' (LIKE "{table.name}" INCLUDING DEFAULTS) ON COMMIT DROP'
-            ))
-            raw = (await conn.get_raw_connection()).driver_connection
-            await raw.copy_records_to_table(
-                stage, records=records, columns=cols
+            await conn.execute(
+                text(
+                    f'CREATE TEMP TABLE "{stage}"'
+                    f' (LIKE "{table.name}" INCLUDING DEFAULTS) ON COMMIT DROP'
+                )
             )
-            await conn.execute(text(
-                f'INSERT INTO "{table.name}" ({col_list})'
-                f' SELECT {col_list} FROM "{stage}" {conflict}'
-            ))
+            raw = (await conn.get_raw_connection()).driver_connection
+            await raw.copy_records_to_table(stage, records=records, columns=cols)
+            await conn.execute(
+                text(
+                    f'INSERT INTO "{table.name}" ({col_list})'
+                    f' SELECT {col_list} FROM "{stage}" {conflict}'
+                )
+            )
 
 
-async def _load_table_batches(
-    engine: AsyncEngine, table, prepared: list[dict]
-) -> None:
+async def _load_table_batches(engine: AsyncEngine, table, prepared: list[dict]) -> None:
     pk_cols = [c.name for c in table.primary_key.columns]
     batch_size = max(1, _MAX_BIND_PARAMS // max(1, len(table.columns)))
     batches = [
-        prepared[start:start + batch_size]
+        prepared[start : start + batch_size]
         for start in range(0, len(prepared), batch_size)
     ]
     queue: asyncio.Queue = asyncio.Queue()
@@ -610,7 +652,8 @@ async def _upsert_batch(conn, table, pk_cols: list[str], chunk: list[dict]) -> N
         async with conn.begin_nested():
             await conn.execute(
                 stmt.on_conflict_do_update(
-                    index_elements=pk_cols, set_=set_,
+                    index_elements=pk_cols,
+                    set_=set_,
                     where=_changed(table, stmt, non_pk),
                 )
             )
@@ -625,7 +668,8 @@ async def _upsert_batch(conn, table, pk_cols: list[str], chunk: list[dict]) -> N
             async with conn.begin_nested():
                 await conn.execute(
                     stmt.on_conflict_do_update(
-                        index_elements=pk_cols, set_=set_,
+                        index_elements=pk_cols,
+                        set_=set_,
                         where=_changed(table, stmt, non_pk),
                     )
                 )
@@ -644,9 +688,7 @@ async def _reconcile_previous_draw(md: MetaData, conn, sample_rows: dict) -> Non
     organizations/users (identity rows; negligible churn, may be referenced
     by reviewer-created rows) are never deleted.
     """
-    res = await conn.execute(
-        text(f"SELECT table_name, row_id FROM {_STATE_TABLE}")
-    )
+    res = await conn.execute(text(f"SELECT table_name, row_id FROM {_STATE_TABLE}"))
     previous: dict[str, set[str]] = {}
     for table_name, row_id in res.fetchall():
         previous.setdefault(table_name, set()).add(row_id)
@@ -657,9 +699,7 @@ async def _reconcile_previous_draw(md: MetaData, conn, sample_rows: dict) -> Non
         table = md.tables.get(name)
         if table is None or name not in previous:
             continue
-        current = {
-            _row_key(table, row) for row in sample_rows.get(name, [])
-        }
+        current = {_row_key(table, row) for row in sample_rows.get(name, [])}
         pk_cols = list(table.primary_key.columns)
         stale = sorted(previous[name] - current)
         if not stale:
@@ -667,9 +707,7 @@ async def _reconcile_previous_draw(md: MetaData, conn, sample_rows: dict) -> Non
         if len(pk_cols) == 1:
             for start in range(0, len(stale), 5000):
                 await conn.execute(
-                    delete(table).where(
-                        pk_cols[0].in_(stale[start:start + 5000])
-                    )
+                    delete(table).where(pk_cols[0].in_(stale[start : start + 5000]))
                 )
         else:
             for stale_key in stale:
@@ -691,7 +729,11 @@ async def _cleanup_legacy_fixture_rows(md: MetaData, conn, ordered) -> None:
     for table in reversed(ordered):
         if table.name == _STATE_TABLE:
             continue
-        str_pks = [c for c in table.primary_key.columns if hasattr(c.type, "length") or str(c.type).lower().startswith("text")]
+        str_pks = [
+            c
+            for c in table.primary_key.columns
+            if hasattr(c.type, "length") or str(c.type).lower().startswith("text")
+        ]
         if not str_pks:
             continue
         conds = [c.like("seed-%") for c in str_pks]

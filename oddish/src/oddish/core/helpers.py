@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
-from harbor import EnvironmentType
+from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,7 +26,6 @@ from oddish.db import (
     WorkerJobStatus,
 )
 from oddish.core.tags_projection import (
-    UserTagView as _UserTagView,
     list_effective_user_tags_for_task_versions,
 )
 from oddish.model_pricing import estimate_cost_usd
@@ -1179,6 +1178,7 @@ async def cancel_job_by_worker(
 
     logger.info("cancel_job_by_worker: terminated %s sandbox %s", provider, external_id)
     return True
+
 
 def escape_like(needle: str) -> str:
     """Escape LIKE/ILIKE pattern metacharacters so user input matches

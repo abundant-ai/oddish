@@ -9,7 +9,7 @@ import { ProbeRunSummary } from "@/components/probe-run-summary";
 type AgentMessage = {
   kind: "assistant_text" | "tool_use" | "tool_result" | "result";
   text: string;
-  name?: string;        // tool name when kind === "tool_use" (e.g. "Bash", "Read")
+  name?: string; // tool name when kind === "tool_use" (e.g. "Bash", "Read")
   is_error?: boolean;
 };
 
@@ -61,7 +61,9 @@ export default function ProbeResultPage({
   const fetcher = async (url: string) => {
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok)
-      throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      throw new Error(
+        `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`,
+      );
     return res.json();
   };
 

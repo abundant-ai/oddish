@@ -89,7 +89,11 @@ function resultDisplay(t: Trial): ResultDisplay {
       return { text: `—/— ${plural}`, variant: "muted", title: "Trial queued" };
     }
     if (t.status === "running") {
-      return { text: `—/— ${plural}`, variant: "muted", title: "Trial running" };
+      return {
+        text: `—/— ${plural}`,
+        variant: "muted",
+        title: "Trial running",
+      };
     }
     if (t.status === "failed") {
       return {
@@ -210,10 +214,13 @@ function resultDisplay(t: Trial): ResultDisplay {
         ? `${succeeded} cheat${succeeded === 1 ? "" : "s"} succeeded`
         : `${blocked} blocked`;
     const tipParts: string[] = [];
-    if (succeeded > 0) tipParts.push(`${succeeded} succeeded (verifier was bypassed)`);
+    if (succeeded > 0)
+      tipParts.push(`${succeeded} succeeded (verifier was bypassed)`);
     if (blocked > 0) tipParts.push(`${blocked} blocked by verifier`);
     if (investigation > 0)
-      tipParts.push(`${investigation} investigation step${investigation === 1 ? "" : "s"} (not cheat attempts)`);
+      tipParts.push(
+        `${investigation} investigation step${investigation === 1 ? "" : "s"} (not cheat attempts)`,
+      );
     return {
       text,
       variant: succeeded > 0 ? "cheat" : "blocked",
@@ -317,7 +324,10 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
                   {(() => {
                     const r = resultDisplay(t);
                     return (
-                      <span className={VARIANT_CLASS[r.variant]} title={r.title}>
+                      <span
+                        className={VARIANT_CLASS[r.variant]}
+                        title={r.title}
+                      >
                         {r.text}
                       </span>
                     );

@@ -91,7 +91,9 @@ def test_select_excludes_current_and_probes():
         SimpleNamespace(id="t-0", harbor_config=None),  # real attempt
         SimpleNamespace(id="t-1", harbor_config={"mode": "probe"}),  # probe
         SimpleNamespace(id="t-2", harbor_config={"extra_instructions": "x"}),  # real
-        SimpleNamespace(id="t-3", harbor_config={"mode": "probe"}),  # current (also probe)
+        SimpleNamespace(
+            id="t-3", harbor_config={"mode": "probe"}
+        ),  # current (also probe)
     ]
     selected = select_related_trials(trials, current_trial_id="t-3")
     ids = [t.id for t in selected]

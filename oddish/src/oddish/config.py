@@ -50,23 +50,37 @@ def next_probe_model(index: int) -> str:
     return PROBE_MODEL_ROTATION[index % len(PROBE_MODEL_ROTATION)]
 
 
-# Directive injected into every auto-probe (the operator supplies nothing).
-# Mirrors the established default probe preset; change requires a deploy.
-AUTO_PROBE_INSTRUCTIONS: str = (
-    "You are probing this task's harness, not solving the task. Explore the "
-    "environment, the verifier, and (via `import harbor`) the harness itself. "
-    "Report anything that would let *the real solving agent* score well "
-    "without genuinely completing the task: reward hacks, leaked solutions, "
-    "verifier gaps, or environment quirks. The real agent sees only its `/app` "
-    "workspace plus its prompt — probe-only material is staged separately under "
-    "`/probe-harness/`, and a hidden answer key or reference solution there "
-    "(tests/, solution/) is by design, not a leak, unless that same answer is "
-    "reachable from `/app`. Be concise and concrete."
+NOP_ORACLE_QUEUE_KEY = "nop_oracle"
+_NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
+# Suffixed/prefixed variants of the deterministic baseline agents (e.g.
+# "oracle-v2", "agent-nop"). Kept in sync with the dashboard's
+# ``_baseline_agent_clause`` and the frontend's ``isBaselineAgentName`` so every
+# code path agrees on what counts as a nop/oracle baseline.
+_NOP_ORACLE_AGENT_PREFIXES: tuple[str, ...] = (
+    "nop-",
+    "oracle-",
+    "agent-nop",
+    "agent-oracle",
 )
 
 
-NOP_ORACLE_QUEUE_KEY = "nop_oracle"
-_NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
+def is_nop_oracle_agent(agent: str | None) -> bool:
+    """Return True for the deterministic nop/oracle baseline agents.
+
+    Matches the exact ``nop``/``oracle`` names plus the common suffixed and
+    prefixed variants people use (``oracle-v2``, ``agent-nop``, ...). Every
+    baseline trial — whatever its agent variant — is then forced onto the
+    ``default`` model and the shared nop/oracle queue, instead of inheriting
+    whatever (often arbitrary) model string the caller happened to pass.
+    """
+    normalized = (agent or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in _NOP_ORACLE_AGENTS:
+        return True
+    return normalized.startswith(_NOP_ORACLE_AGENT_PREFIXES)
+
+
 OPENAI_PROVIDER_AZURE = "azure"
 OPENAI_PROVIDER_OPENAI = "openai"
 _OPENAI_PROVIDERS: set[str] = {OPENAI_PROVIDER_AZURE, OPENAI_PROVIDER_OPENAI}
@@ -842,16 +856,18 @@ class Settings(BaseSettings):
         """Canonicalize trial model input for storage/routing.
 
         - Treat '-', 'none', 'null', empty, etc as missing.
-        - For nop/oracle, always force model to 'default'.
+        - For nop/oracle, always force the model to the single canonical
+          ``nop_oracle`` id (same string as the queue key) so the stored model,
+          the queue key, and the concurrency bucket all agree -- one id, no
+          model/queue drift in bookkeeping.
         - Canonicalize Claude models to their Bedrock runtime id, since Oddish
           runs Claude through Bedrock and persists the same id it executes.
         - Otherwise return cleaned model (or None if missing).
         """
         cleaned = normalize_model_id(model)
 
-        normalized_agent = (agent or "").strip().lower()
-        if normalized_agent in _NOP_ORACLE_AGENTS:
-            return "default"
+        if is_nop_oracle_agent(agent):
+            return NOP_ORACLE_QUEUE_KEY
 
         # GLM/z.ai, MiniMax, and Moonshot/Kimi models run on the claude-code
         # harness but route to their own direct endpoints, not Bedrock.
@@ -898,8 +914,7 @@ class Settings(BaseSettings):
 
     def get_queue_key_for_trial(self, agent: str, model: str | None) -> str:
         """Resolve queue key from model first, fallback to provider bucket."""
-        normalized_agent = (agent or "").strip().lower()
-        if normalized_agent in _NOP_ORACLE_AGENTS:
+        if is_nop_oracle_agent(agent):
             return NOP_ORACLE_QUEUE_KEY
         normalized_model = self.normalize_trial_model(agent, model)
         if normalized_model:

@@ -3,11 +3,15 @@ NEW task submissions into run_probe without passing --run-probe.
 
 Runs against an empty Postgres via ``ODDISH_DATABASE_URL``; skips otherwise.
 """
+
 import os
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (  # type: ignore[attr-defined]
+    async_sessionmaker,
+    create_async_engine,
+)
 
 import models  # noqa: F401  registers cloud tables on the shared Base
 from auth.types import AuthContext, AuthMethod

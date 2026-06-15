@@ -109,7 +109,7 @@ async def list_org_probes_core(
     # trials newest-first, selecting only the five scalar columns the row
     # needs. The org filter sits on ``TrialModel.org_id`` (mirrors the task's
     # org at trial creation) so Postgres restricts the scan before windowing.
-    ranked = select(
+    ranked_select = select(
         TrialModel.task_id.label("task_id"),
         TrialModel.status.label("last_status"),
         TrialModel.created_at.label("last_run_at"),
@@ -122,8 +122,8 @@ async def list_org_probes_core(
         .label("rn"),
     ).where(TrialModel.is_probe.is_(True))
     if org_id is not None:
-        ranked = ranked.where(TrialModel.org_id == org_id)
-    ranked = ranked.subquery()
+        ranked_select = ranked_select.where(TrialModel.org_id == org_id)
+    ranked = ranked_select.subquery()
 
     stmt = (
         select(

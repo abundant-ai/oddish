@@ -161,7 +161,7 @@ async def _claim_for_user(
     result = await session.execute(
         _claim_update_statement(experiment_ids=experiment_ids, user_id=user_id)
     )
-    return int(result.rowcount or 0)
+    return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
 
 def _sentinel_update_statement(*, org_id: str, batch: int):
@@ -365,7 +365,7 @@ async def backfill_experiment_owners(
                 result = await session.execute(
                     _sentinel_update_statement(org_id=org_id, batch=sentinel_batch)
                 )
-                sentineled += int(result.rowcount or 0)
+                sentineled += int(result.rowcount or 0)  # type: ignore[attr-defined]
     if claimed or sentineled:
         logger.info(
             "experiments owner backfill: claimed=%s unattributed=%s",
