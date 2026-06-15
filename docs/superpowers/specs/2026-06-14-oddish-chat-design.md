@@ -1,122 +1,113 @@
-# Oddish Chat — Query Experiments/Trials & Chat with Trial Logs
+# Oddish Chat — Recovery Substrate + Global & Task Scopes
 
-**Status:** Approved design (2026-06-14)
-**Branch:** `chat/experiment-trial-chat`
-**Inspiration:** atelier's chat (event-log message store, NDJSON streaming, scoped-vs-general priming) — *not* its Codex/Firecracker execution model.
+**Status:** Approved design (2026-06-14, rev 2)
+**Branch (oddish):** `chat/experiment-trial-chat`
+**Primary implementation repo:** `agent-sandbox-service` (chat domain). Oddish is the thin client (entry points + cutover).
 
-## Problem
+> **Rev 2 supersedes rev 1.** Rev 1 proposed an in-process Anthropic SDK tool-use loop inside oddish. That was wrong: the chat engine already exists as **Claude Code running in Daytona sandboxes**, orchestrated by `agent-sandbox-service` (`services/agent_runtimes/claude_code.py` runs `claude --print --output-format=stream-json --resume <id>`). This rev builds on that.
 
-Two distinct conversational needs against oddish data:
+## What we're taking from atelier
 
-1. **Global query chat** (tasks page): "find tasks that have xyz characteristics" — ask natural-language questions across all tasks/experiments/trials.
-2. **Scoped log chat** (task/experiment detail page): chat with the trial logs associated with a task/experiment, defaulting to the latest version while able to reach past version runs.
+**Not** its engine (Codex-in-Firecracker). We already have the equivalent (Claude-Code-in-Daytona). We're taking atelier's **state management + chat recovery**: an append-only event log persisted *per chunk* to Postgres, durable in-flight turn tracking with a one-running-turn invariant, and replay-then-resume on reconnect. This is the backbone; the two chat scopes are built on top of it.
 
-## Decision: one engine, two primers (two entry points)
+## Current state (agent-sandbox-service)
 
-We build **one** chat engine with **two configurations** (a `scope`), not two independent chats and not a single chat that carries context between scopes. The two jobs need genuinely different tools — global is *structured search over Postgres*; scoped is *on-demand retrieval over large S3 log blobs* — so context-carryover plumbing is unnecessary for v1. The only things that differ per entry point are **which tools are offered** and the **system prompt**.
+- `ChatSession` (Postgres, `models.py:92`): durable **metadata** only — `id, org_id, user_id, scope_kind, scope_id, sandbox_id, daytona_session_id, claude_session_id, status, error`. `scope_kind`/`scope_id` are already generic.
+- Engine: long-lived Daytona sandbox per session; `claude` installed once; `claude --resume <claude_session_id>` per message; scoped `CLAUDE.md` (`render_experiment_claude_md`, `render_task_probes_claude_md`).
+- Routes: `POST /chat-sessions`, `GET /chat-sessions/{id}`, `POST /chat-sessions/{id}/messages` (SSE), `DELETE /chat-sessions/{id}`, skills export.
+- **Transcript: `SessionTranscriptBuffer` — in-memory dict, flushed to MinIO once at close, "Lost on service crash by design."** No event-log table, no per-turn record, no replay endpoint.
 
-### Approaches considered
+## The gap (vs. atelier)
 
-| Approach | Verdict |
-|---|---|
-| Copy atelier literally (Codex CLI in Firecracker sandbox, tools as injected CLIs) | Rejected — massive infra for "query Postgres + read S3 blobs"; oddish has no sandbox layer. |
-| Text-to-SQL (model writes SQL) | Rejected — unsafe/brittle; bypasses the tested `oddish.core.*` access layer and org-scoping/auth. |
-| **In-process Anthropic tool-use wrapping `oddish.core.*`** | **Chosen** — reuses the existing Anthropic client + model routing, inherits auth/org-scoping, deterministic tools, scales via on-demand retrieval. |
+| Concern | atelier | agent-sandbox-service today |
+|---|---|---|
+| Transcript durability | per-chunk append to Postgres `sandbox_events` | in-memory, flush-at-close only |
+| In-flight turn tracking | `agent_turns` + one-running-turn unique index | none |
+| Mid-turn refresh | replay log + tail live stream | nothing to replay from |
+| Service crash mid-session | transcript intact in DB | transcript lost; session marked `broken` |
 
-## Engine
+The cold archive (MinIO flush at close) stays. We add the **hot path** (durable per-event log) that makes recovery actually work.
 
-An in-process **manual agentic loop** (Anthropic SDK, pinned `anthropic==0.76.0`):
+---
 
-1. Load the conversation's prior messages from the DB.
-2. Build the **system prompt** from `scope` (general vs. primed with this task's id / `current_version` / compact trial summary).
-3. Run the tool-use loop with the **async streaming** variant:
-   - `async with client.messages.stream(model, max_tokens, system, tools, messages) as stream:` — forward text deltas to the client as they arrive.
-   - `final = await stream.get_final_message()`.
-   - While `final.stop_reason == "tool_use"`: execute each `tool_use` block via the dispatch table, append the assistant message (`final.content`) and a user message of `tool_result` blocks (`{"type":"tool_result","tool_use_id":..,"content":..,"is_error":?}`), and stream again.
-   - Stop on `stop_reason == "end_turn"`.
-4. Persist each completed turn to the DB and stream assistant text + tool-activity events to the browser.
+## Backbone: recovery substrate
 
-**SDK constraints (pinned 0.76.0):** use raw-JSON tool schemas (`{"name","description","input_schema"}`) and the manual loop. Do **not** use `@beta_tool`/`client.beta.messages.tool_runner` or `messages.parse` — not assumed present in this pin. Reuse the client-selection + model-routing pattern from `oddish/src/oddish/core/digest.py` (`AsyncAnthropic` vs `AsyncAnthropicBedrock` via `config.py`), extended to support z.ai routing already in `config.py`.
+### 1. Durable append-only event log
+New table **`chat_session_events`**: `id`, `session_id` (FK → `chat_sessions`), `seq` (monotonic per session), `event` (jsonb — one stream-json event verbatim), `created_at`. Unique `(session_id, seq)`; index `(session_id, seq asc)`.
 
-**Model:** new `CHAT_MODEL` config in `oddish/src/oddish/config.py` (alongside `ANALYSIS_MODEL`). Default `claude-opus-4-8` for the direct API; ops sets the corresponding Bedrock inference-profile / z.ai id in deployment via the existing routing helpers. `max_tokens` ~16000. Adaptive thinking (`thinking={"type":"adaptive"}`) enabled only when the routed model is a Claude 4.6+ model; left off for z.ai/GLM routing to avoid 400s. Final decision deferred to implementation per deployed routing.
+- `SessionTranscriptBuffer.append(...)` is replaced/backed by a write to this table **as each event is emitted** during `send_message`'s stream, before it is yielded to the client. The transcript becomes an ordered replay of this log (atelier's model).
+- The in-memory buffer may remain as a write-through cache, but it is no longer the source of truth.
+- MinIO flush at close still happens (cold archive), now sourced from the log.
 
-## Tools
+### 2. Durable turn record
+New table **`chat_turns`**: `id`, `session_id` (FK), `seq` (turn ordinal), `user_message` (text), `status` (`running|done|failed|canceled`), `started_at`, `ended_at`, `error`. **Partial unique index** `WHERE status='running'` on `session_id` → at most one running turn per session (atelier's `agent_turns` concurrency guard). A turn row is opened when a user message starts streaming and closed (`done`/`failed`) when the stream ends.
 
-Tool functions wrap existing `oddish.core.*` helpers and run under the **same `require_auth` + org filter** as the existing routers, so chat can never read another org's data. A failing tool returns a structured `tool_result` with `is_error: true` (not an HTTP 500) so the model can recover or report.
+On service restart, `restart_sweep` marks any `running` turn `failed` (its sandbox stream is gone) but **keeps the event log** — so the transcript is intact and the session can accept a new message.
 
-### Global scope (tasks page)
-- `search_tasks(status?, agent?, model?, provider?, tags?, experiment?, reward_min?, reward_max?, date_range?, limit?)` → wraps `tasks/browse` core logic.
-- `get_task_detail(task_id)` → versions + trial totals (`TaskDetailResponse`).
-- `aggregate_trials(group_by, filters)` → trial-outcome stats (e.g. "tasks with verifier pass rate < 30%").
-- `search_verdicts(query)` → over `task.verdict` / `trial.analysis` JSONB text.
+### 3. Replay + resume on reconnect
+New route **`GET /chat-sessions/{id}/events?since=<seq>`** → returns events with `seq > since` (full transcript when `since` omitted). Client flow:
+1. On load, `GET /chat-sessions/{id}` (metadata + whether a turn is `running`) and `GET …/events` to rebuild the transcript.
+2. If a turn is `running`, re-attach to the live `messages` SSE stream (or a dedicated tail) and continue from the last `seq` seen.
+3. `claude --resume <claude_session_id>` already preserves *Claude's* context; the event log preserves *UI/transcript* continuity — the half currently lost.
 
-### Task/Experiment scope (detail page)
-- `list_trials(task_id, version?)` → defaults to `current_version`; pass a `version` to reach past runs. Filters `superseded_by_trial_id IS NULL` by default.
-- `get_trial_logs(trial_id)` → `read_trial_logs_structured` (categorized agent/verifier). **Truncates** at a documented cap and tells the model it truncated.
-- `get_trial_trajectory(trial_id)` → ATIF steps via `read_trial_trajectory` (gated by `has_trajectory`).
-- `list_task_versions(task_id)` → so the model can answer "what past versions exist" and switch.
+---
 
-The task-scope system prompt is seeded with: task id, name, `current_version`, and a compact latest-version trial summary (`id / version / reward / status`) so the model answers immediately and only fetches full logs on demand. Experiment scope seeds the experiment id + its tasks; `list_trials`/`get_trial_logs` operate per task within it.
+## Scope 1: Global cross-task query chat (net new)
 
-### Fast-follow (not in v1)
-- `search_task_content(query)` → semantic/keyword search over task **bundle** text in S3. Needs a keyword-grep-on-demand vs. embeddings-index decision; specced separately so it does not gate v1.
+A `scope_kind = "global"` session (scope_id = org). Entry point: the oddish **tasks page**. Purpose: "find tasks with xyz characteristics" across all tasks/experiments/trials.
 
-## Data model (persist from day one)
+- **Priming:** new `render_global_claude_md(org_id)` describing how to query and the available query tool.
+- **Querying:** Claude Code in the sandbox calls a **new oddish query endpoint** (e.g. `POST /tasks/query`) via an injected CLI/tool in the sandbox (atelier's "credentialed CLI in the sandbox" pattern), wrapping existing `oddish.core` browse/aggregate logic. Supports structured filters (status, agent, model, reward range, tags, experiment, dates) and trial-outcome aggregations. Auth/org-scoping enforced server-side in oddish.
+- Semantic search over task *bundle content* is a fast-follow (separate decision: keyword-grep vs. embeddings).
 
-Two new tables in the **backend (cloud) Alembic chain** (`backend/alembic/versions/`) + `backend/models.py`, since they reference `org_id`/`user` from the cloud layer. Follows atelier's append-and-replay pattern.
+## Scope 2: Task-level trial-log chat, version-aware (extends existing)
 
-- **`chat_conversations`**: `id`, `org_id`, `user_id`, `scope` (`global|task|experiment`), `scope_ref_id` (nullable task/experiment id), `title`, `created_at`, `last_activity_at`.
-- **`chat_messages`**: `id`, `conversation_id` (FK), `role` (`user|assistant|tool`), `content` (JSONB — text + tool_use/tool_result blocks, replayed verbatim), `created_at`. Index `(conversation_id, created_at asc)`.
+A `scope_kind = "task"` session (scope_id = task_id). Entry point: the oddish **task detail page**. Purpose: chat with the trial logs for this task.
 
-A page reload replays the transcript from `chat_messages`.
+- **Version defaulting:** primes with the task's **`current_version`** trials by default; the `CLAUDE.md` + an injected tool let the user pull in **past version runs** on request (`list_task_versions`, `list_trials(task_id, version)`). This is the new "default latest, see past versions" behavior on top of the existing task-probes scope.
+- **Logs:** reuses the existing `OddishClient.list_experiment_trial_files` / trial-file fetch path so Claude Code reads structured trial logs/trajectory from S3 in-sandbox.
+- The existing `experiment`-scoped chat remains; `task` scope is the version-aware addition the user asked for.
 
-## Components / files
+---
 
-**Backend** (fills the empty `backend/api/services/cc_chat/` + `backend/tests/cc_chat/` placeholders):
-- `backend/api/services/cc_chat/engine.py` — the streaming tool-use loop + turn persistence.
-- `backend/api/services/cc_chat/tools.py` — tool JSON schemas + dispatch → `oddish.core.*`.
-- `backend/api/services/cc_chat/prompts.py` — global vs. scoped system prompts.
-- `backend/api/routers/chat.py` — routes (below), registered in `backend/api/app.py`.
-- `backend/models.py` + new `backend/alembic/versions/<rev>_add_chat_tables.py`.
-- `oddish/src/oddish/config.py` — add `CHAT_MODEL`.
+## Oddish cutover (entry points)
 
-**API routes** (mirror existing auth/proxy conventions):
-- `POST /chat/conversations` — create (body: `scope`, `scope_ref_id?`).
-- `GET /chat/conversations` / `GET /chat/conversations/{id}` — list / fetch with messages.
-- `POST /chat/conversations/{id}/messages/stream` — send a user message, stream the assistant turn as NDJSON.
+Oddish becomes a thin client of agent-sandbox-service's chat API (Plan 3 direction).
+- **Frontend:** a shared `chat-panel.tsx` (SSE reader + replay-on-mount using the events endpoint). Mounted at two entry points — tasks page (`scope=global`) and task detail page (`scope=task`, `scope_id=task_id`).
+- **Proxy routes:** `frontend/src/app/api/chat/...` → agent-sandbox-service, auth header injected (existing proxy pattern).
+- **New oddish backend endpoint:** `POST /tasks/query` for the global scope's query tool (wraps `oddish.core` browse/aggregate; org-scoped via existing `require_auth`).
 
-**Frontend** (Next.js App Router, SWR, existing `/api/*` proxy pattern):
-- `frontend/src/components/chat/chat-panel.tsx` — shared streaming chat UI; NDJSON reader modeled on atelier's `streamCodex` (`response.body.getReader()` + `TextDecoder`, split on `\n`).
-- Entry points: a button/drawer on `frontend/src/app/(app)/tasks/page.tsx` (global), and on `tasks/[task_id]` + `experiments/[experiment]` (scoped, passing `scope_ref_id`).
-- `frontend/src/app/api/chat/...` thin proxy routes → FastAPI backend (auth header injection via `@/lib/backend-config`).
+## Data model summary (new, in agent-sandbox-service Alembic)
+- `chat_session_events` (durable transcript log)
+- `chat_turns` (durable turn record, one-running-turn partial-unique index)
+- `chat_sessions`: add `global` and `task` to the `scope_kind` set (generic column, no schema change beyond allowed values).
 
 ## Streaming protocol
-
-NDJSON lines (atelier shape): `{type:"started", conversation_id, turn_id}`, `{type:"text", delta}`, `{type:"tool", name, status}` (activity chips), `{type:"done"}`, `{type:"error", message}`. Heartbeat every ~10s to hold the connection during long tool loops. Each completed turn is persisted before `done` so a refresh replays from the DB.
+SSE stream-json events (existing). Each event is **persisted to `chat_session_events` before being yielded**. Heartbeat to hold the connection. Replay via `GET …/events?since=<seq>`; resume by tailing from the last seen `seq`.
 
 ## Error handling
-
-- Tool failure → structured `tool_result` with `is_error: true`; model recovers or reports. Tool args validated before execution.
-- Auth/org-scoping enforced inside every tool (same filter as existing routers).
-- Unbounded logs → `get_trial_logs` truncates at a documented cap and signals truncation to the model.
-- Stream errors emit `{type:"error"}`; partial turns are not persisted as if complete.
+- Service crash mid-turn → `restart_sweep` marks the `running` turn `failed`, event log preserved, session reusable.
+- Sandbox/stream error → emit an error event (also persisted), close the turn `failed`.
+- Query tool failure (global scope) → structured error back to Claude Code in-sandbox, not a 500.
+- Org-scoping enforced in every oddish endpoint the sandbox calls.
 
 ## Testing
+agent-sandbox-service (`tests/services/chat/`, `tests/routers/test_chat.py`):
+- Event log: per-event persistence ordering; replay `since=<seq>` correctness.
+- Turn record: one-running-turn invariant; restart sweep marks running→failed and preserves log.
+- Reconnect: rebuild transcript from log + resume a live turn.
+- `render_global_claude_md` / `render task version-aware` prompt builders.
+- Global query tool dispatch (mock oddish query endpoint): filters, aggregation, org-scoping, error mapping.
 
-Unit tests in `backend/tests/cc_chat/`:
-- Tool dispatch (mock `oddish.core.*`): arg validation, org-scoping, error→`is_error` mapping, log truncation.
-- Prompt builders: global vs. scoped seeding (task id / `current_version` / trial summary).
-- Message replay/persistence: turn round-trips through `chat_messages` and rebuilds the transcript.
-- Engine loop: mocked Anthropic stream driving one tool round-trip to `end_turn`.
-
-(No e2e/browser tests — repo has no frontend test suite.)
+oddish: `POST /tasks/query` unit tests (filters/aggregation/org-scoping); proxy-route smoke. (No frontend test suite in oddish.)
 
 ## Phasing
-
-- **v1:** everything above except `search_task_content`.
-- **Fast-follow:** `search_task_content` (semantic task-content search) — separate spec; decide keyword-grep vs. embeddings.
+1. **Backbone** — `chat_session_events`, `chat_turns`, per-event persistence, replay endpoint, restart sweep. (Hardens existing scopes immediately.)
+2. **Scope 2 (task, version-aware)** + oddish task-detail entry point.
+3. **Scope 1 (global)** — `render_global_claude_md`, oddish `POST /tasks/query` + sandbox query tool, tasks-page entry point.
+4. **Fast-follow:** semantic task-content search for global scope.
 
 ## Open risks
-
-- Exact `thinking`/model behavior depends on the deployed routing target (Claude direct vs. Bedrock vs. z.ai/GLM) — resolved at implementation against the configured `CHAT_MODEL`.
-- Log truncation cap is a tunable; start conservative and adjust from real transcript sizes.
+- agent-sandbox-service replica count: if >1, durable turn ownership may need a lease (atelier's `compute_leases`) so reconnect routes to the worker holding the sandbox. Single-replica → not needed yet; flagged.
+- Per-event DB writes add write load; batch within a turn if it shows up in practice (log is still per-event-ordered).
+- `claude --resume` session continuity vs. our turn log must stay consistent if a turn fails mid-stream (resume from last completed turn).
