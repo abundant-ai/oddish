@@ -10,10 +10,12 @@ from sqlalchemy import and_, func, select
 
 from auth import AuthContext, require_admin
 from oddish.core.admin import (
+    QueueHealthResponse,
     QueueSlotsResponse,
     QueueStatusResponse,
     OrphanedStateResponse,
     WorkerJobsResponse,
+    get_queue_health_core,
     get_queue_slots_core,
     get_queue_status_core,
     get_orphaned_state_core,
@@ -53,6 +55,20 @@ async def get_orphaned_state(
         return await get_orphaned_state_core(
             session, stale_after_minutes=stale_after_minutes
         )
+
+
+@router.get("/queue-health", response_model=QueueHealthResponse)
+async def get_queue_health(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> QueueHealthResponse:
+    """Operator overview: throughput, per-queue-key capacity fill, and the
+    persisted dispatcher/reconciler heartbeats.
+
+    Answers "is the queue keeping up?" at a glance -- the panel that lets an
+    operator self-diagnose "queued but not running" without psql + Modal logs.
+    """
+    async with get_session() as session:
+        return await get_queue_health_core(session)
 
 
 @router.get("/worker-jobs", response_model=WorkerJobsResponse)
