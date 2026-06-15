@@ -5,7 +5,7 @@
 ## Installation
 
 ```bash
-uv pip install oddish
+uv pip install "oddish @ git+https://github.com/abundant-ai/oddish.git#subdirectory=oddish"
 ```
 
 Ensure your API key is set:
@@ -77,7 +77,7 @@ Options
 - `--user`, `-u TEXT` - Override the author attached to the run. Defaults to the authenticated identity (Clerk-linked email for API keys / dashboard sessions); set this only to attribute a run to someone other than yourself.
 - `--github-user`, `-G TEXT` - GitHub user attribution for CI metadata. When omitted, the backend auto-fills this from the authenticated user's Clerk-linked GitHub username (if any) so CI-style attribution still works.
 - `--github-meta TEXT` - JSON metadata blob to attach to the task
-- `--link TEXT` - Associate URL with the task. 
+- `--link TEXT` - Associate URL with the task.
 - `--publish` - Publish the experiment for public read-only access
 - `--watch/--no-watch`, `-w` - Watch progress after submission; enabled by default
 - `--background`, `--async`, `-b` - Submit and return immediately
