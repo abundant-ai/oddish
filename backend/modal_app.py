@@ -19,6 +19,13 @@ def _env_int(name: str, default: int) -> int:
     return int(value)
 
 
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return float(value)
+
+
 MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
 MODAL_SECRET_ENVIRONMENT = os.environ.get("MODAL_SECRET_ENVIRONMENT", "main")
 RUNTIME_SECRET_NAME = "oddish-prod"
@@ -32,6 +39,17 @@ API_BUFFER_CONTAINERS = _env_int("ODDISH_MODAL_API_BUFFER_CONTAINERS", 16)
 API_MAX_CONTAINERS = _env_int("ODDISH_MODAL_API_MAX_CONTAINERS", 16)
 API_CONCURRENCY_TARGET = _env_int("ODDISH_MODAL_API_CONCURRENCY_TARGET", 4)
 API_CONCURRENCY_MAX = _env_int("ODDISH_MODAL_API_CONCURRENCY_MAX", 8)
+
+# Per-function CPU/memory. ``cpu`` is a reservation floor (containers may burst
+# above it when the host has spare capacity); ``memory`` is in MiB. These were
+# previously unset on every function except the single-job worker, so the API
+# in particular ran on Modal's tiny default fractional-core reservation -- with
+# up to API_CONCURRENCY_MAX requests sharing one event loop, CPU-bound work
+# (Pydantic serialization, SQLAlchemy hydration, JWT verify) contended badly
+# under load and showed up as latency that looked like "slow DB". The API gets
+# the most headroom since it is the most concurrent, latency-sensitive surface.
+API_CPU = _env_float("ODDISH_MODAL_API_CPU", 2.0)
+API_MEMORY_MB = _env_int("ODDISH_MODAL_API_MEMORY_MB", 4096)
 LOCAL_DOTENV_PATH = Path(__file__).with_name(".env")
 LOCAL_DOTENV_VARS = {
     key: value
@@ -84,10 +102,23 @@ WORKER_MAX_CONTAINERS = _env_int(
 # Mark single-job worker containers as non-preemptible so Modal does not
 # interrupt long-running trials / analyses / verdicts mid-execution. Modal
 # applies a 3x CPU+memory price multiplier when this is enabled
-# (https://modal.com/docs/guide/preemption); keep it env-flagged so previews
-# or experiments can opt out.
+# (https://modal.com/docs/guide/preemption);
 WORKER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_WORKER_NONPREEMPTIBLE", True)
 DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", True)
+
+# Per-function CPU/memory floors (see API_CPU/API_MEMORY_MB note above).
+# - Worker: keeps the historical 1 core / 3 GiB; Harbor scratch + log handling
+#   is the heaviest non-API workload.
+# - Dispatcher: lightweight (discover active keys + spawn); a modest floor is
+#   plenty now that it no longer runs the reconciliation sweep inline.
+# - Reconciler: DB-bound multi-pass sweep; give it a bit more memory than the
+#   dispatcher for the larger result sets it materializes.
+WORKER_CPU = _env_float("ODDISH_MODAL_WORKER_CPU", 1.0)
+WORKER_MEMORY_MB = _env_int("ODDISH_MODAL_WORKER_MEMORY_MB", 3072)
+DISPATCHER_CPU = _env_float("ODDISH_MODAL_DISPATCHER_CPU", 1.0)
+DISPATCHER_MEMORY_MB = _env_int("ODDISH_MODAL_DISPATCHER_MEMORY_MB", 1024)
+RECONCILER_CPU = _env_float("ODDISH_MODAL_RECONCILER_CPU", 1.0)
+RECONCILER_MEMORY_MB = _env_int("ODDISH_MODAL_RECONCILER_MEMORY_MB", 2048)
 
 # Max number of workers spawned per poll cycle (rate limiter, global across all
 # queue_keys). This is the dominant throughput ceiling: long agent trials hold a
