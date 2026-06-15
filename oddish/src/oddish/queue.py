@@ -336,7 +336,13 @@ def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
 # Every domain-row insertion or stage transition that schedules compute
 # work has a sibling ``worker_jobs`` row in the same transaction. The
 # dispatcher claims from ``worker_jobs`` only; these helpers are the
-# single enqueue surface for the TRIAL / ANALYSIS / VERDICT kinds.
+# single enqueue surface for the TRIAL and (task-level) VERDICT kinds.
+#
+# Trajectory analysis is task-scoped: a single VERDICT worker job
+# classifies every trial in the task and then synthesizes the task
+# verdict, so there is no longer a per-trial ANALYSIS enqueue on the
+# normal pipeline. ``enqueue_analysis_worker_job`` is retained only for
+# in-flight ANALYSIS rows across a deploy.
 
 
 async def enqueue_trial_worker_job(
@@ -412,6 +418,12 @@ async def enqueue_verdict_worker_job(
     task_id: str,
     org_id: str | None,
 ) -> WorkerJobModel:
+    """Enqueue the single task-level QA job for a task.
+
+    Despite the ``VERDICT`` kind name, this job now performs the whole
+    trajectory-analysis pipeline for the task: it classifies every live
+    trial and then synthesizes the task verdict. One job per task.
+    """
     return await enqueue_worker_job(
         session,
         EnqueueRequest(
@@ -953,8 +965,14 @@ async def append_trials_to_task(
 async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bool:
     """Check if all trials for a task are done and transition task status.
 
-    If run_analysis is enabled -> status becomes ANALYZING
-    If run_analysis is disabled -> status becomes COMPLETED
+    If run_analysis is enabled -> enqueue the single task-level QA job
+    (which classifies every trial then synthesizes the verdict) and move
+    the task to VERDICT_PENDING.
+    If run_analysis is disabled -> status becomes COMPLETED.
+
+    The per-trial ANALYSIS stage no longer exists: one task-scoped job
+    handles both classification and verdict, so a task goes straight from
+    RUNNING to VERDICT_PENDING rather than passing through ANALYZING.
 
     Uses SELECT FOR UPDATE to prevent race conditions.
     """
@@ -996,33 +1014,9 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
         return False
 
     if task.run_analysis:
-        task.status = TaskStatus.ANALYZING
-        await session.flush()
-
-        analysis_pending_count = await session.scalar(
-            select(func.count(TrialModel.id)).where(
-                and_(
-                    TrialModel.task_id == task_id,
-                    TrialModel.superseded_by_trial_id.is_(None),
-                    or_(
-                        TrialModel.analysis_status.is_(None),
-                        TrialModel.analysis_status.in_(
-                            [
-                                AnalysisStatus.PENDING,
-                                AnalysisStatus.QUEUED,
-                                AnalysisStatus.RUNNING,
-                            ]
-                        ),
-                    ),
-                )
-            )
-        )
-        if analysis_pending_count == 0:
-            task.status = TaskStatus.VERDICT_PENDING
-            task.verdict_status = VerdictStatus.QUEUED
-            await enqueue_verdict_worker_job(
-                session, task_id=task_id, org_id=task.org_id
-            )
+        task.status = TaskStatus.VERDICT_PENDING
+        task.verdict_status = VerdictStatus.QUEUED
+        await enqueue_verdict_worker_job(session, task_id=task_id, org_id=task.org_id)
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()

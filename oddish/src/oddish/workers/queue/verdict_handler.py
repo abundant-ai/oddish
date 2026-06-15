@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
+from sqlalchemy import select
+
 from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
@@ -12,6 +14,7 @@ from oddish.db import (
     get_session,
     utcnow,
 )
+from oddish.workers.queue.analysis_handler import classify_trial_and_store
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
@@ -59,19 +62,59 @@ async def _heartbeat_verdict_worker_job(
             pending_last_error = f"{type(exc).__name__}: {exc}"
 
 
+async def _load_live_trials_for_classification(
+    task_id: str,
+) -> list[tuple[str, bool, AnalysisStatus | None]]:
+    """Return ``(trial_id, is_probe, analysis_status)`` for live trials.
+
+    "Live" means not superseded by a retry. Used to decide which trials
+    the task-level QA job still needs to classify.
+    """
+    async with get_session() as session:
+        rows = (
+            await session.execute(
+                select(
+                    TrialModel.id,
+                    TrialModel.harbor_config,
+                    TrialModel.analysis_status,
+                ).where(
+                    TrialModel.task_id == task_id,
+                    TrialModel.superseded_by_trial_id.is_(None),
+                )
+            )
+        ).all()
+
+    out: list[tuple[str, bool, AnalysisStatus | None]] = []
+    for trial_id, harbor_config, analysis_status in rows:
+        is_probe = bool((harbor_config or {}).get("extra_instructions"))
+        out.append((str(trial_id), is_probe, analysis_status))
+    return out
+
+
 async def run_verdict_job(
     task_id: str,
     queue_key: str,
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
 ) -> None:
-    """
-    Execute verdict synthesis for a claimed task.
+    """Run task-level trajectory analysis (QA) for a claimed task.
 
-    1. Load all trial classifications from database
-    2. Run verdict synthesis with Claude
-    3. Store verdict in task.verdict
-    4. Mark task as COMPLETED
+    This is the single, task-scoped QA job that replaced the old
+    per-trial ``ANALYSIS`` jobs plus the separate per-task ``VERDICT``
+    job. One worker job per task now:
+
+    1. Classifies every live (non-superseded) trial's trajectory with the
+       Claude Code classifier -- same taxonomy, evidence, and reasoning as
+       before -- writing each result to ``trial.analysis`` /
+       ``trial.analysis_status``. Trials already classified (SUCCESS) or
+       analyzed inline (probe trials) are reused, not re-run.
+    2. Synthesizes a single task verdict from those per-trial
+       classifications and stores it on ``task.verdict``.
+    3. Marks the task COMPLETED.
+
+    Collapsing N analyses + 1 verdict into one job means a sweep of
+    ``T`` tasks x ``N`` trials enqueues ``T`` QA jobs instead of
+    ``T * (N + 1)``.
     """
     from oddish.analyze import (
         Classification,
@@ -79,10 +122,13 @@ async def run_verdict_job(
         compute_task_verdict,
     )
 
-    console.print(f"[cyan]Processing verdict[/cyan] {task_id} (queue_key={queue_key})")
+    console.print(
+        f"[cyan]Processing task QA[/cyan] {task_id} (queue_key={queue_key})"
+    )
 
-    # Mark as running and load classifications
-    classifications = []
+    # Mark as running. The per-trial classification + verdict synthesis
+    # below can be long (it walks every trial), so a single heartbeat
+    # loop spans the whole job.
     async with get_session() as session:
         task = await session.get(TaskModel, task_id)
         if not task:
@@ -98,47 +144,6 @@ async def run_verdict_job(
         task.verdict_status = VerdictStatus.RUNNING
         task.verdict_started_at = utcnow()
 
-        # Load trial classifications. Filter out superseded rows so
-        # the verdict only synthesises over the currently-live trial
-        # set; old attempts that a user retried away from must not
-        # contribute classifications to the new verdict.
-        from sqlalchemy import select
-
-        trials_result = await session.execute(
-            select(TrialModel).where(
-                TrialModel.task_id == task_id,
-                TrialModel.superseded_by_trial_id.is_(None),
-            )
-        )
-        trials = trials_result.scalars().all()
-
-        for trial in trials:
-            if trial.analysis and trial.analysis_status == AnalysisStatus.SUCCESS:
-                # Reconstruct TrialClassification from stored dict
-                analysis = trial.analysis
-                classifications.append(
-                    TrialClassification(
-                        trial_name=analysis.get("trial_name", trial.id),
-                        classification=Classification(analysis["classification"]),
-                        subtype=analysis.get("subtype", "Unknown"),
-                        evidence=analysis.get("evidence", ""),
-                        root_cause=analysis.get("root_cause", ""),
-                        recommendation=analysis.get("recommendation", ""),
-                        reward=analysis.get("reward"),
-                    )
-                )
-
-        await session.commit()
-
-    console.print(
-        f"[cyan]Computing verdict from {len(classifications)} classifications...[/cyan]"
-    )
-    for i, c in enumerate(classifications):
-        console.print(
-            f"  [{i + 1}] {c.classification.value}: {c.subtype} (reward={c.reward})"
-        )
-
-    # Run verdict synthesis
     verdict_result = None
     verdict_error = None
     heartbeat_stop = asyncio.Event()
@@ -151,7 +156,83 @@ async def run_verdict_job(
             )
         )
 
+    classifications: list[TrialClassification] = []
     try:
+        # -----------------------------------------------------------------
+        # 1. Classification phase: classify every live trial that still
+        #    needs it. Probe trials are analyzed inline by the trial job,
+        #    so they are skipped here; trials already SUCCESS/FAILED keep
+        #    their stored result. Each classification is best-effort --
+        #    one failed trial must not abort the whole task QA -- and
+        #    ``classify_trial_and_store`` records FAILED on error itself.
+        # -----------------------------------------------------------------
+        live_trials = await _load_live_trials_for_classification(task_id)
+        to_classify = [
+            trial_id
+            for trial_id, is_probe, analysis_status in live_trials
+            if not is_probe
+            and analysis_status
+            not in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
+        ]
+        if to_classify:
+            console.print(
+                f"[cyan]Classifying {len(to_classify)} trial(s) for task "
+                f"{task_id}...[/cyan]"
+            )
+        for trial_id in to_classify:
+            try:
+                await classify_trial_and_store(trial_id)
+            except Exception as exc:  # noqa: BLE001
+                console.print(
+                    f"[red]Classification crashed for {trial_id}: "
+                    f"{type(exc).__name__}: {exc}[/red]"
+                )
+
+        # -----------------------------------------------------------------
+        # 2. Verdict phase: synthesize the task verdict from the live
+        #    trials' classifications. Filter out superseded rows so the
+        #    verdict only reflects the currently-live trial set.
+        # -----------------------------------------------------------------
+        async with get_session() as session:
+            trials_result = await session.execute(
+                select(TrialModel).where(
+                    TrialModel.task_id == task_id,
+                    TrialModel.superseded_by_trial_id.is_(None),
+                )
+            )
+            trials = trials_result.scalars().all()
+
+            for trial in trials:
+                analysis = trial.analysis
+                if (
+                    trial.analysis_status == AnalysisStatus.SUCCESS
+                    and isinstance(analysis, dict)
+                    # Probe trials store a probe_summary (no "classification"),
+                    # which is not a verdict input; skip them defensively.
+                    and "classification" in analysis
+                ):
+                    classifications.append(
+                        TrialClassification(
+                            trial_name=analysis.get("trial_name", trial.id),
+                            classification=Classification(analysis["classification"]),
+                            subtype=analysis.get("subtype", "Unknown"),
+                            evidence=analysis.get("evidence", ""),
+                            root_cause=analysis.get("root_cause", ""),
+                            recommendation=analysis.get("recommendation", ""),
+                            reward=analysis.get("reward"),
+                        )
+                    )
+
+        console.print(
+            f"[cyan]Computing verdict from {len(classifications)} "
+            "classifications...[/cyan]"
+        )
+        for i, c in enumerate(classifications):
+            console.print(
+                f"  [{i + 1}] {c.classification.value}: {c.subtype} "
+                f"(reward={c.reward})"
+            )
+
         if not classifications:
             raise ValueError("No successful classifications to synthesize verdict from")
 
